@@ -15,14 +15,14 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x, 22.x]
+        node-version: [20.x, 22.x]
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -37,7 +37,7 @@ jobs:
         run: npm run build:all
 
       - name: Self-analysis (dogfood)
-        if: matrix.node-version == '20.x'
+        if: matrix.node-version == '22.x'
         run: npm run dogfood
 
       - name: Run tests with coverage
@@ -50,8 +50,8 @@ jobs:
           # Vitest with @vitest/coverage-v8 will fail if thresholds aren't met in vitest.config.ts
 
       - name: Upload coverage reports
-        if: matrix.node-version == '20.x'
-        uses: codecov/codecov-action@v4
+        if: matrix.node-version == '22.x'
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage/coverage-final.json
           flags: unittests
@@ -67,12 +67,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           cache: 'npm'
 
       - name: Install cognium-ai
@@ -83,7 +83,9 @@ jobs:
           LLM_BASE_URL: https://models.github.ai/inference
           LLM_API_KEY: ${{ github.token }}
           LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
-        run: cognium-ai scan ./src
+        run: |
+          # Exit code 0 = clean, 1 = security findings (fail CI), 2 = quality-only findings (ok)
+          cognium-ai scan ./src || [ $? -eq 2 ]
 
       - name: Run trust score
         env:
@@ -131,12 +133,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           cache: 'npm'
 
       - name: Install dependencies
