@@ -1,5 +1,8 @@
 # circle-ir
 
+![Trust Score](https://raw.githubusercontent.com/cogniumhq/circle-ir/badges/trust-badge.svg)
+![Quality Score](https://raw.githubusercontent.com/cogniumhq/circle-ir/badges/quality-badge.svg)
+
 A high-performance Static Application Security Testing (SAST) library for detecting security vulnerabilities through taint analysis, and code quality findings through an extensible 36-pass analysis pipeline. Works in Node.js and browsers.
 
 ## Features
