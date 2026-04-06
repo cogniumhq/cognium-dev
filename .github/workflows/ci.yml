@@ -94,13 +94,27 @@ jobs:
           cognium-ai quality ./src
           cognium-ai quality ./src --format badge -o quality-badge.svg
 
-      - name: Upload badges
+      - name: Upload badges as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: badges
           path: |
             trust-badge.svg
             quality-badge.svg
+
+      - name: Commit badges to badges branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin badges:badges || git checkout --orphan badges
+          git checkout badges || git checkout --orphan badges
+          git reset --hard
+          cp ${{ github.workspace }}/trust-badge.svg . 2>/dev/null || true
+          cp ${{ github.workspace }}/quality-badge.svg . 2>/dev/null || true
+          git add trust-badge.svg quality-badge.svg
+          git commit -m "Update badges [skip ci]" || echo "No changes to commit"
+          git push origin badges --force
 
   lint:
     name: Lint and Format Check
