@@ -61,6 +61,9 @@ jobs:
   security-scan:
     name: Security Scan (cognium-ai)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      models: read
 
     steps:
       - name: Checkout code
@@ -77,19 +80,25 @@ jobs:
 
       - name: Run security scan
         env:
-          LLM_BASE_URL: https://llmproxy.xus.one/v1
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
         run: cognium-ai scan ./src
 
       - name: Run trust score
         env:
-          LLM_BASE_URL: https://llmproxy.xus.one/v1
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
         run: |
           cognium-ai trust ./src
           cognium-ai trust ./src --format badge -o trust-badge.svg
 
       - name: Run quality score
         env:
-          LLM_BASE_URL: https://llmproxy.xus.one/v1
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
         run: |
           cognium-ai quality ./src
           cognium-ai quality ./src --format badge -o quality-badge.svg
