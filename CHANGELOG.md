@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.7] - 2026-04-07
+
+### Fixed
+
+- Republish of 3.16.6 — same fix, the previous tag was never published to npm.
+  Includes the n-plus-one in-memory collection exclusion and the cognium.config
+  re-enable of the pass for circle-ir's own dogfood scan.
+
+[3.16.7]: https://github.com/cogniumhq/circle-ir/compare/v3.16.6...v3.16.7
+
 ## [3.16.6] - 2026-04-07
 
 ### Fixed
