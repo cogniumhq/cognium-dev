@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.8] - 2026-04-08
+
+### Changed
+
+- **Dependencies refreshed** — no source code or behavior changes:
+  - `web-tree-sitter` 0.26.7 → 0.26.8 (runtime, patch)
+  - `esbuild` 0.27.4 → 0.28.0 (build tool)
+  - `@types/node` 25.5.0 → 25.5.2
+  - `@vitest/coverage-v8` 4.1.2 → 4.1.3
+  - `vitest` 4.1.2 → 4.1.3
+
+[3.16.8]: https://github.com/cogniumhq/circle-ir/compare/v3.16.7...v3.16.8
+
 ## [3.16.7] - 2026-04-07
 
 ### Fixed
