@@ -143,10 +143,38 @@ Numbers follow COGNIUM_IMPLEMENTATION_GUIDE §10 Week 12-14.
 
 ## Ongoing: Architecture Improvements
 
+### Completed
+
 - [x] **P2**: Pass-level unit tests (`tests/analysis/passes/*.test.ts`) — each pass testable with minimal `PassContext` fixture
 - [x] **P2**: `ScopeGraph` implementation for Phase 1 Group 3 (done in v3.9.3)
 - [x] **P2**: `ImportGraph` implementation for Phase 1 Group 4 (done in v3.9.4)
 - [x] **P2**: Implement type resolution TODO in `src/languages/plugins/java.ts` — `buildVarTypeMap` + `WeakMap` cache (done in v3.12.0)
+
+### Unified CodeGraph Refactor (low priority)
+
+**Status: NOT BUILT.** `CodeGraph` today is a lazy index wrapper over `CircleIR` — it provides
+query helpers (`defsAtLine()`, `callsAtLine()`, `loopBodies()`) but is not a true unified graph.
+Passes still build separate graph structures independently.
+
+**Current state — 6 disjoint graph classes:**
+
+| Graph | Location | Built by |
+|---|---|---|
+| `CodeGraph` | `src/graph/code-graph.ts` | Once per file in `analyze()` — lazy indexes over IR |
+| `DominatorGraph` | `src/graph/dominator-graph.ts` | On-demand per pass (missing-guard-dom, cleanup-verify) |
+| `ExceptionFlowGraph` | `src/graph/exception-flow-graph.ts` | On-demand per pass (broad-catch, unhandled-exception, swallowed-exception) |
+| `ScopeGraph` | `src/graph/scope-graph.ts` | On-demand per pass (variable-shadowing, leaked-global) |
+| `ProjectGraph` | `src/graph/project-graph.ts` | Multi-file analysis wrapper |
+| `ImportGraph` | `src/graph/import-graph.ts` | Tarjan SCC for circular deps, orphan modules |
+
+**What the full refactor would do:**
+
+- [ ] **Typed edge store** — single edge abstraction with ~15 types (`ast`, `controls`, `dataFlows`, `calls`, `taints`, `dominates`, `throws`, `inherits`, etc.) instead of separate graph classes
+- [ ] **Shared graph instances** — `DominatorGraph`, `ExceptionFlowGraph`, `ScopeGraph` built once per file and cached on `CodeGraph`, not rebuilt by each pass
+- [ ] **AST integration** — Tree-sitter AST nodes accessible through CodeGraph (currently passed separately to constant propagation)
+- [ ] **Unified query API** — single entry point for all graph queries instead of `graph.ir.cfg` + `new DominatorGraph(cfg)` + `new ExceptionFlowGraph(cfg, ...)` etc.
+
+**Why it's deferred:** All 36+ passes work fine with current structures. ~1,500 LOC refactor for cleaner internals but no new analysis capabilities. Would benefit circle-ir-ai (LLM passes need a unified graph view).
 
 ---
 
@@ -217,4 +245,4 @@ Before any release:
 
 ---
 
-*Last updated: 2026-03-27*
+*Last updated: 2026-04-08*
