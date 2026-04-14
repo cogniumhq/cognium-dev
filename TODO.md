@@ -205,8 +205,78 @@ Current coverage: 86.56% stmts / 73.09% branches / 91.28% functions / 88.85% lin
 | Python | 63.8% CWE-Bench | ✅ Complete (Flask, Django, FastAPI) | P2 improvements |
 | Rust | 100% CWE-Bench | ⚠️ Partial (needs Axum, SQLx) | P3 |
 | Bash/Shell | 68.2% TPR, 0% FPR | ⚠️ Basic (read source only) | P2 |
+| Go | — | Not started | P2 |
+| C | — | Not started | P4 (see notes) |
 
-### Pending Language Additions
+### New Language: Go (P2)
+
+**Effort: Medium** (~500-800 LOC plugin, ~200 LOC source/sink configs)
+
+Go's simplicity maps well to circle-ir's IR model. Structs + methods map to types, standard
+control flow maps to CFG, explicit error returns (no exceptions), strong typing. Most existing
+passes (36+) would work with minimal adaptation.
+
+- [ ] Add `tree-sitter-go` WASM grammar to `wasm/`
+- [ ] Create `src/languages/plugins/go.ts` extending `BaseLanguagePlugin`
+- [ ] Add source configs: `net/http` handlers (`r.URL.Query()`, `r.FormValue()`, `r.Body`),
+      Gin (`c.Query()`, `c.Param()`, `c.PostForm()`), Echo, Fiber, Chi
+- [ ] Add sink configs: `database/sql` (`db.Query()`, `db.Exec()`), GORM, `os/exec`
+      (`exec.Command()`), `html/template` vs `text/template`, `fmt.Sprintf` for format strings
+- [ ] Handle Go-specific patterns: `defer` (resource cleanup), multiple return values
+      (error handling), goroutines/channels (concurrency)
+- [ ] Add tests in `tests/languages/go.test.ts`
+
+### New Language: C (P4 — low priority)
+
+**Effort: Very high** (~1500+ LOC plugin, new analysis passes required)
+
+C requires fundamentally different analysis capabilities that circle-ir doesn't have:
+pointer analysis, buffer bounds tracking, memory lifetime tracking. Only ~40% of existing
+passes apply. Better tools exist for C (Coverity, cppcheck, Clang Static Analyzer).
+
+- [ ] Add `tree-sitter-c` WASM grammar to `wasm/`
+- [ ] Create `src/languages/plugins/c.ts` extending `BaseLanguagePlugin`
+- [ ] Add source configs: `stdin`, `argv`, `getenv()`, `recv()`, `read()`, `fgets()`
+- [ ] Add sink configs: `system()`, `exec*()`, `printf()` (format string), `strcpy()`/`strcat()`
+      (buffer overflow), `malloc()`/`free()` (memory management)
+- [ ] **New passes required** (not needed for other languages):
+  - [ ] Buffer overflow detection (CWE-120/787) — bounds tracking for `strcpy`, `sprintf`, etc.
+  - [ ] Format string vulnerability (CWE-134) — user input as format string in `printf` family
+  - [ ] Use-after-free detection (CWE-416) — memory lifetime tracking after `free()`
+  - [ ] Double-free detection (CWE-415) — `free()` called twice on same pointer
+  - [ ] Integer overflow (CWE-190) — arithmetic on sizes before `malloc`/array index
+- [ ] Pointer-aware taint tracking (pointer aliasing, `void*` casts, `memcpy` propagation)
+- [ ] Add tests in `tests/languages/c.test.ts`
+
+### Web Extraction Preprocessor (P2)
+
+**Effort: Medium** (extraction layer) to **High** (per template language)
+
+Not a full language plugin. A preprocessor that extracts analyzable code from HTML and
+template files, then feeds it to the existing JS/TS analyzer. Also runs ~10 attribute-level
+security rules that don't need an IR.
+
+**Why not "HTML as a language":** HTML has no data flow, control flow, or functions. Building
+a full IR produces mostly-empty structures that none of the 36+ passes can analyze. The
+vulnerabilities are in embedded JS and template interpolation, not in HTML itself.
+
+- [ ] Parse HTML with `tree-sitter-html` (extraction only, no full IR)
+- [ ] Extract `<script>` blocks → feed to JS analyzer with correct line offsets
+- [ ] Extract inline event handlers (`onclick`, `onerror`, etc.) → analyze as JS snippets
+- [ ] Attribute-level security rules (no IR needed):
+  - [ ] Missing `rel="noopener noreferrer"` on `target="_blank"` links
+  - [ ] `<iframe>` without `sandbox` attribute
+  - [ ] `<form>` without CSRF token hidden input
+  - [ ] Mixed content (`http://` resources on HTTPS pages)
+  - [ ] `href="javascript:..."` links
+  - [ ] Missing Subresource Integrity on external `<script>`/`<link>`
+- [ ] **Template language support** (high effort, per language):
+  - [ ] EJS: detect `<%-` (unescaped, XSS) vs `<%=` (escaped, safe)
+  - [ ] Handlebars: detect `{{{` (unescaped) vs `{{` (escaped)
+  - [ ] Jinja2: detect `| safe` filter (unescaped)
+  - [ ] Pug/Jade: detect `!{` (unescaped) vs `#{` (escaped)
+
+### Existing Language Improvements
 
 **Python (P2):**
 - [ ] Add Jinja2 XSS sink patterns
