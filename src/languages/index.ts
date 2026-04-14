@@ -2,7 +2,7 @@
  * Language Plugin System
  *
  * Provides multi-language support through a plugin architecture.
- * Each language (Java, JavaScript, Python, Rust) has its own plugin
+ * Each language (Java, JavaScript, Python, Rust, Bash, HTML) has its own plugin
  * that handles AST node types, taint patterns, and framework detection.
  */
 

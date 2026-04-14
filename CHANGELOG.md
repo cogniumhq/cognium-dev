@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.1] - 2026-04-14
+
+### Changed
+
+- Updated all documentation to list HTML as a supported language (README, SPEC, ARCHITECTURE, CLAUDE, CONTRIBUTING, source comments)
+
+[3.17.1]: https://github.com/cogniumhq/circle-ir/compare/v3.17.0...v3.17.1
+
 ## [3.17.0] - 2026-04-13
 
 ### Added

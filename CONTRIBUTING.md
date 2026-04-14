@@ -70,7 +70,7 @@ npm run typecheck     # Type check only
 src/
 ├── core/           # Parser and IR generation (Tree-sitter)
 ├── analysis/       # Taint analysis engine
-├── languages/      # Language plugins (Java, JS, Python, Rust)
+├── languages/      # Language plugins (Java, JS, Python, Rust, Bash, HTML)
 ├── resolution/     # Cross-file resolution and type hierarchy
 ├── types/          # TypeScript type definitions
 ├── utils/          # Logging utilities

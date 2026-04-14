@@ -563,7 +563,7 @@ FPs primarily from: correlated predicates, custom sanitizers, strong updates.
 2. **Type resolution improvements:** Java generic-type receiver inference (`List<T>` element access, `Optional<T>.get()`) to reduce false negatives in heavily generic codebases; tracked in `src/languages/java.ts`.
 3. **Cognitive complexity metric:** McCabe cyclomatic complexity is already present; adding Sonar's cognitive complexity scoring would improve the `bug_hotspot_score` composite.
 4. **IDE integration:** VS Code / IntelliJ Language Server Protocol (LSP) extension exposing circle-ir findings inline as you type.
-5. **Go / Ruby language plugins:** Tree-sitter grammars exist; adding Go and Ruby plugins would cover the remaining popular web-framework ecosystems.
+5. **Go / Ruby language plugins:** Tree-sitter grammars exist; adding Go and Ruby plugins would cover the remaining popular web-framework ecosystems. (HTML support shipped in v3.17.0 as a web extraction preprocessor.)
 
 See [TODO.md](../TODO.md) for the phase-based roadmap.
 

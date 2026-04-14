@@ -2,7 +2,7 @@
  * Language Plugin System
  *
  * Defines the interface for language-specific analysis plugins.
- * Each language (Java, JavaScript, Python, Rust) implements this interface.
+ * Each language (Java, JavaScript, Python, Rust, Bash, HTML) implements this interface.
  */
 
 import type { Parser, Node as SyntaxNode, Tree } from 'web-tree-sitter';

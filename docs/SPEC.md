@@ -73,7 +73,7 @@ File metadata and version information.
 interface Meta {
   circle_ir: "3.0";
   file: string;
-  language: "java" | "javascript" | "typescript" | "python" | "rust" | "bash";
+  language: "java" | "javascript" | "typescript" | "python" | "rust" | "bash" | "html";
   loc: number;
   hash: string;           // SHA256 prefix (16 chars)
   package?: string;       // PENDING: Add to implementation
