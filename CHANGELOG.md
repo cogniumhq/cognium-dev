@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-04-13
+
+### Added
+
+- **HTML Web Extraction Preprocessor** — HTML is now a supported language. `analyze()` accepts `language: 'html'` and automatically:
+  - Extracts `<script>` blocks and analyzes each as JavaScript (with correct line offset mapping)
+  - Extracts inline event handlers (`onclick`, `onerror`, etc.) and analyzes as JS
+  - Runs 8 attribute-level security checks (H1–H8) directly on the HTML AST:
+    - `html-missing-noopener` (CWE-1022), `html-javascript-uri` (CWE-79),
+      `html-missing-sandbox` (CWE-1021), `html-mixed-content` (CWE-319),
+      `html-missing-sri` (CWE-353), `html-autocomplete-sensitive` (CWE-525),
+      `html-inline-event-handler` (CWE-79), `html-form-action-javascript` (CWE-79)
+  - Merges all results into a single `CircleIR` with correct HTML line numbers
+- `HtmlPlugin` language plugin registered for `.html`, `.htm`, `.xhtml` extensions
+- `tree-sitter-html` WASM grammar added to `wasm/`
+- 45 new tests (extractor, attribute security, integration)
+
+[3.17.0]: https://github.com/cogniumhq/circle-ir/compare/v3.16.8...v3.17.0
+
 ## [3.16.8] - 2026-04-08
 
 ### Changed

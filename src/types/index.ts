@@ -8,7 +8,7 @@
 // 1. Meta
 // =============================================================================
 
-export type SupportedLanguage = "java" | "c" | "cpp" | "javascript" | "typescript" | "python" | "rust" | "bash";
+export type SupportedLanguage = "java" | "c" | "cpp" | "javascript" | "typescript" | "python" | "rust" | "bash" | "html";
 
 export interface Meta {
   circle_ir: "3.0";

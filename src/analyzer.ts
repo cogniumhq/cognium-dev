@@ -78,6 +78,12 @@ import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
 import { CrossFilePass } from './analysis/passes/cross-file-pass.js';
 
+// HTML preprocessor
+import { extractHtmlContent } from './analysis/html/html-extractor.js';
+import { runHtmlAttributeSecurityChecks } from './analysis/html/html-attribute-security-pass.js';
+import { mergeHtmlResults } from './analysis/html/html-merge.js';
+import type { ScriptBlockResult } from './analysis/html/html-merge.js';
+
 // Pass classes
 import { TaintMatcherPass } from './analysis/passes/taint-matcher-pass.js';
 import { ConstantPropagationPass } from './analysis/passes/constant-propagation-pass.js';
@@ -307,6 +313,11 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'command', 'function_definition', 'variable_assignment', 'declaration_command',
         'if_statement', 'for_statement', 'c_style_for_statement', 'while_statement',
       ]);
+    case 'html':
+      return new Set([
+        'element', 'script_element', 'style_element', 'attribute',
+        'start_tag', 'self_closing_tag', 'text',
+      ]);
     default:
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
@@ -331,6 +342,11 @@ export async function analyze(
 ): Promise<CircleIR> {
   if (!initialized) {
     await initAnalyzer(options);
+  }
+
+  // HTML preprocessor path — extract scripts and delegate to JS analyzer
+  if (language === 'html') {
+    return analyzeHtmlFile(code, filePath, options);
   }
 
   logger.debug('Analyzing file', { filePath, language, codeLength: code.length });
@@ -448,6 +464,93 @@ export async function analyze(
     findings: findings.length > 0 ? findings : undefined,
     metrics: { file: filePath, metrics: metricValues },
   };
+}
+
+// ---------------------------------------------------------------------------
+// HTML preprocessor
+// ---------------------------------------------------------------------------
+
+/**
+ * Analyze an HTML file by extracting script blocks and event handlers,
+ * delegating JS analysis to the standard pipeline, and running
+ * attribute-level security checks.
+ */
+async function analyzeHtmlFile(
+  code: string,
+  filePath: string,
+  options: AnalyzerOptions,
+): Promise<CircleIR> {
+  logger.debug('Analyzing HTML file', { filePath, codeLength: code.length });
+
+  // Parse HTML
+  const tree = await parse(code, 'html');
+  const meta = extractMeta(code, tree, filePath, 'html');
+
+  // Extract script blocks and event handlers
+  const { scriptBlocks, eventHandlers } = extractHtmlContent(tree.rootNode);
+
+  logger.debug('HTML extraction', {
+    filePath,
+    inlineScripts: scriptBlocks.filter(b => b.kind === 'inline').length,
+    externalScripts: scriptBlocks.filter(b => b.kind === 'external-src').length,
+    eventHandlers: eventHandlers.length,
+  });
+
+  // Analyze each inline script block via standard JS pipeline
+  const scriptResults: ScriptBlockResult[] = [];
+
+  for (const block of scriptBlocks) {
+    if (block.kind !== 'inline' || !block.code.trim()) continue;
+
+    // Determine script language from type/lang attribute
+    const scriptLang: SupportedLanguage =
+      block.scriptType === 'ts' || block.scriptType === 'typescript' ||
+      block.scriptType === 'text/typescript'
+        ? 'typescript'
+        : 'javascript';
+
+    try {
+      const ir = await analyze(block.code, filePath, scriptLang, options);
+      scriptResults.push({ ir, lineOffset: block.lineOffset });
+    } catch (e) {
+      logger.warn('Failed to analyze script block', {
+        filePath,
+        lineOffset: block.lineOffset,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // Analyze inline event handlers (wrap in synthetic function)
+  for (const handler of eventHandlers) {
+    const wrappedCode = `function __${handler.eventName}_handler() { ${handler.code} }`;
+    try {
+      const ir = await analyze(wrappedCode, filePath, 'javascript', options);
+      scriptResults.push({ ir, lineOffset: handler.line });
+    } catch (e) {
+      logger.warn('Failed to analyze event handler', {
+        filePath,
+        eventName: handler.eventName,
+        line: handler.line,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // Run attribute-level security checks
+  const attributeFindings = runHtmlAttributeSecurityChecks(tree.rootNode, filePath);
+
+  // Merge everything
+  const result = mergeHtmlResults(meta, scriptResults, attributeFindings);
+
+  logger.debug('HTML analysis complete', {
+    filePath,
+    scriptBlocks: scriptResults.length,
+    attributeFindings: attributeFindings.length,
+    totalFindings: result.findings?.length ?? 0,
+  });
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------

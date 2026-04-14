@@ -1,6 +1,6 @@
 {
   "name": "circle-ir",
-  "version": "3.16.8",
+  "version": "3.17.0",
   "description": "High-performance Static Application Security Testing (SAST) library for detecting security vulnerabilities through taint analysis",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -97,6 +97,7 @@
     "@vitest/coverage-v8": "^4.1.2",
     "esbuild": "^0.28.0",
     "tree-sitter-bash": "^0.25.1",
+    "tree-sitter-html": "^0.23.2",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-rust": "^0.24.0",

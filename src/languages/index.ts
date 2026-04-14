@@ -34,6 +34,7 @@ export {
   JavaScriptPlugin,
   PythonPlugin,
   RustPlugin,
+  HtmlPlugin,
   registerBuiltinPlugins,
 } from './plugins/index.js';
 

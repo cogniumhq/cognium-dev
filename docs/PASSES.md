@@ -58,6 +58,21 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 | 18 | `weak-crypto` | CWE-327 | DES, RC4, or ECB mode encryption |
 | 19 | `insecure-cookie` | CWE-614 | Cookie set without Secure or HttpOnly flag |
 
+### A2. HTML Security Passes (category = `security`, HTML files only)
+
+Attribute-level checks on HTML AST. No IR/taint graph required.
+
+| # | rule_id | CWE | level | status | Description |
+|---|---------|-----|-------|--------|-------------|
+| H1 | `html-missing-noopener` | CWE-1022 | warning | shipped | `<a target="_blank">` missing `rel="noopener"` |
+| H2 | `html-javascript-uri` | CWE-79 | error | shipped | `javascript:` URI in href/src/action |
+| H3 | `html-missing-sandbox` | CWE-1021 | warning | shipped | `<iframe>` without `sandbox` attribute |
+| H4 | `html-mixed-content` | CWE-319 | warning | shipped | HTTP resource loaded (script/link/img/iframe src) |
+| H5 | `html-missing-sri` | CWE-353 | warning | shipped | External CDN script/stylesheet without `integrity` |
+| H6 | `html-autocomplete-sensitive` | CWE-525 | note | shipped | Sensitive input without `autocomplete="off"` |
+| H7 | `html-inline-event-handler` | CWE-79 | note | shipped | Inline `on*` handler (CSP incompatible) |
+| H8 | `html-form-action-javascript` | CWE-79 | error | shipped | `<form action="javascript:...">` |
+
 ---
 
 ## B. Reliability Passes (category = `reliability`)

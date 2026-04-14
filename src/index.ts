@@ -174,6 +174,7 @@ export {
   JavaScriptPlugin,
   PythonPlugin,
   RustPlugin,
+  HtmlPlugin,
   BaseLanguagePlugin,
 } from './languages/index.js';
 

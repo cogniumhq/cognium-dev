@@ -205,6 +205,7 @@ Current coverage: 86.56% stmts / 73.09% branches / 91.28% functions / 88.85% lin
 | Python | 63.8% CWE-Bench | ✅ Complete (Flask, Django, FastAPI) | P2 improvements |
 | Rust | 100% CWE-Bench | ⚠️ Partial (needs Axum, SQLx) | P3 |
 | Bash/Shell | 68.2% TPR, 0% FPR | ⚠️ Basic (read source only) | P2 |
+| HTML | N/A (preprocessor) | ✅ 8 attribute rules + script delegation | Shipped |
 | Go | — | Not started | P2 |
 | C | — | Not started | P4 (see notes) |
 
@@ -260,16 +261,18 @@ security rules that don't need an IR.
 a full IR produces mostly-empty structures that none of the 36+ passes can analyze. The
 vulnerabilities are in embedded JS and template interpolation, not in HTML itself.
 
-- [ ] Parse HTML with `tree-sitter-html` (extraction only, no full IR)
-- [ ] Extract `<script>` blocks → feed to JS analyzer with correct line offsets
-- [ ] Extract inline event handlers (`onclick`, `onerror`, etc.) → analyze as JS snippets
-- [ ] Attribute-level security rules (no IR needed):
-  - [ ] Missing `rel="noopener noreferrer"` on `target="_blank"` links
-  - [ ] `<iframe>` without `sandbox` attribute
-  - [ ] `<form>` without CSRF token hidden input
-  - [ ] Mixed content (`http://` resources on HTTPS pages)
-  - [ ] `href="javascript:..."` links
-  - [ ] Missing Subresource Integrity on external `<script>`/`<link>`
+- [x] Parse HTML with `tree-sitter-html` (extraction only, no full IR)
+- [x] Extract `<script>` blocks → feed to JS analyzer with correct line offsets
+- [x] Extract inline event handlers (`onclick`, `onerror`, etc.) → analyze as JS snippets
+- [x] Attribute-level security rules (8 rules, no IR needed):
+  - [x] `html-missing-noopener` (CWE-1022) — `<a target="_blank">` without rel="noopener"
+  - [x] `html-javascript-uri` (CWE-79) — `javascript:` in href/src/action
+  - [x] `html-missing-sandbox` (CWE-1021) — `<iframe>` without `sandbox`
+  - [x] `html-mixed-content` (CWE-319) — HTTP resources (script/link/img/iframe)
+  - [x] `html-missing-sri` (CWE-353) — CDN script/stylesheet without `integrity`
+  - [x] `html-autocomplete-sensitive` (CWE-525) — sensitive input without autocomplete="off"
+  - [x] `html-inline-event-handler` (CWE-79) — inline on* handler (CSP incompatible)
+  - [x] `html-form-action-javascript` (CWE-79) — `<form action="javascript:...">`
 - [ ] **Template language support** (high effort, per language):
   - [ ] EJS: detect `<%-` (unescaped, XSS) vs `<%=` (escaped, safe)
   - [ ] Handlebars: detect `{{{` (unescaped) vs `{{` (escaped)
