@@ -14,11 +14,11 @@ describe('Bash plugin — edge cases', () => {
     await initAnalyzer();
   });
 
-  // ── Sinks are always detected regardless of DFG propagation ──────────────
+  // ── Sinks detected when arguments are not all literals ───────────────────
 
   describe('Sink detection', () => {
     it('eval is registered as a code_injection sink', async () => {
-      const code = `eval "some command"`;
+      const code = `eval "$CMD"`;
       const result = await analyze(code, 'script.sh', 'bash');
       const evalSinks = result.taint.sinks.filter(s => s.method === 'eval');
       expect(evalSinks.length).toBeGreaterThan(0);
@@ -26,7 +26,7 @@ describe('Bash plugin — edge cases', () => {
     });
 
     it('mysql is registered as a sql_injection sink', async () => {
-      const code = `mysql -e "SELECT 1"`;
+      const code = `mysql -e "$QUERY"`;
       const result = await analyze(code, 'script.sh', 'bash');
       const sqlSinks = result.taint.sinks.filter(s => s.method === 'mysql');
       expect(sqlSinks.length).toBeGreaterThan(0);
@@ -34,7 +34,7 @@ describe('Bash plugin — edge cases', () => {
     });
 
     it('curl is registered as an ssrf sink', async () => {
-      const code = `curl "https://example.com"`;
+      const code = `curl "$URL"`;
       const result = await analyze(code, 'script.sh', 'bash');
       const curlSinks = result.taint.sinks.filter(s => s.method === 'curl');
       expect(curlSinks.length).toBeGreaterThan(0);
@@ -42,7 +42,7 @@ describe('Bash plugin — edge cases', () => {
     });
 
     it('rm is registered as a path_traversal sink', async () => {
-      const code = `rm -rf /tmp/file`;
+      const code = `rm -rf "$DIR"`;
       const result = await analyze(code, 'script.sh', 'bash');
       const rmSinks = result.taint.sinks.filter(s => s.method === 'rm');
       expect(rmSinks.length).toBeGreaterThan(0);

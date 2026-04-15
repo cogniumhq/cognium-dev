@@ -596,6 +596,7 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
         'prepareStatement': ['PreparedStatement'],
         'getRuntime': ['Runtime'],
         'builder': ['Response', 'ResponseBuilder', 'HttpResponseBuilder'],
+        'stdin': ['stdin', 'Stdin', 'BufReader'],
       };
       const expectedTypes = returnTypeMappings[methodName];
       if (Array.isArray(expectedTypes) && expectedTypes.includes(className)) {
@@ -605,11 +606,17 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   }
 
   // Handle Rust scoped calls like "Response::builder()" — extract type before ::
+  // and function name after :: for return-type heuristics (e.g., io::stdin() returns Stdin)
   if (receiver.includes('::') && receiver.endsWith(')')) {
-    const scopedMatch = receiver.match(/^(\w+)::\w+\(.*\)$/);
+    const scopedMatch = receiver.match(/^(\w+)::(\w+)\(.*\)$/);
     if (scopedMatch) {
       const typeName = scopedMatch[1];
+      const funcName = scopedMatch[2];
       if (typeName === className || typeName.toLowerCase() === lowerClass) {
+        return true;
+      }
+      // Check if the function name matches or returns the expected class
+      if (funcName === className || funcName.toLowerCase() === lowerClass) {
         return true;
       }
     }

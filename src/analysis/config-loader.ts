@@ -487,6 +487,7 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'read_line', class: 'BufReader', type: 'file_input', severity: 'medium', return_tainted: true },
   { method: 'lines', class: 'BufReader', type: 'file_input', severity: 'medium', return_tainted: true },
   { method: 'read_to_string', class: 'stdin', type: 'io_input', severity: 'medium', return_tainted: true },
+  { method: 'read_line', class: 'stdin', type: 'io_input', severity: 'medium', return_tainted: true },
   { method: 'recv', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read_to_end', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
@@ -1246,6 +1247,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'query', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
   { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
 
+  // Browser DOM XSS sinks
+  { method: 'setAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
+
   // Express.js XSS (response methods)
   { method: 'send', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
@@ -1529,6 +1533,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Rust Open Redirect
   { method: 'redirect', class: 'HttpResponse', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0] },
   { method: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0] },
+  { method: 'see_other', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  { method: 'to', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  { method: 'temporary', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  { method: 'permanent', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  { method: 'header', class: 'Response', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [1] },
+  { method: 'insert_header', class: 'HttpResponse', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [1] },
+  { method: 'append_header', class: 'HttpResponse', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [1] },
+  { method: 'from_str', class: 'HeaderValue', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
 
   // Rust Log Injection (log crate, tracing)
   { method: 'info!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2] },
@@ -1568,6 +1580,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'body', class: 'HttpResponse', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'body', class: 'HttpResponseBuilder', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'body', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  // warp::reply::html
+  { method: 'html', class: 'reply', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'html', class: 'warp', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
 
   // Rust serde deserialization
   { method: 'from_str', class: 'serde_yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
@@ -1648,6 +1663,9 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // DOMPurify and similar
   { method: 'sanitize', class: 'DOMPurify', removes: ['xss'] },
   { method: 'escape', class: 'validator', removes: ['xss'] },
+
+  // JSON.parse (data is validated against JSON grammar, prevents XSS/code injection)
+  { method: 'parse', class: 'JSON', removes: ['xss', 'code_injection'] },
 
   // Type coercion (removes string-based injections)
   { method: 'parseInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'xss'] },

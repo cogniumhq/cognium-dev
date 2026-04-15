@@ -63,6 +63,13 @@ export const JS_TAINTED_PATTERNS = [
   // The formerly broad `/\.value\b/` matched any `.value` property (e.g. `result.value`,
   // `node.value` in TypeScript) generating false positives in non-browser code.
   { pattern: /\b(?:event|e)\.(?:target\.)?value\b/, type: 'dom_input' as const },
+  // Browser property-based sources (assigned to variables then used in sinks)
+  { pattern: /\bdocument\.referrer\b/, type: 'http_header' as const },
+  { pattern: /\bdocument\.cookie\b/, type: 'http_cookie' as const },
+  { pattern: /\bwindow\.name\b/, type: 'dom_input' as const },
+  { pattern: /\bdocument\.URL\b/, type: 'http_path' as const },
+  { pattern: /\bdocument\.documentURI\b/, type: 'http_path' as const },
+  { pattern: /\blocation\.pathname\b/, type: 'http_path' as const },
 ];
 
 const PYTHON_TAINTED_PATTERNS = [

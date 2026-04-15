@@ -377,6 +377,10 @@ export function filterCleanVariableSinks(
       const methodName = call.in_method;
 
       for (const arg of call.arguments) {
+        // Skip the command-name argument in shell calls (e.g., arg[0]="curl" for `curl -s URL`).
+        // The command name itself has literal=null and expression matching the method name.
+        if (arg.expression === call.method_name && !arg.variable && arg.literal == null) continue;
+
         if (arg.variable && !arg.expression?.includes('[')) {
           const varName = arg.variable;
           const scopedName = methodName ? `${methodName}:${varName}` : varName;
