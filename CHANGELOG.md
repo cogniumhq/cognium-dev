@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.2] - 2026-04-15
+
+### Added
+
+- **JavaScript sources**: `localStorage.getItem()` and `sessionStorage.getItem()` as storage input sources
+- **JavaScript sinks**: `el.style.background` and `el.style.backgroundImage` for CSS url() injection
+- **Rust sinks**: `axum::response::Html()` (XSS, CWE-79) and `HeaderValue::from_str()` (open redirect, CWE-601)
+- **Rust sanitizers**: `html_escape::encode_text()`, `html_escape::encode_quoted_attribute()`, `ammonia::clean()`, `ammonia::Builder::clean()`
+- **Java sanitizers**: OWASP ESAPI `Encoder.encodeForHTML()`, `encodeForHTMLAttribute()`, `encodeForJavaScript()`; `Jsoup.clean()`
+
+[3.18.2]: https://github.com/cogniumhq/circle-ir/compare/v3.18.1...v3.18.2
+
 ## [3.18.1] - 2026-04-15
 
 ### Added

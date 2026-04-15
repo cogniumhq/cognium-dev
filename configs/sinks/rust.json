@@ -397,6 +397,49 @@
       "severity": "high",
       "tainted_args": [0],
       "note": "Redirect to user-controlled URL"
+    },
+    {
+      "method": "Html",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "axum::response::Html() with user-controlled content"
+    },
+    {
+      "method": "from_str",
+      "class": "HeaderValue",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HeaderValue::from_str() for Location header with user input"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "encode_text",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_text() HTML entity encoding"
+    },
+    {
+      "method": "encode_quoted_attribute",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_quoted_attribute()"
+    },
+    {
+      "method": "clean",
+      "class": "ammonia",
+      "removes": ["xss"],
+      "note": "ammonia::clean() HTML sanitizer"
+    },
+    {
+      "method": "clean",
+      "class": "Builder",
+      "removes": ["xss"],
+      "note": "ammonia::Builder::clean() HTML sanitizer"
     }
   ]
 }

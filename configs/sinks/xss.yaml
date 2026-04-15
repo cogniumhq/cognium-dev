@@ -745,6 +745,38 @@
       "note": "Google Guava HtmlEscapers.htmlEscaper()"
     },
     {
+      "method": "encodeForHTML",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForHTML()"
+    },
+    {
+      "method": "encodeForHTMLAttribute",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForHTMLAttribute()"
+    },
+    {
+      "method": "encodeForJavaScript",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForJavaScript()"
+    },
+    {
+      "method": "clean",
+      "class": "Jsoup",
+      "removes": [
+        "xss"
+      ],
+      "note": "Jsoup.clean() HTML sanitizer"
+    },
+    {
       "tag": "c:out",
       "removes": [
         "xss"

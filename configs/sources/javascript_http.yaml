@@ -293,6 +293,22 @@
       "note": "Event target value"
     },
     {
+      "method": "getItem",
+      "object": "localStorage",
+      "type": "storage_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "localStorage.getItem() - data may have been set by attacker via XSS"
+    },
+    {
+      "method": "getItem",
+      "object": "sessionStorage",
+      "type": "storage_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "sessionStorage.getItem() - data may have been set by attacker via XSS"
+    },
+    {
       "property": "referrer",
       "object": "document",
       "type": "url_param",

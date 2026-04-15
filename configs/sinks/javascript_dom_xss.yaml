@@ -156,6 +156,20 @@
       "cwe": "CWE-79",
       "severity": "medium",
       "note": "CSS injection via style.cssText"
+    },
+    {
+      "property": "background",
+      "type": "css_injection",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.background (url() injection)"
+    },
+    {
+      "property": "backgroundImage",
+      "type": "css_injection",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.backgroundImage (url() injection)"
     }
   ],
   "sanitizers": [
