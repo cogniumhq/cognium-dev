@@ -1109,11 +1109,14 @@ function extractBashCommandInfo(node: Node): CallInfo | null {
     // Extract variable reference if argument is/contains a variable expansion
     const variable = extractBashVariableRef(child);
 
+    // Detect string literals: quoted strings without variable expansions
+    const literal = variable === null ? extractBashLiteral(child) : null;
+
     args.push({
       position: position++,
       expression,
       variable,
-      literal: null,
+      literal,
     });
   }
 
@@ -1163,6 +1166,44 @@ function extractBashVariableRef(node: Node): string | null {
     if (text.startsWith('$')) {
       return text.slice(1).replace(/^\{/, '').replace(/\}$/, '');
     }
+  }
+
+  return null;
+}
+
+/**
+ * Extract a string literal value from a Bash argument node.
+ * Returns the unquoted string for pure literals (no variable expansions),
+ * or null if the argument contains variables or is not a literal.
+ */
+function extractBashLiteral(node: Node): string | null {
+  const type = node.type;
+  const text = getNodeText(node);
+
+  // raw_string: 'content' — no interpolation possible
+  if (type === 'raw_string') return text.slice(1, -1);
+
+  // ansi_c_string: $'content'
+  if (type === 'ansi_c_string') return text.slice(2, -1);
+
+  // Double-quoted string: "content" — only literal if no expansions inside
+  if (type === 'string') {
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+      if (child.type === 'simple_expansion' || child.type === 'expansion' ||
+          child.type === 'command_substitution') {
+        return null; // Has variable/command interpolation
+      }
+    }
+    // Strip surrounding quotes
+    if (text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1);
+    return text;
+  }
+
+  // Plain word without any $ signs — treat as literal
+  if (type === 'word' && !text.startsWith('$') && !text.includes('$')) {
+    return text;
   }
 
   return null;

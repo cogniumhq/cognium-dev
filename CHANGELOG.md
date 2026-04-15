@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.1] - 2026-04-15
+
+### Added
+
+- **JavaScript setAttribute filtering** (Stage 6): `setAttribute` sink now only flags dangerous attribute names (`on*`, `style`, `srcdoc`). Safe attributes like `title`, `class`, `id` no longer trigger XSS findings.
+- **Bash literal detection**: Bash argument extraction now recognizes string literals (quoted and unquoted), enabling the clean-variable filter to suppress findings when sink arguments are hardcoded constants.
+
+### Fixed
+
+- **Bash curl/wget hardcoded URL FP**: `curl "https://static.example.com"` no longer triggers SSRF findings because the URL argument is correctly identified as a string literal.
+
+[3.18.1]: https://github.com/cogniumhq/circle-ir/compare/v3.18.0...v3.18.1
+
 ## [3.18.0] - 2026-04-15
 
 ### Added

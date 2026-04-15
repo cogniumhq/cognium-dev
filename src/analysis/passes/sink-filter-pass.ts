@@ -10,7 +10,8 @@
  *   3. Clean variables — arguments proven non-tainted by constant propagation
  *   4. Sanitized sinks — sinks wrapped by a recognised sanitizer call
  *   5. Python XPath FP reduction
- *   6. JavaScript XSS FP reduction
+ *   6. JavaScript setAttribute FP reduction (safe attribute names)
+ *   7. JavaScript XSS FP reduction
  *
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
@@ -108,7 +109,43 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
-    // Stage 6 — JavaScript XSS FP reduction
+    // Build call-by-line index for Stages 6–7.
+    const callsByLine = new Map<number, typeof calls>();
+    for (const call of calls) {
+      const existing = callsByLine.get(call.location.line) ?? [];
+      existing.push(call);
+      callsByLine.set(call.location.line, existing);
+    }
+
+    // Stage 6 — JavaScript setAttribute FP reduction
+    // Only flag setAttribute when the attribute name is dangerous (on*, style, srcdoc).
+    if (['javascript', 'typescript'].includes(language)) {
+      filtered = filtered.filter(sink => {
+        if (sink.method !== 'setAttribute') return true;
+        const callsAtSink = callsByLine.get(sink.line) ?? [];
+        const setAttrCalls = callsAtSink.filter(c => c.method_name === 'setAttribute');
+        for (const call of setAttrCalls) {
+          const firstArg = call.arguments[0];
+          if (!firstArg) continue;
+          // If first arg is a string literal, check if it's a dangerous attribute
+          const attrName = firstArg.literal ?? (
+            firstArg.expression && !firstArg.variable && isStringLiteralExpression(firstArg.expression)
+              ? firstArg.expression.trim().replace(/^['"]|['"]$/g, '')
+              : null
+          );
+          if (attrName != null) {
+            const lower = String(attrName).toLowerCase();
+            if (/^on\w+$/.test(lower) || lower === 'style' || lower === 'srcdoc') return true;
+            return false; // Safe attribute like 'title', 'class', 'id', etc.
+          }
+          // Attribute name is dynamic — keep as dangerous (conservative)
+          return true;
+        }
+        return true;
+      });
+    }
+
+    // Stage 7 — JavaScript XSS FP reduction
     if (['javascript', 'typescript'].includes(language)) {
       const { jsTaintedVars } = langSources;
       const sourceLines = ctx.code.split('\n');
