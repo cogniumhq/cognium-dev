@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.6] - 2026-04-15
+
+### Added
+
+- **JS property sources**: `document.referrer`, `document.cookie`, `document.URL`, `document.documentURI`, `window.name`, `location.pathname` added to `JS_TAINTED_PATTERNS` — sources now propagate through variable assignments
+- **DOM sinks**: `setAttribute()` registered as XSS sink (CWE-79, arg position 1)
+- **Rust sources**: `stdin().read_line()` (class `stdin`) for `io::stdin().read_line()` patterns
+- **Rust sinks**: `reply::html()` and `warp::html()` for warp XSS detection
+- **JSON.parse sanitizer**: Added to DEFAULT_SANITIZERS (removes xss, code_injection)
+
+### Fixed
+
+- **Bash false positives**: Sink filter now skips the command-name argument (arg[0] in shell calls where `expression === method_name`), so `curl -s "https://literal.url"` is correctly filtered out
+- **Rust `io::stdin()` matching**: `receiverMightBeClass()` now checks the function name in `module::func()` scoped calls, matching `io::stdin()` to class `stdin`
+- **Benchmark debug tests**: Added `benchmark-debug.test.ts` with 9 integration tests covering all remaining benchmark gaps
+
+[3.18.6]: https://github.com/cogniumhq/circle-ir/compare/v3.18.5...v3.18.6
+
 ## [3.18.5] - 2026-04-15
 
 ### Fixed
