@@ -318,7 +318,15 @@ async function getDefaultWasmPath(): Promise<string> {
     // This works whether circle-ir is in node_modules or run from source
     const packageRoot = mods.join(moduleDir, '..', '..');
 
-    // First, try the package's node_modules (installed package)
+    // First, try the package's own dist/wasm/ directory (shipped with npm package).
+    // This is the most reliable location when circle-ir is installed as a dependency,
+    // since it doesn't depend on node_modules hoisting structure.
+    const distWasmPath = mods.join(packageRoot, 'dist', 'wasm', 'web-tree-sitter.wasm');
+    if (mods.existsSync(distWasmPath)) {
+      return distWasmPath;
+    }
+
+    // Then try the package's node_modules (installed package)
     const packageNodeModulesPath = mods.join(packageRoot, 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm');
     if (mods.existsSync(packageNodeModulesPath)) {
       return packageNodeModulesPath;
@@ -341,8 +349,15 @@ async function getDefaultLanguagePath(language: SupportedLanguage): Promise<stri
   if (mods && moduleDir) {
     // In Node.js, resolve relative to this module's location
     const packageRoot = mods.join(moduleDir, '..', '..');
-    const packageWasmPath = mods.join(packageRoot, 'wasm', `tree-sitter-${grammarName}.wasm`);
 
+    // First, try dist/wasm/ (shipped with npm package, works regardless of hoisting)
+    const distWasmPath = mods.join(packageRoot, 'dist', 'wasm', `tree-sitter-${grammarName}.wasm`);
+    if (mods.existsSync(distWasmPath)) {
+      return distWasmPath;
+    }
+
+    // Then try the source wasm/ directory (development)
+    const packageWasmPath = mods.join(packageRoot, 'wasm', `tree-sitter-${grammarName}.wasm`);
     if (mods.existsSync(packageWasmPath)) {
       return packageWasmPath;
     }

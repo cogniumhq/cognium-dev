@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.2] - 2026-04-14
+
+### Fixed
+
+- **WASM auto-detection in nested node_modules** (fixes #11): `initAnalyzer()` now checks `dist/wasm/` within the circle-ir package directory first when auto-detecting WASM paths. This resolves failures when circle-ir is installed as a transitive dependency and npm hoists `web-tree-sitter` to a different `node_modules` level. Consumers no longer need to manually resolve WASM paths with `createRequire`.
+
+[3.17.2]: https://github.com/cogniumhq/circle-ir/compare/v3.17.1...v3.17.2
+
 ## [3.17.1] - 2026-04-14
 
 ### Changed
