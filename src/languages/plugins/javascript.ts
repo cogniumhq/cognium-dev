@@ -620,6 +620,43 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
         argPositions: [0],
       },
 
+      // jQuery XSS
+      {
+        method: 'html',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'critical',
+        argPositions: [0],
+      },
+      {
+        method: '$',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'jQuery',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'append',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'prepend',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [0],
+      },
+
       // SQL Injection
       {
         method: 'query',

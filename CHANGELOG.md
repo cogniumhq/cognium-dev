@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-04-15
+
+### Added
+
+- **JavaScript sources**: `document.referrer` (CWE-79) and `event.data`/postMessage (CWE-79) as taint sources
+- **JavaScript sinks**: jQuery `.html()`, `$()`, `jQuery()`, `.append()`, `.prepend()` for XSS; `cssText` for CSS injection
+- **JavaScript sanitizers**: `JSON.parse` (removes command_injection, sql_injection, xss, code_injection) and `URL` constructor (removes open_redirect, ssrf)
+- **Java sinks**: CORS misconfiguration via `setHeader("Access-Control-Allow-Origin", ...)` (CWE-942)
+- **Java sanitizers**: Google Guava `Escaper.escapeHtml`, `HtmlEscapers.escapeHtml`, `HtmlEscapers.htmlEscaper` (removes xss)
+- **Rust sources**: `io::stdin()` and Axum `Body` extractors (`into_body`, `to_bytes`, `body`, `into_inner`, `collect`)
+- **Rust sinks**: Warp `reply::html()` / `Html::html()` (XSS), `Response::body()` (XSS), `Response::header()` / `HttpResponse::insert_header()` / `append_header()` (open redirect), `Redirect::redirect()` (open redirect)
+- **Bash sources**: `curl` and `wget` output as taint sources for supply-chain attack detection
+
+### Fixed
+
+- **JavaScript FP**: Removed `JSON.parse` from deserialization sinks (it does not execute code)
+
+[3.18.0]: https://github.com/cogniumhq/circle-ir/compare/v3.17.3...v3.18.0
+
 ## [3.17.3] - 2026-04-14
 
 ### Fixed

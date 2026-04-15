@@ -291,6 +291,46 @@
       "severity": "high",
       "return_tainted": true,
       "note": "Event target value"
+    },
+    {
+      "property": "referrer",
+      "object": "document",
+      "type": "url_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "document.referrer - attacker-controlled via Referer header"
+    },
+    {
+      "property": "data",
+      "object": "e",
+      "type": "message_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "event",
+      "type": "message_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "msg",
+      "type": "message_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "message",
+      "type": "message_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
     }
   ]
 }

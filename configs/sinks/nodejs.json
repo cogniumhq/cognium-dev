@@ -531,15 +531,6 @@
       "note": "Object deserialization - dangerous with untrusted data"
     },
     {
-      "method": "parse",
-      "class": "JSON",
-      "type": "deserialization",
-      "cwe": "CWE-502",
-      "severity": "medium",
-      "arg_positions": [0],
-      "note": "JSON parse with reviver can be dangerous"
-    },
-    {
       "method": "compile",
       "class": "Handlebars",
       "type": "template_injection",
@@ -682,6 +673,17 @@
       "method": "toString",
       "removes": ["nosql_injection"],
       "note": "Convert to string - prevents NoSQL operator injection"
+    },
+    {
+      "method": "parse",
+      "class": "JSON",
+      "removes": ["command_injection", "sql_injection", "xss", "code_injection"],
+      "note": "JSON.parse is safe - does not execute code (unlike eval/YAML)"
+    },
+    {
+      "method": "URL",
+      "removes": ["open_redirect", "ssrf"],
+      "note": "new URL() constructor validates URL structure; combined with hostname check is a sanitizer"
     }
   ]
 }

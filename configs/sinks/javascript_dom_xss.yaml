@@ -97,6 +97,65 @@
       "severity": "high",
       "arg_positions": [0],
       "note": "DOM parsing - may lead to XSS if content is rendered"
+    },
+    {
+      "method": "html",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "jQuery .html() - XSS via jQuery HTML injection"
+    },
+    {
+      "method": "html",
+      "class": "jQuery",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "jQuery .html() - XSS via jQuery HTML injection"
+    },
+    {
+      "method": "append",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery .append() - XSS if user input contains HTML"
+    },
+    {
+      "method": "prepend",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery .prepend() - XSS if user input contains HTML"
+    },
+    {
+      "method": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery $() selector - DOM clobbering/XSS when user input is used as selector"
+    },
+    {
+      "method": "jQuery",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery() selector - DOM clobbering/XSS when user input is used as selector"
+    },
+    {
+      "property": "cssText",
+      "type": "css_injection",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.cssText"
     }
   ],
   "sanitizers": [

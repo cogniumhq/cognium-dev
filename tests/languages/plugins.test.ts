@@ -325,13 +325,19 @@ describe('Language Plugins', () => {
       const sources = plugin.getBuiltinSources();
       expect(sources.length).toBeGreaterThan(0);
 
-      // Only 'read' is a source; curl/wget are excluded (they're also sinks)
+      // 'read' is a source for stdin input
       const readSource = sources.find(s => s.method === 'read');
       expect(readSource).toBeDefined();
       expect(readSource?.type).toBe('io_input');
 
-      expect(sources.find(s => s.method === 'curl')).toBeUndefined();
-      expect(sources.find(s => s.method === 'wget')).toBeUndefined();
+      // curl/wget output as taint sources for supply-chain attack patterns
+      const curlSource = sources.find(s => s.method === 'curl');
+      expect(curlSource).toBeDefined();
+      expect(curlSource?.type).toBe('http_response');
+
+      const wgetSource = sources.find(s => s.method === 'wget');
+      expect(wgetSource).toBeDefined();
+      expect(wgetSource?.type).toBe('http_response');
     });
 
     it('should have builtin sinks', () => {

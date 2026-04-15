@@ -70,20 +70,33 @@ export class BashPlugin extends BaseLanguagePlugin {
 
   /**
    * Bash taint source patterns.
-   * In shell, tainted data enters via `read` (stdin).
-   * curl/wget are excluded as sources (see comment in implementation).
+   * In shell, tainted data enters via `read` (stdin) and
+   * `curl`/`wget` (HTTP responses for supply-chain attack detection).
    */
   getBuiltinSources(): TaintSourcePattern[] {
     return [
       // read built-in reads user input from stdin.
-      // curl/wget are intentionally excluded: they're also registered as sinks (SSRF),
-      // and without DFG tracking of $() command substitution, including them as sources
-      // would generate false positives for safe curl calls.
       {
         method: 'read',
         type: 'io_input',
         severity: 'high',
         confidence: 0.9,
+        returnTainted: true,
+      },
+      // curl/wget output as taint sources for supply-chain attack patterns
+      // (e.g., curl ... | sh, $(curl ...) piped to eval/bash).
+      {
+        method: 'curl',
+        type: 'http_response',
+        severity: 'high',
+        confidence: 0.8,
+        returnTainted: true,
+      },
+      {
+        method: 'wget',
+        type: 'http_response',
+        severity: 'high',
+        confidence: 0.8,
         returnTainted: true,
       },
     ];

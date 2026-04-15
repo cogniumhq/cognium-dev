@@ -44,6 +44,17 @@
       "note": "HTTP header injection / XSS in header"
     },
     {
+      "method": "setHeader",
+      "class": "HttpServletResponse",
+      "type": "cors_misconfiguration",
+      "cwe": "CWE-942",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "CORS: Access-Control-Allow-Origin set from user-controlled Origin header"
+    },
+    {
       "method": "addHeader",
       "class": "HttpServletResponse",
       "type": "xss",
@@ -708,6 +719,30 @@
       "removes": [
         "xss"
       ]
+    },
+    {
+      "method": "escapeHtml",
+      "class": "Escaper",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HTML escaper"
+    },
+    {
+      "method": "escapeHtml",
+      "class": "HtmlEscapers",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HtmlEscapers"
+    },
+    {
+      "method": "htmlEscaper",
+      "class": "HtmlEscapers",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HtmlEscapers.htmlEscaper()"
     },
     {
       "tag": "c:out",

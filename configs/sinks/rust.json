@@ -334,6 +334,69 @@
       "severity": "high",
       "tainted_args": [0],
       "note": "PathBuf push with user input"
+    },
+    {
+      "method": "html",
+      "class": "reply",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Warp reply::html() with user-controlled content"
+    },
+    {
+      "method": "html",
+      "class": "Html",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Warp Html response with user-controlled content"
+    },
+    {
+      "method": "body",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Axum/hyper Response body with user-controlled content"
+    },
+    {
+      "method": "header",
+      "class": "Response",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Setting Location header from user input (open redirect)"
+    },
+    {
+      "method": "insert_header",
+      "class": "HttpResponse",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Actix-web header injection / open redirect via Location header"
+    },
+    {
+      "method": "append_header",
+      "class": "HttpResponse",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Actix-web header injection / open redirect"
+    },
+    {
+      "method": "redirect",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect to user-controlled URL"
     }
   ]
 }

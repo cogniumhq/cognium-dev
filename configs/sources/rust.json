@@ -235,6 +235,60 @@
       "framework": "std"
     },
     {
+      "method": "stdin",
+      "class": "io",
+      "type": "stdin",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "std",
+      "note": "std::io::stdin() returns a handle to stdin input"
+    },
+    {
+      "method": "into_body",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body extractor"
+    },
+    {
+      "method": "to_bytes",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body to bytes"
+    },
+    {
+      "method": "body",
+      "class": "Request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum request body extractor"
+    },
+    {
+      "method": "into_inner",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum Body::into_inner()"
+    },
+    {
+      "method": "collect",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body collect"
+    },
+    {
       "method": "recv",
       "class": "TcpStream",
       "type": "network",
