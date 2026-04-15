@@ -152,24 +152,32 @@
     },
     {
       "property": "cssText",
-      "type": "css_injection",
+      "type": "xss",
       "cwe": "CWE-79",
       "severity": "medium",
       "note": "CSS injection via style.cssText"
     },
     {
       "property": "background",
-      "type": "css_injection",
+      "type": "xss",
       "cwe": "CWE-79",
       "severity": "medium",
       "note": "CSS injection via style.background (url() injection)"
     },
     {
       "property": "backgroundImage",
-      "type": "css_injection",
+      "type": "xss",
       "cwe": "CWE-79",
       "severity": "medium",
       "note": "CSS injection via style.backgroundImage (url() injection)"
+    },
+    {
+      "property": "textContent",
+      "element": "style",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "note": "Dynamic stylesheet injection via style.textContent"
     }
   ],
   "sanitizers": [
@@ -199,6 +207,12 @@
       "method": "encodeURIComponent",
       "removes": ["xss"],
       "note": "URL encoding - safe for URL parameters"
+    },
+    {
+      "method": "parse",
+      "class": "JSON",
+      "removes": ["xss", "code_injection"],
+      "note": "JSON.parse() returns object - breaks string taint chain"
     }
   ]
 }

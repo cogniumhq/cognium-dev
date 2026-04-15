@@ -354,6 +354,15 @@
       "note": "Warp Html response with user-controlled content"
     },
     {
+      "method": "html",
+      "class": "warp",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "warp::reply::html() with user-controlled content"
+    },
+    {
       "method": "body",
       "class": "Response",
       "type": "xss",
@@ -397,6 +406,42 @@
       "severity": "high",
       "tainted_args": [0],
       "note": "Redirect to user-controlled URL"
+    },
+    {
+      "method": "to",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::to() with user-controlled URL"
+    },
+    {
+      "method": "see_other",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::see_other() with user-controlled URL (303)"
+    },
+    {
+      "method": "temporary",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::temporary() with user-controlled URL (307)"
+    },
+    {
+      "method": "permanent",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::permanent() with user-controlled URL (301)"
     },
     {
       "method": "Html",

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.4] - 2026-04-15
+
+### Added
+
+- **JavaScript sinks**: `style.textContent` for dynamic stylesheet injection (CWE-79)
+- **JavaScript sanitizers**: `JSON.parse()` breaks string taint chain (removes xss, code_injection)
+- **Rust sinks**: `Redirect::to()`, `Redirect::see_other()`, `Redirect::temporary()`, `Redirect::permanent()` (open redirect, CWE-601); `warp::reply::html()` namespace variant (XSS, CWE-79)
+
+### Fixed
+
+- **Config type correctness**: Fixed invalid `css_injection` SinkType in JavaScript DOM XSS config (→ `xss`)
+
+[3.18.4]: https://github.com/cogniumhq/circle-ir/compare/v3.18.3...v3.18.4
+
 ## [3.18.3] - 2026-04-15
 
 ### Fixed
