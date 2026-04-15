@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.3] - 2026-04-15
+
+### Fixed
+
+- **Property source matching**: Auto-normalize `property_tainted` flag in `loadSourceConfigs()` so YAML-defined property-based sources (e.g., `location.hash`, `event.data`) are correctly matched by the taint engine
+- **Browser DOM default sources**: Added `document.referrer`, `location.hash/search/href/pathname`, and `event.data` to DEFAULT_SOURCES with correct `property_tainted` flag
+- **Config type correctness**: Fixed invalid `SourceType` values in JavaScript configs (`url_param` → `http_header`, `user_input`/`message_input`/`storage_input` → `dom_input`)
+
+[3.18.3]: https://github.com/cogniumhq/circle-ir/compare/v3.18.2...v3.18.3
+
 ## [3.18.2] - 2026-04-15
 
 ### Added

@@ -29,7 +29,14 @@ export function loadSourceConfigs(configs: SourceConfig[]): SourcePattern[] {
 
   for (const config of configs) {
     if (config.sources) {
-      patterns.push(...config.sources);
+      for (const source of config.sources) {
+        // Normalise: property-based sources need property_tainted to be matched
+        // by the taint-matcher. Auto-set it when property + object are defined.
+        if (source.property && source.object && !source.property_tainted) {
+          source.property_tainted = true;
+        }
+        patterns.push(source);
+      }
     }
   }
 
@@ -352,6 +359,17 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { property: 'params', object: 'ctx', type: 'http_param', severity: 'high', property_tainted: true },
   { property: 'request', object: 'ctx', type: 'http_body', severity: 'high', property_tainted: true },
   { property: 'headers', object: 'ctx', type: 'http_header', severity: 'high', property_tainted: true },
+
+  // Browser DOM sources
+  { property: 'referrer', object: 'document', type: 'http_header', severity: 'high', property_tainted: true },
+  { property: 'hash', object: 'location', type: 'http_param', severity: 'high', property_tainted: true },
+  { property: 'search', object: 'location', type: 'http_param', severity: 'high', property_tainted: true },
+  { property: 'href', object: 'location', type: 'http_path', severity: 'high', property_tainted: true },
+  { property: 'pathname', object: 'location', type: 'http_path', severity: 'medium', property_tainted: true },
+  { property: 'data', object: 'event', type: 'dom_input', severity: 'high', property_tainted: true },
+  { property: 'data', object: 'e', type: 'dom_input', severity: 'high', property_tainted: true },
+  { property: 'data', object: 'msg', type: 'dom_input', severity: 'high', property_tainted: true },
+  { property: 'data', object: 'message', type: 'dom_input', severity: 'high', property_tainted: true },
 
   // =========================================================================
   // Python / Flask / Django Sources
