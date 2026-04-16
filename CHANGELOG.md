@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.1] - 2026-04-16
+
+### Fixed
+
+- **Security headers constant resolution**: `SecurityHeadersPass` now resolves Java/framework constants like `HttpHeaders.X_FRAME_OPTIONS` → `X-Frame-Options` by converting SCREAMING_SNAKE_CASE field names to Header-Case. Fixes false negatives on Google Firing Range `invalidframingconfig` tests where all 7 test files use `HttpHeaders.X_FRAME_OPTIONS` instead of the literal string.
+
+[3.19.1]: https://github.com/cogniumhq/circle-ir/compare/v3.19.0...v3.19.1
+
 ## [3.19.0] - 2026-04-16
 
 ### Added

@@ -86,7 +86,7 @@ export class SecurityHeadersPass
       if (!HEADER_WRITE_METHODS.has(call.method_name)) continue;
       if (call.arguments.length < 1) continue;
 
-      const nameLiteral = literalOf(call.arguments[0]);
+      const nameLiteral = resolveHeaderName(call.arguments[0]);
       if (nameLiteral === null) continue;
 
       const key = nameLiteral.toLowerCase();
@@ -214,6 +214,38 @@ function stripQuotes(s: string): string {
     return s.slice(1, -1);
   }
   return s;
+}
+
+/**
+ * Resolve the header-name argument to a string value. Handles:
+ *  1. String literals: "X-Frame-Options"
+ *  2. Java/framework constants: HttpHeaders.X_FRAME_OPTIONS → "X-Frame-Options"
+ *     Converts SCREAMING_SNAKE_CASE to Header-Case. Works with any framework
+ *     that follows Java constant naming conventions (Spring, Jakarta, Apache,
+ *     Guava, etc.).
+ */
+function resolveHeaderName(arg: { literal?: string | null; expression: string }): string | null {
+  // Try literal first.
+  const lit = literalOf(arg);
+  if (lit !== null) return lit;
+
+  // Fallback: check if expression looks like a constant reference.
+  // e.g. "HttpHeaders.X_FRAME_OPTIONS", "CONTENT_TYPE", "Header.X_FRAME_OPTIONS"
+  const expr = arg.expression.trim();
+  const dotIdx = expr.lastIndexOf('.');
+  const fieldName = dotIdx >= 0 ? expr.slice(dotIdx + 1) : expr;
+
+  // Must be SCREAMING_SNAKE_CASE: all uppercase letters, digits, underscores,
+  // at least one underscore (to distinguish from simple variable names).
+  if (!/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(fieldName)) return null;
+
+  // Convert SCREAMING_SNAKE_CASE → Header-Case:
+  //   X_FRAME_OPTIONS → X-Frame-Options
+  //   ACCESS_CONTROL_ALLOW_ORIGIN → Access-Control-Allow-Origin
+  return fieldName
+    .split('_')
+    .map(part => part.charAt(0) + part.slice(1).toLowerCase())
+    .join('-');
 }
 
 /**

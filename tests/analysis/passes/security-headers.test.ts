@@ -429,4 +429,93 @@ describe('SecurityHeadersPass', () => {
       expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(1);
     });
   });
+
+  // ========================================================================
+  // Java constant resolution (HttpHeaders.X_FRAME_OPTIONS etc.)
+  // ========================================================================
+
+  describe('constant resolution', () => {
+    it('resolves HttpHeaders.X_FRAME_OPTIONS to X-Frame-Options', () => {
+      const ir = makeIR('java', {
+        types: [makeType('FramingConfigServlet', ['@Controller'], [
+          makeMethod('doGet', 10, 30, ['@RequestMapping']),
+        ])],
+        calls: [makeCall('setHeader', 'response', 15, [
+          makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),  // constant, no literal
+          makeArg(1, '"ALLOW-FROM https://evil.com"', '"ALLOW-FROM https://evil.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // Should fire x-frame-options-allow-from (weak-value)
+      const af = findings.filter(f => f.rule_id === 'x-frame-options-allow-from');
+      expect(af).toHaveLength(1);
+      expect(af[0].line).toBe(15);
+      // Should NOT fire missing-x-frame-options (the header was set)
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('resolves HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN to Access-Control-Allow-Origin', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 22, [
+          makeArg(0, 'HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN'),  // constant
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(1);
+    });
+
+    it('resolves bare SCREAMING_SNAKE_CASE constant (no class prefix)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 8, [
+          makeArg(0, 'X_FRAME_OPTIONS'),  // bare constant
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // X-Frame-Options is set with DENY → missing rule should NOT fire
+      // and ALLOW-FROM should NOT fire
+      expect(findings.filter(f => f.rule_id === 'x-frame-options-allow-from')).toHaveLength(0);
+    });
+
+    it('resolves CONTENT_SECURITY_POLICY constant', () => {
+      const ir = makeIR('java', {
+        types: [makeType('MyController', ['@RestController'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+        calls: [makeCall('addHeader', 'response', 14, [
+          makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+          makeArg(1, '"frame-ancestors \'self\'"', '"frame-ancestors \'self\'"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // CSP is set → missing-csp-frame-ancestors should NOT fire
+      expect(findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors')).toHaveLength(0);
+    });
+
+    it('does NOT resolve single-word identifiers (not SCREAMING_SNAKE_CASE)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 10, [
+          makeArg(0, 'headerName'),  // variable, not constant
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // headerName is not resolvable → call is skipped → no cors-wildcard finding
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(0);
+    });
+
+    it('detects reflected origin via constant header name', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, 'HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN'),
+          makeArg(1, 'request.getHeader("Origin")'),  // dynamic → reflected
+        ])],
+      });
+      const findings = runPass(ir);
+      const refl = findings.filter(f => f.rule_id === 'cors-reflected-origin');
+      expect(refl).toHaveLength(1);
+      expect(refl[0].line).toBe(25);
+    });
+  });
 });
