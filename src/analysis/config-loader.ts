@@ -488,6 +488,7 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'lines', class: 'BufReader', type: 'file_input', severity: 'medium', return_tainted: true },
   { method: 'read_to_string', class: 'stdin', type: 'io_input', severity: 'medium', return_tainted: true },
   { method: 'read_line', class: 'stdin', type: 'io_input', severity: 'medium', return_tainted: true },
+  { method: 'lines', class: 'stdin', type: 'io_input', severity: 'medium', return_tainted: true },
   { method: 'recv', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read_to_end', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
@@ -1029,9 +1030,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'load', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'loadAll', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'loadAs', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  // JSON deserialization
+  // JSON deserialization (Java FastJSON / Jackson — NOT JavaScript's safe JSON.parse)
   { method: 'parseObject', class: 'JSON', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'JSON', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'parseObject', class: 'JSONObject', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'fromJson', class: 'Gson', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
   // XMLDecoder
@@ -1068,8 +1068,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'sendRedirect', type: 'ssrf', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
   { method: 'openConnection', class: 'URL', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [] },
   { method: 'openStream', class: 'URL', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [] },
-  { method: 'URL', class: 'constructor', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
-  { method: 'URI', class: 'constructor', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  // NOTE: URL/URI constructors removed — constructing a URL object doesn't make a network
+  // request in any language. The real SSRF sinks are openConnection/openStream/execute/etc.
   { method: 'execute', class: 'HttpClient', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'send', class: 'HttpClient', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'getForObject', class: 'RestTemplate', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
@@ -1756,9 +1756,9 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'canonicalize', removes: ['path_traversal'] },  // Resolves symlinks, validates path exists
 
   // Rust Command Injection - allowlist validation
-  { method: 'contains', removes: ['command_injection', 'ssrf'] },  // Used for allowlist checks
-  { method: 'starts_with', removes: ['path_traversal', 'ssrf'] },  // Path/URL prefix validation
-  { method: 'ends_with', removes: ['path_traversal'] },
+  { method: 'contains', removes: ['command_injection', 'ssrf', 'open_redirect'] },  // Used for allowlist checks
+  { method: 'starts_with', removes: ['path_traversal', 'ssrf', 'open_redirect'] },  // Path/URL prefix validation
+  { method: 'ends_with', removes: ['path_traversal', 'open_redirect'] },
 
   // Rust XSS - HTML escaping
   { method: 'escape', class: 'html_escape', removes: ['xss'] },

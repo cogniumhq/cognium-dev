@@ -880,15 +880,8 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
       // =========================================================
       // Data Exposure Sinks (React Native)
       // =========================================================
-      {
-        // Logging sensitive data
-        method: 'log',
-        class: 'console',
-        type: 'information_exposure',
-        cwe: 'CWE-532',
-        severity: 'low',
-        argPositions: [0],
-      },
+      // NOTE: console.log removed as a sink — too noisy for general-purpose analysis.
+      // console.log is ubiquitous and rarely a true vulnerability outside mobile contexts.
       {
         // Storing sensitive data insecurely
         method: 'setItem',

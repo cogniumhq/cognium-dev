@@ -93,6 +93,29 @@ function findSources(
     }
   }
 
+  // Rust web framework extractors: Axum/Actix/Rocket parameter types that carry HTTP input.
+  // e.g. Json<T>, Form<T>, Query<T>, Path<T>, Body, Bytes, Multipart
+  const RUST_EXTRACTOR_TYPES = /^(?:Json|Form|Query|Path|Extension|Multipart)(?:<|$)|^(?:Body|Bytes)$/;
+  for (const type of types) {
+    for (const method of type.methods) {
+      for (const param of method.parameters) {
+        if (param.type && RUST_EXTRACTOR_TYPES.test(param.type)) {
+          const paramLine = param.line ?? method.start_line;
+          const alreadyExists = sources.some(s => s.line === paramLine && s.type === 'http_body');
+          if (!alreadyExists) {
+            sources.push({
+              type: 'http_body',
+              location: `${param.type} ${param.name} in ${method.name}`,
+              severity: 'high',
+              line: paramLine,
+              confidence: 1.0,
+            });
+          }
+        }
+      }
+    }
+  }
+
   // Inter-procedural: treat certain method parameters as potential taint sources
   // This handles cases where tainted data flows from another class/method
   for (const type of types) {
@@ -597,6 +620,7 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
         'getRuntime': ['Runtime'],
         'builder': ['Response', 'ResponseBuilder', 'HttpResponseBuilder'],
         'stdin': ['stdin', 'Stdin', 'BufReader'],
+        'lock': ['stdin', 'Stdin', 'StdinLock', 'BufReader'],
       };
       const expectedTypes = returnTypeMappings[methodName];
       if (Array.isArray(expectedTypes) && expectedTypes.includes(className)) {

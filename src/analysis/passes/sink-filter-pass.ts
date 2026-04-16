@@ -86,7 +86,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // Stage 3 — clean variables
     filtered = filterCleanVariableSinks(
       filtered, calls, constProp.tainted, constProp.symbols,
-      dfg, constProp.sanitizedVars, constProp.synchronizedLines,
+      dfg, constProp.sanitizedVars, constProp.synchronizedLines, language,
     );
 
     // Stage 4 — sanitized sinks
@@ -173,7 +173,21 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           if (rhs === '""' || rhs === "''" || rhs === '``') return false;
         }
 
-        // 6c. If known tainted vars exist, require one on this line to keep the sink
+        // 6c. Validation-guard heuristic: suppress .href / location sinks inside validated blocks.
+        // If nearby lines (within 5 lines above) contain a conditional validation pattern
+        // (if + includes/startsWith/indexOf/test/match/endsWith), suppress the sink.
+        if (/\.href\s*=|location\s*=/.test(sinkLineText)) {
+          const guardPatterns = /\b(?:includes|startsWith|endsWith|indexOf|test|match)\s*\(/;
+          const startLine = Math.max(0, sink.line - 6);
+          for (let i = startLine; i < sink.line - 1; i++) {
+            const line = sourceLines[i] ?? '';
+            if (/\bif\s*\(/.test(line) && guardPatterns.test(line)) {
+              return false;
+            }
+          }
+        }
+
+        // 6d. If known tainted vars exist, require one on this line to keep the sink
         if (jsTaintedVars.size > 0) {
           if ([...jsTaintedVars.keys()].some(v => new RegExp(`\\b${v}\\b`).test(sinkLineText))) return true;
           if (JS_TAINTED_PATTERNS.some(p => p.pattern.test(sinkLineText))) return true;
@@ -346,6 +360,7 @@ export function filterCleanVariableSinks(
   dfg?: CircleIR['dfg'],
   sanitizedVars?: Set<string>,
   synchronizedLines?: Set<number>,
+  language?: string,
 ): CircleIR['taint']['sinks'] {
   const fieldNames = new Set<string>();
   if (dfg) {
@@ -379,7 +394,9 @@ export function filterCleanVariableSinks(
       for (const arg of call.arguments) {
         // Skip the command-name argument in shell calls (e.g., arg[0]="curl" for `curl -s URL`).
         // The command name itself has literal=null and expression matching the method name.
-        if (arg.expression === call.method_name && !arg.variable && arg.literal == null) continue;
+        // Only applies to Bash — in other languages a variable can legitimately share its name
+        // with the function (e.g., Rust `html(html)` where `html` is a tainted local variable).
+        if (language === 'bash' && arg.expression === call.method_name && !arg.variable && arg.literal == null) continue;
 
         if (arg.variable && !arg.expression?.includes('[')) {
           const varName = arg.variable;

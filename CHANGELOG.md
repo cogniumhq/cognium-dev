@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.7] - 2026-04-15
+
+### Added
+
+- **Rust extractor sources**: Axum/Actix/Rocket parameter types (`Json<T>`, `Form<T>`, `Query<T>`, `Path<T>`, `Body`, `Bytes`, `Multipart`) now recognized as HTTP body sources
+- **Rust `stdin.lock().lines()` source**: Added `lines` method for class `stdin` and `lock` to returnTypeMappings for chained stdin access patterns
+
+### Fixed
+
+- **Bash command-name skip scoped to Bash only**: The shell command-name argument skip (`arg.expression === method_name`) now only applies when `language === 'bash'`, fixing false negative where Rust `html(html)` variable was incorrectly treated as a command name
+- **`JSON.parse` no longer a deserialization sink**: Removed `JSON.parse` from DEFAULT_SINKS — JavaScript's `JSON.parse` is safe (no code execution), unlike Java's FastJSON `parseObject`
+- **`console.log` no longer an information_exposure sink**: Removed overly noisy sink that caused false positives in general-purpose JS analysis
+- **`URL`/`URI` constructor no longer SSRF sinks**: Constructing a URL object doesn't make a network request; removed to reduce false positives
+- **Validated URL redirect suppression**: Added validation-guard heuristic for `.href`/`location` assignments — suppresses XSS sink when nearby lines contain `if` + `includes`/`startsWith`/`endsWith`/`indexOf`/`test`/`match`
+- **`starts_with`/`contains`/`ends_with` sanitize `open_redirect`**: URL validation functions now remove `open_redirect` findings in addition to existing categories
+
+[3.18.7]: https://github.com/cogniumhq/circle-ir/compare/v3.18.6...v3.18.7
+
 ## [3.18.6] - 2026-04-15
 
 ### Added
