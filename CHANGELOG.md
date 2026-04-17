@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.4] - 2026-04-16
+
+### Fixed
+
+- **Template literal taint tracking**: Template strings with interpolations (`` `...${name}...` ``) are no longer treated as safe literals. The interpolated variable is now extracted and tracked through taint analysis, fixing false negatives for XSS via `res.send()` with template literals (NodeTest00018).
+
+[3.19.4]: https://github.com/cogniumhq/circle-ir/compare/v3.19.3...v3.19.4
+
 ## [3.19.3] - 2026-04-16
 
 ### Fixed

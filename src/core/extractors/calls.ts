@@ -346,6 +346,24 @@ function analyzeJSArgument(node: Node): { variable: string | null; literal: stri
     return { variable: getNodeText(node), literal: null };
   }
 
+  // Check if it's a template string with interpolations (e.g., `hello ${name}`)
+  // These are NOT safe literals — the interpolated expression may carry tainted data.
+  if (node.type === 'template_string') {
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child && child.type === 'template_substitution') {
+        // Find the primary variable in the interpolation
+        const identifier = findPrimaryIdentifier(child);
+        if (identifier) {
+          return { variable: identifier, literal: null };
+        }
+        return { variable: null, literal: null };
+      }
+    }
+    // Plain template string with no interpolations — treat as literal
+    return { variable: null, literal: extractJSLiteralValue(node) };
+  }
+
   // Check if it's a literal
   if (isJSLiteral(node)) {
     return { variable: null, literal: extractJSLiteralValue(node) };
