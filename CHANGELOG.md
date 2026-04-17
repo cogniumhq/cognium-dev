@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.3] - 2026-04-16
+
+### Fixed
+
+- **TypeHierarchyResolver memoization**: `getAllSubtypes()` and `getAllImplementations()` now cache results, eliminating redundant BFS traversals in `matchesSinkPattern()`. Fixes O(calls × sinks × hierarchy²) blowup that caused timeouts on Servlet-heavy projects (e.g. DSpace 140 files → 300s timeout).
+- **jQuery `.text()` false positive**: `.text()`, `.textContent`, `.innerText`, and `.createTextNode` excluded from `external_taint_escape` — these use safe textContent, not innerHTML.
+- **Safe DOM/utility methods excluded from `external_taint_escape`**: `addClass`/`removeClass`/`toggleClass`, `parseInt`/`parseFloat`/`Number`/`String`/`Boolean` no longer flagged as external taint sinks.
+
+[3.19.3]: https://github.com/cogniumhq/circle-ir/compare/v3.19.2...v3.19.3
+
 ## [3.19.2] - 2026-04-16
 
 ### Added

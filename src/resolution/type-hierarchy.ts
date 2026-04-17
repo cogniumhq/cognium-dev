@@ -46,6 +46,10 @@ export class TypeHierarchyResolver {
   // Implementation relationships: interface FQN -> implementing class FQNs
   private implementations: Map<string, Set<string>> = new Map();
 
+  // Memoization caches for transitive lookups (safe: hierarchy is immutable after loading)
+  private _subtypeCache: Map<string, string[]> = new Map();
+  private _implCache: Map<string, string[]> = new Map();
+
   /**
    * Add types from a CircleIR analysis result
    */
@@ -125,6 +129,9 @@ export class TypeHierarchyResolver {
    */
   getAllSubtypes(className: string): string[] {
     const fqn = this.resolveFqn(className);
+    const cached = this._subtypeCache.get(fqn);
+    if (cached) return cached;
+
     const result = new Set<string>();
     const queue = [fqn];
 
@@ -141,7 +148,9 @@ export class TypeHierarchyResolver {
       }
     }
 
-    return Array.from(result);
+    const arr = Array.from(result);
+    this._subtypeCache.set(fqn, arr);
+    return arr;
   }
 
   /**
@@ -157,6 +166,9 @@ export class TypeHierarchyResolver {
    */
   getAllImplementations(interfaceName: string): string[] {
     const fqn = this.resolveFqn(interfaceName);
+    const cached = this._implCache.get(fqn);
+    if (cached) return cached;
+
     const result = new Set<string>();
     const visited = new Set<string>();
     const queue = [fqn];
@@ -188,7 +200,9 @@ export class TypeHierarchyResolver {
       }
     }
 
-    return Array.from(result);
+    const arr = Array.from(result);
+    this._implCache.set(fqn, arr);
+    return arr;
   }
 
   /**

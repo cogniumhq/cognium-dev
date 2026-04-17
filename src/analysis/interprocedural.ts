@@ -192,6 +192,10 @@ export function analyzeInterprocedural(
     // Logging (console.log, logger.info, etc.) — not security sinks
     'log', 'warn', 'error', 'info', 'debug', 'trace', 'dir', 'table',
     'println', 'print', 'printf', 'fprintf',
+    // Safe DOM text methods — set textContent, not innerHTML (XSS-safe)
+    'text', 'textContent', 'innerText', 'createTextNode',
+    'addClass', 'removeClass', 'toggleClass',
+    'parseInt', 'parseFloat', 'Number', 'String', 'Boolean',
     // I/O stream wrappers — pure decorators that wrap a stream, not security sinks
     // e.g. new InputStreamReader(proc.getInputStream()) is safe; the underlying stream is the source
     'InputStreamReader', 'OutputStreamWriter',
