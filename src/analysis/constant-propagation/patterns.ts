@@ -54,6 +54,22 @@ export const TAINT_PATTERNS = [
   'Files.readAllLines(',
   'Files.readString(',
   'Files.readAllBytes(',
+
+  // JavaScript / Browser DOM Sources
+  'location.hash',
+  'location.search',
+  'location.href',
+  'location.pathname',
+  'document.cookie',
+  'document.referrer',
+  'document.URL',
+  'document.documentURI',
+  'window.name',
+  'window.status',
+  'document.title',
+  'history.state',
+  'localStorage.getItem(',
+  'sessionStorage.getItem(',
 ];
 
 // Compile patterns into a single regex for faster matching

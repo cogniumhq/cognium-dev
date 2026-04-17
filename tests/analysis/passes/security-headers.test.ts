@@ -50,9 +50,10 @@ function makeType(
   name: string,
   annotations: string[] = [],
   methods: MethodInfo[] = [],
+  extendsClass: string | null = null,
 ): TypeInfo {
   return {
-    name, kind: 'class', package: null, extends: null, implements: [],
+    name, kind: 'class', package: null, extends: extendsClass, implements: [],
     annotations, methods, fields: [], start_line: 1, end_line: 50,
   };
 }
@@ -516,6 +517,173 @@ describe('SecurityHeadersPass', () => {
       const refl = findings.filter(f => f.rule_id === 'cors-reflected-origin');
       expect(refl).toHaveLength(1);
       expect(refl[0].line).toBe(25);
+    });
+  });
+
+  // ========================================================================
+  // Servlet handler detection
+  // ========================================================================
+
+  describe('servlet handler detection', () => {
+    it('detects HttpServlet with doGet as a handler', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'FrameAncestorsServlet', [], [makeMethod('doGet', 30, 35)], 'HttpServlet',
+        )],
+      });
+      const findings = runPass(ir);
+      // Handler detected → missing-x-frame-options should fire
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+    });
+
+    it('detects HttpServlet with service() as a handler', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'EscapeServlet', [], [makeMethod('service', 52, 81)], 'HttpServlet',
+        )],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+    });
+
+    it('does NOT treat plain class with doGet as handler (no HttpServlet extends)', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'SomeHelper', [], [makeMethod('doGet', 5, 15)],  // no extends
+        )],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('fires missing-x-frame-options on servlet that sets CSP but not XFO', () => {
+      // Mirrors FrameAncestorsNoXFOAllowFrom.java
+      const ir = makeIR('java', {
+        types: [makeType(
+          'FrameAncestorsNoXFOAllowFrom', [], [makeMethod('doGet', 30, 35)], 'HttpServlet',
+        )],
+        calls: [makeCall('setHeader', 'response', 32, [
+          makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+          makeArg(1, '"frame-ancestors https://example.com"', '"frame-ancestors https://example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // Should fire missing-x-frame-options (XFO not set)
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+      // Should NOT fire missing-csp-frame-ancestors (CSP IS set)
+      expect(findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // XFO ↔ CSP mismatch detection
+  // ========================================================================
+
+  describe('xfo-csp-mismatch', () => {
+    it('fires when XFO=DENY but CSP frame-ancestors=self (mismatch)', () => {
+      // Mirrors XFODenyNoFrameAncestorsNone.java
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 32, [
+            makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 33, [
+            makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+            makeArg(1, "\"frame-ancestors 'self'\"", "\"frame-ancestors 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      const mm = findings.filter(f => f.rule_id === 'xfo-csp-mismatch');
+      expect(mm).toHaveLength(1);
+      expect(mm[0].cwe).toBe('CWE-1021');
+      expect(mm[0].evidence).toMatchObject({
+        xfo: 'DENY',
+        csp_frame_ancestors: "'self'",
+      });
+    });
+
+    it('fires when XFO=SAMEORIGIN but CSP allows external origin', () => {
+      // Mirrors XFOSameOriginNoFrameAncestorsSelf.java
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 32, [
+            makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),
+            makeArg(1, '"SAMEORIGIN"', '"SAMEORIGIN"'),
+          ]),
+          makeCall('setHeader', 'response', 33, [
+            makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+            makeArg(1, '"frame-ancestors https://google.com"', '"frame-ancestors https://google.com"'),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      const mm = findings.filter(f => f.rule_id === 'xfo-csp-mismatch');
+      expect(mm).toHaveLength(1);
+      expect(mm[0].line).toBe(33);
+    });
+
+    it('does NOT fire when XFO=DENY and CSP frame-ancestors=none (consistent)', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"frame-ancestors 'none'\"", "\"frame-ancestors 'none'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when XFO=SAMEORIGIN and CSP frame-ancestors=self (consistent)', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"SAMEORIGIN"', '"SAMEORIGIN"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"frame-ancestors 'self'\"", "\"frame-ancestors 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when only XFO is set (no CSP)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 10, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when CSP has no frame-ancestors directive', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"default-src 'self'\"", "\"default-src 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
     });
   });
 });

@@ -72,7 +72,11 @@ export function isFalsePositive(
   }
 
   // Reason 3: Variable not tainted
-  if (!result.tainted.has(taintedVar)) {
+  // Only apply this check when constant propagation actually tracked symbols.
+  // When the symbols map is empty (e.g. JavaScript code where the constant propagation
+  // engine doesn't process variable declarations), we can't conclude anything about
+  // taint status — return false to avoid suppressing real flows.
+  if (result.symbols.size > 0 && !result.tainted.has(taintedVar)) {
     return { isFalsePositive: true, reason: 'variable_not_tainted' };
   }
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.2] - 2026-04-16
+
+### Added
+
+- **`xfo-csp-mismatch` rule** (CWE-1021, warning): Detects when `X-Frame-Options` and CSP `frame-ancestors` disagree in the same handler (e.g. XFO=DENY but CSP allows framing). Modern browsers use CSP, so the XFO header is effectively ignored.
+- **Servlet handler detection**: `SecurityHeadersPass` now detects Java servlet handlers (`HttpServlet.doGet/doPost/service`) to enable missing-header rules on servlet-based code.
+- **Logging methods excluded from external-taint-escape**: `console.log`, `println`, `printf` and other logging methods are no longer flagged as `external_taint_escape` sinks — reduces false positives in JavaScript and Java code.
+
+### Fixed
+
+- **JavaScript taint flow detection**: Fixed `isFalsePositive` in constant propagation to not suppress taint flows when the constant propagation engine hasn't tracked any symbols (common in JavaScript). Previously all JS taint flows were silently filtered as false positives.
+- **JS DOM taint patterns in constant propagation**: Added `location.hash`, `document.cookie`, `window.name` and 11 other browser DOM taint sources to the constant propagation engine's `TAINT_PATTERNS`, ensuring consistency with the language-sources pass.
+- **Top-level JS DFG extraction**: `buildJavaScriptDFG` now processes top-level expression statements (e.g. `eval(payload)` outside any function body), enabling taint flow detection for script-level code.
+
+[3.19.2]: https://github.com/cogniumhq/circle-ir/compare/v3.19.1...v3.19.2
+
 ## [3.19.1] - 2026-04-16
 
 ### Fixed

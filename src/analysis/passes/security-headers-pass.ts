@@ -54,6 +54,17 @@ const HEADER_WRITE_METHODS = new Set([
 const HANDLER_ANNOTATION_RE =
   /\b(Controller|RestController|RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestBody|RequestParam|PathVariable|route|blueprint|api_view|get|post|put|delete|patch|head|options)\b/i;
 
+/** Java servlet HTTP handler method names (doGet, doPost, …). */
+const SERVLET_HANDLER_METHODS = new Set([
+  'doGet', 'doPost', 'doPut', 'doDelete', 'doHead', 'doOptions', 'doPatch',
+  'service',
+]);
+
+/** Java servlet base class names. */
+const SERVLET_BASE_CLASSES = new Set([
+  'HttpServlet', 'GenericServlet', 'Servlet',
+]);
+
 /** Express / Koa route-registration receivers. */
 const JS_ROUTER_RECEIVERS = new Set(['app', 'router', 'server', 'route']);
 const JS_ROUTE_METHODS = new Set([
@@ -172,6 +183,13 @@ export class SecurityHeadersPass
       }
     }
 
+    // -------------------------------------------------------------------
+    // Step 4: cross-header consistency (XFO ↔ CSP frame-ancestors).
+    //   CSP frame-ancestors takes precedence over XFO in modern browsers.
+    //   Flag mismatches where the two headers disagree.
+    // -------------------------------------------------------------------
+    checkXfoCspMismatch(writtenHeaders, file, ctx);
+
     return { hasHandler, writtenHeaders };
   }
 }
@@ -249,11 +267,89 @@ function resolveHeaderName(arg: { literal?: string | null; expression: string })
 }
 
 /**
+ * Detect XFO ↔ CSP frame-ancestors mismatches.
+ *
+ * When both X-Frame-Options and Content-Security-Policy (with frame-ancestors)
+ * are set in the same file, CSP takes precedence in modern browsers. A mismatch
+ * means the effective policy differs from what XFO declares, which is
+ * a clickjacking misconfiguration (CWE-1021).
+ *
+ * Cases detected:
+ *   - XFO=DENY but CSP frame-ancestors is not 'none'
+ *   - XFO=SAMEORIGIN but CSP frame-ancestors allows external origins
+ */
+function checkXfoCspMismatch(
+  writtenHeaders: Map<string, CallInfo[]>,
+  file: string,
+  ctx: PassContext,
+): void {
+  const xfoCalls = writtenHeaders.get('x-frame-options') ?? [];
+  const cspCalls = writtenHeaders.get('content-security-policy') ?? [];
+  if (xfoCalls.length === 0 || cspCalls.length === 0) return;
+
+  for (const xfoCall of xfoCalls) {
+    const xfoValue = literalOf(xfoCall.arguments[1])?.toUpperCase();
+    if (!xfoValue) continue;
+
+    for (const cspCall of cspCalls) {
+      const cspValue = literalOf(cspCall.arguments[1]);
+      if (!cspValue) continue;
+
+      // Extract frame-ancestors directive from the CSP value.
+      const faMatch = /frame-ancestors\s+([^;]+)/i.exec(cspValue);
+      if (!faMatch) continue;
+      const frameAncestors = faMatch[1].trim().toLowerCase();
+
+      let mismatch = false;
+      let message = '';
+
+      if (xfoValue === 'DENY') {
+        // XFO=DENY means no framing at all. CSP equivalent is frame-ancestors 'none'.
+        if (frameAncestors !== "'none'" && frameAncestors !== 'none') {
+          mismatch = true;
+          message = `X-Frame-Options: DENY conflicts with CSP frame-ancestors: ${faMatch[1].trim()} — CSP takes precedence, framing is allowed`;
+        }
+      } else if (xfoValue === 'SAMEORIGIN') {
+        // XFO=SAMEORIGIN means only same-origin. CSP equivalent is frame-ancestors 'self'.
+        if (frameAncestors !== "'self'") {
+          mismatch = true;
+          message = `X-Frame-Options: SAMEORIGIN conflicts with CSP frame-ancestors: ${faMatch[1].trim()} — CSP takes precedence`;
+        }
+      }
+
+      if (mismatch) {
+        ctx.addFinding({
+          id: `xfo-csp-mismatch-${file}-${xfoCall.location.line}`,
+          pass: 'security-headers',
+          category: 'security',
+          rule_id: 'xfo-csp-mismatch',
+          cwe: 'CWE-1021',
+          severity: 'medium',
+          level: 'warning',
+          message,
+          file,
+          line: cspCall.location.line,
+          fix: 'Ensure X-Frame-Options and CSP frame-ancestors express the same framing policy',
+          evidence: {
+            xfo: xfoValue,
+            csp_frame_ancestors: frameAncestors,
+          },
+        });
+      }
+    }
+  }
+}
+
+/**
  * Heuristic detection of whether the file contains an HTTP request handler.
  * Used to gate 'missing' rules so they don't fire on library / utility files.
  */
 function detectHandler(
-  graph: { ir: { types: Array<{ annotations: string[]; methods: Array<{ annotations: string[] }> }> } },
+  graph: { ir: { types: Array<{
+    annotations: string[];
+    extends: string | null;
+    methods: Array<{ name: string; annotations: string[] }>;
+  }> } },
   calls: CallInfo[],
 ): boolean {
   // 1. Class or method annotations that look like controller/route markers.
@@ -264,7 +360,15 @@ function detectHandler(
     }
   }
 
-  // 2. Express / Koa / Node route registration: app.get('/x', …), router.post(…)
+  // 2. Java servlet: class extends HttpServlet with doGet/doPost/service.
+  for (const type of graph.ir.types) {
+    const base = type.extends;
+    if (base && SERVLET_BASE_CLASSES.has(base)) {
+      if (type.methods.some(m => SERVLET_HANDLER_METHODS.has(m.name))) return true;
+    }
+  }
+
+  // 3. Express / Koa / Node route registration: app.get('/x', …), router.post(…)
   for (const call of calls) {
     if (!JS_ROUTE_METHODS.has(call.method_name)) continue;
     if (!call.receiver) continue;
@@ -275,12 +379,6 @@ function detectHandler(
     const literal = literalOf(first);
     if (literal !== null && literal.startsWith('/')) return true;
   }
-
-  // 3. Any setHeader/addHeader call itself implies the file interacts
-  //    with HTTP responses (but we don't want to let this alone bypass
-  //    the 'missing' gate — otherwise rules would never fire when they
-  //    should!). So DON'T count header writes here; they're counted
-  //    at step 2 above via routing instead.
 
   return false;
 }

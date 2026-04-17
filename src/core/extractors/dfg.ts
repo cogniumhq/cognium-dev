@@ -220,6 +220,22 @@ function buildJavaScriptDFG(tree: Tree, cache?: NodeCache): DFG {
     }
   }
 
+  // Process top-level expression statements (e.g., eval(payload), func calls)
+  // These are not inside any function body, so they need explicit handling
+  const topLevelStmts = tree.rootNode.children.filter(
+    node => node.type === 'expression_statement'
+  );
+  for (const stmt of topLevelStmts) {
+    const expr = stmt.child(0);
+    if (expr) {
+      const result = processExpression(expr, defIdCounter, useIdCounter, scopeStack, true);
+      defs.push(...result.defs);
+      uses.push(...result.uses);
+      defIdCounter = result.nextDefId;
+      useIdCounter = result.nextUseId;
+    }
+  }
+
   // Also extract class field definitions
   const classes = getNodesFromCache(tree.rootNode, 'class_declaration', cache);
   for (const cls of classes) {

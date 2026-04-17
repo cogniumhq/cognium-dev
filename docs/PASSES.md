@@ -90,6 +90,7 @@ Emits findings for clickjacking (CWE-1021) and CORS misconfiguration
 | 89e | `cors-null-origin` | CWE-346 | error | shipped | `Access-Control-Allow-Origin: null` exploitable via sandboxed iframes |
 | 89f | `cors-http-origin` | CWE-346 | warning | shipped | Allowed origin uses insecure `http://` scheme |
 | 89g | `cors-reflected-origin` | CWE-346 | error | shipped | `Access-Control-Allow-Origin` set to a dynamic (non-literal) value |
+| 89h | `xfo-csp-mismatch` | CWE-1021 | warning | shipped | `X-Frame-Options` and CSP `frame-ancestors` disagree (e.g. XFO=DENY but CSP allows framing) |
 
 ---
 

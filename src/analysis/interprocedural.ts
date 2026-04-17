@@ -189,6 +189,9 @@ export function analyzeInterprocedural(
     'minimatch', 'match', 'test', 'includes', 'startsWith', 'endsWith',
     // General validation
     'validate', 'validateInput', 'check', 'verify',
+    // Logging (console.log, logger.info, etc.) — not security sinks
+    'log', 'warn', 'error', 'info', 'debug', 'trace', 'dir', 'table',
+    'println', 'print', 'printf', 'fprintf',
     // I/O stream wrappers — pure decorators that wrap a stream, not security sinks
     // e.g. new InputStreamReader(proc.getInputStream()) is safe; the underlying stream is the source
     'InputStreamReader', 'OutputStreamWriter',
