@@ -125,7 +125,7 @@ import { ExcessiveAllocationPass } from './analysis/passes/excessive-allocation-
 import { MissingStreamPass } from './analysis/passes/missing-stream-pass.js';
 import { GodClassPass } from './analysis/passes/god-class-pass.js';
 import { NamingConventionPass, type NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
-import { SecurityHeadersPass, type SecurityHeadersOptions } from './analysis/passes/security-headers-pass.js';
+import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -847,9 +847,22 @@ export async function analyzeProject(
   // 2. Cross-file analysis
   const crossFileResult = new CrossFilePass().run(projectGraph, sourceLinesByFile);
 
+  // 2.5 Cross-file security-header inheritance (CORS via virtual methods)
+  const disabledPasses = options.disabledPasses ?? [];
+  if (!disabledPasses.includes('security-headers')) {
+    const inheritedFindings = checkInheritedCorsHeaders(
+      fileAnalyses, projectGraph.typeHierarchy, sourceLinesByFile,
+    );
+    for (const finding of inheritedFindings) {
+      const fa = fileAnalyses.find(f => f.file === finding.file);
+      if (fa) {
+        fa.analysis.findings = [...(fa.analysis.findings ?? []), finding];
+      }
+    }
+  }
+
   // 3. Import-graph analysis (circular deps + orphan modules)
   const importGraph = new ImportGraph(projectGraph);
-  const disabledPasses = options.disabledPasses ?? [];
   const circularFindings = disabledPasses.includes('circular-dependency')
     ? []
     : new CircularDependencyPass().run(projectGraph, importGraph);

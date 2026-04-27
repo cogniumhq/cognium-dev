@@ -4,7 +4,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { CodeGraph } from '../../../src/graph/code-graph.js';
-import { SecurityHeadersPass } from '../../../src/analysis/passes/security-headers-pass.js';
+import { SecurityHeadersPass, checkInheritedCorsHeaders } from '../../../src/analysis/passes/security-headers-pass.js';
+import { TypeHierarchyResolver } from '../../../src/resolution/type-hierarchy.js';
 import type {
   CircleIR, SastFinding, TypeInfo, MethodInfo, CallInfo, ArgumentInfo,
 } from '../../../src/types/index.js';
@@ -684,6 +685,415 @@ describe('SecurityHeadersPass', () => {
       });
       const findings = runPass(ir);
       expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // Cross-file CORS inheritance (checkInheritedCorsHeaders)
+  // ========================================================================
+
+  describe('CORS inheritance via checkInheritedCorsHeaders', () => {
+    /**
+     * Build a TypeHierarchyResolver with a parent→child relationship.
+     * The parent defines a virtual method; each child overrides it.
+     */
+    function buildHierarchy(
+      parentName: string,
+      parentFile: string,
+      childEntries: Array<{ name: string; file: string }>,
+    ): TypeHierarchyResolver {
+      const th = new TypeHierarchyResolver();
+      th.addType({
+        name: parentName, kind: 'class', package: 'com.example',
+        extends: 'HttpServlet', implements: [], annotations: [],
+        methods: [], fields: [], start_line: 1, end_line: 50,
+      }, parentFile, 'com.example');
+      for (const child of childEntries) {
+        th.addType({
+          name: child.name, kind: 'class', package: 'com.example',
+          extends: parentName, implements: [], annotations: [],
+          methods: [], fields: [], start_line: 1, end_line: 30,
+        }, child.file, 'com.example');
+      }
+      return th;
+    }
+
+    it('detects cors-null-origin in child that returns "null"', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile = 'AllowNullOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('AllowNullOrigin', [], [
+          makeMethod('getAllowOriginValue', 6, 10),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'AllowNullOrigin', file: childFile },
+      ]);
+
+      // Source lines (1-indexed: line 1='package...', line 6='protected String...', line 9='return "null"')
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',                                                // line 1
+        '',                                                                     // line 2
+        'public class AllowNullOrigin extends AllowOriginServlet {',            // line 3
+        '',                                                                     // line 4
+        '  @Override',                                                          // line 5
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 6
+        '    // This is insecure:',                                             // line 7
+        '    // https://www.w3.org/TR/cors/#access-control-allow-origin...',    // line 8
+        '    return "null";',                                                   // line 9
+        '  }',                                                                  // line 10
+        '}',                                                                    // line 11
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-null-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+      expect(findings[0].file).toBe(childFile);
+      expect(findings[0].line).toBe(6);
+      expect(findings[0].snippet).toContain('null');
+    });
+
+    it('detects cors-reflected-origin in child that returns request.getHeader()', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile = 'DynamicAllowOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('DynamicAllowOrigin', [], [
+          makeMethod('getAllowOriginValue', 6, 9),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'DynamicAllowOrigin', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',                                                // line 1
+        '',                                                                     // line 2
+        'public class DynamicAllowOrigin extends AllowOriginServlet {',         // line 3
+        '',                                                                     // line 4
+        '  @Override',                                                          // line 5
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 6
+        '    // Reflects the Origin header back.',                              // line 7
+        '    return request.getHeader("Origin");',                              // line 8
+        '  }',                                                                  // line 9
+        '}',                                                                    // line 10
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-reflected-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+      expect(findings[0].severity).toBe('high');
+      expect(findings[0].file).toBe(childFile);
+    });
+
+    it('detects cors-wildcard-origin in child that returns "*"', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'WildcardChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('WildcardChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'WildcardChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class WildcardChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "*";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-wildcard-origin');
+      expect(findings[0].cwe).toBe('CWE-942');
+    });
+
+    it('detects cors-http-origin in child that returns "http://..."', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'HttpChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('HttpChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'HttpChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class HttpChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "http://insecure.example.com";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-http-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+    });
+
+    it('does NOT emit for child that returns "https://safe.example.com"', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'SafeChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('SafeChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'SafeChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class SafeChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "https://safe.example.com";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(0);
+    });
+
+    it('handles multiple children from the same parent', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile1 = 'AllowNullOrigin.java';
+      const childFile2 = 'DynamicAllowOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const child1IR = makeIR('java', {
+        file: childFile1,
+        types: [makeType('AllowNullOrigin', [], [
+          makeMethod('getAllowOriginValue', 3, 5),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const child2IR = makeIR('java', {
+        file: childFile2,
+        types: [makeType('DynamicAllowOrigin', [], [
+          makeMethod('getAllowOriginValue', 3, 5),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'AllowNullOrigin', file: childFile1 },
+        { name: 'DynamicAllowOrigin', file: childFile2 },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile1, [
+        'class AllowNullOrigin extends AllowOriginServlet {',                   // line 1
+        '  @Override',                                                          // line 2
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 3
+        '    return "null";',                                                   // line 4
+        '  }',                                                                  // line 5
+        '}',                                                                    // line 6
+      ]);
+      sourceLines.set(childFile2, [
+        'class DynamicAllowOrigin extends AllowOriginServlet {',               // line 1
+        '  @Override',                                                          // line 2
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 3
+        '    return request.getHeader("Origin");',                              // line 4
+        '  }',                                                                  // line 5
+        '}',                                                                    // line 6
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [
+          { file: parentFile, analysis: parentIR },
+          { file: childFile1, analysis: child1IR },
+          { file: childFile2, analysis: child2IR },
+        ],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(2);
+      const ruleIds = findings.map(f => f.rule_id).sort();
+      expect(ruleIds).toEqual(['cors-null-origin', 'cors-reflected-origin']);
+    });
+
+    it('does NOT emit when parent header value is a literal', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'Child.java';
+
+      // Parent sets ACAO to a literal value — no virtual method involved.
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('Child', [], [], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'Child', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, []);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      // Literal values are handled by the per-file pass, not inheritance.
+      expect(findings).toHaveLength(0);
     });
   });
 });

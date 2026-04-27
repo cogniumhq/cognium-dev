@@ -25,9 +25,10 @@
  *   - Rust:        attribute macros matching get|post|put|delete|patch|route
  */
 
-import type { CallInfo } from '../../types/index.js';
+import type { CallInfo, SastFinding, CircleIR } from '../../types/index.js';
 import type { HeaderRule } from '../../types/config.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
+import type { TypeHierarchyResolver } from '../../resolution/type-hierarchy.js';
 import { DEFAULT_HEADER_RULES } from '../config-loader.js';
 
 export interface SecurityHeadersOptions {
@@ -381,4 +382,267 @@ function detectHandler(
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file CORS inheritance
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect CORS misconfigurations inherited through class hierarchy.
+ *
+ * When a parent servlet calls `setHeader("Access-Control-Allow-Origin", getXxx())`
+ * with a virtual method as the value, child classes override that method to return
+ * different values. Per-file analysis only sees the parent's call — the children
+ * have 0 calls and produce 0 findings. This function resolves each child's
+ * override return value and emits the appropriate CORS finding on the child file.
+ */
+export function checkInheritedCorsHeaders(
+  fileAnalyses: Array<{ file: string; analysis: CircleIR }>,
+  typeHierarchy: TypeHierarchyResolver,
+  sourceLines: Map<string, string[]>,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+
+  // Step 1: Find parent files with CORS header writes using a dynamic value.
+  for (const { file: parentFile, analysis: parentIR } of fileAnalyses) {
+    for (const call of parentIR.calls) {
+      if (!HEADER_WRITE_METHODS.has(call.method_name)) continue;
+      if (call.arguments.length < 2) continue;
+
+      // Check arg[0] is the ACAO header.
+      const headerName = resolveHeaderName(call.arguments[0]);
+      if (headerName === null) continue;
+      if (headerName.toLowerCase() !== 'access-control-allow-origin') continue;
+
+      // Check arg[1] is dynamic (not a literal).
+      const valueArg = call.arguments[1];
+      const valueLiteral = literalOf(valueArg);
+      if (valueLiteral !== null) continue; // Static value — handled by per-file pass.
+
+      // Extract the virtual method name from the dynamic value expression.
+      // e.g. "getAllowOriginValue(request)" → "getAllowOriginValue"
+      const methodName = extractMethodName(valueArg);
+      if (!methodName) continue;
+
+      // Step 2: Find the parent class that contains this call.
+      const parentClassName = findClassContainingMethod(parentIR, call, methodName);
+      if (!parentClassName) continue;
+
+      // Step 3: Find child classes via type hierarchy.
+      const childFqns = typeHierarchy.getAllSubtypes(parentClassName);
+      if (childFqns.length === 0) continue;
+
+      // Step 4: For each child, resolve the override and emit a finding.
+      for (const childFqn of childFqns) {
+        const childType = typeHierarchy.getType(childFqn);
+        if (!childType) continue;
+
+        const childFile = childType.file;
+        const lines = sourceLines.get(childFile);
+        if (!lines) continue;
+
+        // Find the override method in the child's IR.
+        const childFA = fileAnalyses.find(f => f.file === childFile);
+        if (!childFA) continue;
+
+        const childIR = childFA.analysis;
+        let overrideStartLine = 0;
+        let overrideEndLine = 0;
+
+        for (const type of childIR.types) {
+          for (const method of type.methods) {
+            if (method.name === methodName) {
+              overrideStartLine = method.start_line;
+              overrideEndLine = method.end_line;
+              break;
+            }
+          }
+          if (overrideStartLine > 0) break;
+        }
+
+        if (overrideStartLine === 0) continue; // No override — child inherits parent behavior.
+
+        // Extract the return value from the override method's source lines.
+        const returnValue = extractReturnValue(
+          lines, overrideStartLine, overrideEndLine,
+        );
+
+        // Map return value to a CORS rule.
+        const corsRule = mapReturnValueToCorsRule(returnValue);
+        if (!corsRule) continue;
+
+        findings.push({
+          id: `${corsRule.ruleId}-${childFile}-${overrideStartLine}`,
+          pass: 'security-headers',
+          category: 'security',
+          rule_id: corsRule.ruleId,
+          cwe: corsRule.cwe,
+          severity: corsRule.severity,
+          level: 'error',
+          message: corsRule.message,
+          file: childFile,
+          line: overrideStartLine,
+          snippet: corsRule.snippet,
+          evidence: {
+            parentFile,
+            parentMethod: methodName,
+            childClass: childFqn,
+            returnValue: returnValue.raw,
+          },
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Extract a method name from a dynamic value argument.
+ * Handles patterns like "getAllowOriginValue(request)", "this.getOrigin()", "getOrigin()".
+ */
+function extractMethodName(arg: { variable?: string | null; expression: string }): string | null {
+  // Try variable field first (e.g. "getAllowOriginValue").
+  if (arg.variable) {
+    // If variable looks like a method name (not a parameter name), use it.
+    const v = arg.variable;
+    if (/^[a-zA-Z_]\w*$/.test(v) && v !== 'request' && v !== 'response' && v !== 'req' && v !== 'res') {
+      return v;
+    }
+  }
+
+  // Parse from expression: "getAllowOriginValue(request)" or "this.getOrigin()".
+  const expr = arg.expression.trim();
+  const match = /(?:\w+\.)?(\w+)\s*\(/.exec(expr);
+  if (match) return match[1];
+
+  return null;
+}
+
+/**
+ * Find the class in the IR that (a) contains the header-write call site and
+ * (b) defines the virtual method being invoked.
+ */
+function findClassContainingMethod(
+  ir: CircleIR,
+  call: CallInfo,
+  methodName: string,
+): string | null {
+  const callLine = call.location.line;
+
+  for (const type of ir.types) {
+    // The call must be within the class's line range.
+    if (callLine < type.start_line || callLine > type.end_line) continue;
+
+    // The class must declare or inherit the virtual method.
+    // We check if the class itself declares the method (abstract or concrete).
+    const hasMethod = type.methods.some(m => m.name === methodName);
+    if (hasMethod) return type.name;
+  }
+
+  // Fallback: return the class that contains the call site (even without the method).
+  for (const type of ir.types) {
+    if (callLine >= type.start_line && callLine <= type.end_line) return type.name;
+  }
+
+  return null;
+}
+
+interface ReturnValueInfo {
+  kind: 'literal' | 'dynamic';
+  value: string | null;  // The literal string value, if any.
+  raw: string;            // The raw return expression.
+}
+
+/**
+ * Extract the return value from a method's source lines.
+ * Scans for `return` statements and classifies the returned expression.
+ */
+function extractReturnValue(
+  lines: string[],
+  startLine: number,
+  endLine: number,
+): ReturnValueInfo {
+  const returnLiteralRe = /return\s+"([^"]*)"[;\s]*$/;
+  const returnSingleQuoteRe = /return\s+'([^']*)'[;\s]*$/;
+
+  for (let i = startLine - 1; i < Math.min(endLine, lines.length); i++) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+
+    // Match: return "someValue";
+    const literalMatch = returnLiteralRe.exec(line) || returnSingleQuoteRe.exec(line);
+    if (literalMatch) {
+      return { kind: 'literal', value: literalMatch[1], raw: literalMatch[1] };
+    }
+
+    // Match: return <dynamic expression>;
+    if (/^\s*return\s+/.test(lines[i])) {
+      const expr = lines[i].replace(/^\s*return\s+/, '').replace(/;\s*$/, '').trim();
+      return { kind: 'dynamic', value: null, raw: expr };
+    }
+  }
+
+  // No return found — treat as dynamic (may inherit parent behavior).
+  return { kind: 'dynamic', value: null, raw: '<inherited>' };
+}
+
+interface CorsRuleMapping {
+  ruleId: string;
+  cwe: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  message: string;
+  snippet: string;
+}
+
+/**
+ * Map a resolved return value to the appropriate CORS misconfiguration rule.
+ */
+function mapReturnValueToCorsRule(returnValue: ReturnValueInfo): CorsRuleMapping | null {
+  if (returnValue.kind === 'literal' && returnValue.value !== null) {
+    const v = returnValue.value;
+
+    if (v === 'null') {
+      return {
+        ruleId: 'cors-null-origin',
+        cwe: 'CWE-346',
+        severity: 'medium',
+        message: 'Access-Control-Allow-Origin set to "null" — sandboxed or data: URIs can exploit this to bypass origin checks',
+        snippet: `Access-Control-Allow-Origin: ${v}`,
+      };
+    }
+
+    if (v === '*') {
+      return {
+        ruleId: 'cors-wildcard-origin',
+        cwe: 'CWE-942',
+        severity: 'medium',
+        message: 'Access-Control-Allow-Origin set to wildcard "*" — any origin can read the response',
+        snippet: `Access-Control-Allow-Origin: ${v}`,
+      };
+    }
+
+    if (v.startsWith('http://')) {
+      return {
+        ruleId: 'cors-http-origin',
+        cwe: 'CWE-346',
+        severity: 'medium',
+        message: `Access-Control-Allow-Origin allows insecure HTTP origin "${v}" — susceptible to MITM`,
+        snippet: `Access-Control-Allow-Origin: ${v}`,
+      };
+    }
+
+    // Other literal values (e.g. "https://example.com") — likely safe.
+    return null;
+  }
+
+  // Dynamic/tainted return value — reflected origin.
+  return {
+    ruleId: 'cors-reflected-origin',
+    cwe: 'CWE-346',
+    severity: 'high',
+    message: 'Access-Control-Allow-Origin reflects user-controlled value — any origin can read the response',
+    snippet: `Access-Control-Allow-Origin: <dynamic: ${returnValue.raw}>`,
+  };
 }

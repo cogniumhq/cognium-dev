@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.19.5] - 2026-04-26
+
+### Added
+
+- **Cross-file CORS inheritance detection**: `analyzeProject()` now resolves CORS misconfigurations inherited through class hierarchy. When a parent servlet writes `Access-Control-Allow-Origin` with a virtual method call and child classes override that method, the child's return value is resolved from source to emit `cors-null-origin`, `cors-wildcard-origin`, `cors-http-origin`, or `cors-reflected-origin` findings on the child file. Fixes 3 false negatives in Firing Range CORS benchmarks (AllowNullOrigin, DynamicAllowOrigin, AllowInsecureScheme).
+
+[3.19.5]: https://github.com/cogniumhq/circle-ir/compare/v3.19.4...v3.19.5
+
 ## [3.19.4] - 2026-04-16
 
 ### Fixed
