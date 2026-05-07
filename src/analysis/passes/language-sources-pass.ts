@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TypeInfo, SourceType } from '../../types/index.js';
+import type { TaintSource, TaintSink, TypeInfo, SourceType, SastFinding } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
@@ -197,6 +197,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     }
 
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
+
+    // -- Bash/Shell: pattern-based findings (hardcoded creds, chmod 777, etc.) --
+    if (language === 'bash') {
+      const bashFindings = findBashPatternFindings(code, graph.ir.meta.file);
+      for (const finding of bashFindings) {
+        ctx.addFinding(finding);
+      }
+    }
 
     return { additionalSources, additionalSinks, pyTaintedVars, pySanitizedVars, jsTaintedVars };
   }
@@ -568,4 +576,118 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   }
 
   return tainted;
+}
+
+// ---------------------------------------------------------------------------
+// Bash/Shell pattern-based findings
+// ---------------------------------------------------------------------------
+
+const BASH_CREDENTIAL_PATTERN = /^(.*?)(password|passwd|secret|api_?key|token|auth_token|private_key|access_key)\s*=\s*["']?([^"'\s$][^"'\s]*)["']?\s*$/i;
+
+export function findBashPatternFindings(sourceCode: string, file: string): SastFinding[] {
+  const findings: SastFinding[] = [];
+  const lines = sourceCode.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    const lineNumber = i + 1;
+
+    // Skip comments
+    if (trimmed.startsWith('#')) continue;
+
+    // 1. Hardcoded credentials: PASSWORD="secret123"
+    const credMatch = trimmed.match(BASH_CREDENTIAL_PATTERN);
+    if (credMatch) {
+      const value = credMatch[3];
+      // Skip empty, variable references, and command substitutions
+      if (value && !value.startsWith('$') && !value.startsWith('(') && value.length > 1) {
+        findings.push({
+          id: `hardcoded-credential-${file}-${lineNumber}`,
+          pass: 'language-sources',
+          category: 'security',
+          rule_id: 'hardcoded-credential',
+          cwe: 'CWE-798',
+          severity: 'high',
+          level: 'error',
+          message: `Hardcoded credential: ${credMatch[2]} contains a literal value`,
+          file,
+          line: lineNumber,
+          snippet: trimmed.substring(0, 80),
+        });
+      }
+    }
+
+    // 2. Cleartext HTTP in curl/wget
+    if (/\b(curl|wget)\b/.test(trimmed) && /\bhttp:\/\//.test(trimmed)) {
+      findings.push({
+        id: `cleartext-transmission-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'cleartext-transmission',
+        cwe: 'CWE-319',
+        severity: 'medium',
+        level: 'warning',
+        message: 'Cleartext HTTP transmission: use https:// instead of http://',
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 80),
+      });
+    }
+
+    // 3. Predictable /tmp file (no variable in path)
+    const tmpMatch = trimmed.match(/\/tmp\/([^\s"'$]+)/);
+    if (tmpMatch && !/mktemp/.test(trimmed)) {
+      findings.push({
+        id: `predictable-temp-file-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'predictable-temp-file',
+        cwe: 'CWE-377',
+        severity: 'medium',
+        level: 'warning',
+        message: `Predictable temp file: /tmp/${tmpMatch[1]}. Use mktemp instead`,
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 80),
+      });
+    }
+
+    // 4. Insecure file permissions: chmod 777 or chmod 666
+    if (/\bchmod\b/.test(trimmed) && /\b(777|666)\b/.test(trimmed)) {
+      const mode = trimmed.match(/\b(777|666)\b/)![1];
+      findings.push({
+        id: `insecure-file-permission-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'insecure-file-permission',
+        cwe: 'CWE-732',
+        severity: 'medium',
+        level: 'warning',
+        message: `Insecure file permission: chmod ${mode} grants excessive access`,
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 80),
+      });
+    }
+
+    // 5. Unsafe archive extraction: tar with extract flags and no --strip-components
+    if (/\btar\b/.test(trimmed) && /(-x|--extract)/.test(trimmed) && !/--strip-components/.test(trimmed)) {
+      findings.push({
+        id: `unsafe-archive-extraction-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'unsafe-archive-extraction',
+        cwe: 'CWE-22',
+        severity: 'medium',
+        level: 'warning',
+        message: 'Unsafe archive extraction: tar -x without --strip-components may allow path traversal',
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 80),
+      });
+    }
+  }
+
+  return findings;
 }

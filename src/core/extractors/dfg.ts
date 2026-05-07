@@ -61,6 +61,9 @@ export function buildDFG(tree: Tree, cache?: NodeCache, language?: SupportedLang
   if (effectiveLanguage === 'rust') {
     return buildRustDFG(tree, cache);
   }
+  if (effectiveLanguage === 'bash') {
+    return buildBashDFG(tree);
+  }
   return buildJavaDFG(tree, cache);
 }
 
@@ -1043,6 +1046,161 @@ function computeChains(defs: DFGDef[], uses: DFGUse[]): DFGChain[] {
   chains.sort((a, b) => a.from_def - b.from_def || a.to_def - b.to_def);
 
   return chains;
+}
+
+/**
+ * Build DFG for Bash/Shell code.
+ *
+ * Bash has dynamic scoping — all variables are global unless declared with
+ * `local`.  We track:
+ *   - DFGDef from `variable_assignment` (VAR=value)
+ *   - DFGDef from `read` commands (read VAR)
+ *   - DFGDef from `for_statement` loop variable
+ *   - DFGUse from `simple_expansion` ($VAR) and `expansion` (${VAR})
+ */
+function buildBashDFG(tree: Tree): DFG {
+  const defs: DFGDef[] = [];
+  const uses: DFGUse[] = [];
+  let defIdCounter = 1;
+  let useIdCounter = 1;
+
+  // Single global scope (Bash dynamic scoping)
+  const scopeStack: Map<string, number>[] = [new Map()];
+
+  walkTree(tree.rootNode, (node) => {
+    if (node.type === 'variable_assignment') {
+      // VAR=value  — Tree-sitter Bash: variable_assignment has `name` and `value` fields
+      const nameNode = node.childForFieldName('name');
+      if (nameNode) {
+        const varName = getNodeText(nameNode);
+        const def: DFGDef = {
+          id: defIdCounter++,
+          variable: varName,
+          line: node.startPosition.row + 1,
+          kind: 'local',
+        };
+        defs.push(def);
+        currentScope(scopeStack).set(varName, def.id);
+
+        // Extract uses from the value side
+        const valueNode = node.childForFieldName('value');
+        if (valueNode) {
+          extractBashUses(valueNode, uses, useIdCounter, scopeStack);
+          // Count uses added
+          useIdCounter = uses.length + 1;
+        }
+      }
+    } else if (node.type === 'command') {
+      // Check for `read` builtin: read VAR1 VAR2 ...
+      const nameNode = node.childForFieldName('name');
+      if (nameNode && getNodeText(nameNode) === 'read') {
+        // Arguments after `read` are variable names being defined
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const arg = node.namedChild(i);
+          if (!arg || arg === nameNode) continue;
+          // Skip flags like -r, -p, etc.
+          if (arg.type === 'word') {
+            const text = getNodeText(arg);
+            if (text.startsWith('-')) continue;
+            const def: DFGDef = {
+              id: defIdCounter++,
+              variable: text,
+              line: node.startPosition.row + 1,
+              kind: 'local',
+            };
+            defs.push(def);
+            currentScope(scopeStack).set(text, def.id);
+          }
+        }
+      }
+    } else if (node.type === 'for_statement') {
+      // for VAR in ...; do ...; done
+      const varNode = node.childForFieldName('variable');
+      if (varNode) {
+        const varName = getNodeText(varNode);
+        const def: DFGDef = {
+          id: defIdCounter++,
+          variable: varName,
+          line: node.startPosition.row + 1,
+          kind: 'local',
+        };
+        defs.push(def);
+        currentScope(scopeStack).set(varName, def.id);
+      }
+    } else if (node.type === 'simple_expansion') {
+      // $VAR — child is a `variable_name` node
+      const varNameNode = node.namedChildCount > 0 ? node.namedChild(0) : null;
+      if (varNameNode) {
+        const varName = getNodeText(varNameNode);
+        if (varName && !varName.startsWith('?') && !varName.startsWith('#')) {
+          const reachingDef = findReachingDef(varName, scopeStack);
+          uses.push({
+            id: useIdCounter++,
+            variable: varName,
+            line: node.startPosition.row + 1,
+            def_id: reachingDef,
+          });
+        }
+      }
+    } else if (node.type === 'expansion') {
+      // ${VAR}, ${VAR:-default}, etc. — first named child is usually `variable_name`
+      // or the operator expression
+      const varNameNode = node.namedChildCount > 0 ? node.namedChild(0) : null;
+      if (varNameNode && varNameNode.type === 'variable_name') {
+        const varName = getNodeText(varNameNode);
+        const reachingDef = findReachingDef(varName, scopeStack);
+        uses.push({
+          id: useIdCounter++,
+          variable: varName,
+          line: node.startPosition.row + 1,
+          def_id: reachingDef,
+        });
+      }
+    }
+  });
+
+  const chains = computeChains(defs, uses);
+  return { defs, uses, chains };
+}
+
+/**
+ * Extract variable uses from a Bash AST node.
+ */
+function extractBashUses(
+  node: Node,
+  uses: DFGUse[],
+  _startId: number,
+  scopeStack: Map<string, number>[],
+): void {
+  walkTree(node, (child) => {
+    if (child.type === 'simple_expansion') {
+      const varNameNode = child.namedChildCount > 0 ? child.namedChild(0) : null;
+      if (varNameNode) {
+        const varName = getNodeText(varNameNode);
+        if (varName && !varName.startsWith('?') && !varName.startsWith('#')) {
+          const reachingDef = findReachingDef(varName, scopeStack);
+          uses.push({
+            id: uses.length + 1,
+            variable: varName,
+            line: child.startPosition.row + 1,
+            def_id: reachingDef,
+          });
+        }
+      }
+    } else if (child.type === 'expansion') {
+      const varNameNode = child.namedChildCount > 0 ? child.namedChild(0) : null;
+      if (varNameNode && varNameNode.type === 'variable_name') {
+        const varName = getNodeText(varNameNode);
+        const reachingDef = findReachingDef(varName, scopeStack);
+        uses.push({
+          id: uses.length + 1,
+          variable: varName,
+          line: child.startPosition.row + 1,
+          def_id: reachingDef,
+        });
+      }
+    }
+  });
 }
 
 /**

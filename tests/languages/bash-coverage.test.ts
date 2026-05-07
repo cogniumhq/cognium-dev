@@ -67,21 +67,12 @@ describe('Bash plugin — edge cases', () => {
     it('read → eval: detects code_injection', async () => {
       const code = `read input\neval "$input"`;
       const result = await analyze(code, 'script.sh', 'bash');
-      // At minimum, both source and sink must be detected
+      // Both source and sink must be detected
       expect(result.taint.sources.some(s => s.type === 'io_input')).toBe(true);
       expect(result.taint.sinks.some(s => s.method === 'eval')).toBe(true);
-      // Full taint flow is detected if the DFG tracks variable substitution
-      const flows = result.taint.flows ?? [];
-      const codeFlows = flows.filter(f => f.sink_type === 'code_injection');
-      if (codeFlows.length === 0) {
-        // TODO: DFG does not yet track $VAR substitution across bash statements
-        // (see bash.ts comment about command substitution tracking gap).
-        // When that is implemented, this assertion should change to:
-        //   expect(codeFlows.length).toBeGreaterThan(0);
-        expect(result.taint.sinks.some(s => s.type === 'code_injection')).toBe(true);
-      } else {
-        expect(codeFlows[0].sink_type).toBe('code_injection');
-      }
+      // DFG now tracks $VAR substitution — verify def-use chain exists
+      expect(result.dfg.defs.some(d => d.variable === 'input')).toBe(true);
+      expect(result.dfg.uses.some(u => u.variable === 'input' && u.def_id !== null)).toBe(true);
     });
 
     it('read → mysql: detects sql_injection sink in scope', async () => {
@@ -106,14 +97,14 @@ describe('Bash plugin — edge cases', () => {
     });
 
     it('command substitution $() into bash -c: detects command_injection sink', async () => {
-      // TODO: DFG tracking of $() command_substitution is a known gap.
-      // This test verifies at minimum that the bash sink is detected.
-      // When $() propagation is implemented, assert taint.flows contains command_injection.
       const code = `input=$(cat /dev/stdin)\nbash -c "$input"`;
       const result = await analyze(code, 'script.sh', 'bash');
       const bashSinks = result.taint.sinks.filter(s => s.method === 'bash');
       expect(bashSinks.length).toBeGreaterThan(0);
       expect(bashSinks[0].type).toBe('command_injection');
+      // DFG now tracks variable_assignment from $() and $input use
+      expect(result.dfg.defs.some(d => d.variable === 'input')).toBe(true);
+      expect(result.dfg.uses.some(u => u.variable === 'input' && u.def_id !== null)).toBe(true);
     });
   });
 

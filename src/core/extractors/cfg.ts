@@ -49,6 +49,10 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
   const allEdges: CFGEdge[] = [];
   let blockIdCounter = 0;
 
+  if (effectiveLanguage === 'bash') {
+    return buildBashCFG(tree, blockIdCounter);
+  }
+
   if (isJavaScript) {
     // Find all JavaScript function bodies
     const functions = [
@@ -610,6 +614,108 @@ function processSwitchStatement(
     exitIds,
     nextId: currentId,
   };
+}
+
+/**
+ * Build CFG for Bash/Shell code.
+ *
+ * Processes function_definition bodies and the top-level program body
+ * as a synthetic "main" function.
+ */
+function buildBashCFG(tree: Tree, startId: number): CFG {
+  const allBlocks: CFGBlock[] = [];
+  const allEdges: CFGEdge[] = [];
+  let blockIdCounter = startId;
+
+  // Process function_definition nodes
+  const functions = findNodes(tree.rootNode, 'function_definition');
+  for (const func of functions) {
+    const body = func.childForFieldName('body');
+    if (!body) continue;
+    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, false);
+    allBlocks.push(...blocks);
+    allEdges.push(...edges);
+    blockIdCounter = nextId;
+  }
+
+  // Process top-level program body as a synthetic "main"
+  // Filter out function_definition nodes to avoid duplicating them
+  const topLevelStatements: Node[] = [];
+  for (let i = 0; i < tree.rootNode.childCount; i++) {
+    const child = tree.rootNode.child(i);
+    if (child && child.type !== 'function_definition' && isBashStatement(child)) {
+      topLevelStatements.push(child);
+    }
+  }
+
+  if (topLevelStatements.length > 0) {
+    // Create entry block
+    const entryBlock: CFGBlock = {
+      id: blockIdCounter++,
+      type: 'entry',
+      start_line: topLevelStatements[0].startPosition.row + 1,
+      end_line: topLevelStatements[0].startPosition.row + 1,
+    };
+    allBlocks.push(entryBlock);
+
+    let lastExitIds: number[] = [];
+    let firstBlockId = -1;
+
+    for (const stmt of topLevelStatements) {
+      const result = processStatement(stmt, blockIdCounter, allBlocks, allEdges, false);
+      blockIdCounter = result.nextId;
+
+      if (firstBlockId === -1) {
+        firstBlockId = result.entryId;
+      } else {
+        for (const exitId of lastExitIds) {
+          allEdges.push({ from: exitId, to: result.entryId, type: 'sequential' });
+        }
+      }
+      lastExitIds = result.exitIds;
+    }
+
+    // Connect entry to first statement
+    if (firstBlockId !== -1) {
+      allEdges.push({ from: entryBlock.id, to: firstBlockId, type: 'sequential' });
+    }
+
+    // Create exit block
+    const exitBlock: CFGBlock = {
+      id: blockIdCounter++,
+      type: 'exit',
+      start_line: topLevelStatements[topLevelStatements.length - 1].endPosition.row + 1,
+      end_line: topLevelStatements[topLevelStatements.length - 1].endPosition.row + 1,
+    };
+    allBlocks.push(exitBlock);
+
+    for (const exitId of lastExitIds) {
+      allEdges.push({ from: exitId, to: exitBlock.id, type: 'sequential' });
+    }
+  }
+
+  return { blocks: allBlocks, edges: allEdges };
+}
+
+/**
+ * Check if a Bash node is a statement-like construct.
+ */
+function isBashStatement(node: Node): boolean {
+  const bashStatementTypes = new Set([
+    'command',
+    'variable_assignment',
+    'if_statement',
+    'for_statement',
+    'while_statement',
+    'case_statement',
+    'pipeline',
+    'list',
+    'redirected_statement',
+    'compound_statement',
+    'subshell',
+    'declaration_command',
+  ]);
+  return bashStatementTypes.has(node.type);
 }
 
 /**

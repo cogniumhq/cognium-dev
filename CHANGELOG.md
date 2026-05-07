@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-05-06
+
+### Added
+
+- **Bash DFG builder**: `buildBashDFG()` tracks variable definitions (`variable_assignment`, `read` builtin, `for` loop variables) and uses (`$VAR`, `${VAR}` expansions) with reaching-definition resolution and def-use chains. Enables taint flow analysis for shell scripts.
+- **Bash CFG builder**: `buildBashCFG()` processes `function_definition` bodies and top-level script body with entry/exit blocks. Control flow (`if`, `for`, `while`, `case`) handled via shared `processStatements()`.
+- **Bash pattern-based findings** in LanguageSourcesPass:
+  - `hardcoded-credential` (CWE-798) — detects `PASSWORD="literal"` patterns
+  - `cleartext-transmission` (CWE-319) — detects `curl http://` and `wget http://`
+  - `predictable-temp-file` (CWE-377) — detects `/tmp/predictable` without `mktemp`
+  - `insecure-file-permission` (CWE-732) — detects `chmod 777` and `chmod 666`
+  - `unsafe-archive-extraction` (CWE-22) — detects `tar -xf` without `--strip-components`
+
+[3.20.0]: https://github.com/cogniumhq/circle-ir/compare/v3.19.5...v3.20.0
+
 ## [3.19.5] - 2026-04-26
 
 ### Added
