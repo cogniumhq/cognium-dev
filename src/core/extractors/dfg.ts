@@ -1067,6 +1067,20 @@ function buildBashDFG(tree: Tree): DFG {
   // Single global scope (Bash dynamic scoping)
   const scopeStack: Map<string, number>[] = [new Map()];
 
+  // Positional parameters ($1–$9, $@, $*) are always external input.
+  // Create synthetic defs at line 0 so they get reaching-def chains.
+  const positionalParams = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '*'];
+  for (const p of positionalParams) {
+    const def: DFGDef = {
+      id: defIdCounter++,
+      variable: p,
+      line: 0,
+      kind: 'param',
+    };
+    defs.push(def);
+    currentScope(scopeStack).set(p, def.id);
+  }
+
   walkTree(tree.rootNode, (node) => {
     if (node.type === 'variable_assignment') {
       // VAR=value  — Tree-sitter Bash: variable_assignment has `name` and `value` fields
@@ -1081,14 +1095,8 @@ function buildBashDFG(tree: Tree): DFG {
         };
         defs.push(def);
         currentScope(scopeStack).set(varName, def.id);
-
-        // Extract uses from the value side
-        const valueNode = node.childForFieldName('value');
-        if (valueNode) {
-          extractBashUses(valueNode, uses, useIdCounter, scopeStack);
-          // Count uses added
-          useIdCounter = uses.length + 1;
-        }
+        // Value-side uses ($VAR, ${VAR}) are picked up by the main walkTree
+        // descending into children — no need for a separate extraction pass.
       }
     } else if (node.type === 'command') {
       // Check for `read` builtin: read VAR1 VAR2 ...
@@ -1161,46 +1169,6 @@ function buildBashDFG(tree: Tree): DFG {
 
   const chains = computeChains(defs, uses);
   return { defs, uses, chains };
-}
-
-/**
- * Extract variable uses from a Bash AST node.
- */
-function extractBashUses(
-  node: Node,
-  uses: DFGUse[],
-  _startId: number,
-  scopeStack: Map<string, number>[],
-): void {
-  walkTree(node, (child) => {
-    if (child.type === 'simple_expansion') {
-      const varNameNode = child.namedChildCount > 0 ? child.namedChild(0) : null;
-      if (varNameNode) {
-        const varName = getNodeText(varNameNode);
-        if (varName && !varName.startsWith('?') && !varName.startsWith('#')) {
-          const reachingDef = findReachingDef(varName, scopeStack);
-          uses.push({
-            id: uses.length + 1,
-            variable: varName,
-            line: child.startPosition.row + 1,
-            def_id: reachingDef,
-          });
-        }
-      }
-    } else if (child.type === 'expansion') {
-      const varNameNode = child.namedChildCount > 0 ? child.namedChild(0) : null;
-      if (varNameNode && varNameNode.type === 'variable_name') {
-        const varName = getNodeText(varNameNode);
-        const reachingDef = findReachingDef(varName, scopeStack);
-        uses.push({
-          id: uses.length + 1,
-          variable: varName,
-          line: child.startPosition.row + 1,
-          def_id: reachingDef,
-        });
-      }
-    }
-  });
 }
 
 /**

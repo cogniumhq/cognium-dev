@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TypeInfo, SourceType, SastFinding } from '../../types/index.js';
+import type { TaintSource, TaintSink, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
@@ -198,8 +198,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
 
-    // -- Bash/Shell: pattern-based findings (hardcoded creds, chmod 777, etc.) --
+    // -- Bash/Shell: taint sources + pattern-based findings --
     if (language === 'bash') {
+      additionalSources.push(...findBashTaintSources(code, graph.ir.dfg));
       const bashFindings = findBashPatternFindings(code, graph.ir.meta.file);
       for (const finding of bashFindings) {
         ctx.addFinding(finding);
@@ -576,6 +577,119 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   }
 
   return tainted;
+}
+
+// ---------------------------------------------------------------------------
+// Bash/Shell taint sources
+// ---------------------------------------------------------------------------
+
+/** Positional parameter names that are always external input. */
+const BASH_POSITIONAL_PARAMS = new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', '@', '*']);
+
+/** Common untrusted environment variable name patterns. */
+const BASH_UNTRUSTED_ENV_PATTERNS = [
+  /^USER_INPUT$/i,
+  /^QUERY_STRING$/i,
+  /^REQUEST_/i,
+  /^HTTP_/i,
+  /^REMOTE_/i,
+  /^CONTENT_TYPE$/i,
+  /^CONTENT_LENGTH$/i,
+  /^PATH_INFO$/i,
+  /^SCRIPT_NAME$/i,
+  /^SERVER_NAME$/i,
+];
+
+/** Commands whose output should be treated as tainted network data. */
+const BASH_NETWORK_COMMANDS = new Set(['curl', 'wget', 'nc', 'ncat']);
+
+/** Commands whose output should be treated as tainted file data. */
+const BASH_FILE_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'awk', 'sed', 'cut', 'grep']);
+
+/**
+ * Find Bash taint sources: positional params, command substitution from
+ * network/file, and known untrusted environment variables.
+ */
+function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const definedVars = new Set(dfg.defs.filter(d => d.kind === 'local').map(d => d.variable));
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    const lineNumber = i + 1;
+    if (trimmed.startsWith('#')) continue;
+
+    // 1. Positional parameters: $1-$9, $@, $*
+    const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = positionalRe.exec(line)) !== null) {
+      const param = m[1] ?? m[2];
+      const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
+      if (!alreadyExists) {
+        sources.push({
+          type: 'io_input',
+          location: `positional parameter $${param}`,
+          severity: 'high',
+          line: lineNumber,
+          confidence: 1.0,
+          variable: param,
+        });
+      }
+    }
+
+    // 2. Command substitution from network: VAR=$(curl ...) or VAR=`curl ...`
+    const cmdSubAssign = trimmed.match(/^(\w+)=\$\((\w+)\s/);
+    const cmdSubBacktick = trimmed.match(/^(\w+)=`(\w+)\s/);
+    const csMatch = cmdSubAssign ?? cmdSubBacktick;
+    if (csMatch) {
+      const [, varName, cmd] = csMatch;
+      if (BASH_NETWORK_COMMANDS.has(cmd)) {
+        sources.push({
+          type: 'network_input',
+          location: `${varName}=$(${cmd} ...) — network command output`,
+          severity: 'high',
+          line: lineNumber,
+          confidence: 0.9,
+          variable: varName,
+        });
+      } else if (BASH_FILE_COMMANDS.has(cmd)) {
+        sources.push({
+          type: 'file_input',
+          location: `${varName}=$(${cmd} ...) — file command output`,
+          severity: 'medium',
+          line: lineNumber,
+          confidence: 0.7,
+          variable: varName,
+        });
+      }
+    }
+
+    // 3. Environment variables: $VAR where VAR was never assigned in the script
+    //    and matches known untrusted env patterns
+    const envRe = /\$([A-Z][A-Z0-9_]{2,})|\$\{([A-Z][A-Z0-9_]{2,})\}/g;
+    let em: RegExpExecArray | null;
+    while ((em = envRe.exec(line)) !== null) {
+      const envVar = em[1] ?? em[2];
+      // Only flag if not defined in the script and matches untrusted patterns
+      if (!definedVars.has(envVar) && BASH_UNTRUSTED_ENV_PATTERNS.some(p => p.test(envVar))) {
+        const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === envVar);
+        if (!alreadyExists) {
+          sources.push({
+            type: 'env_input',
+            location: `environment variable $${envVar}`,
+            severity: 'medium',
+            line: lineNumber,
+            confidence: 0.8,
+            variable: envVar,
+          });
+        }
+      }
+    }
+  }
+
+  return sources;
 }
 
 // ---------------------------------------------------------------------------
