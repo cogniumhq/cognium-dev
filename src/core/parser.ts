@@ -52,7 +52,7 @@ export type { Node };
 // Create type alias for backward compatibility
 export type SyntaxNode = Node;
 
-export type SupportedLanguage = 'java' | 'c' | 'cpp' | 'javascript' | 'typescript' | 'python' | 'rust' | 'bash' | 'html';
+export type SupportedLanguage = 'java' | 'c' | 'cpp' | 'javascript' | 'typescript' | 'python' | 'rust' | 'bash' | 'html' | 'go';
 
 interface ParserOptions {
   /**

@@ -65,6 +65,9 @@ export function extractImports(tree: Tree, language?: SupportedLanguage): Import
   const isPython = effectiveLanguage === 'python';
   const isRust = effectiveLanguage === 'rust';
 
+  if (effectiveLanguage === 'go') {
+    return extractGoImports(tree);
+  }
   if (isRust) {
     return extractRustImports(tree);
   }
@@ -822,4 +825,85 @@ function extractRustScopedUseList(node: Node, lineNumber: number): ImportInfo[] 
   }
 
   return imports;
+}
+
+// =============================================================================
+// Go Import Extraction
+// =============================================================================
+
+/**
+ * Extract Go imports.
+ */
+function extractGoImports(tree: Tree): ImportInfo[] {
+  const imports: ImportInfo[] = [];
+
+  const importDecls = findNodes(tree.rootNode, 'import_declaration');
+  for (const decl of importDecls) {
+    // Single import: import "fmt"
+    const singleSpec = findGoChildByType(decl, 'import_spec');
+    if (singleSpec) {
+      const parsed = parseGoImportSpec(singleSpec);
+      if (parsed) imports.push(parsed);
+      continue;
+    }
+
+    // Grouped imports: import ( "fmt"; "net/http" )
+    const specList = findGoChildByType(decl, 'import_spec_list');
+    if (specList) {
+      for (let i = 0; i < specList.childCount; i++) {
+        const spec = specList.child(i);
+        if (!spec || spec.type !== 'import_spec') continue;
+        const parsed = parseGoImportSpec(spec);
+        if (parsed) imports.push(parsed);
+      }
+    }
+  }
+
+  return imports;
+}
+
+/**
+ * Parse a single Go import_spec node.
+ */
+function parseGoImportSpec(spec: Node): ImportInfo | null {
+  let alias: string | null = null;
+  let path: string | undefined;
+
+  for (let i = 0; i < spec.childCount; i++) {
+    const child = spec.child(i);
+    if (!child) continue;
+    if (child.type === 'package_identifier' || child.type === 'blank_identifier' || child.type === 'dot') {
+      alias = getNodeText(child);
+    }
+    if (child.type === 'interpreted_string_literal') {
+      const text = getNodeText(child);
+      path = text.slice(1, -1); // Remove quotes
+    }
+  }
+
+  if (!path) return null;
+
+  // Extract short name from path (e.g., "net/http" → "http")
+  const shortName = alias || path.split('/').pop() || path;
+
+  return {
+    imported_name: shortName,
+    from_package: path,
+    alias,
+    is_wildcard: alias === '.',
+    line_number: spec.startPosition.row + 1,
+  };
+}
+
+/**
+ * Find child node by type (Go-specific helper to avoid naming conflicts).
+ */
+function findGoChildByType(node: Node, type: string): Node | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === type) {
+      return child;
+    }
+  }
+  return null;
 }

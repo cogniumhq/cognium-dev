@@ -321,6 +321,15 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'element', 'script_element', 'style_element', 'attribute',
         'start_tag', 'self_closing_tag', 'text',
       ]);
+    case 'go':
+      return new Set([
+        'call_expression', 'function_declaration', 'method_declaration',
+        'package_clause', 'import_declaration', 'import_spec',
+        'var_declaration', 'short_var_declaration', 'assignment_statement',
+        'type_declaration', 'if_statement', 'for_statement',
+        'return_statement', 'defer_statement', 'go_statement',
+        'selector_expression', 'identifier',
+      ]);
     default:
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',

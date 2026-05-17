@@ -208,28 +208,22 @@ Current coverage: 86.56% stmts / 73.09% branches / 91.28% functions / 88.85% lin
 | JavaScript/TS | 100% NodeGoat | ✅ Complete (Express, Fastify, Koa, Prisma) | P2 additions |
 | Python | 63.8% CWE-Bench | ✅ Complete (Flask, Django, FastAPI) | P2 improvements |
 | Rust | 100% CWE-Bench | ⚠️ Partial (needs Axum, SQLx) | P3 |
-| Bash/Shell | 68.2% TPR, 0% FPR | ⚠️ Basic (read source only) | P2 |
+| Bash/Shell | 68.2% TPR, 0% FPR | ✅ Complete (DFG/CFG, positional params, cmd subst, env vars, 5 pattern rules) | Maintenance |
 | HTML | N/A (preprocessor) | ✅ 8 attribute rules + script delegation | Shipped |
-| Go | — | Not started | P2 |
+| Go | — | ✅ Complete (DFG/CFG, net/http, Gin, Echo, Fiber, Chi, 18 sources, 14 sinks) | Maintenance |
 | C | — | Not started | P4 (see notes) |
 
-### New Language: Go (P2)
+### New Language: Go ✅ Complete (v3.22.0)
 
-**Effort: Medium** (~500-800 LOC plugin, ~200 LOC source/sink configs)
-
-Go's simplicity maps well to circle-ir's IR model. Structs + methods map to types, standard
-control flow maps to CFG, explicit error returns (no exceptions), strong typing. Most existing
-passes (36+) would work with minimal adaptation.
-
-- [ ] Add `tree-sitter-go` WASM grammar to `wasm/`
-- [ ] Create `src/languages/plugins/go.ts` extending `BaseLanguagePlugin`
-- [ ] Add source configs: `net/http` handlers (`r.URL.Query()`, `r.FormValue()`, `r.Body`),
-      Gin (`c.Query()`, `c.Param()`, `c.PostForm()`), Echo, Fiber, Chi
-- [ ] Add sink configs: `database/sql` (`db.Query()`, `db.Exec()`), GORM, `os/exec`
-      (`exec.Command()`), `html/template` vs `text/template`, `fmt.Sprintf` for format strings
-- [ ] Handle Go-specific patterns: `defer` (resource cleanup), multiple return values
-      (error handling), goroutines/channels (concurrency)
-- [ ] Add tests in `tests/languages/go.test.ts`
+- [x] Add `tree-sitter-go` WASM grammar to `wasm/`
+- [x] Create `src/languages/plugins/go.ts` extending `BaseLanguagePlugin`
+- [x] Add source configs: `net/http` (FormValue, Header.Get, Cookie), Gin (Query, Param, PostForm, GetRawData), Echo (QueryParam, FormValue, Param), stdlib (Getenv, ReadFile, Scanner.Text)
+- [x] Add sink configs: `database/sql` (Query, QueryRow, Exec), `os/exec` (Command, CommandContext), path traversal (os.Open, ReadFile, WriteFile), XSS (fmt.Fprintf, ResponseWriter.Write), SSRF (http.Get, http.Post), deserialization (json.Unmarshal)
+- [x] Add sanitizers: db.Prepare, filepath.Clean, html.EscapeString, template.HTMLEscapeString
+- [x] DFG builder: short_var_declaration, var_declaration, assignment_statement, range_clause, multiple return values, blank identifier skipping, receiver as param def
+- [x] CFG builder: function/method body processing, top-level declarations as synthetic block
+- [x] Framework detection: Gin, Echo, Fiber, Chi, net/http
+- [x] 67 tests in `tests/languages/go-coverage.test.ts`
 
 ### New Language: C (P4 — low priority)
 

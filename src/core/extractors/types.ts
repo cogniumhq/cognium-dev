@@ -61,6 +61,9 @@ export function extractTypes(tree: Tree, cache?: NodeCache, language?: Supported
   const isPython = effectiveLanguage === 'python';
   const isRust = effectiveLanguage === 'rust';
 
+  if (effectiveLanguage === 'go') {
+    return extractGoTypes(tree, cache);
+  }
   if (isRust) {
     return extractRustTypes(tree, cache);
   }
@@ -1624,6 +1627,176 @@ function extractRustDerives(node: Node): string[] {
   }
 
   return derives;
+}
+
+// =============================================================================
+// Go Type Extraction
+// =============================================================================
+
+/**
+ * Extract Go types (structs, interfaces, and functions).
+ */
+function extractGoTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
+  const types: TypeInfo[] = [];
+  const root = tree.rootNode;
+
+  // Extract type declarations (struct and interface)
+  const typeDecls = getNodesFromCache(root, 'type_declaration', cache);
+  for (const decl of typeDecls) {
+    for (let i = 0; i < decl.childCount; i++) {
+      const spec = decl.child(i);
+      if (!spec || spec.type !== 'type_spec') continue;
+
+      const nameNode = spec.childForFieldName('name');
+      const typeNode = spec.childForFieldName('type');
+      if (!nameNode || !typeNode) continue;
+
+      const name = getNodeText(nameNode);
+      const isInterface = typeNode.type === 'interface_type';
+      const isStruct = typeNode.type === 'struct_type';
+
+      if (!isStruct && !isInterface) continue;
+
+      const fields: FieldInfo[] = [];
+      const methods: MethodInfo[] = [];
+
+      if (isStruct) {
+        // Extract struct fields from field_declaration_list
+        const fieldList = findChildByType(typeNode, 'field_declaration_list');
+        if (fieldList) {
+          for (let j = 0; j < fieldList.childCount; j++) {
+            const field = fieldList.child(j);
+            if (!field || field.type !== 'field_declaration') continue;
+            const fieldName = field.childForFieldName('name');
+            const fieldType = field.childForFieldName('type');
+            if (fieldName) {
+              fields.push({
+                name: getNodeText(fieldName),
+                type: fieldType ? getNodeText(fieldType) : null,
+                modifiers: [],
+                annotations: [],
+              });
+            }
+          }
+        }
+      }
+
+      // Find methods declared for this type (method_declaration with matching receiver)
+      const methodDecls = getNodesFromCache(root, 'method_declaration', cache);
+      for (const md of methodDecls) {
+        const receiver = md.childForFieldName('receiver');
+        if (!receiver) continue;
+        const receiverText = getNodeText(receiver);
+        if (receiverText.includes(name)) {
+          const methodNameNode = md.childForFieldName('name');
+          const params = md.childForFieldName('parameters');
+          const result = md.childForFieldName('result');
+          if (methodNameNode) {
+            methods.push({
+              name: getNodeText(methodNameNode),
+              return_type: result ? getNodeText(result) : null,
+              parameters: params ? extractGoParameters(params) : [],
+              annotations: [],
+              modifiers: [],
+              start_line: md.startPosition.row + 1,
+              end_line: md.endPosition.row + 1,
+            });
+          }
+        }
+      }
+
+      // Extract package from package_clause
+      let pkg: string | null = null;
+      const pkgClause = findChildByType(root, 'package_clause');
+      if (pkgClause) {
+        for (let j = 0; j < pkgClause.childCount; j++) {
+          const child = pkgClause.child(j);
+          if (child && child.type === 'package_identifier') {
+            pkg = getNodeText(child);
+            break;
+          }
+        }
+      }
+
+      types.push({
+        name,
+        kind: isInterface ? 'interface' : 'class',
+        package: pkg,
+        extends: null,
+        implements: [],
+        annotations: [],
+        methods,
+        fields,
+        start_line: decl.startPosition.row + 1,
+        end_line: decl.endPosition.row + 1,
+      });
+    }
+  }
+
+  // Extract standalone functions as a module-like type
+  const functions = getNodesFromCache(root, 'function_declaration', cache);
+  if (functions.length > 0) {
+    const moduleFunctions: MethodInfo[] = [];
+    for (const func of functions) {
+      const nameNode = func.childForFieldName('name');
+      const params = func.childForFieldName('parameters');
+      const result = func.childForFieldName('result');
+      if (nameNode) {
+        moduleFunctions.push({
+          name: getNodeText(nameNode),
+          return_type: result ? getNodeText(result) : null,
+          parameters: params ? extractGoParameters(params) : [],
+          annotations: [],
+          modifiers: [],
+          start_line: func.startPosition.row + 1,
+          end_line: func.endPosition.row + 1,
+        });
+      }
+    }
+
+    if (moduleFunctions.length > 0) {
+      types.push({
+        name: '<module>',
+        kind: 'class',
+        package: null,
+        extends: null,
+        implements: [],
+        annotations: [],
+        methods: moduleFunctions,
+        fields: [],
+        start_line: 1,
+        end_line: root.endPosition.row + 1,
+      });
+    }
+  }
+
+  return types;
+}
+
+/**
+ * Extract parameters from a Go parameter_list node.
+ */
+function extractGoParameters(params: Node): ParameterInfo[] {
+  const parameters: ParameterInfo[] = [];
+
+  for (let i = 0; i < params.childCount; i++) {
+    const child = params.child(i);
+    if (!child || child.type !== 'parameter_declaration') continue;
+
+    const nameNode = child.childForFieldName('name');
+    const typeNode = child.childForFieldName('type');
+
+    if (nameNode) {
+      parameters.push({
+        name: getNodeText(nameNode),
+        type: typeNode ? getNodeText(typeNode) : null,
+        annotations: [],
+        line: child.startPosition.row + 1,
+      });
+    }
+  }
+
+  return parameters;
 }
 
 /**

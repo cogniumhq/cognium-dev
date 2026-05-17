@@ -53,6 +53,10 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
     return buildBashCFG(tree, blockIdCounter);
   }
 
+  if (effectiveLanguage === 'go') {
+    return buildGoCFG(tree, blockIdCounter);
+  }
+
   if (isJavaScript) {
     // Find all JavaScript function bodies
     const functions = [
@@ -768,4 +772,79 @@ function isStatement(node: Node, isJavaScript: boolean): boolean {
   ]);
 
   return isJavaScript ? jsStatementTypes.has(node.type) : javaStatementTypes.has(node.type);
+}
+
+// =============================================================================
+// Go CFG Builder
+// =============================================================================
+
+/**
+ * Build CFG for Go code.
+ *
+ * Processes function_declaration and method_declaration bodies.
+ * Top-level source_file statements are treated as a synthetic main.
+ */
+function buildGoCFG(tree: Tree, blockIdCounter: number): CFG {
+  const allBlocks: CFGBlock[] = [];
+  const allEdges: CFGEdge[] = [];
+
+  const functions = [
+    ...findNodes(tree.rootNode, 'function_declaration'),
+    ...findNodes(tree.rootNode, 'method_declaration'),
+  ];
+
+  for (const func of functions) {
+    const body = func.childForFieldName('body');
+    if (!body || body.type !== 'block') continue;
+
+    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, false);
+    allBlocks.push(...blocks);
+    allEdges.push(...edges);
+    blockIdCounter = nextId;
+  }
+
+  // Process top-level var/const declarations as a synthetic block
+  const hasTopLevelDecls = tree.rootNode.children.some(c =>
+    c !== null && isGoStatement(c)
+  );
+
+  if (hasTopLevelDecls) {
+    // Create a single block for top-level declarations
+    const block: CFGBlock = {
+      id: blockIdCounter++,
+      type: 'normal',
+      start_line: 1,
+      end_line: tree.rootNode.endPosition.row + 1,
+    };
+    allBlocks.push(block);
+  }
+
+  return { blocks: allBlocks, edges: allEdges };
+}
+
+/**
+ * Check if a Go node is a statement-like construct.
+ */
+function isGoStatement(node: Node): boolean {
+  const goStatementTypes = new Set([
+    'short_var_declaration',
+    'var_declaration',
+    'assignment_statement',
+    'expression_statement',
+    'if_statement',
+    'for_statement',
+    'switch_statement',
+    'type_switch_statement',
+    'select_statement',
+    'return_statement',
+    'go_statement',
+    'defer_statement',
+    'send_statement',
+    'inc_statement',
+    'dec_statement',
+    'block',
+    'type_declaration',
+    'const_declaration',
+  ]);
+  return goStatementTypes.has(node.type);
 }

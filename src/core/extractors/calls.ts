@@ -85,6 +85,10 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
   const isPython = detectedLanguage === 'python';
   const isRust = detectedLanguage === 'rust';
 
+  if (detectedLanguage === 'go') {
+    return extractGoCalls(tree, cache);
+  }
+
   if (detectedLanguage === 'bash') {
     return extractBashCalls(tree, cache);
   }
@@ -1849,4 +1853,148 @@ function resolveRustCall(methodName: string, receiver: string | null, context: R
   return {
     status: 'external_method',
   };
+}
+
+// =============================================================================
+// Go Call Extraction
+// =============================================================================
+
+/**
+ * Extract all function/method calls from a Go tree.
+ */
+function extractGoCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
+  const calls: CallInfo[] = [];
+
+  const callExpressions = getNodesFromCache(tree.rootNode, 'call_expression', cache);
+  for (const call of callExpressions) {
+    const callInfo = extractGoCallInfo(call);
+    if (callInfo) {
+      calls.push(callInfo);
+    }
+  }
+
+  return calls;
+}
+
+/**
+ * Extract call information from a Go call_expression node.
+ */
+function extractGoCallInfo(node: Node): CallInfo | null {
+  const funcNode = node.childForFieldName('function');
+  if (!funcNode) return null;
+
+  let methodName: string;
+  let receiver: string | null = null;
+
+  if (funcNode.type === 'selector_expression') {
+    // pkg.Function() or obj.Method()
+    const operand = funcNode.childForFieldName('operand');
+    const field = funcNode.childForFieldName('field');
+    receiver = operand ? getNodeText(operand) : null;
+    methodName = field ? getNodeText(field) : getNodeText(funcNode);
+  } else if (funcNode.type === 'identifier') {
+    // Plain function call: funcName()
+    methodName = getNodeText(funcNode);
+  } else {
+    // Other expression
+    methodName = getNodeText(funcNode);
+  }
+
+  // Extract arguments
+  const argsNode = node.childForFieldName('arguments');
+  const args = argsNode ? extractGoArguments(argsNode) : [];
+
+  // Find enclosing function/method
+  const inMethod = findGoEnclosingFunction(node);
+
+  return {
+    method_name: methodName,
+    receiver,
+    arguments: args,
+    location: {
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    },
+    in_method: inMethod,
+    resolved: false,
+    resolution: { status: 'external_method' },
+  };
+}
+
+/**
+ * Extract arguments from a Go argument_list node.
+ */
+function extractGoArguments(argsNode: Node): ArgumentInfo[] {
+  const args: ArgumentInfo[] = [];
+  let position = 0;
+
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child) continue;
+
+    // Skip punctuation
+    if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+
+    const expression = getNodeText(child);
+    const variable = child.type === 'identifier' ? expression : null;
+    const literal = isGoLiteral(child) ? extractGoLiteralValue(child) : null;
+
+    args.push({
+      position: position++,
+      expression,
+      variable,
+      literal,
+    });
+  }
+
+  return args;
+}
+
+/**
+ * Check if a node is a Go literal.
+ */
+function isGoLiteral(node: Node): boolean {
+  const literalTypes = new Set([
+    'interpreted_string_literal',
+    'raw_string_literal',
+    'int_literal',
+    'float_literal',
+    'true',
+    'false',
+    'nil',
+  ]);
+  return literalTypes.has(node.type);
+}
+
+/**
+ * Extract value from a Go literal node.
+ */
+function extractGoLiteralValue(node: Node): string {
+  const text = getNodeText(node);
+  if (node.type === 'interpreted_string_literal') {
+    return text.slice(1, -1); // Remove quotes
+  }
+  if (node.type === 'raw_string_literal') {
+    return text.slice(1, -1); // Remove backticks
+  }
+  return text;
+}
+
+/**
+ * Find the enclosing function/method for a Go call expression.
+ */
+function findGoEnclosingFunction(node: Node): string | null {
+  let current = node.parent;
+  while (current) {
+    if (current.type === 'function_declaration') {
+      const nameNode = current.childForFieldName('name');
+      return nameNode ? getNodeText(nameNode) : null;
+    }
+    if (current.type === 'method_declaration') {
+      const nameNode = current.childForFieldName('name');
+      return nameNode ? getNodeText(nameNode) : null;
+    }
+    current = current.parent;
+  }
+  return null;
 }

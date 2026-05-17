@@ -1,0 +1,150 @@
+{
+  "name": "Go Sources",
+  "description": "Taint sources for Go web frameworks and standard library",
+  "sources": [
+    {
+      "method": "FormValue",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "net/http"
+    },
+    {
+      "method": "PostFormValue",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "net/http"
+    },
+    {
+      "method": "Get",
+      "class": "Header",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "net/http"
+    },
+    {
+      "method": "Cookie",
+      "class": "Request",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "net/http"
+    },
+    {
+      "method": "ReadAll",
+      "class": "io",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "net/http"
+    },
+    {
+      "method": "Query",
+      "class": "Context",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "gin"
+    },
+    {
+      "method": "Param",
+      "class": "Context",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "gin"
+    },
+    {
+      "method": "PostForm",
+      "class": "Context",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "gin"
+    },
+    {
+      "method": "GetRawData",
+      "class": "Context",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "gin"
+    },
+    {
+      "method": "BindJSON",
+      "class": "Context",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "gin"
+    },
+    {
+      "method": "QueryParam",
+      "class": "Context",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "echo"
+    },
+    {
+      "method": "FormValue",
+      "class": "Context",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "echo"
+    },
+    {
+      "method": "Param",
+      "class": "Context",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "echo"
+    },
+    {
+      "method": "Getenv",
+      "class": "os",
+      "type": "env_var",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "stdlib"
+    },
+    {
+      "method": "ReadFile",
+      "class": "os",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "stdlib"
+    },
+    {
+      "method": "Text",
+      "class": "Scanner",
+      "type": "stdin",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "stdlib"
+    },
+    {
+      "method": "Scan",
+      "class": "fmt",
+      "type": "stdin",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "stdlib"
+    },
+    {
+      "method": "Scanln",
+      "class": "fmt",
+      "type": "stdin",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "stdlib"
+    }
+  ]
+}

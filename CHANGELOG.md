@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-05-17
+
+### Added
+
+- **Go language support**: Full Go SAST analysis with parsing, type/call/import extraction, DFG, CFG, taint analysis, and framework detection.
+  - **GoPlugin** (`src/languages/plugins/go.ts`): Struct/interface extraction with field types, method-to-type matching via receiver, call extraction with argument tracking, import extraction (single, grouped, aliased, blank `_`, dot `.`).
+  - **DFG builder** (`buildGoDFG`): Tracks short var declarations (`:=`), var declarations, assignments, function parameters, method receivers, range clause variables, multiple return values (`x, err := ...`), blank identifier skipping, top-level package vars.
+  - **CFG builder** (`buildGoCFG`): Function and method body processing via `buildMethodCFG`, top-level declarations as synthetic block.
+  - **Taint sources** (18 patterns): `net/http` (FormValue, PostFormValue, Header.Get, Cookie, ReadAll), Gin (Query, Param, PostForm, GetRawData, BindJSON), Echo (QueryParam, FormValue, Param), stdlib (Getenv, ReadFile, Scanner.Text, fmt.Scan).
+  - **Taint sinks** (14 patterns): SQL injection (db.Query/QueryRow/Exec, tx.Query), command injection (exec.Command/CommandContext), path traversal (os.Open/ReadFile/WriteFile), XSS (fmt.Fprintf, ResponseWriter.Write), SSRF (http.Get/Post), deserialization (json.Unmarshal, Decoder.Decode).
+  - **Sanitizers** (4 patterns): db.Prepare (SQL), filepath.Clean (path), html.EscapeString (XSS), template.HTMLEscapeString (XSS).
+  - **Framework detection**: Gin, Echo, Fiber, Chi, net/http.
+  - **67 tests** covering parsing, imports, types, calls, DFG, CFG, taint analysis, framework detection, and edge cases.
+
+### Fixed
+
+- **Go CFG `isJavaScript` flag**: `buildGoCFG` was passing `isJavaScript=true` to `buildMethodCFG`; corrected to `false`.
+
+[3.22.0]: https://github.com/cogniumhq/circle-ir/compare/v3.21.0...v3.22.0
+
 ## [3.21.0] - 2026-05-07
 
 ### Added

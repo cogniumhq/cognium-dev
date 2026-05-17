@@ -64,6 +64,9 @@ export function buildDFG(tree: Tree, cache?: NodeCache, language?: SupportedLang
   if (effectiveLanguage === 'bash') {
     return buildBashDFG(tree);
   }
+  if (effectiveLanguage === 'go') {
+    return buildGoDFG(tree);
+  }
   return buildJavaDFG(tree, cache);
 }
 
@@ -1341,4 +1344,306 @@ function isRustKeyword(name: string): boolean {
     'macro', 'override', 'priv', 'typeof', 'unsized', 'virtual', 'yield',
   ]);
   return keywords.has(name);
+}
+
+// =============================================================================
+// Go DFG Builder
+// =============================================================================
+
+const GO_KEYWORDS = new Set([
+  'break', 'case', 'chan', 'const', 'continue', 'default', 'defer', 'else',
+  'fallthrough', 'for', 'func', 'go', 'goto', 'if', 'import', 'interface',
+  'map', 'package', 'range', 'return', 'select', 'struct', 'switch', 'type',
+  'var', 'true', 'false', 'nil', 'iota', 'append', 'cap', 'close', 'complex',
+  'copy', 'delete', 'imag', 'len', 'make', 'new', 'panic', 'print', 'println',
+  'real', 'recover', 'string', 'int', 'int8', 'int16', 'int32', 'int64',
+  'uint', 'uint8', 'uint16', 'uint32', 'uint64', 'float32', 'float64',
+  'complex64', 'complex128', 'byte', 'rune', 'bool', 'error', 'any',
+]);
+
+/**
+ * Build DFG for Go code.
+ *
+ * Go has block scoping with := introducing new variables. Track:
+ *   - DFGDef from function/method parameters
+ *   - DFGDef from short_var_declaration (:=)
+ *   - DFGDef from var_declaration
+ *   - DFGDef from assignment_statement (=) — reassignment
+ *   - DFGDef from range_clause loop variables
+ *   - DFGUse from identifier references in expressions
+ */
+function buildGoDFG(tree: Tree): DFG {
+  const defs: DFGDef[] = [];
+  const uses: DFGUse[] = [];
+  let defIdCounter = 1;
+  let useIdCounter = 1;
+
+  const scopeStack: Map<string, number>[] = [new Map()];
+
+  // Process each function/method declaration
+  const functions = [
+    ...findNodes(tree.rootNode, 'function_declaration'),
+    ...findNodes(tree.rootNode, 'method_declaration'),
+  ];
+
+  for (const func of functions) {
+    scopeStack.push(new Map());
+
+    // Extract parameters
+    const params = func.childForFieldName('parameters');
+    if (params) {
+      extractGoParamDefs(params, defs, defIdCounter, scopeStack);
+      defIdCounter = defs.length + 1;
+    }
+
+    // For method declarations, extract receiver as a def
+    const receiver = func.childForFieldName('receiver');
+    if (receiver) {
+      extractGoParamDefs(receiver, defs, defIdCounter, scopeStack);
+      defIdCounter = defs.length + 1;
+    }
+
+    // Process function body
+    const body = func.childForFieldName('body');
+    if (body) {
+      processGoBlock(body, defs, uses, scopeStack, { defId: defIdCounter, useId: useIdCounter });
+      defIdCounter = defs.length + 1;
+      useIdCounter = uses.length + 1;
+    }
+
+    scopeStack.pop();
+  }
+
+  // Also process top-level var declarations (package-level)
+  for (let i = 0; i < tree.rootNode.childCount; i++) {
+    const child = tree.rootNode.child(i);
+    if (!child) continue;
+    if (child.type === 'var_declaration') {
+      processGoVarDecl(child, defs, scopeStack, { defId: defIdCounter });
+      defIdCounter = defs.length + 1;
+    }
+  }
+
+  const chains = computeChains(defs, uses);
+  return { defs, uses, chains };
+}
+
+/**
+ * Extract parameter definitions from a Go parameter_list.
+ */
+function extractGoParamDefs(
+  params: Node,
+  defs: DFGDef[],
+  _startId: number,
+  scopeStack: Map<string, number>[]
+): void {
+  for (let i = 0; i < params.childCount; i++) {
+    const param = params.child(i);
+    if (!param || param.type !== 'parameter_declaration') continue;
+
+    // parameter_declaration can have multiple names: (a, b int)
+    const typeNode = param.childForFieldName('type');
+    for (let j = 0; j < param.childCount; j++) {
+      const nameNode = param.child(j);
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      if (nameNode === typeNode) continue;
+
+      const varName = getNodeText(nameNode);
+      if (varName === '_') continue;
+
+      const def: DFGDef = {
+        id: defs.length + 1,
+        variable: varName,
+        kind: 'param',
+        line: param.startPosition.row + 1,
+      };
+      defs.push(def);
+      currentScope(scopeStack).set(varName, def.id);
+    }
+  }
+}
+
+/**
+ * Process a Go block (function body, if body, etc.) for definitions and uses.
+ */
+function processGoBlock(
+  node: Node,
+  defs: DFGDef[],
+  uses: DFGUse[],
+  scopeStack: Map<string, number>[],
+  counters: { defId: number; useId: number }
+): void {
+  walkTree(node, (child) => {
+    if (child.type === 'short_var_declaration') {
+      // x, y := expr
+      const left = child.childForFieldName('left');
+      const right = child.childForFieldName('right');
+
+      // Extract uses from right side first
+      if (right) {
+        extractGoUses(right, uses, scopeStack);
+      }
+
+      // Then create defs for left side
+      if (left) {
+        extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
+      }
+    } else if (child.type === 'var_declaration') {
+      processGoVarDecl(child, defs, scopeStack, counters);
+    } else if (child.type === 'assignment_statement') {
+      const left = child.childForFieldName('left');
+      const right = child.childForFieldName('right');
+
+      // Uses from right side
+      if (right) {
+        extractGoUses(right, uses, scopeStack);
+      }
+
+      // Defs for left side (reassignment)
+      if (left) {
+        extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
+      }
+    } else if (child.type === 'for_statement') {
+      // range clause: for k, v := range expr
+      const rangeClause = findChildByTypeGo(child, 'range_clause');
+      if (rangeClause) {
+        const left = rangeClause.childForFieldName('left');
+        if (left) {
+          extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
+        }
+      }
+    } else if (child.type === 'call_expression') {
+      // Extract uses from call arguments
+      extractGoUses(child, uses, scopeStack);
+    } else if (child.type === 'return_statement') {
+      // Extract uses from return expressions
+      for (let i = 0; i < child.childCount; i++) {
+        const expr = child.child(i);
+        if (expr && expr.type !== 'return') {
+          extractGoUses(expr, uses, scopeStack);
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Process a Go var declaration (var x = value or var x type = value).
+ */
+function processGoVarDecl(
+  node: Node,
+  defs: DFGDef[],
+  scopeStack: Map<string, number>[],
+  _counters: { defId: number }
+): void {
+  // var_declaration contains var_spec children
+  for (let i = 0; i < node.childCount; i++) {
+    const spec = node.child(i);
+    if (!spec || spec.type !== 'var_spec') continue;
+
+    // var_spec has name(s) and optionally a type and value
+    for (let j = 0; j < spec.childCount; j++) {
+      const nameNode = spec.child(j);
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      const varName = getNodeText(nameNode);
+      if (varName === '_') continue;
+
+      const def: DFGDef = {
+        id: defs.length + 1,
+        variable: varName,
+        kind: 'local',
+        line: spec.startPosition.row + 1,
+      };
+      defs.push(def);
+      currentScope(scopeStack).set(varName, def.id);
+    }
+  }
+}
+
+/**
+ * Extract definitions from the left side of := or = in Go.
+ */
+function extractGoLhsDefs(
+  left: Node,
+  defs: DFGDef[],
+  scopeStack: Map<string, number>[],
+  line: number
+): void {
+  if (left.type === 'identifier') {
+    const varName = getNodeText(left);
+    if (varName === '_') return;
+    const def: DFGDef = {
+      id: defs.length + 1,
+      variable: varName,
+      kind: 'local',
+      line,
+    };
+    defs.push(def);
+    currentScope(scopeStack).set(varName, def.id);
+  } else if (left.type === 'expression_list') {
+    // Multiple return: x, err := ...
+    for (let i = 0; i < left.childCount; i++) {
+      const item = left.child(i);
+      if (item && item.type === 'identifier') {
+        const varName = getNodeText(item);
+        if (varName === '_') continue;
+        const def: DFGDef = {
+          id: defs.length + 1,
+          variable: varName,
+          kind: 'local',
+          line,
+        };
+        defs.push(def);
+        currentScope(scopeStack).set(varName, def.id);
+      }
+    }
+  }
+}
+
+/**
+ * Extract variable uses from a Go expression.
+ */
+function extractGoUses(
+  node: Node,
+  uses: DFGUse[],
+  scopeStack: Map<string, number>[]
+): void {
+  walkTree(node, (child) => {
+    if (child.type === 'identifier') {
+      const varName = getNodeText(child);
+      if (varName === '_' || GO_KEYWORDS.has(varName)) return;
+      // Skip if this is a function name in a call (selector field)
+      const parent = child.parent;
+      if (parent?.type === 'selector_expression' && parent.childForFieldName('field') === child) {
+        return; // This is the method name, not a variable use
+      }
+      // Skip type names in declarations
+      if (parent?.type === 'parameter_declaration' && parent.childForFieldName('type') === child) {
+        return;
+      }
+      // Skip type identifier nodes (tree-sitter uses type_identifier for type references)
+      if (parent?.type === 'type_identifier') {
+        return;
+      }
+
+      const defId = findReachingDef(varName, scopeStack);
+      uses.push({
+        id: uses.length + 1,
+        variable: varName,
+        line: child.startPosition.row + 1,
+        def_id: defId,
+      });
+    }
+  });
+}
+
+/**
+ * Find a child node by type in Go AST.
+ */
+function findChildByTypeGo(node: Node, type: string): Node | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === type) return child;
+  }
+  return null;
 }
