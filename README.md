@@ -65,7 +65,7 @@ Scan files or directories for security vulnerabilities.
 cognium scan <path> [options]
 
 Options:
-  -l, --language <lang>      Force language (java|javascript|typescript|python|rust|bash|html)
+  -l, --language <lang>      Force language (java|javascript|typescript|python|go|rust|bash|html)
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
   --severity <level>         Filter by severity:
@@ -276,6 +276,7 @@ Filter to security findings only: `cognium scan ./src --category security`
 | JavaScript | `.js`, `.mjs` | Express, Fastify, Node.js |
 | TypeScript | `.ts`, `.tsx` | Express, Fastify, Node.js |
 | Python | `.py` | Flask, Django, FastAPI |
+| Go | `.go` | net/http, Gin, Echo, Fiber, Chi |
 | Rust | `.rs` | Actix-web, Rocket, Axum |
 | Bash | `.sh`, `.bash` | Shell scripts |
 | HTML | `.html`, `.htm` | Web extraction preprocessor |

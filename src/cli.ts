@@ -212,6 +212,7 @@ const LANG_MAP: Record<string, string> = {
   '.ts': 'typescript',
   '.tsx': 'typescript',
   '.py': 'python',
+  '.go': 'go',
   '.rs': 'rust',
   '.sh': 'bash',
   '.bash': 'bash',
@@ -489,6 +490,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
         wasmPath: join(wasmDir, 'web-tree-sitter.wasm'),
         languagePaths: {
           bash: join(wasmDir, 'tree-sitter-bash.wasm'),
+          go: join(wasmDir, 'tree-sitter-go.wasm'),
           java: join(wasmDir, 'tree-sitter-java.wasm'),
           javascript: join(wasmDir, 'tree-sitter-javascript.wasm'),
           typescript: join(wasmDir, 'tree-sitter-javascript.wasm'),
@@ -520,6 +522,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
       wasmPath: wasmBasePath + 'web-tree-sitter.wasm',
       languagePaths: {
         bash: wasmBasePath + 'tree-sitter-bash.wasm',
+        go: wasmBasePath + 'tree-sitter-go.wasm',
         java: wasmBasePath + 'tree-sitter-java.wasm',
         javascript: wasmBasePath + 'tree-sitter-javascript.wasm',
         typescript: wasmBasePath + 'tree-sitter-javascript.wasm',
@@ -1074,7 +1077,7 @@ async function handleInit(): Promise<void> {
 
   const config: CogniumConfig = {
     version: '1.0',
-    include: ['src/**/*.java', 'src/**/*.ts', 'src/**/*.js', 'src/**/*.py'],
+    include: ['src/**/*.java', 'src/**/*.ts', 'src/**/*.js', 'src/**/*.py', 'src/**/*.go'],
     exclude: ['**/test/**', '**/tests/**', '**/node_modules/**', '**/dist/**'],
     passes: {
       'naming-convention': false,
