@@ -66,6 +66,23 @@ export class SwallowedExceptionPass implements AnalysisPass<SwallowedExceptionRe
         }
       }
 
+      // Check if the caught exception variable is forwarded via a function call
+      // (e.g., `catch (err) { cb(err); }` or `catch (e) { next(e); }`)
+      if (!hasAction) {
+        const catchVarMatch = (codeLines[catchLine - 1] ?? '').match(/catch\s*\(\s*(\w+)/);
+        if (catchVarMatch) {
+          const catchVar = catchVarMatch[1];
+          const forwardRe = new RegExp(`\\w+\\s*\\([^)]*\\b${catchVar}\\b`);
+          // Start from catchLine + 1 to skip the catch declaration line itself
+          for (let ln = catchLine + 1; ln <= catchBodyEnd && ln <= codeLines.length; ln++) {
+            if (forwardRe.test(codeLines[ln - 1] ?? '')) {
+              hasAction = true;
+              break;
+            }
+          }
+        }
+      }
+
       if (!hasAction) {
         reported.add(catchLine);
         swallowed.push({ line: catchLine });

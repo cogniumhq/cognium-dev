@@ -27,6 +27,29 @@ import { ExceptionFlowGraph } from '../../graph/exception-flow-graph.js';
 const JS_THROW_RE = /^\s*throw\s+/;
 const PYTHON_RAISE_RE = /^\s*raise\b/;
 
+/**
+ * Detects validation throws: `throw new TypeError(...)` or `throw new RangeError(...)`
+ * preceded by a guard condition (`if (typeof ...`, `if (!...`, `if (x === null)`, etc.).
+ * These are intentional input-validation patterns, not uncaught security events.
+ */
+function isValidationThrow(lines: string[], throwLine: number): boolean {
+  const throwText = lines[throwLine - 1] ?? '';
+  if (!/\bthrow\s+new\s+(TypeError|RangeError|ArgumentError|ERR_\w+)\b/.test(throwText)) {
+    return false;
+  }
+  // Look back 1–3 lines for a guard condition
+  for (let i = 1; i <= 3 && throwLine - i >= 1; i++) {
+    const prev = lines[throwLine - i - 1] ?? '';
+    if (
+      /\bif\s*\(/.test(prev) &&
+      /typeof|===\s*['"]undefined['"]|===\s*null|!|\.length|<\s*\d|>\s*\d/.test(prev)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Regex to detect try/catch blocks in source (JS/TS and Python)
 const JS_TRY_RE = /^\s*try\s*\{/;
 const JS_CATCH_RE = /^\s*\}\s*catch\b/;
@@ -220,6 +243,10 @@ export class UnhandledExceptionPass implements AnalysisPass<UnhandledExceptionRe
         : `global-${ln}`;
 
       if (reportedMethods.has(methodKey)) continue;
+
+      // Skip validation throws: throw new TypeError/RangeError after a guard
+      if (isValidationThrow(codeLines, ln)) continue;
+
       reportedMethods.add(methodKey);
 
       const methodName = methodInfo?.method.name ?? '<anonymous>';

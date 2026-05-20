@@ -106,6 +106,75 @@ describe('SwallowedExceptionPass', () => {
     expect(ctx.findings).toHaveLength(0);
   });
 
+  it('does not flag catch block that forwards error via callback', () => {
+    // Express pattern: try { view.render(opts, cb); } catch (err) { cb(err); }
+    const code = 'try {\n  view.render(opts, cb);\n} catch (err) {\n  cb(err);\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 1, end_line: 2 },
+          { id: 1, type: 'normal', start_line: 3, end_line: 5 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new SwallowedExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag catch block that calls next(err) (Express middleware)', () => {
+    const code = 'try {\n  doSomething();\n} catch (e) {\n  next(e);\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 1, end_line: 2 },
+          { id: 1, type: 'normal', start_line: 3, end_line: 5 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new SwallowedExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag catch block that calls reject(err) (Promise)', () => {
+    const code = 'try {\n  doSomething();\n} catch (err) {\n  reject(err);\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 1, end_line: 2 },
+          { id: 1, type: 'normal', start_line: 3, end_line: 5 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new SwallowedExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('still flags catch block where error is not referenced', () => {
+    const code = 'try {\n  doSomething();\n} catch (err) {\n  doOtherThing();\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 1, end_line: 2 },
+          { id: 1, type: 'normal', start_line: 3, end_line: 5 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new SwallowedExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+  });
+
   it('skips Rust', () => {
     const code = 'fn foo() {}';
     const ir = makeIR({ meta: { circle_ir: '3.0', file: 'test.rs', language: 'rust', loc: 1, hash: '' } });
@@ -251,6 +320,115 @@ describe('UnhandledExceptionPass', () => {
     const ctx = makeCtx(ir, code, 'javascript');
     new UnhandledExceptionPass().run(ctx);
     expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: TypeError after typeof check', () => {
+    const code = [
+      'function use(fn) {',                                  // line 1
+      '  if (typeof fn !== "function") {',                    // line 2
+      '    throw new TypeError("requires a function");',      // line 3
+      '  }',                                                  // line 4
+      '  fn();',                                              // line 5
+      '}',                                                    // line 6
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 6, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 6,
+        methods: [{ name: 'use', start_line: 1, end_line: 6, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: RangeError after range check', () => {
+    const code = [
+      'function setStatus(code) {',                           // line 1
+      '  if (code < 100 || code > 999) {',                   // line 2
+      '    throw new RangeError("Invalid status code");',     // line 3
+      '  }',                                                  // line 4
+      '}',                                                    // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'setStatus', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: TypeError after negation check', () => {
+    const code = [
+      'function process(x) {',        // line 1
+      '  if (!x) {',                   // line 2
+      '    throw new TypeError("x required");', // line 3
+      '  }',                           // line 4
+      '}',                             // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'process', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('still flags throw new Error (not TypeError/RangeError)', () => {
+    const code = [
+      'function process(x) {',               // line 1
+      '  if (!x) {',                          // line 2
+      '    throw new Error("critical");',     // line 3
+      '  }',                                  // line 4
+      '}',                                    // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'process', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+  });
+
+  it('still flags TypeError with no preceding guard', () => {
+    const code = [
+      'function broken() {',                        // line 1
+      '  throw new TypeError("always throws");',    // line 2
+      '}',                                           // line 3
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 3, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 3,
+        methods: [{ name: 'broken', start_line: 1, end_line: 3, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
   });
 
   it('skips Java', () => {

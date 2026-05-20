@@ -124,6 +124,114 @@ while (true) {
     expect(ctx.findings).toHaveLength(0);
   });
 
+  it('does not flag bounded C-style for loop with .length', () => {
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 10, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'entry', start_line: 1, end_line: 1 },
+          { id: 1, type: 'loop', start_line: 2, end_line: 2 },
+          { id: 2, type: 'normal', start_line: 3, end_line: 4 },
+        ],
+        edges: [
+          { from: 0, to: 1, type: 'sequential' },
+          { from: 1, to: 2, type: 'true' },
+          { from: 2, to: 1, type: 'back' },
+        ],
+      },
+    });
+    const code = `function process(arr) {
+  for (var i = 0; i < arr.length; i++) {
+    doWork(arr[i]);
+  }
+}`;
+    const ctx = makeCtx(ir, code, 'javascript');
+    const result = new InfiniteLoopPass().run(ctx);
+    expect(result.potentialInfiniteLoops).toHaveLength(0);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag bounded C-style for loop with variable limit', () => {
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 10, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'entry', start_line: 1, end_line: 1 },
+          { id: 1, type: 'loop', start_line: 2, end_line: 2 },
+          { id: 2, type: 'normal', start_line: 3, end_line: 4 },
+        ],
+        edges: [
+          { from: 0, to: 1, type: 'sequential' },
+          { from: 1, to: 2, type: 'true' },
+          { from: 2, to: 1, type: 'back' },
+        ],
+      },
+    });
+    const code = `function process(items) {
+  for (let i = 0; i < count; i++) {
+    doWork(items[i]);
+  }
+}`;
+    const ctx = makeCtx(ir, code, 'javascript');
+    const result = new InfiniteLoopPass().run(ctx);
+    expect(result.potentialInfiniteLoops).toHaveLength(0);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('still flags while(true) with no exit', () => {
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 10, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'entry', start_line: 1, end_line: 1 },
+          { id: 1, type: 'loop', start_line: 2, end_line: 2 },
+          { id: 2, type: 'normal', start_line: 3, end_line: 4 },
+        ],
+        edges: [
+          { from: 0, to: 1, type: 'sequential' },
+          { from: 1, to: 2, type: 'true' },
+          { from: 2, to: 1, type: 'back' },
+        ],
+      },
+    });
+    const code = `function run() {
+  while (true) {
+    doWork();
+  }
+}`;
+    const ctx = makeCtx(ir, code, 'javascript');
+    const result = new InfiniteLoopPass().run(ctx);
+    expect(result.potentialInfiniteLoops.length).toBeGreaterThanOrEqual(1);
+    expect(ctx.findings.some(f => f.rule_id === 'infinite-loop')).toBe(true);
+  });
+
+  it('still flags for(;;) with no exit', () => {
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 10, hash: '' },
+      cfg: {
+        blocks: [
+          { id: 0, type: 'entry', start_line: 1, end_line: 1 },
+          { id: 1, type: 'loop', start_line: 2, end_line: 2 },
+          { id: 2, type: 'normal', start_line: 3, end_line: 4 },
+        ],
+        edges: [
+          { from: 0, to: 1, type: 'sequential' },
+          { from: 1, to: 2, type: 'true' },
+          { from: 2, to: 1, type: 'back' },
+        ],
+      },
+    });
+    const code = `function run() {
+  for (;;) {
+    doWork();
+  }
+}`;
+    const ctx = makeCtx(ir, code, 'javascript');
+    const result = new InfiniteLoopPass().run(ctx);
+    expect(result.potentialInfiniteLoops.length).toBeGreaterThanOrEqual(1);
+    expect(ctx.findings.some(f => f.rule_id === 'infinite-loop')).toBe(true);
+  });
+
   it('skips bash language', () => {
     const ir = makeIR({
       meta: { circle_ir: '3.0', file: 'test.sh', language: 'bash', loc: 5, hash: '' },

@@ -39,6 +39,18 @@ const ITERATOR_LOOP_PATTERNS = [
   /\bfor\s*\([^)]+\s*:\s*[^)]+\)/, // Java: for (Type x : collection)
 ];
 
+/**
+ * C-style bounded loops that terminate when the counter reaches a limit.
+ * These should NOT be flagged as infinite loops.
+ */
+const BOUNDED_LOOP_PATTERNS = [
+  /\bfor\s*\([^;]*;\s*\w+\s*[<>!=]+\s*[^;]*\.length\b/, // for (i=0; i < arr.length; i++)
+  /\bfor\s*\([^;]*;\s*\w+\s*<\s*\w+\s*;/,               // for (i=0; i < N; i++)
+  /\bfor\s*\([^;]*;\s*\w+\s*>\s*\d+\s*;/,               // for (i=N; i > 0; i--)
+  /\bfor\s*\([^;]*;\s*\w+\s*<=\s*\w+\s*;/,              // for (i=0; i <= N; i++)
+  /\bfor\s*\([^;]*;\s*\w+\s*>=\s*\d+\s*;/,              // for (i=N; i >= 0; i--)
+];
+
 export interface InfiniteLoopResult {
   potentialInfiniteLoops: Array<{ headerLine: number; bodyEndLine: number }>;
 }
@@ -137,6 +149,10 @@ export class InfiniteLoopPass implements AnalysisPass<InfiniteLoopResult> {
       const headerLine = codeLines[header.start_line - 1] ?? '';
       const isIteratorLoop = ITERATOR_LOOP_PATTERNS.some(pattern => pattern.test(headerLine));
       if (isIteratorLoop) continue;
+
+      // Check if this is a bounded C-style for loop (for (i=0; i < N; i++))
+      const isBoundedLoop = BOUNDED_LOOP_PATTERNS.some(pattern => pattern.test(headerLine));
+      if (isBoundedLoop) continue;
 
       reportedHeaders.add(headerId);
       potentialInfiniteLoops.push({ headerLine: header.start_line, bodyEndLine: bodyEnd });

@@ -82,15 +82,45 @@ export function generateFindings(
     }
   }
 
+  // Deduplicate: group by (sink.line, type), keep highest confidence,
+  // aggregate all contributing sources into evidence
+  const grouped = new Map<string, Finding>();
+  for (const f of findings) {
+    const key = `${f.sink.line}:${f.type}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      f.evidence = {
+        ...f.evidence,
+        sources: [{ file: f.source.file, line: f.source.line }],
+      };
+      grouped.set(key, f);
+    } else {
+      const sources = ((existing.evidence?.sources as Array<{ file: string; line: number }>) ?? []);
+      sources.push({ file: f.source.file, line: f.source.line });
+      existing.evidence = { ...existing.evidence, sources };
+      if (f.confidence > existing.confidence) {
+        existing.confidence = f.confidence;
+        existing.source = f.source;
+        existing.path = f.path;
+        existing.explanation = f.explanation;
+        existing.verification = f.verification;
+        existing.exploitable = f.exploitable;
+        existing.severity = f.severity;
+      }
+    }
+  }
+
+  const deduped = Array.from(grouped.values());
+
   // Sort by severity and confidence
-  findings.sort((a, b) => {
+  deduped.sort((a, b) => {
     const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
     if (severityDiff !== 0) return severityDiff;
     return b.confidence - a.confidence;
   });
 
-  return findings;
+  return deduped;
 }
 
 /**

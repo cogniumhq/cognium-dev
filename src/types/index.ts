@@ -559,6 +559,7 @@ export interface Finding {
     llm_verified: boolean;
     llm_confidence: number;
   };
+  evidence?: Record<string, unknown>;
 }
 
 export interface TaintHop {
