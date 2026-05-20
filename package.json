@@ -65,7 +65,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "circle-ir": "^3.22.0"
+    "circle-ir": "^3.22.1"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
