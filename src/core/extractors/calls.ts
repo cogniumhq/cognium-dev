@@ -1115,7 +1115,7 @@ function extractBashCommandInfo(node: Node): CallInfo | null {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (!child) continue;
-    if (child === nameNode) continue;
+    if (child === nameNode || child.id === nameNode.id) continue;
     // Skip I/O redirects and heredoc operators
     if (
       child.type.includes('redirect') ||

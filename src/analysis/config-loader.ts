@@ -555,9 +555,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'FlowExecution', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   // ActiveMQ control commands
   { method: 'processControlCommand', class: 'TransportConnection', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  // XStream deserialization (leads to RCE via gadget chains)
-  { method: 'fromXML', class: 'XStream', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'unmarshal', class: 'XStream', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // XStream deserialization — classified as CWE-502 (deserialization), not CWE-78 (command injection).
+  // The deserialization sink entries at lines ~1059 handle this correctly.
   { method: 'fromString', class: 'FileConverter', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   // Plexus command line
   { method: 'getPosition', class: 'Commandline', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
@@ -1276,7 +1275,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'query', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
+  // Note: classless { method: 'query' } removed — too many FPs (UriComponentsBuilder.query(), etc.)
+  // SQL query calls are covered by class-specific patterns above (Connection, Pool, Client, JdbcTemplate)
   { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
 
   // Browser DOM XSS sinks
@@ -1506,8 +1506,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'execute', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'query_row', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'prepare', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  // sqlx::query macro
-  { method: 'query', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  // sqlx::query macro — use class-specific pattern
+  { method: 'query', class: 'sqlx', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   // rusqlite specific
   { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },

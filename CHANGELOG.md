@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.1] - 2026-05-20
+
+### Fixed
+
+- **Reduce false positives in taint analysis** with three targeted precision improvements:
+  - **Receiver-type-aware sink filtering**: Expanded `SAFE_RECEIVERS_BY_METHOD` for `query()`, `authenticate()`, and `add()` to suppress false positives from classless sink patterns (e.g., `UriComponentsBuilder.query()` no longer flagged as SQL injection, `auth.authenticate()` no longer flagged as code injection).
+  - **Placeholder-aware SQL injection filter**: `isParameterizedQueryCall()` now detects Go (`?`), Python (`%s`), Java (`:name`), and PostgreSQL (`$1`) placeholder patterns in query string literals, suppressing false positives for parameterized queries across all languages.
+  - **Sink-type-aware `fromXML`/`unmarshal` filtering**: `fromXML()` and `unmarshal()` calls on XStream/XML receivers are only flagged as deserialization (CWE-502), no longer also flagged as command injection (CWE-78).
+- **Tighten `receiverMightBeClass` heuristic**: Short receiver names (e.g., `auth`, `r`) no longer match unrelated classes via overly broad substring matching. Added fraction-based guards, CamelCase word-prefix matching, trailing-digit stripping, and explicit Go-idiom mappings (`r` → `Request`).
+- **Remove classless `query` sink patterns**: Classless `{ method: 'query' }` entries that matched any `.query()` call removed from config-loader; class-constrained patterns (`Connection`, `Pool`, `Client`, `JdbcTemplate`, `sqlx`) retained.
+- **Fix bash call extraction**: `eval "echo $user"` no longer has the command name duplicated as arg[0]. Fixed tree-sitter node identity check to use `child.id === nameNode.id`.
+- **Bash taint flow end-to-end**: `curl`→`eval` and `$1`→`eval` taint flows now correctly propagate through bash variable assignments.
+
+### Added
+
+- 40 new precision tests: receiver-type filtering (23), placeholder SQL filtering (13), bash taint flow diagnostics (4).
+
+[3.22.1]: https://github.com/cogniumhq/circle-ir/compare/v3.22.0...v3.22.1
+
 ## [3.22.0] - 2026-05-17
 
 ### Added

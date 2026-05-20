@@ -283,32 +283,47 @@ function isInterproceduralTaintableType(typeName: string): boolean {
 
 /**
  * Check if a SQL query call uses parameterized query pattern.
- * Parameterized queries (e.g., db.query("SELECT ? ...", [param])) are safe
- * because user input is passed as bound parameters, not concatenated into the query.
+ * Parameterized queries are safe because user input is passed as bound
+ * parameters, not concatenated into the query string.
  *
  * Recognized patterns:
  * - db.query(sql, [params], callback)  — Node.js mysql/pg
  * - db.query(sql, [params])            — Node.js mysql2
  * - knex.raw(sql, [params])            — Knex.js
+ * - db.Query("SELECT ... WHERE id = ?", input)  — Go database/sql
+ * - cursor.execute("SELECT ... WHERE id = %s", (param,))  — Python DB-API
+ * - jdbcTemplate.query("SELECT ... WHERE id = ?", mapper)  — Java Spring
+ * - stmt.executeQuery("SELECT ... WHERE id = ?")           — Java PreparedStatement
  */
 function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean {
   // Only applies to SQL injection sinks
   if (pattern.type !== 'sql_injection') return false;
 
-  // Parameterized queries have at least 2 arguments:
-  // arg[0] = query string (with ? or $N placeholders)
-  // arg[1] = params array
-  if (call.arguments.length < 2) return false;
-
-  // Check if the second argument looks like a params array
-  const secondArg = call.arguments.find(a => a.position === 1);
-  if (!secondArg) return false;
-
-  // Check for array literal: [id], [id, name], etc.
-  if (secondArg.expression) {
-    const expr = secondArg.expression.trim();
-    if (expr.startsWith('[')) {
+  // Check arg[0] — the query string — for placeholder patterns.
+  // If the query is a string literal containing SQL placeholders and no
+  // concatenation, it's a parameterized query regardless of how the params
+  // are passed (array, varargs, tuple, etc.).
+  const queryArg = call.arguments.find(a => a.position === 0);
+  if (queryArg) {
+    const queryText = queryArg.literal ?? queryArg.expression ?? '';
+    // SQL placeholders: ?, $1, $2, :name, %s
+    // The ? can appear mid-string ("WHERE id = ? AND") or at end ("WHERE id = ?")
+    const hasPlaceholders = /(\?(?:\s|,|$|\))|\$\d+|:\w+|%s)/.test(queryText);
+    // String concatenation indicators (unsafe even with placeholders)
+    const hasConcatenation = /\+\s*[^+]/.test(queryText) || queryText.includes('${');
+    if (hasPlaceholders && !hasConcatenation && call.arguments.length >= 2) {
       return true;
+    }
+  }
+
+  // Existing check: second arg is array literal [params] (Node.js pattern)
+  if (call.arguments.length >= 2) {
+    const secondArg = call.arguments.find(a => a.position === 1);
+    if (secondArg?.expression) {
+      const expr = secondArg.expression.trim();
+      if (expr.startsWith('[')) {
+        return true;
+      }
     }
   }
 
@@ -480,6 +495,40 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
     'pool', 'knex', 'prisma', 'sequelize', 'transaction', 'tx',
     'stmt', 'statement', 'cursor',
   ]),
+
+  // query() is only a SQL sink when receiver is a database handle — not URL builders,
+  // DOM selectors, GraphQL clients, DNS resolvers, etc.
+  query: new Set([
+    'uri', 'url', 'builder', 'uribuilder', 'uricomponents', 'uricomponentsbuilder',
+    'servleturicomponentsbuilder', 'httpurl', 'urlbuilder', 'webclient',
+    'request', 'req', 'router', 'route', 'app', 'express',
+    'parser', 'selector', 'jquery', 'dom', 'document', 'element',
+    'xmlpath', 'xpath', 'dns', 'resolver',
+    'graphql', 'apollo', 'querybuilder', 'criteria',
+  ]),
+
+  // authenticate() — safe on auth framework objects (token verification, not code exec)
+  authenticate: new Set([
+    'auth', 'authenticator', 'authmanager', 'authprovider',
+    'authenticationmanager', 'authservice', 'oauth', 'token',
+    'jwt', 'passport', 'session', 'security', 'credentials',
+    'identityprovider', 'ldap', 'saml', 'oidc',
+  ]),
+
+  // add() is extremely generic — safe on collections, UI containers, builders, etc.
+  add: new Set([
+    'list', 'set', 'map', 'collection', 'array', 'queue', 'deque',
+    'stack', 'vector', 'builder', 'panel', 'container', 'group',
+    'layout', 'menu', 'toolbar', 'model', 'registry', 'context',
+    'config', 'options', 'params', 'headers', 'attributes',
+    'listeners', 'handlers', 'filters', 'interceptors', 'validators',
+    'extensions', 'plugins', 'modules', 'components', 'children',
+    'items', 'elements', 'entries', 'rows', 'columns', 'fields',
+    'properties', 'descriptors', 'nodes', 'actions', 'results',
+    'errors', 'warnings', 'messages', 'notifications', 'events',
+    'subscribers', 'observers', 'providers', 'services', 'beans',
+    'tasks', 'jobs', 'workers', 'threads', 'schedulers',
+  ]),
 };
 
 /**
@@ -487,7 +536,14 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
  * method name and sink type.  Used to suppress false positives from
  * classless sink patterns.
  */
-function isKnownSafeReceiverForMethod(receiver: string, method: string, _sinkType: string): boolean {
+function isKnownSafeReceiverForMethod(receiver: string, method: string, sinkType: string): boolean {
+  // fromXML/unmarshal are deserialization sinks (CWE-502), NOT command injection (CWE-78).
+  // Suppress command_injection on any receiver — the deserialization sink pattern handles it.
+  const lowerMethod = method.toLowerCase();
+  if ((lowerMethod === 'fromxml' || lowerMethod === 'unmarshal') && sinkType === 'command_injection') {
+    return true;
+  }
+
   const safeReceivers = SAFE_RECEIVERS_BY_METHOD[method];
   if (!safeReceivers) return false;
 
@@ -647,13 +703,38 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   }
 
   // e.g., "request" might be HttpServletRequest
-  if (lowerClass.includes(lowerReceiver)) {
-    return true;
+  // Match when receiver is contained in class name, but only if:
+  //   (a) the receiver is ≥ 5 chars (avoids short generic names), OR
+  //   (b) the receiver is 3-4 chars AND occupies ≥ 40% of the class name
+  // This prevents "auth" (4/34=0.12) matching "DefaultOAuth2RequestAuthenticator"
+  // while allowing "stmt" (4/9=0.44) to match "Statement".
+  if (lowerReceiver.length >= 3 && lowerClass.includes(lowerReceiver)) {
+    if (lowerReceiver.length >= 5 || lowerReceiver.length / lowerClass.length >= 0.4) {
+      return true;
+    }
   }
 
-  // e.g., "stmt" might be Statement
-  if (lowerClass.startsWith(lowerReceiver.substring(0, 3))) {
-    return true;
+  // Short-prefix/suffix heuristic: "ev" might be ExpressionEvaluator (prefix),
+  // "sink" might be CustomSink (suffix).
+  // Only match if the class name starts or ends with the receiver (2+ chars).
+  if (lowerReceiver.length >= 2) {
+    if (lowerClass.startsWith(lowerReceiver) || lowerClass.endsWith(lowerReceiver)) {
+      return true;
+    }
+  }
+
+  // CamelCase word prefix heuristic: "req" might be CustomRequest (starts a word),
+  // "lang" might be SimpleLanguage.  Check if the receiver matches the start of
+  // any CamelCase segment and covers ≥ 40% of that word.
+  // This prevents "auth" (4/13=0.31) matching "authenticator" while allowing
+  // "req" (3/7=0.43) to match "request" and "lang" (4/8=0.50) to match "language".
+  if (lowerReceiver.length >= 3) {
+    const words = className.replace(/([a-z])([A-Z])/g, '$1\0$2').toLowerCase().split('\0');
+    for (const word of words) {
+      if (word.startsWith(lowerReceiver) && lowerReceiver.length / word.length >= 0.4) {
+        return true;
+      }
+    }
   }
 
   // Common abbreviations
@@ -680,8 +761,10 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     runtime: ['Runtime'],
     pb: ['ProcessBuilder'],
 
-    // Scripting
+    // Scripting / Expression evaluation
     engine: ['ScriptEngine'],
+    ev: ['ExpressionEvaluator', 'ScriptEvaluator', 'ClassBodyEvaluator'],
+    evaluator: ['ExpressionEvaluator', 'ScriptEvaluator', 'ClassBodyEvaluator'],
 
     // LDAP
     ctx: ['Context', 'InitialContext', 'DirContext', 'InitialDirContext', 'LdapContext'],
@@ -782,11 +865,29 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     prisma: ['prisma'],
     axios: ['axios'],
     fetch: ['fetch'],
+
+    // Go idioms (single-letter receivers)
+    r: ['Request'],
+    w: ['ResponseWriter'],
   };
 
   const mappings = commonMappings[lowerReceiver];
   if (mappings && Array.isArray(mappings) && mappings.includes(className)) {
     return true;
+  }
+
+  // Try stripping trailing digits from receiver (e.g., XSTREAM2 → xstream → XStream)
+  const strippedReceiver = lowerReceiver.replace(/\d+$/, '');
+  if (strippedReceiver !== lowerReceiver && strippedReceiver.length >= 2) {
+    const strippedMappings = commonMappings[strippedReceiver];
+    if (strippedMappings && Array.isArray(strippedMappings) && strippedMappings.includes(className)) {
+      return true;
+    }
+    // Also check if the stripped receiver matches via the heuristic checks above
+    // (e.g., xstream2 → xstream → starts with 'xstream' which is the class XStream)
+    if (lowerClass.startsWith(strippedReceiver) || strippedReceiver.startsWith(lowerClass)) {
+      return true;
+    }
   }
 
   return false;
