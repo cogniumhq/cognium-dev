@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.3] - 2026-05-21
+
+### Fixed
+
+- **Expand defensive-throw suppression (unhandled-exception)**: `isValidationThrow()` now suppresses `throw new Error(...)` (not just TypeError/RangeError) when preceded by a guard condition. Added `switch default:` as a guard context. Expanded guard regex to recognize `Array.isArray`, `instanceof`, `isFinite`, `isNaN`, `Number.isInteger`, `===`, `!==`. Lookback window increased from 3 to 5 lines. Eliminates 6 remaining FPs on Express `/lib`.
+- **Fix swallowed-exception callback-forwarding detection**: The catch variable extraction now looks at both `catchLine` and `catchLine - 1` to handle CFG start_line pointing to the first body statement rather than the `catch (...)` declaration. Skips the declaration line during forwarding scan to prevent `catch (err)` from false-matching as a forwarding call. Fixes Express `application.js:629` `try { view.render(opts, cb); } catch (err) { cb(err); }` which was incorrectly flagged.
+
+[3.22.3]: https://github.com/cogniumhq/circle-ir/compare/v3.22.2...v3.22.3
+
 ## [3.22.2] - 2026-05-21
 
 ### Fixed

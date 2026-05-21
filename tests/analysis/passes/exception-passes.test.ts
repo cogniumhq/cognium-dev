@@ -389,7 +389,8 @@ describe('UnhandledExceptionPass', () => {
     expect(ctx.findings).toHaveLength(0);
   });
 
-  it('still flags throw new Error (not TypeError/RangeError)', () => {
+  it('does not flag validation throw: Error after guard check', () => {
+    // Express pattern: throw new Error("callback function required") after typeof check
     const code = [
       'function process(x) {',               // line 1
       '  if (!x) {',                          // line 2
@@ -408,7 +409,98 @@ describe('UnhandledExceptionPass', () => {
     });
     const ctx = makeCtx(ir, code, 'javascript');
     new UnhandledExceptionPass().run(ctx);
-    expect(ctx.findings).toHaveLength(1);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: Error after typeof check (Express pattern)', () => {
+    const code = [
+      'function use(fn) {',                                         // line 1
+      '  if (typeof fn !== "function") {',                           // line 2
+      '    throw new Error("callback function required");',          // line 3
+      '  }',                                                         // line 4
+      '}',                                                           // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'use', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: Error after === check (Express cookie pattern)', () => {
+    const code = [
+      'function setCookie(signed, secret) {',            // line 1
+      '  if (signed && !secret) {',                       // line 2
+      '    throw new Error("cookieParser required");',    // line 3
+      '  }',                                              // line 4
+      '}',                                                // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'setCookie', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: TypeError in switch default arm', () => {
+    const code = [
+      'function convert(type, value) {',                               // line 1
+      '  switch (type) {',                                             // line 2
+      '    case "string": return String(value);',                      // line 3
+      '    case "number": return Number(value);',                      // line 4
+      '    default:',                                                  // line 5
+      '      throw new TypeError("unknown value for " + type);',      // line 6
+      '  }',                                                           // line 7
+      '}',                                                             // line 8
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 8, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 8,
+        methods: [{ name: 'convert', start_line: 1, end_line: 8, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('does not flag validation throw: TypeError after Array.isArray guard', () => {
+    const code = [
+      'function setContentType(value) {',                                  // line 1
+      '  if (Array.isArray(value)) {',                                     // line 2
+      '    throw new TypeError("Content-Type cannot be set to an Array");', // line 3
+      '  }',                                                               // line 4
+      '}',                                                                 // line 5
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 5, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 5,
+        methods: [{ name: 'setContentType', start_line: 1, end_line: 5, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
   });
 
   it('still flags TypeError with no preceding guard', () => {
@@ -416,6 +508,26 @@ describe('UnhandledExceptionPass', () => {
       'function broken() {',                        // line 1
       '  throw new TypeError("always throws");',    // line 2
       '}',                                           // line 3
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 3, hash: '' },
+      types: [{
+        name: 'module', kind: 'class', start_line: 1, end_line: 3,
+        methods: [{ name: 'broken', start_line: 1, end_line: 3, parameters: [], is_public: true }],
+        fields: [], implements: [],
+      }],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+  });
+
+  it('still flags Error with no preceding guard', () => {
+    const code = [
+      'function broken() {',                          // line 1
+      '  throw new Error("unconditional throw");',    // line 2
+      '}',                                             // line 3
     ].join('\n');
     const ir = makeIR({
       meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 3, hash: '' },

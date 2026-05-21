@@ -28,22 +28,28 @@ const JS_THROW_RE = /^\s*throw\s+/;
 const PYTHON_RAISE_RE = /^\s*raise\b/;
 
 /**
- * Detects validation throws: `throw new TypeError(...)` or `throw new RangeError(...)`
- * preceded by a guard condition (`if (typeof ...`, `if (!...`, `if (x === null)`, etc.).
+ * Detects validation throws: `throw new TypeError(...)`, `throw new Error(...)`
+ * preceded by a guard condition (`if (typeof ...`, `if (!...`, `if (x === null)`, etc.)
+ * or inside a `default:` arm of a switch statement.
  * These are intentional input-validation patterns, not uncaught security events.
  */
 function isValidationThrow(lines: string[], throwLine: number): boolean {
   const throwText = lines[throwLine - 1] ?? '';
-  if (!/\bthrow\s+new\s+(TypeError|RangeError|ArgumentError|ERR_\w+)\b/.test(throwText)) {
+  if (!/\bthrow\s+new\s+(TypeError|RangeError|Error|ArgumentError|ERR_\w+)\b/.test(throwText)) {
     return false;
   }
-  // Look back 1–3 lines for a guard condition
-  for (let i = 1; i <= 3 && throwLine - i >= 1; i++) {
+  // Look back 1–5 lines for a guard condition or switch/default context
+  for (let i = 1; i <= 5 && throwLine - i >= 1; i++) {
     const prev = lines[throwLine - i - 1] ?? '';
+    // Guard condition: if (...) with a type/value check
     if (
       /\bif\s*\(/.test(prev) &&
-      /typeof|===\s*['"]undefined['"]|===\s*null|!|\.length|<\s*\d|>\s*\d/.test(prev)
+      /typeof|===|!==|!|\binstanceof\b|Array\.isArray|isFinite|isNaN|Number\.isInteger|\.length|<\s*\d|>\s*\d/.test(prev)
     ) {
+      return true;
+    }
+    // Switch default arm: the throw is in the unreachable/invalid branch
+    if (/\bdefault\s*:/.test(prev)) {
       return true;
     }
   }
