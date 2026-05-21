@@ -639,6 +639,20 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     return true;
   }
 
+  // Rust/C++ scoped receivers: extract the type name before ::
+  // Handles both single-line and multi-line chained calls, e.g.:
+  //   "Command::new(\"sh\").arg(\"-c\").arg(&input)"          (single-line)
+  //   "Command::new(\"sh\")\n  .arg(\"-c\")\n  .arg(&input)"  (multi-line)
+  if (receiver.includes('::')) {
+    const scopePrefix = receiver.match(/^(\w+)::/);
+    if (scopePrefix) {
+      const typeName = scopePrefix[1];
+      if (typeName === className || typeName.toLowerCase() === className.toLowerCase()) {
+        return true;
+      }
+    }
+  }
+
   // Handle fully qualified paths like "org.owasp.benchmark.helpers.DatabaseHelper.JDBCtemplate"
   // Check if the receiver ends with the class name (case insensitive)
   const lowerReceiver = receiver.toLowerCase();

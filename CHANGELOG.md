@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.2] - 2026-05-21
+
+### Fixed
+
+- **Fix Rust multi-line Command chain sink detection**: `receiverMightBeClass()` now extracts the type name before `::` early, so multi-line chained receivers like `Command::new("sh")\n.arg("-c")\n.arg(&input)` correctly match `class: "Command"` sinks. Previously the scoped-call regex at line 690 failed because `.` doesn't match `\n`.
+- **Strengthen Rust cmdi benchmark tests**: All 3 existing Rust command injection tests now assert both source detection and `command_injection` sink detection (previously source-only).
+
+[3.22.2]: https://github.com/cogniumhq/circle-ir/compare/v3.22.1...v3.22.2
+
 ## [3.22.1] - 2026-05-20
 
 ### Fixed

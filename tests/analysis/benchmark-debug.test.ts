@@ -112,7 +112,7 @@ curl -s "https://api.example.com/data"
   // Rust
   // -------------------------------------------------------------------------
 
-  it('cmdi_stdin_to_command: stdin().read_line should be a source', async () => {
+  it('cmdi_stdin_to_command: stdin().read_line should be a source and Command.arg a sink', async () => {
     const code = `
 use std::io;
 use std::process::Command;
@@ -125,9 +125,10 @@ fn main() {
 `;
     const result = await analyze(code, 'test.rs', 'rust');
     expect(result.taint.sources.length).toBeGreaterThan(0);
+    expect(result.taint.sinks.some(s => s.type === 'command_injection')).toBe(true);
   });
 
-  it('cmdi_stdin_to_command: stdin.lock().lines() should be a source (actual benchmark)', async () => {
+  it('cmdi_stdin_to_command: multi-line Command chain should produce cmdi sink', async () => {
     const code = `
 use std::io::{self, BufRead};
 use std::process::Command;
@@ -145,15 +146,11 @@ fn run_from_stdin() {
 }
 `;
     const result = await analyze(code, 'test.rs', 'rust');
-    console.log('SOURCES:', JSON.stringify(result.taint.sources, null, 2));
-    console.log('SINKS:', JSON.stringify(result.taint.sinks, null, 2));
-    console.log('CALLS:', JSON.stringify(result.calls.map(c => ({
-      method: c.method_name, receiver: c.receiver
-    })), null, 2));
     expect(result.taint.sources.length).toBeGreaterThan(0);
+    expect(result.taint.sinks.some(s => s.type === 'command_injection')).toBe(true);
   });
 
-  it('cmdi_axum_body_to_command: Json extractor should be a source', async () => {
+  it('cmdi_axum_body_to_command: multi-line Json body to Command should produce cmdi sink', async () => {
     const code = `
 use axum::extract::Json;
 use std::process::Command;
@@ -174,13 +171,8 @@ async fn execute_cmd(Json(payload): Json<CmdRequest>) -> String {
 }
 `;
     const result = await analyze(code, 'test.rs', 'rust');
-    console.log('SOURCES:', JSON.stringify(result.taint.sources, null, 2));
-    console.log('SINKS:', JSON.stringify(result.taint.sinks, null, 2));
-    console.log('CALLS:', JSON.stringify(result.calls.map(c => ({
-      method: c.method_name, receiver: c.receiver, args: c.arguments
-    })), null, 2));
-    console.log('TYPES:', JSON.stringify(result.types, null, 2));
     expect(result.taint.sources.length).toBeGreaterThan(0);
+    expect(result.taint.sinks.some(s => s.type === 'command_injection')).toBe(true);
   });
 
   it('open_redirect_safe_relative: starts_with should sanitize open_redirect', async () => {
