@@ -1,0 +1,1099 @@
+/**
+ * Tests for Pass #89: security-headers (category: security)
+ */
+
+import { describe, it, expect } from 'vitest';
+import { CodeGraph } from '../../../src/graph/code-graph.js';
+import { SecurityHeadersPass, checkInheritedCorsHeaders } from '../../../src/analysis/passes/security-headers-pass.js';
+import { TypeHierarchyResolver } from '../../../src/resolution/type-hierarchy.js';
+import type {
+  CircleIR, SastFinding, TypeInfo, MethodInfo, CallInfo, ArgumentInfo,
+} from '../../../src/types/index.js';
+import type { PassContext } from '../../../src/graph/analysis-pass.js';
+import type { TaintConfig } from '../../../src/types/config.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeArg(
+  position: number,
+  expression: string,
+  literal?: string | null,
+): ArgumentInfo {
+  return { position, expression, literal: literal ?? null };
+}
+
+function makeCall(
+  method_name: string,
+  receiver: string | null,
+  line: number,
+  args: ArgumentInfo[],
+): CallInfo {
+  return {
+    method_name,
+    receiver,
+    arguments: args,
+    location: { line, column: 0 },
+  };
+}
+
+function makeMethod(
+  name: string,
+  start_line: number,
+  end_line: number,
+  annotations: string[] = [],
+): MethodInfo {
+  return { name, return_type: null, parameters: [], annotations, modifiers: [], start_line, end_line };
+}
+
+function makeType(
+  name: string,
+  annotations: string[] = [],
+  methods: MethodInfo[] = [],
+  extendsClass: string | null = null,
+): TypeInfo {
+  return {
+    name, kind: 'class', package: null, extends: extendsClass, implements: [],
+    annotations, methods, fields: [], start_line: 1, end_line: 50,
+  };
+}
+
+function makeIR(
+  language: CircleIR['meta']['language'],
+  options: { types?: TypeInfo[]; calls?: CallInfo[]; file?: string } = {},
+): CircleIR {
+  return {
+    meta: {
+      circle_ir: '3.0',
+      file: options.file ?? 'app.ts',
+      language,
+      loc: 50,
+      hash: '',
+    },
+    types: options.types ?? [],
+    calls: options.calls ?? [],
+    cfg: { blocks: [], edges: [] },
+    dfg: { defs: [], uses: [], chains: [] },
+    taint: { sources: [], sinks: [], sanitizers: [] },
+    imports: [],
+    exports: [],
+    unresolved: [],
+    enriched: {} as CircleIR['enriched'],
+  };
+}
+
+function runPass(ir: CircleIR): SastFinding[] {
+  const graph = new CodeGraph(ir);
+  const findings: SastFinding[] = [];
+  const ctx: PassContext = {
+    graph,
+    code: '',
+    language: ir.meta.language,
+    config: { sources: [], sinks: [], sanitizers: [] } as TaintConfig,
+    getResult: () => { throw new Error('not used'); },
+    hasResult: () => false,
+    addFinding: (f) => findings.push(f),
+  };
+  new SecurityHeadersPass().run(ctx);
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('SecurityHeadersPass', () => {
+  // ========================================================================
+  // Clickjacking rules (CWE-1021)
+  // ========================================================================
+
+  describe('missing-x-frame-options', () => {
+    it('fires on Java @Controller with no X-Frame-Options set', () => {
+      const ir = makeIR('java', {
+        types: [makeType('HomeController', ['@RestController'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+      });
+      const findings = runPass(ir);
+      const xframe = findings.filter(f => f.rule_id === 'missing-x-frame-options');
+      expect(xframe).toHaveLength(1);
+      expect(xframe[0].cwe).toBe('CWE-1021');
+      expect(xframe[0].level).toBe('warning');
+      expect(xframe[0].line).toBe(1);
+    });
+
+    it('fires on Express app.get() route with no X-Frame-Options', () => {
+      const ir = makeIR('javascript', {
+        calls: [makeCall('get', 'app', 5, [
+          makeArg(0, "'/home'", "'/home'"),
+          makeArg(1, 'handler'),
+        ])],
+      });
+      const findings = runPass(ir);
+      const xframe = findings.filter(f => f.rule_id === 'missing-x-frame-options');
+      expect(xframe).toHaveLength(1);
+    });
+
+    it('does NOT fire when X-Frame-Options IS set', () => {
+      const ir = makeIR('java', {
+        types: [makeType('HomeController', ['@RestController'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+        calls: [makeCall('setHeader', 'response', 12, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('does NOT fire on library code without HTTP handlers', () => {
+      // Plain class, no controller annotations, no route calls.
+      const ir = makeIR('java', {
+        types: [makeType('UserService', [], [
+          makeMethod('getUser', 5, 15),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('matches header name case-insensitively', () => {
+      const ir = makeIR('java', {
+        types: [makeType('HomeController', ['@Controller'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+        calls: [makeCall('setHeader', 'response', 12, [
+          makeArg(0, '"x-frame-options"', '"x-frame-options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+  });
+
+  describe('x-frame-options-allow-from', () => {
+    it('fires on X-Frame-Options: ALLOW-FROM example.com', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 15, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"ALLOW-FROM https://example.com"', '"ALLOW-FROM https://example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      const match = findings.filter(f => f.rule_id === 'x-frame-options-allow-from');
+      expect(match).toHaveLength(1);
+      expect(match[0].cwe).toBe('CWE-1021');
+      expect(match[0].line).toBe(15);
+    });
+
+    it('does NOT fire on X-Frame-Options: DENY', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 15, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'x-frame-options-allow-from')).toHaveLength(0);
+    });
+  });
+
+  describe('missing-csp-frame-ancestors', () => {
+    it('fires when CSP is absent on a handler', () => {
+      const ir = makeIR('javascript', {
+        calls: [makeCall('get', 'app', 5, [
+          makeArg(0, "'/home'", "'/home'"),
+          makeArg(1, 'handler'),
+        ])],
+      });
+      const findings = runPass(ir);
+      const csp = findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors');
+      expect(csp).toHaveLength(1);
+      expect(csp[0].level).toBe('note');
+    });
+
+    it('does NOT fire when Content-Security-Policy IS set', () => {
+      const ir = makeIR('javascript', {
+        calls: [
+          makeCall('get', 'app', 5, [
+            makeArg(0, "'/home'", "'/home'"),
+            makeArg(1, 'handler'),
+          ]),
+          makeCall('setHeader', 'res', 8, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"frame-ancestors 'self'\"", "\"frame-ancestors 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // CORS rules (CWE-346, CWE-942)
+  // ========================================================================
+
+  describe('cors-wildcard-origin', () => {
+    it('fires on Access-Control-Allow-Origin: *', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 20, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      const wc = findings.filter(f => f.rule_id === 'cors-wildcard-origin');
+      expect(wc).toHaveLength(1);
+      expect(wc[0].level).toBe('error');
+      expect(wc[0].severity).toBe('high');
+      expect(wc[0].cwe).toBe('CWE-942');
+    });
+
+    it('does NOT fire on a specific origin', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 20, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"https://trusted.example.com"', '"https://trusted.example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(0);
+    });
+  });
+
+  describe('cors-null-origin', () => {
+    it('fires on Access-Control-Allow-Origin: null', () => {
+      const ir = makeIR('javascript', {
+        calls: [makeCall('setHeader', 'res', 42, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"null"', '"null"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      const nulo = findings.filter(f => f.rule_id === 'cors-null-origin');
+      expect(nulo).toHaveLength(1);
+      expect(nulo[0].cwe).toBe('CWE-346');
+    });
+  });
+
+  describe('cors-http-origin', () => {
+    it('fires on http:// origin', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 30, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"http://example.com"', '"http://example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-http-origin')).toHaveLength(1);
+    });
+
+    it('does NOT fire on https:// origin', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 30, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"https://example.com"', '"https://example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-http-origin')).toHaveLength(0);
+    });
+  });
+
+  describe('cors-reflected-origin', () => {
+    it('fires when value is a dynamic expression (no literal)', () => {
+      const ir = makeIR('javascript', {
+        calls: [makeCall('setHeader', 'res', 50, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'req.headers.origin', null),   // NO literal → reflected
+        ])],
+      });
+      const findings = runPass(ir);
+      const refl = findings.filter(f => f.rule_id === 'cors-reflected-origin');
+      expect(refl).toHaveLength(1);
+      expect(refl[0].level).toBe('error');
+      expect(refl[0].evidence).toMatchObject({
+        header: 'Access-Control-Allow-Origin',
+        value: null,
+        kind: 'unsafe-value',
+      });
+    });
+
+    it('does NOT fire when value is a string literal', () => {
+      const ir = makeIR('javascript', {
+        calls: [makeCall('setHeader', 'res', 50, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"https://safe.example.com"', '"https://safe.example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-reflected-origin')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // Structural behavior
+  // ========================================================================
+
+  describe('pass structure', () => {
+    it('has correct name and category', () => {
+      const pass = new SecurityHeadersPass();
+      expect(pass.name).toBe('security-headers');
+      expect(pass.category).toBe('security');
+    });
+
+    it('returns result with writtenHeaders and hasHandler', () => {
+      const ir = makeIR('java', {
+        types: [makeType('HomeController', ['@RestController'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+        calls: [makeCall('setHeader', 'response', 12, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const graph = new CodeGraph(ir);
+      const ctx: PassContext = {
+        graph,
+        code: '',
+        language: 'java',
+        config: { sources: [], sinks: [], sanitizers: [] } as TaintConfig,
+        getResult: () => { throw new Error('not used'); },
+        hasResult: () => false,
+        addFinding: () => {},
+      };
+      const result = new SecurityHeadersPass().run(ctx);
+      expect(result.hasHandler).toBe(true);
+      expect(result.writtenHeaders.has('x-frame-options')).toBe(true);
+    });
+
+    it('accepts custom rule tables via options', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 5, [
+          makeArg(0, '"X-Custom"', '"X-Custom"'),
+          makeArg(1, '"bad"', '"bad"'),
+        ])],
+      });
+      const graph = new CodeGraph(ir);
+      const findings: SastFinding[] = [];
+      const ctx: PassContext = {
+        graph,
+        code: '',
+        language: 'java',
+        config: { sources: [], sinks: [], sanitizers: [] } as TaintConfig,
+        getResult: () => { throw new Error('not used'); },
+        hasResult: () => false,
+        addFinding: (f) => findings.push(f),
+      };
+      new SecurityHeadersPass({
+        rules: [{
+          rule_id: 'custom-bad-header',
+          cwe: 'CWE-0000',
+          level: 'error',
+          severity: 'critical',
+          header: 'X-Custom',
+          kind: 'weak-value',
+          valuePattern: /^bad$/,
+          message: 'Bad custom header value',
+        }],
+      }).run(ctx);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('custom-bad-header');
+    });
+
+    it('emits stable finding IDs', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 20, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"*"', '"*"'),
+        ])],
+        file: 'src/MyController.java',
+      });
+      const findings = runPass(ir);
+      expect(findings[0].id).toBe('cors-wildcard-origin-src/MyController.java-20');
+    });
+
+    it('still fires value-based rules even without a handler', () => {
+      // cors-wildcard-origin has no requiresHandler → should fire anywhere
+      // a setHeader call appears.
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 20, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(1);
+    });
+  });
+
+  // ========================================================================
+  // Java constant resolution (HttpHeaders.X_FRAME_OPTIONS etc.)
+  // ========================================================================
+
+  describe('constant resolution', () => {
+    it('resolves HttpHeaders.X_FRAME_OPTIONS to X-Frame-Options', () => {
+      const ir = makeIR('java', {
+        types: [makeType('FramingConfigServlet', ['@Controller'], [
+          makeMethod('doGet', 10, 30, ['@RequestMapping']),
+        ])],
+        calls: [makeCall('setHeader', 'response', 15, [
+          makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),  // constant, no literal
+          makeArg(1, '"ALLOW-FROM https://evil.com"', '"ALLOW-FROM https://evil.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // Should fire x-frame-options-allow-from (weak-value)
+      const af = findings.filter(f => f.rule_id === 'x-frame-options-allow-from');
+      expect(af).toHaveLength(1);
+      expect(af[0].line).toBe(15);
+      // Should NOT fire missing-x-frame-options (the header was set)
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('resolves HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN to Access-Control-Allow-Origin', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 22, [
+          makeArg(0, 'HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN'),  // constant
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(1);
+    });
+
+    it('resolves bare SCREAMING_SNAKE_CASE constant (no class prefix)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 8, [
+          makeArg(0, 'X_FRAME_OPTIONS'),  // bare constant
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // X-Frame-Options is set with DENY → missing rule should NOT fire
+      // and ALLOW-FROM should NOT fire
+      expect(findings.filter(f => f.rule_id === 'x-frame-options-allow-from')).toHaveLength(0);
+    });
+
+    it('resolves CONTENT_SECURITY_POLICY constant', () => {
+      const ir = makeIR('java', {
+        types: [makeType('MyController', ['@RestController'], [
+          makeMethod('index', 10, 20, ['@GetMapping']),
+        ])],
+        calls: [makeCall('addHeader', 'response', 14, [
+          makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+          makeArg(1, '"frame-ancestors \'self\'"', '"frame-ancestors \'self\'"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // CSP is set → missing-csp-frame-ancestors should NOT fire
+      expect(findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors')).toHaveLength(0);
+    });
+
+    it('does NOT resolve single-word identifiers (not SCREAMING_SNAKE_CASE)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 10, [
+          makeArg(0, 'headerName'),  // variable, not constant
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // headerName is not resolvable → call is skipped → no cors-wildcard finding
+      expect(findings.filter(f => f.rule_id === 'cors-wildcard-origin')).toHaveLength(0);
+    });
+
+    it('detects reflected origin via constant header name', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, 'HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN'),
+          makeArg(1, 'request.getHeader("Origin")'),  // dynamic → reflected
+        ])],
+      });
+      const findings = runPass(ir);
+      const refl = findings.filter(f => f.rule_id === 'cors-reflected-origin');
+      expect(refl).toHaveLength(1);
+      expect(refl[0].line).toBe(25);
+    });
+  });
+
+  // ========================================================================
+  // Servlet handler detection
+  // ========================================================================
+
+  describe('servlet handler detection', () => {
+    it('detects HttpServlet with doGet as a handler', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'FrameAncestorsServlet', [], [makeMethod('doGet', 30, 35)], 'HttpServlet',
+        )],
+      });
+      const findings = runPass(ir);
+      // Handler detected → missing-x-frame-options should fire
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+    });
+
+    it('detects HttpServlet with service() as a handler', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'EscapeServlet', [], [makeMethod('service', 52, 81)], 'HttpServlet',
+        )],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+    });
+
+    it('does NOT treat plain class with doGet as handler (no HttpServlet extends)', () => {
+      const ir = makeIR('java', {
+        types: [makeType(
+          'SomeHelper', [], [makeMethod('doGet', 5, 15)],  // no extends
+        )],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(0);
+    });
+
+    it('fires missing-x-frame-options on servlet that sets CSP but not XFO', () => {
+      // Mirrors FrameAncestorsNoXFOAllowFrom.java
+      const ir = makeIR('java', {
+        types: [makeType(
+          'FrameAncestorsNoXFOAllowFrom', [], [makeMethod('doGet', 30, 35)], 'HttpServlet',
+        )],
+        calls: [makeCall('setHeader', 'response', 32, [
+          makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+          makeArg(1, '"frame-ancestors https://example.com"', '"frame-ancestors https://example.com"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      // Should fire missing-x-frame-options (XFO not set)
+      expect(findings.filter(f => f.rule_id === 'missing-x-frame-options')).toHaveLength(1);
+      // Should NOT fire missing-csp-frame-ancestors (CSP IS set)
+      expect(findings.filter(f => f.rule_id === 'missing-csp-frame-ancestors')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // XFO ↔ CSP mismatch detection
+  // ========================================================================
+
+  describe('xfo-csp-mismatch', () => {
+    it('fires when XFO=DENY but CSP frame-ancestors=self (mismatch)', () => {
+      // Mirrors XFODenyNoFrameAncestorsNone.java
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 32, [
+            makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 33, [
+            makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+            makeArg(1, "\"frame-ancestors 'self'\"", "\"frame-ancestors 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      const mm = findings.filter(f => f.rule_id === 'xfo-csp-mismatch');
+      expect(mm).toHaveLength(1);
+      expect(mm[0].cwe).toBe('CWE-1021');
+      expect(mm[0].evidence).toMatchObject({
+        xfo: 'DENY',
+        csp_frame_ancestors: "'self'",
+      });
+    });
+
+    it('fires when XFO=SAMEORIGIN but CSP allows external origin', () => {
+      // Mirrors XFOSameOriginNoFrameAncestorsSelf.java
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 32, [
+            makeArg(0, 'HttpHeaders.X_FRAME_OPTIONS'),
+            makeArg(1, '"SAMEORIGIN"', '"SAMEORIGIN"'),
+          ]),
+          makeCall('setHeader', 'response', 33, [
+            makeArg(0, 'HttpHeaders.CONTENT_SECURITY_POLICY'),
+            makeArg(1, '"frame-ancestors https://google.com"', '"frame-ancestors https://google.com"'),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      const mm = findings.filter(f => f.rule_id === 'xfo-csp-mismatch');
+      expect(mm).toHaveLength(1);
+      expect(mm[0].line).toBe(33);
+    });
+
+    it('does NOT fire when XFO=DENY and CSP frame-ancestors=none (consistent)', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"frame-ancestors 'none'\"", "\"frame-ancestors 'none'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when XFO=SAMEORIGIN and CSP frame-ancestors=self (consistent)', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"SAMEORIGIN"', '"SAMEORIGIN"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"frame-ancestors 'self'\"", "\"frame-ancestors 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when only XFO is set (no CSP)', () => {
+      const ir = makeIR('java', {
+        calls: [makeCall('setHeader', 'response', 10, [
+          makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+          makeArg(1, '"DENY"', '"DENY"'),
+        ])],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+
+    it('does NOT fire when CSP has no frame-ancestors directive', () => {
+      const ir = makeIR('java', {
+        calls: [
+          makeCall('setHeader', 'response', 10, [
+            makeArg(0, '"X-Frame-Options"', '"X-Frame-Options"'),
+            makeArg(1, '"DENY"', '"DENY"'),
+          ]),
+          makeCall('setHeader', 'response', 11, [
+            makeArg(0, '"Content-Security-Policy"', '"Content-Security-Policy"'),
+            makeArg(1, "\"default-src 'self'\"", "\"default-src 'self'\""),
+          ]),
+        ],
+      });
+      const findings = runPass(ir);
+      expect(findings.filter(f => f.rule_id === 'xfo-csp-mismatch')).toHaveLength(0);
+    });
+  });
+
+  // ========================================================================
+  // Cross-file CORS inheritance (checkInheritedCorsHeaders)
+  // ========================================================================
+
+  describe('CORS inheritance via checkInheritedCorsHeaders', () => {
+    /**
+     * Build a TypeHierarchyResolver with a parent→child relationship.
+     * The parent defines a virtual method; each child overrides it.
+     */
+    function buildHierarchy(
+      parentName: string,
+      parentFile: string,
+      childEntries: Array<{ name: string; file: string }>,
+    ): TypeHierarchyResolver {
+      const th = new TypeHierarchyResolver();
+      th.addType({
+        name: parentName, kind: 'class', package: 'com.example',
+        extends: 'HttpServlet', implements: [], annotations: [],
+        methods: [], fields: [], start_line: 1, end_line: 50,
+      }, parentFile, 'com.example');
+      for (const child of childEntries) {
+        th.addType({
+          name: child.name, kind: 'class', package: 'com.example',
+          extends: parentName, implements: [], annotations: [],
+          methods: [], fields: [], start_line: 1, end_line: 30,
+        }, child.file, 'com.example');
+      }
+      return th;
+    }
+
+    it('detects cors-null-origin in child that returns "null"', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile = 'AllowNullOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('AllowNullOrigin', [], [
+          makeMethod('getAllowOriginValue', 6, 10),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'AllowNullOrigin', file: childFile },
+      ]);
+
+      // Source lines (1-indexed: line 1='package...', line 6='protected String...', line 9='return "null"')
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',                                                // line 1
+        '',                                                                     // line 2
+        'public class AllowNullOrigin extends AllowOriginServlet {',            // line 3
+        '',                                                                     // line 4
+        '  @Override',                                                          // line 5
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 6
+        '    // This is insecure:',                                             // line 7
+        '    // https://www.w3.org/TR/cors/#access-control-allow-origin...',    // line 8
+        '    return "null";',                                                   // line 9
+        '  }',                                                                  // line 10
+        '}',                                                                    // line 11
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-null-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+      expect(findings[0].file).toBe(childFile);
+      expect(findings[0].line).toBe(6);
+      expect(findings[0].snippet).toContain('null');
+    });
+
+    it('detects cors-reflected-origin in child that returns request.getHeader()', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile = 'DynamicAllowOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('DynamicAllowOrigin', [], [
+          makeMethod('getAllowOriginValue', 6, 9),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'DynamicAllowOrigin', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',                                                // line 1
+        '',                                                                     // line 2
+        'public class DynamicAllowOrigin extends AllowOriginServlet {',         // line 3
+        '',                                                                     // line 4
+        '  @Override',                                                          // line 5
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 6
+        '    // Reflects the Origin header back.',                              // line 7
+        '    return request.getHeader("Origin");',                              // line 8
+        '  }',                                                                  // line 9
+        '}',                                                                    // line 10
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-reflected-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+      expect(findings[0].severity).toBe('high');
+      expect(findings[0].file).toBe(childFile);
+    });
+
+    it('detects cors-wildcard-origin in child that returns "*"', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'WildcardChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('WildcardChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'WildcardChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class WildcardChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "*";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-wildcard-origin');
+      expect(findings[0].cwe).toBe('CWE-942');
+    });
+
+    it('detects cors-http-origin in child that returns "http://..."', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'HttpChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('HttpChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'HttpChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class HttpChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "http://insecure.example.com";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].rule_id).toBe('cors-http-origin');
+      expect(findings[0].cwe).toBe('CWE-346');
+    });
+
+    it('does NOT emit for child that returns "https://safe.example.com"', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'SafeChild.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+          makeMethod('getOrigin', 32, 35),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getOrigin()', null),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('SafeChild', [], [
+          makeMethod('getOrigin', 5, 8),
+        ], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'SafeChild', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, [
+        'package com.example;',
+        'public class SafeChild extends Parent {',
+        '  @Override',
+        '  protected String getOrigin() {',
+        '    return "https://safe.example.com";',
+        '  }',
+        '}',
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(0);
+    });
+
+    it('handles multiple children from the same parent', () => {
+      const parentFile = 'AllowOriginServlet.java';
+      const childFile1 = 'AllowNullOrigin.java';
+      const childFile2 = 'DynamicAllowOrigin.java';
+
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('AllowOriginServlet', [], [
+          makeMethod('doPost', 30, 48),
+          makeMethod('getAllowOriginValue', 50, 55),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 47, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, 'getAllowOriginValue(request)', null),
+        ])],
+      });
+
+      const child1IR = makeIR('java', {
+        file: childFile1,
+        types: [makeType('AllowNullOrigin', [], [
+          makeMethod('getAllowOriginValue', 3, 5),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const child2IR = makeIR('java', {
+        file: childFile2,
+        types: [makeType('DynamicAllowOrigin', [], [
+          makeMethod('getAllowOriginValue', 3, 5),
+        ], 'AllowOriginServlet')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('AllowOriginServlet', parentFile, [
+        { name: 'AllowNullOrigin', file: childFile1 },
+        { name: 'DynamicAllowOrigin', file: childFile2 },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile1, [
+        'class AllowNullOrigin extends AllowOriginServlet {',                   // line 1
+        '  @Override',                                                          // line 2
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 3
+        '    return "null";',                                                   // line 4
+        '  }',                                                                  // line 5
+        '}',                                                                    // line 6
+      ]);
+      sourceLines.set(childFile2, [
+        'class DynamicAllowOrigin extends AllowOriginServlet {',               // line 1
+        '  @Override',                                                          // line 2
+        '  protected String getAllowOriginValue(HttpServletRequest request) {', // line 3
+        '    return request.getHeader("Origin");',                              // line 4
+        '  }',                                                                  // line 5
+        '}',                                                                    // line 6
+      ]);
+
+      const findings = checkInheritedCorsHeaders(
+        [
+          { file: parentFile, analysis: parentIR },
+          { file: childFile1, analysis: child1IR },
+          { file: childFile2, analysis: child2IR },
+        ],
+        th,
+        sourceLines,
+      );
+
+      expect(findings).toHaveLength(2);
+      const ruleIds = findings.map(f => f.rule_id).sort();
+      expect(ruleIds).toEqual(['cors-null-origin', 'cors-reflected-origin']);
+    });
+
+    it('does NOT emit when parent header value is a literal', () => {
+      const parentFile = 'Parent.java';
+      const childFile = 'Child.java';
+
+      // Parent sets ACAO to a literal value — no virtual method involved.
+      const parentIR = makeIR('java', {
+        file: parentFile,
+        types: [makeType('Parent', [], [
+          makeMethod('doPost', 10, 30),
+        ], 'HttpServlet')],
+        calls: [makeCall('setHeader', 'response', 25, [
+          makeArg(0, '"Access-Control-Allow-Origin"', '"Access-Control-Allow-Origin"'),
+          makeArg(1, '"*"', '"*"'),
+        ])],
+      });
+
+      const childIR = makeIR('java', {
+        file: childFile,
+        types: [makeType('Child', [], [], 'Parent')],
+        calls: [],
+      });
+
+      const th = buildHierarchy('Parent', parentFile, [
+        { name: 'Child', file: childFile },
+      ]);
+
+      const sourceLines = new Map<string, string[]>();
+      sourceLines.set(parentFile, []);
+      sourceLines.set(childFile, []);
+
+      const findings = checkInheritedCorsHeaders(
+        [{ file: parentFile, analysis: parentIR }, { file: childFile, analysis: childIR }],
+        th,
+        sourceLines,
+      );
+
+      // Literal values are handled by the per-file pass, not inheritance.
+      expect(findings).toHaveLength(0);
+    });
+  });
+});

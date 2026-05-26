@@ -1,0 +1,218 @@
+{
+  "sinks": [
+    {
+      "property": "innerHTML",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "note": "DOM XSS - innerHTML assignment with user input"
+    },
+    {
+      "property": "outerHTML",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "note": "DOM XSS - outerHTML assignment with user input"
+    },
+    {
+      "method": "write",
+      "class": "document",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "DOM XSS - document.write with user input"
+    },
+    {
+      "method": "writeln",
+      "class": "document",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "DOM XSS - document.writeln with user input"
+    },
+    {
+      "method": "insertAdjacentHTML",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [1],
+      "note": "DOM XSS - insertAdjacentHTML with user input"
+    },
+    {
+      "property": "src",
+      "element": "script",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "note": "DOM XSS - script src manipulation"
+    },
+    {
+      "property": "href",
+      "element": "a",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "note": "DOM XSS - anchor href with javascript: protocol"
+    },
+    {
+      "property": "action",
+      "element": "form",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "note": "DOM XSS - form action manipulation"
+    },
+    {
+      "method": "setAttribute",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [1],
+      "note": "DOM XSS - setAttribute with event handler or dangerous attributes"
+    },
+    {
+      "method": "setAttributeNS",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [2],
+      "note": "DOM XSS - setAttributeNS"
+    },
+    {
+      "method": "createContextualFragment",
+      "class": "Range",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "DOM XSS - Range.createContextualFragment"
+    },
+    {
+      "method": "parseFromString",
+      "class": "DOMParser",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "DOM parsing - may lead to XSS if content is rendered"
+    },
+    {
+      "method": "html",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "jQuery .html() - XSS via jQuery HTML injection"
+    },
+    {
+      "method": "html",
+      "class": "jQuery",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "jQuery .html() - XSS via jQuery HTML injection"
+    },
+    {
+      "method": "append",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery .append() - XSS if user input contains HTML"
+    },
+    {
+      "method": "prepend",
+      "class": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery .prepend() - XSS if user input contains HTML"
+    },
+    {
+      "method": "$",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery $() selector - DOM clobbering/XSS when user input is used as selector"
+    },
+    {
+      "method": "jQuery",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "jQuery() selector - DOM clobbering/XSS when user input is used as selector"
+    },
+    {
+      "property": "cssText",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.cssText"
+    },
+    {
+      "property": "background",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.background (url() injection)"
+    },
+    {
+      "property": "backgroundImage",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "note": "CSS injection via style.backgroundImage (url() injection)"
+    },
+    {
+      "property": "textContent",
+      "element": "style",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "note": "Dynamic stylesheet injection via style.textContent"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "sanitize",
+      "class": "DOMPurify",
+      "removes": ["xss"],
+      "note": "DOMPurify sanitization"
+    },
+    {
+      "method": "createTextNode",
+      "class": "document",
+      "removes": ["xss"],
+      "note": "Text node creation - safe from XSS"
+    },
+    {
+      "property": "textContent",
+      "removes": ["xss"],
+      "note": "textContent assignment - safe from XSS"
+    },
+    {
+      "property": "innerText",
+      "removes": ["xss"],
+      "note": "innerText assignment - safe from XSS"
+    },
+    {
+      "method": "encodeURIComponent",
+      "removes": ["xss"],
+      "note": "URL encoding - safe for URL parameters"
+    },
+    {
+      "method": "parse",
+      "class": "JSON",
+      "removes": ["xss", "code_injection"],
+      "note": "JSON.parse() returns object - breaks string taint chain"
+    }
+  ]
+}

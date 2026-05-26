@@ -1,0 +1,136 @@
+{
+  "sinks": [
+    {
+      "method": "search",
+      "class": "DirContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0,
+        1
+      ],
+      "note": "LDAP filter injection if user input in filter"
+    },
+    {
+      "method": "search",
+      "class": "InitialDirContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "search",
+      "class": "LdapContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "search",
+      "class": "InitialContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "lookup",
+      "class": "DirContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "lookup",
+      "class": "InitialDirContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "lookup",
+      "class": "InitialContext",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "search",
+      "class": "LdapTemplate",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "lookup",
+      "class": "LdapTemplate",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "find",
+      "class": "LdapTemplate",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "findOne",
+      "class": "LdapTemplate",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "encodeForLDAP",
+      "class": "Encoder",
+      "removes": [
+        "ldap_injection"
+      ]
+    },
+    {
+      "method": "escapeLDAPSearchFilter",
+      "removes": [
+        "ldap_injection"
+      ],
+      "note": "Apache Commons escape method"
+    }
+  ]
+}

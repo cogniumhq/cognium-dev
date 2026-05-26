@@ -1,0 +1,828 @@
+{
+  "sinks": [
+    {
+      "method": "FileInputStream",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Direct file access with user input"
+    },
+    {
+      "method": "FileOutputStream",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "FileReader",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "FileWriter",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "RandomAccessFile",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "File",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ],
+      "note": "File object creation - check usage"
+    },
+    {
+      "method": "delete",
+      "class": "File",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high"
+    },
+    {
+      "method": "renameTo",
+      "class": "File",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high"
+    },
+    {
+      "method": "newInputStream",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "newOutputStream",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "newBufferedReader",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "newBufferedWriter",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "readAllBytes",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "readAllLines",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "write",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "delete",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "move",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "copy",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "createFile",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createDirectory",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createDirectories",
+      "class": "Files",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "resolve",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Path resolution with user input"
+    },
+    {
+      "method": "resolveSibling",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "toFile",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "medium",
+      "note": "Path to File conversion"
+    },
+    {
+      "method": "getInputStream",
+      "class": "Resource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Resource input stream access"
+    },
+    {
+      "method": "getFile",
+      "class": "Resource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high"
+    },
+    {
+      "method": "getURL",
+      "class": "Resource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "medium"
+    },
+    {
+      "method": "resolveURI",
+      "class": "SourceResolver",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Cocoon URI resolution with user input"
+    },
+    {
+      "method": "resolve",
+      "class": "SourceResolver",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getResource",
+      "class": "ClassLoader",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "ClassLoader resource path traversal"
+    },
+    {
+      "method": "getResourceAsStream",
+      "class": "ClassLoader",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getResources",
+      "class": "ClassLoader",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getResource",
+      "class": "Class",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Class.getResource() path traversal"
+    },
+    {
+      "method": "getResourceAsStream",
+      "class": "Class",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getResource",
+      "class": "ResourceLoader",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Spring ResourceLoader"
+    },
+    {
+      "method": "PathResource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Spring PathResource constructor"
+    },
+    {
+      "method": "FileSystemResource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "readFileToString",
+      "class": "FileUtils",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "writeStringToFile",
+      "class": "FileUtils",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "copyFile",
+      "class": "FileUtils",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0,
+        1
+      ]
+    },
+    {
+      "method": "deleteQuietly",
+      "class": "FileUtils",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getResourceAsStream",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "getResource",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "File",
+      "class": "constructor",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "openStream",
+      "class": "URL",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "resolve",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "parse",
+      "class": "DocumentBuilder",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "compile",
+      "class": "XPath",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "FileOutputStream",
+      "class": "constructor",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "normalize",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "FileInputStream",
+      "class": "constructor",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "FileReader",
+      "class": "constructor",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "println",
+      "class": "PrintWriter",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "write",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "get",
+      "class": "Paths",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "forName",
+      "class": "Class",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "newInstance",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "readObject",
+      "class": "ObjectInputStream",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "execute",
+      "class": "Statement",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "start",
+      "class": "ProcessBuilder",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "print",
+      "class": "PrintWriter",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "executeQuery",
+      "class": "Statement",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "executeUpdate",
+      "class": "Statement",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "child",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Jenkins FilePath child resolution - CVE-2022-25174"
+    },
+    {
+      "method": "copyRecursiveTo",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Jenkins FilePath copy - may traverse paths"
+    },
+    {
+      "method": "write",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Jenkins FilePath write"
+    },
+    {
+      "method": "read",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Jenkins FilePath read"
+    },
+    {
+      "method": "list",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "medium",
+      "arg_positions": [0],
+      "note": "Jenkins FilePath directory listing"
+    },
+    {
+      "method": "deleteRecursive",
+      "class": "FilePath",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Jenkins FilePath recursive delete"
+    },
+    {
+      "method": "createRelative",
+      "class": "Resource",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Spring Resource.createRelative() - path traversal via relative path"
+    },
+    {
+      "method": "createRelative",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Resource createRelative without class qualifier"
+    },
+    {
+      "method": "sendFile",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Vert.x/HTTP file sending - path traversal"
+    },
+    {
+      "method": "sendStatic",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Static file serving - path traversal"
+    },
+    {
+      "method": "handle",
+      "class": "StaticHandler",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Vert.x static file handler"
+    },
+    {
+      "method": "handle",
+      "class": "StaticHandlerImpl",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Vert.x static file handler implementation"
+    },
+    {
+      "method": "getFile",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Generic getFile with user input"
+    },
+    {
+      "method": "extractEntry",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Archive entry extraction - zip slip"
+    },
+    {
+      "method": "extractAll",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Archive extraction - zip slip"
+    },
+    {
+      "method": "unzip",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Unzip operation - zip slip"
+    },
+    {
+      "method": "getPath",
+      "class": "ZipEntry",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Zip entry path - may contain ../"
+    },
+    {
+      "method": "getName",
+      "class": "ZipEntry",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Zip entry name - may contain ../"
+    },
+    {
+      "method": "getEnvironment",
+      "class": "ConfigServicePropertySourceLocator",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Spring Cloud Config path traversal"
+    },
+    {
+      "method": "findOne",
+      "class": "GenericResourceRepository",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "note": "Spring Cloud Config resource repository"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "getCanonicalPath",
+      "class": "File",
+      "removes": [
+        "path_traversal"
+      ],
+      "note": "Safe if followed by startsWith check"
+    },
+    {
+      "method": "normalize",
+      "class": "Paths",
+      "removes": [
+        "path_traversal"
+      ],
+      "note": "Normalizes path removing .. sequences"
+    },
+    {
+      "method": "startsWith",
+      "class": "String",
+      "removes": [
+        "path_traversal"
+      ],
+      "note": "Whitelist validation"
+    }
+  ]
+}

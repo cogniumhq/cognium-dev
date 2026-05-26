@@ -1,0 +1,160 @@
+{
+  "sinks": [
+    {
+      "method": "sendRedirect",
+      "class": "HttpServletResponse",
+      "type": "ssrf",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Open redirect - user-controlled URL can redirect to malicious site"
+    },
+    {
+      "method": "setHeader",
+      "class": "HttpServletResponse",
+      "type": "ssrf",
+      "cwe": "CWE-601",
+      "severity": "medium",
+      "arg_positions": [1],
+      "note": "Header injection - especially dangerous for Location header"
+    },
+    {
+      "method": "addHeader",
+      "class": "HttpServletResponse",
+      "type": "ssrf",
+      "cwe": "CWE-601",
+      "severity": "medium",
+      "arg_positions": [1],
+      "note": "Header injection"
+    },
+    {
+      "method": "openConnection",
+      "class": "URL",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [],
+      "note": "SSRF - server-side request to user-controlled URL"
+    },
+    {
+      "method": "openStream",
+      "class": "URL",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [],
+      "note": "SSRF - fetches content from user-controlled URL"
+    },
+    {
+      "method": "URL",
+      "class": "constructor",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "URL construction with user input"
+    },
+    {
+      "method": "URI",
+      "class": "constructor",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "URI construction with user input"
+    },
+    {
+      "method": "create",
+      "class": "URI",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "URI.create with user input"
+    },
+    {
+      "method": "get",
+      "class": "HttpClient",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "HTTP client GET request to user-controlled URL"
+    },
+    {
+      "method": "post",
+      "class": "HttpClient",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "HTTP client POST request to user-controlled URL"
+    },
+    {
+      "method": "execute",
+      "class": "HttpClient",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "HTTP client execute with user-controlled request"
+    },
+    {
+      "method": "getForObject",
+      "class": "RestTemplate",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring RestTemplate GET request"
+    },
+    {
+      "method": "getForEntity",
+      "class": "RestTemplate",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring RestTemplate GET request"
+    },
+    {
+      "method": "postForObject",
+      "class": "RestTemplate",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring RestTemplate POST request"
+    },
+    {
+      "method": "postForEntity",
+      "class": "RestTemplate",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring RestTemplate POST request"
+    },
+    {
+      "method": "exchange",
+      "class": "RestTemplate",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring RestTemplate exchange request"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "validateUrl",
+      "removes": ["ssrf"],
+      "note": "URL validation function"
+    },
+    {
+      "method": "isAllowedHost",
+      "removes": ["ssrf"],
+      "note": "Host allowlist check"
+    }
+  ]
+}

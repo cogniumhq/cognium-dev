@@ -1,0 +1,808 @@
+{
+  "sinks": [
+    {
+      "method": "eval",
+      "class": "ScriptEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Can execute arbitrary code via script engine"
+    },
+    {
+      "method": "getEngineByName",
+      "class": "ScriptEngineManager",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Check if followed by eval()"
+    },
+    {
+      "method": "ScriptEngineManager",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "medium",
+      "note": "Script engine initialization"
+    },
+    {
+      "method": "eval",
+      "class": "NashornScriptEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evaluateString",
+      "class": "Context",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "evaluate",
+      "class": "GroovyShell",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "GroovyShell",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high"
+    },
+    {
+      "method": "parse",
+      "class": "GroovyShell",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getBeanInfo",
+      "class": "Introspector",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Java Bean introspection - Spring4Shell"
+    },
+    {
+      "method": "CachedIntrospectionResults",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Spring bean introspection"
+    },
+    {
+      "method": "getPropertyDescriptors",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "medium",
+      "note": "Property descriptor access"
+    },
+    {
+      "method": "forName",
+      "class": "Class",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Can load arbitrary classes with user input"
+    },
+    {
+      "method": "newInstance",
+      "class": "Class",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Instantiates loaded class"
+    },
+    {
+      "method": "newInstance",
+      "class": "Constructor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high"
+    },
+    {
+      "method": "invoke",
+      "class": "Method",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "Can invoke arbitrary methods via reflection"
+    },
+    {
+      "method": "getDeclaredMethod",
+      "class": "Class",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getMethod",
+      "class": "Class",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "parseExpression",
+      "class": "ExpressionParser",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "SpEL expression parsing with user input"
+    },
+    {
+      "method": "parseExpression",
+      "class": "SpelExpressionParser",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getValue",
+      "class": "Expression",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "SpEL expression evaluation"
+    },
+    {
+      "method": "setValue",
+      "class": "Expression",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createValueExpression",
+      "class": "ExpressionFactory",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        1
+      ],
+      "note": "EL expression creation"
+    },
+    {
+      "method": "getValue",
+      "class": "ValueExpression",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical"
+    },
+    {
+      "method": "createMethodExpression",
+      "class": "ExpressionFactory",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "invoke",
+      "class": "MethodExpression",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical"
+    },
+    {
+      "method": "parseExpression",
+      "class": "Ognl",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getValue",
+      "class": "Ognl",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "setValue",
+      "class": "Ognl",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "eval",
+      "class": "MVEL",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "compileExpression",
+      "class": "MVEL",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createExpression",
+      "class": "JexlEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evaluate",
+      "class": "Expression",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical"
+    },
+    {
+      "method": "eval",
+      "class": "Interpreter",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "source",
+      "class": "Interpreter",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "exec",
+      "class": "PythonInterpreter",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "eval",
+      "class": "PythonInterpreter",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evalScriptlet",
+      "class": "ScriptingContainer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "runScriptlet",
+      "class": "ScriptingContainer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evaluate",
+      "class": "Velocity",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        2
+      ],
+      "note": "Template injection can lead to code execution"
+    },
+    {
+      "method": "Template",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Template with user-controlled content"
+    },
+    {
+      "method": "process",
+      "class": "Template",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high"
+    },
+    {
+      "method": "createTemplate",
+      "class": "Configuration",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "FreeMarker template creation from string"
+    },
+    {
+      "method": "VelocityEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Velocity engine initialization"
+    },
+    {
+      "method": "process",
+      "class": "TemplateEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Thymeleaf template processing"
+    },
+    {
+      "method": "createTemplate",
+      "class": "TemplateEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "compile",
+      "class": "PebbleEngine",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Pebble template compilation"
+    },
+    {
+      "method": "execute",
+      "class": "Renderer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "JStachio template rendering"
+    },
+    {
+      "method": "lookup",
+      "class": "InitialContext",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "JNDI injection can lead to RCE"
+    },
+    {
+      "method": "lookup",
+      "class": "Context",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getTask",
+      "class": "JavaCompiler",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical"
+    },
+    {
+      "method": "URLClassLoader",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Can load classes from attacker-controlled URLs"
+    },
+    {
+      "method": "defineClass",
+      "class": "ClassLoader",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [
+        1
+      ],
+      "note": "Can define arbitrary classes from bytecode"
+    },
+    {
+      "method": "newInstance",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "readObject",
+      "class": "ObjectInputStream",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "compile",
+      "class": "XPath",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "println",
+      "class": "PrintWriter",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "onNewInstance",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox interceptor - sandbox bypass"
+    },
+    {
+      "method": "onMethodCall",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox method interception"
+    },
+    {
+      "method": "onStaticCall",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox static call interception"
+    },
+    {
+      "method": "render",
+      "class": "XWikiRenderer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "XWiki wiki content rendering"
+    },
+    {
+      "method": "render",
+      "class": "WikiRenderer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Wiki content rendering"
+    },
+    {
+      "method": "parseGroovyScript",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Groovy script parsing"
+    },
+    {
+      "method": "run",
+      "class": "Script",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy script execution"
+    },
+    {
+      "method": "invokeMethod",
+      "class": "GroovyObject",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Dynamic Groovy method invocation"
+    },
+    {
+      "method": "getMetaClass",
+      "class": "GroovyObject",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Groovy metaclass access - can lead to code execution"
+    },
+    {
+      "method": "execute",
+      "class": "WikiMacro",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "XWiki macro execution"
+    },
+    {
+      "method": "parseClass",
+      "class": "CompilerConfiguration",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Groovy class compilation from string"
+    },
+    {
+      "method": "interpolate",
+      "class": "StringSubstitutor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache Commons Text interpolation - CVE-2022-42889 (script:, dns:, url: lookups)"
+    },
+    {
+      "method": "replace",
+      "class": "StringSubstitutor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache Commons Text substitution with lookup"
+    },
+    {
+      "method": "interpolate",
+      "class": "StringLookupFactory",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache Commons Text lookup interpolation"
+    },
+    {
+      "method": "getConnection",
+      "class": "DriverManager",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "JDBC URL injection - can trigger JNDI/RCE via malicious JDBC URLs"
+    },
+    {
+      "method": "createConnection",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Database connection creation with attacker-controlled URL"
+    },
+    {
+      "method": "invoke",
+      "class": "RpcInvocation",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Dubbo RPC invocation - may execute arbitrary code"
+    },
+    {
+      "method": "decode",
+      "class": "DecodeableRpcInvocation",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Dubbo RPC deserialization"
+    },
+    {
+      "method": "refer",
+      "class": "RegistryProtocol",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Dubbo registry protocol reference"
+    },
+    {
+      "method": "executeScript",
+      "class": "ScriptingComponentHelper",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache NiFi script execution"
+    },
+    {
+      "method": "onTrigger",
+      "class": "ExecuteScript",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Apache NiFi ExecuteScript processor"
+    },
+    {
+      "method": "parse",
+      "class": "CronDefinition",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Cron expression parsing - potential injection"
+    },
+    {
+      "method": "parse",
+      "class": "CronParser",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Cron expression parsing"
+    },
+    {
+      "method": "check",
+      "class": "PermitAllPermissionEvaluator",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Spring Security expression evaluation bypass"
+    },
+    {
+      "method": "evaluate",
+      "class": "SpelExpressionParser",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "SpEL direct evaluation"
+    },
+    {
+      "method": "setPropertyValues",
+      "class": "DataBinder",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Spring DataBinder property binding - Spring4Shell"
+    },
+    {
+      "method": "bind",
+      "class": "DataBinder",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "high",
+      "note": "Spring DataBinder bind - Spring4Shell"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "matches",
+      "class": "String",
+      "removes": [
+        "code_injection"
+      ],
+      "note": "Pattern validation - check pattern is restrictive (alphanumeric only)"
+    },
+    {
+      "class": "SimpleEvaluationContext",
+      "removes": [
+        "code_injection"
+      ],
+      "note": "Restricts SpEL to safe operations only"
+    },
+    {
+      "pattern": "allowedClasses.contains",
+      "removes": [
+        "code_injection"
+      ],
+      "note": "Whitelist validation for class names"
+    }
+  ],
+  "dangerous_spel_patterns": [
+    {
+      "pattern": "T(java.lang.Runtime)",
+      "risk": "critical",
+      "note": "Runtime access via SpEL"
+    },
+    {
+      "pattern": "T(java.lang.ProcessBuilder)",
+      "risk": "critical",
+      "note": "ProcessBuilder access via SpEL"
+    },
+    {
+      "pattern": ".getClass().forName",
+      "risk": "critical",
+      "note": "Reflection via SpEL"
+    },
+    {
+      "pattern": "getEngineByName",
+      "risk": "critical",
+      "note": "Script engine access via SpEL"
+    }
+  ]
+}

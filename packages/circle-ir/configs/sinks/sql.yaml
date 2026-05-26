@@ -1,0 +1,233 @@
+{
+  "sinks": [
+    {
+      "method": "createNativeQuery",
+      "class": "EntityManager",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createQuery",
+      "class": "EntityManager",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "HQL injection if string concat used"
+    },
+    {
+      "method": "executeQuery",
+      "class": "Statement",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "execute",
+      "class": "Statement",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "executeUpdate",
+      "class": "Statement",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "addBatch",
+      "class": "Statement",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "query",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "queryForObject",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "queryForList",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "update",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "execute",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "queryForRowSet",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "queryForMap",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "batchUpdate",
+      "class": "JdbcTemplate",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "File",
+      "class": "constructor",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "FileInputStream",
+      "class": "constructor",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "getResource",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "openConnection",
+      "class": "URL",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "openStream",
+      "class": "URL",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "forName",
+      "class": "Class",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "prepareStatement",
+      "class": "Connection",
+      "removes": [
+        "sql_injection"
+      ],
+      "note": "Safe if parameters are bound with setX methods"
+    },
+    {
+      "method": "setParameter",
+      "class": "Query",
+      "removes": [
+        "sql_injection"
+      ]
+    },
+    {
+      "annotation": "@Param",
+      "removes": [
+        "sql_injection"
+      ]
+    }
+  ]
+}

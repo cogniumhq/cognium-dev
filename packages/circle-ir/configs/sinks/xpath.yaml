@@ -1,0 +1,121 @@
+{
+  "sinks": [
+    {
+      "method": "evaluate",
+      "class": "XPath",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "XPath injection if user input in expression"
+    },
+    {
+      "method": "compile",
+      "class": "XPath",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evaluate",
+      "class": "XPathExpression",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "evaluate",
+      "class": "XPathEvaluator",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "selectNodes",
+      "class": "XPath",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "selectSingleNode",
+      "class": "XPath",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "selectNodes",
+      "class": "Node",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "selectSingleNode",
+      "class": "Node",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "createXPath",
+      "class": "DocumentHelper",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "setQuery",
+      "class": "XQPreparedExpression",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "setXPathVariableResolver",
+      "class": "XPath",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "Using variables is safe"
+    },
+    {
+      "method": "encodeForXPath",
+      "removes": [
+        "xpath_injection"
+      ]
+    }
+  ]
+}

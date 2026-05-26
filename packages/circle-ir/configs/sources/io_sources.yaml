@@ -1,0 +1,519 @@
+{
+  "sources": [
+    {
+      "method": "readLine",
+      "class": "BufferedReader",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Line read from file, network, or console"
+    },
+    {
+      "method": "read",
+      "class": "BufferedReader",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Characters read from input"
+    },
+    {
+      "method": "read",
+      "class": "InputStreamReader",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Characters from input stream"
+    },
+    {
+      "method": "readLine",
+      "class": "DataInputStream",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Line from data input stream"
+    },
+    {
+      "method": "readUTF",
+      "class": "DataInputStream",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "UTF string from data input stream"
+    },
+    {
+      "method": "nextLine",
+      "class": "Scanner",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Line from scanner input"
+    },
+    {
+      "method": "next",
+      "class": "Scanner",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Token from scanner input"
+    },
+    {
+      "method": "readLine",
+      "class": "Console",
+      "type": "console_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Line from console input"
+    },
+    {
+      "method": "readPassword",
+      "class": "Console",
+      "type": "console_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Password from console input"
+    },
+    {
+      "method": "getenv",
+      "class": "System",
+      "type": "env_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Environment variable - can be attacker-controlled"
+    },
+    {
+      "method": "getProperty",
+      "class": "System",
+      "type": "env_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "System property"
+    },
+    {
+      "method": "getProperty",
+      "class": "Properties",
+      "type": "env_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Property value from properties file"
+    },
+    {
+      "method": "getInputStream",
+      "class": "Socket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Input stream from network socket"
+    },
+    {
+      "method": "openStream",
+      "class": "URL",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Stream from URL connection"
+    },
+    {
+      "method": "getString",
+      "class": "ResultSet",
+      "type": "database_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "String from database result"
+    },
+    {
+      "method": "getObject",
+      "class": "ResultSet",
+      "type": "database_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Object from database result"
+    },
+    {
+      "method": "readAllLines",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Lines from file"
+    },
+    {
+      "method": "readString",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Content from file"
+    },
+    {
+      "method": "readAllBytes",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Bytes from file"
+    },
+    {
+      "method": "getArgs",
+      "type": "cli_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Command line arguments"
+    },
+    {
+      "method": "get",
+      "class": "Map",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Map.get() - often used for plugin/config parameters from user input"
+    },
+    {
+      "method": "get",
+      "class": "HashMap",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "HashMap.get() - often used for plugin parameters"
+    },
+    {
+      "method": "get",
+      "class": "LinkedHashMap",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "LinkedHashMap.get() for config parameters"
+    },
+    {
+      "method": "get",
+      "class": "TreeMap",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "TreeMap.get() for config parameters"
+    },
+    {
+      "method": "get",
+      "class": "ConcurrentHashMap",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "ConcurrentHashMap.get() for config parameters"
+    },
+    {
+      "method": "get",
+      "class": "Hashtable",
+      "type": "plugin_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Hashtable.get() for config parameters"
+    },
+    {
+      "method": "getAttribute",
+      "class": "HttpSession",
+      "type": "session_data",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Session attribute - may contain user-controlled data"
+    },
+    {
+      "method": "getAttribute",
+      "class": "HttpServletRequest",
+      "type": "request_data",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Request attribute - may contain user-controlled data"
+    },
+    {
+      "method": "getAttribute",
+      "class": "ServletContext",
+      "type": "context_data",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Context attribute"
+    },
+    {
+      "method": "contentAsString",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as string - may contain untrusted data"
+    },
+    {
+      "method": "readAsString",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as string"
+    },
+    {
+      "method": "readToString",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as string"
+    },
+    {
+      "method": "getText",
+      "class": "File",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as text (Groovy)"
+    },
+    {
+      "method": "text",
+      "class": "File",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as text (Groovy property)"
+    },
+    {
+      "method": "getContent",
+      "class": "WikiDocument",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "XWiki document content - user-controlled wiki text"
+    },
+    {
+      "method": "getRenderedContent",
+      "class": "WikiDocument",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "XWiki rendered content"
+    },
+    {
+      "method": "getStringValue",
+      "class": "BaseObject",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "XWiki object property value"
+    },
+    {
+      "method": "getFilename",
+      "class": "Part",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Multipart file upload filename"
+    },
+    {
+      "method": "getSubmittedFileName",
+      "class": "Part",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Multipart file upload filename"
+    },
+    {
+      "method": "getOriginalFilename",
+      "class": "MultipartFile",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Spring multipart file original filename"
+    },
+    {
+      "method": "getFileName",
+      "class": "MimePart",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Email attachment filename - CVE-2018-8041 pattern"
+    },
+    {
+      "method": "getFileName",
+      "class": "BodyPart",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Email attachment filename"
+    },
+    {
+      "method": "getFileName",
+      "class": "MimeBodyPart",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "MIME attachment filename"
+    },
+    {
+      "method": "getName",
+      "class": "FileItem",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Commons FileUpload filename"
+    },
+    {
+      "method": "param",
+      "class": "RoutingContext",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x routing context parameter"
+    },
+    {
+      "method": "pathParam",
+      "class": "RoutingContext",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x path parameter"
+    },
+    {
+      "method": "queryParam",
+      "class": "RoutingContext",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x query parameter"
+    },
+    {
+      "method": "getBodyAsString",
+      "class": "RoutingContext",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x request body"
+    },
+    {
+      "method": "getBodyAsJson",
+      "class": "RoutingContext",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x JSON request body"
+    },
+    {
+      "method": "path",
+      "class": "HttpServerRequest",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x request path"
+    },
+    {
+      "method": "uri",
+      "class": "HttpServerRequest",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x request URI"
+    },
+    {
+      "method": "getParam",
+      "class": "HttpServerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x HTTP request parameter"
+    },
+    {
+      "method": "getHeader",
+      "class": "HttpServerRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x HTTP request header"
+    },
+    {
+      "method": "getJsonObject",
+      "class": "Message",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x event bus message body"
+    },
+    {
+      "method": "body",
+      "class": "Message",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x event bus message body"
+    },
+    {
+      "method": "normalizedPath",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Normalized path still contains user input - CVE-2018-12542 pattern"
+    },
+    {
+      "method": "toAbsolutePath",
+      "class": "Path",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Path resolution with user input"
+    },
+    {
+      "method": "resolve",
+      "class": "Path",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Path resolution with user input"
+    },
+    {
+      "method": "resolveSibling",
+      "class": "Path",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Path resolution with user input"
+    },
+    {
+      "method": "fromXML",
+      "class": "XStream",
+      "type": "deserialization_input",
+      "severity": "critical",
+      "return_tainted": true,
+      "note": "XStream deserialization - untrusted XML input"
+    },
+    {
+      "method": "unmarshal",
+      "class": "XStream",
+      "type": "deserialization_input",
+      "severity": "critical",
+      "return_tainted": true,
+      "note": "XStream unmarshalling - untrusted input"
+    },
+    {
+      "method": "startElement",
+      "class": "ContentHandler",
+      "type": "html_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "SAX element start - receives untrusted HTML/XML element"
+    },
+    {
+      "method": "scan",
+      "class": "AntiSamy",
+      "type": "html_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "AntiSamy HTML scanning"
+    },
+    {
+      "method": "getCleanHTML",
+      "class": "CleanResults",
+      "type": "html_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "AntiSamy cleaned HTML output - may still have bypass"
+    },
+    {
+      "method": "realClass",
+      "class": "Mapper",
+      "type": "deserialization_input",
+      "severity": "critical",
+      "return_tainted": true,
+      "note": "XStream class mapping from untrusted element name"
+    }
+  ]
+}

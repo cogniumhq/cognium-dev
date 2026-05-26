@@ -1,0 +1,55 @@
+{
+  "version": "1.0",
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/node_modules/**", "**/dist/**", "**/tests/**"],
+
+  "passes": {
+    "infinite-loop": false,
+    "missing-public-doc": false,
+    "unbounded-collection": false,
+    "excessive-allocation": false,
+    "orphan-module": false,
+    "dependency-fan-out": { "threshold": 50 }
+  },
+
+  "suppressions": [
+    {
+      "pass": "god-class",
+      "file": "src/analysis/constant-propagation/evaluator.ts",
+      "reason": "ExpressionEvaluator is a visitor over 20+ AST node types - splitting by node type would scatter related logic"
+    },
+    {
+      "pass": "dependency-fan-out",
+      "file": "src/analyzer.ts",
+      "reason": "Main orchestrator that registers all 40 passes - high import count is inherent to its role"
+    },
+    {
+      "pass": "serial-await",
+      "file": "src/core/parser.ts",
+      "reason": "Tree-sitter WASM must initialize before language loading - sequential by API contract"
+    },
+    {
+      "pass": "serial-await",
+      "file": "src/analyzer.ts",
+      "reason": "Parser init must complete before parse() can be called - sequential by API contract"
+    },
+    {
+      "pass": "unhandled-exception",
+      "file": "src/core/parser.ts",
+      "reason": "Throws on uninitialized state - standard library pattern for API misuse"
+    },
+    {
+      "pass": "unhandled-exception",
+      "file": "src/browser.ts",
+      "reason": "Throws on unsupported language/invalid state - caller must handle"
+    },
+    {
+      "pass": "unhandled-exception",
+      "file": "src/graph/analysis-pass.ts",
+      "reason": "Throws when required pass dependency missing - fail-fast design"
+    }
+  ],
+
+  "severity": "low",
+  "categories": ["security", "reliability", "performance", "maintainability", "architecture"]
+}

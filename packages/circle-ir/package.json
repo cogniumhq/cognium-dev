@@ -1,0 +1,110 @@
+{
+  "name": "circle-ir",
+  "version": "3.22.3",
+  "description": "High-performance Static Application Security Testing (SAST) library for detecting security vulnerabilities through taint analysis",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/circle-ir-core.d.ts",
+      "import": "./dist/core/circle-ir-core.js",
+      "require": "./dist/core/circle-ir-core.cjs"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser/circle-ir.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "configs",
+    "examples",
+    "docs/SPEC.md"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "build": "tsc",
+    "build:browser": "esbuild src/browser.ts --bundle --format=esm --platform=browser --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/browser/circle-ir.js && mkdir -p dist/wasm && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/wasm/ && cp wasm/*.wasm dist/wasm/",
+    "build:core": "esbuild src/core-lib.ts --bundle --format=esm --platform=neutral --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/core/circle-ir-core.js && esbuild src/core-lib.ts --bundle --format=cjs --platform=neutral --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/core/circle-ir-core.cjs && cp dist/core-lib.d.ts dist/core/circle-ir-core.d.ts",
+    "build:all": "npm run build && npm run build:browser && npm run build:core",
+    "clean": "rm -rf dist coverage *.tsbuildinfo *.tgz",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build:all && npm test",
+    "prepack": "npm run build:all",
+    "dogfood": "npx tsx scripts/dogfood.ts"
+  },
+  "keywords": [
+    "sast",
+    "security",
+    "static-analysis",
+    "taint-analysis",
+    "vulnerability-detection",
+    "code-analysis",
+    "java",
+    "javascript",
+    "typescript",
+    "python",
+    "go",
+    "golang",
+    "rust",
+    "bash",
+    "shell",
+    "tree-sitter",
+    "sql-injection",
+    "xss",
+    "command-injection",
+    "path-traversal",
+    "owasp"
+  ],
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://github.com/cogniumhq"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/circle-ir.git"
+  },
+  "homepage": "https://github.com/cogniumhq/circle-ir#readme",
+  "bugs": {
+    "url": "https://github.com/cogniumhq/circle-ir/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/cogniumhq"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "web-tree-sitter": "^0.26.7",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "esbuild": "^0.28.0",
+    "tree-sitter-bash": "^0.25.1",
+    "tree-sitter-html": "^0.23.2",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-rust": "^0.24.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}

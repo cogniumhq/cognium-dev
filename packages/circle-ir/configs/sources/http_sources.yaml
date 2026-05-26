@@ -1,0 +1,530 @@
+{
+  "sources": [
+    {
+      "method": "getParameter",
+      "class": "HttpServletRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Single parameter value from query string or POST body"
+    },
+    {
+      "method": "getParameterValues",
+      "class": "HttpServletRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Array of parameter values"
+    },
+    {
+      "method": "getParameterMap",
+      "class": "HttpServletRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Map of all parameters"
+    },
+    {
+      "method": "getHeader",
+      "class": "HttpServletRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "HTTP header value - can be attacker-controlled"
+    },
+    {
+      "method": "getHeaders",
+      "class": "HttpServletRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Enumeration of header values"
+    },
+    {
+      "method": "getQueryString",
+      "class": "HttpServletRequest",
+      "type": "http_query",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Full query string - highly tainted"
+    },
+    {
+      "method": "getRequestURI",
+      "class": "HttpServletRequest",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Request URI - can contain path traversal"
+    },
+    {
+      "method": "getPathInfo",
+      "class": "HttpServletRequest",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Extra path information"
+    },
+    {
+      "method": "getCookies",
+      "class": "HttpServletRequest",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Array of Cookie objects"
+    },
+    {
+      "method": "getValue",
+      "class": "Cookie",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Cookie value - attacker-controlled"
+    },
+    {
+      "method": "getInputStream",
+      "class": "HttpServletRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Raw request body input stream"
+    },
+    {
+      "method": "getReader",
+      "class": "HttpServletRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "BufferedReader for request body"
+    },
+    {
+      "annotation": "@RequestParam",
+      "type": "http_param",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring request parameter binding"
+    },
+    {
+      "annotation": "@RequestBody",
+      "type": "http_body",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring request body (JSON/XML)"
+    },
+    {
+      "annotation": "@PathVariable",
+      "type": "http_path",
+      "severity": "medium",
+      "param_tainted": true,
+      "note": "Spring path variable from URL"
+    },
+    {
+      "annotation": "@RequestHeader",
+      "type": "http_header",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring request header binding"
+    },
+    {
+      "annotation": "@CookieValue",
+      "type": "http_cookie",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring cookie value binding"
+    },
+    {
+      "annotation": "@MatrixVariable",
+      "type": "http_param",
+      "severity": "medium",
+      "param_tainted": true,
+      "note": "Spring matrix variable from URL"
+    },
+    {
+      "annotation": "@QueryParam",
+      "type": "http_param",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "JAX-RS query parameter"
+    },
+    {
+      "annotation": "@FormParam",
+      "type": "http_param",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "JAX-RS form parameter"
+    },
+    {
+      "annotation": "@PathParam",
+      "type": "http_path",
+      "severity": "medium",
+      "param_tainted": true,
+      "note": "JAX-RS path parameter"
+    },
+    {
+      "annotation": "@HeaderParam",
+      "type": "http_header",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "JAX-RS header parameter"
+    },
+    {
+      "annotation": "@CookieParam",
+      "type": "http_cookie",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "JAX-RS cookie parameter"
+    },
+    {
+      "annotation": "@MatrixParam",
+      "type": "http_param",
+      "severity": "medium",
+      "param_tainted": true,
+      "note": "JAX-RS matrix parameter"
+    },
+    {
+      "method": "queryParam",
+      "class": "ServerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebFlux query parameter"
+    },
+    {
+      "method": "pathVariable",
+      "class": "ServerRequest",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "WebFlux path variable"
+    },
+    {
+      "method": "header",
+      "class": "ServerRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebFlux request header"
+    },
+    {
+      "method": "bodyToMono",
+      "class": "ServerRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebFlux request body as Mono"
+    },
+    {
+      "method": "bodyToFlux",
+      "class": "ServerRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebFlux request body as Flux"
+    },
+    {
+      "method": "getTheParameter",
+      "class": "SeparateClassRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "OWASP Benchmark wrapper for getParameter"
+    },
+    {
+      "method": "getTheHeaders",
+      "class": "SeparateClassRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "OWASP Benchmark wrapper for getHeaders"
+    },
+    {
+      "method": "getTheCookies",
+      "class": "SeparateClassRequest",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "OWASP Benchmark wrapper for getCookies"
+    },
+    {
+      "method": "nextElement",
+      "class": "Enumeration",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Value from header/cookie enumeration"
+    },
+    {
+      "method": "getInitParameter",
+      "class": "ServletConfig",
+      "type": "config_param",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Servlet init parameter - may be attacker-influenced"
+    },
+    {
+      "method": "getInitParameter",
+      "class": "ServletContext",
+      "type": "config_param",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Context init parameter - may be attacker-influenced"
+    },
+    {
+      "method": "getInitParameter",
+      "class": "FilterConfig",
+      "type": "config_param",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Filter init parameter"
+    },
+    {
+      "method": "getServletConfig",
+      "class": "GenericServlet",
+      "type": "config_param",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Returns servlet config which has init parameters"
+    },
+    {
+      "annotation": "@ModelAttribute",
+      "type": "http_model",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring model attribute from request binding"
+    },
+    {
+      "annotation": "@SessionAttribute",
+      "type": "session_data",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring session attribute"
+    },
+    {
+      "annotation": "@RequestAttribute",
+      "type": "request_data",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Spring request attribute"
+    },
+    {
+      "method": "getAppname",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getTitle",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getAddressList",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getDescription",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getName",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getContent",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getMessage",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getUrl",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getPath",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getBody",
+      "type": "model_field",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Model object getter - may contain HTTP request data"
+    },
+    {
+      "method": "getParameter",
+      "class": "StaplerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Jenkins StaplerRequest parameter - attacker-controlled"
+    },
+    {
+      "method": "getSubmittedForm",
+      "class": "StaplerRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Jenkins StaplerRequest form submission"
+    },
+    {
+      "method": "bindJSON",
+      "class": "StaplerRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Jenkins StaplerRequest JSON binding"
+    },
+    {
+      "method": "getRequestURI",
+      "class": "StaplerRequest",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Jenkins StaplerRequest URI"
+    },
+    {
+      "method": "getRestOfPath",
+      "class": "StaplerRequest",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Jenkins StaplerRequest rest of path"
+    },
+    {
+      "method": "getPathParameter",
+      "class": "HandlerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Flink HandlerRequest path parameter"
+    },
+    {
+      "method": "getQueryParameter",
+      "class": "HandlerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Flink HandlerRequest query parameter"
+    },
+    {
+      "method": "getRequestBody",
+      "class": "HandlerRequest",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Flink HandlerRequest body"
+    },
+    {
+      "method": "path",
+      "class": "HttpServerRequest",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x HTTP request path"
+    },
+    {
+      "method": "getParam",
+      "class": "HttpServerRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x HTTP request parameter"
+    },
+    {
+      "method": "getHeader",
+      "class": "HttpServerRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x HTTP request header"
+    },
+    {
+      "method": "request",
+      "class": "RoutingContext",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x RoutingContext request access"
+    },
+    {
+      "method": "pathParam",
+      "class": "RoutingContext",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x RoutingContext path parameter"
+    },
+    {
+      "method": "queryParam",
+      "class": "RoutingContext",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x RoutingContext query parameter"
+    },
+    {
+      "method": "getBodyAsString",
+      "class": "RoutingContext",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x RoutingContext body"
+    },
+    {
+      "method": "normalisedPath",
+      "class": "RoutingContext",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Vert.x RoutingContext normalized path"
+    },
+    {
+      "method": "getRemoteEnvironment",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Spring Cloud Config remote environment fetch"
+    },
+    {
+      "method": "getHeader",
+      "class": "ServerWebExchange",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Spring WebFlux exchange header"
+    },
+    {
+      "method": "getExchange",
+      "class": "GatewayFilter",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Spring Cloud Gateway exchange"
+    }
+  ]
+}

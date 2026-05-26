@@ -1,0 +1,197 @@
+{
+  "sources": [
+    {
+      "method": "params",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express route parameters (req.params)"
+    },
+    {
+      "method": "query",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express query string parameters (req.query)"
+    },
+    {
+      "method": "body",
+      "class": "Request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express request body (req.body)"
+    },
+    {
+      "method": "headers",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express request headers (req.headers)"
+    },
+    {
+      "method": "cookies",
+      "class": "Request",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express cookies (req.cookies)"
+    },
+    {
+      "method": "url",
+      "class": "Request",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express request URL (req.url)"
+    },
+    {
+      "method": "path",
+      "class": "Request",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express request path (req.path)"
+    },
+    {
+      "method": "originalUrl",
+      "class": "Request",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express original URL (req.originalUrl)"
+    },
+    {
+      "method": "get",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express header getter (req.get('header'))"
+    },
+    {
+      "method": "header",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express header getter (req.header('name'))"
+    },
+    {
+      "method": "param",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express param getter (req.param('name'))"
+    },
+    {
+      "method": "file",
+      "class": "Request",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express file upload (req.file with multer)"
+    },
+    {
+      "method": "files",
+      "class": "Request",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express multiple file uploads (req.files)"
+    },
+    {
+      "method": "ip",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express client IP (can be spoofed via X-Forwarded-For)"
+    },
+    {
+      "method": "hostname",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express hostname from Host header"
+    },
+    {
+      "method": "subdomains",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express subdomains from Host header"
+    },
+    {
+      "method": "protocol",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Express protocol (can be influenced by X-Forwarded-Proto)"
+    },
+    {
+      "method": "env",
+      "class": "process",
+      "type": "env_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Environment variables (process.env) - may contain sensitive data"
+    },
+    {
+      "method": "argv",
+      "class": "process",
+      "type": "io_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Command line arguments (process.argv)"
+    },
+    {
+      "method": "stdin",
+      "class": "process",
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Standard input stream"
+    },
+    {
+      "method": "on",
+      "class": "WebSocket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "arg_positions": [1],
+      "note": "WebSocket message handler - data from client"
+    },
+    {
+      "method": "message",
+      "class": "WebSocket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebSocket message event"
+    },
+    {
+      "method": "data",
+      "class": "Socket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Socket data event"
+    },
+    {
+      "method": "signedCookies",
+      "class": "Request",
+      "type": "http_cookie",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express signed cookies (req.signedCookies)"
+    }
+  ]
+}

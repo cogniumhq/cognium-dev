@@ -1,0 +1,55 @@
+# Source files (TypeScript)
+src/
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__/
+test/
+tests/
+
+# Development scripts
+scripts/
+
+# Benchmark data
+benchmark/
+
+# Configuration files
+.eslintrc*
+.prettierrc*
+tsconfig.json
+vitest.config.ts
+wrangler.toml
+
+# Development documentation
+CLAUDE.md
+docs/ARCHITECTURE.md
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage reports
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts we don't need to publish
+dist/worker/

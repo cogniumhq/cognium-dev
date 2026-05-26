@@ -1,0 +1,348 @@
+{
+  "sources": [
+    {
+      "method": "get",
+      "class": "args",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.args.get() - query string parameter"
+    },
+    {
+      "method": "getlist",
+      "class": "args",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.args.getlist() - multi-value query string parameter"
+    },
+    {
+      "method": "get",
+      "class": "form",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.form.get() - POST form parameter"
+    },
+    {
+      "method": "getlist",
+      "class": "form",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.form.getlist() - multi-value POST form parameter"
+    },
+    {
+      "field": "json",
+      "class": "request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.json - parsed JSON body"
+    },
+    {
+      "method": "get_json",
+      "class": "request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.get_json() - parsed JSON body"
+    },
+    {
+      "field": "data",
+      "class": "request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.data - raw request body"
+    },
+    {
+      "method": "get",
+      "class": "headers",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.headers.get() - HTTP header value"
+    },
+    {
+      "method": "get",
+      "class": "cookies",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.cookies.get() - cookie value"
+    },
+    {
+      "field": "path",
+      "class": "request",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Flask request.path - URL path"
+    },
+    {
+      "field": "query_string",
+      "class": "request",
+      "type": "http_query",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Flask request.query_string - raw query string"
+    },
+    {
+      "method": "get",
+      "class": "GET",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.GET.get() - query string parameter"
+    },
+    {
+      "method": "get",
+      "class": "POST",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.POST.get() - POST form parameter"
+    },
+    {
+      "field": "body",
+      "class": "request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.body - raw request body"
+    },
+    {
+      "method": "get",
+      "class": "META",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.META.get() - HTTP headers and server info"
+    },
+    {
+      "method": "get",
+      "class": "COOKIES",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.COOKIES.get() - cookie value"
+    },
+    {
+      "field": "FILES",
+      "class": "request",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Django request.FILES - uploaded files"
+    },
+    {
+      "field": "path_info",
+      "class": "request",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Django request.path_info - URL path"
+    },
+    {
+      "method": "get",
+      "class": "query_params",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "FastAPI/Starlette request.query_params.get() - query string parameter"
+    },
+    {
+      "method": "get",
+      "class": "environ",
+      "type": "env_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "os.environ.get() - environment variable"
+    },
+    {
+      "method": "getenv",
+      "class": "os",
+      "type": "env_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "os.getenv() - environment variable"
+    },
+    {
+      "method": "input",
+      "class": null,
+      "type": "io_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "input() - user console input"
+    },
+    {
+      "method": "read",
+      "class": null,
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "file.read() - file content"
+    },
+    {
+      "method": "readline",
+      "class": null,
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "file.readline() - single line from file"
+    },
+    {
+      "method": "readlines",
+      "class": null,
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "file.readlines() - all lines from file"
+    },
+    {
+      "method": "fetchone",
+      "class": null,
+      "type": "db_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "cursor.fetchone() - database row"
+    },
+    {
+      "method": "fetchall",
+      "class": null,
+      "type": "db_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "cursor.fetchall() - database rows"
+    },
+    {
+      "method": "fetchmany",
+      "class": null,
+      "type": "db_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "cursor.fetchmany() - database rows"
+    },
+    {
+      "method": "recv",
+      "class": "socket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "socket.recv() - network data"
+    },
+    {
+      "method": "recvfrom",
+      "class": "socket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "socket.recvfrom() - network data with address"
+    },
+    {
+      "annotation": "Query",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI Query() parameter"
+    },
+    {
+      "annotation": "Path",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI Path() parameter"
+    },
+    {
+      "annotation": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "note": "FastAPI Body() parameter"
+    },
+    {
+      "annotation": "Header",
+      "type": "http_header",
+      "severity": "high",
+      "note": "FastAPI Header() parameter"
+    },
+    {
+      "annotation": "Cookie",
+      "type": "http_cookie",
+      "severity": "high",
+      "note": "FastAPI Cookie() parameter"
+    },
+    {
+      "annotation": "Form",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI Form() parameter"
+    },
+    {
+      "annotation": "File",
+      "type": "file_input",
+      "severity": "high",
+      "note": "FastAPI File() upload"
+    }
+  ],
+  "annotations": [
+    {
+      "annotation": "route",
+      "type": "http_param",
+      "severity": "high",
+      "note": "Flask @app.route() decorated function parameters"
+    },
+    {
+      "annotation": "get",
+      "type": "http_param",
+      "severity": "high",
+      "note": "Flask @app.get() decorated function parameters"
+    },
+    {
+      "annotation": "post",
+      "type": "http_body",
+      "severity": "high",
+      "note": "Flask @app.post() decorated function parameters"
+    },
+    {
+      "annotation": "api_view",
+      "type": "http_param",
+      "severity": "high",
+      "note": "Django REST framework @api_view() decorated function"
+    },
+    {
+      "annotation": "app.get",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI @app.get() decorated function parameters"
+    },
+    {
+      "annotation": "app.post",
+      "type": "http_body",
+      "severity": "high",
+      "note": "FastAPI @app.post() decorated function parameters"
+    },
+    {
+      "annotation": "app.put",
+      "type": "http_body",
+      "severity": "high",
+      "note": "FastAPI @app.put() decorated function parameters"
+    },
+    {
+      "annotation": "app.delete",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI @app.delete() decorated function parameters"
+    },
+    {
+      "annotation": "router.get",
+      "type": "http_param",
+      "severity": "high",
+      "note": "FastAPI APIRouter @router.get() decorated function"
+    },
+    {
+      "annotation": "router.post",
+      "type": "http_body",
+      "severity": "high",
+      "note": "FastAPI APIRouter @router.post() decorated function"
+    }
+  ]
+}

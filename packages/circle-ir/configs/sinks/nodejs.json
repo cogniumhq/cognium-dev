@@ -1,0 +1,689 @@
+{
+  "sinks": [
+    {
+      "method": "exec",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Command execution - extremely dangerous with user input"
+    },
+    {
+      "method": "exec",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Destructured child_process.exec import - no receiver"
+    },
+    {
+      "method": "execSync",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Synchronous command execution"
+    },
+    {
+      "method": "execSync",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Destructured child_process.execSync import - no receiver"
+    },
+    {
+      "method": "spawn",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Process spawn - arg[0] is command, arg[1] is args array"
+    },
+    {
+      "method": "spawn",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Destructured child_process.spawn import - no receiver"
+    },
+    {
+      "method": "spawnSync",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Synchronous process spawn"
+    },
+    {
+      "method": "spawnSync",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Destructured child_process.spawnSync import - no receiver"
+    },
+    {
+      "method": "execFile",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Execute file with arguments"
+    },
+    {
+      "method": "execFile",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "Destructured child_process.execFile import - no receiver"
+    },
+    {
+      "method": "fork",
+      "class": "child_process",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Fork new Node.js process"
+    },
+    {
+      "method": "query",
+      "class": "mysql",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MySQL query - use parameterized queries"
+    },
+    {
+      "method": "query",
+      "class": "Connection",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Database query method"
+    },
+    {
+      "method": "query",
+      "class": "Pool",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Database pool query"
+    },
+    {
+      "method": "raw",
+      "class": "knex",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Knex raw SQL query"
+    },
+    {
+      "method": "$queryRaw",
+      "class": "prisma",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Prisma raw query"
+    },
+    {
+      "method": "readFile",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "File read - validate path before use"
+    },
+    {
+      "method": "readFileSync",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Synchronous file read"
+    },
+    {
+      "method": "writeFile",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "File write - validate path before use"
+    },
+    {
+      "method": "writeFileSync",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Synchronous file write"
+    },
+    {
+      "method": "appendFile",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "File append operation"
+    },
+    {
+      "method": "unlink",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "File deletion"
+    },
+    {
+      "method": "createReadStream",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Create read stream from file"
+    },
+    {
+      "method": "createWriteStream",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Create write stream to file"
+    },
+    {
+      "method": "send",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Express response - HTML content may be vulnerable to XSS"
+    },
+    {
+      "method": "html",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Express HTML response - directly renders HTML"
+    },
+    {
+      "method": "write",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Response write - may render HTML"
+    },
+    {
+      "method": "end",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Response end with data"
+    },
+    {
+      "method": "render",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [1],
+      "note": "Template render - second arg is data object"
+    },
+    {
+      "method": "eval",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Never use eval with user input"
+    },
+    {
+      "method": "Function",
+      "class": "constructor",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Function constructor is like eval"
+    },
+    {
+      "method": "setTimeout",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "setTimeout with string argument evaluates code"
+    },
+    {
+      "method": "setInterval",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "setInterval with string argument evaluates code"
+    },
+    {
+      "method": "fetch",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "HTTP fetch - validate URL to prevent SSRF"
+    },
+    {
+      "method": "get",
+      "class": "axios",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Axios GET request"
+    },
+    {
+      "method": "post",
+      "class": "axios",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Axios POST request"
+    },
+    {
+      "method": "request",
+      "class": "axios",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Axios request"
+    },
+    {
+      "method": "request",
+      "class": "http",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Node.js HTTP request"
+    },
+    {
+      "method": "get",
+      "class": "http",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Node.js HTTP GET request - validate URL to prevent SSRF"
+    },
+    {
+      "method": "request",
+      "class": "https",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Node.js HTTPS request"
+    },
+    {
+      "method": "get",
+      "class": "https",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Node.js HTTPS GET request"
+    },
+    {
+      "method": "redirect",
+      "class": "Response",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "medium",
+      "arg_positions": [0],
+      "note": "Express redirect - validate URL to prevent open redirect"
+    },
+    {
+      "method": "join",
+      "class": "path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0, 1],
+      "note": "Path join - may allow path traversal if not validated"
+    },
+    {
+      "method": "resolve",
+      "class": "path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0, 1],
+      "note": "Path resolve - may allow path traversal if not validated"
+    },
+    {
+      "method": "lookup",
+      "class": "dns",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "DNS lookup - can be used for DNS rebinding attacks"
+    },
+    {
+      "method": "resolve",
+      "class": "dns",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "DNS resolve"
+    },
+    {
+      "method": "connect",
+      "class": "net",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "TCP connection - validate host/port"
+    },
+    {
+      "method": "createConnection",
+      "class": "net",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Create TCP connection"
+    },
+    {
+      "method": "runInContext",
+      "class": "vm",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "VM code execution - dangerous with user input"
+    },
+    {
+      "method": "runInNewContext",
+      "class": "vm",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "VM code execution in new context"
+    },
+    {
+      "method": "runInThisContext",
+      "class": "vm",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "VM code execution in current context"
+    },
+    {
+      "method": "compileFunction",
+      "class": "vm",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Compile function from code string"
+    },
+    {
+      "method": "find",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MongoDB find - beware of NoSQL injection via object operators"
+    },
+    {
+      "method": "findOne",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MongoDB findOne"
+    },
+    {
+      "method": "findOneAndUpdate",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "MongoDB findOneAndUpdate"
+    },
+    {
+      "method": "updateOne",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0, 1],
+      "note": "MongoDB updateOne"
+    },
+    {
+      "method": "deleteOne",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MongoDB deleteOne"
+    },
+    {
+      "method": "aggregate",
+      "class": "MongoDB",
+      "type": "nosql_injection",
+      "cwe": "CWE-943",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MongoDB aggregation pipeline"
+    },
+    {
+      "method": "$where",
+      "class": "MongoDB",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MongoDB $where operator - executes JavaScript"
+    },
+    {
+      "method": "deserialize",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Object deserialization - dangerous with untrusted data"
+    },
+    {
+      "method": "compile",
+      "class": "Handlebars",
+      "type": "template_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Handlebars template compilation - SSTI risk"
+    },
+    {
+      "method": "compile",
+      "class": "pug",
+      "type": "template_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Pug/Jade template compilation - SSTI risk"
+    },
+    {
+      "method": "compile",
+      "class": "ejs",
+      "type": "template_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "EJS template compilation - SSTI risk"
+    },
+    {
+      "method": "setHeader",
+      "class": "Response",
+      "type": "header_injection",
+      "cwe": "CWE-113",
+      "severity": "medium",
+      "arg_positions": [1],
+      "note": "HTTP header injection if value contains CRLF"
+    },
+    {
+      "method": "cookie",
+      "class": "Response",
+      "type": "header_injection",
+      "cwe": "CWE-113",
+      "severity": "medium",
+      "arg_positions": [1],
+      "note": "Cookie value injection"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "escape",
+      "class": "validator",
+      "removes": ["xss"],
+      "note": "Validator.js escape function"
+    },
+    {
+      "method": "escapeHtml",
+      "removes": ["xss"],
+      "note": "HTML escape function"
+    },
+    {
+      "method": "sanitize",
+      "removes": ["xss", "sql_injection"],
+      "note": "Generic sanitization"
+    },
+    {
+      "method": "normalize",
+      "class": "path",
+      "removes": ["path_traversal"],
+      "note": "Path normalization (still needs validation)"
+    },
+    {
+      "method": "basename",
+      "class": "path",
+      "removes": ["path_traversal"],
+      "note": "Returns filename only"
+    },
+    {
+      "method": "escape",
+      "class": "mysql",
+      "removes": ["sql_injection"],
+      "note": "MySQL escape function"
+    },
+    {
+      "method": "escapeId",
+      "class": "mysql",
+      "removes": ["sql_injection"],
+      "note": "MySQL identifier escape"
+    },
+    {
+      "method": "createHash",
+      "class": "crypto",
+      "removes": ["plain_text"],
+      "note": "Hashing function (use for integrity, not encryption)"
+    },
+    {
+      "method": "parseInt",
+      "removes": ["sql_injection", "command_injection"],
+      "note": "Converts to integer - safe for numeric values"
+    },
+    {
+      "method": "parseFloat",
+      "removes": ["sql_injection", "command_injection"],
+      "note": "Converts to float - safe for numeric values"
+    },
+    {
+      "method": "Number",
+      "removes": ["sql_injection", "command_injection"],
+      "note": "Number constructor - safe for numeric values"
+    },
+    {
+      "method": "encodeURIComponent",
+      "removes": ["xss", "open_redirect"],
+      "note": "URL encoding - safe for URL parameters"
+    },
+    {
+      "method": "encodeURI",
+      "removes": ["open_redirect"],
+      "note": "URL encoding"
+    },
+    {
+      "method": "createCipheriv",
+      "class": "crypto",
+      "removes": ["plain_text"],
+      "note": "Encryption function"
+    },
+    {
+      "method": "DOMPurify.sanitize",
+      "removes": ["xss"],
+      "note": "DOMPurify HTML sanitization"
+    },
+    {
+      "method": "xss",
+      "removes": ["xss"],
+      "note": "xss npm package sanitization"
+    },
+    {
+      "method": "stripTags",
+      "removes": ["xss"],
+      "note": "HTML tag stripping"
+    },
+    {
+      "method": "toString",
+      "removes": ["nosql_injection"],
+      "note": "Convert to string - prevents NoSQL operator injection"
+    },
+    {
+      "method": "parse",
+      "class": "JSON",
+      "removes": ["command_injection", "sql_injection", "xss", "code_injection"],
+      "note": "JSON.parse is safe - does not execute code (unlike eval/YAML)"
+    },
+    {
+      "method": "URL",
+      "removes": ["open_redirect", "ssrf"],
+      "note": "new URL() constructor validates URL structure; combined with hostname check is a sanitizer"
+    }
+  ]
+}

@@ -1,0 +1,490 @@
+{
+  "name": "Rust Sinks",
+  "description": "Taint sinks for Rust web frameworks and standard library",
+  "sinks": [
+    {
+      "method": "query",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx raw query execution"
+    },
+    {
+      "method": "query_as",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx query_as with raw SQL"
+    },
+    {
+      "method": "query_scalar",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx query_scalar with raw SQL"
+    },
+    {
+      "method": "execute",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx execute with raw SQL"
+    },
+    {
+      "method": "fetch_one",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx fetch_one with raw SQL"
+    },
+    {
+      "method": "fetch_all",
+      "class": "sqlx",
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "sqlx fetch_all with raw SQL"
+    },
+    {
+      "method": "arg",
+      "class": "Command",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "Command argument with user input"
+    },
+    {
+      "method": "args",
+      "class": "Command",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "Command arguments with user input"
+    },
+    {
+      "method": "new",
+      "class": "Command",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "Command creation with user-controlled program"
+    },
+    {
+      "method": "spawn",
+      "class": "Command",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "Command spawn"
+    },
+    {
+      "method": "output",
+      "class": "Command",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "tainted_args": [],
+      "note": "Command output execution"
+    },
+    {
+      "method": "get",
+      "class": "reqwest",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP GET request with user-controlled URL"
+    },
+    {
+      "method": "post",
+      "class": "reqwest",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP POST request with user-controlled URL"
+    },
+    {
+      "method": "put",
+      "class": "reqwest",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP PUT request with user-controlled URL"
+    },
+    {
+      "method": "delete",
+      "class": "reqwest",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP DELETE request with user-controlled URL"
+    },
+    {
+      "method": "get",
+      "class": "Client",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP client GET with user-controlled URL"
+    },
+    {
+      "method": "post",
+      "class": "Client",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP client POST with user-controlled URL"
+    },
+    {
+      "method": "send",
+      "class": "Client",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HTTP client send request"
+    },
+    {
+      "method": "body",
+      "class": "HttpResponse",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Actix-web response body with user input"
+    },
+    {
+      "method": "body",
+      "class": "HttpResponseBuilder",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Actix-web response builder body"
+    },
+    {
+      "method": "json",
+      "class": "HttpResponse",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "tainted_args": [0],
+      "note": "JSON response (lower risk)"
+    },
+    {
+      "method": "read_to_string",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File read with user-controlled path"
+    },
+    {
+      "method": "read",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File read with user-controlled path"
+    },
+    {
+      "method": "write",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File write with user-controlled path"
+    },
+    {
+      "method": "create",
+      "class": "File",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File creation with user-controlled path"
+    },
+    {
+      "method": "open",
+      "class": "File",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File open with user-controlled path"
+    },
+    {
+      "method": "remove_file",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "File deletion with user-controlled path"
+    },
+    {
+      "method": "remove_dir",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Directory deletion with user-controlled path"
+    },
+    {
+      "method": "remove_dir_all",
+      "class": "fs",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "tainted_args": [0],
+      "note": "Recursive directory deletion with user-controlled path"
+    },
+    {
+      "method": "from_str",
+      "class": "serde_yaml",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "YAML deserialization of untrusted data"
+    },
+    {
+      "method": "from_reader",
+      "class": "serde_yaml",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "YAML deserialization from reader"
+    },
+    {
+      "method": "from_str",
+      "class": "serde_json",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "medium",
+      "tainted_args": [0],
+      "note": "JSON deserialization (lower risk than YAML)"
+    },
+    {
+      "method": "from_slice",
+      "class": "serde_json",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "medium",
+      "tainted_args": [0],
+      "note": "JSON deserialization from bytes"
+    },
+    {
+      "method": "join",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Path join with user input (doesn't prevent traversal)"
+    },
+    {
+      "method": "new",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Path creation with user input"
+    },
+    {
+      "method": "new",
+      "class": "PathBuf",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "PathBuf creation with user input"
+    },
+    {
+      "method": "push",
+      "class": "PathBuf",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "PathBuf push with user input"
+    },
+    {
+      "method": "html",
+      "class": "reply",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Warp reply::html() with user-controlled content"
+    },
+    {
+      "method": "html",
+      "class": "Html",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Warp Html response with user-controlled content"
+    },
+    {
+      "method": "html",
+      "class": "warp",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "warp::reply::html() with user-controlled content"
+    },
+    {
+      "method": "body",
+      "class": "Response",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Axum/hyper Response body with user-controlled content"
+    },
+    {
+      "method": "header",
+      "class": "Response",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Setting Location header from user input (open redirect)"
+    },
+    {
+      "method": "insert_header",
+      "class": "HttpResponse",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Actix-web header injection / open redirect via Location header"
+    },
+    {
+      "method": "append_header",
+      "class": "HttpResponse",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [1],
+      "note": "Actix-web header injection / open redirect"
+    },
+    {
+      "method": "redirect",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect to user-controlled URL"
+    },
+    {
+      "method": "to",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::to() with user-controlled URL"
+    },
+    {
+      "method": "see_other",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::see_other() with user-controlled URL (303)"
+    },
+    {
+      "method": "temporary",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::temporary() with user-controlled URL (307)"
+    },
+    {
+      "method": "permanent",
+      "class": "Redirect",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "Redirect::permanent() with user-controlled URL (301)"
+    },
+    {
+      "method": "Html",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "axum::response::Html() with user-controlled content"
+    },
+    {
+      "method": "from_str",
+      "class": "HeaderValue",
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "high",
+      "tainted_args": [0],
+      "note": "HeaderValue::from_str() for Location header with user input"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "encode_text",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_text() HTML entity encoding"
+    },
+    {
+      "method": "encode_quoted_attribute",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_quoted_attribute()"
+    },
+    {
+      "method": "clean",
+      "class": "ammonia",
+      "removes": ["xss"],
+      "note": "ammonia::clean() HTML sanitizer"
+    },
+    {
+      "method": "clean",
+      "class": "Builder",
+      "removes": ["xss"],
+      "note": "ammonia::Builder::clean() HTML sanitizer"
+    }
+  ]
+}

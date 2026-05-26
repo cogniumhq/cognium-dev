@@ -1,0 +1,794 @@
+{
+  "sinks": [
+    {
+      "method": "sendError",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "XSS in error message (CWE-81)"
+    },
+    {
+      "method": "setStatus",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "sendRedirect",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Open redirect leading to XSS"
+    },
+    {
+      "method": "setHeader",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "HTTP header injection / XSS in header"
+    },
+    {
+      "method": "setHeader",
+      "class": "HttpServletResponse",
+      "type": "cors_misconfiguration",
+      "cwe": "CWE-942",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "CORS: Access-Control-Allow-Origin set from user-controlled Origin header"
+    },
+    {
+      "method": "addHeader",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "getWriter",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Returns PrintWriter - check what's written"
+    },
+    {
+      "method": "print",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Direct output to HTTP response"
+    },
+    {
+      "method": "println",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "write",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "printf",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "format",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "append",
+      "class": "PrintWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "getOutputStream",
+      "class": "HttpServletResponse",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium"
+    },
+    {
+      "method": "print",
+      "class": "ServletOutputStream",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "println",
+      "class": "ServletOutputStream",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "print",
+      "class": "JspWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "println",
+      "class": "JspWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "write",
+      "class": "JspWriter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "ok",
+      "class": "ResponseEntity",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ],
+      "note": "Check if body contains unencoded user input"
+    },
+    {
+      "method": "body",
+      "class": "ResponseEntity$BodyBuilder",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "annotation": "@ResponseBody",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "note": "Check return value encoding"
+    },
+    {
+      "method": "addAttribute",
+      "class": "Model",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        1
+      ],
+      "note": "Check if used in unescaped JSP/Thymeleaf"
+    },
+    {
+      "method": "addAttribute",
+      "class": "ModelMap",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "put",
+      "class": "ModelMap",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "setAttribute",
+      "class": "HttpServletRequest",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "low",
+      "arg_positions": [
+        1
+      ],
+      "note": "Low risk unless forwarded to JSP"
+    },
+    {
+      "method": "append",
+      "class": "StringBuilder",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ],
+      "note": "Check if used for HTML and written to response"
+    },
+    {
+      "method": "append",
+      "class": "StringBuffer",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "put",
+      "class": "VelocityContext",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "Velocity doesn't auto-escape by default"
+    },
+    {
+      "method": "setVariable",
+      "class": "Environment",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "medium",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "Cookie",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "low",
+      "arg_positions": [
+        1
+      ],
+      "note": "Cookie value XSS - rare but possible"
+    },
+    {
+      "method": "setValue",
+      "class": "Cookie",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "low",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "addJavascript",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "JavaScript context requires JS encoding"
+    },
+    {
+      "method": "setAttribute",
+      "class": "HttpSession",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "Session attribute can be reflected in HTML"
+    },
+    {
+      "method": "putValue",
+      "class": "HttpSession",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "setAttribute",
+      "class": "HttpServletRequest",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "Request attribute reflection"
+    },
+    {
+      "method": "addAttribute",
+      "class": "Model",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ],
+      "note": "Spring MVC model attribute XSS"
+    },
+    {
+      "method": "addAttribute",
+      "class": "ModelMap",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "addObject",
+      "class": "ModelAndView",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "arg_positions": [
+        1
+      ]
+    },
+    {
+      "method": "getResource",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "compile",
+      "class": "XPath",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "write",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "newInstance",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "parse",
+      "class": "DocumentBuilder",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "execute",
+      "class": "WikiPlugin",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Wiki plugin execution - may render HTML"
+    },
+    {
+      "method": "handleLinks",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Wiki link rendering"
+    },
+    {
+      "method": "getString",
+      "class": "WysiwygEditingRenderer",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Wiki WYSIWYG rendering"
+    },
+    {
+      "method": "printXMLElement",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XML/HTML element output"
+    },
+    {
+      "method": "printXMLStartElement",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XML/HTML start element output"
+    },
+    {
+      "method": "printRaw",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Raw HTML output without encoding"
+    },
+    {
+      "method": "getValidInput",
+      "class": "DefaultValidator",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "ESAPI validator - may have bypass vulnerabilities"
+    },
+    {
+      "method": "getValidSafeHTML",
+      "class": "DefaultValidator",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "ESAPI HTML validator"
+    },
+    {
+      "method": "scan",
+      "class": "AntiSamyDOMScanner",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "AntiSamy HTML scanner"
+    },
+    {
+      "method": "scan",
+      "class": "AntiSamySAXScanner",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "AntiSamy SAX scanner"
+    },
+    {
+      "method": "startElement",
+      "class": "MagicSAXFilter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "AntiSamy SAX filter"
+    },
+    {
+      "method": "decodeRedirectUri",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Redirect URI decoding - potential XSS via open redirect"
+    },
+    {
+      "method": "getOrigin",
+      "class": "UriUtils",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "URI origin extraction"
+    },
+    {
+      "method": "isValid",
+      "class": "SafeHtmlValidator",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Hibernate SafeHtml validator"
+    },
+    {
+      "method": "getFragmentAsDocument",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "HTML fragment parsing"
+    },
+    {
+      "method": "cleanAttributes",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XWiki/HTML attribute sanitization - may have bypass"
+    },
+    {
+      "method": "printXMLElement",
+      "class": "XHTMLWikiPrinter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XWiki XHTML element output"
+    },
+    {
+      "method": "printXMLStartElement",
+      "class": "XHTMLWikiPrinter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XWiki XHTML start element output"
+    },
+    {
+      "method": "printXMLComment",
+      "class": "XMLWikiPrinter",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XML comment output"
+    },
+    {
+      "method": "sanitize",
+      "class": "JsonSanitizer",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Google JsonSanitizer - check for bypass CVEs"
+    },
+    {
+      "method": "validate",
+      "class": "SafeHtmlValidator",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Hibernate SafeHtml - CVE-2019-10219 bypass"
+    },
+    {
+      "method": "clean",
+      "class": "HtmlCleaner",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "HtmlCleaner sanitization"
+    },
+    {
+      "method": "clean",
+      "class": "Cleaner",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Jsoup cleaner"
+    },
+    {
+      "method": "save",
+      "class": "JobGroupController",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "XXL-Job controller - CVE-2020-29204"
+    },
+    {
+      "method": "parseText",
+      "class": "Jsoup",
+      "type": "xss",
+      "cwe": "CWE-079",
+      "severity": "high",
+      "note": "Jsoup HTML parsing"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "forHtml",
+      "class": "Encode",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP HTML entity encoding"
+    },
+    {
+      "method": "forHtmlAttribute",
+      "class": "Encode",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "forJavaScript",
+      "class": "Encode",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "forHtmlContent",
+      "class": "Encode",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "escapeHtml4",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "escapeHtml3",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "escapeEcmaScript",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "escapeXml",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "htmlEscape",
+      "class": "HtmlUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "htmlEscapeDecimal",
+      "class": "HtmlUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "htmlEscapeHex",
+      "class": "HtmlUtils",
+      "removes": [
+        "xss"
+      ]
+    },
+    {
+      "method": "escapeHtml",
+      "class": "Escaper",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HTML escaper"
+    },
+    {
+      "method": "escapeHtml",
+      "class": "HtmlEscapers",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HtmlEscapers"
+    },
+    {
+      "method": "htmlEscaper",
+      "class": "HtmlEscapers",
+      "removes": [
+        "xss"
+      ],
+      "note": "Google Guava HtmlEscapers.htmlEscaper()"
+    },
+    {
+      "method": "encodeForHTML",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForHTML()"
+    },
+    {
+      "method": "encodeForHTMLAttribute",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForHTMLAttribute()"
+    },
+    {
+      "method": "encodeForJavaScript",
+      "class": "Encoder",
+      "removes": [
+        "xss"
+      ],
+      "note": "OWASP ESAPI Encoder.encodeForJavaScript()"
+    },
+    {
+      "method": "clean",
+      "class": "Jsoup",
+      "removes": [
+        "xss"
+      ],
+      "note": "Jsoup.clean() HTML sanitizer"
+    },
+    {
+      "tag": "c:out",
+      "removes": [
+        "xss"
+      ],
+      "note": "JSTL c:out auto-escapes by default"
+    },
+    {
+      "attribute": "th:text",
+      "removes": [
+        "xss"
+      ],
+      "note": "Thymeleaf th:text auto-escapes"
+    }
+  ]
+}

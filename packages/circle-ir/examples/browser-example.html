@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Circle-IR | Cognium Security Analysis</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --blue: #3B82F6;
+      --cyan: #06B6D4;
+      --purple: #8B5CF6;
+      --green: #10B981;
+      --red: #EF4444;
+      --orange: #F59E0B;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(180deg, #080810 0%, #030306 100%);
+      color: #fff;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+      background-size: 50px 50px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .glow {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.15;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 36px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #fff, var(--cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      font-size: 16px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 24px;
+    }
+    .bar {
+      width: 80px;
+      height: 4px;
+      background: linear-gradient(90deg, var(--blue), var(--cyan));
+      border-radius: 2px;
+      margin-bottom: 24px;
+    }
+
+    h2 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--cyan);
+      margin-bottom: 12px;
+    }
+
+    /* Status */
+    #status {
+      display: inline-flex;
+      padding: 8px 16px;
+      border-radius: 50px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    .loading {
+      background: rgba(59,130,246,0.1);
+      border: 1px solid rgba(59,130,246,0.3);
+      color: var(--blue);
+    }
+    .ready {
+      background: rgba(16,185,129,0.1);
+      border: 1px solid rgba(16,185,129,0.3);
+      color: var(--green);
+    }
+    .error {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: var(--red);
+    }
+
+    /* Main grid */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    /* Cards */
+    .card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .card-glow {
+      background: linear-gradient(135deg, rgba(6,182,212,0.08), rgba(59,130,246,0.04));
+      border-color: rgba(6,182,212,0.2);
+    }
+
+    /* Code textarea */
+    textarea {
+      width: 100%;
+      height: 320px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 13px;
+      background: rgba(0,0,0,0.4);
+      color: rgba(255,255,255,0.8);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 16px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 2px rgba(6,182,212,0.2);
+    }
+
+    /* Button */
+    button.analyze-btn {
+      background: linear-gradient(135deg, var(--blue), var(--cyan));
+      color: #fff;
+      border: none;
+      padding: 12px 28px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 12px;
+      transition: all 0.3s;
+    }
+    button.analyze-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(6,182,212,0.3);
+    }
+    button.analyze-btn:disabled {
+      background: rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.3);
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+    .tab {
+      padding: 8px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px 6px 0 0;
+      color: rgba(255,255,255,0.5);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      transition: all 0.2s;
+    }
+    .tab:hover {
+      color: rgba(255,255,255,0.8);
+    }
+    .tab.active {
+      background: rgba(6,182,212,0.1);
+      border-color: rgba(6,182,212,0.3);
+      color: var(--cyan);
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Results */
+    #results, #irJson {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
+      max-height: 360px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    #results {
+      white-space: pre-wrap;
+    }
+    #irJson {
+      white-space: pre;
+      color: rgba(255,255,255,0.6);
+    }
+
+    /* Result highlighting */
+    .vuln { color: var(--red); font-weight: 600; }
+    .safe { color: var(--green); font-weight: 600; }
+    .source { color: var(--orange); }
+    .sink { color: var(--purple); }
+    .info { color: var(--cyan); }
+
+    /* JSON highlighting */
+    .json-key { color: var(--purple); }
+    .json-string { color: var(--green); }
+    .json-number { color: var(--orange); }
+    .json-boolean { color: var(--cyan); }
+    .json-null { color: rgba(255,255,255,0.4); }
+
+    /* Info section */
+    .info-section {
+      margin-top: 24px;
+    }
+    .info-card {
+      background: linear-gradient(135deg, rgba(16,185,129,0.08), rgba(6,182,212,0.04));
+      border: 1px solid rgba(16,185,129,0.2);
+      border-radius: 12px;
+      padding: 20px 24px;
+    }
+    .info-card h3 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--green);
+      margin-bottom: 12px;
+    }
+    .info-card ol {
+      margin-left: 20px;
+      color: rgba(255,255,255,0.7);
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    .info-card li strong {
+      color: var(--cyan);
+    }
+    .info-card em {
+      display: block;
+      margin-top: 12px;
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.15);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.25);
+    }
+
+    @media (max-width: 900px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <div class="glow" style="width:600px;height:600px;top:-200px;right:-100px;background:var(--blue);"></div>
+  <div class="glow" style="width:500px;height:500px;bottom:-200px;left:-100px;background:var(--cyan);"></div>
+
+  <!-- Master Logo Definition -->
+  <svg style="position:absolute;width:0;height:0;">
+    <defs>
+      <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#60A5FA"/>
+        <stop offset="100%" stop-color="#06B6D4"/>
+      </linearGradient>
+      <symbol id="cognium-logo" viewBox="0 0 100 100">
+        <g transform="translate(50,50)">
+          <path d="M-28,0 C-28,-15 -15,-15 0,0 C15,15 28,15 28,0 C28,-15 15,-15 0,0 C-15,15 -28,15 -28,0 Z"
+                fill="none" stroke="url(#logoGradient)" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="-18" cy="0" r="4" fill="#60A5FA"/>
+          <circle cx="18" cy="0" r="4" fill="#06B6D4"/>
+          <circle cx="0" cy="0" r="5" fill="#FFFFFF"/>
+        </g>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div class="container">
+    <div class="header">
+      <svg width="48" height="48"><use href="#cognium-logo"/></svg>
+      <h1>Circle-IR</h1>
+    </div>
+    <p class="subtitle">Security vulnerability detection powered by taint analysis</p>
+    <div class="bar"></div>
+
+    <div id="status" class="loading">Initializing analyzer...</div>
+
+    <div class="main-grid">
+      <div class="card">
+        <h2>Java Code</h2>
+        <textarea id="code">package com.example;
+
+import javax.servlet.http.*;
+import java.sql.*;
+
+public class UserController extends HttpServlet {
+
+    public void doGet(HttpServletRequest request, HttpServletResponse response) {
+        // User input from HTTP parameter
+        String userId = request.getParameter("id");
+
+        // Direct string concatenation - SQL injection!
+        String query = "SELECT * FROM users WHERE id = '" + userId + "'";
+
+        try {
+            Connection conn = DriverManager.getConnection("jdbc:mysql://localhost/db");
+            Statement stmt = conn.createStatement();
+
+            // Vulnerable: executing unsanitized query
+            ResultSet rs = stmt.executeQuery(query);
+
+            while (rs.next()) {
+                response.getWriter().println(rs.getString("name"));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}</textarea>
+        <button id="analyzeBtn" class="analyze-btn" onclick="analyzeCode()" disabled>Analyze Code</button>
+      </div>
+
+      <div class="card card-glow">
+        <h2>Analysis Results</h2>
+        <div class="tabs">
+          <button class="tab active" onclick="showTab('summary')">Summary</button>
+          <button class="tab" onclick="showTab('ir')">Circle-IR JSON</button>
+        </div>
+        <div id="summaryTab" class="tab-content active">
+          <div id="results">Click "Analyze Code" to start...</div>
+        </div>
+        <div id="irTab" class="tab-content">
+          <div id="irJson">Circle-IR output will appear here after analysis...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="info-card">
+        <h3>How It Works</h3>
+        <ol>
+          <li><strong>Parsing</strong> - Tree-sitter WASM parses Java code into an AST</li>
+          <li><strong>IR Extraction</strong> - Extracts types, method calls, CFG, and DFG</li>
+          <li><strong>Taint Analysis</strong> - Identifies sources (user input) and sinks (dangerous operations)</li>
+          <li><strong>Flow Detection</strong> - Traces data flow from sources to sinks</li>
+        </ol>
+        <em>No server required - all analysis happens locally in your browser!</em>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      initParser,
+      parse,
+      collectAllNodes,
+      extractMeta,
+      extractTypes,
+      extractCalls,
+      buildCFG,
+      buildDFG,
+      analyzeTaint,
+      propagateTaint,
+      analyzeConstantPropagation,
+      isFalsePositive,
+      getDefaultConfig,
+    } from '../dist/core/circle-ir-core.js';
+
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const irJsonEl = document.getElementById('irJson');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+
+    // Tab switching
+    window.showTab = function(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      if (tab === 'summary') {
+        document.querySelector('.tab:first-child').classList.add('active');
+        document.getElementById('summaryTab').classList.add('active');
+      } else {
+        document.querySelector('.tab:last-child').classList.add('active');
+        document.getElementById('irTab').classList.add('active');
+      }
+    };
+
+    // Syntax highlight JSON
+    function syntaxHighlight(json) {
+      return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+        let cls = 'json-number';
+        if (/^"/.test(match)) {
+          if (/:$/.test(match)) {
+            cls = 'json-key';
+          } else {
+            cls = 'json-string';
+          }
+        } else if (/true|false/.test(match)) {
+          cls = 'json-boolean';
+        } else if (/null/.test(match)) {
+          cls = 'json-null';
+        }
+        return '<span class="' + cls + '">' + match + '</span>';
+      });
+    }
+
+    // Initialize parser on load
+    async function init() {
+      try {
+        statusEl.textContent = 'Initializing Tree-sitter parser...';
+        await initParser({
+          wasmPath: '../dist/wasm/web-tree-sitter.wasm',
+          languagePaths: {
+            java: '../dist/wasm/tree-sitter-java.wasm'
+          }
+        });
+        statusEl.textContent = 'Ready to analyze';
+        statusEl.className = 'ready';
+        analyzeBtn.disabled = false;
+      } catch (error) {
+        statusEl.textContent = `Error: ${error.message}`;
+        statusEl.className = 'error';
+        console.error('Init error:', error);
+      }
+    }
+
+    // Make analyzeCode available globally
+    window.analyzeCode = async function() {
+      const code = document.getElementById('code').value;
+      resultsEl.innerHTML = '<span class="info">Analyzing...</span>';
+
+      try {
+        const startTime = performance.now();
+
+        const NODE_TYPES = new Set([
+          'method_invocation',
+          'object_creation_expression',
+          'class_declaration',
+          'method_declaration',
+          'constructor_declaration',
+          'field_declaration',
+          'import_declaration',
+          'interface_declaration',
+          'enum_declaration',
+        ]);
+
+        // Parse code
+        const tree = await parse(code, 'java');
+        const nodeCache = collectAllNodes(tree.rootNode, NODE_TYPES);
+
+        // Extract IR
+        const meta = extractMeta(code, tree, 'input.java', 'java');
+        const types = extractTypes(tree, nodeCache);
+        const calls = extractCalls(tree, nodeCache);
+        const cfg = buildCFG(tree);
+        const dfg = buildDFG(tree, nodeCache);
+
+        // Analyze taint
+        const config = getDefaultConfig();
+        const taint = analyzeTaint(calls, types, config);
+
+        // Find flows
+        const propagationResult = propagateTaint(
+          dfg,
+          calls,
+          taint.sources,
+          taint.sinks,
+          taint.sanitizers || []
+        );
+
+        // Filter false positives
+        const constPropResult = analyzeConstantPropagation(tree, code);
+        const verifiedFlows = propagationResult.flows.filter(flow => {
+          for (const step of flow.path) {
+            const fpCheck = isFalsePositive(constPropResult, step.line, step.variable);
+            if (fpCheck.isFalsePositive) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        const elapsed = (performance.now() - startTime).toFixed(0);
+
+        // Format results
+        let output = `<span class="info">Analysis completed in ${elapsed}ms</span>\n\n`;
+
+        output += `<strong>IR Summary:</strong>\n`;
+        output += `  Lines of code: ${meta.loc}\n`;
+        output += `  Classes: ${types.length}\n`;
+        output += `  Method calls: ${calls.length}\n`;
+        output += `  CFG blocks: ${cfg.blocks.length}\n`;
+        output += `  DFG definitions: ${dfg.defs.length}\n\n`;
+
+        output += `<strong>Taint Analysis:</strong>\n`;
+        output += `<span class="source">  Sources: ${taint.sources.length}</span>\n`;
+        taint.sources.forEach(s => {
+          output += `    Line ${s.line}: ${s.type}\n`;
+        });
+
+        output += `<span class="sink">  Sinks: ${taint.sinks.length}</span>\n`;
+        taint.sinks.forEach(s => {
+          output += `    Line ${s.line}: ${s.type}\n`;
+        });
+
+        output += `  Sanitizers: ${taint.sanitizers.length}\n\n`;
+
+        output += `<strong>Vulnerability Detection:</strong>\n`;
+        if (verifiedFlows.length > 0) {
+          output += `<span class="vuln">Found ${verifiedFlows.length} potential vulnerabilities!</span>\n\n`;
+          verifiedFlows.forEach((flow, i) => {
+            output += `<span class="vuln">[${i + 1}] ${flow.sink.type.toUpperCase()}</span>\n`;
+            output += `    Source: Line ${flow.source.line} (${flow.source.type})\n`;
+            output += `    Sink: Line ${flow.sink.line} (${flow.sink.type})\n`;
+            output += `    Confidence: ${(flow.confidence * 100).toFixed(0)}%\n`;
+            if (flow.path && flow.path.length > 0) {
+              output += `    Path:\n`;
+              flow.path.forEach(step => {
+                output += `      -> ${step.variable} (line ${step.line})\n`;
+              });
+            }
+            output += '\n';
+          });
+        } else {
+          output += `<span class="safe">No vulnerabilities detected.</span>\n`;
+        }
+
+        resultsEl.innerHTML = output;
+
+        // Build Circle-IR JSON object
+        const circleIR = {
+          meta,
+          types,
+          calls,
+          cfg,
+          dfg,
+          taint: {
+            sources: taint.sources,
+            sinks: taint.sinks,
+            sanitizers: taint.sanitizers,
+            flows: verifiedFlows
+          }
+        };
+
+        // Display Circle-IR JSON with syntax highlighting
+        const jsonStr = JSON.stringify(circleIR, null, 2);
+        irJsonEl.innerHTML = syntaxHighlight(jsonStr);
+
+        console.log('Circle-IR:', circleIR);
+      } catch (error) {
+        resultsEl.innerHTML = `<span class="vuln">Error: ${error.message}</span>\n\n${error.stack}`;
+        irJsonEl.textContent = `Error: ${error.message}`;
+        console.error('Analysis error:', error);
+      }
+    };
+
+    // Initialize on load
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,510 @@
+{
+  "sinks": [
+    {
+      "method": "system",
+      "class": "os",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "os.system() - shell command execution"
+    },
+    {
+      "method": "popen",
+      "class": "os",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "os.popen() - shell command execution"
+    },
+    {
+      "method": "spawn",
+      "class": "os",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [1],
+      "note": "os.spawn*() - process execution"
+    },
+    {
+      "method": "exec",
+      "class": "os",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "os.exec*() - process execution"
+    },
+    {
+      "method": "run",
+      "class": "subprocess",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "subprocess.run() - command execution"
+    },
+    {
+      "method": "call",
+      "class": "subprocess",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "subprocess.call() - command execution"
+    },
+    {
+      "method": "check_output",
+      "class": "subprocess",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "subprocess.check_output() - command execution"
+    },
+    {
+      "method": "check_call",
+      "class": "subprocess",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "subprocess.check_call() - command execution"
+    },
+    {
+      "method": "Popen",
+      "class": "subprocess",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "subprocess.Popen() - command execution"
+    },
+    {
+      "method": "eval",
+      "class": null,
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "eval() - arbitrary code execution"
+    },
+    {
+      "method": "exec",
+      "class": null,
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "exec() - arbitrary code execution"
+    },
+    {
+      "method": "compile",
+      "class": null,
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "compile() - code compilation from string"
+    },
+    {
+      "method": "__import__",
+      "class": null,
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "__import__() - dynamic import"
+    },
+    {
+      "method": "loads",
+      "class": "pickle",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "pickle.loads() - unsafe deserialization"
+    },
+    {
+      "method": "load",
+      "class": "pickle",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "pickle.load() - unsafe deserialization from file"
+    },
+    {
+      "method": "loads",
+      "class": "marshal",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "marshal.loads() - unsafe deserialization"
+    },
+    {
+      "method": "loads",
+      "class": "yaml",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "yaml.loads() - unsafe YAML deserialization (use safe_load)"
+    },
+    {
+      "method": "load",
+      "class": "yaml",
+      "type": "deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "yaml.load() - unsafe YAML deserialization (use safe_load)"
+    },
+    {
+      "method": "execute",
+      "class": null,
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "cursor.execute() - SQL query execution"
+    },
+    {
+      "method": "executemany",
+      "class": null,
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "cursor.executemany() - batch SQL execution"
+    },
+    {
+      "method": "raw",
+      "class": null,
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Django QuerySet.raw() - raw SQL query"
+    },
+    {
+      "method": "extra",
+      "class": null,
+      "type": "sql_injection",
+      "cwe": "CWE-89",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Django QuerySet.extra() - raw SQL fragments"
+    },
+    {
+      "method": "open",
+      "class": null,
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "open() - file path traversal risk"
+    },
+    {
+      "method": "read",
+      "class": "Path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [],
+      "note": "pathlib.Path().read_text/read_bytes() - file path traversal"
+    },
+    {
+      "method": "join",
+      "class": "os.path",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "medium",
+      "arg_positions": [0, 1],
+      "note": "os.path.join() - path construction with user input"
+    },
+    {
+      "method": "remove",
+      "class": "os",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "os.remove() - file deletion"
+    },
+    {
+      "method": "unlink",
+      "class": "os",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "os.unlink() - file deletion"
+    },
+    {
+      "method": "rmdir",
+      "class": "os",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "os.rmdir() - directory deletion"
+    },
+    {
+      "method": "rmtree",
+      "class": "shutil",
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "shutil.rmtree() - recursive directory deletion"
+    },
+    {
+      "method": "send_file",
+      "class": null,
+      "type": "path_traversal",
+      "cwe": "CWE-22",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Flask send_file() - file serving path traversal"
+    },
+    {
+      "method": "render_template_string",
+      "class": null,
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Flask render_template_string() - SSTI/XSS"
+    },
+    {
+      "method": "Markup",
+      "class": null,
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Markup() - marks string as safe HTML"
+    },
+    {
+      "method": "mark_safe",
+      "class": null,
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Django mark_safe() - marks string as safe HTML"
+    },
+    {
+      "method": "format_html",
+      "class": null,
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "medium",
+      "arg_positions": [0],
+      "note": "Django format_html() - HTML formatting with user input"
+    },
+    {
+      "method": "get",
+      "class": "requests",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "requests.get() - SSRF via user-controlled URL"
+    },
+    {
+      "method": "post",
+      "class": "requests",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "requests.post() - SSRF via user-controlled URL"
+    },
+    {
+      "method": "urlopen",
+      "class": "urllib.request",
+      "type": "ssrf",
+      "cwe": "CWE-918",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "urllib.request.urlopen() - SSRF via user-controlled URL"
+    },
+    {
+      "method": "redirect",
+      "class": null,
+      "type": "open_redirect",
+      "cwe": "CWE-601",
+      "severity": "medium",
+      "arg_positions": [0],
+      "note": "Flask/Django redirect() - open redirect"
+    },
+    {
+      "method": "xpath",
+      "class": null,
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "lxml/etree xpath() - XPath injection"
+    },
+    {
+      "method": "find",
+      "class": "etree",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.find() with XPath expression"
+    },
+    {
+      "method": "findall",
+      "class": "etree",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.findall() with XPath expression"
+    },
+    {
+      "method": "iterfind",
+      "class": "etree",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.iterfind() with XPath expression"
+    },
+    {
+      "method": "select",
+      "class": "elementpath",
+      "type": "xpath_injection",
+      "cwe": "CWE-643",
+      "severity": "high",
+      "arg_positions": [1],
+      "note": "elementpath.select(root, query) - XPath injection via query param"
+    },
+    {
+      "method": "parse",
+      "class": "etree",
+      "type": "xxe",
+      "cwe": "CWE-611",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.parse() - XXE if external entities enabled"
+    },
+    {
+      "method": "fromstring",
+      "class": "etree",
+      "type": "xxe",
+      "cwe": "CWE-611",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.fromstring() - XXE if external entities enabled"
+    },
+    {
+      "method": "XML",
+      "class": "etree",
+      "type": "xxe",
+      "cwe": "CWE-611",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "etree.XML() - XXE if external entities enabled"
+    },
+    {
+      "method": "parseString",
+      "class": "minidom",
+      "type": "xxe",
+      "cwe": "CWE-611",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "minidom.parseString() - XXE if external entities enabled"
+    },
+    {
+      "method": "parse",
+      "class": "sax",
+      "type": "xxe",
+      "cwe": "CWE-611",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "sax.parse() - XXE if external entities enabled"
+    },
+    {
+      "method": "search",
+      "class": "ldap",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [0, 2],
+      "note": "ldap.search() - LDAP injection via filter"
+    },
+    {
+      "method": "search_s",
+      "class": "ldap",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [0, 2],
+      "note": "ldap.search_s() - LDAP injection via filter"
+    },
+    {
+      "method": "search_ext",
+      "class": "ldap",
+      "type": "ldap_injection",
+      "cwe": "CWE-90",
+      "severity": "high",
+      "arg_positions": [0, 2],
+      "note": "ldap.search_ext() - LDAP injection via filter"
+    },
+    {
+      "method": "__setitem__",
+      "class": "session",
+      "type": "trust_boundary",
+      "cwe": "CWE-501",
+      "severity": "medium",
+      "arg_positions": [1],
+      "note": "session[key] = value - trust boundary violation"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "escape",
+      "class": "markupsafe",
+      "sanitizes": ["xss"],
+      "note": "MarkupSafe escape() - HTML escaping"
+    },
+    {
+      "method": "escape",
+      "class": "html",
+      "sanitizes": ["xss"],
+      "note": "html.escape() - HTML escaping"
+    },
+    {
+      "method": "quote",
+      "class": "shlex",
+      "sanitizes": ["command_injection"],
+      "note": "shlex.quote() - shell escaping"
+    },
+    {
+      "method": "safe_load",
+      "class": "yaml",
+      "sanitizes": ["deserialization"],
+      "note": "yaml.safe_load() - safe YAML loading"
+    },
+    {
+      "method": "parameterized",
+      "class": null,
+      "sanitizes": ["sql_injection"],
+      "note": "Parameterized query (cursor.execute with params)"
+    },
+    {
+      "method": "secure_filename",
+      "class": "werkzeug.utils",
+      "sanitizes": ["path_traversal"],
+      "note": "werkzeug secure_filename() - filename sanitization"
+    }
+  ]
+}

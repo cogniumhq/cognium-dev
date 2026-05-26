@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test and Coverage
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build all targets
+        run: npm run build:all
+
+      - name: Self-analysis (dogfood)
+        if: matrix.node-version == '22.x'
+        run: npm run dogfood
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Check coverage threshold
+        run: |
+          echo "Checking coverage threshold ≥75%..."
+          npm run test:coverage -- --reporter=json --reporter=text > coverage-summary.json || true
+          # Vitest with @vitest/coverage-v8 will fail if thresholds aren't met in vitest.config.ts
+
+      - name: Upload coverage reports
+        if: matrix.node-version == '22.x'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  security-scan:
+    name: Security Scan (cognium-ai)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      models: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Install cognium-ai
+        run: |
+          npm install cognium-ai@latest
+          ln -s node_modules/circle-ir/dist/wasm wasm
+
+      - name: Run security scan
+        env:
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
+        run: |
+          # Exit code 0 = clean, 1 = security findings (fail CI), 2 = quality-only findings (ok)
+          npx cognium-ai scan ./src || [ $? -eq 2 ]
+
+      - name: Run trust score
+        env:
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
+        run: |
+          npx cognium-ai trust ./src
+          npx cognium-ai trust ./src --format badge -o trust-badge.svg
+
+      - name: Run quality score
+        env:
+          LLM_BASE_URL: https://models.github.ai/inference
+          LLM_API_KEY: ${{ github.token }}
+          LLM_ENRICHMENT_MODEL: openai/gpt-4o-mini
+        run: |
+          npx cognium-ai quality ./src
+          npx cognium-ai quality ./src --format badge -o quality-badge.svg
+
+      - name: Upload badges as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: badges
+          path: |
+            trust-badge.svg
+            quality-badge.svg
+
+      - name: Commit badges to badges branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Save badges to temp before switching branches
+          cp trust-badge.svg /tmp/trust-badge.svg 2>/dev/null || true
+          cp quality-badge.svg /tmp/quality-badge.svg 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git stash --include-untracked
+          git fetch origin badges && git checkout badges || git checkout --orphan badges
+          git rm -rf . 2>/dev/null || true
+          cp /tmp/trust-badge.svg . 2>/dev/null || true
+          cp /tmp/quality-badge.svg . 2>/dev/null || true
+          git add trust-badge.svg quality-badge.svg
+          git commit -m "Update badges [skip ci]" || echo "No changes to commit"
+          git push origin badges --force
+
+  lint:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck

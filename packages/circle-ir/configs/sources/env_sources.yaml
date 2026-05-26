@@ -1,0 +1,94 @@
+{
+  "sources": [
+    {
+      "method": "getProperty",
+      "class": "System",
+      "type": "system_property",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "System property - could be set by attacker in some contexts"
+    },
+    {
+      "method": "getProperties",
+      "class": "System",
+      "type": "system_property",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "All system properties"
+    },
+    {
+      "method": "getenv",
+      "class": "System",
+      "type": "env_variable",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Environment variable - could be attacker-controlled"
+    },
+    {
+      "method": "lookup",
+      "class": "InitialContext",
+      "type": "jndi",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "JNDI lookup - argument is taint source if from user input"
+    },
+    {
+      "method": "lookup",
+      "class": "Context",
+      "type": "jndi",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "JNDI context lookup"
+    },
+    {
+      "method": "getProperty",
+      "class": "Environment",
+      "type": "spring_property",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Spring environment property - usually safe but can be external"
+    },
+    {
+      "method": "getRequiredProperty",
+      "class": "Environment",
+      "type": "spring_property",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Spring required property"
+    },
+    {
+      "annotation": "@Value",
+      "type": "spring_property",
+      "severity": "low",
+      "param_tainted": true,
+      "note": "Spring @Value injection - from properties file"
+    },
+    {
+      "annotation": "@ConfigurationProperties",
+      "type": "spring_property",
+      "severity": "low",
+      "class_fields_tainted": true,
+      "note": "Spring configuration properties binding"
+    },
+    {
+      "method": "getProperty",
+      "class": "PropertyDescriptor",
+      "type": "reflection",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Bean property value via reflection"
+    },
+    {
+      "method": "invoke",
+      "class": "Method",
+      "type": "reflection",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Method invocation result via reflection"
+    }
+  ]
+}

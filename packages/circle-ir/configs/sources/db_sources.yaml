@@ -1,0 +1,90 @@
+{
+  "sources": [
+    {
+      "method": "getString",
+      "class": "ResultSet",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "String column value - could be attacker-controlled if stored from user input"
+    },
+    {
+      "method": "getObject",
+      "class": "ResultSet",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Object column value"
+    },
+    {
+      "method": "getBytes",
+      "class": "ResultSet",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Byte array column value"
+    },
+    {
+      "method": "getClob",
+      "class": "ResultSet",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "CLOB column value"
+    },
+    {
+      "method": "getBlob",
+      "class": "ResultSet",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "BLOB column value"
+    },
+    {
+      "annotation": "@Column",
+      "type": "database",
+      "severity": "medium",
+      "field_tainted": true,
+      "note": "JPA entity field - may contain attacker data"
+    },
+    {
+      "annotation": "@Entity",
+      "type": "database",
+      "severity": "low",
+      "class_fields_tainted": true,
+      "note": "JPA entity - all fields are potentially tainted"
+    },
+    {
+      "method": "findBy.*",
+      "class": ".*Repository",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Spring Data finder method - returns entities from DB"
+    },
+    {
+      "method": "findAll",
+      "class": ".*Repository",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Returns all entities - could contain attacker data"
+    },
+    {
+      "method": "getString",
+      "class": "Document",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "MongoDB document field"
+    },
+    {
+      "method": "get",
+      "class": "Document",
+      "type": "database",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "MongoDB document field (generic)"
+    }
+  ]
+}

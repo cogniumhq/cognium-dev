@@ -1,0 +1,340 @@
+{
+  "name": "Rust Sources",
+  "description": "Taint sources for Rust web frameworks and standard library",
+  "sources": [
+    {
+      "method": "query_string",
+      "class": "HttpRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "path",
+      "class": "Path",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "into_inner",
+      "class": "Path",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "into_inner",
+      "class": "Query",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "into_inner",
+      "class": "Json",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "into_inner",
+      "class": "Form",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "match_info",
+      "class": "HttpRequest",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "headers",
+      "class": "HttpRequest",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "cookie",
+      "class": "HttpRequest",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "actix-web"
+    },
+    {
+      "method": "param",
+      "class": "Request",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "rocket"
+    },
+    {
+      "method": "into_inner",
+      "class": "Form",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "rocket"
+    },
+    {
+      "method": "into_inner",
+      "class": "Json",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "rocket"
+    },
+    {
+      "method": "cookies",
+      "class": "Request",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "rocket"
+    },
+    {
+      "method": "headers",
+      "class": "Request",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "rocket"
+    },
+    {
+      "method": "body",
+      "class": "Request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum"
+    },
+    {
+      "method": "extract",
+      "class": "Query",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum"
+    },
+    {
+      "method": "extract",
+      "class": "Path",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum"
+    },
+    {
+      "method": "extract",
+      "class": "Json",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum"
+    },
+    {
+      "method": "var",
+      "class": "env",
+      "type": "env_var",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "var_os",
+      "class": "env",
+      "type": "env_var",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "args",
+      "class": "env",
+      "type": "cli_arg",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "args_os",
+      "class": "env",
+      "type": "cli_arg",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read_to_string",
+      "class": "File",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read",
+      "class": "File",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read_to_end",
+      "class": "File",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read_line",
+      "class": "BufReader",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "lines",
+      "class": "BufReader",
+      "type": "file_read",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read_to_string",
+      "class": "stdin",
+      "type": "stdin",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read_line",
+      "class": "stdin",
+      "type": "stdin",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "stdin",
+      "class": "io",
+      "type": "stdin",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "std",
+      "note": "std::io::stdin() returns a handle to stdin input"
+    },
+    {
+      "method": "into_body",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body extractor"
+    },
+    {
+      "method": "to_bytes",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body to bytes"
+    },
+    {
+      "method": "body",
+      "class": "Request",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum request body extractor"
+    },
+    {
+      "method": "into_inner",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum Body::into_inner()"
+    },
+    {
+      "method": "collect",
+      "class": "Body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "axum",
+      "note": "Axum body collect"
+    },
+    {
+      "method": "recv",
+      "class": "TcpStream",
+      "type": "network",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "read",
+      "class": "TcpStream",
+      "type": "network",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "recv",
+      "class": "UdpSocket",
+      "type": "network",
+      "severity": "high",
+      "return_tainted": true,
+      "framework": "std"
+    },
+    {
+      "method": "query",
+      "class": "Client",
+      "type": "db_result",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "sqlx"
+    },
+    {
+      "method": "fetch_one",
+      "class": "Client",
+      "type": "db_result",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "sqlx"
+    },
+    {
+      "method": "fetch_all",
+      "class": "Client",
+      "type": "db_result",
+      "severity": "medium",
+      "return_tainted": true,
+      "framework": "sqlx"
+    }
+  ]
+}

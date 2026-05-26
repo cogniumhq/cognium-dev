@@ -1,0 +1,99 @@
+{
+  "sources": [
+    {
+      "method": "getInputStream",
+      "class": "Socket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Raw socket input stream - untrusted network data"
+    },
+    {
+      "method": "getInputStream",
+      "class": "ServerSocket",
+      "type": "network_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Socket input from accepted connection"
+    },
+    {
+      "method": "getEntity",
+      "class": "HttpResponse",
+      "type": "http_response",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "HTTP response entity - could be attacker-controlled (SSRF)"
+    },
+    {
+      "method": "bodyToMono",
+      "class": "ClientResponse",
+      "type": "http_response",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "WebClient response body"
+    },
+    {
+      "method": "bodyToFlux",
+      "class": "ClientResponse",
+      "type": "http_response",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "WebClient response body (streaming)"
+    },
+    {
+      "method": "getResponseBodyAsString",
+      "class": "RestTemplate",
+      "type": "http_response",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "RestTemplate response body"
+    },
+    {
+      "method": "getText",
+      "class": "TextMessage",
+      "type": "jms_message",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "JMS text message body - could be attacker-controlled"
+    },
+    {
+      "method": "getBody",
+      "class": "Message",
+      "type": "jms_message",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "JMS message body"
+    },
+    {
+      "method": "getStringProperty",
+      "class": "Message",
+      "type": "jms_message",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "JMS message property"
+    },
+    {
+      "annotation": "@Remote",
+      "type": "rmi",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "RMI remote method parameters - from untrusted client"
+    },
+    {
+      "method": "getText",
+      "class": "Session",
+      "type": "websocket",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebSocket message text"
+    },
+    {
+      "method": "getBasicRemote",
+      "class": "Session",
+      "type": "websocket",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "WebSocket remote endpoint"
+    }
+  ]
+}

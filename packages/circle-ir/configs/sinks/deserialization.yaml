@@ -1,0 +1,105 @@
+{
+  "sinks": [
+    {
+      "method": "readObject",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [],
+      "note": "Java deserialization RCE - can trigger gadget chains"
+    },
+    {
+      "method": "readUnshared",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [],
+      "note": "Java deserialization RCE - unshared objects"
+    },
+    {
+      "method": "ObjectInputStream",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Creating ObjectInputStream with untrusted data"
+    },
+    {
+      "method": "readObject",
+      "class": "XMLDecoder",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": []
+    },
+    {
+      "method": "XMLDecoder",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "fromXML",
+      "class": "XStream",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "unmarshal",
+      "class": "XStream",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "load",
+      "class": "Yaml",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "SnakeYAML unsafe deserialization"
+    },
+    {
+      "method": "loadAll",
+      "class": "Yaml",
+      "type": "insecure_deserialization",
+      "cwe": "CWE-502",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "resolveClass",
+      "removes": [
+        "insecure_deserialization"
+      ],
+      "note": "Custom ObjectInputStream with class whitelist"
+    },
+    {
+      "method": "readValue",
+      "class": "ObjectMapper",
+      "removes": [
+        "insecure_deserialization"
+      ],
+      "note": "JSON deserialization (safe if default typing disabled)"
+    }
+  ]
+}

@@ -1,0 +1,352 @@
+{
+  "sources": [
+    {
+      "property": "query",
+      "object": "req",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js query parameters (req.query.x)"
+    },
+    {
+      "property": "params",
+      "object": "req",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js route parameters (req.params.x)"
+    },
+    {
+      "property": "body",
+      "object": "req",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js request body (req.body.x)"
+    },
+    {
+      "property": "headers",
+      "object": "req",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js request headers (req.headers.x)"
+    },
+    {
+      "property": "cookies",
+      "object": "req",
+      "type": "http_cookie",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js cookies (req.cookies.x)"
+    },
+    {
+      "method": "param",
+      "object": "req",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js req.param() method"
+    },
+    {
+      "method": "get",
+      "object": "req",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js req.get() for headers"
+    },
+    {
+      "method": "header",
+      "object": "req",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js req.header() for headers"
+    },
+    {
+      "property": "url",
+      "object": "req",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js request URL"
+    },
+    {
+      "property": "path",
+      "object": "req",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express.js request path"
+    },
+    {
+      "property": "originalUrl",
+      "object": "req",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Express.js original URL"
+    },
+    {
+      "property": "baseUrl",
+      "object": "req",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express.js base URL"
+    },
+    {
+      "property": "hostname",
+      "object": "req",
+      "type": "http_header",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Express.js hostname from Host header"
+    },
+    {
+      "property": "ip",
+      "object": "req",
+      "type": "http_header",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Express.js client IP (can be spoofed via X-Forwarded-For)"
+    },
+    {
+      "property": "protocol",
+      "object": "req",
+      "type": "http_header",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Express.js protocol"
+    },
+    {
+      "property": "searchParams",
+      "object": "URL",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "URL searchParams"
+    },
+    {
+      "method": "searchParams.get",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "URL searchParams.get()"
+    },
+    {
+      "property": "search",
+      "object": "location",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Browser location.search"
+    },
+    {
+      "property": "hash",
+      "object": "location",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Browser location.hash"
+    },
+    {
+      "property": "href",
+      "object": "location",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Browser location.href"
+    },
+    {
+      "property": "pathname",
+      "object": "location",
+      "type": "http_path",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Browser location.pathname"
+    },
+    {
+      "method": "getElementById",
+      "object": "document",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "DOM element (may contain user input)"
+    },
+    {
+      "method": "querySelector",
+      "object": "document",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "DOM element (may contain user input)"
+    },
+    {
+      "method": "querySelectorAll",
+      "object": "document",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "DOM elements (may contain user input)"
+    },
+    {
+      "property": "value",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Form input value"
+    },
+    {
+      "property": "innerHTML",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "DOM innerHTML (can be tainted)"
+    },
+    {
+      "property": "innerText",
+      "type": "dom_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "DOM innerText (can be tainted)"
+    },
+    {
+      "property": "textContent",
+      "type": "dom_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "DOM textContent (can be tainted)"
+    },
+    {
+      "method": "prompt",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Browser prompt() dialog - user input"
+    },
+    {
+      "property": "request.query",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa/Hapi request query"
+    },
+    {
+      "property": "request.params",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa/Hapi request params"
+    },
+    {
+      "property": "request.body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa/Hapi request body"
+    },
+    {
+      "property": "ctx.query",
+      "type": "http_param",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa context query"
+    },
+    {
+      "property": "ctx.params",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa context params"
+    },
+    {
+      "property": "ctx.request.body",
+      "type": "http_body",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Koa context request body"
+    },
+    {
+      "property": "input",
+      "object": "event",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Event input (keyboard, etc.)"
+    },
+    {
+      "property": "data",
+      "object": "event",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Event data (paste, drag, etc.)"
+    },
+    {
+      "property": "target.value",
+      "object": "event",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Event target value"
+    },
+    {
+      "method": "getItem",
+      "object": "localStorage",
+      "type": "dom_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "localStorage.getItem() - data may have been set by attacker via XSS"
+    },
+    {
+      "method": "getItem",
+      "object": "sessionStorage",
+      "type": "dom_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "sessionStorage.getItem() - data may have been set by attacker via XSS"
+    },
+    {
+      "property": "referrer",
+      "object": "document",
+      "type": "http_header",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "document.referrer - attacker-controlled via Referer header"
+    },
+    {
+      "property": "data",
+      "object": "e",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "event",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "msg",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    },
+    {
+      "property": "data",
+      "object": "message",
+      "type": "dom_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "postMessage event.data - untrusted cross-origin data"
+    }
+  ]
+}

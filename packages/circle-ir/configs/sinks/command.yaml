@@ -1,0 +1,1026 @@
+{
+  "sinks": [
+    {
+      "method": "fromXML",
+      "class": "XStream",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "XStream deserialization RCE"
+    },
+    {
+      "method": "unmarshal",
+      "class": "XStream",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "realClass",
+      "class": "Mapper",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "XStream class resolution - can load arbitrary classes"
+    },
+    {
+      "method": "realClass",
+      "class": "CachingMapper",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "XStream cached class resolution"
+    },
+    {
+      "method": "realClass",
+      "class": "MapperWrapper",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "XStream mapper class resolution"
+    },
+    {
+      "method": "fromString",
+      "class": "FileConverter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "XStream File converter - creates File from untrusted input"
+    },
+    {
+      "method": "fromString",
+      "class": "AbstractSingleValueConverter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "XStream value converter - converts untrusted input"
+    },
+    {
+      "method": "fromString",
+      "class": "FileConverter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "XStream File converter - creates File from untrusted string"
+    },
+    {
+      "method": "flushCache",
+      "class": "CachingMapper",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "XStream cache flush - may be triggered by deserialization"
+    },
+    {
+      "method": "readObject",
+      "class": "ObjectInputStream",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Java deserialization RCE"
+    },
+    {
+      "method": "readUnshared",
+      "class": "ObjectInputStream",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical"
+    },
+    {
+      "method": "File",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "File constructor in deserialization can lead to path traversal + RCE"
+    },
+    {
+      "method": "exec",
+      "class": "Runtime",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Especially dangerous with shell invocation (sh -c, cmd /c)"
+    },
+    {
+      "method": "exec",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Generic exec() call - likely Runtime.getRuntime().exec()"
+    },
+    {
+      "method": "exit",
+      "class": "System",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Controlled System.exit() can cause DoS or command execution"
+    },
+    {
+      "method": "getRuntime",
+      "class": "Runtime",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Check if followed by exec"
+    },
+    {
+      "method": "ProcessBuilder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Constructor with command array"
+    },
+    {
+      "method": "command",
+      "class": "ProcessBuilder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "start",
+      "class": "ProcessBuilder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Executes the command"
+    },
+    {
+      "method": "Process",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high"
+    },
+    {
+      "method": "execute",
+      "class": "Executor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "execute",
+      "class": "DefaultExecutor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "CommandLine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Command line construction"
+    },
+    {
+      "method": "eval",
+      "class": "ScriptEngine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "GroovyShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical"
+    },
+    {
+      "method": "evaluate",
+      "class": "GroovyShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "parse",
+      "class": "GroovyShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Groovy script parsing"
+    },
+    {
+      "method": "doCheckScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins script validation bypass"
+    },
+    {
+      "class": "ScriptApproval",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins script approval mechanism"
+    },
+    {
+      "method": "sandbox",
+      "class": "GroovySandbox",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox"
+    },
+    {
+      "method": "evaluate",
+      "class": "CpsScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins Pipeline CPS script evaluation"
+    },
+    {
+      "method": "sh",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline shell command"
+    },
+    {
+      "method": "bat",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline Windows batch command"
+    },
+    {
+      "method": "powershell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline PowerShell command"
+    },
+    {
+      "method": "pwsh",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline PowerShell Core command"
+    },
+    {
+      "method": "node",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline node step - may execute shell"
+    },
+    {
+      "method": "library",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins shared library loading with arbitrary code execution"
+    },
+    {
+      "method": "load",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline load step - loads and executes Groovy scripts"
+    },
+    {
+      "method": "tool",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline tool step - may execute installers"
+    },
+    {
+      "method": "withEnv",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [
+        0
+      ],
+      "note": "Jenkins pipeline withEnv - environment manipulation"
+    },
+    {
+      "method": "Exec",
+      "class": "org.apache.tools.ant.taskdefs",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical"
+    },
+    {
+      "method": "setCommand",
+      "class": "Exec",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ]
+    },
+    {
+      "method": "File",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "println",
+      "class": "PrintWriter",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [
+        0
+      ],
+      "note": "Auto-mined from CVE analysis"
+    },
+    {
+      "method": "create",
+      "class": "CpsScmFlowDefinition",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins Pipeline SCM script loading"
+    },
+    {
+      "method": "getLibrary",
+      "class": "LibraryAdder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins shared library loading"
+    },
+    {
+      "method": "checkout",
+      "class": "SCMCheckout",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins SCM checkout - may execute hooks"
+    },
+    {
+      "method": "imageName",
+      "class": "DockerRegistryEndpoint",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins Docker image name injection"
+    },
+    {
+      "method": "getShellArgs",
+      "class": "BourneShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Shell argument construction"
+    },
+    {
+      "method": "getRawCommandLine",
+      "class": "Shell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Shell command line construction"
+    },
+    {
+      "method": "createProcess",
+      "class": "DefaultExecuteAsyncHandler",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0]
+    },
+    {
+      "method": "processControlCommand",
+      "class": "TransportConnection",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "ActiveMQ control command processing"
+    },
+    {
+      "method": "run",
+      "class": "GroovyScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Groovy script execution"
+    },
+    {
+      "method": "parseClass",
+      "class": "GroovyClassLoader",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Groovy class parsing with code execution"
+    },
+    {
+      "method": "newScript",
+      "class": "GroovyShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Groovy script creation"
+    },
+    {
+      "method": "execute",
+      "class": "CommandLine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Apache Commons Exec command execution"
+    },
+    {
+      "method": "addArgument",
+      "class": "CommandLine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Adding potentially tainted argument to command"
+    },
+    {
+      "method": "addArguments",
+      "class": "CommandLine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Adding potentially tainted arguments to command"
+    },
+    {
+      "method": "CpsFlowDefinition",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins CPS Flow Definition - executes Pipeline scripts"
+    },
+    {
+      "method": "CpsFlowExecution",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins CPS Flow Execution - executes Pipeline scripts"
+    },
+    {
+      "method": "FlowExecution",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins Flow Execution - executes Pipeline scripts"
+    },
+    {
+      "method": "FlowDefinition",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins Flow Definition - executes Pipeline scripts"
+    },
+    {
+      "method": "parseScript",
+      "class": "CpsGroovyShell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins CPS Groovy script parsing"
+    },
+    {
+      "method": "loadScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Script loading with execution"
+    },
+    {
+      "method": "readTrusted",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins trusted script reading"
+    },
+    {
+      "method": "retrieve",
+      "class": "LibraryAdder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins shared library retrieval - CVE-2022-25174"
+    },
+    {
+      "method": "findResources",
+      "class": "LibraryAdder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins shared library resource finding"
+    },
+    {
+      "method": "parse",
+      "class": "LibraryAdder",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins shared library parsing"
+    },
+    {
+      "method": "forGroup",
+      "class": "FolderLibraries",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins folder libraries - CVE-2022-25174"
+    },
+    {
+      "method": "BourneShell",
+      "class": "constructor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Bourne shell constructor"
+    },
+    {
+      "method": "setQuotedArgumentsEnabled",
+      "class": "Shell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Shell quoting configuration"
+    },
+    {
+      "method": "getExecutionPreamble",
+      "class": "Shell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Shell preamble construction"
+    },
+    {
+      "method": "getEscapeChars",
+      "class": "Shell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Shell escape character handling"
+    },
+    {
+      "method": "quoteWorkingDirectoryAndExecutable",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Shell path quoting"
+    },
+    {
+      "method": "escapeArgument",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Shell argument escaping"
+    },
+    {
+      "method": "createExpression",
+      "class": "JexlEngine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache JEXL expression creation - can execute arbitrary code"
+    },
+    {
+      "method": "createScript",
+      "class": "JexlEngine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache JEXL script creation - can execute arbitrary code"
+    },
+    {
+      "method": "evaluate",
+      "class": "JexlExpression",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Apache JEXL expression evaluation"
+    },
+    {
+      "method": "execute",
+      "class": "JexlScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Apache JEXL script execution"
+    },
+    {
+      "method": "getValue",
+      "class": "ExpressionFactory",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "EL expression evaluation - may lead to RCE"
+    },
+    {
+      "method": "createValueExpression",
+      "class": "ExpressionFactory",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [1],
+      "note": "EL expression creation"
+    },
+    {
+      "method": "createMethodExpression",
+      "class": "ExpressionFactory",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [1],
+      "note": "EL method expression creation"
+    },
+    {
+      "method": "parseExpression",
+      "class": "SpelExpressionParser",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Spring SpEL expression parsing - CVE-2022-22963, CVE-2022-22947"
+    },
+    {
+      "method": "getValue",
+      "class": "SpelExpression",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Spring SpEL expression evaluation"
+    },
+    {
+      "method": "setValue",
+      "class": "SpelExpression",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Spring SpEL expression assignment"
+    },
+    {
+      "method": "getValue",
+      "class": "OgnlContext",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "OGNL expression evaluation - CVE-2022-26134 (Confluence)"
+    },
+    {
+      "method": "parseExpression",
+      "class": "Ognl",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "OGNL expression parsing"
+    },
+    {
+      "method": "compileExpression",
+      "class": "Ognl",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "OGNL expression compilation"
+    },
+    {
+      "method": "evaluate",
+      "class": "Velocity",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [1],
+      "note": "Apache Velocity template evaluation"
+    },
+    {
+      "method": "mergeTemplate",
+      "class": "VelocityEngine",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0, 2],
+      "note": "Apache Velocity template merging"
+    },
+    {
+      "method": "evaluate",
+      "class": "MvelEvaluator",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MVEL expression evaluation"
+    },
+    {
+      "method": "eval",
+      "class": "MVEL",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MVEL expression evaluation"
+    },
+    {
+      "method": "compileExpression",
+      "class": "MVEL",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "MVEL expression compilation"
+    },
+    {
+      "method": "executeScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Generic script execution"
+    },
+    {
+      "method": "runScript",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Generic script execution"
+    },
+    {
+      "method": "executeCommand",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Generic command execution"
+    },
+    {
+      "method": "runCommand",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Generic command execution"
+    },
+    {
+      "method": "system",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "System command execution"
+    },
+    {
+      "method": "shell",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Shell command execution"
+    },
+    {
+      "method": "cmds",
+      "class": "ProcStarter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins Launcher.ProcStarter command list"
+    },
+    {
+      "method": "launch",
+      "class": "Launcher",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins Launcher.launch() - process execution"
+    },
+    {
+      "method": "launch",
+      "class": "ProcStarter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins ProcStarter.launch() - process execution"
+    },
+    {
+      "method": "start",
+      "class": "ProcStarter",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "note": "Jenkins ProcStarter.start() - process execution"
+    },
+    {
+      "method": "launchChannel",
+      "class": "Launcher",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins Launcher channel creation with command"
+    },
+    {
+      "method": "subcommand",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Git CLI subcommand construction"
+    },
+    {
+      "method": "launchCommandIn",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Jenkins Git plugin command launch"
+    },
+    {
+      "method": "fetch",
+      "class": "CliGitAPIImpl",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Jenkins Git plugin fetch - may inject via refspec"
+    },
+    {
+      "method": "checkout",
+      "class": "CliGitAPIImpl",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Jenkins Git plugin checkout - may inject via branch name"
+    },
+    {
+      "method": "submoduleUpdate",
+      "class": "CliGitAPIImpl",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "note": "Jenkins Git plugin submodule update - CVE injection vector"
+    },
+    {
+      "method": "interpolate",
+      "class": "StringSubstitutor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache Commons Text string interpolation - CVE-2022-42889"
+    },
+    {
+      "method": "replace",
+      "class": "StringSubstitutor",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "Apache Commons Text string substitution"
+    },
+    {
+      "method": "getConnection",
+      "class": "DriverManager",
+      "type": "command_injection",
+      "cwe": "CWE-078",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "JDBC connection with attacker-controlled URL can lead to RCE"
+    }
+  ],
+  "sanitizers": [
+    {
+      "method": "matches",
+      "class": "String",
+      "removes": [
+        "command_injection"
+      ],
+      "note": "Regex validation - check pattern is restrictive"
+    },
+    {
+      "method": "quote",
+      "class": "Pattern",
+      "removes": [
+        "command_injection"
+      ],
+      "note": "Shell escape - still risky"
+    }
+  ],
+  "dangerous_patterns": [
+    {
+      "pattern": "sh -c",
+      "risk": "critical",
+      "note": "Shell execution with command string"
+    },
+    {
+      "pattern": "bash -c",
+      "risk": "critical",
+      "note": "Bash execution with command string"
+    },
+    {
+      "pattern": "cmd /c",
+      "risk": "critical",
+      "note": "Windows command execution"
+    },
+    {
+      "pattern": "/bin/sh",
+      "risk": "critical"
+    },
+    {
+      "pattern": "/bin/bash",
+      "risk": "critical"
+    }
+  ]
+}

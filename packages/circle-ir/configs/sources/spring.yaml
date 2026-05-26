@@ -1,0 +1,70 @@
+{
+  "sources": [
+    {
+      "annotation": "@RequestBody",
+      "type": "http_body",
+      "severity": "high",
+      "cwe": null
+    },
+    {
+      "annotation": "@RequestParam",
+      "type": "http_param",
+      "severity": "high",
+      "cwe": null
+    },
+    {
+      "annotation": "@PathVariable",
+      "type": "http_path",
+      "severity": "medium",
+      "cwe": null
+    },
+    {
+      "annotation": "@RequestHeader",
+      "type": "http_header",
+      "severity": "medium",
+      "cwe": null
+    },
+    {
+      "annotation": "@CookieValue",
+      "type": "http_cookie",
+      "severity": "high",
+      "cwe": null
+    },
+    {
+      "annotation": "@MatrixVariable",
+      "type": "http_matrix",
+      "severity": "medium",
+      "cwe": null
+    },
+    {
+      "method": "getParameter",
+      "class": "HttpServletRequest",
+      "type": "http_param",
+      "severity": "high"
+    },
+    {
+      "method": "getInputStream",
+      "class": "HttpServletRequest",
+      "type": "http_body",
+      "severity": "high"
+    },
+    {
+      "method": "getReader",
+      "class": "HttpServletRequest",
+      "type": "http_body",
+      "severity": "high"
+    },
+    {
+      "method": "getHeader",
+      "class": "HttpServletRequest",
+      "type": "http_header",
+      "severity": "medium"
+    },
+    {
+      "method": "getCookies",
+      "class": "HttpServletRequest",
+      "type": "http_cookie",
+      "severity": "high"
+    }
+  ]
+}

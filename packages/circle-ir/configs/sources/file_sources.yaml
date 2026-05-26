@@ -1,0 +1,164 @@
+{
+  "sources": [
+    {
+      "method": "readLine",
+      "class": "BufferedReader",
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Single line from file - could be attacker-controlled"
+    },
+    {
+      "method": "readAllLines",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "All lines from file as List<String>"
+    },
+    {
+      "method": "readAllBytes",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "All bytes from file"
+    },
+    {
+      "method": "readString",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "File content as String (Java 11+)"
+    },
+    {
+      "method": "lines",
+      "class": "Files",
+      "type": "file_input",
+      "severity": "medium",
+      "return_tainted": true,
+      "note": "Stream of lines from file"
+    },
+    {
+      "method": "getOriginalFilename",
+      "class": "MultipartFile",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename - path traversal risk"
+    },
+    {
+      "method": "getName",
+      "class": "MultipartFile",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Form field name for uploaded file"
+    },
+    {
+      "method": "getBytes",
+      "class": "MultipartFile",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as byte array"
+    },
+    {
+      "method": "getInputStream",
+      "class": "MultipartFile",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as InputStream"
+    },
+    {
+      "method": "getSubmittedFileName",
+      "class": "Part",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename from multipart upload (Servlet API)"
+    },
+    {
+      "method": "getFileName",
+      "class": "Part",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename from MIME part (JavaMail API)"
+    },
+    {
+      "method": "getFileName",
+      "class": "MimePart",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename from MIME part (JavaMail API)"
+    },
+    {
+      "method": "getFileName",
+      "class": "BodyPart",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename from email attachment (JavaMail API)"
+    },
+    {
+      "method": "getFileName",
+      "class": "MimeBodyPart",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename from email attachment (JavaMail API)"
+    },
+    {
+      "method": "getInputStream",
+      "class": "Part",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Uploaded file content"
+    },
+    {
+      "method": "getName",
+      "class": "FileItem",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "User-provided filename"
+    },
+    {
+      "method": "getString",
+      "class": "FileItem",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as String"
+    },
+    {
+      "method": "getInputStream",
+      "class": "FileItem",
+      "type": "file_upload",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "File content as InputStream"
+    },
+    {
+      "method": "getProperty",
+      "class": "Properties",
+      "type": "config_file",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Property value - if loaded from external file, could be tainted"
+    },
+    {
+      "method": "load",
+      "class": "Properties",
+      "type": "config_file",
+      "severity": "low",
+      "return_tainted": true,
+      "note": "Loads properties from InputStream"
+    }
+  ]
+}
