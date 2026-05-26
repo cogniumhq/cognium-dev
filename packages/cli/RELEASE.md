@@ -1,6 +1,6 @@
 # Release Checklist
 
-This document provides a step-by-step checklist for releasing a new version of Cognium.
+This document provides a step-by-step checklist for releasing a new version of cognium-dev.
 
 ## Pre-Release
 
@@ -21,7 +21,7 @@ npm version major   # e.g. 1.0.0 → 2.0.0
 
 - [ ] Run `npm version <patch|minor|major>` (updates `package.json` + `src/version.ts` + creates git tag)
 - [ ] Update `CHANGELOG.md` with release date and notes
-- [ ] Update version in `Formula/cognium.rb` (reference formula)
+- [ ] Update version in `Formula/cognium-dev.rb` (reference formula)
 
 ## Build Verification
 
@@ -38,7 +38,7 @@ bun run build
 bun run build:standalone
 ```
 - [ ] Build completes without errors
-- [ ] Binary is executable: `./cognium version`
+- [ ] Binary is executable: `./cognium-dev version`
 - [ ] Binary size is reasonable (~60MB)
 
 ## Cross-Platform Builds
@@ -47,27 +47,27 @@ Build binaries for all supported platforms:
 
 ### macOS ARM64 (Apple Silicon)
 ```bash
-bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile cognium-darwin-arm64
+bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile cognium-dev-darwin-arm64
 ```
 - [ ] Binary created successfully
-- [ ] Test if on ARM Mac: `./cognium-darwin-arm64 version`
+- [ ] Test if on ARM Mac: `./cognium-dev-darwin-arm64 version`
 
 ### macOS x64 (Intel)
 ```bash
-bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile cognium-darwin-x64
+bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile cognium-dev-darwin-x64
 ```
 - [ ] Binary created successfully
-- [ ] Test if on Intel Mac: `./cognium-darwin-x64 version`
+- [ ] Test if on Intel Mac: `./cognium-dev-darwin-x64 version`
 
 ### Linux x64
 ```bash
-bun build src/cli.ts --compile --target=bun-linux-x64 --outfile cognium-linux-x64
+bun build src/cli.ts --compile --target=bun-linux-x64 --outfile cognium-dev-linux-x64
 ```
 - [ ] Binary created successfully
 
 ### Linux ARM64
 ```bash
-bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile cognium-linux-arm64
+bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile cognium-dev-linux-arm64
 ```
 - [ ] Binary created successfully
 
@@ -76,13 +76,13 @@ bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile cognium-linux-
 ## Generate SHA256 Hashes
 
 ```bash
-shasum -a 256 cognium-darwin-arm64 > cognium-darwin-arm64.sha256
-shasum -a 256 cognium-darwin-x64 > cognium-darwin-x64.sha256
-shasum -a 256 cognium-linux-x64 > cognium-linux-x64.sha256
-shasum -a 256 cognium-linux-arm64 > cognium-linux-arm64.sha256
+shasum -a 256 cognium-dev-darwin-arm64 > cognium-dev-darwin-arm64.sha256
+shasum -a 256 cognium-dev-darwin-x64 > cognium-dev-darwin-x64.sha256
+shasum -a 256 cognium-dev-linux-x64 > cognium-dev-linux-x64.sha256
+shasum -a 256 cognium-dev-linux-arm64 > cognium-dev-linux-arm64.sha256
 
 # Or all at once
-shasum -a 256 cognium-* > SHA256SUMS
+shasum -a 256 cognium-dev-* > SHA256SUMS
 ```
 
 - [ ] SHA256 hashes generated for all binaries
@@ -100,25 +100,25 @@ git push origin vX.Y.Z
 ## GitHub Release
 
 ### Using GitHub Web UI
-1. Go to https://github.com/cogniumhq/cognium/releases/new
+1. Go to https://github.com/cogniumhq/cognium-dev/releases/new
 2. Select the tag: vX.Y.Z
 3. Set title: vX.Y.Z
 4. Copy release notes from CHANGELOG.md
 5. Upload binaries:
-   - cognium-darwin-arm64
-   - cognium-darwin-x64
-   - cognium-linux-x64
-   - cognium-linux-arm64
+   - cognium-dev-darwin-arm64
+   - cognium-dev-darwin-x64
+   - cognium-dev-linux-x64
+   - cognium-dev-linux-arm64
    - SHA256SUMS (optional)
 6. Publish release
 
 ### Using GitHub CLI
 ```bash
 gh release create vX.Y.Z \
-  cognium-darwin-arm64 \
-  cognium-darwin-x64 \
-  cognium-linux-x64 \
-  cognium-linux-arm64 \
+  cognium-dev-darwin-arm64 \
+  cognium-dev-darwin-x64 \
+  cognium-dev-linux-x64 \
+  cognium-dev-linux-arm64 \
   SHA256SUMS \
   --title "vX.Y.Z" \
   --notes-file CHANGELOG.md
@@ -141,14 +141,14 @@ npm publish
 
 - [ ] npm dry-run successful
 - [ ] npm publish successful
-- [ ] Package visible at https://www.npmjs.com/package/cognium
-- [ ] Test install: `npm install -g cognium`
+- [ ] Package visible at https://www.npmjs.com/package/cognium-dev
+- [ ] Test install: `npm install -g cognium-dev`
 
 ## Post-Release Verification
 
-- [ ] npm package: `npm view cognium version` shows new version
+- [ ] npm package: `npm view cognium-dev version` shows new version
 - [ ] GitHub release visible and complete
-- [ ] Test fresh install: `npx cognium version`
+- [ ] Test fresh install: `npx cognium-dev version`
 - [ ] Test standalone binary download and execution
 
 ## Communication

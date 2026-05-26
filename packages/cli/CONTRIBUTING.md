@@ -1,4 +1,4 @@
-# Contributing to Cognium
+# Contributing to cognium-dev
 
 Thank you for your interest in contributing! This guide covers how to get started.
 
@@ -12,8 +12,8 @@ Thank you for your interest in contributing! This guide covers how to get starte
 ### Setup
 
 ```bash
-git clone https://github.com/cogniumhq/cognium.git
-cd cognium
+git clone https://github.com/cogniumhq/cognium-dev.git
+cd cognium-dev/packages/cli
 bun install
 ```
 
@@ -30,16 +30,16 @@ bun run build:standalone    # Build self-contained binary
 
 ### Reporting Bugs
 
-Open an issue at [github.com/cogniumhq/cognium/issues](https://github.com/cogniumhq/cognium/issues) with:
+Open an issue at [github.com/cogniumhq/cognium-dev/issues](https://github.com/cogniumhq/cognium-dev/issues) with:
 
-- Cognium version (`cognium version`)
+- cognium-dev version (`cognium-dev version`)
 - Operating system and Node.js/Bun version
 - Minimal reproduction case (code snippet + command that triggers the issue)
 - Actual vs. expected output
 
 ### Suggesting Features
 
-Open a [feature request issue](https://github.com/cogniumhq/cognium/issues/new) describing:
+Open a [feature request issue](https://github.com/cogniumhq/cognium-dev/issues/new) describing:
 
 - The problem you're trying to solve
 - Your proposed solution

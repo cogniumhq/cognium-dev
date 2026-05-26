@@ -1,25 +1,25 @@
-# cognium
+# cognium-dev
 
-[![npm version](https://img.shields.io/npm/v/cognium.svg)](https://www.npmjs.com/package/cognium)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cogniumhq/cognium/blob/main/LICENSE)
-[![OWASP Benchmark](https://img.shields.io/badge/OWASP%20Benchmark-100%25%20TPR%2C%200%25%20FPR-brightgreen)](https://github.com/cogniumhq/cognium#benchmark-results)
-[![GitHub Action](https://img.shields.io/badge/GitHub%20Action-available-blue?logo=github)](https://github.com/marketplace/actions/cognium-security-scan)
-![Trust Score](https://raw.githubusercontent.com/cogniumhq/cognium/badges/trust-badge.svg)
-![Quality Score](https://raw.githubusercontent.com/cogniumhq/cognium/badges/quality-badge.svg)
+[![npm version](https://img.shields.io/npm/v/cognium-dev.svg)](https://www.npmjs.com/package/cognium-dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cogniumhq/cognium-dev/blob/main/LICENSE)
+[![OWASP Benchmark](https://img.shields.io/badge/OWASP%20Benchmark-100%25%20TPR%2C%200%25%20FPR-brightgreen)](https://github.com/cogniumhq/cognium-dev#benchmark-results)
+[![GitHub Action](https://img.shields.io/badge/GitHub%20Action-available-blue?logo=github)](https://github.com/marketplace/actions/cognium-dev-scan)
+![Trust Score](https://raw.githubusercontent.com/cogniumhq/cognium-dev/badges/trust-badge.svg)
+![Quality Score](https://raw.githubusercontent.com/cogniumhq/cognium-dev/badges/quality-badge.svg)
 
-Semantic static analysis engine for detecting security vulnerabilities via taint tracking.
+Static Application Security Testing CLI for detecting security vulnerabilities via taint tracking.
 
 ## Installation
 
 ### npm (recommended)
 
 ```bash
-npm install -g cognium
+npm install -g cognium-dev
 ```
 
 ### Standalone binary
 
-Download from [GitHub Releases](https://github.com/cogniumhq/cognium/releases).
+Download from [GitHub Releases](https://github.com/cogniumhq/cognium-dev/releases).
 
 **Note:** When using the standalone binary, place the `wasm/` directory in the same location as the binary.
 
@@ -27,42 +27,42 @@ Download from [GitHub Releases](https://github.com/cogniumhq/cognium/releases).
 
 ```bash
 # Scan a single file
-cognium scan src/app.java
+cognium-dev scan src/app.java
 
 # Scan a directory
-cognium scan ./src
+cognium-dev scan ./src
 
 # Scan with specific language
-cognium scan api.py --language python
+cognium-dev scan api.py --language python
 
 # Output as JSON
-cognium scan ./src --format json
+cognium-dev scan ./src --format json
 
 # Show only critical vulnerabilities
-cognium scan ./src --severity critical
+cognium-dev scan ./src --severity critical
 
 # Security findings only (skip quality/reliability passes)
-cognium scan ./src --category security
+cognium-dev scan ./src --category security
 
 # Exclude specific CWEs (e.g. weak crypto noise)
-cognium scan ./src --exclude-cwe CWE-327,CWE-330
+cognium-dev scan ./src --exclude-cwe CWE-327,CWE-330
 
 # Exclude test files
-cognium scan ./src --exclude-tests
+cognium-dev scan ./src --exclude-tests
 
 # Software quality metrics
-cognium metrics ./src
-cognium metrics ./src --category complexity,coupling --format json
+cognium-dev metrics ./src
+cognium-dev metrics ./src --category complexity,coupling --format json
 ```
 
 ## Commands
 
-### `cognium scan <path>`
+### `cognium-dev scan <path>`
 
 Scan files or directories for security vulnerabilities.
 
 ```bash
-cognium scan <path> [options]
+cognium-dev scan <path> [options]
 
 Options:
   -l, --language <lang>      Force language (java|javascript|typescript|python|go|rust|bash|html)
@@ -85,49 +85,49 @@ Options:
 
 ```bash
 # Scan entire project
-cognium scan ./src
+cognium-dev scan ./src
 
 # Show only critical and high severity issues
-cognium scan ./src --severity critical,high
+cognium-dev scan ./src --severity critical,high
 
 # Exclude test files and show only critical issues
-cognium scan ./src --exclude-tests --severity critical
+cognium-dev scan ./src --exclude-tests --severity critical
 
 # Security findings only (skip quality/reliability passes)
-cognium scan ./src --category security
+cognium-dev scan ./src --category security
 
 # Reliability + performance findings only
-cognium scan ./src --category reliability,performance
+cognium-dev scan ./src --category reliability,performance
 
 # Exclude weak-crypto and weak-random findings
-cognium scan ./src --exclude-cwe CWE-327,CWE-330
+cognium-dev scan ./src --exclude-cwe CWE-327,CWE-330
 
 # Generate SARIF report for CI/CD
-cognium scan ./src --format sarif --output results.sarif
+cognium-dev scan ./src --format sarif --output results.sarif
 
 # Scan with verbose output
-cognium scan ./src -v
+cognium-dev scan ./src -v
 
 # Quiet mode (no progress, only results)
-cognium scan ./src -q
+cognium-dev scan ./src -q
 ```
 
-### `cognium init`
+### `cognium-dev init`
 
 Initialize a configuration file in your project.
 
 ```bash
-cognium init
+cognium-dev init
 ```
 
 Creates a `cognium.config.json` with customizable rules.
 
-### `cognium metrics <path>`
+### `cognium-dev metrics <path>`
 
 Report software quality metrics for files or directories.
 
 ```bash
-cognium metrics <path> [options]
+cognium-dev metrics <path> [options]
 
 Options:
   -l, --language <lang>      Analyze only files for the given language
@@ -144,16 +144,16 @@ Options:
 
 ```bash
 # Show all metrics for a directory
-cognium metrics ./src
+cognium-dev metrics ./src
 
 # Complexity and coupling metrics only
-cognium metrics ./src --category complexity,coupling
+cognium-dev metrics ./src --category complexity,coupling
 
 # JSON output for tooling integration
-cognium metrics ./src --format json --output metrics.json
+cognium-dev metrics ./src --format json --output metrics.json
 
 # Java files only, skip tests
-cognium metrics ./src --language java --exclude-tests
+cognium-dev metrics ./src --language java --exclude-tests
 ```
 
 **Sample output:**
@@ -183,12 +183,12 @@ src/UserController.java
 
 Available metrics: `cyclomatic_complexity`, `WMC`, `halstead_volume`, `halstead_difficulty`, `halstead_effort`, `halstead_bugs`, `LOC`, `NLOC`, `comment_density`, `function_count`, `CBO`, `RFC`, `DIT`, `NOC`, `LCOM`, `doc_coverage`, `maintainability_index`, `code_quality_index`, `bug_hotspot_score`, `refactoring_roi`.
 
-### `cognium version`
+### `cognium-dev version`
 
 Display version information.
 
 ```bash
-cognium version
+cognium-dev version
 ```
 
 ## Output Format
@@ -239,7 +239,7 @@ Use `-v` flag to see all scanned files including clean ones.
 
 ## Code Quality Analysis
 
-In addition to security vulnerabilities, `cognium scan` runs 17 code quality passes and reports findings in five ISO 25010 categories:
+In addition to security vulnerabilities, `cognium-dev scan` runs 17 code quality passes and reports findings in five ISO 25010 categories:
 
 | Category | Rule IDs | Example Issues |
 |----------|----------|----------------|
@@ -266,7 +266,7 @@ Also found 2 code quality finding(s) in 1 file(s)
 
 **Exit codes:** The CLI exits `1` only when **security** findings are present (so CI pipelines gate on vulnerabilities without being blocked by documentation or style findings). Quality-only scans exit `0`.
 
-Filter to security findings only: `cognium scan ./src --category security`
+Filter to security findings only: `cognium-dev scan ./src --category security`
 
 ## Supported Languages
 
@@ -309,13 +309,13 @@ Shows vulnerabilities at or above the specified level:
 
 ```bash
 # Show only critical
-cognium scan ./src --severity critical
+cognium-dev scan ./src --severity critical
 
 # Show high and critical
-cognium scan ./src --severity high
+cognium-dev scan ./src --severity high
 
 # Show medium, high, and critical
-cognium scan ./src --severity medium
+cognium-dev scan ./src --severity medium
 ```
 
 ### Exact Severity Match (Comma-Separated)
@@ -324,13 +324,13 @@ Shows only the specified severity levels:
 
 ```bash
 # Show only critical and high
-cognium scan ./src --severity critical,high
+cognium-dev scan ./src --severity critical,high
 
 # Show only medium
-cognium scan ./src --severity medium
+cognium-dev scan ./src --severity medium
 
 # Show low and medium
-cognium scan ./src --severity low,medium
+cognium-dev scan ./src --severity low,medium
 ```
 
 ## CI/CD Integration
@@ -349,7 +349,7 @@ jobs:
       - name: Install cognium
         run: npm install -g cognium
       - name: Run security scan
-        run: cognium scan ./src --format sarif --output results.sarif --severity high
+        run: cognium-dev scan ./src --format sarif --output results.sarif --severity high
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -363,7 +363,7 @@ security-scan:
   image: node:20
   script:
     - npm install -g cognium
-    - cognium scan ./src --format json --output gl-sast-report.json --severity high
+    - cognium-dev scan ./src --format json --output gl-sast-report.json --severity high
   artifacts:
     reports:
       sast: gl-sast-report.json
@@ -377,7 +377,7 @@ Prevent commits with critical vulnerabilities:
 #!/bin/sh
 # .git/hooks/pre-commit
 
-if ! cognium scan . --severity critical --quiet; then
+if ! cognium-dev scan . --severity critical --quiet; then
   echo "❌ Commit blocked: Critical security vulnerabilities found"
   exit 1
 fi
@@ -395,16 +395,16 @@ Use exit codes in CI/CD to fail builds when security vulnerabilities are detecte
 
 ```bash
 # Fail build on any security finding
-cognium scan ./src || exit 1
+cognium-dev scan ./src || exit 1
 
 # Fail build only on critical/high security findings
-cognium scan ./src --severity high || exit 1
+cognium-dev scan ./src --severity high || exit 1
 
 # Fail build only on critical security findings
-cognium scan ./src --severity critical || exit 1
+cognium-dev scan ./src --severity critical || exit 1
 
 # Never fail on quality-only issues (always exit 0 for docs/style findings)
-cognium scan ./src --category reliability,performance,maintainability,architecture; echo "Quality scan done (exit $?)"
+cognium-dev scan ./src --category reliability,performance,maintainability,architecture; echo "Quality scan done (exit $?)"
 ```
 
 ## Performance
@@ -419,7 +419,7 @@ Cognium is built for speed:
 ## Architecture
 
 - **CLI**: Lightweight wrapper with zero-dependency utilities
-- **Core Engine**: [circle-ir](https://github.com/cogniumhq/circle-ir) - High-performance SAST library
+- **Core Engine**: [circle-ir](https://github.com/cogniumhq/cognium-dev/tree/main/packages/circle-ir) - High-performance SAST library
 - **Dependencies**: Only 1 runtime dependency (circle-ir)
 
 ## LLM Enhancement (Optional)
@@ -457,17 +457,17 @@ git clone https://github.com/juliet-test-suite/juliet-test-suite-for-java
 git clone https://github.com/CWE-Bench/cwe-bench-java
 
 # Run scans
-cognium scan BenchmarkJava/src --format json -o owasp-results.json
-cognium scan juliet-test-suite-for-java --format json -o juliet-results.json
-cognium scan cwe-bench-java --format json -o cwe-bench-results.json
+cognium-dev scan BenchmarkJava/src --format json -o owasp-results.json
+cognium-dev scan juliet-test-suite-for-java --format json -o juliet-results.json
+cognium-dev scan cwe-bench-java --format json -o cwe-bench-results.json
 ```
 
 For detailed benchmark methodology and comparison with other tools, see [cognium.dev](https://cognium.dev).
 
 ## Links
 
-- [GitHub](https://github.com/cogniumhq/cognium)
-- [circle-ir (Core Engine)](https://github.com/cogniumhq/circle-ir)
+- [GitHub](https://github.com/cogniumhq/cognium-dev)
+- [circle-ir (Core Engine)](https://github.com/cogniumhq/cognium-dev/tree/main/packages/circle-ir)
 - [Website](https://cognium.dev)
 
 ## License

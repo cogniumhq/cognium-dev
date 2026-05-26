@@ -6,8 +6,8 @@ Thank you for your interest in contributing to circle-ir! This document provides
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/cogniumhq/circle-ir.git
-   cd circle-ir
+   git clone https://github.com/cogniumhq/cognium-dev.git
+   cd cognium-dev/packages/circle-ir
    ```
 
 2. **Install dependencies**

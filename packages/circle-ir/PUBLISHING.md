@@ -84,7 +84,7 @@ The following GitHub Actions workflows are configured:
    ```
 
 5. **Monitor GitHub Actions**:
-   - Go to: https://github.com/cogniumhq/circle-ir/actions
+   - Go to: https://github.com/cogniumhq/cognium-dev/actions
    - Watch the "Publish to npm" workflow
    - Verify successful completion
 
