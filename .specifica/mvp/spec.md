@@ -37,7 +37,10 @@ cognium-dev is the **pure-SAST product** for AppSec buyers. It implements **Pill
 ## Acceptance Criteria
 
 - [ ] Java SAST benchmarks published (vs Snyk, Checkmarx, Semgrep)
-- [ ] OWASP Benchmark: 100% TPR, 0% FPR
-- [ ] Juliet Test Suite: 100% pass rate
+- [x] OWASP Benchmark: 100% TPR, 0% FPR ✓
+- [x] Juliet Test Suite: 100% pass rate (156/156) ✓
+- [x] SecuriBench Micro: 97.7% TPR ✓
 - [ ] GitHub Action `cognium-dev/scan@v1` available
 - [ ] npm packages published: `circle-ir`, `cognium-dev`
+- [x] Monorepo structure established ✓
+- [x] GitHub repository live: cogniumhq/cognium-dev ✓

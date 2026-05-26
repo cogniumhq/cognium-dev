@@ -6,15 +6,13 @@
 
 ## In Progress
 
-- [ ] **Monorepo setup** — Combine circle-ir + CLI repos ✅ DONE
-  - Owner: —
-  - Completed: 2026-05-26
+(none)
 
 ## Open — High Priority
 
 - [ ] **Publish to npm** — Publish `circle-ir` and `cognium-dev` packages
   - Owner: —
-  - Blocked by: Monorepo setup
+  - Ready: Monorepo complete
 
 - [ ] **GitHub Action** — Create `cognium-dev/scan@v1` action
   - Owner: —
@@ -24,7 +22,16 @@
   - Owner: —
   - Due: Phase 1 (May 2026)
 
+- [ ] **Fix misclassified sinks** — Clean up auto-mined CVE sink entries
+  - Issue: [#3](https://github.com/cogniumhq/cognium-dev/issues/3)
+  - Files: sql.yaml, path.yaml, code_injection.yaml
+  - Priority: Medium (incorrect labels, not false negatives)
+
 ## Open — Medium Priority
+
+- [ ] **CWE-Bench-Java improvements** — Add missing sinks for better recall
+  - Issue: [#2](https://github.com/cogniumhq/cognium-dev/issues/2)
+  - Add: `SCMFileSystem.child()` (path traversal), refine Jenkins sources
 
 - [ ] **Secret scanning** — Implement `scan_secrets` pass
   - Maps to: cognium-ai MCP `scan_secrets`
@@ -39,16 +46,29 @@
 
 ## Open — Low Priority
 
-- [ ] **README updates** — Update for monorepo structure
 - [ ] **CI/CD pipeline** — GitHub Actions for monorepo builds
 - [ ] **Pre-commit hooks** — Lint, typecheck, test on commit
 
 ## Completed
 
-- [x] **Monorepo structure** — Set up workspace with preserved git history
-- [x] **CLI rebrand** — Rename cognium → cognium-dev
-- [x] **Shared tsconfig** — Create base TypeScript config
-- [x] **CLAUDE.md** — Combined guidance document
+- [x] **Monorepo structure** — Set up workspace with preserved git history (2026-05-26)
+- [x] **CLI rebrand** — Rename cognium → cognium-dev (2026-05-26)
+- [x] **Shared tsconfig** — Create base TypeScript config (2026-05-26)
+- [x] **CLAUDE.md** — Combined guidance document (2026-05-26)
+- [x] **GitHub repo setup** — Push to cogniumhq/cognium-dev (2026-05-26)
+- [x] **Archive old repos** — circle-ir → archived, cognium → cognium-sast-cli archived (2026-05-26)
+- [x] **Documentation review** — Update all README/docs for monorepo (2026-05-26)
+- [x] **MyBatis ORM sinks** — Add 12 MyBatis mapper SQL injection sinks (2026-05-26)
+- [x] **Issue migration** — Transfer CWE-Bench issue from archived repo (2026-05-26)
+
+---
+
+## Open Issues
+
+| # | Title | Priority | Labels |
+|---|-------|----------|--------|
+| [#2](https://github.com/cogniumhq/cognium-dev/issues/2) | CWE-Bench-Java engine misses | Medium | enhancement |
+| [#3](https://github.com/cogniumhq/cognium-dev/issues/3) | Misclassified sinks from auto-mined CVE | Medium | bug, cleanup |
 
 ---
 
