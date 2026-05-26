@@ -1,18 +1,18 @@
 {
-  "name": "cognium",
+  "name": "cognium-dev",
   "version": "1.8.3",
-  "description": "Semantic static analysis engine for detecting security vulnerabilities via taint tracking",
+  "description": "Static Application Security Testing CLI for detecting security vulnerabilities via taint tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "cognium": "dist/cli.js"
+    "cognium-dev": "dist/cli.js"
   },
   "scripts": {
     "build": "bun build src/cli.ts --outdir dist --target node --format esm --external pino-pretty",
-    "build:standalone": "mkdir -p wasm && cp node_modules/circle-ir/dist/wasm/*.wasm wasm/ && bun build src/cli.ts --compile --outfile cognium --external pino-pretty",
+    "build:standalone": "mkdir -p wasm && cp ../circle-ir/wasm/*.wasm wasm/ && bun build src/cli.ts --compile --outfile cognium-dev --external pino-pretty",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
-    "clean": "rm -rf dist cognium cognium-* *.bun-build wasm",
+    "clean": "rm -rf dist cognium-dev cognium-dev-* *.bun-build wasm",
     "typecheck": "tsc --noEmit",
     "version": "node -e \"const v = require('./package.json').version; require('fs').writeFileSync('src/version.ts', '/**\\n * Version information\\n *\\n * Kept in sync with package.json via the \\`version\\` npm lifecycle script.\\n * Do not edit manually — use \\`npm version patch|minor|major\\` instead.\\n */\\nexport const version = \\x27' + v + '\\x27;\\n')\" && git add src/version.ts",
     "dogfood": "bun run src/cli.ts scan src/ -q",
@@ -41,11 +41,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cogniumhq/cognium.git"
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/cli"
   },
   "homepage": "https://cognium.dev",
   "bugs": {
-    "url": "https://github.com/cogniumhq/cognium/issues"
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
   },
   "funding": {
     "type": "github",
@@ -65,7 +66,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "circle-ir": "^3.22.3"
+    "circle-ir": "*"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

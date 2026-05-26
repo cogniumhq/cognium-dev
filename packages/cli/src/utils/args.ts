@@ -57,10 +57,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 export function showHelp(): void {
   console.log(`
-cognium - Semantic static analysis CLI for detecting security vulnerabilities
+cognium-dev - Static Application Security Testing CLI
 
 USAGE:
-  cognium <command> [options]
+  cognium-dev <command> [options]
 
 COMMANDS:
   scan <path>          Scan files or directories for security vulnerabilities
@@ -100,27 +100,27 @@ METRICS OPTIONS:
   -q, --quiet                Suppress progress output
 
 EXAMPLES:
-  cognium scan src/
-  cognium scan app.java -f json -o results.json
-  cognium scan . --exclude-tests --severity high
-  cognium scan . --severity critical,high
-  cognium scan . --category security
-  cognium scan . --category reliability,performance
-  cognium scan . --exclude-cwe CWE-330,CWE-327
-  cognium scan . --disable-pass naming-convention,todo-in-prod
-  cognium scan . --profile custom-config.json
-  cognium metrics src/
-  cognium metrics src/ --category complexity
-  cognium metrics src/ --format json --profile custom-config.json
-  cognium list-passes
-  cognium list-passes reliability
-  cognium init
+  cognium-dev scan src/
+  cognium-dev scan app.java -f json -o results.json
+  cognium-dev scan . --exclude-tests --severity high
+  cognium-dev scan . --severity critical,high
+  cognium-dev scan . --category security
+  cognium-dev scan . --category reliability,performance
+  cognium-dev scan . --exclude-cwe CWE-330,CWE-327
+  cognium-dev scan . --disable-pass naming-convention,todo-in-prod
+  cognium-dev scan . --profile custom-config.json
+  cognium-dev metrics src/
+  cognium-dev metrics src/ --category complexity
+  cognium-dev metrics src/ --format json --profile custom-config.json
+  cognium-dev list-passes
+  cognium-dev list-passes reliability
+  cognium-dev init
 
 For more information, visit: https://cognium.dev
 `);
 }
 
 export function showVersion(version: string): void {
-  console.log(`cognium v${version}`);
+  console.log(`cognium-dev v${version}`);
   console.log(`Powered by Cognium Labs`);
 }

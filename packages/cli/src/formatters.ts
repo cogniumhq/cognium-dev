@@ -462,7 +462,7 @@ export function formatSARIF(results: ScanResult[], crossFileData?: CrossFileData
       {
         tool: {
           driver: {
-            name: 'cognium',
+            name: 'cognium-dev',
             version,
             informationUri: 'https://cognium.dev',
             rules: generateRules(results, crossFileData),

@@ -1,0 +1,30 @@
+{
+  "name": "cognium-dev-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cognium-dev: Static Application Security Testing platform",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/circle-ir && npm run build -w packages/cli",
+    "build:all": "npm run build:all -w packages/circle-ir && npm run build -w packages/cli",
+    "test": "npm run test --workspaces",
+    "test:coverage": "npm run test:coverage -w packages/circle-ir",
+    "typecheck": "npm run typecheck --workspaces",
+    "clean": "npm run clean --workspaces",
+    "dogfood": "npm run dogfood -w packages/cli"
+  },
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://cognium.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1127,7 +1127,7 @@ async function main(): Promise<void> {
   if (command === 'metrics') {
     if (args.length === 0) {
       console.error(colors.red('Error: metrics command requires a path argument'));
-      console.log('\nUsage: cognium metrics <path> [options]');
+      console.log('\nUsage: cognium-dev metrics <path> [options]');
       process.exit(1);
     }
 
@@ -1150,7 +1150,7 @@ async function main(): Promise<void> {
   if (command === 'scan') {
     if (args.length === 0) {
       console.error(colors.red('Error: scan command requires a path argument'));
-      console.log('\nUsage: cognium scan <path> [options]');
+      console.log('\nUsage: cognium-dev scan <path> [options]');
       process.exit(1);
     }
 
@@ -1179,7 +1179,7 @@ async function main(): Promise<void> {
     showHelp();
   } else {
     console.error(colors.red(`Error: Unknown command '${command}'`));
-    console.log('\nRun \'cognium --help\' for usage information');
+    console.log('\nRun \'cognium-dev --help\' for usage information');
     process.exit(1);
   }
 }

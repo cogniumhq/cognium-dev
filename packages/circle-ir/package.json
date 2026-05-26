@@ -34,7 +34,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "build": "tsc",
-    "build:browser": "esbuild src/browser.ts --bundle --format=esm --platform=browser --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/browser/circle-ir.js && mkdir -p dist/wasm && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/wasm/ && cp wasm/*.wasm dist/wasm/",
+    "build:browser": "esbuild src/browser.ts --bundle --format=esm --platform=browser --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/browser/circle-ir.js && mkdir -p dist/wasm && cp ../../node_modules/web-tree-sitter/web-tree-sitter.wasm dist/wasm/ && cp wasm/*.wasm dist/wasm/",
     "build:core": "esbuild src/core-lib.ts --bundle --format=esm --platform=neutral --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/core/circle-ir-core.js && esbuild src/core-lib.ts --bundle --format=cjs --platform=neutral --external:fs --external:fs/promises --external:path --external:module --external:crypto --outfile=dist/core/circle-ir-core.cjs && cp dist/core-lib.d.ts dist/core/circle-ir-core.d.ts",
     "build:all": "npm run build && npm run build:browser && npm run build:core",
     "clean": "rm -rf dist coverage *.tsbuildinfo *.tgz",
@@ -73,11 +73,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cogniumhq/circle-ir.git"
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/circle-ir"
   },
-  "homepage": "https://github.com/cogniumhq/circle-ir#readme",
+  "homepage": "https://github.com/cogniumhq/cognium-dev/tree/main/packages/circle-ir#readme",
   "bugs": {
-    "url": "https://github.com/cogniumhq/circle-ir/issues"
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
   },
   "funding": {
     "type": "github",
