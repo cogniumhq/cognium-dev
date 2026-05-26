@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/node_modules/**", "**/dist/**"],
+
+  "passes": {
+    "dependency-fan-out": { "threshold": 35 }
+  },
+
+  "suppressions": [],
+
+  "severity": "low",
+  "categories": ["security", "reliability", "performance", "maintainability", "architecture"]
+}
