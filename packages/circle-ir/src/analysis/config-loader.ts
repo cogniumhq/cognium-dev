@@ -148,6 +148,11 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { annotation: 'PathParam', type: 'http_path', severity: 'medium', param_tainted: true },
   { annotation: 'HeaderParam', type: 'http_header', severity: 'high', param_tainted: true },
 
+  // Jenkins data-binding: every parameter of an annotated constructor is wired
+  // from form/JSON user input at construction time. Method-level annotation —
+  // all params tainted.
+  { method_annotation: 'DataBoundConstructor', type: 'http_param', severity: 'high' },
+
   // Environment
   { method: 'getenv', class: 'System', type: 'env_input', severity: 'medium', return_tainted: true },
   { method: 'getProperty', class: 'System', type: 'env_input', severity: 'medium', return_tainted: true },

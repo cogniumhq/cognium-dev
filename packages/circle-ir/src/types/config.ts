@@ -21,8 +21,13 @@ export interface SourcePattern {
   property?: string;         // Property name (e.g., 'params', 'query', 'body')
   object?: string;           // Object name (e.g., 'req', 'request')
 
-  // Annotation-based source
+  // Annotation-based source — annotation appears on a parameter
+  // (e.g. Spring @RequestParam, JAX-RS @QueryParam). Pair with `param_tainted`.
   annotation?: string;
+
+  // Annotation-based source — annotation appears on a method/constructor;
+  // ALL its parameters are tainted (e.g. Jenkins @DataBoundConstructor).
+  method_annotation?: string;
 
   type: SourceType;
   severity: Severity;

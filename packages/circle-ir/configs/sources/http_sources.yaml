@@ -416,6 +416,13 @@
       "note": "Jenkins StaplerRequest rest of path"
     },
     {
+      "method_annotation": "DataBoundConstructor",
+      "type": "http_param",
+      "severity": "high",
+      "param_tainted": true,
+      "note": "Jenkins @DataBoundConstructor — every constructor parameter is wired from form/JSON binding (user-controlled at construction time)"
+    },
+    {
       "method": "getPathParameter",
       "class": "HandlerRequest",
       "type": "http_param",

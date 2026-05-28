@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.3] - 2026-05-28
+
+### Added
+
+- **Method-level annotation taint sources** — extends `SourcePattern` with a new `method_annotation` field (distinct from the param-level `annotation`). When the configured annotation appears on a method or constructor, **all of its parameters** are emitted as taint sources at confidence `1.0`. Used for framework patterns where a single annotation indicates user-controlled binding of every parameter.
+- **Jenkins `@DataBoundConstructor` source pattern** (closes the source-side gap of #1) — adds `@DataBoundConstructor` as a `method_annotation` source (`http_param`, severity `high`). Jenkins binds every parameter of a `@DataBoundConstructor` from user-supplied form/JSON data at object construction time, so all such params are now treated as taint origins. Upgrades the previous fallback (`interprocedural_param` at confidence 0.7) to a precise high-confidence source for this case. Field-binding propagation (`this.path = path` → another method reads `step.path` on a different instance) still requires cross-instance flow analysis and remains open as a separate effort.
+- New unit test `taint.test.ts > should detect Jenkins @DataBoundConstructor params as taint sources`.
+
+[3.23.3]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.2...circle-ir-v3.23.3
+
 ## [3.23.2] - 2026-05-28
 
 ### Added

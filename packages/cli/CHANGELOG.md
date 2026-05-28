@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.3] - 2026-05-28
+
+### Changed
+
+- **circle-ir upgraded 3.23.2 → 3.23.3** — adds Jenkins `@DataBoundConstructor` taint-source matcher: every parameter of a constructor annotated with `@DataBoundConstructor` is now reported as a high-confidence `http_param` source. Closes the source-side gap of cognium-dev#1 (Jenkins CVE-2022-25175). No CLI behavior change.
+
+[3.23.3]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.2...cognium-dev-v3.23.3
+
 ## [3.23.2] - 2026-05-28
 
 ### Changed

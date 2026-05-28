@@ -185,6 +185,44 @@ public class ReadTrustedExecution {
     expect(scmChild!.cwe).toBe('CWE-22');
   });
 
+  it('should detect Jenkins @DataBoundConstructor params as taint sources', async () => {
+    // Jenkins wires every parameter of a @DataBoundConstructor from user input
+    // (form/JSON binding), so ALL constructor params must be tainted.
+    // Params on separate lines (real Jenkins style) so they aren't collapsed
+    // by findSources' (line, type) dedup.
+    const code = `
+public class MyStep {
+    private final String path;
+    private final int timeout;
+
+    @DataBoundConstructor
+    public MyStep(
+        String path,
+        int timeout
+    ) {
+        this.path = path;
+        this.timeout = timeout;
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const dataBoundSources = taint.sources.filter(
+      s => s.location.includes('DataBoundConstructor')
+    );
+    // Both params of the constructor must be tainted.
+    expect(dataBoundSources.length).toBe(2);
+    expect(dataBoundSources.every(s => s.type === 'http_param')).toBe(true);
+    expect(dataBoundSources.every(s => s.severity === 'high')).toBe(true);
+    expect(dataBoundSources.every(s => s.confidence === 1.0)).toBe(true);
+    const names = dataBoundSources.map(s => s.location).sort();
+    expect(names.some(n => n.includes('path'))).toBe(true);
+    expect(names.some(n => n.includes('timeout'))).toBe(true);
+  });
+
   it('should detect environment variable source', async () => {
     const code = `
 public class Config {

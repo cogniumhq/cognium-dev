@@ -93,6 +93,28 @@ function findSources(
     }
   }
 
+  // Check methods/constructors with a method-level annotation that taints ALL params.
+  // E.g. Jenkins @DataBoundConstructor: every constructor parameter is user-controlled
+  // because Jenkins wires them from form/JSON binding at construction time.
+  for (const type of types) {
+    for (const method of type.methods) {
+      for (const pattern of patterns) {
+        if (!pattern.method_annotation) continue;
+        if (!matchesAnnotation(method.annotations, pattern.method_annotation)) continue;
+        for (const param of method.parameters) {
+          const paramLine = param.line ?? method.start_line;
+          sources.push({
+            type: pattern.type,
+            location: `@${pattern.method_annotation} ${param.name} in ${method.name}`,
+            severity: pattern.severity,
+            line: paramLine,
+            confidence: 1.0,
+          });
+        }
+      }
+    }
+  }
+
   // Rust web framework extractors: Axum/Actix/Rocket parameter types that carry HTTP input.
   // e.g. Json<T>, Form<T>, Query<T>, Path<T>, Body, Bytes, Multipart
   const RUST_EXTRACTOR_TYPES = /^(?:Json|Form|Query|Path|Extension|Multipart)(?:<|$)|^(?:Body|Bytes)$/;
