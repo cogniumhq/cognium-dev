@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.2] - 2026-05-28
+
+### Changed
+
+- **circle-ir upgraded 3.23.1 → 3.23.2** — adds Jenkins `SCMFileSystem.child(String)` path-traversal sink (CWE-22), closing the sink side of CWE-Bench-Java miss for `workflow-multibranch-plugin` CVE-2022-25175. No CLI behavior change.
+
+[3.23.2]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.1...cognium-dev-v3.23.2
+
 ## [3.23.1] - 2026-05-28
 
 ### Fixed

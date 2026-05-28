@@ -654,6 +654,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'getResource', class: 'ServletContext', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'getResourceAsStream', class: 'ServletContext', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'getRealPath', class: 'ServletContext', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  // Jenkins SCM file system (CVE-2022-25175 — workflow-multibranch-plugin)
+  { method: 'child', class: 'SCMFileSystem', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   // Static file handlers
   { method: 'externalStaticFileLocation', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'staticFileLocation', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },

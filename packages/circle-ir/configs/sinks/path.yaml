@@ -577,6 +577,15 @@
       "note": "Jenkins FilePath recursive delete"
     },
     {
+      "method": "child",
+      "class": "SCMFileSystem",
+      "type": "path_traversal",
+      "cwe": "CWE-022",
+      "severity": "high",
+      "arg_positions": [0],
+      "note": "Jenkins jenkins.scm.api.SCMFileSystem.child(String) - SCM file read with no path-confinement check (CVE-2022-25175)"
+    },
+    {
       "method": "createRelative",
       "class": "Resource",
       "type": "path_traversal",

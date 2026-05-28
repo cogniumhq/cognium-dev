@@ -160,6 +160,31 @@ public class FileService {
     expect(pathSinks[0].cwe).toBe('CWE-22');
   });
 
+  it('should detect Jenkins SCMFileSystem.child path traversal sink (CVE-2022-25175)', async () => {
+    // Receiver name matches the class name so the static receiver-heuristic
+    // matches. Real Jenkins code uses `fs` and relies on TypeHierarchyResolver
+    // (project-level analysis) to resolve the type.
+    const code = `
+import jenkins.scm.api.SCMFileSystem;
+
+public class ReadTrustedExecution {
+    public String run(SCMFileSystem scmFileSystem, String path) throws Exception {
+        return scmFileSystem.child(path).contentAsString();
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const scmChild = taint.sinks.find(
+      s => s.type === 'path_traversal' && s.method === 'child'
+    );
+    expect(scmChild).toBeDefined();
+    expect(scmChild!.cwe).toBe('CWE-22');
+  });
+
   it('should detect environment variable source', async () => {
     const code = `
 public class Config {

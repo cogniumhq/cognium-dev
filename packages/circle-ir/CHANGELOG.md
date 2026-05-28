@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.2] - 2026-05-28
+
+### Added
+
+- **Jenkins `SCMFileSystem.child(String)` path-traversal sink** (partial fix for #1) — adds `jenkins.scm.api.SCMFileSystem.child(...)` to the path-traversal sink list (CWE-22, severity `high`). Closes the sink side of CWE-Bench-Java miss `jenkinsci__workflow-multibranch-plugin_CVE-2022-25175_706.vd43c65dec013`. Detection from real Jenkins code (where the receiver is typed `SCMFileSystem` but named `fs`) requires project-level `TypeHierarchyResolver`; unit test uses a heuristic-matchable receiver name. The source-side gap — tracking `@DataBoundConstructor` field-binding as a taint origin — is not addressed in this patch and remains open in #1.
+
+[3.23.2]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.1...circle-ir-v3.23.2
+
 ## [3.23.1] - 2026-05-28
 
 ### Fixed
