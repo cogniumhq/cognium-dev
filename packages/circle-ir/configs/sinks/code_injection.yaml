@@ -491,49 +491,6 @@
       "note": "Can define arbitrary classes from bytecode"
     },
     {
-      "method": "newInstance",
-      "type": "code_injection",
-      "cwe": "CWE-94",
-      "severity": "critical",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "readObject",
-      "class": "ObjectInputStream",
-      "type": "code_injection",
-      "cwe": "CWE-94",
-      "severity": "critical",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "compile",
-      "class": "XPath",
-      "type": "code_injection",
-      "cwe": "CWE-94",
-      "severity": "critical",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "println",
-      "class": "PrintWriter",
-      "type": "code_injection",
-      "cwe": "CWE-94",
-      "severity": "critical",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
       "method": "onNewInstance",
       "class": "SandboxInterceptor",
       "type": "code_injection",

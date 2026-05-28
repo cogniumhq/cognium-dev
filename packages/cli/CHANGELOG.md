@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.1] - 2026-05-28
+
+### Fixed
+
+- **circle-ir upgraded 3.23.0 → 3.23.1** — removes 20 misclassified sink entries from `sql.yaml`, `path.yaml`, and `code_injection.yaml` that had wrong `type` / `cwe` values. Canonical entries remain in the correct sink files. Improves CWE-mapping accuracy in findings with no loss of detection coverage. Closes cognium-dev#3.
+
+[3.23.1]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.0...cognium-dev-v3.23.1
+
 ## [3.23.0] - 2026-05-28
 
 ### Changed

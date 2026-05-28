@@ -461,17 +461,6 @@
       "note": "Auto-mined from CVE analysis"
     },
     {
-      "method": "compile",
-      "class": "XPath",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
       "method": "FileOutputStream",
       "class": "constructor",
       "type": "path_traversal",
@@ -515,17 +504,6 @@
       "note": "Auto-mined from CVE analysis"
     },
     {
-      "method": "println",
-      "class": "PrintWriter",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
       "method": "write",
       "type": "path_traversal",
       "cwe": "CWE-22",
@@ -538,93 +516,6 @@
     {
       "method": "get",
       "class": "Paths",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "forName",
-      "class": "Class",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "newInstance",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "readObject",
-      "class": "ObjectInputStream",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "execute",
-      "class": "Statement",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "start",
-      "class": "ProcessBuilder",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "print",
-      "class": "PrintWriter",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "executeQuery",
-      "class": "Statement",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "executeUpdate",
-      "class": "Statement",
       "type": "path_traversal",
       "cwe": "CWE-22",
       "severity": "high",

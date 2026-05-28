@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.1] - 2026-05-28
+
+### Fixed
+
+- **Sink misclassifications removed** (closes #3) — 20 sink entries had wrong `type` / `cwe` values from an earlier "Auto-mined from CVE analysis" pass and have been deleted in favor of the canonical entries in the correct files:
+  - `configs/sinks/sql.yaml` — removed 6 non-SQL entries (`File`, `FileInputStream`, `getResource`, `URL.openConnection`, `URL.openStream`, `Class.forName`)
+  - `configs/sinks/path.yaml` — removed 10 non-path entries (`XPath.compile`, `PrintWriter.println`, `Class.forName`, `newInstance`, `ObjectInputStream.readObject`, `Statement.execute`/`executeQuery`/`executeUpdate`, `ProcessBuilder.start`, `PrintWriter.print`)
+  - `configs/sinks/code_injection.yaml` — removed 4 non-code-injection entries (`newInstance`, `ObjectInputStream.readObject`, `XPath.compile`, `PrintWriter.println`)
+  - Net: 217 lines deleted across the three files. Canonical entries verified present in `ssrf.yaml`, `code_injection.yaml`, `deserialization.yaml`, `command.yaml`, `xpath.yaml`, and the proper sections of `sql.yaml` / `path.yaml`. Improves CWE-mapping accuracy with no loss of detection.
+
+[3.23.1]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.0...circle-ir-v3.23.1
+
 ## [3.23.0] - 2026-05-28
 
 ### Added
