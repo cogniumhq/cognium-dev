@@ -1,6 +1,6 @@
 {
   "name": "circle-ir",
-  "version": "3.22.3",
+  "version": "3.23.0",
   "description": "High-performance Static Application Security Testing (SAST) library for detecting security vulnerabilities through taint analysis",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -85,7 +85,7 @@
     "url": "https://github.com/sponsors/cogniumhq"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.19.0"
   },
   "type": "module",
   "publishConfig": {

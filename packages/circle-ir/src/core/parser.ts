@@ -24,7 +24,16 @@ async function getNodeModules() {
   if (nodeModules) return nodeModules;
 
   try {
-    // Use Function constructor to hide imports from bundlers
+    // Use Function constructor to hide imports from bundlers (esbuild can't
+    // statically analyze through `new Function`, so 'url'/'path'/'fs' do not
+    // leak into browser bundles).
+    //
+    // Caveat: `new Function('m', 'return import(m)')` creates an isolated
+    // script context. In Node VM sandboxes that don't set a dynamic-import
+    // callback (e.g., Vitest's default pool), this throws
+    // "A dynamic import callback was not specified". Consumers running in
+    // such environments must pass `wasmPath` explicitly to `initParser` /
+    // `loadLanguage` to bypass this discovery path.
     const dynamicImport = new Function('m', 'return import(m)');
     const [urlMod, pathMod, fsMod] = await Promise.all([
       dynamicImport('url'),
@@ -41,7 +50,7 @@ async function getNodeModules() {
     moduleDir = nodeModules.dirname(nodeModules.fileURLToPath(import.meta.url));
     return nodeModules;
   } catch {
-    // Not in Node.js environment (browser/worker)
+    // Not in Node.js environment (browser/worker), or imports failed
     return null;
   }
 }

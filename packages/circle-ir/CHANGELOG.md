@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-05-28
+
+### Added
+
+- **MyBatis ORM SQL injection sinks** — 12 new sink patterns for MyBatis mapper methods vulnerable to SQL injection when using `${}` interpolation syntax: `insert`, `insertSelective`, `update`, `updateByPrimaryKey`, `updateByPrimaryKeySelective`, `delete`, `deleteByPrimaryKey`, `selectOne`, `selectList`, `selectByPrimaryKey`, `selectByExample`. Pattern matches the `*Mapper` class convention used by MyBatis Generator.
+
+### Changed
+
+- **Node engine** raised to `>=20.19.0` (was `>=20.0.0`) to align with modern toolchain requirements.
+- **Parser** (`src/core/parser.ts`) — documented the `new Function` dynamic-import pattern used to hide Node built-ins from browser bundlers, including the Vitest VM caveat that requires explicit `wasmPath` / `languagePaths` in test setup.
+- **Test setup** (`tests/setup.ts`) — pre-resolves WASM grammar paths so the Tree-sitter parser initializes deterministically under Vitest's VM pool (which doesn't expose a dynamic-import callback).
+
+[3.23.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.22.3...circle-ir-v3.23.0
+
 ## [3.22.3] - 2026-05-21
 
 ### Fixed

@@ -7,7 +7,7 @@ Thank you for your interest in contributing! This guide covers how to get starte
 ### Prerequisites
 
 - [Bun](https://bun.sh) >= 1.0.0
-- Node.js >= 18.0.0 (for npm distribution testing)
+- Node.js >= 20.19.0 (for npm distribution testing)
 
 ### Setup
 

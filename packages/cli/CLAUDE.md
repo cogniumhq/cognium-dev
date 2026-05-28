@@ -124,7 +124,7 @@ src/
 - Main: `dist/index.js` (programmatic API)
 - Bin: `dist/cli.js` (CLI command)
 - Types: `dist/index.d.ts`
-- Requires Node.js >= 18.0.0
+- Requires Node.js >= 20.19.0
 - Built with `bun run build`
 
 ### 2. GitHub Releases

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.0] - 2026-05-28
+
+### Changed
+
+- **Version aligned with `circle-ir`** — jumped from `1.8.3` to `3.23.0` so the CLI version always matches the underlying SAST engine. Going forward, both packages share a synchronized version stream.
+- **circle-ir upgraded 3.22.3 → 3.23.0** — adds MyBatis ORM SQL injection sinks (12 mapper method patterns: `insert`, `update`, `select*`, `delete*`); raises Node engine to `>=20.19.0`; documents browser-safe dynamic import pattern.
+- **Pinned `circle-ir` dependency** from `*` to `^3.23.0` for reproducible npm installs.
+- **Node engine** raised to `>=20.19.0` (was `>=18.0.0`) — aligns with the underlying `circle-ir` library and the toolchain we test against.
+
+[3.23.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v1.8.3...cognium-dev-v3.23.0
+
 ## [1.6.5] - 2026-04-15
 
 ### Fixed

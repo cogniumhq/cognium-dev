@@ -25,6 +25,6 @@
     "url": "git+https://github.com/cogniumhq/cognium-dev.git"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.19.0"
   }
 }
