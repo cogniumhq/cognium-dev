@@ -13,7 +13,8 @@
     "test:coverage": "npm run test:coverage -w packages/circle-ir",
     "typecheck": "npm run typecheck --workspaces",
     "clean": "npm run clean --workspaces",
-    "dogfood": "npm run dogfood -w packages/cli"
+    "dogfood": "npm run dogfood -w packages/cli",
+    "release": "bash release.sh"
   },
   "author": {
     "name": "Cognium Labs",
