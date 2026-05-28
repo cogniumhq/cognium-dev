@@ -14,7 +14,7 @@ Working plan and task tracker for the circle-ir SAST library.
 | 0 — Architecture foundation | ✅ Complete | CodeGraph, AnalysisPipeline, ProjectGraph, taxonomy types |
 | 1 — High-impact SAST passes | ✅ Complete | All 17 passes done (Groups 1-4, v3.9.4) |
 | 2 — Metrics engine | ✅ Complete | MetricRunner, 24 metrics (core 20 + 4 composite), wired into `analyze()` (v3.9.5) |
-| 4 — Advanced graphs + passes | Pending | Dominator tree, exception flow, type hierarchy wired |
+| 4 — Advanced graphs + passes | ✅ Complete | Dominator tree, exception flow, type hierarchy wired (v3.9.8 / v3.9.9 / v3.11.0 / v3.19.0) |
 
 > Phase 3 (LLM passes) and Phase 5 (semantic understanding) are circle-ir-ai scope.
 > Phase numbering matches COGNIUM_IMPLEMENTATION_GUIDE §10.
@@ -292,7 +292,10 @@ vulnerabilities are in embedded JS and template interpolation, not in HTML itsel
 **Java (P3):**
 - [ ] Add Micronaut framework patterns
 - [ ] Add Quarkus framework patterns
-- [ ] Add MyBatis sink patterns
+- [x] Add MyBatis sink patterns (done in v3.22.x — 12 patterns covering `*Mapper.insert/update/delete/select*` for SQL injection)
+- [x] Jenkins `SCMFileSystem.child(String)` path-traversal sink (done in v3.23.2 — CVE-2022-25175)
+- [x] Jenkins `@DataBoundConstructor` method-level annotation source (done in v3.23.3 — all ctor params tainted at confidence 1.0)
+- [ ] **Cross-instance field-binding propagation** (Jenkins / general engine gap) — `this.field = param` write in one method → `other.field` read in another method on an aliased instance. Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` taint path end-to-end. Cross-instance flow analysis (DFG-level), not a YAML/config gap.
 
 **Rust (P3):**
 - [ ] Add Axum framework patterns
@@ -316,4 +319,4 @@ Before any release:
 
 ---
 
-*Last updated: 2026-04-08*
+*Last updated: 2026-05-28*
