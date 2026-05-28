@@ -10,10 +10,6 @@
 
 ## Open — High Priority
 
-- [ ] **Publish to npm** — Publish `circle-ir` and `cognium-dev` packages
-  - Owner: —
-  - Ready: Monorepo complete
-
 - [ ] **GitHub Action** — Create `cognium-dev/scan@v1` action
   - Owner: —
   - See: `packages/cli/action.yml` (exists, needs update for new name)
@@ -22,16 +18,19 @@
   - Owner: —
   - Due: Phase 1 (May 2026)
 
-- [ ] **Fix misclassified sinks** — Clean up auto-mined CVE sink entries
-  - Issue: [#3](https://github.com/cogniumhq/cognium-dev/issues/3)
-  - Files: sql.yaml, path.yaml, code_injection.yaml
-  - Priority: Medium (incorrect labels, not false negatives)
-
 ## Open — Medium Priority
 
-- [ ] **CWE-Bench-Java improvements** — Add missing sinks for better recall
-  - Issue: [#2](https://github.com/cogniumhq/cognium-dev/issues/2)
-  - Add: `SCMFileSystem.child()` (path traversal), refine Jenkins sources
+- [ ] **Cross-instance field-binding propagation** (Jenkins / general engine gap)
+  - `this.field = param` in one method → `other.field` read in another method on an aliased instance
+  - Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` path end-to-end
+  - Engine-level (DFG cross-instance reasoning), not a YAML/config change
+
+- [ ] **Framework coverage expansion** (proposed 3.24.0)
+  - JS/TS: Next.js API routes, TypeORM sinks, narrow `.value` dom_input source
+  - Python: Jinja2 XSS sinks; additional MyBatis/Django ORM raw query patterns
+  - Java: Micronaut, Quarkus
+  - Rust: Axum extractor refinement, SQLx, Reqwest
+  - All YAML-only except dom_input narrowing
 
 - [ ] **Secret scanning** — Implement `scan_secrets` pass
   - Maps to: cognium-ai MCP `scan_secrets`
@@ -48,9 +47,16 @@
 
 - [ ] **CI/CD pipeline** — GitHub Actions for monorepo builds
 - [ ] **Pre-commit hooks** — Lint, typecheck, test on commit
+- [ ] **Doc cleanup** — Audit `packages/cli/RELEASE.md` and `packages/circle-ir/PUBLISHING.md` for staleness vs root `release.sh`
+- [ ] **README pass-count consolidation** — Have README/CLAUDE.md/design.md cite `PASSES.md` instead of duplicating counts (per new principle)
 
 ## Completed
 
+- [x] **Release 3.23.3** — `@DataBoundConstructor` method-level annotation source matcher; new `method_annotation` field on `SourcePattern`; closes source-side of #1 (2026-05-28)
+- [x] **Release 3.23.2** — Jenkins `SCMFileSystem.child(String)` path-traversal sink (CVE-2022-25175 sink side) (2026-05-28)
+- [x] **Release 3.23.1** — closed #3 (sink misclassifications); 20 wrong-type sink entries removed (2026-05-28)
+- [x] **Release 3.23.0** — initial monorepo npm publish stream (2026-05-28)
+- [x] **Monorepo hygiene** — root `release.sh`, dropped stale per-package lockfiles (2026-05-28)
 - [x] **Monorepo structure** — Set up workspace with preserved git history (2026-05-26)
 - [x] **CLI rebrand** — Rename cognium → cognium-dev (2026-05-26)
 - [x] **Shared tsconfig** — Create base TypeScript config (2026-05-26)
@@ -65,10 +71,7 @@
 
 ## Open Issues
 
-| # | Title | Priority | Labels |
-|---|-------|----------|--------|
-| [#2](https://github.com/cogniumhq/cognium-dev/issues/2) | CWE-Bench-Java engine misses | Medium | enhancement |
-| [#3](https://github.com/cogniumhq/cognium-dev/issues/3) | Misclassified sinks from auto-mined CVE | Medium | bug, cleanup |
+_None._ (#1, #2, #3 all closed as of 3.23.3)
 
 ---
 

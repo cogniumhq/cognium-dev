@@ -33,7 +33,7 @@ cognium-dev/
 
 ## Analysis Pipeline
 
-Six-phase taint analysis per file:
+Six-phase taint analysis per file (canonical pass registry: [`packages/circle-ir/docs/PASSES.md`](../../packages/circle-ir/docs/PASSES.md)):
 
 1. **TaintMatcherPass** — Config-based source/sink extraction
 2. **ConstantPropagationPass** — Variable value tracking, dead code detection
@@ -42,7 +42,7 @@ Six-phase taint analysis per file:
 5. **TaintPropagationPass** — DFG-based flow verification
 6. **InterproceduralPass** — Cross-method taint tracking
 
-Plus 34 additional quality/metric passes.
+Plus additional quality, reliability, performance, maintainability, and architecture passes — see PASSES.md for canonical counts and status.
 
 ## Key Design Decisions
 
@@ -60,6 +60,16 @@ Plus 34 additional quality/metric passes.
 - **Decision:** CLI built with Bun, not tsc
 - **Rationale:** Faster builds, standalone binary support
 - **Trade-off:** Requires Bun runtime for development
+
+### ADR-004: Runtime config in `config-loader.ts`, not YAML
+- **Decision:** `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_HEADER_RULES` in `packages/circle-ir/src/analysis/config-loader.ts` are the runtime source-of-truth. YAML under `configs/` is for documentation, external consumers, and analyst review.
+- **Rationale:** Browser-compatible (no `fs`); tree-shakeable; statically typed; works in WASM/Cloudflare Workers without filesystem.
+- **Trade-off:** Pattern additions must be made in two places (TS + YAML) for parity. Captured in `principles.md`.
+
+### ADR-005: Synchronized version stream
+- **Decision:** circle-ir and cognium-dev share one version number, bumped together via root `release.sh`.
+- **Rationale:** Eliminates dep-pin ambiguity; one tag stream; users on `cognium-dev@X.Y.Z` know exactly which library they're running.
+- **Trade-off:** A library-only bug fix forces a CLI version bump too. Acceptable cost.
 
 ## Configuration
 

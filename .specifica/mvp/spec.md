@@ -41,6 +41,6 @@ cognium-dev is the **pure-SAST product** for AppSec buyers. It implements **Pill
 - [x] Juliet Test Suite: 100% pass rate (156/156) ✓
 - [x] SecuriBench Micro: 97.7% TPR ✓
 - [ ] GitHub Action `cognium-dev/scan@v1` available
-- [ ] npm packages published: `circle-ir`, `cognium-dev`
+- [x] npm packages published: `circle-ir`, `cognium-dev` ✓ (live since 3.23.0; current 3.23.3)
 - [x] Monorepo structure established ✓
 - [x] GitHub repository live: cogniumhq/cognium-dev ✓
