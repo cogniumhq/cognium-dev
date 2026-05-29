@@ -1,181 +1,45 @@
-# Release Checklist
+# Releasing cognium-dev
 
-This document provides a step-by-step checklist for releasing a new version of cognium-dev.
+`cognium-dev` and `circle-ir` ship as a **synchronized version stream** from this monorepo. There is no per-package release — both packages share one version, one commit, two tags (`circle-ir-vX.Y.Z` and `cognium-dev-vX.Y.Z`), and one workflow.
 
-## Pre-Release
+## Canonical release flow
 
-- [ ] All changes committed and pushed
-- [ ] All tests passing (when tests exist)
-- [ ] `bun run typecheck` passes without errors
-- [ ] Manual testing completed for all commands
-- [ ] CHANGELOG.md updated with release notes
-
-## Version Update
+From the repo root:
 
 ```bash
-# Bump version (pick one) — automatically updates package.json and src/version.ts
-npm version patch   # e.g. 1.0.0 → 1.0.1
-npm version minor   # e.g. 1.0.0 → 1.1.0
-npm version major   # e.g. 1.0.0 → 2.0.0
+./release.sh patch    # or minor / major
 ```
 
-- [ ] Run `npm version <patch|minor|major>` (updates `package.json` + `src/version.ts` + creates git tag)
-- [ ] Update `CHANGELOG.md` with release date and notes
-- [ ] Update version in `Formula/cognium-dev.rb` (reference formula)
+`release.sh` handles:
 
-## Build Verification
+1. Prerequisite check (`bun`, `node`, `npm`, `gh`, npm + GitHub auth)
+2. Synchronized version bump for both packages
+3. Pinning the CLI's `circle-ir` dep to `^<NEW_VERSION>`
+4. Lockfile sync
+5. CHANGELOG entry pre-population from git log (opens both for review)
+6. `npm run build` + `npm test`
+7. Built-CLI smoke test (`node packages/cli/dist/cli.js version`)
+8. `npm publish --dry-run` for both packages
+9. Commit + two tags (`circle-ir-vX.Y.Z`, `cognium-dev-vX.Y.Z`)
+10. Branch + tag push
+11. GitHub releases for both tags (notes pulled from each package's CHANGELOG)
+12. `npm publish` — **circle-ir first, then cognium-dev** (CLI depends on lib)
 
-### npm Build
-```bash
-bun run build
-```
-- [ ] Build completes without errors
-- [ ] `dist/` directory contains cli.js, index.js, and .d.ts files
-- [ ] Test with: `node dist/cli.js version`
+See [`release.sh`](../../release.sh) for the authoritative implementation.
 
-### Standalone Binary Build (Local Platform)
-```bash
-bun run build:standalone
-```
-- [ ] Build completes without errors
-- [ ] Binary is executable: `./cognium-dev version`
-- [ ] Binary size is reasonable (~60MB)
+## Principles enforced
 
-## Cross-Platform Builds
+- **Version sync** — Both packages always carry the same version. Do not bump one in isolation; doing so will be caught by the script and require an explicit confirmation.
+- **CHANGELOG required** — Each release writes an entry to both `packages/circle-ir/CHANGELOG.md` and `packages/cli/CHANGELOG.md`.
+- **No manual npm publish** — Manual publishes bypass the dry-run, tag, and GitHub release steps. Use `release.sh`.
 
-Build binaries for all supported platforms:
+## Standalone binaries / Homebrew
 
-### macOS ARM64 (Apple Silicon)
-```bash
-bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile cognium-dev-darwin-arm64
-```
-- [ ] Binary created successfully
-- [ ] Test if on ARM Mac: `./cognium-dev-darwin-arm64 version`
-
-### macOS x64 (Intel)
-```bash
-bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile cognium-dev-darwin-x64
-```
-- [ ] Binary created successfully
-- [ ] Test if on Intel Mac: `./cognium-dev-darwin-x64 version`
-
-### Linux x64
-```bash
-bun build src/cli.ts --compile --target=bun-linux-x64 --outfile cognium-dev-linux-x64
-```
-- [ ] Binary created successfully
-
-### Linux ARM64
-```bash
-bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile cognium-dev-linux-arm64
-```
-- [ ] Binary created successfully
-
-**Note**: Cross-compilation may not work for all targets. Consider using CI/CD (GitHub Actions) or building on native platforms.
-
-## Generate SHA256 Hashes
-
-```bash
-shasum -a 256 cognium-dev-darwin-arm64 > cognium-dev-darwin-arm64.sha256
-shasum -a 256 cognium-dev-darwin-x64 > cognium-dev-darwin-x64.sha256
-shasum -a 256 cognium-dev-linux-x64 > cognium-dev-linux-x64.sha256
-shasum -a 256 cognium-dev-linux-arm64 > cognium-dev-linux-arm64.sha256
-
-# Or all at once
-shasum -a 256 cognium-dev-* > SHA256SUMS
-```
-
-- [ ] SHA256 hashes generated for all binaries
-- [ ] Hashes saved to file(s)
-
-## Git Tag
-
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-- [ ] Tag created locally
-- [ ] Tag pushed to GitHub
-
-## GitHub Release
-
-### Using GitHub Web UI
-1. Go to https://github.com/cogniumhq/cognium-dev/releases/new
-2. Select the tag: vX.Y.Z
-3. Set title: vX.Y.Z
-4. Copy release notes from CHANGELOG.md
-5. Upload binaries:
-   - cognium-dev-darwin-arm64
-   - cognium-dev-darwin-x64
-   - cognium-dev-linux-x64
-   - cognium-dev-linux-arm64
-   - SHA256SUMS (optional)
-6. Publish release
-
-### Using GitHub CLI
-```bash
-gh release create vX.Y.Z \
-  cognium-dev-darwin-arm64 \
-  cognium-dev-darwin-x64 \
-  cognium-dev-linux-x64 \
-  cognium-dev-linux-arm64 \
-  SHA256SUMS \
-  --title "vX.Y.Z" \
-  --notes-file CHANGELOG.md
-```
-
-- [ ] GitHub release created
-- [ ] All binaries uploaded
-- [ ] Release notes included
-- [ ] Release published (not draft)
-
-## npm Publication
-
-```bash
-# Dry run first
-npm publish --dry-run
-
-# Actual publish
-npm publish
-```
-
-- [ ] npm dry-run successful
-- [ ] npm publish successful
-- [ ] Package visible at https://www.npmjs.com/package/cognium-dev
-- [ ] Test install: `npm install -g cognium-dev`
-
-## Post-Release Verification
-
-- [ ] npm package: `npm view cognium-dev version` shows new version
-- [ ] GitHub release visible and complete
-- [ ] Test fresh install: `npx cognium-dev version`
-- [ ] Test standalone binary download and execution
-
-## Communication
-
-- [ ] Announce on Discord (if applicable)
-- [ ] Tweet about release (if applicable)
-- [ ] Update documentation site (if applicable)
-- [ ] Notify users of breaking changes (if any)
+Standalone binary builds (`bun run build:standalone`) and Homebrew formula publishing are **not** part of the current release flow. The `bun-darwin-arm64` / `bun-linux-x64` / etc. compile targets still work for ad-hoc builds, but no release artifact pipeline is wired up. Restart that work in a follow-up if needed.
 
 ## Troubleshooting
 
-### Cross-compilation fails
-- Use GitHub Actions for multi-platform builds
-- Build on native machines/VMs
-
-### npm publish fails
-- Check you're logged in: `npm whoami`
-- Verify package name availability
-- Check npm registry status: https://status.npmjs.org/
-
-### Binary not executable
-- Check file permissions after download
-- Verify SHA256 hash matches release
-
-## Automation (Future)
-
-Consider implementing GitHub Actions for:
-- Automatic cross-platform builds on tag push
-- Automatic GitHub release creation
-- Automatic npm publication
+- **`npm whoami` fails** → `npm login`
+- **`gh auth status` fails** → `gh auth login`
+- **Versions out of sync at script start** → script will warn and offer to continue using `circle-ir`'s version as the source of truth
+- **Built CLI reports wrong version after build** → check `packages/cli/src/version.ts` was rewritten by `npm version`; the script asserts this and aborts otherwise

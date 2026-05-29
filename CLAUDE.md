@@ -60,23 +60,14 @@ bun run dev scan <path>     # Run CLI in development mode
 
 ### circle-ir (SAST Library)
 
-**40 analysis passes** organized by category:
-- **Security (19 passes)** — Taint analysis for SQLi, XSS, command injection, path traversal, SSRF, etc.
-- **Reliability (9 passes)** — Null deref, resource leaks, dead code, infinite loops, missing await
-- **Performance (5 passes)** — N+1 queries, redundant computation, unbounded collections
-- **Maintainability (3 passes)** — Documentation, TODO markers, stale references
-- **Architecture (6 passes)** — Circular deps, orphan modules, deep inheritance
+Analysis passes (security, reliability, performance, maintainability, architecture) and software quality metrics are enumerated in the canonical registry: [`packages/circle-ir/docs/PASSES.md`](./packages/circle-ir/docs/PASSES.md). Do **not** duplicate pass or metric counts in this file — link to PASSES.md.
 
-**24 software quality metrics** — Cyclomatic complexity, Halstead, coupling, cohesion, maintainability index
-
-**7 languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML
+**Languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML.
 
 **Benchmark scores:**
 - OWASP Benchmark: 100% TPR, 0% FPR
 - Juliet Test Suite: 100% (156/156 cases)
 - SecuriBench Micro: 97.7% TPR
-
-See `packages/circle-ir/docs/PASSES.md` for the canonical pass registry.
 
 ### CLI
 
@@ -136,5 +127,5 @@ This repo implements the deterministic layer of **cognium-dev** (the AppSec prod
 
 Raw IR signals available for circle-ir-ai (LLM-enhanced analysis):
 - `ir.types`, `ir.calls`, `ir.cfg`, `ir.dfg`, `ir.taint`
-- All `SastFinding` objects from the 40-pass pipeline
-- All 24 software quality metrics
+- All `SastFinding` objects produced by the pass pipeline (see [`PASSES.md`](./packages/circle-ir/docs/PASSES.md))
+- All software quality metrics (see [`PASSES.md`](./packages/circle-ir/docs/PASSES.md))

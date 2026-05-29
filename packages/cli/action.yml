@@ -1,5 +1,5 @@
-name: 'Cognium Security Scan'
-description: 'Semantic static analysis for security vulnerabilities via taint tracking. Supports Java, JavaScript, TypeScript, Python, Rust, Bash, and HTML.'
+name: 'cognium-dev SAST scan'
+description: 'Deterministic static analysis for security vulnerabilities via taint tracking. Supports Java, JavaScript, TypeScript, Python, Go, Rust, Bash, and HTML.'
 author: 'Cognium Labs'
 
 branding:
@@ -40,7 +40,7 @@ inputs:
     required: false
     default: 'true'
   version:
-    description: 'Cognium version to install (e.g. "1.4.2" or "latest")'
+    description: 'cognium-dev npm version to install (e.g. "3.23.3" or "latest")'
     required: false
     default: 'latest'
 
@@ -55,13 +55,15 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install Cognium
+    - name: Install cognium-dev
       shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
-          npm install -g cognium
+        if [ "$INPUT_VERSION" = "latest" ]; then
+          npm install -g cognium-dev
         else
-          npm install -g cognium@${{ inputs.version }}
+          npm install -g "cognium-dev@$INPUT_VERSION"
         fi
 
     - name: Run security scan
@@ -82,7 +84,7 @@ runs:
         [ -n "$INPUT_EXCLUDE_CWE" ] && args+=(--exclude-cwe "$INPUT_EXCLUDE_CWE")
         [ "$INPUT_EXCLUDE_TESTS" = "true" ] && args+=(--exclude-tests)
 
-        cognium scan "$INPUT_PATH" "${args[@]}" || EXIT_CODE=$?
+        cognium-dev scan "$INPUT_PATH" "${args[@]}" || EXIT_CODE=$?
 
         if [ "$INPUT_FORMAT" = "sarif" ] && [ -n "$INPUT_OUTPUT" ]; then
           echo "sarif-file=$INPUT_OUTPUT" >> "$GITHUB_OUTPUT"
@@ -103,4 +105,4 @@ runs:
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.output }}
-        category: cognium
+        category: cognium-dev

@@ -12,10 +12,12 @@
 
 cognium-dev is a high-performance SAST tool that detects security vulnerabilities across 7 programming languages using deterministic taint analysis. It provides:
 
-- **19 security passes** — SQL injection, XSS, command injection, path traversal, SSRF, and more
-- **17 quality passes** — Null dereference, resource leaks, dead code, N+1 queries
-- **24 software metrics** — Cyclomatic complexity, coupling, cohesion, maintainability index
+- **Security passes** — SQL injection, XSS, command injection, path traversal, SSRF, and more
+- **Quality passes** — Null dereference, resource leaks, dead code, N+1 queries
+- **Software quality metrics** — Cyclomatic complexity, coupling, cohesion, maintainability index
 - **SARIF 2.1.0 output** — Native GitHub/GitLab CI integration
+
+Full inventory of passes and metrics: [`packages/circle-ir/docs/PASSES.md`](./packages/circle-ir/docs/PASSES.md).
 
 ### Benchmark Results
 
@@ -129,17 +131,19 @@ Create a `cognium.config.json` in your project root:
 
 ```yaml
 - name: Run cognium-dev scan
-  uses: cognium-dev/scan@v1
+  uses: cogniumhq/cognium-dev/packages/cli@cognium-dev-v3.23.3
   with:
     path: ./src
     format: sarif
     output: results.sarif
 
 - name: Upload SARIF
-  uses: github/codeql-action/upload-sarif@v2
+  uses: github/codeql-action/upload-sarif@v3
   with:
     sarif_file: results.sarif
 ```
+
+The action's SARIF upload is built in — set `upload-sarif: true` (default) and grant `security-events: write` permission to the workflow token. A standalone `cognium-dev/scan@v1` marketplace listing is on the roadmap; until then, pin to a tag of this repository.
 
 ### Pre-commit Hook
 
