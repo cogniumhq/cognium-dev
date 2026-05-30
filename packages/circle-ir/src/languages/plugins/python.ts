@@ -438,17 +438,28 @@ export class PythonPlugin extends BaseLanguagePlugin {
         severity: 'critical',
         argPositions: [0],
       },
+      // NOTE: yaml.safe_load / yaml.SafeLoader are intentionally NOT sinks.
+      // safe_load constructs only standard scalar/list/dict types and cannot
+      // instantiate arbitrary Python objects, so it is not a CWE-502 sink
+      // (unlike yaml.load / yaml.unsafe_load / yaml.full_load below).
       {
-        method: 'safe_load',
+        method: 'load',
         class: 'yaml',
         type: 'deserialization',
         cwe: 'CWE-502',
-        severity: 'high',
+        severity: 'critical',
         argPositions: [0],
-        sanitizes: ['yaml_unsafe'],  // safe_load is safe for YAML
       },
       {
-        method: 'load',
+        method: 'unsafe_load',
+        class: 'yaml',
+        type: 'deserialization',
+        cwe: 'CWE-502',
+        severity: 'critical',
+        argPositions: [0],
+      },
+      {
+        method: 'full_load',
         class: 'yaml',
         type: 'deserialization',
         cwe: 'CWE-502',

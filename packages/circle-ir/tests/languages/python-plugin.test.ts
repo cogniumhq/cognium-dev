@@ -341,6 +341,26 @@ describe('PythonPlugin.getBuiltinSinks()', () => {
     expect(s!.severity).toBe('critical');
   });
 
+  it('includes yaml.unsafe_load as deserialization (cognium-dev#4)', () => {
+    const s = sinks.find(x => x.method === 'unsafe_load' && x.class === 'yaml');
+    expect(s!.type).toBe('deserialization');
+    expect(s!.cwe).toBe('CWE-502');
+    expect(s!.severity).toBe('critical');
+  });
+
+  it('includes yaml.full_load as deserialization (cognium-dev#4)', () => {
+    const s = sinks.find(x => x.method === 'full_load' && x.class === 'yaml');
+    expect(s!.type).toBe('deserialization');
+    expect(s!.cwe).toBe('CWE-502');
+  });
+
+  it('does NOT register yaml.safe_load as a sink (cognium-dev#4 FP fix)', () => {
+    // safe_load constructs only scalar/list/dict and cannot instantiate
+    // arbitrary objects, so it must not be a CWE-502 deserialization sink.
+    const s = sinks.find(x => x.method === 'safe_load' && x.class === 'yaml');
+    expect(s).toBeUndefined();
+  });
+
   it('includes search_s() as ldap_injection (CWE-90)', () => {
     const s = sinks.find(x => x.method === 'search_s');
     expect(s!.type).toBe('ldap_injection');

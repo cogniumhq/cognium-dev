@@ -68,7 +68,7 @@ Analysis passes (security, reliability, performance, maintainability, architectu
 - OWASP Benchmark (Java): 100% TPR, 0% FPR
 - Juliet Test Suite (Java): 100% (156/156 cases)
 - SecuriBench Micro (Java): 97.7% TPR
-- OWASP BenchmarkPython: 81.2% TPR, 14.8% FPR on 3.23.3 — tracked as Issue #4; FPs concentrated in deserialization/codeinj/xpathi/xxe due to safe-variant over-matching (`yaml.safe_load`, etc.). Target 3.23.4.
+- OWASP BenchmarkPython: 81.2% TPR, **12.6% FPR** (was 14.8% on 3.23.3) — Issue #4. The `yaml.safe_load` CWE-502 mis-registration is fixed (3.23.5): `safe_load` is no longer a deserialization sink (it cannot instantiate arbitrary objects), and `yaml.unsafe_load`/`full_load` were added as proper sinks. Deserialization FP 24 → 7, overall 58.3% → 61.7%. The residual FPs (codeinj/xpathi/xxe/redirect/etc.) are **not** core sink-model bugs: the engine emits `taint.flows: []` for them, but the circle-ir-ai benchmark harness flags on file-level `hasSink && hasSource` co-occurrence without consulting flows (run-benchmark-python.ts:579). That is a harness-methodology artifact tracked on the circle-ir-ai side.
 
 ### CLI
 
