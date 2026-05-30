@@ -15,7 +15,7 @@
   - Smoking gun: `yaml.safe_load()` flagged as CWE-502 deserialization sink (it's the safe API)
   - Pattern likely repeats in codeinj (CWE-94, 18 FPs), xpathi (CWE-643, 17 FPs), redirect (CWE-601, 12 FPs), xxe (CWE-611, 10 FPs), pathtraver (CWE-22, 14 FPs)
   - YAML-only fix: audit `configs/sinks/deserialization.yaml`, `code_injection.yaml`, `xpath.yaml`, `redirect.yaml`, `xxe.yaml`, `xss.yaml`, `ldap.yaml`, `path.yaml` for safe-variant carve-outs
-  - Target: 3.23.4 patch release; must land before any 3.24.0 framework expansion to avoid stacking confounds
+  - Target: 3.23.5 patch release; must land before any 3.24.0 framework expansion to avoid stacking confounds
   - Cross-ref: `cogniumhq/circle-ir-ai#75`
 
 - [ ] **GitHub Action `cognium-dev/scan@v1` marketplace listing**
@@ -59,6 +59,8 @@
 
 ## Completed
 
+- [x] **Release 3.23.4** — documentation-only release: `PUBLISHING.md` + `RELEASE.md` rewrites pointing to root `release.sh`, `action.yml` rebrand to `cognium-dev`, README benchmark table split by language with BenchmarkPython qualification, `.gitignore` adds `.claude/`. No engine/taint-config changes. Known issue #4 (Python FPR 14.8%) carries forward. (7b679ad, 2026-05-30)
+- [x] **Pre-populated CHANGELOG entries** — committed before `release.sh` ran so the auto-prepend produced a single canonical entry per package (c6bbd71, 2026-05-30)
 - [x] **Pass-count consolidation** — README + CLAUDE no longer duplicate pass/metric counts; both link to `packages/circle-ir/docs/PASSES.md` (d0957b6, 2026-05-29)
 - [x] **Release docs refresh** — Rewrote `packages/cli/RELEASE.md` and `packages/circle-ir/PUBLISHING.md` as pointers to root `release.sh`; dropped stale Homebrew + per-platform binary + `v*`-trigger workflow content (d0957b6, 2026-05-29)
 - [x] **GitHub Action rebrand** — `packages/cli/action.yml` renamed to "cognium-dev SAST scan"; npm package + CLI binary + SARIF category switched from `cognium` → `cognium-dev`; README CI example points to actual usable path (d0957b6, 2026-05-29)
