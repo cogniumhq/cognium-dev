@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.23.4] - 2026-05-30
 
+### Changes
+
+- docs: pre-write 3.23.4 CHANGELOG entries
+- chore: untrack and gitignore .claude/ personal Claude Code configs
+- docs: qualify OWASP Benchmark claims (Java) and surface BenchmarkPython gap
+- docs: consolidate pass counts, refresh release docs, update Action for cognium-dev
+
+## [3.23.4] - 2026-05-30
+
 ### Changed
 
 - **circle-ir upgraded 3.23.3 → 3.23.4** — documentation-only bump (`PUBLISHING.md` rewritten as a pointer to root `release.sh`; `TODO.md` refreshed). No engine, taint-config, or pass-pipeline changes — CLI scan/metrics behavior is identical to 3.23.3.
