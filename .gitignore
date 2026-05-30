@@ -20,6 +20,9 @@ cognium-dev-*
 *.swp
 *.swo
 
+# Claude Code personal configs (per-user, not project)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
