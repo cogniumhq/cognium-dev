@@ -10,9 +10,10 @@
 
 ## Open — High Priority
 
-- [ ] **GitHub Action** — Create `cognium-dev/scan@v1` action
+- [ ] **GitHub Action `cognium-dev/scan@v1` marketplace listing**
   - Owner: —
-  - See: `packages/cli/action.yml` (exists, needs update for new name)
+  - Status: `packages/cli/action.yml` rebranded to `cognium-dev` (npm name, CLI binary, SARIF category) in d0957b6 — usable today as `cogniumhq/cognium-dev/packages/cli@cognium-dev-vX.Y.Z`
+  - Remaining: extract to standalone `cognium-dev/scan` repo, tag `v1`, publish marketplace listing
 
 - [ ] **Java benchmarks** — Publish comparison vs Snyk/Checkmarx/Semgrep
   - Owner: —
@@ -47,11 +48,12 @@
 
 - [ ] **CI/CD pipeline** — GitHub Actions for monorepo builds
 - [ ] **Pre-commit hooks** — Lint, typecheck, test on commit
-- [ ] **Doc cleanup** — Audit `packages/cli/RELEASE.md` and `packages/circle-ir/PUBLISHING.md` for staleness vs root `release.sh`
-- [ ] **README pass-count consolidation** — Have README/CLAUDE.md/design.md cite `PASSES.md` instead of duplicating counts (per new principle)
 
 ## Completed
 
+- [x] **Pass-count consolidation** — README + CLAUDE no longer duplicate pass/metric counts; both link to `packages/circle-ir/docs/PASSES.md` (d0957b6, 2026-05-29)
+- [x] **Release docs refresh** — Rewrote `packages/cli/RELEASE.md` and `packages/circle-ir/PUBLISHING.md` as pointers to root `release.sh`; dropped stale Homebrew + per-platform binary + `v*`-trigger workflow content (d0957b6, 2026-05-29)
+- [x] **GitHub Action rebrand** — `packages/cli/action.yml` renamed to "cognium-dev SAST scan"; npm package + CLI binary + SARIF category switched from `cognium` → `cognium-dev`; README CI example points to actual usable path (d0957b6, 2026-05-29)
 - [x] **Release 3.23.3** — `@DataBoundConstructor` method-level annotation source matcher; new `method_annotation` field on `SourcePattern`; closes source-side of #1 (2026-05-28)
 - [x] **Release 3.23.2** — Jenkins `SCMFileSystem.child(String)` path-traversal sink (CVE-2022-25175 sink side) (2026-05-28)
 - [x] **Release 3.23.1** — closed #3 (sink misclassifications); 20 wrong-type sink entries removed (2026-05-28)
