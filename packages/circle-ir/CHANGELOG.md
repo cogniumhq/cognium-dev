@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.4] - 2026-05-30
+
+### Documentation
+
+- **`PUBLISHING.md` rewritten** as a thin pointer to the monorepo root `release.sh`. Dropped the stale "Phase 3 / Phase 4 / `v*`-tag-triggered `publish.yml`" workflow content. The library is **not published independently** — it ships in lock-step with `cognium-dev` via `./release.sh` from the repo root. Added an "emergency manual publish" section that preserves the lib-first ordering.
+- **`TODO.md` refreshed** — Phase 4 marked complete; Java section updated with MyBatis (v3.22.x), `SCMFileSystem.child` (v3.23.2), and `@DataBoundConstructor` (v3.23.3) ticks; cross-instance field-binding propagation added as the remaining engine gap.
+
+No code, taint-config, or pass-pipeline changes. CLI consumer behavior is identical to 3.23.3.
+
+[3.23.4]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.3...circle-ir-v3.23.4
+
 ## [3.23.3] - 2026-05-28
 
 ### Added

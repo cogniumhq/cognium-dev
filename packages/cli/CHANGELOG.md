@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.4] - 2026-05-30
+
+### Changed
+
+- **circle-ir upgraded 3.23.3 → 3.23.4** — documentation-only bump (`PUBLISHING.md` rewritten as a pointer to root `release.sh`; `TODO.md` refreshed). No engine, taint-config, or pass-pipeline changes — CLI scan/metrics behavior is identical to 3.23.3.
+
+### Documentation
+
+- **GitHub Action `action.yml` rebranded** — `name`, `description`, `npm install -g` target, CLI binary invocation, and SARIF category all switched from `cognium` to `cognium-dev`. Marketplace listing `cognium-dev/scan@v1` is still pending; current consumable path is `cogniumhq/cognium-dev/packages/cli@cognium-dev-vX.Y.Z`.
+- **`RELEASE.md` rewritten** as a thin pointer to the monorepo root `release.sh`. Dropped stale Homebrew, per-platform binary, and `v*`-tag-triggered workflow content.
+- **README benchmark table** now split by language and qualified — adds OWASP BenchmarkPython row noting 81.2% TPR / 14.8% FPR on 3.23.3 (tracked as Issue #4, target 3.23.4).
+- **`.gitignore`** — `.claude/` (Claude Code per-user skill configs) now ignored to prevent accidental commits.
+
+### Known issues
+
+- **Python over-flagging** (Issue #4) — 14.8% FPR on OWASP BenchmarkPython carries over to this release. Root cause is safe-variant over-matching in `configs/sinks/deserialization.yaml` and friends (e.g. `yaml.safe_load` flagged as CWE-502). A dedicated YAML sink-audit patch is planned for the next release.
+
+[3.23.4]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.3...cognium-dev-v3.23.4
+
 ## [3.23.3] - 2026-05-28
 
 ### Changed
