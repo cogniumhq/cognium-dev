@@ -5,14 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.23.4] - 2026-05-30
+## [3.23.5] - 2026-05-30
 
-### Changes
+### Changed
 
-- docs: pre-write 3.23.4 CHANGELOG entries
-- chore: untrack and gitignore .claude/ personal Claude Code configs
-- docs: qualify OWASP Benchmark claims (Java) and surface BenchmarkPython gap
-- docs: consolidate pass counts, refresh release docs, update Action for cognium-dev
+- **circle-ir upgraded 3.23.4 → 3.23.5** — `yaml.safe_load` is no longer reported as a CWE-502 deserialization sink, and `yaml.unsafe_load` / `yaml.full_load` are now recognized. Net effect for Python scans: prior false positives on the safe API disappear; the genuinely-unsafe variants are now flagged. Verified on OWASP BenchmarkPython: deserialization FP **24 → 7**, overall FPR **14.8% → 12.6%**, F1 **78.6% → 80.0%**.
+
+### Notes
+
+- This release closes the source-side of Issue #4 (Python over-flagging) and the corresponding direct-to-main review request in Issue #6. The remaining Python FPs (12.6%, target ≤2%) span codeinj / xpathi / pathtraver / redirect / xxe / xss / ldapi / trustbound / cmdi categories — these are tracked as a follow-up.
+
+[3.23.5]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.4...cognium-dev-v3.23.5
 
 ## [3.23.4] - 2026-05-30
 

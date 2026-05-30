@@ -5,15 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.23.4] - 2026-05-30
-
-### Changes
-
-- docs: pre-write 3.23.4 CHANGELOG entries
-- docs: consolidate pass counts, refresh release docs, update Action for cognium-dev
-- docs(circle-ir): refresh TODO with Phase 4 + Jenkins/MyBatis status
-
 ## [Unreleased]
+
+## [3.23.5] - 2026-05-30
+
+### Fixed
+
+- **`yaml.safe_load` no longer reported as a CWE-502 deserialization sink** (closes #4 source-side). `safe_load` constructs only standard scalar/list/dict types and cannot instantiate arbitrary Python objects, so it must not be a sink. The previous entry in `PythonPlugin.getBuiltinSinks()` carried a dead `sanitizes: ['yaml_unsafe']` annotation (only consumed on sanitizer objects, never on sink patterns), which was insufficient to suppress the finding when source/sink co-occurrence was the harness gate. Verified on OWASP BenchmarkPython (1230 cases): deserialization FP **24 → 7**, overall FPR **14.8% → 12.6%**, accuracy **58.3% → 61.7%**, F1 **78.6% → 80.0%** (TPR unchanged at 81.2%).
+
+### Added
+
+- **`yaml.unsafe_load` and `yaml.full_load` registered as CWE-502 sinks** — genuinely-unsafe APIs that were missing from the previous sink set. Both are `critical` severity, `arg_positions: [0]`.
+- Four regression unit tests in `tests/languages/python-plugin.test.ts` locking in: `safe_load` not in sinks, `unsafe_load` is, `full_load` is, and the dead sanitize annotation is gone.
+
+### Known issues
+
+- Even with this fix, OWASP BenchmarkPython FPR is **12.6%** vs the ≤2% target. 91 FPs remain across codeinj (18), xpathi (17), pathtraver (14), redirect (12), xxe (10), xss (9), ldapi (7), trustbound (2), cmdi (2) — likely the same safe-variant-over-matching pattern in other Python plugin sink methods. Tracked as a follow-up to #4.
+
+[3.23.5]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.4...circle-ir-v3.23.5
 
 ## [3.23.4] - 2026-05-30
 
