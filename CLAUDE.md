@@ -65,9 +65,10 @@ Analysis passes (security, reliability, performance, maintainability, architectu
 **Languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML.
 
 **Benchmark scores:**
-- OWASP Benchmark: 100% TPR, 0% FPR
-- Juliet Test Suite: 100% (156/156 cases)
-- SecuriBench Micro: 97.7% TPR
+- OWASP Benchmark (Java): 100% TPR, 0% FPR
+- Juliet Test Suite (Java): 100% (156/156 cases)
+- SecuriBench Micro (Java): 97.7% TPR
+- OWASP BenchmarkPython: 81.2% TPR, 14.8% FPR on 3.23.3 — tracked as Issue #4; FPs concentrated in deserialization/codeinj/xpathi/xxe due to safe-variant over-matching (`yaml.safe_load`, etc.). Target 3.23.4.
 
 ### CLI
 

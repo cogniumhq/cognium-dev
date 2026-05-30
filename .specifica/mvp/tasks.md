@@ -10,6 +10,14 @@
 
 ## Open — High Priority
 
+- [ ] **Python over-flagging on OWASP BenchmarkPython** (Issue #4, opened 2026-05-30)
+  - Reproduced on circle-ir 3.23.3: TPR 81.2%, **FPR 14.8%**, F1 78.6%, 115 FPs / 1230 tests
+  - Smoking gun: `yaml.safe_load()` flagged as CWE-502 deserialization sink (it's the safe API)
+  - Pattern likely repeats in codeinj (CWE-94, 18 FPs), xpathi (CWE-643, 17 FPs), redirect (CWE-601, 12 FPs), xxe (CWE-611, 10 FPs), pathtraver (CWE-22, 14 FPs)
+  - YAML-only fix: audit `configs/sinks/deserialization.yaml`, `code_injection.yaml`, `xpath.yaml`, `redirect.yaml`, `xxe.yaml`, `xss.yaml`, `ldap.yaml`, `path.yaml` for safe-variant carve-outs
+  - Target: 3.23.4 patch release; must land before any 3.24.0 framework expansion to avoid stacking confounds
+  - Cross-ref: `cogniumhq/circle-ir-ai#75`
+
 - [ ] **GitHub Action `cognium-dev/scan@v1` marketplace listing**
   - Owner: —
   - Status: `packages/cli/action.yml` rebranded to `cognium-dev` (npm name, CLI binary, SARIF category) in d0957b6 — usable today as `cogniumhq/cognium-dev/packages/cli@cognium-dev-vX.Y.Z`
@@ -73,7 +81,9 @@
 
 ## Open Issues
 
-_None._ (#1, #2, #3 all closed as of 3.23.3)
+- [#4](https://github.com/cogniumhq/cognium-dev/issues/4) — Python over-flagging on OWASP BenchmarkPython (FPR 14.8%); tracked under High Priority above
+
+(#1, #2, #3 all closed as of 3.23.3)
 
 ---
 

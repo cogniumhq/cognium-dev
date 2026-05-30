@@ -21,11 +21,12 @@ Full inventory of passes and metrics: [`packages/circle-ir/docs/PASSES.md`](./pa
 
 ### Benchmark Results
 
-| Benchmark | Score |
-|-----------|-------|
-| OWASP Benchmark | **100% TPR, 0% FPR** |
-| Juliet Test Suite | **100%** (156/156 cases) |
-| SecuriBench Micro | **97.7% TPR** |
+| Benchmark | Language | Score |
+|-----------|----------|-------|
+| OWASP Benchmark | Java | **100% TPR, 0% FPR** |
+| Juliet Test Suite | Java | **100%** (156/156 cases) |
+| SecuriBench Micro | Java | **97.7% TPR** |
+| OWASP BenchmarkPython | Python | 81.2% TPR, 14.8% FPR (3.23.3 — over-flagging on safe sinks, [#4](https://github.com/cogniumhq/cognium-dev/issues/4)) |
 
 ---
 
