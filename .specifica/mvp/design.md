@@ -62,9 +62,9 @@ Plus additional quality, reliability, performance, maintainability, and architec
 - **Trade-off:** Requires Bun runtime for development
 
 ### ADR-004: Runtime config in `config-loader.ts`, not YAML
-- **Decision:** `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_HEADER_RULES` in `packages/circle-ir/src/analysis/config-loader.ts` are the runtime source-of-truth. YAML under `configs/` is for documentation, external consumers, and analyst review.
+- **Decision:** Runtime source-of-truth for taint patterns is TypeScript code, not YAML. Two TS surfaces are consulted: (1) `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_HEADER_RULES` in `packages/circle-ir/src/analysis/config-loader.ts` (language-agnostic defaults), and (2) per-language `LanguagePlugin.getBuiltinSources()` / `getBuiltinSinks()` in `src/languages/plugins/<lang>.ts` (language-specific patterns). YAML under `configs/` is documentation / external-export only.
 - **Rationale:** Browser-compatible (no `fs`); tree-shakeable; statically typed; works in WASM/Cloudflare Workers without filesystem.
-- **Trade-off:** Pattern additions must be made in two places (TS + YAML) for parity. Captured in `principles.md`.
+- **Trade-off:** A language-specific pattern can be added in either of three places (DEFAULT_SINKS, plugin builtin, or YAML), and only the first two affect runtime. This is an architectural smell — Issue #4's `yaml.safe_load` FP took an extra investigation step because the YAML config was already correct but the plugin builtin was not. Consolidation task tracked in `tasks.md`. Until then: when adding a Python/JS/etc. sink, check the language plugin first.
 
 ### ADR-005: Synchronized version stream
 - **Decision:** circle-ir and cognium-dev share one version number, bumped together via root `release.sh`.

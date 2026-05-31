@@ -10,7 +10,7 @@ Cross-cutting rules for the cognium-dev project.
 - **Minimal dependencies** — circle-ir depends only on `web-tree-sitter` and `yaml`. CLI depends only on `circle-ir`.
 - **No LLM dependencies** — circle-ir is pure deterministic SAST. LLM-enhanced analysis belongs in a separate `circle-ir-ai` package.
 - **Synchronized version stream** — `circle-ir` and `cognium-dev` always share the same version number and ship together; the CLI's `circle-ir` dependency is always pinned to `^X.Y.Z` matching its own version. Use `./release.sh <patch|minor|major>` at the repo root — never bump a single package in isolation.
-- **Runtime config lives in `config-loader.ts`** — `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_HEADER_RULES` in `packages/circle-ir/src/analysis/config-loader.ts` are the **runtime source-of-truth**. YAML under `configs/` is documentation and external-export only; it is NOT loaded at runtime. Any new source/sink pattern MUST be added to both for parity.
+- **Runtime config lives in TypeScript** — Two TS surfaces are consulted at runtime: `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_HEADER_RULES` in `packages/circle-ir/src/analysis/config-loader.ts` (language-agnostic), and `LanguagePlugin.getBuiltinSources()` / `getBuiltinSinks()` in `src/languages/plugins/<lang>.ts` (language-specific). YAML under `configs/` is documentation / external-export only and is NOT loaded at runtime. When adding a language-specific pattern (Python, JS, etc.) the plugin builtin is usually the right home. See ADR-004 (design.md) — consolidation is tracked in `tasks.md`.
 
 ## Code Quality
 

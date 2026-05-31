@@ -10,13 +10,23 @@
 
 ## Open — High Priority
 
-- [ ] **Python over-flagging on OWASP BenchmarkPython** (Issue #4, opened 2026-05-30)
-  - Reproduced on circle-ir 3.23.3: TPR 81.2%, **FPR 14.8%**, F1 78.6%, 115 FPs / 1230 tests
-  - Smoking gun: `yaml.safe_load()` flagged as CWE-502 deserialization sink (it's the safe API)
-  - Pattern likely repeats in codeinj (CWE-94, 18 FPs), xpathi (CWE-643, 17 FPs), redirect (CWE-601, 12 FPs), xxe (CWE-611, 10 FPs), pathtraver (CWE-22, 14 FPs)
-  - YAML-only fix: audit `configs/sinks/deserialization.yaml`, `code_injection.yaml`, `xpath.yaml`, `redirect.yaml`, `xxe.yaml`, `xss.yaml`, `ldap.yaml`, `path.yaml` for safe-variant carve-outs
-  - Target: 3.23.5 patch release; must land before any 3.24.0 framework expansion to avoid stacking confounds
+- [ ] **Residual Python FPs on OWASP BenchmarkPython** (follow-up to Issue #4, post-3.23.5)
+  - Current on 3.23.5: TPR 81.2%, **FPR 12.6%**, F1 80.0%, 91 FPs / 1230 tests (target FPR ≤ 2%)
+  - Breakdown: codeinj (18), xpathi (17), pathtraver (14), redirect (12), xxe (10), xss (9), ldapi (7), trustbound (2), cmdi (2), deserialization (7 residual after `yaml.safe_load` carve-out)
+  - Hypothesis: same safe-variant-over-matching pattern as `yaml.safe_load` repeats in other Python plugin sink methods (`PythonPlugin.getBuiltinSinks()`); audit each category's sink list against the safe-API surface
+  - Must precede any 3.24.0 framework expansion to avoid stacking confounds
   - Cross-ref: `cogniumhq/circle-ir-ai#75`
+
+- [ ] **TypeScript parser drops functions with inline object-type literal params** (Issue #5, opened 2026-05-30, labeled `bug`)
+  - Repro: `function describe(p: { name: string }): string { ... }` — the function is invisible to the IR, breaking downstream taint / call-graph analysis
+  - Impact: HIGH — affects cognium-ai consumers reading `ir.types`, `ir.calls`
+  - Likely root cause in `src/core/parser.ts` TypeScript signature extraction; needs Tree-sitter node-type audit for `type_annotation` → `object_type` paths
+
+- [ ] **Consolidate Python sink source-of-truth** (architectural, surfaced by Issue #4 fix)
+  - Current state: Python sinks live in THREE places — `configs/sinks/python.json`, `config-loader.ts::DEFAULT_SINKS`, and `PythonPlugin.getBuiltinSinks()` in `src/languages/plugins/python.ts`. Only the last is consulted at runtime for the language path
+  - ADR-004 + `principles.md` currently claim `config-loader.ts` is THE runtime source-of-truth — this is incomplete for language-plugin-driven sinks (it's a 3-way split, not 2-way)
+  - Action: either (a) collapse plugin `getBuiltinSinks()` into `DEFAULT_SINKS`, or (b) update ADR-004 + principles to honestly describe the 3-way model and pick a canonical one per language
+  - Triggered by 7834e19 — fix landed in plugin, not config-loader
 
 - [ ] **GitHub Action `cognium-dev/scan@v1` marketplace listing**
   - Owner: —
@@ -59,6 +69,7 @@
 
 ## Completed
 
+- [x] **Release 3.23.5** — source-side fix for Issue #4: `yaml.safe_load` removed from `PythonPlugin.getBuiltinSinks()`; `yaml.unsafe_load` + `yaml.full_load` added as CWE-502 sinks. OWASP BenchmarkPython delta: deser FP 24→7, FPR 14.8%→12.6%, F1 78.6%→80.0%. Closes #4 (source-side) and #6 (direct-to-main review). Residual 91 FPs tracked separately. (7834e19 + 2cd9032, 2026-05-30)
 - [x] **Release 3.23.4** — documentation-only release: `PUBLISHING.md` + `RELEASE.md` rewrites pointing to root `release.sh`, `action.yml` rebrand to `cognium-dev`, README benchmark table split by language with BenchmarkPython qualification, `.gitignore` adds `.claude/`. No engine/taint-config changes. Known issue #4 (Python FPR 14.8%) carries forward. (7b679ad, 2026-05-30)
 - [x] **Pre-populated CHANGELOG entries** — committed before `release.sh` ran so the auto-prepend produced a single canonical entry per package (c6bbd71, 2026-05-30)
 - [x] **Pass-count consolidation** — README + CLAUDE no longer duplicate pass/metric counts; both link to `packages/circle-ir/docs/PASSES.md` (d0957b6, 2026-05-29)
@@ -83,9 +94,9 @@
 
 ## Open Issues
 
-- [#4](https://github.com/cogniumhq/cognium-dev/issues/4) — Python over-flagging on OWASP BenchmarkPython (FPR 14.8%); tracked under High Priority above
+- [#5](https://github.com/cogniumhq/cognium-dev/issues/5) — TypeScript parser drops functions with inline object-type literal params; tracked under High Priority above
 
-(#1, #2, #3 all closed as of 3.23.3)
+(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5)
 
 ---
 

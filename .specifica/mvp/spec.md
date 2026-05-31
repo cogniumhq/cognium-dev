@@ -40,8 +40,8 @@ cognium-dev is the **pure-SAST product** for AppSec buyers. It implements **Pill
 - [x] OWASP Benchmark (Java): 100% TPR, 0% FPR ✓
 - [x] Juliet Test Suite (Java): 100% pass rate (156/156) ✓
 - [x] SecuriBench Micro (Java): 97.7% TPR ✓
-- [ ] OWASP BenchmarkPython: TPR ≥ 95%, FPR ≤ 2% — current on 3.23.3: TPR 81.2%, FPR 14.8% (see Issue #4)
+- [ ] OWASP BenchmarkPython: TPR ≥ 95%, FPR ≤ 2% — current on 3.23.5: TPR 81.2%, **FPR 12.6%** (Issue #4 source-side closed; 91 residual FPs tracked in tasks.md)
 - [ ] GitHub Action `cognium-dev/scan@v1` available
-- [x] npm packages published: `circle-ir`, `cognium-dev` ✓ (live since 3.23.0; current 3.23.3)
+- [x] npm packages published: `circle-ir`, `cognium-dev` ✓ (current 3.23.5)
 - [x] Monorepo structure established ✓
 - [x] GitHub repository live: cogniumhq/cognium-dev ✓
