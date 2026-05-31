@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.23.5] - 2026-05-30
 
+### Changes
+
+- docs: pre-write 3.23.5 CHANGELOG entries
+
+## [3.23.5] - 2026-05-30
+
 ### Changed
 
 - **circle-ir upgraded 3.23.4 → 3.23.5** — `yaml.safe_load` is no longer reported as a CWE-502 deserialization sink, and `yaml.unsafe_load` / `yaml.full_load` are now recognized. Net effect for Python scans: prior false positives on the safe API disappear; the genuinely-unsafe variants are now flagged. Verified on OWASP BenchmarkPython: deserialization FP **24 → 7**, overall FPR **14.8% → 12.6%**, F1 **78.6% → 80.0%**.
