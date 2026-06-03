@@ -14,6 +14,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-05-30
+
+### Fixed
+
+- **TypeScript files are now parsed with the real tree-sitter-typescript grammar** (closes #5). The library previously hardcoded a `typescript → javascript` redirect in `core/parser.ts` (in both `loadLanguage` and `getDefaultLanguagePath`), so every `.ts` input was parsed with the JavaScript grammar. That worked for ES-compatible subsets of TypeScript but broke as soon as a function had TS-only syntax in its parameter list. The most visible failure was inline object-literal type parameters: `export function describe(p: { name: string }): string { ... }` produced a `labeled_statement [HAS_ERROR]` wrapping an `ERROR` node and a free-standing `statement_block`, with **no `function_declaration` anywhere in the tree** — so the function vanished from `ir.types[].methods[]` entirely. After the fix, that same input parses cleanly to `function_declaration` with `required_parameter` + `type_annotation` children, and the function is extracted with `name`, `parameters[0].name === 'p'`, and `parameters[0].type === '{ name: string }'`.
+
+### Added
+
+- **`tree-sitter-typescript.wasm` (v0.23.2)** shipped in `wasm/` (1.4 MB) and auto-copied to `dist/wasm/` by the existing `build:browser` glob step. Pure-TypeScript grammar only — `.tsx`/JSX is out of scope for this release and is tracked as a follow-up.
+- **`required_parameter` / `optional_parameter` handling in `extractJSParameters`** (`src/core/extractors/types.ts`). These are TS-grammar-specific parameter node types that don't appear under the JS grammar. The new branch resolves the parameter's `pattern` field (identifier, rest pattern, object/array destructure, or assignment with default) and its `type` field (`type_annotation` minus the leading `:`). As a side effect, `ParameterInfo.type` is now populated for TS code where it was previously always `null`.
+- **6 regression unit tests** in `tests/extractors/types-typescript.test.ts` covering the Issue #5 repro matrix: inline-object solo, inline-object + plain follower, inline-object-array + follower, primitive-typed param, named-interface-typed param, and optional parameter.
+
+### Changed
+
+- **Removed both `typescript → javascript` grammar redirects** from `src/core/parser.ts` (formerly at lines 178 and 354). Requests for the `typescript` grammar now load `tree-sitter-typescript.wasm` directly.
+- **`tests/setup.ts`** updated to map `typescript` to `tree-sitter-typescript.wasm` in its explicit `languagePaths` table (was `tree-sitter-javascript.wasm` with a "shares JS grammar" comment).
+
+### Known issues / out of scope
+
+- **TSX/JSX is not supported.** This release ships pure-TS only. A follow-up will dispatch `.tsx` to `tree-sitter-tsx.wasm`. Existing tests do not exercise `.tsx`.
+- **Interface extraction is not enriched.** The parser now produces `interface_declaration` nodes, but `extractJavaScriptTypes` still only walks `class_declaration` / `function_declaration` / named arrow funcs. Adding interface extraction (with `kind: 'interface'`) is a clean follow-up but not required to close #5.
+- **Generic / union / intersection types are not surfaced into IR.** The corresponding nodes are now present in the tree.
+- **Behavior change for TS consumers:** scans of TypeScript code that previously parsed to ERROR-bearing trees may now produce additional findings, because regions that the JS grammar had silently dropped are now visible to the analysis pipeline. This is correctness, not a regression, but is called out here for diff-readers.
+
+### Verification
+
+- Full test suite: **1810 passing, 0 failing** (1804 → 1810; the 6 new tests are the only delta).
+- Issue #5 repro matrix (`/tmp/ts-fp/repro.mjs`): all 5 cases now match the expected method-name list.
+- AST dump (`/tmp/ts-fp/ast.mjs`): `function_declaration` counts go from 0/1/1/1/1 (broken) to 1/2/2/1/1 (fixed).
+- CLI smoke (`bun run dev scan packages/circle-ir/src/core/extractors --format text`): runs cleanly on real TS code, produces sane findings.
+
+[3.24.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.23.5...circle-ir-v3.24.0
+
 ## [3.23.5] - 2026-05-30
 
 ### Fixed

@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - docs: pre-write 3.23.5 CHANGELOG entries
 
+## [3.24.0] - 2026-05-30
+
+### Changed
+
+- **circle-ir upgraded 3.23.5 → 3.24.0** — TypeScript files now parse with the real tree-sitter-typescript grammar instead of falling back to the JavaScript grammar (closes #5). TS-only constructs in parameter positions — inline object types, optional params, type annotations — no longer cause functions to silently disappear from the IR. Parameter type information is now preserved in the IR for TS code (`ParameterInfo.type`) where it was previously always `null`.
+
+### Notes
+
+- **Behavior change for users scanning TypeScript code:** scans may surface additional findings on `.ts` files compared to 3.23.x, because regions that the JS grammar had silently turned into ERROR nodes (and therefore the analysis pipeline could not see) are now visible. This is a correctness improvement, not a regression.
+- **`.tsx` files are still affected by the original limitation.** Full TSX/JSX support is tracked as a follow-up; this release ships pure-TS only.
+- No CLI surface, output-format, or flag changes. All existing JS/Java/Python/Go/Rust/Bash/HTML behavior is identical to 3.23.5.
+
+[3.24.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.23.5...cognium-dev-v3.24.0
+
 ## [3.23.5] - 2026-05-30
 
 ### Changed

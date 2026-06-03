@@ -17,11 +17,6 @@
   - Must precede any 3.24.0 framework expansion to avoid stacking confounds
   - Cross-ref: `cogniumhq/circle-ir-ai#75`
 
-- [ ] **TypeScript parser drops functions with inline object-type literal params** (Issue #5, opened 2026-05-30, labeled `bug`)
-  - Repro: `function describe(p: { name: string }): string { ... }` — the function is invisible to the IR, breaking downstream taint / call-graph analysis
-  - Impact: HIGH — affects cognium-ai consumers reading `ir.types`, `ir.calls`
-  - Likely root cause in `src/core/parser.ts` TypeScript signature extraction; needs Tree-sitter node-type audit for `type_annotation` → `object_type` paths
-
 - [ ] **Consolidate Python sink source-of-truth** (architectural, surfaced by Issue #4 fix)
   - Current state: Python sinks live in THREE places — `configs/sinks/python.json`, `config-loader.ts::DEFAULT_SINKS`, and `PythonPlugin.getBuiltinSinks()` in `src/languages/plugins/python.ts`. Only the last is consulted at runtime for the language path
   - ADR-004 + `principles.md` currently claim `config-loader.ts` is THE runtime source-of-truth — this is incomplete for language-plugin-driven sinks (it's a 3-way split, not 2-way)
@@ -44,7 +39,21 @@
   - Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` path end-to-end
   - Engine-level (DFG cross-instance reasoning), not a YAML/config change
 
-- [ ] **Framework coverage expansion** (proposed 3.24.0)
+- [ ] **TSX / JSX parsing** (follow-up to 3.24.0)
+  - 3.24.0 ships pure-TS only via `tree-sitter-typescript.wasm`. `.tsx` files still hit the JS grammar path (the broken pre-3.24.0 behavior for inline-object-type params) — and JSX additionally produces ERROR nodes the JS grammar cannot recover from
+  - Action: bundle `tree-sitter-tsx.wasm` (also shipped by `tree-sitter-typescript@0.23.2`, ~1.45 MB), dispatch `.tsx` to it from the language plugin, mirror the `required_parameter` / `optional_parameter` work for any TSX-only param node shapes
+  - Test coverage: add `tests/extractors/types-tsx.test.ts` with JSX-element-returning components
+
+- [ ] **Interface extraction enrichment** (follow-up to 3.24.0)
+  - The TS grammar now produces `interface_declaration` nodes, but `extractJavaScriptTypes` only walks `class_declaration` / `function_declaration` / named arrow funcs. Interfaces currently fall on the floor
+  - Action: extend `extractJavaScriptTypes` (`src/core/extractors/types.ts`) to emit `interface_declaration` as `TypeInfo` with `kind: 'interface'`, populating `fields` from `property_signature` and `methods` from `method_signature`
+  - Needed for cross-instance taint analysis when the type contract is declared as an interface
+
+- [ ] **Generic / union / intersection type surfacing** (follow-up to 3.24.0)
+  - `generic_type`, `union_type`, `intersection_type` nodes are now present in the TS-grammar tree but not converted into IR fields. `ParameterInfo.type` currently stores the raw source slice; structured representation would let passes reason about `Array<T>` vs `T[]`, nullable unions, etc.
+  - Lower priority than the two above; defer until a pass actually needs structured TS type info
+
+- [ ] **Framework coverage expansion** (proposed 3.25.0+)
   - JS/TS: Next.js API routes, TypeORM sinks, narrow `.value` dom_input source
   - Python: Jinja2 XSS sinks; additional MyBatis/Django ORM raw query patterns
   - Java: Micronaut, Quarkus
@@ -69,6 +78,7 @@
 
 ## Completed
 
+- [x] **Release 3.24.0** — TS parser fix for Issue #5: ship real `tree-sitter-typescript.wasm` (v0.23.2), remove both `typescript → javascript` grammar redirects in `core/parser.ts`, add `required_parameter` / `optional_parameter` handling in `extractJSParameters`, populate `ParameterInfo.type` for TS code. 6 new regression tests in `tests/extractors/types-typescript.test.ts`; full suite 1810 passing, 0 failing. `.tsx` / JSX, interface IR enrichment, and generic-type surfacing tracked as separate follow-ups. (2026-05-30)
 - [x] **Release 3.23.5** — source-side fix for Issue #4: `yaml.safe_load` removed from `PythonPlugin.getBuiltinSinks()`; `yaml.unsafe_load` + `yaml.full_load` added as CWE-502 sinks. OWASP BenchmarkPython delta: deser FP 24→7, FPR 14.8%→12.6%, F1 78.6%→80.0%. Closes #4 (source-side) and #6 (direct-to-main review). Residual 91 FPs tracked separately. (7834e19 + 2cd9032, 2026-05-30)
 - [x] **Release 3.23.4** — documentation-only release: `PUBLISHING.md` + `RELEASE.md` rewrites pointing to root `release.sh`, `action.yml` rebrand to `cognium-dev`, README benchmark table split by language with BenchmarkPython qualification, `.gitignore` adds `.claude/`. No engine/taint-config changes. Known issue #4 (Python FPR 14.8%) carries forward. (7b679ad, 2026-05-30)
 - [x] **Pre-populated CHANGELOG entries** — committed before `release.sh` ran so the auto-prepend produced a single canonical entry per package (c6bbd71, 2026-05-30)
@@ -94,9 +104,9 @@
 
 ## Open Issues
 
-- [#5](https://github.com/cogniumhq/cognium-dev/issues/5) — TypeScript parser drops functions with inline object-type literal params; tracked under High Priority above
+(none open)
 
-(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5)
+(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5; #5 closed as of 3.24.0)
 
 ---
 
