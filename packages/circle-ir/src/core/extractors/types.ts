@@ -813,6 +813,36 @@ function extractJSParameters(params: Node): ParameterInfo[] {
         annotations: [],
         line: child.startPosition.row + 1,
       });
+    } else if (child.type === 'required_parameter' || child.type === 'optional_parameter') {
+      // TypeScript-grammar parameter: pattern (identifier or destructuring) + optional type_annotation
+      const patternNode = child.childForFieldName('pattern');
+      if (!patternNode) continue;
+
+      let paramName: string;
+      if (patternNode.type === 'identifier') {
+        paramName = getNodeText(patternNode);
+      } else if (patternNode.type === 'rest_pattern' || patternNode.type === 'rest_element') {
+        const inner = patternNode.namedChildCount > 0 ? patternNode.namedChild(0) : null;
+        if (!inner) continue;
+        paramName = '...' + getNodeText(inner);
+      } else {
+        // object_pattern, array_pattern, or assignment_pattern with default
+        paramName = getNodeText(patternNode);
+      }
+
+      const typeNode = child.childForFieldName('type');
+      let paramType: string | null = null;
+      if (typeNode) {
+        // type_annotation includes the leading ':'; strip it for storage parity with other languages
+        paramType = getNodeText(typeNode).replace(/^:\s*/, '');
+      }
+
+      parameters.push({
+        name: paramName,
+        type: paramType,
+        annotations: [],
+        line: child.startPosition.row + 1,
+      });
     }
   }
 

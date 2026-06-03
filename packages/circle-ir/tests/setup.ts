@@ -22,7 +22,7 @@ const wasmDir = join(here, '..', 'dist', 'wasm');
 const grammarFile: Partial<Record<SupportedLanguage, string>> = {
   java:       'tree-sitter-java.wasm',
   javascript: 'tree-sitter-javascript.wasm',
-  typescript: 'tree-sitter-javascript.wasm', // shares JS grammar
+  typescript: 'tree-sitter-typescript.wasm',
   python:     'tree-sitter-python.wasm',
   go:         'tree-sitter-go.wasm',
   rust:       'tree-sitter-rust.wasm',

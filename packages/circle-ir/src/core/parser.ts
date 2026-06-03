@@ -175,8 +175,7 @@ export async function loadLanguage(
   }
 
   // Check for pre-compiled module first (Cloudflare Workers)
-  const grammarName = language === 'typescript' ? 'javascript' : language;
-  const wasmModule = configuredLanguageModules[language] ?? configuredLanguageModules[grammarName as SupportedLanguage];
+  const wasmModule = configuredLanguageModules[language];
   if (wasmModule) {
     const loadPromise = (async () => {
       // Pass WebAssembly.Module directly - web-tree-sitter's internal code
@@ -350,9 +349,6 @@ async function getDefaultWasmPath(): Promise<string> {
  * Get default path for a language grammar WASM file.
  */
 async function getDefaultLanguagePath(language: SupportedLanguage): Promise<string> {
-  // TypeScript uses the JavaScript grammar
-  const grammarName = language === 'typescript' ? 'javascript' : language;
-
   const mods = await getNodeModules();
 
   if (mods && moduleDir) {
@@ -360,20 +356,20 @@ async function getDefaultLanguagePath(language: SupportedLanguage): Promise<stri
     const packageRoot = mods.join(moduleDir, '..', '..');
 
     // First, try dist/wasm/ (shipped with npm package, works regardless of hoisting)
-    const distWasmPath = mods.join(packageRoot, 'dist', 'wasm', `tree-sitter-${grammarName}.wasm`);
+    const distWasmPath = mods.join(packageRoot, 'dist', 'wasm', `tree-sitter-${language}.wasm`);
     if (mods.existsSync(distWasmPath)) {
       return distWasmPath;
     }
 
     // Then try the source wasm/ directory (development)
-    const packageWasmPath = mods.join(packageRoot, 'wasm', `tree-sitter-${grammarName}.wasm`);
+    const packageWasmPath = mods.join(packageRoot, 'wasm', `tree-sitter-${language}.wasm`);
     if (mods.existsSync(packageWasmPath)) {
       return packageWasmPath;
     }
   }
 
   // Fallback to relative path (development or browser)
-  return `wasm/tree-sitter-${grammarName}.wasm`;
+  return `wasm/tree-sitter-${language}.wasm`;
 }
 
 /**
