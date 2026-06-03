@@ -78,7 +78,8 @@
 
 ## Completed
 
-- [x] **Release 3.24.0** — TS parser fix for Issue #5: ship real `tree-sitter-typescript.wasm` (v0.23.2), remove both `typescript → javascript` grammar redirects in `core/parser.ts`, add `required_parameter` / `optional_parameter` handling in `extractJSParameters`, populate `ParameterInfo.type` for TS code. 6 new regression tests in `tests/extractors/types-typescript.test.ts`; full suite 1810 passing, 0 failing. `.tsx` / JSX, interface IR enrichment, and generic-type surfacing tracked as separate follow-ups. (2026-05-30)
+- [x] **Release 3.25.0** — version-bump-only re-publish issued ~40s after 3.24.0 to ensure a clean npm publish window; no source, config, or pass-pipeline changes. CHANGELOG auto-prepend records "(no commits since last release)" for both packages. Substantive changes for this stream are entirely in 3.24.0. (4168550, 2026-06-02)
+- [x] **Release 3.24.0** — TS parser fix for Issue #5: ship real `tree-sitter-typescript.wasm` (v0.23.2), remove both `typescript → javascript` grammar redirects in `core/parser.ts`, add `required_parameter` / `optional_parameter` handling in `extractJSParameters`, populate `ParameterInfo.type` for TS code. 6 new regression tests in `tests/extractors/types-typescript.test.ts`; full suite 1810 passing, 0 failing. `.tsx` / JSX, interface IR enrichment, and generic-type surfacing tracked as separate follow-ups. (20df02f, 2026-06-02)
 - [x] **Release 3.23.5** — source-side fix for Issue #4: `yaml.safe_load` removed from `PythonPlugin.getBuiltinSinks()`; `yaml.unsafe_load` + `yaml.full_load` added as CWE-502 sinks. OWASP BenchmarkPython delta: deser FP 24→7, FPR 14.8%→12.6%, F1 78.6%→80.0%. Closes #4 (source-side) and #6 (direct-to-main review). Residual 91 FPs tracked separately. (7834e19 + 2cd9032, 2026-05-30)
 - [x] **Release 3.23.4** — documentation-only release: `PUBLISHING.md` + `RELEASE.md` rewrites pointing to root `release.sh`, `action.yml` rebrand to `cognium-dev`, README benchmark table split by language with BenchmarkPython qualification, `.gitignore` adds `.claude/`. No engine/taint-config changes. Known issue #4 (Python FPR 14.8%) carries forward. (7b679ad, 2026-05-30)
 - [x] **Pre-populated CHANGELOG entries** — committed before `release.sh` ran so the auto-prepend produced a single canonical entry per package (c6bbd71, 2026-05-30)
@@ -106,7 +107,7 @@
 
 (none open)
 
-(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5; #5 closed as of 3.24.0)
+(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5; #5 closed as of 3.24.0; 3.25.0 was a version-bump-only re-publish)
 
 ---
 
