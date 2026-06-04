@@ -7,31 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.27.1] - 2026-06-04
 
-### Changes
-
-- (no commits since last release)
-
-## [3.27.0] - 2026-06-04
-
-### Changes
-
-- (no commits since last release)
-
-## [3.26.0] - 2026-06-04
-
-### Changes
-
-- feat(circle-ir): scan-secrets pass (#90, CWE-798) — 3.26.0 staging
-
-## [3.26.0] - 2026-06-03
+> Versions 3.26.0 and 3.27.0 were prepared locally but never published to npm; their content shipped as part of 3.27.1.
 
 ### Changed
 
-- **circle-ir upgraded 3.25.0 → 3.26.0** — adds the `scan-secrets` security pass (Pass #90, CWE-798) detecting hardcoded credentials across all 7 supported languages. Two layers: ~16 high-confidence provider patterns (AWS `AKIA…`, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`, OpenAI `sk-…`, Anthropic `sk-ant-…`, Slack `xox[baprs]-…`, Google `AIza…`, JWT, PEM private keys, npm `npm_…`) emitting `hardcoded-credential` (critical/error), and Shannon-entropy scan on base64/hex string literals with UUID/hash/placeholder/base64-JSON denylist emitting `hardcoded-credential-entropy` (high/warning). Test-file paths are skipped. Findings dedupe against the legacy Bash detection so existing users see no double-reporting.
+- **circle-ir upgraded 3.25.0 → 3.27.1** — adds the `scan-secrets` security pass (Pass #90, CWE-798) detecting hardcoded credentials across all 7 supported languages. Two layers: ~16 high-confidence provider patterns (AWS `AKIA…`, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`, OpenAI `sk-…`, Anthropic `sk-ant-…`, Slack `xox[baprs]-…`, Google `AIza…`, JWT, PEM private keys, npm `npm_…`) emitting `hardcoded-credential` (critical/error), and Shannon-entropy scan on base64/hex string literals with UUID/hash/placeholder/base64-JSON denylist emitting `hardcoded-credential-entropy` (high/warning). Test-file paths are skipped. Findings dedupe against the legacy Bash detection so existing users see no double-reporting.
 
 ### Notes
 
 - Disable per project via `cognium.config.json`: `{ "disabledPasses": ["scan-secrets"] }`. Filter the entropy branch only by excluding the `hardcoded-credential-entropy` rule_id in your downstream tooling.
+
+[3.27.1]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.25.0...cognium-dev-v3.27.1
 
 ## [3.25.0] - 2026-06-02
 

@@ -7,23 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.27.1] - 2026-06-04
 
-### Changes
-
-- (no commits since last release)
-
-## [3.27.0] - 2026-06-04
-
-### Changes
-
-- (no commits since last release)
-
-## [3.26.0] - 2026-06-04
-
-### Changes
-
-- feat(circle-ir): scan-secrets pass (#90, CWE-798) — 3.26.0 staging
-
-## [3.26.0] - 2026-06-03
+> Versions 3.26.0 and 3.27.0 were prepared locally but never published to npm; their content shipped as part of 3.27.1.
 
 ### Added
 
@@ -38,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `analyzer.ts` registers `ScanSecretsPass` after `InterproceduralPass`; pass list in the header comment now goes up to #41. Disable per project via `disabledPasses: ['scan-secrets']`.
+
+[3.27.1]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.25.0...circle-ir-v3.27.1
 
 ## [3.25.0] - 2026-06-02
 
