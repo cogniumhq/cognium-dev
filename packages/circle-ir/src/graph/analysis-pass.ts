@@ -38,6 +38,17 @@ export interface PassContext {
    * Findings are collected by the pipeline and returned alongside results.
    */
   addFinding(finding: SastFinding): void;
+
+  /**
+   * Read findings emitted by previously-run passes in this pipeline run.
+   * Used by dedup-aware passes (e.g. ScanSecretsPass) to avoid double-reporting
+   * the same `(file, line, rule_id)` already covered by an earlier pass.
+   *
+   * Optional: only the real pipeline implementation provides this. Test
+   * harnesses that construct a `PassContext` literal may omit it; passes that
+   * read it must treat `undefined` as "no prior findings".
+   */
+  getFindings?(): readonly SastFinding[];
 }
 
 /**
@@ -104,6 +115,9 @@ export class AnalysisPipeline {
       },
       addFinding(finding: SastFinding): void {
         findings.push(finding);
+      },
+      getFindings(): readonly SastFinding[] {
+        return findings;
       },
     };
 

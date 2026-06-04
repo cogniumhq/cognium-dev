@@ -92,6 +92,19 @@ Emits findings for clickjacking (CWE-1021) and CORS misconfiguration
 | 89g | `cors-reflected-origin` | CWE-346 | error | shipped | `Access-Control-Allow-Origin` set to a dynamic (non-literal) value |
 | 89h | `xfo-csp-mismatch` | CWE-1021 | warning | shipped | `X-Frame-Options` and CSP `frame-ancestors` disagree (e.g. XFO=DENY but CSP allows framing) |
 
+### A4. Secret Scanner Pass (category = `security`)
+
+Pass #90 `scan-secrets` detects hardcoded credentials across all 7
+supported languages via two detection layers, with deduplication
+against the legacy Bash `hardcoded-credential` detection in
+`LanguageSourcesPass`. Test-file paths are skipped (`__tests__/`,
+`*.test.*`, `*Test.java`, etc.).
+
+| # | rule_id | CWE | level | status | Description |
+|---|---------|-----|-------|--------|-------------|
+| 90a | `hardcoded-credential` | CWE-798 | error | shipped | Provider-specific regex hits (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT, PEM private key, npm `npm_`) |
+| 90b | `hardcoded-credential-entropy` | CWE-798 | warning | shipped | Shannon-entropy ≥ 4.3 bits/char (base64) or ≥ 3.5 bits/char (hex) on string literals 20–200 chars; UUID/hash/placeholder/base64-JSON denylisted; threshold lowered by 0.2 when surrounding line names a credential variable |
+
 ---
 
 ## B. Reliability Passes (category = `reliability`)

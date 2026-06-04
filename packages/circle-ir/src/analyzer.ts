@@ -45,6 +45,7 @@
  *  38. MissingStreamPass       — whole-file read without streaming (performance)
  *  39. GodClassPass            — class with high WMC/LCOM2/CBO metrics (CWE-1060)
  *  40. NamingConventionPass    — class/method names violate language conventions
+ *  41. ScanSecretsPass         — hardcoded credentials: provider regexes + Shannon entropy (CWE-798)
  *
  * Removed from default pipeline (raw IR signals still available for circle-ir-ai):
  *  – MissingGuardDomPass  — false positives in framework-auth codebases (see pass file)
@@ -126,6 +127,7 @@ import { MissingStreamPass } from './analysis/passes/missing-stream-pass.js';
 import { GodClassPass } from './analysis/passes/god-class-pass.js';
 import { NamingConventionPass, type NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
+import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -402,6 +404,10 @@ export async function analyze(
   pipeline.add(new SinkFilterPass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass());
+
+  // Secret scanner runs after LanguageSourcesPass so the legacy Bash
+  // `hardcoded-credential` findings are already in the dedup buffer.
+  if (!disabledPasses.has('scan-secrets'))          pipeline.add(new ScanSecretsPass());
 
   // Optional passes — can be disabled via disabledPasses
   if (!disabledPasses.has('dead-code'))             pipeline.add(new DeadCodePass());

@@ -60,10 +60,6 @@
   - Rust: Axum extractor refinement, SQLx, Reqwest
   - All YAML-only except dom_input narrowing
 
-- [ ] **Secret scanning** — Implement `scan_secrets` pass
-  - Maps to: cognium-ai MCP `scan_secrets`
-  - CWE: CWE-798 (hardcoded credentials)
-
 - [ ] **Dependency analysis** — CVE matching, SBOM generation
   - Maps to: cognium-ai MCP `analyze_dependencies`
   - Formats: CycloneDX, SPDX
@@ -78,6 +74,7 @@
 
 ## Completed
 
+- [x] **Secret scanning (scan-secrets pass)** — Pass #90 shipped in 3.26.0. Two-layer hardcoded-credential detection across all 7 languages: (1) ~16 provider-specific regex patterns (AWS AKIA, GitHub ghp_/gho_/ghs_/ghu_/ghr_, Stripe sk_live_/pk_live_, OpenAI sk-, Anthropic sk-ant-, Slack xox[baprs]-, Google AIza, JWT, PEM private key, npm_) emitting `rule_id=hardcoded-credential` (CWE-798, severity=critical), (2) Shannon-entropy scan on string literals 20–200 chars (≥4.3 bits/char base64, ≥3.5 bits/char hex) with UUID/hash/placeholder/base64-JSON denylist, emitting `rule_id=hardcoded-credential-entropy` (severity=high, warning). Test-file paths skipped. Findings dedupe against the legacy Bash `findBashPatternFindings` so existing detection is preserved without double-reporting.
 - [x] **Release 3.25.0** — version-bump-only re-publish issued ~40s after 3.24.0 to ensure a clean npm publish window; no source, config, or pass-pipeline changes. CHANGELOG auto-prepend records "(no commits since last release)" for both packages. Substantive changes for this stream are entirely in 3.24.0. (4168550, 2026-06-02)
 - [x] **Release 3.24.0** — TS parser fix for Issue #5: ship real `tree-sitter-typescript.wasm` (v0.23.2), remove both `typescript → javascript` grammar redirects in `core/parser.ts`, add `required_parameter` / `optional_parameter` handling in `extractJSParameters`, populate `ParameterInfo.type` for TS code. 6 new regression tests in `tests/extractors/types-typescript.test.ts`; full suite 1810 passing, 0 failing. `.tsx` / JSX, interface IR enrichment, and generic-type surfacing tracked as separate follow-ups. (20df02f, 2026-06-02)
 - [x] **Release 3.23.5** — source-side fix for Issue #4: `yaml.safe_load` removed from `PythonPlugin.getBuiltinSinks()`; `yaml.unsafe_load` + `yaml.full_load` added as CWE-502 sinks. OWASP BenchmarkPython delta: deser FP 24→7, FPR 14.8%→12.6%, F1 78.6%→80.0%. Closes #4 (source-side) and #6 (direct-to-main review). Residual 91 FPs tracked separately. (7834e19 + 2cd9032, 2026-05-30)

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.26.0] - 2026-06-03
+
+### Added
+
+- **New `scan-secrets` security pass (Pass #90, CWE-798)** — detects hardcoded credentials across all 7 supported languages (Java, JS/TS, Python, Go, Rust, Bash, HTML). Two detection layers:
+  1. **~16 high-confidence provider patterns** — AWS access keys (`AKIA…`), GitHub tokens (`ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_`), Stripe (`sk_live_`, `pk_live_`), OpenAI (`sk-…`), Anthropic (`sk-ant-…`), Slack (`xox[baprs]-…`), Google (`AIza…`), JWTs, PEM private keys, npm tokens (`npm_…`). Emits `rule_id=hardcoded-credential`, severity=`critical`, level=`error` (Stripe publishable downgraded to `high`/`warning` because it's leakage, not a credential).
+  2. **Shannon-entropy scan on string literals** — base64/hex shapes 20–200 chars with thresholds 4.3 / 3.5 bits/char (lowered 0.2 when the assignment target name matches `key|secret|token|password|credential|api`). Denylist suppresses UUID v4, bare MD5/SHA1/SHA256 hashes, base64-encoded JSON, placeholder words (`changeme`, `example`, `your-key-here`, …), all-same-character strings, and lines inside test/example/expect contexts. Emits `rule_id=hardcoded-credential-entropy`, severity=`high`, level=`warning`.
+- **Test-file path skip** — pass early-returns on paths matching `/test/`, `/tests/`, `/__tests__/`, `/spec/`, `/fixtures/`, `/testdata/`, `*.test.ts/js`, `*.spec.ts/js`, `_test.go`, `_test.py`, and Java's `Test*.java` / `*Test.java` conventions, so fixtures and unit tests don't trip the scanner.
+- **Dedup against the legacy Bash `hardcoded-credential` detection** in `LanguageSourcesPass` — keyed on `(file, line, rule_id)` via the new additive `PassContext.getFindings?()` accessor. The pass is registered immediately after `LanguageSourcesPass` so existing Bash findings sit in the buffer when dedup runs; users see no double-reporting.
+- **`PassContext.getFindings?()`** (additive, optional) — read-only view of the running findings buffer for passes that need to dedup against earlier emissions.
+- **39 regression tests** in `tests/analysis/passes/scan-secrets.test.ts` covering provider patterns across languages, an explicit all-7-languages parity matrix (Java, JS, TS, Python, Go, Rust, Bash, HTML) for AWS AKIA, Rust let-binding + raw-string-literal cases, FP guards (test files, env-var refs, comments), entropy positives/negatives (UUID, SHA-256, placeholder, base64-JSON), dedup behavior, and severity mapping.
+
+### Changed
+
+- `analyzer.ts` registers `ScanSecretsPass` after `InterproceduralPass`; pass list in the header comment now goes up to #41. Disable per project via `disabledPasses: ['scan-secrets']`.
+
 ## [3.25.0] - 2026-06-02
 
 ### Changes
