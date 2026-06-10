@@ -36,4 +36,5 @@ export {
   extractExports,
   buildCFG,
   buildDFG,
+  extractRuntimeRegistrations,
 } from './extractors/index.js';

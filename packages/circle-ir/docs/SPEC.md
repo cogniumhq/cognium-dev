@@ -35,6 +35,7 @@
 | Architecture passes (circular-dependency, orphan-module, dependency-fan-out, deep-inheritance, missing-override, unused-interface-method) | ⬜ | ✅ | Done (v3.9.0–3.11.0) |
 | TypeHierarchy resolver (polymorphic sink matching) | ⬜ | ✅ | Done (v3.11.0) |
 | Dominator-tree passes (missing-guard-dom, cleanup-verify) | ⬜ | ✅ | Done (v3.11.0) |
+| Runtime registrations (`runtime_registrations[]`) — Phase 1 JS/TS Express-family | ⬜ | ✅ | Done (v3.32.0) |
 
 ---
 

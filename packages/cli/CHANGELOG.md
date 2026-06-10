@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.32.0] - 2026-06-10
+
+### Changed
+
+- **circle-ir upgraded 3.31.0 → 3.32.0** — adds the `runtime_registrations` IR field (#15, Phase 1). For JS/TS projects, `cognium-dev scan` now records Express-family route registrations (`app.METHOD(path, handler)`), middleware (`app.use`, `router.use`), and event listeners (`server.on`) in the per-file IR. This is plumbing for downstream consumers (e.g. cognium-ai dead-code reachability) that need handler functions treated as virtual entry roots; no new findings are emitted at the CLI layer. Phases 2 (Python decorators) and 3 (Rust trait dispatch) will follow as separate PRs.
+
+[3.32.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.31.0...cognium-dev-v3.32.0
+
 ## [3.31.0] - 2026-06-09
 
 ### Changed

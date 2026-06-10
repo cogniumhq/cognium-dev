@@ -9,3 +9,4 @@ export { extractImports } from './imports.js';
 export { extractExports } from './exports.js';
 export { buildCFG } from './cfg.js';
 export { buildDFG } from './dfg.js';
+export { extractRuntimeRegistrations } from './runtime-registrations.js';

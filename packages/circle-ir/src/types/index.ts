@@ -680,6 +680,39 @@ export interface CircleIR {
   findings?: SastFinding[];
   /** Software metrics computed by metric passes (CK suite, Halstead, etc.). */
   metrics?: FileMetrics;
+  /**
+   * Runtime registration patterns (HTTP routes, middlewares, event listeners)
+   * that establish call-graph edges not visible in the static AST.
+   *
+   * Phase 1 (issue #15) covers JS/TS Express-family route registration.
+   * Consumers (e.g. cognium-ai dead-code) treat `handler` targets as virtual
+   * entry roots when computing reachability.
+   */
+  runtime_registrations?: RuntimeRegistration[];
+}
+
+/**
+ * A runtime registration recording that a handler is wired into a framework
+ * dispatch table at module-load time. See issue #15.
+ */
+export interface RuntimeRegistration {
+  kind: 'http_route' | 'middleware' | 'event_listener';
+  framework?: 'express' | 'fastify' | 'koa' | 'nestjs' | 'unknown';
+  /** The registration call site itself (e.g. `app.get(...)`, `router.use(...)`). */
+  registrar: {
+    method: string;     // 'get' | 'post' | 'use' | 'on' | ...
+    receiver: string;   // 'app' | 'router' | 'server' | ...
+    line: number;
+    column: number;
+  };
+  /** Literal route path or event name when the leading argument is a string literal. */
+  path?: string;
+  /** Resolved handler. `name === null` for inline arrow / function expression. */
+  handler: {
+    name: string | null;
+    line: number;
+    column: number;
+  };
 }
 
 // =============================================================================

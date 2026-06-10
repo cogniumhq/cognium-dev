@@ -65,6 +65,7 @@ import {
   extractExports,
   buildCFG,
   buildDFG,
+  extractRuntimeRegistrations,
   collectAllNodes,
   type SupportedLanguage,
 } from './core/index.js';
@@ -384,6 +385,7 @@ export async function analyze(
   const exports = extractExports(types);
   const cfg     = buildCFG(tree, language);
   const dfg     = buildDFG(tree, nodeCache, language);
+  const runtimeRegistrations = extractRuntimeRegistrations(tree, nodeCache, language, imports);
 
   // Build CodeGraph once — shared across all passes.
   // Taint is empty at construction time; sources/sinks/sanitizers are populated by passes.
@@ -486,6 +488,7 @@ export async function analyze(
     meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
     findings: findings.length > 0 ? findings : undefined,
     metrics: { file: filePath, metrics: metricValues },
+    runtime_registrations: runtimeRegistrations.length > 0 ? runtimeRegistrations : undefined,
   };
   } finally {
     disposeTree(tree);

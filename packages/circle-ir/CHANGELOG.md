@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.32.0] - 2026-06-10
+
+### Added
+
+- **Runtime registration extractor — Phase 1 (#15).** New optional IR field `runtime_registrations: RuntimeRegistration[]` records framework dispatch-table wiring that is invisible to plain call extraction. Phase 1 covers JS/TS Express-family patterns: HTTP routes (`app.METHOD(path?, ...handlers)` for METHOD ∈ `{get, post, put, patch, delete, head, options, all}`), middleware (`app.use`, `router.use`), and event listeners (`server.on`, `emitter.once`, `socket.ws`). Each entry resolves the handler — named identifier → declaration-site location, inline arrow / function expression → `name: null` at the lambda site, member-expression → textual reference — and records `kind`, `framework`, `path`, and the registrar call site. Receiver filtering keeps noise out: only express-shaped receivers (`app`, `router`, `server`, `*Router`, `*App`, `*Server`) match, or any receiver when a framework module (`express`, `fastify`, `koa`, `@nestjs/*`, etc.) is imported. Phases 2 (Python decorators) and 3 (Rust trait dispatch) will follow as separate PRs. Downstream consumers (e.g. cognium-ai dead-code reachability) can now treat handler targets as virtual entry roots, eliminating "unreachable" false positives for framework-registered handlers.
+- **10 regression tests** in `tests/extractors/runtime-registrations.test.ts` cover: named handler resolution, inline-arrow `name=null`, variadic middleware chains (one registration per handler-position arg), `router.use` middleware, `server.on` event listener, negative-control for unrelated receivers, non-JS language returns `[]`, TypeScript with `import express from 'express'`, plain template-string paths, and template-with-substitution path treated as no-path.
+- Total suite size: **1874 passing tests** (1864 baseline + 10 new).
+
+[3.32.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.31.0...circle-ir-v3.32.0
+
 ## [3.31.0] - 2026-06-09
 
 ### Fixed
