@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.30.0] - 2026-06-09
+
+### Changed
+
+- **circle-ir upgraded 3.29.0 → 3.30.0** — adds Apache Shiro path-traversal coverage (#8, CVE-2023-34478 / CVE-2023-46749). `cognium-dev scan` now flags the `WebUtils.getPathWithinApplication(request) → new File(baseDir, path)` shape used in Shiro-fronted applications, and re-taints values that pass through `WebUtils.decodeRequestString` after auth-time path normalization. Per-file findings, cross-file taint paths, and SARIF output all surface the new CWE-22 detections.
+
+[3.30.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.29.0...cognium-dev-v3.30.0
+
 ## [3.29.0] - 2026-06-09
 
 ### Changed

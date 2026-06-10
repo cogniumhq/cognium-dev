@@ -145,6 +145,14 @@ export const ANTI_SANITIZER_METHODS = new Set([
   'unescapeJson',
   'unescapeJava',
 
+  // Apache Shiro WebUtils helpers (CVE-2023-34478, CVE-2023-46749 — issue #8).
+  // These internally call URLDecoder.decode, so a value that passed a
+  // string-level path sanitizer (e.g. Paths.normalize) becomes tainted again
+  // after Shiro re-decodes %2e%2e → "..".
+  'getPathWithinApplication',
+  'getRequestUri',
+  'decodeRequestString',
+
   // General decoders
   'unescape',
   'decompress',
@@ -177,4 +185,12 @@ export const PROPAGATOR_METHODS = new Set([
 
   // Object utilities
   'requireNonNull', // Objects.requireNonNull(obj)
+
+  // Apache Shiro WebUtils — propagate taint from string arg through the wrapper
+  // back into the return value (e.g. `WebUtils.decodeRequestString(req, tainted)`).
+  // Also covered by ANTI_SANITIZER_METHODS for sanitized-arg re-tainting and by
+  // configs/sources/http_sources.yaml for the request-bound overloads. Issue #8.
+  'getPathWithinApplication',
+  'getRequestUri',
+  'decodeRequestString',
 ]);

@@ -65,6 +65,30 @@
       "note": "Extra path information"
     },
     {
+      "method": "getPathWithinApplication",
+      "class": "WebUtils",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Shiro path extractor - internally URL-decodes request URI via decodeRequestString → URLDecoder.decode. Tainted because the decoded form can re-introduce path-traversal sequences (%2e%2e → ..) after auth-time normalization. CVE-2023-34478, CVE-2023-46749 (#8)."
+    },
+    {
+      "method": "getRequestUri",
+      "class": "WebUtils",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Shiro URL-decoded request URI helper. Lowercase 'Uri' differentiates from HttpServletRequest.getRequestURI."
+    },
+    {
+      "method": "decodeRequestString",
+      "class": "WebUtils",
+      "type": "http_path",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Shiro URLDecoder wrapper - explicit single-pass decode of an attacker-controlled string."
+    },
+    {
       "method": "getCookies",
       "class": "HttpServletRequest",
       "type": "http_cookie",

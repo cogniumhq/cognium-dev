@@ -106,6 +106,13 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getContextPath', class: 'HttpServletRequest', type: 'http_path', severity: 'medium', return_tainted: true },
   { method: 'getRemoteHost', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
   { method: 'getRemoteAddr', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
+  // Apache Shiro WebUtils helpers — return URL-decoded request data. The internal
+  // decodeRequestString → URLDecoder.decode chain can re-introduce ../ from
+  // %2e%2e payloads that bypassed auth-time normalization. CVE-2023-34478,
+  // CVE-2023-46749 (issue #8).
+  { method: 'getPathWithinApplication', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
+  { method: 'getRequestUri', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
+  { method: 'decodeRequestString', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
   // Additional HTTP request methods that can be attacker-controlled
   { method: 'getProtocol', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
   { method: 'getScheme', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },

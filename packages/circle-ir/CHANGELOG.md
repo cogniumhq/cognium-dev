@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.30.0] - 2026-06-09
+
+### Fixed
+
+- **Apache Shiro path-traversal via URI re-decoding (#8, CVE-2023-34478 / CVE-2023-46749).** Shiro's `WebUtils.getPathWithinApplication(request)`, `WebUtils.getRequestUri(request)`, and `WebUtils.decodeRequestString(request, str)` helpers internally call `URLDecoder.decode`, so a value that passed an auth-time normalization filter (e.g. `Paths.normalize`) becomes path-traversal-tainted again after Shiro re-decodes `%2e%2e` → `..`. The taint analyzer previously did not know about these helpers, so the standard `new File(baseDir, pathFromShiro)` shape used in real-world bypasses was missed. Three-part fix in `src/analysis/constant-propagation/patterns.ts` and `src/analysis/config-loader.ts`:
+  1. **Shiro WebUtils HTTP source registration.** `getPathWithinApplication`, `getRequestUri`, and `decodeRequestString` are now first-class `http_path`/`high` taint sources in `DEFAULT_SOURCES` (and mirrored in `configs/sources/http_sources.yaml` for downstream consumers).
+  2. **Anti-sanitizer entries.** The same three methods are added to `ANTI_SANITIZER_METHODS` so a previously-sanitized string (`Paths.normalize(...)`) passed back through Shiro re-taints the return value.
+  3. **Propagator entries.** Added to `PROPAGATOR_METHODS` so taint flows from string args back to return values for the explicit-arg overloads (`WebUtils.decodeRequestString(req, tainted)`).
+
+### Added
+
+- **Regression suite for #8** — `tests/analysis/taint.test.ts` gains three cases under `describe('Shiro URI normalization bypass (issue #8, CVE-2023-34478/46749)')`:
+  - `WebUtils.getPathWithinApplication(request) → new File(baseDir, path)` must fire as `path_traversal` (CVE-2023-34478/46749 shape).
+  - `Paths.get(raw).normalize() → WebUtils.decodeRequestString(req, normalized) → new File(decoded)` must fire (anti-sanitizer re-taint).
+  - Positive control: `WebUtils.getPathWithinApplication` must be recognized as `type: 'http_path'`, `severity: 'high'`.
+- Total suite size: **1860 passing tests** (1857 baseline + 3 new).
+
+[3.30.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.29.0...circle-ir-v3.30.0
+
 ## [3.29.0] - 2026-06-09
 
 ### Fixed

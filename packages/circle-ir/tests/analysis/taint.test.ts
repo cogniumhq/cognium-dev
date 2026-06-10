@@ -526,3 +526,86 @@ public class Service {
     expect(cmdi).toBeDefined();
   });
 });
+
+describe('Shiro URI normalization bypass (issue #8, CVE-2023-34478/46749)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('should detect WebUtils.getPathWithinApplication → new File path traversal', async () => {
+    // CVE-2023-34478 / CVE-2023-46749 shape: Shiro's WebUtils internally URL-decodes
+    // the request URI, so the returned string can contain ../ that bypassed any
+    // upstream auth-time normalization. Feeding it into a File sink must fire.
+    const code = `
+import org.apache.shiro.web.util.WebUtils;
+import javax.servlet.http.HttpServletRequest;
+import java.io.File;
+
+public class ShiroSink {
+    public File resolve(HttpServletRequest request, String baseDir) {
+        String path = WebUtils.getPathWithinApplication(request);
+        return new File(baseDir, path);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    expect(taint.sources.find(s => s.location.includes('getPathWithinApplication'))).toBeDefined();
+    expect(taint.sinks.find(s => s.type === 'path_traversal')).toBeDefined();
+  });
+
+  it('should re-taint a sanitized path passed through WebUtils.decodeRequestString', async () => {
+    // Even if upstream code normalized the path string, Shiro's decodeRequestString
+    // wraps URLDecoder.decode and re-introduces ../ from %2e%2e — sanitization is
+    // invalidated, so the downstream File sink must still fire.
+    const code = `
+import org.apache.shiro.web.util.WebUtils;
+import javax.servlet.http.HttpServletRequest;
+import java.io.File;
+import java.nio.file.Paths;
+
+public class ShiroDecodeSink {
+    public File resolve(HttpServletRequest request) {
+        String raw = request.getRequestURI();
+        String normalized = Paths.get(raw).normalize().toString();
+        String decoded = WebUtils.decodeRequestString(request, normalized);
+        return new File(decoded);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    expect(taint.sinks.find(s => s.type === 'path_traversal')).toBeDefined();
+  });
+
+  it('should recognise WebUtils.getPathWithinApplication as a Shiro http_path source', async () => {
+    // Positive control: confirm the Shiro source pattern is wired through the
+    // matcher with the expected severity/type. Pinning this guards against
+    // accidentally narrowing or dropping the pattern in future config edits.
+    const code = `
+import org.apache.shiro.web.util.WebUtils;
+import javax.servlet.http.HttpServletRequest;
+
+public class ShiroSourceProbe {
+    public String probe(HttpServletRequest request) {
+        return WebUtils.getPathWithinApplication(request);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const src = taint.sources.find(s => s.location.includes('getPathWithinApplication'));
+    expect(src).toBeDefined();
+    expect(src?.type).toBe('http_path');
+    expect(src?.severity).toBe('high');
+  });
+});
