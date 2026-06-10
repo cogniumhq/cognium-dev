@@ -1,5 +1,5 @@
 /**
- * Tests for the runtime-registrations extractor (issue #15, Phases 1 + 2).
+ * Tests for the runtime-registrations extractor (issue #15, Phases 1, 2, 3).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -410,5 +410,252 @@ def plain():
     const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
 
     expect(regs).toHaveLength(0);
+  });
+});
+
+describe('Runtime-Registrations Extractor — Phase 3 (Rust trait dispatch)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('emits trait_impl for each method in an `impl Trait for Type` block', async () => {
+    const code = `
+trait Handler {
+    fn handle(&self) -> String;
+    fn name(&self) -> &str;
+}
+
+struct PingHandler;
+
+impl Handler for PingHandler {
+    fn handle(&self) -> String { String::from("pong") }
+    fn name(&self) -> &str { "ping" }
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(2);
+    const names = regs.map(r => r.handler.name).sort();
+    expect(names).toEqual(['handle', 'name']);
+    for (const r of regs) {
+      expect(r.kind).toBe('trait_impl');
+      expect(r.framework).toBe('unknown');
+      expect(r.registrar.receiver).toBe('PingHandler');
+      expect(r.path).toBe('Handler');
+    }
+  });
+
+  it('skips inherent impls (no trait field)', async () => {
+    const code = `
+struct Foo;
+
+impl Foo {
+    fn new() -> Self { Foo }
+    fn run(&self) {}
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(0);
+  });
+
+  it('tags stdlib traits by last-segment match', async () => {
+    const code = `
+use std::fmt::{self, Display, Debug};
+
+struct Foo;
+
+impl Display for Foo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "foo") }
+}
+
+impl Debug for Foo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "Foo") }
+}
+
+impl Iterator for Foo {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> { None }
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(3);
+    for (const r of regs) {
+      expect(r.framework).toBe('stdlib');
+    }
+    const paths = regs.map(r => r.path).sort();
+    expect(paths).toEqual(['Debug', 'Display', 'Iterator']);
+  });
+
+  it('tags scoped stdlib trait paths (`std::fmt::Display`) as stdlib', async () => {
+    const code = `
+struct Bar;
+
+impl std::fmt::Display for Bar {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "bar") }
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].framework).toBe('stdlib');
+    // We keep the *last* segment as `path` for convenience.
+    expect(regs[0].path).toBe('Display');
+  });
+
+  it('tags actix_web::FromRequest as actix framework', async () => {
+    const code = `
+struct MyExtractor;
+
+impl actix_web::FromRequest for MyExtractor {
+    type Error = actix_web::Error;
+    type Future = futures::future::Ready<Result<Self, Self::Error>>;
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        futures::future::ready(Ok(MyExtractor))
+    }
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].framework).toBe('actix');
+    expect(regs[0].registrar.method).toBe('from_request');
+    expect(regs[0].registrar.receiver).toBe('MyExtractor');
+    expect(regs[0].path).toBe('FromRequest');
+    expect(regs[0].handler.name).toBe('from_request');
+  });
+
+  it('tags serde::Serialize as serde framework', async () => {
+    const code = `
+struct Payload;
+
+impl serde::Serialize for Payload {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        s.serialize_str("payload")
+    }
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].framework).toBe('serde');
+    expect(regs[0].handler.name).toBe('serialize');
+  });
+
+  it('emits trait_impl for `inventory::submit! { Type::new(...) }`', async () => {
+    const code = `
+inventory::submit! {
+    Plugin::new("ping")
+}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    const r = regs[0];
+    expect(r.kind).toBe('trait_impl');
+    expect(r.framework).toBe('inventory');
+    expect(r.registrar.method).toBe('submit');
+    expect(r.registrar.receiver).toBe('inventory');
+    expect(r.path).toBe('inventory::submit');
+    // First identifier in the token tree
+    expect(r.handler.name).toBe('Plugin');
+  });
+
+  it('emits trait_impl for `#[linkme::distributed_slice]` on a static item', async () => {
+    const code = `
+#[linkme::distributed_slice(REGISTRY)]
+static REG_FOO: fn() -> u32 = foo_handler;
+
+fn foo_handler() -> u32 { 42 }
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    const r = regs[0];
+    expect(r.kind).toBe('trait_impl');
+    expect(r.framework).toBe('linkme');
+    expect(r.registrar.method).toBe('distributed_slice');
+    expect(r.registrar.receiver).toBe('linkme');
+    expect(r.path).toBe('linkme::distributed_slice');
+    expect(r.handler.name).toBe('REG_FOO');
+  });
+
+  it('accepts bare `#[distributed_slice]` (after `use linkme::distributed_slice;`)', async () => {
+    const code = `
+use linkme::distributed_slice;
+
+#[distributed_slice(REGISTRY)]
+fn foo_handler() -> u32 { 42 }
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].framework).toBe('linkme');
+    expect(regs[0].handler.name).toBe('foo_handler');
+  });
+
+  it('ignores unrelated attributes and macros', async () => {
+    const code = `
+#[derive(Debug, Clone)]
+struct Foo;
+
+#[cfg(test)]
+fn test_thing() {}
+
+println!("hi");
+vec![1, 2, 3];
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    expect(regs).toHaveLength(0);
+  });
+
+  it('handles a mixed file with traits + macros + linkme together', async () => {
+    const code = `
+trait Plugin {
+    fn name(&self) -> &str;
+}
+
+struct PingPlugin;
+
+impl Plugin for PingPlugin {
+    fn name(&self) -> &str { "ping" }
+}
+
+impl PingPlugin {
+    fn new() -> Self { PingPlugin }
+}
+
+inventory::submit! {
+    PingPlugin::new()
+}
+
+#[linkme::distributed_slice(PLUGINS)]
+static REG: fn() = init_ping;
+
+fn init_ping() {}
+`;
+    const tree = await parse(code, 'rust');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'rust', []);
+
+    // 1 trait_impl method + 1 inventory + 1 linkme = 3 (inherent impl skipped)
+    expect(regs).toHaveLength(3);
+    const kinds = regs.map(r => `${r.framework}:${r.handler.name}`).sort();
+    expect(kinds).toEqual([
+      'inventory:PingPlugin',
+      'linkme:REG',
+      'unknown:name',
+    ]);
   });
 });

@@ -302,6 +302,7 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'call_expression', 'macro_invocation', 'function_item', 'struct_item',
         'impl_item', 'enum_item', 'trait_item', 'mod_item', 'use_declaration',
         'let_declaration', 'field_expression', 'scoped_identifier',
+        'attribute_item', 'static_item',
       ]);
     case 'python':
       return new Set([

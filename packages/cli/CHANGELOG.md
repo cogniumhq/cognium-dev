@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.34.0] - 2026-06-10
+
+### Changed
+
+- **circle-ir upgraded 3.33.0 → 3.34.0** — extends the `runtime_registrations` IR field with Rust trait-dispatch support (#15, Phase 3). For Rust projects, `cognium-dev scan` now records `impl Trait for Type` blocks (one `kind: 'trait_impl'` entry per method, classified as `stdlib` / `actix` / `axum` / `rocket` / `tokio` / `serde` / `unknown` based on the trait path), `inventory::submit! { … }` collector entries (`framework: 'inventory'`), and `#[linkme::distributed_slice(REGISTRY)]` / `#[distributed_slice(REGISTRY)]` attributes (`framework: 'linkme'`). Plumbing only; no new CLI findings. Phase 3 closes the runtime-registration roadmap from #15.
+
+[3.34.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.33.0...cognium-dev-v3.34.0
+
 ## [3.33.0] - 2026-06-10
 
 ### Changed

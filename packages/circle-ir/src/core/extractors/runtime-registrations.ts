@@ -1,5 +1,5 @@
 /**
- * Runtime-registration extractor (issue #15 — Phases 1 + 2).
+ * Runtime-registration extractor (issue #15 — Phases 1, 2, 3).
  *
  * Recognises framework registration patterns where a handler is wired into a
  * dispatch table at module-load time. Static call extraction sees the
@@ -23,10 +23,21 @@
  *     `kind: 'http_route'` so downstream consumers can treat JS routes and
  *     Python routes uniformly.
  *
- * Out of scope (Phase 3):
- *   - Rust trait dispatch (`impl Trait for Type`, `Box<dyn Trait>`,
- *     `inventory::submit!`, `linkme::distributed_slice`).
+ * Phase 3 — Rust trait dispatch (3.34.0):
+ *   - `impl Trait for Type { fn method(...) }` emits one `trait_impl`
+ *     registration per method, recording the Self type as `receiver`, the
+ *     trait path as `path`, and the method as both `registrar.method` and
+ *     `handler.name`. Stdlib traits (Display, Debug, Iterator, …) are tagged
+ *     `framework: 'stdlib'`; known web/async/serde frameworks (actix, axum,
+ *     rocket, tokio, serde) are tagged accordingly.
+ *   - `inventory::submit! { … }` and `#[linkme::distributed_slice]` emit
+ *     `trait_impl` registrations with framework `'inventory'` / `'linkme'`.
+ *
+ * Out of scope:
  *   - Subapp mounting (`app.use('/api', subApp)`) handler resolution.
+ *   - Cross-file trait → impl resolution scoped by `Cargo.toml` reachability
+ *     (file-local impls only at extraction time; project-level resolution is
+ *     deferred to a later cross-file pass).
  */
 
 import type { Node, Tree } from 'web-tree-sitter';
@@ -63,7 +74,8 @@ const FRAMEWORK_MODULE_PATTERNS = [
  * Extract runtime-registration patterns from a parsed file.
  *
  * Phase 1 covers JavaScript/TypeScript. Phase 2 adds Python decorators.
- * Returns `[]` for any other language.
+ * Phase 3 adds Rust trait dispatch (`impl Trait for Type`, `inventory::submit!`,
+ * `#[linkme::distributed_slice]`). Returns `[]` for any other language.
  */
 export function extractRuntimeRegistrations(
   tree: Tree,
@@ -76,6 +88,9 @@ export function extractRuntimeRegistrations(
   }
   if (language === 'python') {
     return extractPythonRuntimeRegistrations(tree, cache, imports);
+  }
+  if (language === 'rust') {
+    return extractRustRuntimeRegistrations(tree, cache);
   }
   return [];
 }
@@ -629,4 +644,284 @@ function isPyRouterReceiver(receiver: string): boolean {
   // Suffix conventions: my_router, user_bp, etc.
   if (/_(router|bp|blueprint|app|api)$/.test(head)) return true;
   return false;
+}
+
+// =============================================================================
+// Phase 3 — Rust trait dispatch
+// =============================================================================
+
+/**
+ * Standard-library traits whose `impl` blocks are tagged `framework: 'stdlib'`.
+ * Match is by last segment of the trait path, so both `Display` and
+ * `std::fmt::Display` classify the same way.
+ */
+const RUST_STDLIB_TRAITS = new Set([
+  // Formatting
+  'Display', 'Debug', 'Write',
+  // Conversion
+  'From', 'Into', 'TryFrom', 'TryInto', 'AsRef', 'AsMut', 'ToString', 'FromStr',
+  // Iteration
+  'Iterator', 'IntoIterator', 'FromIterator', 'DoubleEndedIterator',
+  'ExactSizeIterator', 'FusedIterator',
+  // Comparison + hashing
+  'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Hash',
+  // Markers + defaults
+  'Default', 'Copy', 'Clone', 'Send', 'Sync', 'Unpin', 'Sized', 'Any',
+  // Resource management
+  'Drop',
+  // Async
+  'Future', 'IntoFuture',
+  // Operators
+  'Add', 'Sub', 'Mul', 'Div', 'Rem', 'Neg', 'Not',
+  'AddAssign', 'SubAssign', 'MulAssign', 'DivAssign', 'RemAssign',
+  'BitAnd', 'BitOr', 'BitXor', 'Shl', 'Shr',
+  'Deref', 'DerefMut', 'Index', 'IndexMut',
+  // Closures
+  'Fn', 'FnMut', 'FnOnce',
+  // Error + I/O
+  'Error', 'Read', 'Write', 'Seek', 'BufRead',
+  // Misc
+  'Borrow', 'BorrowMut', 'ToOwned',
+]);
+
+/**
+ * Trait-path module prefixes → framework tag. Matched against the leading
+ * segments of `impl PathSegment::… for Type`. Longer prefixes win.
+ */
+const RUST_TRAIT_FRAMEWORK_PREFIXES: Array<{
+  prefix: RegExp;
+  framework: NonNullable<RuntimeRegistration['framework']>;
+}> = [
+  { prefix: /^actix(_web)?(::|$)/, framework: 'actix' },
+  { prefix: /^axum(::|$)/,         framework: 'axum'  },
+  { prefix: /^rocket(::|$)/,       framework: 'rocket' },
+  { prefix: /^tokio(::|$)/,        framework: 'tokio' },
+  { prefix: /^serde(_\w+)?(::|$)/, framework: 'serde' },
+  { prefix: /^std(::|$)/,          framework: 'stdlib' },
+  { prefix: /^core(::|$)/,         framework: 'stdlib' },
+  { prefix: /^alloc(::|$)/,        framework: 'stdlib' },
+];
+
+/**
+ * Walk a Rust parse tree and emit one `RuntimeRegistration` per:
+ *   - `impl Trait for Type` method (Self-type as receiver, trait as `path`)
+ *   - `inventory::submit!` macro invocation
+ *   - `#[…distributed_slice(…)]` attribute on a static/function item
+ */
+function extractRustRuntimeRegistrations(
+  tree: Tree,
+  cache: NodeCache | undefined,
+): RuntimeRegistration[] {
+  const regs: RuntimeRegistration[] = [];
+
+  const implNodes = getNodesFromCache(tree.rootNode, 'impl_item', cache);
+  for (const impl of implNodes) {
+    collectRustImplRegistrations(impl, regs);
+  }
+
+  const macroNodes = getNodesFromCache(tree.rootNode, 'macro_invocation', cache);
+  for (const macro of macroNodes) {
+    const rec = parseInventorySubmit(macro);
+    if (rec) regs.push(rec);
+  }
+
+  // Distributed-slice attributes — attribute_item is a top-level sibling of the
+  // decorated static/function. Walk attribute_item nodes and look ahead.
+  const attrNodes = getNodesFromCache(tree.rootNode, 'attribute_item', cache);
+  for (const attr of attrNodes) {
+    const rec = parseDistributedSliceAttribute(attr);
+    if (rec) regs.push(rec);
+  }
+
+  return regs;
+}
+
+/** Emit one trait_impl registration per method in an `impl Trait for Type` block. */
+function collectRustImplRegistrations(impl: Node, regs: RuntimeRegistration[]): void {
+  const traitNode = impl.childForFieldName('trait');
+  if (!traitNode) return; // inherent impl: skip
+  const typeNode = impl.childForFieldName('type');
+  if (!typeNode) return;
+
+  const traitText = getNodeText(traitNode).trim();
+  const traitLastSegment = lastRustPathSegment(stripRustGenerics(traitText));
+  const selfType = getNodeText(typeNode).trim();
+  const framework = classifyRustTrait(traitText);
+
+  const body = impl.childForFieldName('body');
+  if (!body) return;
+
+  for (let i = 0; i < body.childCount; i++) {
+    const child = body.child(i);
+    if (!child || child.type !== 'function_item') continue;
+    const nameNode = child.childForFieldName('name');
+    if (!nameNode) continue;
+    const methodName = getNodeText(nameNode);
+
+    regs.push({
+      kind: 'trait_impl',
+      framework,
+      registrar: {
+        method: methodName,
+        receiver: selfType,
+        line: impl.startPosition.row + 1,
+        column: impl.startPosition.column,
+      },
+      path: traitLastSegment || traitText,
+      handler: {
+        name: methodName,
+        line: child.startPosition.row + 1,
+        column: child.startPosition.column,
+      },
+    });
+  }
+}
+
+/** Strip turbofish/generic arguments from a Rust trait path. */
+function stripRustGenerics(text: string): string {
+  // Drop everything starting at the first `<` so `Display<T>` → `Display`,
+  // `std::fmt::Display<'a>` → `std::fmt::Display`.
+  const idx = text.indexOf('<');
+  return idx >= 0 ? text.slice(0, idx) : text;
+}
+
+/** Last `::`-delimited segment of a Rust path. */
+function lastRustPathSegment(path: string): string {
+  const parts = path.split('::');
+  return parts[parts.length - 1] || path;
+}
+
+/** Classify a Rust trait path to a framework tag. */
+function classifyRustTrait(traitText: string): NonNullable<RuntimeRegistration['framework']> {
+  const stripped = stripRustGenerics(traitText).trim();
+  const last = lastRustPathSegment(stripped);
+
+  // Stdlib by last-segment match (covers bare `Display` import).
+  if (RUST_STDLIB_TRAITS.has(last)) return 'stdlib';
+
+  // Framework by leading module prefix.
+  for (const { prefix, framework } of RUST_TRAIT_FRAMEWORK_PREFIXES) {
+    if (prefix.test(stripped)) return framework;
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Recognise `inventory::submit! { Type::new(…) }` (or variations) and emit a
+ * registration with framework `'inventory'`. The handler name is the first
+ * identifier inside the token tree.
+ */
+function parseInventorySubmit(macro: Node): RuntimeRegistration | null {
+  const macroName = macro.childForFieldName('macro');
+  if (!macroName) return null;
+  const name = getNodeText(macroName).trim();
+  if (name !== 'inventory::submit' && name !== 'submit') return null;
+  // Belt-and-braces: require an `inventory::` prefix unless the scoped form matches.
+  if (name === 'submit') return null;
+
+  // Find the token_tree (the macro body).
+  let tokenTree: Node | null = null;
+  for (let i = 0; i < macro.childCount; i++) {
+    const c = macro.child(i);
+    if (c && c.type === 'token_tree') { tokenTree = c; break; }
+  }
+  if (!tokenTree) return null;
+
+  const handlerName = firstIdentifierInTokenTree(tokenTree);
+
+  return {
+    kind: 'trait_impl',
+    framework: 'inventory',
+    registrar: {
+      method: 'submit',
+      receiver: 'inventory',
+      line: macro.startPosition.row + 1,
+      column: macro.startPosition.column,
+    },
+    path: 'inventory::submit',
+    handler: {
+      name: handlerName,
+      line: tokenTree.startPosition.row + 1,
+      column: tokenTree.startPosition.column,
+    },
+  };
+}
+
+/** Walk a token_tree and return the first non-punctuation identifier text. */
+function firstIdentifierInTokenTree(tokenTree: Node): string | null {
+  for (let i = 0; i < tokenTree.childCount; i++) {
+    const c = tokenTree.child(i);
+    if (!c) continue;
+    if (c.type === 'identifier' || c.type === 'scoped_identifier' || c.type === 'type_identifier') {
+      return getNodeText(c).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Recognise `#[linkme::distributed_slice(…)]` (or `#[distributed_slice(…)]`)
+ * and emit a registration whose handler is the next sibling static/function.
+ */
+function parseDistributedSliceAttribute(attrItem: Node): RuntimeRegistration | null {
+  // Find the inner `attribute` node carrying the path.
+  let attr: Node | null = null;
+  for (let i = 0; i < attrItem.childCount; i++) {
+    const c = attrItem.child(i);
+    if (c && c.type === 'attribute') { attr = c; break; }
+  }
+  if (!attr) return null;
+
+  const pathNode = attr.child(0);
+  if (!pathNode) return null;
+  const pathText = getNodeText(pathNode).trim();
+  // Accept either fully-qualified `linkme::distributed_slice` or bare
+  // `distributed_slice` (common with `use linkme::distributed_slice;`).
+  if (pathText !== 'linkme::distributed_slice' && pathText !== 'distributed_slice') return null;
+
+  // Walk forward through following siblings of attrItem (under the same parent)
+  // to find the decorated static_item or function_item.
+  // web-tree-sitter returns fresh Node wrappers from `child(i)`, so compare by
+  // node `.id` rather than reference identity.
+  const parent = attrItem.parent;
+  if (!parent) return null;
+  let attrIndex = -1;
+  for (let i = 0; i < parent.childCount; i++) {
+    const c = parent.child(i);
+    if (c && c.id === attrItem.id) { attrIndex = i; break; }
+  }
+  if (attrIndex < 0) return null;
+
+  let handlerNode: Node | null = null;
+  for (let j = attrIndex + 1; j < parent.childCount; j++) {
+    const sib = parent.child(j);
+    if (!sib) continue;
+    if (sib.type === 'attribute_item') continue; // chained attributes
+    if (sib.type === 'static_item' || sib.type === 'function_item') {
+      handlerNode = sib;
+    }
+    break;
+  }
+  if (!handlerNode) return null;
+
+  const nameNode = handlerNode.childForFieldName('name');
+  const handlerName = nameNode ? getNodeText(nameNode).trim() : null;
+
+  return {
+    kind: 'trait_impl',
+    framework: 'linkme',
+    registrar: {
+      method: 'distributed_slice',
+      receiver: 'linkme',
+      line: attrItem.startPosition.row + 1,
+      column: attrItem.startPosition.column,
+    },
+    path: 'linkme::distributed_slice',
+    handler: {
+      name: handlerName,
+      line: handlerNode.startPosition.row + 1,
+      column: handlerNode.startPosition.column,
+    },
+  };
 }

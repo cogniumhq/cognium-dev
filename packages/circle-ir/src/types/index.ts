@@ -684,7 +684,10 @@ export interface CircleIR {
    * Runtime registration patterns (HTTP routes, middlewares, event listeners)
    * that establish call-graph edges not visible in the static AST.
    *
-   * Phase 1 (issue #15) covers JS/TS Express-family route registration.
+   * Phase 1 (issue #15): JS/TS Express-family route registration.
+   * Phase 2: Python decorators (Flask/FastAPI routes, pytest fixtures, …).
+   * Phase 3: Rust trait dispatch (`impl Trait for Type`, `inventory::submit!`,
+   *          `#[linkme::distributed_slice]`).
    * Consumers (e.g. cognium-ai dead-code) treat `handler` targets as virtual
    * entry roots when computing reachability.
    */
@@ -696,10 +699,11 @@ export interface CircleIR {
  * dispatch table at module-load time. See issue #15.
  */
 export interface RuntimeRegistration {
-  kind: 'http_route' | 'middleware' | 'event_listener' | 'decorator';
+  kind: 'http_route' | 'middleware' | 'event_listener' | 'decorator' | 'trait_impl';
   framework?:
     | 'express' | 'fastify' | 'koa' | 'nestjs'
     | 'flask' | 'fastapi' | 'django' | 'click' | 'pytest' | 'celery' | 'numba'
+    | 'actix' | 'axum' | 'rocket' | 'tokio' | 'serde' | 'inventory' | 'linkme'
     | 'stdlib' | 'unknown';
   /**
    * The registration call site itself.
@@ -708,14 +712,22 @@ export interface RuntimeRegistration {
    *  - Python Phase 2: a `@receiver.method` decorator — receiver is everything
    *    before the last dotted segment (empty string for bare `@name`),
    *    method is the last segment.
+   *  - Rust Phase 3: an `impl Trait for Type` block — receiver is the Self type
+   *    (e.g. `'PingHandler'`), method is the trait method name (e.g. `'handle'`).
+   *    For `inventory::submit!` / `#[linkme::distributed_slice]`, receiver is
+   *    the collector module (`'inventory'` / `'linkme'`) and method is the
+   *    registration verb (`'submit'` / `'distributed_slice'`).
    */
   registrar: {
-    method: string;     // 'get' | 'post' | 'use' | 'on' | 'route' | 'fixture' | ...
-    receiver: string;   // 'app' | 'router' | 'pytest' | 'click' | '' (bare decorator)
+    method: string;     // 'get' | 'post' | 'use' | 'on' | 'route' | 'fixture' | 'handle' | 'submit' | ...
+    receiver: string;   // 'app' | 'router' | 'pytest' | 'PingHandler' | 'inventory' | '' (bare)
     line: number;
     column: number;
   };
-  /** Literal route path or event name when the leading argument is a string literal. */
+  /**
+   * Literal route path, event name, or — for `trait_impl` — the trait path
+   * (e.g. `'Handler'`, `'std::fmt::Display'`).
+   */
   path?: string;
   /** Resolved handler. `name === null` for inline arrow / function expression. */
   handler: {

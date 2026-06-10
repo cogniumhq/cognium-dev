@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.34.0] - 2026-06-10
+
+### Added
+
+- **Runtime registration extractor — Phase 3: Rust trait dispatch (#15).** `ir.runtime_registrations` now records Rust dispatch-table wiring that is invisible to plain call extraction. The same `RuntimeRegistration` shape used for JS/TS Phase 1 and Python Phase 2 is reused; a new `kind: 'trait_impl'` value covers both real trait impls and inventory/linkme collector entries.
+  - **`impl Trait for Type` blocks** emit one `trait_impl` registration per method in the body. `registrar.method` and `handler.name` are the method name, `registrar.receiver` is the Self type text, and `path` is the last segment of the trait path. Inherent impls (`impl Type { … }`, no `trait` field) are skipped.
+  - **Trait classification cascade:**
+    1. Last-segment match against the stdlib trait set (`Display`, `Debug`, `Drop`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `Default`, `From`, `Into`, `TryFrom`, `TryInto`, `AsRef`, `AsMut`, `Borrow`, `BorrowMut`, `Deref`, `DerefMut`, `Iterator`, `IntoIterator`, `FromIterator`, `Future`, `Send`, `Sync`, `Sized`, `Unpin`, `Error`, `FromStr`, `ToString`) → `framework: 'stdlib'`. Covers both bare (`Display`) and fully scoped (`std::fmt::Display`) names.
+    2. Prefix regex against the full trait path: `actix_web::*` / `actix::*` → `actix`, `axum::*` → `axum`, `rocket::*` → `rocket`, `tokio::*` → `tokio`, `serde::*` → `serde`, `std::*` / `core::*` / `alloc::*` → `stdlib`.
+    3. Fallthrough → `framework: 'unknown'`.
+  - **`inventory::submit! { Plugin::new("ping") }` macros** are emitted as `kind: 'trait_impl'`, `framework: 'inventory'`, `registrar.method: 'inventory::submit'`, `handler.name` = the first identifier in the macro token tree.
+  - **`#[linkme::distributed_slice(REGISTRY)]` / `#[distributed_slice(REGISTRY)]` attributes** walk parent siblings to find the next decorated `static_item` or `function_item`, emitting `kind: 'trait_impl'`, `framework: 'linkme'`, `registrar.method: 'linkme::distributed_slice'`, `handler.name` = the static/function name.
+  - The Rust node cache is extended with `attribute_item` and `static_item` so the new attribute walker stays O(N).
+- **11 Rust regression tests** in `tests/extractors/runtime-registrations.test.ts` cover: per-method emission for `impl Handler for PingHandler`, inherent-impl skipping, stdlib traits (`Display`, `Debug`, `Iterator`) classified by last-segment match, scoped `std::fmt::Display` resolving to stdlib, `actix_web::FromRequest` → `actix`, `serde::Serialize` → `serde`, `inventory::submit!` handler extraction, `#[linkme::distributed_slice]` on `static`, bare `#[distributed_slice]` on `fn` (after `use linkme::distributed_slice;`), unrelated attributes/macros (`#[derive]`, `#[cfg(test)]`, `println!`, `vec!`) emitting nothing, and a mixed-file integration case combining trait impls + inventory + linkme.
+- Total suite size: **1895 passing tests** (1884 baseline + 11 new).
+
+### Notes
+
+- Phase 3 completes the runtime-registration roadmap from issue #15 (JS/TS Express → Python decorators → Rust trait dispatch). Downstream consumers (e.g. cognium-ai dead-code reachability) can now treat any `kind === 'trait_impl'` handler as a virtual entry root, eliminating "unreachable" false positives for Rust trait-dispatch handlers and inventory/linkme registry entries.
+
+[3.34.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.33.0...circle-ir-v3.34.0
+
 ## [3.33.0] - 2026-06-10
 
 ### Added
