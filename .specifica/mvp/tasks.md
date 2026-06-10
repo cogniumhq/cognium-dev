@@ -34,10 +34,12 @@
 
 ## Open — Medium Priority
 
-- [ ] **Cross-instance field-binding propagation** (Jenkins / general engine gap)
+- [ ] **Cross-instance field-binding propagation** (Jenkins / general engine gap, Issue #1)
   - `this.field = param` in one method → `other.field` read in another method on an aliased instance
-  - Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` path end-to-end
+  - Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` path end-to-end (CVE-2022-25175)
   - Engine-level (DFG cross-instance reasoning), not a YAML/config change
+  - Audited 2026-06-10: ~420 LOC across `dfg.ts` + `taint-propagation.ts` + `cross-file.ts` + new `field-binding-resolver.ts`. Honest difficulty 7/10. Moderate-to-high regression risk on OWASP 100/100/97.7% TPR benchmarks
+  - **Deferred to cognium-ai triage** — if LLM-discovery already covers this CVE, close circle-ir-side as won't-fix; if not, prioritize with explicit benchmark-gate plan. Issue #1 left open pending their call
 
 - [ ] **TSX / JSX parsing** (follow-up to 3.24.0)
   - 3.24.0 ships pure-TS only via `tree-sitter-typescript.wasm`. `.tsx` files still hit the JS grammar path (the broken pre-3.24.0 behavior for inline-object-type params) — and JSX additionally produces ERROR nodes the JS grammar cannot recover from
@@ -74,7 +76,14 @@
 
 ## Completed
 
-- [x] **Secret scanning (scan-secrets pass)** — Pass #90 shipped in 3.26.0. Two-layer hardcoded-credential detection across all 7 languages: (1) ~16 provider-specific regex patterns (AWS AKIA, GitHub ghp_/gho_/ghs_/ghu_/ghr_, Stripe sk_live_/pk_live_, OpenAI sk-, Anthropic sk-ant-, Slack xox[baprs]-, Google AIza, JWT, PEM private key, npm_) emitting `rule_id=hardcoded-credential` (CWE-798, severity=critical), (2) Shannon-entropy scan on string literals 20–200 chars (≥4.3 bits/char base64, ≥3.5 bits/char hex) with UUID/hash/placeholder/base64-JSON denylist, emitting `rule_id=hardcoded-credential-entropy` (severity=high, warning). Test-file paths skipped. Findings dedupe against the legacy Bash `findBashPatternFindings` so existing detection is preserved without double-reporting.
+- [x] **Release 3.34.0** — Runtime-registration extractor Phase 3 (Rust trait dispatch, #15). New `RuntimeRegistration.kind = 'trait_impl'` covers (a) `impl Trait for Type` blocks emitting one registration per method with stdlib / actix / axum / rocket / tokio / serde / unknown classification via last-segment + prefix matching, (b) `inventory::submit! { Plugin::new(...) }` macros as `framework: 'inventory'` with handler from token tree, (c) `#[linkme::distributed_slice]` / `#[distributed_slice]` attributes as `framework: 'linkme'` walking parent siblings to next `static_item` / `function_item`. Rust node cache extended with `attribute_item` + `static_item`. 11 new tests; suite 1895 passing. Closes #15 (Phase 3 of 3 — full runtime-registration roadmap complete). (bbb59c1, 2026-06-10)
+- [x] **Release 3.33.0** — Runtime-registration extractor Phase 2 (Python decorators, #15). Records every `@decorator` on `def`/`async def`: Flask/FastAPI routes as `http_route`, `@app.before_request`/`@app.after_request` as `middleware`, `@app.errorhandler` as `event_listener`, `@pytest.fixture`/`@click.command()`/`@property` etc. as `decorator` with framework tags (`pytest`, `click`, `stdlib`, `numba`, `celery`, `django`, `unknown`). Chained decorators emit one registration each. 10 new tests; suite 1884 passing. (a6c74ed, 2026-06-10)
+- [x] **Release 3.32.0** — Runtime-registration extractor Phase 1 (JS/TS Express family, #15). New optional IR field `runtime_registrations: RuntimeRegistration[]` recording HTTP routes (`app.METHOD(path, handler)`), middleware (`app.use`, `router.use`), event listeners (`server.on`, `emitter.once`). Handler resolution: named identifier → declaration site, inline arrow → `name: null` at lambda site, member-expression → textual reference. Receiver filtering: express-shaped names or any receiver with framework module imported. 10 new tests; suite 1874 passing. (8fef35b, 2026-06-10)
+- [x] **Release 3.31.0** — Java SAST sink expansion: NiFi EL injection (#11, CVE-2023-36542, `PropertyValue.evaluateAttributeExpressions` as `code_injection`/CWE-94/critical) + XWiki rendering pipeline XSS (#10, 5 CVEs — sources `XWikiRequest.getParameter*/getHeader`, sinks `WikiPrinter.print*`, `XHTMLWikiPrinter.print*`, `DefaultBlockRenderer.render`). 4 new regression tests; suite 1864 passing. Closes #10 and #11. (a9039de, 2026-06-09)
+- [x] **Release 3.30.0** — Encoding-aware path traversal propagation for Shiro CWE-022 (#8). Decoder methods (`URLDecoder.decode`, `Normalizer.normalize`, etc.) now propagate taint forward rather than sanitize. Closes #8. (b4fb62a, 2026-06-09)
+- [x] **Release 3.29.0** — Apache Camel mail path-traversal sink (#12, CVE-2018-8041) + Java enterprise sink-shape FP fix (#14, DBeaver / Dubbo / Ruoyi / JeecgBoot / XXL-JOB). Closes #12 and #14. (2beddea, 2026-06-09)
+- [x] **Release 3.28.0** — WASM memory leak fix (#16). Every `analyze()` previously created `new Parser()` and a `Tree`, neither ever `.delete()`'d, causing tree-sitter WASM heap to grow monotonically across 120-project benchmark runs. Both now disposed; static baseline restored. Closes #16. (2026-06-09)
+- [x] **Release 3.27.1** — `scan-secrets` pass #90 (CWE-798, #79 in repo bookkeeping). Two-layer hardcoded-credential detection across all 7 languages: ~16 provider-specific regex patterns (AWS AKIA, GitHub ghp_/gho_/ghs_/ghu_/ghr_, Stripe sk_live_/pk_live_, OpenAI sk-, Anthropic sk-ant-, Slack xox[baprs]-, Google AIza, JWT, PEM, npm_) emitting `hardcoded-credential` (critical/error) + Shannon-entropy scan on string literals 20–200 chars (≥4.3 bits/char base64, ≥3.5 bits/char hex) with UUID/hash/placeholder/base64-JSON denylist emitting `hardcoded-credential-entropy` (high/warning). Test-file paths skipped; dedupes against legacy Bash detection via new `PassContext.getFindings?()` accessor. 39 new tests. Versions 3.26.0 and 3.27.0 prepared locally but never published — content shipped as 3.27.1. (947282b, 2026-06-04)
 - [x] **Release 3.25.0** — version-bump-only re-publish issued ~40s after 3.24.0 to ensure a clean npm publish window; no source, config, or pass-pipeline changes. CHANGELOG auto-prepend records "(no commits since last release)" for both packages. Substantive changes for this stream are entirely in 3.24.0. (4168550, 2026-06-02)
 - [x] **Release 3.24.0** — TS parser fix for Issue #5: ship real `tree-sitter-typescript.wasm` (v0.23.2), remove both `typescript → javascript` grammar redirects in `core/parser.ts`, add `required_parameter` / `optional_parameter` handling in `extractJSParameters`, populate `ParameterInfo.type` for TS code. 6 new regression tests in `tests/extractors/types-typescript.test.ts`; full suite 1810 passing, 0 failing. `.tsx` / JSX, interface IR enrichment, and generic-type surfacing tracked as separate follow-ups. (20df02f, 2026-06-02)
 - [x] **Release 3.23.5** — source-side fix for Issue #4: `yaml.safe_load` removed from `PythonPlugin.getBuiltinSinks()`; `yaml.unsafe_load` + `yaml.full_load` added as CWE-502 sinks. OWASP BenchmarkPython delta: deser FP 24→7, FPR 14.8%→12.6%, F1 78.6%→80.0%. Closes #4 (source-side) and #6 (direct-to-main review). Residual 91 FPs tracked separately. (7834e19 + 2cd9032, 2026-05-30)
@@ -102,9 +111,13 @@
 
 ## Open Issues
 
-(none open)
+- **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan.
 
-(#1, #2, #3 closed as of 3.23.3; #4, #6 closed as of 3.23.5; #5 closed as of 3.24.0; 3.25.0 was a version-bump-only re-publish)
+### Recently closed
+- #16 closed 3.28.0 (WASM tree leak), #15 closed 3.34.0 (runtime-registration roadmap Phase 1+2+3 complete), #14 + #12 closed 3.29.0, #11 + #10 closed 3.31.0, #8 closed 3.30.0
+- #7 / #9 / #13 shuttled to cognium-ai (cognium-ai#73 / #74 / #67) — semantic/harness scope, not deterministic SAST
+- #1, #2, #3 closed as of 3.23.3 (initial round); #4 + #6 closed 3.23.5; #5 closed 3.24.0
+- #1 later re-opened after cross-instance flow gap surfaced in CWE-Bench-Java retest
 
 ---
 
