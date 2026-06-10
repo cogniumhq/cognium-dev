@@ -307,6 +307,7 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       return new Set([
         'call', 'function_definition', 'class_definition', 'import_statement',
         'import_from_statement', 'assignment', 'attribute', 'subscript',
+        'decorated_definition', 'decorator',
       ]);
     case 'javascript':
     case 'typescript':

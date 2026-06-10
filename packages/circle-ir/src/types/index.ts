@@ -696,12 +696,22 @@ export interface CircleIR {
  * dispatch table at module-load time. See issue #15.
  */
 export interface RuntimeRegistration {
-  kind: 'http_route' | 'middleware' | 'event_listener';
-  framework?: 'express' | 'fastify' | 'koa' | 'nestjs' | 'unknown';
-  /** The registration call site itself (e.g. `app.get(...)`, `router.use(...)`). */
+  kind: 'http_route' | 'middleware' | 'event_listener' | 'decorator';
+  framework?:
+    | 'express' | 'fastify' | 'koa' | 'nestjs'
+    | 'flask' | 'fastapi' | 'django' | 'click' | 'pytest' | 'celery' | 'numba'
+    | 'stdlib' | 'unknown';
+  /**
+   * The registration call site itself.
+   *  - JS Phase 1: `app.get(...)`, `router.use(...)`, `server.on(...)` — receiver
+   *    is the runtime object, method is the verb.
+   *  - Python Phase 2: a `@receiver.method` decorator — receiver is everything
+   *    before the last dotted segment (empty string for bare `@name`),
+   *    method is the last segment.
+   */
   registrar: {
-    method: string;     // 'get' | 'post' | 'use' | 'on' | ...
-    receiver: string;   // 'app' | 'router' | 'server' | ...
+    method: string;     // 'get' | 'post' | 'use' | 'on' | 'route' | 'fixture' | ...
+    receiver: string;   // 'app' | 'router' | 'pytest' | 'click' | '' (bare decorator)
     line: number;
     column: number;
   };

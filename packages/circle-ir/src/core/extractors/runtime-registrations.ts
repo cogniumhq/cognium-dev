@@ -1,25 +1,32 @@
 /**
- * Runtime-registration extractor (issue #15 — Phase 1).
+ * Runtime-registration extractor (issue #15 — Phases 1 + 2).
  *
- * Recognises JS/TS framework registration patterns where a handler is wired
- * into a dispatch table at module-load time. Static call extraction sees the
- * registration call (`app.get(...)`) but not the edge from registrar → handler.
+ * Recognises framework registration patterns where a handler is wired into a
+ * dispatch table at module-load time. Static call extraction sees the
+ * registration call/decorator but not the edge from registrar → handler.
  *
  * Downstream consumers (e.g. dead-code reachability) read
  * `ir.runtime_registrations` and add each resolved handler as a virtual entry
  * root, eliminating "unreachable" false positives for framework handlers.
  *
- * Phase 1 covers:
- *   - Express-family HTTP routes: `app.METHOD(path?, ...handlers)`
- *     where METHOD ∈ HTTP_VERBS and receiver is express-shaped
+ * Phase 1 — JS/TS Express-family (shipped 3.32.0):
+ *   - HTTP routes: `app.METHOD(path?, ...handlers)` for METHOD ∈ HTTP_VERBS
  *   - Middleware: `app.use(...handlers)`
- *   - Event listeners: `emitter.on('event', handler)` (when receiver is
- *     express-shaped, otherwise skipped to avoid false-positive registrations)
+ *   - Event listeners: `emitter.on('event', handler)` on express-shaped receivers
  *
- * Out of scope for Phase 1:
- *   - NestJS / Python decorators (Phase 2)
- *   - Rust trait dispatch (Phase 3)
- *   - Subapp mounting (`app.use('/api', subApp)`) handler resolution
+ * Phase 2 — Python decorators (3.33.0):
+ *   - Every `@decorator` on a function emits a registration with handler =
+ *     decorated function. Known frameworks are tagged (flask, fastapi,
+ *     django, click, pytest, celery, numba); built-in (property,
+ *     staticmethod, etc.) is tagged `stdlib`. Routing-style decorators
+ *     (`@app.route`, `@app.get`, `@router.post`) are classified as
+ *     `kind: 'http_route'` so downstream consumers can treat JS routes and
+ *     Python routes uniformly.
+ *
+ * Out of scope (Phase 3):
+ *   - Rust trait dispatch (`impl Trait for Type`, `Box<dyn Trait>`,
+ *     `inventory::submit!`, `linkme::distributed_slice`).
+ *   - Subapp mounting (`app.use('/api', subApp)`) handler resolution.
  */
 
 import type { Node, Tree } from 'web-tree-sitter';
@@ -55,7 +62,8 @@ const FRAMEWORK_MODULE_PATTERNS = [
 /**
  * Extract runtime-registration patterns from a parsed file.
  *
- * Returns `[]` for any language other than JavaScript/TypeScript in Phase 1.
+ * Phase 1 covers JavaScript/TypeScript. Phase 2 adds Python decorators.
+ * Returns `[]` for any other language.
  */
 export function extractRuntimeRegistrations(
   tree: Tree,
@@ -63,10 +71,13 @@ export function extractRuntimeRegistrations(
   language: SupportedLanguage | string,
   imports?: ImportInfo[],
 ): RuntimeRegistration[] {
-  if (language !== 'javascript' && language !== 'typescript') {
-    return [];
+  if (language === 'javascript' || language === 'typescript') {
+    return extractJSRuntimeRegistrations(tree, cache, imports);
   }
-  return extractJSRuntimeRegistrations(tree, cache, imports);
+  if (language === 'python') {
+    return extractPythonRuntimeRegistrations(tree, cache, imports);
+  }
+  return [];
 }
 
 /**
@@ -308,4 +319,314 @@ function resolveHandler(
 
   // Anything else (object literals, complex expressions): not a handler.
   return null;
+}
+
+// =============================================================================
+// Python — Phase 2
+// =============================================================================
+
+/** HTTP-route decorator method names (after the dotted prefix). */
+const PY_HTTP_ROUTE_METHODS = new Set([
+  // Flask/Blueprint: app.route, blueprint.route, api.route
+  'route',
+  // FastAPI / Starlette / DRF method-specific
+  'get', 'post', 'put', 'patch', 'delete', 'head', 'options',
+  // Flask aliases (Flask 2.x): app.get/post/...
+]);
+
+/** Flask middleware-style decorators. */
+const PY_MIDDLEWARE_METHODS = new Set([
+  'before_request', 'after_request', 'teardown_request',
+  'before_first_request', 'teardown_appcontext',
+  // Starlette / FastAPI
+  'middleware',
+]);
+
+/** Event/lifecycle-style decorators. */
+const PY_EVENT_METHODS = new Set([
+  'errorhandler', 'on_event', 'exception_handler',
+  // Celery beat etc — not strictly events but lifecycle
+]);
+
+/** Python stdlib / built-in decorators that don't register externally. */
+const PY_STDLIB_DECORATORS = new Set([
+  'property', 'staticmethod', 'classmethod', 'abstractmethod', 'cached_property',
+  'dataclass', 'cache', 'lru_cache', 'singledispatch', 'singledispatchmethod',
+  'contextmanager', 'asynccontextmanager', 'final', 'override',
+  'wraps',
+]);
+
+interface PyImportSummary {
+  hasFlask: boolean;
+  hasFastApi: boolean;
+  hasCelery: boolean;
+  hasNumba: boolean;
+  hasClick: boolean;
+  hasPytest: boolean;
+}
+
+function summarisePythonImports(imports?: ImportInfo[]): PyImportSummary {
+  const s: PyImportSummary = {
+    hasFlask: false, hasFastApi: false, hasCelery: false,
+    hasNumba: false, hasClick: false, hasPytest: false,
+  };
+  if (!imports) return s;
+  for (const imp of imports) {
+    const mod = imp.from_package ?? '';
+    if (!mod) continue;
+    if (/^flask(\b|\.)/.test(mod)) s.hasFlask = true;
+    if (/^fastapi(\b|\.)/.test(mod) || /^starlette(\b|\.)/.test(mod)) s.hasFastApi = true;
+    if (/^celery(\b|\.)/.test(mod)) s.hasCelery = true;
+    if (/^numba(\b|\.)/.test(mod)) s.hasNumba = true;
+    if (/^click(\b|\.)/.test(mod)) s.hasClick = true;
+    if (/^pytest(\b|\.)/.test(mod)) s.hasPytest = true;
+  }
+  return s;
+}
+
+function extractPythonRuntimeRegistrations(
+  tree: Tree,
+  cache: NodeCache | undefined,
+  imports?: ImportInfo[],
+): RuntimeRegistration[] {
+  const out: RuntimeRegistration[] = [];
+  const importSummary = summarisePythonImports(imports);
+
+  const decoratedDefs = getNodesFromCache(tree.rootNode, 'decorated_definition', cache);
+
+  for (const dd of decoratedDefs) {
+    // Find the function_definition child (skip class_definition for now —
+    // class-level decorators are not the dead-code use case).
+    let fnNode: Node | null = null;
+    const decorators: Node[] = [];
+    for (let i = 0; i < dd.childCount; i++) {
+      const child = dd.child(i);
+      if (!child) continue;
+      if (child.type === 'decorator') {
+        decorators.push(child);
+      } else if (child.type === 'function_definition' || child.type === 'async_function_definition') {
+        fnNode = child;
+      }
+    }
+    if (!fnNode || decorators.length === 0) continue;
+
+    const handler = pythonHandlerFromFunctionDef(fnNode);
+    if (!handler) continue;
+
+    for (const dec of decorators) {
+      const parsed = parsePythonDecorator(dec);
+      if (!parsed) continue;
+
+      const { receiver, method, path, line, column } = parsed;
+      const { kind, framework } = classifyPythonDecorator(
+        receiver, method, importSummary,
+      );
+
+      out.push({
+        kind,
+        framework,
+        registrar: { method, receiver, line, column },
+        ...(path !== undefined ? { path } : {}),
+        handler,
+      });
+    }
+  }
+
+  return out;
+}
+
+function pythonHandlerFromFunctionDef(fn: Node): RuntimeRegistration['handler'] | null {
+  const nameNode = fn.childForFieldName('name');
+  if (!nameNode) return null;
+  return {
+    name: getNodeText(nameNode),
+    line: fn.startPosition.row + 1,
+    column: fn.startPosition.column,
+  };
+}
+
+interface ParsedPythonDecorator {
+  receiver: string;
+  method: string;
+  path?: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * Parse a `decorator` node into receiver/method/path components.
+ * The decorator wraps one of: `identifier`, `attribute`, or `call`.
+ */
+function parsePythonDecorator(dec: Node): ParsedPythonDecorator | null {
+  // Skip the leading `@` token; take the first non-trivial child.
+  let target: Node | null = null;
+  for (let i = 0; i < dec.childCount; i++) {
+    const child = dec.child(i);
+    if (!child || child.type === '@') continue;
+    target = child;
+    break;
+  }
+  if (!target) return null;
+
+  const line = dec.startPosition.row + 1;
+  const column = dec.startPosition.column;
+
+  // @bare_decorator
+  if (target.type === 'identifier') {
+    return { receiver: '', method: getNodeText(target), line, column };
+  }
+
+  // @pkg.attr  (no call)
+  if (target.type === 'attribute') {
+    const { receiver, method } = splitDottedAttribute(target);
+    return { receiver, method, line, column };
+  }
+
+  // @pkg.attr(...) or @bare_decorator(...)
+  if (target.type === 'call') {
+    const fnNode = target.childForFieldName('function');
+    if (!fnNode) return null;
+    let receiver = '';
+    let method = '';
+    if (fnNode.type === 'identifier') {
+      method = getNodeText(fnNode);
+    } else if (fnNode.type === 'attribute') {
+      const split = splitDottedAttribute(fnNode);
+      receiver = split.receiver;
+      method = split.method;
+    } else {
+      // Complex expression like `make_decorator()(...)` — record textual.
+      method = getNodeText(fnNode);
+    }
+
+    // Look at first positional arg for a literal string path.
+    const path = extractFirstStringArg(target);
+
+    return { receiver, method, path, line, column };
+  }
+
+  return null;
+}
+
+/** Split `a.b.c` into receiver=`a.b`, method=`c`. */
+function splitDottedAttribute(attr: Node): { receiver: string; method: string } {
+  const objectNode = attr.childForFieldName('object');
+  const attrNode = attr.childForFieldName('attribute');
+  const method = attrNode ? getNodeText(attrNode) : '';
+  const receiver = objectNode ? getNodeText(objectNode) : '';
+  return { receiver, method };
+}
+
+/** Extract first positional argument as a literal string if present. */
+function extractFirstStringArg(call: Node): string | undefined {
+  const argsNode = call.childForFieldName('arguments');
+  if (!argsNode) return undefined;
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child) continue;
+    if (child.type === '(' || child.type === ')' || child.type === ',') continue;
+    // First real argument
+    if (child.type === 'string') {
+      return stripPythonStringQuotes(getNodeText(child));
+    }
+    // Anything else as first positional arg → no path
+    return undefined;
+  }
+  return undefined;
+}
+
+function stripPythonStringQuotes(s: string): string {
+  // Handle prefixes like b'', r'', u'', f'' — we don't need their semantics here.
+  const m = s.match(/^[bBrRuUfF]{0,2}(['"])(.*)\1$/s);
+  if (m) return m[2];
+  if (s.length >= 2 && (s[0] === '"' || s[0] === "'") && s[s.length - 1] === s[0]) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * Classify a Python decorator into kind + framework.
+ *
+ * The classification cascade:
+ *   1. stdlib built-in (property, staticmethod, ...) → kind=decorator, framework=stdlib
+ *   2. `@<framework>.<method>` where framework is recognised
+ *   3. `@app.<http_verb>` / `@router.<http_verb>` / `@app.route` → http_route
+ *   4. Middleware / event hooks on Flask-like receivers
+ *   5. Generic decorator → kind=decorator, framework=unknown
+ */
+function classifyPythonDecorator(
+  receiver: string,
+  method: string,
+  imp: PyImportSummary,
+): { kind: RuntimeRegistration['kind']; framework: RuntimeRegistration['framework'] } {
+  // 1. stdlib built-ins (bare decorators, e.g. @property)
+  if (!receiver && PY_STDLIB_DECORATORS.has(method)) {
+    return { kind: 'decorator', framework: 'stdlib' };
+  }
+
+  // 2. Framework-prefixed decorators
+  if (receiver) {
+    const head = receiver.split('.')[0];
+    // pytest.fixture / pytest.mark.parametrize
+    if (head === 'pytest') {
+      return { kind: 'decorator', framework: 'pytest' };
+    }
+    if (head === 'click') {
+      return { kind: 'decorator', framework: 'click' };
+    }
+    if (head === 'numba' || head === 'nb') {
+      return { kind: 'decorator', framework: 'numba' };
+    }
+    if (head === 'celery') {
+      return { kind: 'decorator', framework: 'celery' };
+    }
+  }
+
+  // 3. HTTP-route decorators on app/router/blueprint/api receivers
+  if (receiver && PY_HTTP_ROUTE_METHODS.has(method)) {
+    const isRoutey = isPyRouterReceiver(receiver);
+    if (isRoutey) {
+      // Framework inference: import-driven
+      let framework: RuntimeRegistration['framework'] = 'unknown';
+      if (imp.hasFlask) framework = 'flask';
+      else if (imp.hasFastApi) framework = 'fastapi';
+      else if (method === 'route') framework = 'flask';   // Flask hallmark
+      else framework = 'fastapi';                          // verbs alone bias to FastAPI
+      return { kind: 'http_route', framework };
+    }
+  }
+
+  // 4. Middleware-style decorators
+  if (receiver && PY_MIDDLEWARE_METHODS.has(method)) {
+    return { kind: 'middleware', framework: imp.hasFlask ? 'flask' : (imp.hasFastApi ? 'fastapi' : 'unknown') };
+  }
+
+  // 5. Event-style decorators
+  if (receiver && PY_EVENT_METHODS.has(method)) {
+    return { kind: 'event_listener', framework: imp.hasFlask ? 'flask' : (imp.hasFastApi ? 'fastapi' : 'unknown') };
+  }
+
+  // 6. app.task / @<x>.task — celery if celery imported
+  if (method === 'task' && imp.hasCelery) {
+    return { kind: 'decorator', framework: 'celery' };
+  }
+
+  // 7. Django auth/method decorators (bare)
+  if (!receiver && (method === 'login_required' || method === 'require_http_methods' || method === 'api_view')) {
+    return { kind: 'decorator', framework: 'django' };
+  }
+
+  // Fallthrough
+  return { kind: 'decorator', framework: 'unknown' };
+}
+
+/** Names commonly used for Flask/FastAPI app/router/blueprint instances. */
+function isPyRouterReceiver(receiver: string): boolean {
+  const head = receiver.split('.')[0];
+  if (!head) return false;
+  if (['app', 'router', 'blueprint', 'bp', 'api', 'application'].includes(head)) return true;
+  // Suffix conventions: my_router, user_bp, etc.
+  if (/_(router|bp|blueprint|app|api)$/.test(head)) return true;
+  return false;
 }

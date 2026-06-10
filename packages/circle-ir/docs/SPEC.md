@@ -36,6 +36,7 @@
 | TypeHierarchy resolver (polymorphic sink matching) | ⬜ | ✅ | Done (v3.11.0) |
 | Dominator-tree passes (missing-guard-dom, cleanup-verify) | ⬜ | ✅ | Done (v3.11.0) |
 | Runtime registrations (`runtime_registrations[]`) — Phase 1 JS/TS Express-family | ⬜ | ✅ | Done (v3.32.0) |
+| Runtime registrations — Phase 2 Python decorators (flask/fastapi/pytest/click/stdlib/…) | ⬜ | ✅ | Done (v3.33.0) |
 
 ---
 

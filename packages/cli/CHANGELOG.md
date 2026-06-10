@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.33.0] - 2026-06-10
+
+### Changed
+
+- **circle-ir upgraded 3.32.0 → 3.33.0** — extends the `runtime_registrations` IR field with Python decorator support (#15, Phase 2). For Python projects, `cognium-dev scan` now records every `@decorator` on a `def`/`async def`: Flask/FastAPI routes (`@app.route`, `@router.get`, …) as `kind: 'http_route'`; `@app.before_request`/`@app.after_request` as `middleware`; `@app.errorhandler` as `event_listener`; `@pytest.fixture`, `@click.command()`, `@property`, etc. as `decorator` with framework tags (`pytest`, `click`, `stdlib`, `numba`, `celery`, `django`, `unknown`). Plumbing only; no new CLI findings. Phase 3 (Rust trait dispatch) is still pending.
+
+[3.33.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.32.0...cognium-dev-v3.33.0
+
 ## [3.32.0] - 2026-06-10
 
 ### Changed

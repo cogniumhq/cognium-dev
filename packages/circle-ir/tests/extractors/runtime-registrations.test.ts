@@ -1,5 +1,5 @@
 /**
- * Tests for the runtime-registrations extractor (issue #15, Phase 1).
+ * Tests for the runtime-registrations extractor (issue #15, Phases 1 + 2).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -193,5 +193,222 @@ app.get(\`\${prefix}/x\`, h);
     // skipped, leaving only the second arg `h`.
     expect(regs[0].path).toBeUndefined();
     expect(regs[0].handler.name).toBe('h');
+  });
+});
+
+describe('Runtime-Registrations Extractor — Phase 2 (Python decorators)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('detects Flask @app.route with path extraction', async () => {
+    const code = `
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/ping')
+def ping():
+    return 'pong'
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    const reg = regs[0];
+    expect(reg.kind).toBe('http_route');
+    expect(reg.framework).toBe('flask');
+    expect(reg.registrar.method).toBe('route');
+    expect(reg.registrar.receiver).toBe('app');
+    expect(reg.path).toBe('/ping');
+    expect(reg.handler.name).toBe('ping');
+    expect(reg.handler.line).toBeGreaterThan(0);
+  });
+
+  it('emits one registration per decorator for chained @app.route + @auth_required', async () => {
+    const code = `
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/users/<id>', methods=['GET'])
+@auth_required
+def get_user(id):
+    return {}
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(2);
+    const routeReg = regs.find(r => r.kind === 'http_route');
+    expect(routeReg).toBeDefined();
+    expect(routeReg!.framework).toBe('flask');
+    expect(routeReg!.registrar.method).toBe('route');
+    expect(routeReg!.path).toBe('/users/<id>');
+    expect(routeReg!.handler.name).toBe('get_user');
+
+    const authReg = regs.find(r => r.registrar.method === 'auth_required');
+    expect(authReg).toBeDefined();
+    expect(authReg!.kind).toBe('decorator');
+    expect(authReg!.handler.name).toBe('get_user');
+  });
+
+  it('detects FastAPI-style @router.get', async () => {
+    const code = `
+from fastapi import APIRouter
+router = APIRouter()
+
+@router.get('/x')
+async def x_handler():
+    pass
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('http_route');
+    expect(regs[0].registrar.method).toBe('get');
+    expect(regs[0].registrar.receiver).toBe('router');
+    expect(regs[0].path).toBe('/x');
+    expect(regs[0].handler.name).toBe('x_handler');
+  });
+
+  it('classifies @app.before_request as middleware', async () => {
+    const code = `
+from flask import Flask
+app = Flask(__name__)
+
+@app.before_request
+def hook():
+    pass
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('middleware');
+    expect(regs[0].registrar.method).toBe('before_request');
+    expect(regs[0].registrar.receiver).toBe('app');
+    expect(regs[0].handler.name).toBe('hook');
+  });
+
+  it('classifies @app.errorhandler(404) as event_listener', async () => {
+    const code = `
+from flask import Flask
+app = Flask(__name__)
+
+@app.errorhandler(404)
+def not_found(err):
+    return 'nf', 404
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('event_listener');
+    expect(regs[0].registrar.method).toBe('errorhandler');
+    expect(regs[0].registrar.receiver).toBe('app');
+    expect(regs[0].handler.name).toBe('not_found');
+  });
+
+  it('tags @pytest.fixture and @click.command() with their framework', async () => {
+    const code = `
+import pytest
+import click
+
+@pytest.fixture
+def setup():
+    pass
+
+@click.command()
+def main():
+    pass
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(2);
+    const fixture = regs.find(r => r.handler.name === 'setup');
+    expect(fixture).toBeDefined();
+    expect(fixture!.kind).toBe('decorator');
+    expect(fixture!.framework).toBe('pytest');
+    expect(fixture!.registrar.method).toBe('fixture');
+
+    const cmd = regs.find(r => r.handler.name === 'main');
+    expect(cmd).toBeDefined();
+    expect(cmd!.kind).toBe('decorator');
+    expect(cmd!.framework).toBe('click');
+    expect(cmd!.registrar.method).toBe('command');
+  });
+
+  it('tags @property as stdlib framework', async () => {
+    const code = `
+class Foo:
+    @property
+    def x(self):
+        return 1
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('decorator');
+    expect(regs[0].framework).toBe('stdlib');
+    expect(regs[0].registrar.method).toBe('property');
+    expect(regs[0].handler.name).toBe('x');
+  });
+
+  it('handles bare unknown decorators with framework=unknown', async () => {
+    const code = `
+@my_custom_decorator
+def custom_fn():
+    pass
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('decorator');
+    expect(regs[0].framework).toBe('unknown');
+    expect(regs[0].registrar.method).toBe('my_custom_decorator');
+    expect(regs[0].handler.name).toBe('custom_fn');
+  });
+
+  it('handles async function decorators', async () => {
+    const code = `
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.post('/items')
+async def create_item(payload):
+    return payload
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(1);
+    expect(regs[0].kind).toBe('http_route');
+    expect(regs[0].registrar.method).toBe('post');
+    expect(regs[0].path).toBe('/items');
+    expect(regs[0].handler.name).toBe('create_item');
+  });
+
+  it('emits nothing for a plain undecorated function', async () => {
+    const code = `
+def plain():
+    return 1
+`;
+    const tree = await parse(code, 'python');
+    const imports = extractImports(tree, 'python');
+    const regs = extractRuntimeRegistrations(tree, undefined, 'python', imports);
+
+    expect(regs).toHaveLength(0);
   });
 });

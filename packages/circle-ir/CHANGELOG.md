@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.33.0] - 2026-06-10
+
+### Added
+
+- **Runtime registration extractor — Phase 2: Python decorators (#15).** `ir.runtime_registrations` now records every `@decorator` attached to a Python `function_definition`. The same `RuntimeRegistration` shape used for JS/TS Phase 1 is reused so downstream consumers can treat JS routes and Python routes uniformly.
+  - **Decorator shapes:** bare identifier (`@my_dec`), attribute (`@app.route`, `@pytest.fixture`), and call (`@app.route('/x', methods=['GET'])`, `@click.command()`). Path is extracted from the first string literal argument when present.
+  - **Classification cascade:**
+    1. Stdlib decorators (`property`, `staticmethod`, `classmethod`, `abstractmethod`, `cached_property`, `dataclass`, `cache`, `lru_cache`, `singledispatch`, `singledispatchmethod`, `contextmanager`, `asynccontextmanager`, `final`, `override`, `wraps`) → `kind: 'decorator'`, `framework: 'stdlib'`.
+    2. Framework-prefixed (`pytest.*`, `click.*`, `numba.*`, `celery.*`) → `kind: 'decorator'`, `framework: <name>`.
+    3. HTTP-route methods (`route`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`) on router-shaped receivers (`app`, `router`, `blueprint`, `bp`, `api`, `application`, plus `*_router` / `*_bp` / `*_app` suffix) → `kind: 'http_route'`, `framework: 'flask'` (FastAPI/Flask share the call shape so downstream consumers should also consult `imports`).
+    4. Middleware methods (`before_request`, `after_request`, `teardown_request`, `before_first_request`, `teardown_appcontext`, `middleware`) → `kind: 'middleware'`.
+    5. Event methods (`errorhandler`, `on_event`, `exception_handler`) → `kind: 'event_listener'`.
+    6. `.task` with celery import, Django bare decorators (`login_required`, `permission_required`, `csrf_exempt`, `require_http_methods`, `require_GET`, `require_POST`, `require_safe`) → framework tags.
+    7. Fallthrough → `kind: 'decorator'`, `framework: 'unknown'`.
+  - **Chained decorators emit one registration each**, all pointing at the same decorated handler — `@app.route('/x') / @auth_required / def get_user()` produces two entries (`http_route flask` + `decorator unknown`) sharing `handler.name = 'get_user'`.
+- **10 Python regression tests** in `tests/extractors/runtime-registrations.test.ts` cover: Flask `@app.route` with path extraction, chained `@app.route + @auth_required`, FastAPI `@router.get`, `@app.before_request` middleware, `@app.errorhandler(404)` event-listener, `@pytest.fixture` and `@click.command()` framework tagging, `@property` stdlib tagging, bare unknown decorators, async function decorators, and the negative case of a plain undecorated function emitting nothing.
+- Total suite size: **1884 passing tests** (1874 baseline + 10 new).
+
+### Notes
+
+- Phase 3 (Rust trait dispatch — `impl Trait for Type`, `Box<dyn Trait>`, `inventory::submit!`, `linkme::distributed_slice`) remains scheduled for a separate PR. The JS Phase 1 extractor and Python Phase 2 extractor share the same `RuntimeRegistration` shape, so adding Rust will only widen the framework union.
+
+[3.33.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.32.0...circle-ir-v3.33.0
+
 ## [3.32.0] - 2026-06-10
 
 ### Added
