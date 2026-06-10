@@ -96,6 +96,10 @@ let parserInitialized = false;
 let parserInitializing: Promise<void> | null = null;
 const loadedLanguages = new Map<SupportedLanguage, Language>();
 const loadingLanguages = new Map<SupportedLanguage, Promise<Language>>();
+// One reusable Parser per language. `new Parser()` allocates a struct in the
+// tree-sitter WASM heap; reusing the instance avoids unbounded heap growth
+// when many files are parsed in a single process (see issue #16).
+const cachedParsers = new Map<SupportedLanguage, Parser>();
 let configuredLanguagePaths: Partial<Record<SupportedLanguage, string>> = {};
 let configuredLanguageModules: Partial<Record<SupportedLanguage, WebAssembly.Module>> = {};
 
@@ -205,9 +209,27 @@ export async function loadLanguage(
 }
 
 /**
- * Create a new parser instance configured for the specified language.
+ * Get a parser instance configured for the specified language. The Parser is
+ * cached per-language and reused across calls — see `cachedParsers` above.
+ * Use `createFreshParser()` if you need a non-shared instance.
  */
 export async function createParser(language: SupportedLanguage): Promise<Parser> {
+  const cached = cachedParsers.get(language);
+  if (cached) {
+    return cached;
+  }
+  const lang = await loadLanguage(language);
+  const parser = new Parser();
+  parser.setLanguage(lang);
+  cachedParsers.set(language, parser);
+  return parser;
+}
+
+/**
+ * Create a non-cached parser. Caller is responsible for `parser.delete()` when
+ * done. Prefer `createParser` unless isolation is required.
+ */
+export async function createFreshParser(language: SupportedLanguage): Promise<Parser> {
   const lang = await loadLanguage(language);
   const parser = new Parser();
   parser.setLanguage(lang);
@@ -216,6 +238,10 @@ export async function createParser(language: SupportedLanguage): Promise<Parser>
 
 /**
  * Parse source code and return the syntax tree.
+ *
+ * IMPORTANT: The returned Tree holds memory in the tree-sitter WASM heap. Call
+ * `disposeTree(tree)` once you no longer need its nodes to free that memory.
+ * Failing to dispose causes unbounded WASM heap growth at scale (#16).
  */
 export async function parse(
   code: string,
@@ -227,6 +253,18 @@ export async function parse(
     throw new Error('Failed to parse code');
   }
   return tree;
+}
+
+/**
+ * Free the WASM memory backing a parsed Tree. Safe to call multiple times.
+ */
+export function disposeTree(tree: Tree | null | undefined): void {
+  if (!tree) return;
+  try {
+    tree.delete();
+  } catch {
+    // Already deleted or invalid handle — ignore.
+  }
 }
 
 /**
@@ -388,9 +426,19 @@ export function isLanguageLoaded(language: SupportedLanguage): boolean {
 
 /**
  * Reset the parser state (mainly for testing).
+ *
+ * Disposes any cached Parser instances and clears the language cache so the
+ * next `initParser()` call starts with a clean WASM heap.
  */
 export function resetParser(): void {
-  parserInitialized = false;
+  for (const parser of cachedParsers.values()) {
+    try { parser.delete(); } catch { /* ignore */ }
+  }
+  cachedParsers.clear();
   loadedLanguages.clear();
+  loadingLanguages.clear();
   configuredLanguagePaths = {};
+  configuredLanguageModules = {};
+  parserInitialized = false;
+  parserInitializing = null;
 }

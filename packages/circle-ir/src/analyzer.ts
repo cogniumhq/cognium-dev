@@ -57,6 +57,7 @@ import type { TaintConfig } from './types/config.js';
 import {
   initParser,
   parse,
+  disposeTree,
   extractMeta,
   extractTypes,
   extractCalls,
@@ -365,8 +366,11 @@ export async function analyze(
 
   logger.debug('Analyzing file', { filePath, language, codeLength: code.length });
 
-  // Parse the code
+  // Parse the code. The Tree holds tree-sitter WASM memory; we MUST dispose
+  // it before returning, otherwise the WASM heap grows unboundedly across
+  // many analyze() calls in the same process (issue #16).
   const tree = await parse(code, language);
+  try {
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 
   // Collect all node types in a single traversal for better performance
@@ -483,6 +487,9 @@ export async function analyze(
     findings: findings.length > 0 ? findings : undefined,
     metrics: { file: filePath, metrics: metricValues },
   };
+  } finally {
+    disposeTree(tree);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +510,7 @@ async function analyzeHtmlFile(
 
   // Parse HTML
   const tree = await parse(code, 'html');
+  try {
   const meta = extractMeta(code, tree, filePath, 'html');
 
   // Extract script blocks and event handlers
@@ -570,6 +578,9 @@ async function analyzeHtmlFile(
   });
 
   return result;
+  } finally {
+    disposeTree(tree);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +606,7 @@ export async function analyzeForAPI(
   const tree = await parse(code, language);
   const parseTime = performance.now() - parseStart;
 
+  try {
   const analysisStart = performance.now();
 
   const nodeCache = collectAllNodes(tree.rootNode, getNodeTypesForLanguage(language));
@@ -684,6 +696,9 @@ export async function analyzeForAPI(
       totalTimeMs: Math.round(totalTime),
     },
   };
+  } finally {
+    disposeTree(tree);
+  }
 }
 
 // ---------------------------------------------------------------------------
