@@ -609,3 +609,109 @@ public class ShiroSourceProbe {
     expect(src?.severity).toBe('high');
   });
 });
+
+describe('NiFi Expression Language injection (issue #11, CVE-2023-36542)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('should detect PropertyValue.evaluateAttributeExpressions as code_injection', async () => {
+    // CVE-2023-36542: NiFi processors evaluate user-controlled property values
+    // through PropertyValue.evaluateAttributeExpressions(...). If the property
+    // source is attacker-influenced the EL evaluation is RCE.
+    const code = `
+import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.flowfile.FlowFile;
+
+public class NifiSink {
+    public String evaluate(ProcessContext context, FlowFile flowFile) {
+        PropertyValue pv = context.getProperty("EL_EXPRESSION");
+        return pv.evaluateAttributeExpressions(flowFile).getValue();
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const sink = taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('evaluateAttributeExpressions'));
+    expect(sink).toBeDefined();
+    expect(sink?.cwe).toBe('CWE-94');
+  });
+});
+
+describe('XWiki rendering pipeline XSS (issue #10, CVE-2022-24897/2023-29201/29528/36471/37908)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('should detect XWikiRequest.getParameter → DefaultWikiPrinter.print XSS flow', async () => {
+    // XWiki request param flows into the rendering output stream without escaping.
+    const code = `
+import com.xpn.xwiki.web.XWikiRequest;
+import org.xwiki.rendering.renderer.printer.DefaultWikiPrinter;
+
+public class XWikiXss {
+    public void render(XWikiRequest request, DefaultWikiPrinter printer) {
+        String content = request.getParameter("content");
+        printer.print(content);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    expect(taint.sources.find(s => s.location.includes('getParameter'))).toBeDefined();
+    const sink = taint.sinks.find(s => s.type === 'xss');
+    expect(sink).toBeDefined();
+    expect(sink?.cwe).toBe('CWE-79');
+  });
+
+  it('should recognise XHTMLWikiPrinter.println as XSS sink', async () => {
+    // Pin the XHTMLWikiPrinter.println sink wiring — the CVE-2023-29528 fix
+    // path runs HTML through the XHTML printer's println output.
+    const code = `
+import org.xwiki.rendering.renderer.printer.XHTMLWikiPrinter;
+import com.xpn.xwiki.web.XWikiRequest;
+
+public class XHTMLXss {
+    public void emit(XWikiRequest request, XHTMLWikiPrinter printer) {
+        printer.println(request.get("html"));
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const sink = taint.sinks.find(s => s.type === 'xss' && s.location.includes('println'));
+    expect(sink).toBeDefined();
+  });
+
+  it('should recognise DefaultBlockRenderer.render as XSS sink', async () => {
+    // CVE-2023-37908 / 2022-24897 shape: tainted Block flows into render(block, printer).
+    const code = `
+import org.xwiki.rendering.renderer.DefaultBlockRenderer;
+import org.xwiki.rendering.block.Block;
+import org.xwiki.rendering.renderer.printer.WikiPrinter;
+
+public class BlockRenderSink {
+    public void emit(DefaultBlockRenderer renderer, Block block, WikiPrinter printer) {
+        renderer.render(block, printer);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const sink = taint.sinks.find(s => s.type === 'xss' && s.location.includes('render'));
+    expect(sink).toBeDefined();
+  });
+});

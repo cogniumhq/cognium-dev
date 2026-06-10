@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.31.0] - 2026-06-09
+
+### Changed
+
+- **circle-ir upgraded 3.30.0 → 3.31.0** — adds NiFi Expression Language coverage (#11, CVE-2023-36542) and XWiki rendering-pipeline XSS coverage (#10, CVE-2022-24897 / CVE-2023-29201 / CVE-2023-29528 / CVE-2023-36471 / CVE-2023-37908). `cognium-dev scan` now flags `PropertyValue.evaluateAttributeExpressions(...)` as CWE-94 RCE on NiFi processors, and `XWikiRequest.getParameter/get → WikiPrinter.print*/XHTMLWikiPrinter.println/DefaultBlockRenderer.render` as CWE-79 XSS in XWiki rendering. Per-file findings, cross-file taint paths, and SARIF output all surface the new detections.
+
+[3.31.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.30.0...cognium-dev-v3.31.0
+
 ## [3.30.0] - 2026-06-09
 
 ### Changed

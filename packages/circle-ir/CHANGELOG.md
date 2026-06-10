@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.31.0] - 2026-06-09
+
+### Fixed
+
+- **NiFi Expression Language injection sink missing (#11, CVE-2023-36542).** `PropertyValue.evaluateAttributeExpressions(...)` runs NiFi EL against user-controlled property values; this is the exact RCE shape used by CVE-2023-36542. The method is now registered as a `code_injection` / CWE-94 / critical sink in `DEFAULT_SINKS` (both class-qualified on `PropertyValue` and as a classless variant for receiver-typed call resolution).
+- **XWiki rendering pipeline XSS sources + sinks missing (#10, CVE-2022-24897 / CVE-2023-29201 / CVE-2023-29528 / CVE-2023-36471 / CVE-2023-37908).** Five XSS CVEs in `xwiki-commons` / `xwiki-rendering` shared an unmodeled-pattern root cause. Added:
+  - **Sources:** `XWikiRequest.get` / `getParameter` / `getParameterValues` / `getParameterMap` / `getHeader` (URL/form/header data).
+  - **Sinks:** `WikiPrinter.print/println`, `DefaultWikiPrinter.print/println`, `XHTMLWikiPrinter.print/println/printXML/printXMLComment`, `AnnotatedXHTMLWikiPrinter.print/println/printXMLElement/printXMLStartElement`, and the block-render entry points `BlockRenderer.render` / `AbstractBlockRenderer.render` / `DefaultBlockRenderer.render`.
+
+### Added
+
+- **Regression suite for #11 / #10** — `tests/analysis/taint.test.ts` gains four cases:
+  - `describe('NiFi Expression Language injection (issue #11, CVE-2023-36542)')` — pins `PropertyValue.evaluateAttributeExpressions` as `code_injection` / CWE-94.
+  - `describe('XWiki rendering pipeline XSS (issue #10, …)')` — three cases pinning the XWikiRequest → DefaultWikiPrinter.print XSS flow, XHTMLWikiPrinter.println sink wiring, and DefaultBlockRenderer.render sink wiring.
+- Total suite size: **1864 passing tests** (1860 baseline + 4 new).
+
+### Notes
+
+- **#11 deferred sub-cases:** CVE-2018-1260 (Spring OAuth `SpelExpressionParser.parseExpression` + `Expression.getValue`) and CVE-2011-2732 (Spring Security `HttpServletResponse.sendRedirect`) have their sinks already modeled in `DEFAULT_SINKS`. Failure to detect those in the CWE-Bench-Java run is therefore not a sink gap — likely an indirect / cross-file data-flow issue best investigated against a concrete reproducer (tracked on the cognium-ai benchmark side).
+
+[3.31.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.30.0...circle-ir-v3.31.0
+
 ## [3.30.0] - 2026-06-09
 
 ### Fixed

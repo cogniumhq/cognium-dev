@@ -279,6 +279,14 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getContent', class: 'Block', type: 'io_input', severity: 'high', return_tainted: true },
   { method: 'getParameters', class: 'Block', type: 'io_input', severity: 'high', return_tainted: true },
   { method: 'getRawContent', type: 'io_input', severity: 'high', return_tainted: true },
+  // XWiki request-bound sources (issue #10, CVE-2022-24897 / 2023-29201 / 2023-29528 /
+  // 2023-36471 / 2023-37908). XWikiRequest.get(name) / .getParameter(name) /
+  // XWikiContext.getRequest().get(...) all return URL/form data unchanged.
+  { method: 'get', class: 'XWikiRequest', type: 'http_param', severity: 'high', return_tainted: true },
+  { method: 'getParameter', class: 'XWikiRequest', type: 'http_param', severity: 'high', return_tainted: true },
+  { method: 'getParameterValues', class: 'XWikiRequest', type: 'http_param', severity: 'high', return_tainted: true },
+  { method: 'getParameterMap', class: 'XWikiRequest', type: 'http_param', severity: 'high', return_tainted: true },
+  { method: 'getHeader', class: 'XWikiRequest', type: 'http_header', severity: 'high', return_tainted: true },
 
   // SAX/XML parsing sources (data from parsed XML)
   { method: 'getAttributes', class: 'XMLReader', type: 'io_input', severity: 'high', return_tainted: true },
@@ -957,6 +965,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'eval', class: 'MVEL', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'createValueExpression', class: 'ExpressionFactory', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1] },
   { method: 'createMethodExpression', class: 'ExpressionFactory', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1] },
+  // Apache NiFi Expression Language (CVE-2023-36542, issue #11).
+  // PropertyValue.evaluateAttributeExpressions(...) runs NiFi EL against
+  // user-controlled property values — if the property is attacker-influenced
+  // the EL evaluation is a code-injection sink.
+  { method: 'evaluateAttributeExpressions', class: 'PropertyValue', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'evaluateAttributeExpressions', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
   // Groovy script execution
   { method: 'evaluate', class: 'GroovyShell', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'parse', class: 'GroovyShell', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
@@ -1182,6 +1196,27 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'cleanAttributes', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'printXMLElement', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'printXMLStartElement', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  // XWiki rendering output sinks (issue #10, CVE-2022-24897 / 2023-29201 /
+  // 2023-29528 / 2023-36471 / 2023-37908). WikiPrinter is the base output
+  // interface; DefaultWikiPrinter and AnnotatedXHTMLWikiPrinter are the
+  // concrete renderers that emit HTML into the response stream.
+  { method: 'print', class: 'WikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'println', class: 'WikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'print', class: 'DefaultWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'println', class: 'DefaultWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'print', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'println', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'printXML', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'printXMLComment', class: 'XHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'print', class: 'AnnotatedXHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'println', class: 'AnnotatedXHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'printXMLElement', class: 'AnnotatedXHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'printXMLStartElement', class: 'AnnotatedXHTMLWikiPrinter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  // Block renderers — `render(block, printer)` writes the block content out.
+  // The block argument carries the parsed (possibly tainted) wiki content.
+  { method: 'render', class: 'BlockRenderer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'render', class: 'AbstractBlockRenderer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'render', class: 'DefaultBlockRenderer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // XHTML renderer chains
   { method: 'initialize', class: 'HTML5Renderer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'initialize', class: 'XHTMLRenderer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
