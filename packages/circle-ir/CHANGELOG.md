@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.28.0] - 2026-06-09
+
+### Fixed
+
+- **Bounded tree-sitter WASM heap across many `analyze()` calls (#16).** Previously every `analyze()` allocated a fresh `Parser` and leaked the returned `Tree` in the WASM heap, causing a ~20pp benchmark regression when 120 Java projects shared one `initAnalyzer()` call (50.8% in-process vs 70.8% subprocess). Fix: cache one `Parser` per language and dispose `Tree` objects in a `try { … } finally { disposeTree(tree); }` wrapper around the three entry points (`analyze`, `analyzeForAPI`, `analyzeHtmlFile`). Repeated-`analyze()` IR stability is now covered by `tests/core/parser-lifecycle.test.ts`.
+
+### Added
+
+- `disposeTree(tree)` (re-exported from `core/index.ts`) — null-safe, idempotent helper to free a `Tree`'s WASM memory. Use this if you call `parse()` directly.
+- `createFreshParser(language)` — escape hatch returning a non-cached `Parser`; caller owns `.delete()`.
+
+### Changed
+
+- `resetParser()` now also disposes cached `Parser` instances and clears `loadingLanguages` / `configuredLanguageModules`, so a reset returns a clean WASM heap.
+
+[3.28.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.27.1...circle-ir-v3.28.0
+
 ## [3.27.1] - 2026-06-04
 
 > Versions 3.26.0 and 3.27.0 were prepared locally but never published to npm; their content shipped as part of 3.27.1.

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.28.0] - 2026-06-09
+
+### Changed
+
+- **circle-ir upgraded 3.27.1 → 3.28.0** — fixes unbounded tree-sitter WASM heap growth across many `analyze()` calls (#16). The CLI no longer leaks WASM memory when scanning large directories (`cognium scan <dir>` runs `analyzeProject()` which calls `analyze()` once per file). On the 120-Java-project corpus the in-process baseline previously regressed by ~20pp versus subprocess-isolated runs; that gap should close with this release.
+
+[3.28.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.27.1...cognium-dev-v3.28.0
+
 ## [3.27.1] - 2026-06-04
 
 > Versions 3.26.0 and 3.27.0 were prepared locally but never published to npm; their content shipped as part of 3.27.1.
