@@ -158,7 +158,7 @@ The spec includes an Implementation Status table tracking Python (reference) vs 
 
 ## Test Coverage
 
-- 1423+ tests passing
+- 1895+ tests passing
 - 75%+ coverage required
 - See `TODO.md` for areas needing additional test coverage
 
