@@ -4,7 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
-import type { CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType } from '../types/index.js';
+import type { CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SupportedLanguage } from '../types/index.js';
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
@@ -37,9 +37,10 @@ export function analyzeTaint(
   types: TypeInfo[],
   config: TaintConfig = getDefaultConfig(),
   typeHierarchy?: TypeHierarchyResolver,
+  language?: SupportedLanguage,
 ): Taint {
   const sources = findSources(calls, types, config.sources);
-  const sinks = findSinks(calls, config.sinks, typeHierarchy);
+  const sinks = findSinks(calls, config.sinks, typeHierarchy, language);
   const sanitizers = findSanitizers(calls, types, config.sanitizers);
 
   return { sources, sinks, sanitizers };
@@ -356,13 +357,18 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
-function findSinks(calls: CallInfo[], patterns: SinkPattern[], typeHierarchy?: TypeHierarchyResolver): TaintSink[] {
+function findSinks(
+  calls: CallInfo[],
+  patterns: SinkPattern[],
+  typeHierarchy?: TypeHierarchyResolver,
+  language?: SupportedLanguage,
+): TaintSink[] {
   // Use a map to deduplicate by location+line+cwe
   const sinkMap = new Map<string, TaintSink>();
 
   for (const call of calls) {
     for (const pattern of patterns) {
-      if (matchesSinkPattern(call, pattern, typeHierarchy)) {
+      if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
           continue;
@@ -582,7 +588,21 @@ function isKnownSafeReceiverForMethod(receiver: string, method: string, sinkType
 /**
  * Check if a call matches a sink pattern.
  */
-function matchesSinkPattern(call: CallInfo, pattern: SinkPattern, typeHierarchy?: TypeHierarchyResolver): boolean {
+function matchesSinkPattern(
+  call: CallInfo,
+  pattern: SinkPattern,
+  typeHierarchy?: TypeHierarchyResolver,
+  language?: SupportedLanguage,
+): boolean {
+  // Language scoping: when the pattern declares a language list, only match
+  // calls from a file in that language. Prevents cross-language name collisions
+  // (e.g. Python/Rust `cursor.execute(sql)` matching Java `Executor.execute(Runnable)`).
+  if (pattern.languages && pattern.languages.length > 0 && language !== undefined) {
+    if (!pattern.languages.includes(language)) {
+      return false;
+    }
+  }
+
   // Method name must match
   // Handle fully qualified names (e.g., "java.io.FileInputStream" should match "FileInputStream")
   const callMethodName = call.method_name;
@@ -738,13 +758,25 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     }
   }
 
+  // Denylist: identifiers whose lowercased form is a well-known standalone JDK
+  // type / generic concept name. For these, skip the loose substring/suffix
+  // heuristics — only explicit `commonMappings` (below) should resolve them.
+  // Prevents e.g. variable `executor` (j.u.c.Executor) wrongly matching pattern
+  // class `DefaultExecutor` (Apache Commons Exec) just because
+  // 'defaultexecutor'.includes('executor'). See issue #14.
+  const ambiguousIdentifiers = new Set([
+    'executor', 'pool', 'connection', 'manager',
+    'handler', 'controller', 'task', 'thread', 'job',
+  ]);
+  const isAmbiguous = ambiguousIdentifiers.has(lowerReceiver);
+
   // e.g., "request" might be HttpServletRequest
   // Match when receiver is contained in class name, but only if:
   //   (a) the receiver is ≥ 5 chars (avoids short generic names), OR
   //   (b) the receiver is 3-4 chars AND occupies ≥ 40% of the class name
   // This prevents "auth" (4/34=0.12) matching "DefaultOAuth2RequestAuthenticator"
   // while allowing "stmt" (4/9=0.44) to match "Statement".
-  if (lowerReceiver.length >= 3 && lowerClass.includes(lowerReceiver)) {
+  if (!isAmbiguous && lowerReceiver.length >= 3 && lowerClass.includes(lowerReceiver)) {
     if (lowerReceiver.length >= 5 || lowerReceiver.length / lowerClass.length >= 0.4) {
       return true;
     }
@@ -753,7 +785,7 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   // Short-prefix/suffix heuristic: "ev" might be ExpressionEvaluator (prefix),
   // "sink" might be CustomSink (suffix).
   // Only match if the class name starts or ends with the receiver (2+ chars).
-  if (lowerReceiver.length >= 2) {
+  if (!isAmbiguous && lowerReceiver.length >= 2) {
     if (lowerClass.startsWith(lowerReceiver) || lowerClass.endsWith(lowerReceiver)) {
       return true;
     }
@@ -764,7 +796,7 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   // any CamelCase segment and covers ≥ 40% of that word.
   // This prevents "auth" (4/13=0.31) matching "authenticator" while allowing
   // "req" (3/7=0.43) to match "request" and "lang" (4/8=0.50) to match "language".
-  if (lowerReceiver.length >= 3) {
+  if (!isAmbiguous && lowerReceiver.length >= 3) {
     const words = className.replace(/([a-z])([A-Z])/g, '$1\0$2').toLowerCase().split('\0');
     for (const word of words) {
       if (word.startsWith(lowerReceiver) && lowerReceiver.length / word.length >= 0.4) {

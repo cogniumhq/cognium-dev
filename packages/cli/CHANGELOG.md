@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.29.0] - 2026-06-09
+
+### Changed
+
+- **circle-ir upgraded 3.28.0 → 3.29.0** — fixes two upstream false-negative / false-positive issues that show up in `cognium-dev scan` output:
+  - **#14 Java enterprise FPs.** Threadpool dispatch sites like `executor.execute(task)` and `cachedThreadPool.execute(...)` no longer spuriously report `command_injection` / `sql_injection`. The CLI's per-file findings and the cross-file taint-path renderer both drop these on the DBeaver / Dubbo / Ruoyi / JeecgBoot / XXL-JOB corpus (298 → 0 FPs). Legitimate `Runtime.exec` and Apache Commons `DefaultExecutor.execute` detection is preserved.
+  - **#12 Apache Camel mail path traversal (CVE-2018-8041).** `new File(safeDir, untrustedHeader)` now triggers a CWE-22 finding, so SARIF / JSON / text output flags the second-argument-controlled traversal the previous release missed.
+
+[3.29.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.28.0...cognium-dev-v3.29.0
+
 ## [3.28.0] - 2026-06-09
 
 ### Changed

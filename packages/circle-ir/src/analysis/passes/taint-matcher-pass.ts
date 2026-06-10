@@ -73,7 +73,7 @@ export class TaintMatcherPass implements AnalysisPass<TaintMatcherResult> {
     const hierarchy = createWithJdkTypes();
     hierarchy.addFromIR(graph.ir, graph.ir.meta.file);
 
-    const taint = analyzeTaint(calls, types, mergedConfig, hierarchy);
+    const taint = analyzeTaint(calls, types, mergedConfig, hierarchy, language as import('../../types/index.js').SupportedLanguage);
 
     // Extract method names annotated with @sanitizer (Javadoc comments).
     const sanitizerMethods: string[] = [];

@@ -52,9 +52,10 @@
       "cwe": "CWE-022",
       "severity": "medium",
       "arg_positions": [
-        0
+        0,
+        1
       ],
-      "note": "File object creation - check usage"
+      "note": "File object creation - check usage. arg 1 covers File(parent, child) overload (CVE-2018-8041 Camel mail)"
     },
     {
       "method": "delete",
@@ -424,9 +425,10 @@
       "cwe": "CWE-22",
       "severity": "high",
       "arg_positions": [
-        0
+        0,
+        1
       ],
-      "note": "Auto-mined from CVE analysis"
+      "note": "Auto-mined from CVE analysis. arg 1 covers File(parent, child) overload (CVE-2018-8041)"
     },
     {
       "method": "openStream",

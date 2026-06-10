@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.29.0] - 2026-06-09
+
+### Fixed
+
+- **Java enterprise false-positives from cross-language sink leak + over-eager receiver heuristic (#14).** The classless Python/Rust `execute(...)` sink patterns (cursor.execute → SQL, exec/popen → cmdi) were matching Java `j.u.c.Executor.execute(Runnable)` and `cachedThreadPool.execute(...)` callsites because the matcher had no language filter and `receiverMightBeClass` accepted any receiver whose lowercased name was a substring/prefix/suffix/CamelCase-word of a sink class name. On the DBeaver / Dubbo / Ruoyi / JeecgBoot / XXL-JOB corpus this produced 298/298 false `command_injection` and `sql_injection` findings on every threadpool dispatch. Two-part fix:
+  1. **Language-scoped sink patterns.** `SinkPattern` gains an optional `languages?: SupportedLanguage[]` filter. `analyzeTaint` / `findSinks` / `matchesSinkPattern` / `matchesMethod` now take a `language` argument and skip any pattern whose `languages` list excludes the file's language. Node-specific sinks (`execSync`, `spawn`, `spawnSync`, `execFile`) and Python/Rust `cursor.execute`/`subprocess.run`/`os.system`/`std::process::Command` are tagged. The classless `exec` pattern is intentionally **not** scoped — it remains the catch-all that detects Java `Runtime.exec` via short receivers like `r.exec()` where the receiver-→-class heuristic can't resolve.
+  2. **Ambiguous-identifier denylist in `receiverMightBeClass`.** Identifiers whose lowercased form is a generic JDK concept name (`executor`, `pool`, `connection`, `manager`, `handler`, `controller`, `task`, `thread`, `job`) now skip the loose substring/short-prefix/short-suffix/CamelCase heuristics. Explicit `commonMappings` (e.g. `request → HttpServletRequest`, `session → HttpSession`, `stmt → Statement`) still resolve normally, so legitimate framework sinks are unaffected.
+- **Apache Camel mail path-traversal coverage of the `File(parent, child)` overload (#12, CVE-2018-8041).** The `java.io.File` constructor sink only marked argument 0 as dangerous, so attacker-controlled child names passed through `new File(safeDir, untrustedHeader)` (the exact shape used by Camel's mail component before the patch) escaped. `arg_positions` now lists `[0, 1]` for both the `java.io.File` and the auto-mined entry; flow detection now follows the second argument through the constructor and reports a single CWE-22 finding instead of letting the chain die at the parent directory.
+
+### Added
+
+- **`SinkPattern.languages?: SupportedLanguage[]`** — optional allow-list restricting a sink pattern to specific source languages. Existing patterns without `languages` continue to match every language, so this change is additive and backwards-compatible for downstream YAML configs.
+- **Regression suite for #14** — `tests/analysis/taint.test.ts` gains four cases under `describe('Java enterprise FP suppression (issue #14)')`:
+  - `j.u.c.Executor.execute(Runnable)` and `cachedThreadPool.execute(...)` must not produce `command_injection` or `sql_injection` (the upstream FP).
+  - Apache Commons `DefaultExecutor.execute(CommandLine)` must still fire as `command_injection` (positive control — class name is unambiguous, so the denylist doesn't apply).
+  - `Runtime.getRuntime().exec(...)` via short receiver `r.exec(...)` must still fire (positive control for the classless `exec` catch-all).
+- Total suite size: **1857 passing tests** (1853 baseline + 4 new).
+
+### Changed
+
+- `analyzeTaint(calls, types, config, hierarchy?, language?)`, `findSinks(...)`, `matchesSinkPattern(...)`, and `matchesMethod(...)` now propagate the source language end-to-end. The argument is optional and defaults to "unscoped" (existing behaviour) so external callers that don't pass `language` still get every pattern matched — but the in-tree analyzer (`analyzer.ts`, `analyzeForAPI`, `TaintMatcherPass`) all pass the real language now.
+
+[3.29.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.28.0...circle-ir-v3.29.0
+
 ## [3.28.0] - 2026-06-09
 
 ### Fixed

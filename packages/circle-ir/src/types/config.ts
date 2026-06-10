@@ -2,7 +2,7 @@
  * Types for YAML configuration files (configs/sources/, configs/sinks/)
  */
 
-import type { SarifLevel, Severity, SinkType, SourceType } from './index.js';
+import type { SarifLevel, Severity, SinkType, SourceType, SupportedLanguage } from './index.js';
 
 // =============================================================================
 // Source Configuration (configs/sources/*.yaml)
@@ -56,6 +56,13 @@ export interface SinkPattern {
   cwe: string;
   severity: Severity;
   arg_positions: number[];  // Which arguments are dangerous (0-indexed)
+  /**
+   * Restrict the pattern to specific source languages. When omitted, the
+   * pattern matches calls regardless of language. Use this for sinks whose
+   * method name collides across language ecosystems (e.g. Python/Rust
+   * `cursor.execute()` vs Java `Executor.execute()`).
+   */
+  languages?: SupportedLanguage[];
   note?: string;
 }
 

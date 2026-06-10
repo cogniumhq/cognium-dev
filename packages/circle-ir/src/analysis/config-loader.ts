@@ -536,7 +536,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'ProcessBuilder', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'command', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   // Commons Exec
-  { method: 'execute', class: 'Executor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // Note: bare class 'Executor' removed — it collided with java.util.concurrent.Executor
+  // (Executor.execute(Runnable) is not command injection). Apache Commons Exec users
+  // typically declare DefaultExecutor explicitly, so we match that instead. See issue #14.
   { method: 'execute', class: 'DefaultExecutor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'CommandLine', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'parse', class: 'CommandLine', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
@@ -610,8 +612,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'system', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Apache Commons Exec
-  { method: 'execute', class: 'Executor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'setCommandline', class: 'Executor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // Note: bare class 'Executor' removed (see comment above) — DefaultExecutor matched explicitly.
+  { method: 'setCommandline', class: 'DefaultExecutor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'parse', class: 'CommandLine', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'addArgument', class: 'CommandLine', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
@@ -622,7 +624,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'redirectInput', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'medium', arg_positions: [0] },
 
   // Path Traversal (CWE-22)
-  { method: 'File', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  // File: covers both File(String pathname) and File(parent, child). The 2-arg
+  // overload's child argument carries CVE-2018-8041 (Camel mail Content-Disposition
+  // filename written to disk).
+  { method: 'File', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
   { method: 'FileInputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileOutputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileReader', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
@@ -1260,11 +1265,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'spawn', class: 'child_process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'spawnSync', class: 'child_process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   // Also match without receiver (destructured imports: const { exec } = require('child_process'))
+  // `exec` is intentionally classless: catches Node.js child_process.exec AND
+  // Java Runtime.exec (via `r.exec()` where heuristic can't resolve r → Runtime).
   { method: 'exec', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
-  { method: 'execSync', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
-  { method: 'spawn', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
-  { method: 'spawnSync', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
-  { method: 'execFile', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
+  // `execSync`/`spawn`/`spawnSync`/`execFile` are Node-specific — language-scope them.
+  { method: 'execSync', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'spawn', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'spawnSync', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'execFile', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Node.js File System (path traversal)
   { method: 'readFile', class: 'fs', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0] },
@@ -1279,12 +1287,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'createWriteStream', class: 'fs', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0] },
 
   // Node.js SQL (mysql, pg, sqlite, etc.)
-  { method: 'query', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  // Language-scoped: generic class names `Pool`/`Connection`/`Client` substring-match
+  // unrelated Java identifiers like `cachedThreadPool`, `dbConnection`. See issue #14.
+  { method: 'query', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // Note: classless { method: 'query' } removed — too many FPs (UriComponentsBuilder.query(), etc.)
   // SQL query calls are covered by class-specific patterns above (Connection, Pool, Client, JdbcTemplate)
-  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
+  // Note: `raw` is shared with Python (Django ORM) — scoped to JS+TS to avoid leaking.
+  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Browser DOM XSS sinks
   { method: 'setAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
@@ -1297,7 +1308,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'render', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [1] },
 
   // Node.js Code Injection (eval, vm, etc.)
-  { method: 'eval', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
+  { method: 'eval', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'Function', class: 'constructor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInNewContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
@@ -1315,7 +1326,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'get', class: 'axios', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'post', class: 'axios', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'request', class: 'axios', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
-  { method: 'fetch', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'fetch', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'request', class: 'http', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'get', class: 'http', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'request', class: 'https', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
@@ -1347,10 +1358,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Popen', class: 'subprocess', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Python Code Injection
-  { method: 'eval', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  { method: 'exec', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  { method: 'compile', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
-  { method: '__import__', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Language-scoped: classless `exec`/`eval`/`compile` collide with Java/JS builtins
+  // and Java util.concurrent (e.g. Executor.execute / future.compile).
+  { method: 'eval', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'exec', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'compile', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: '__import__', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python Deserialization
   { method: 'loads', class: 'pickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
@@ -1360,23 +1373,26 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'loads', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
 
   // Python SQL Injection
-  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'executemany', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'extra', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
+  // Language-scoped: classless `execute`/`raw` collide with Java util.concurrent
+  // (Executor.execute, ThreadPool.execute) and other languages. See issue #14.
+  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'executemany', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'extra', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python Path Traversal
-  { method: 'open', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  // Language-scoped: classless `open` collides with Java I/O / JS DOM.
+  { method: 'open', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'remove', class: 'os', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'unlink', class: 'os', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'rmdir', class: 'os', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'rmtree', class: 'shutil', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0] },
-  { method: 'send_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  { method: 'send_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python XSS / SSTI
-  { method: 'render_template_string', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'Markup', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'mark_safe', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'render_template_string', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'Markup', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'mark_safe', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python SSRF
   { method: 'get', class: 'requests', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
@@ -1384,17 +1400,17 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'urlopen', class: 'urllib.request', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
 
   // Python Open Redirect
-  { method: 'redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0] },
+  { method: 'redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['python'] },
 
   // Python XPath Injection
-  { method: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
+  { method: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'find', class: 'etree', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
   { method: 'findall', class: 'etree', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
   { method: 'iterfind', class: 'etree', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
   { method: 'XPath', class: 'lxml', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
   // elementpath library (XPath 2.0/3.0)
   { method: 'select', class: 'elementpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [1] },
-  { method: 'select', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
+  { method: 'select', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'iter_select', class: 'elementpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [1] },
   { method: 'Selector', class: 'elementpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
 
@@ -1504,37 +1520,43 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'args', class: 'Command', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Rust SQL Injection (sqlx, diesel, rusqlite, tokio-postgres)
-  { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'execute', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'execute', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'sql_query', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'raw_sql', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'execute', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query_row', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'prepare', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  // Language-scoped: generic class names `Pool`/`Connection`/`Client` substring-match
+  // unrelated Java identifiers (cachedThreadPool, dbConnection). See issue #14.
+  { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'execute', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'execute', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'sql_query', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'raw_sql', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'execute', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'query_row', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'prepare', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
   // sqlx::query macro — use class-specific pattern
   { method: 'query', class: 'sqlx', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   // rusqlite specific
-  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
-  { method: 'query_map', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  // Language-scoped: classless `execute`/`prepare`/`query_map` collide with
+  // Java util.concurrent (Executor.execute, ExecutorService) and other languages.
+  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'query_map', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['rust'] },
 
   // Rust Path Traversal
   { method: 'open', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'create', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'read_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'remove_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'remove_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'remove_dir_all', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0] },
-  { method: 'copy', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
-  { method: 'rename', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
-  { method: 'write', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'read_to_string', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'create_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'create_dir_all', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'metadata', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
-  { method: 'symlink_metadata', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
+  // Language-scoped: classless std::fs helpers collide with Java/JS method names
+  // (write, copy, rename, metadata, etc.) See issue #14.
+  { method: 'read_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'remove_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'remove_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'remove_dir_all', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0], languages: ['rust'] },
+  { method: 'copy', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1], languages: ['rust'] },
+  { method: 'rename', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1], languages: ['rust'] },
+  { method: 'write', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'read_to_string', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'create_dir', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'create_dir_all', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['rust'] },
+  { method: 'metadata', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0], languages: ['rust'] },
+  { method: 'symlink_metadata', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0], languages: ['rust'] },
   // Tokio async fs
   { method: 'read_to_string', class: 'fs', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'write', class: 'fs', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },

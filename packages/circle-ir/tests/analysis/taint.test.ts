@@ -160,6 +160,43 @@ public class FileService {
     expect(pathSinks[0].cwe).toBe('CWE-22');
   });
 
+  it('should detect Camel mail Content-Disposition path traversal (CVE-2018-8041)', async () => {
+    // Apache Camel mail consumer wrote attachments to disk using the
+    // user-controlled MIME `Content-Disposition: filename=` header, reached via
+    // BodyPart.getFileName(). The vulnerable pattern is `new File(parentDir,
+    // fileName)` — the tainted argument is at position 1, not 0. Prior to the
+    // sink-position widening this flow was missed entirely.
+    const code = `
+import javax.mail.BodyPart;
+import java.io.File;
+
+public class MailConsumer {
+    public void saveAttachment(BodyPart part, File parentDir) throws Exception {
+        String fileName = part.getFileName();
+        File file = new File(parentDir, fileName);
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const fileNameSource = taint.sources.find(
+      s => s.location.includes('getFileName')
+    );
+    expect(fileNameSource).toBeDefined();
+
+    const fileSink = taint.sinks.find(
+      s => s.type === 'path_traversal' && s.method === 'File'
+    );
+    expect(fileSink).toBeDefined();
+    expect(fileSink!.cwe).toBe('CWE-22');
+    // The critical assertion: the 2-arg File(parent, child) overload must
+    // mark argument index 1 as a dangerous position.
+    expect(fileSink!.argPositions).toContain(1);
+  });
+
   it('should detect Jenkins SCMFileSystem.child path traversal sink (CVE-2022-25175)', async () => {
     // Receiver name matches the class name so the static receiver-heuristic
     // matches. Real Jenkins code uses `fs` and relies on TypeHierarchyResolver
@@ -391,5 +428,101 @@ public class Service {
     // Sanitizers should always be defined (possibly empty array)
     expect(taint.sanitizers).toBeDefined();
     expect(Array.isArray(taint.sanitizers)).toBe(true);
+  });
+});
+
+describe('Java enterprise FP suppression (issue #14)', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('should NOT flag j.u.c.Executor.execute(Runnable) as command_injection', async () => {
+    // Reproducer for the 298/298 FP corpus from DBeaver/Dubbo/Ruoyi/JeecgBoot/XXL-JOB:
+    // java.util.concurrent.Executor.execute(Runnable) collides with the
+    // Apache Commons Exec `DefaultExecutor.execute(CommandLine)` sink via the
+    // substring heuristic ('defaultexecutor'.includes('executor') === true).
+    const code = `
+import java.util.concurrent.Executor;
+public class TaskRunner {
+    private Executor executor;
+    private Object cachedThreadPool;
+    public void runTask(Runnable task) {
+        executor.execute(task);
+        cachedThreadPool.execute(() -> System.out.println("hi"));
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const cmdi = taint.sinks.find(s => s.type === 'command_injection');
+    expect(cmdi).toBeUndefined();
+    const sqli = taint.sinks.find(s => s.type === 'sql_injection');
+    expect(sqli).toBeUndefined();
+  });
+
+  it('should NOT flag cachedThreadPool.execute as sql_injection (cross-language Pool leak)', async () => {
+    // Rust/Node `Pool.execute` patterns must not match Java identifiers that
+    // happen to end with "pool" via substring containment.
+    const code = `
+public class ThreadPoolWrapper {
+    private Object cachedThreadPool;
+    public void schedule(Runnable r) {
+        cachedThreadPool.execute(r);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    expect(taint.sinks.find(s => s.type === 'sql_injection')).toBeUndefined();
+    expect(taint.sinks.find(s => s.type === 'command_injection')).toBeUndefined();
+  });
+
+  it('should still detect Apache Commons DefaultExecutor.execute() command injection', async () => {
+    // Negative-control: the legitimate cmdi sink must still fire when the
+    // receiver is actually a DefaultExecutor instance.
+    const code = `
+import org.apache.commons.exec.DefaultExecutor;
+import org.apache.commons.exec.CommandLine;
+public class Runner {
+    public void run(String userCmd) throws Exception {
+        DefaultExecutor defaultExecutor = new DefaultExecutor();
+        CommandLine cmd = CommandLine.parse(userCmd);
+        defaultExecutor.execute(cmd);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const cmdi = taint.sinks.find(s => s.type === 'command_injection');
+    expect(cmdi).toBeDefined();
+  });
+
+  it('should still detect Runtime.exec via short identifier `r`', async () => {
+    // Negative-control: classless `exec` pattern must still catch Java's
+    // Runtime.exec(...) when the variable is too short to resolve via heuristic.
+    const code = `
+public class Service {
+    public void run(String cmd) throws Exception {
+        Runtime r = Runtime.getRuntime();
+        r.exec(cmd);
+    }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const config = getDefaultConfig();
+    const taint = analyzeTaint(calls, types, config, undefined, 'java');
+
+    const cmdi = taint.sinks.find(s => s.type === 'command_injection');
+    expect(cmdi).toBeDefined();
   });
 });
