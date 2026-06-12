@@ -610,6 +610,239 @@ public class ShiroSourceProbe {
   });
 });
 
+describe('Jenkins Groovy sandbox script-security sinks (issue #17, CVE-2023-24422)', () => {
+  // Background. The reporter's original premise — that SandboxInterceptor was
+  // "modeled as sanitizing" — was incorrect: SANITIZER_METHODS contains no
+  // interceptor entries and configs/sinks/code_injection.yaml already listed three
+  // SandboxInterceptor dispatch methods as critical code-injection sinks. The
+  // actual gap was twofold:
+  //   1. `getDefaultConfig()` only reads embedded DEFAULT_SINKS in config-loader.ts,
+  //      not the YAML files. So the YAML entries for SandboxInterceptor.onMethodCall
+  //      / onStaticCall were dead-letter for the default analyzer surface.
+  //   2. The broader Jenkins script-security attack surface — parent class
+  //      `GroovyInterceptor`, the AST transformer `SandboxTransformer`, the outer
+  //      `GroovySandbox.runInSandbox` wrapper, and the property/attribute
+  //      interception entry points — was not modeled at all.
+  // Fix: mirror the SandboxInterceptor dispatch methods + the missing surrounding
+  // classes into DEFAULT_SINKS and code_injection.yaml. These are sinks, not
+  // anti-sanitizers, because the sandbox is a known-bypassable wrapper around the
+  // Groovy runtime — any user-controlled value reaching a dispatch point is RCE.
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('should detect SandboxInterceptor.onMethodCall as code_injection', async () => {
+    // Was MISS before: lived in code_injection.yaml only, never reached default consumers.
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxInterceptor;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, SandboxInterceptor interceptor) {
+    String script = request.getParameter("script");
+    interceptor.onMethodCall(null, null, script, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const sink = taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('onMethodCall'));
+    expect(sink).toBeDefined();
+    expect(sink?.cwe).toBe('CWE-94');
+  });
+
+  it('should detect SandboxInterceptor.onStaticCall as code_injection', async () => {
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxInterceptor;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, SandboxInterceptor interceptor) {
+    String script = request.getParameter("script");
+    interceptor.onStaticCall(null, null, script, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    expect(taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('onStaticCall'))).toBeDefined();
+  });
+
+  it('should detect SandboxInterceptor.onNewInstance as code_injection (regression guard)', async () => {
+    // Regression: SandboxInterceptor.onNewInstance was already in DEFAULT_SINKS as
+    // command_injection. The fix adds a code_injection entry too. Either must fire;
+    // neither should disappear.
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxInterceptor;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, SandboxInterceptor interceptor) {
+    String script = request.getParameter("script");
+    interceptor.onNewInstance(script, null, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const hit = taint.sinks.find(s => s.location.includes('onNewInstance'));
+    expect(hit).toBeDefined();
+    expect(['code_injection', 'command_injection']).toContain(hit?.type);
+  });
+
+  it('should detect GroovyInterceptor.onMethodCall as code_injection (parent class)', async () => {
+    // Was MISS before. Plugins that extend the parent class directly bypass any
+    // SandboxInterceptor-only patterns; the parent must be modeled.
+    const code = `
+import org.kohsuke.groovy.sandbox.GroovyInterceptor;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, GroovyInterceptor groovyInterceptor) {
+    String script = request.getParameter("script");
+    groovyInterceptor.onMethodCall(null, null, script, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    expect(taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('onMethodCall'))).toBeDefined();
+  });
+
+  it('should detect SandboxTransformer.call as code_injection (AST transformer)', async () => {
+    // Was MISS before. The AST transformer is what actually rewrites Groovy code
+    // into interceptor callbacks; many CVE-class bypasses target this layer.
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxTransformer;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, SandboxTransformer sandboxTransformer) {
+    String script = request.getParameter("script");
+    sandboxTransformer.call(null, null, script);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    expect(taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('.call'))).toBeDefined();
+  });
+
+  it('should detect GroovySandbox.runInSandbox as code_injection (Jenkins outer wrapper)', async () => {
+    // Was MISS before. command.yaml has a fictional GroovySandbox.sandbox entry;
+    // the real Jenkins method is runInSandbox(Callable, GroovyClassLoader).
+    const code = `
+import org.jenkinsci.plugins.scriptsecurity.sandbox.groovy.GroovySandbox;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, GroovySandbox groovySandbox) {
+    String script = request.getParameter("script");
+    groovySandbox.runInSandbox(() -> script, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    expect(taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('runInSandbox'))).toBeDefined();
+  });
+
+  it('should detect property/attribute interception entries as code_injection', async () => {
+    // Was MISS before. onGetProperty / onSetProperty / onGetAttribute / onSetAttribute
+    // are common attacker-controlled dispatch points in Groovy meta-programming bypasses.
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxInterceptor;
+import javax.servlet.http.HttpServletRequest;
+public class JenkinsScriptHandler {
+  public void run(HttpServletRequest request, SandboxInterceptor interceptor) {
+    String prop = request.getParameter("prop");
+    interceptor.onGetProperty(null, null, prop);
+    interceptor.onSetProperty(null, null, prop, null);
+    interceptor.onGetAttribute(null, null, prop);
+    interceptor.onSetAttribute(null, null, prop, null);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const propertyHits = taint.sinks.filter(s =>
+      s.type === 'code_injection' &&
+      (s.location.includes('onGetProperty') || s.location.includes('onSetProperty') ||
+       s.location.includes('onGetAttribute') || s.location.includes('onSetAttribute'))
+    );
+    expect(propertyHits.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('should not flag unrelated onMethodCall on a non-Groovy class (negative control)', async () => {
+    // Method-name collision guard: many libraries (Mockito, AOP frameworks) expose
+    // onMethodCall hooks. The pattern is class-qualified, so an unrelated class
+    // should not trigger. We pick a deliberately non-Groovy receiver name to ensure
+    // the receiver-class heuristic does not falsely associate it.
+    const code = `
+import javax.servlet.http.HttpServletRequest;
+public class ApplicationLogger {
+  public void run(HttpServletRequest request, ApplicationLogger logger) {
+    String evt = request.getParameter("evt");
+    logger.onMethodCall(evt);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    // Confirm source still fires — guards against accidental source regression.
+    expect(taint.sources.find(s => s.type === 'http_param')).toBeDefined();
+    // No code_injection sink should match the unrelated onMethodCall.
+    const cijHits = taint.sinks.filter(s =>
+      s.type === 'code_injection' && s.location.includes('onMethodCall')
+    );
+    expect(cijHits.length).toBe(0);
+  });
+
+  it('should detect end-to-end HTTP-source → sandbox dispatch flow (CVE-2023-24422 shape)', async () => {
+    // CVE-2023-24422 shape: attacker-controlled Groovy reaches the sandbox dispatch
+    // surface where the bypass is exploitable. Models a Jenkins build-step handler
+    // where the script parameter flows through SandboxInterceptor.onMethodCall.
+    const code = `
+import org.kohsuke.groovy.sandbox.SandboxInterceptor;
+import javax.servlet.http.HttpServletRequest;
+import java.util.Map;
+public class BuildStepHandler {
+  public void runStep(HttpServletRequest request, SandboxInterceptor interceptor, Map<String, Object> ctx) {
+    String userScript = request.getParameter("buildScript");
+    String name = request.getHeader("X-Step-Name");
+    Object[] args = new Object[]{ name, ctx };
+    interceptor.onMethodCall(null, null, userScript, args);
+  }
+}`;
+    const tree = await parse(code, 'java');
+    const calls = extractCalls(tree);
+    const types = extractTypes(tree);
+    const taint = analyzeTaint(calls, types);
+
+    // Both HTTP sources present (parameter + header)
+    expect(taint.sources.length).toBeGreaterThanOrEqual(2);
+    expect(taint.sources.find(s => s.type === 'http_param')).toBeDefined();
+    expect(taint.sources.find(s => s.type === 'http_header')).toBeDefined();
+
+    // Code-injection sink fires at the sandbox dispatch
+    const codeInj = taint.sinks.find(s => s.type === 'code_injection' && s.location.includes('onMethodCall'));
+    expect(codeInj).toBeDefined();
+    expect(codeInj?.cwe).toBe('CWE-94');
+    // High confidence — critical-severity pattern + receiver class match.
+    expect(codeInj?.confidence ?? 0).toBeGreaterThanOrEqual(0.7);
+  });
+});
+
 describe('NiFi Expression Language injection (issue #11, CVE-2023-36542)', () => {
   beforeAll(async () => {
     await initParser();

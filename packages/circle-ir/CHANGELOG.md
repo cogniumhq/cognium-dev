@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.35.0] - 2026-06-11
+
+### Added
+
+- **Jenkins Groovy sandbox dispatch surface — systematic sink coverage (#17, CVE-2023-24422).** The default `code_injection` sink registry now covers the full `org.kohsuke.groovy.sandbox` and `org.jenkinsci.plugins.scriptsecurity.sandbox.groovy` dispatch surface, not just `SandboxInterceptor.onNewInstance`. The CVE-2023-24422 sandbox-bypass class of vulnerabilities reaches Jenkins through any of these dispatch hooks; modelling only `onNewInstance` left realistic attack shapes (method-call and static-call dispatch) silently undetected even though the YAML sink file already listed them. The gap existed because `getDefaultConfig()` reads the embedded `DEFAULT_SINKS` array, not the YAML files.
+  - **`SandboxInterceptor`** (9 methods, all `code_injection` / CWE-94 / critical): `onMethodCall`, `onStaticCall`, `onGetProperty`, `onSetProperty`, `onGetAttribute`, `onSetAttribute`, `onMethodPointer`, `onSuperCall`, `onSuperConstructor`. `onNewInstance` remains as before (kept for regression).
+  - **`GroovyInterceptor`** (parent class — 5 methods): `onMethodCall`, `onNewInstance`, `onStaticCall`, `onGetProperty`, `onSetProperty`. Plugins extending `GroovyInterceptor` directly were previously uncovered.
+  - **`SandboxTransformer.call`** — AST transformer (CVE bypass typically targets the transformer's pre-execution rewriting step).
+  - **`GroovySandbox.runInSandbox`** — Jenkins outer wrapper used by script-security plugin consumers (replaces the fictional `GroovySandbox.sandbox` entry the previous YAML referenced).
+  - All 16 entries are mirrored in both `src/analysis/config-loader.ts` (`DEFAULT_SINKS`, the registry actually consumed by `getDefaultConfig()`) and `configs/sinks/code_injection.yaml` (the registry consumed by CLI projects with custom configs). The existing `SandboxInterceptor.onNewInstance` entry in `DEFAULT_SINKS` (classified as `command_injection` / CWE-78 since pre-3.x) is left untouched to avoid breaking downstream consumers that filter on `type === 'command_injection'`; the regression-guard test accepts either type so future normalisation is a separate, deliberate change.
+- **9 regression tests** in `tests/analysis/taint.test.ts` covering: each new dispatch hook (positive), the existing `onNewInstance` (regression guard), parent-class `GroovyInterceptor.onMethodCall`, `SandboxTransformer.call`, `GroovySandbox.runInSandbox`, batched property/attribute interception entries, a negative control proving an unrelated `ApplicationLogger.onMethodCall` does NOT match (receiver-class heuristic correctly discriminates), and an end-to-end CVE-2023-24422 shape with `http_param` + `http_header` sources reaching `SandboxInterceptor.onMethodCall`.
+- Total suite size: **1904 passing tests** (1895 baseline + 9 new).
+
+### Notes
+
+- Reporter's original premise — that the SandboxInterceptor methods were modelled as *sanitizers* — was incorrect after verification. `SANITIZER_METHODS` contains zero interceptor entries, and the YAML already classified `onMethodCall`/`onStaticCall`/`onNewInstance` as critical sinks. The real defect was the YAML-vs-`DEFAULT_SINKS` registry split: `getDefaultConfig()` only ever reads `DEFAULT_SINKS`, so the YAML entries were dead-letter for any consumer (including circle-ir's own tests) that didn't explicitly load the YAML. This release closes that split for the Jenkins Groovy surface and broadens coverage to the full dispatch API rather than landing a one-off CVE patch.
+
+[3.35.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.34.0...circle-ir-v3.35.0
+
 ## [3.34.0] - 2026-06-10
 
 ### Added

@@ -515,6 +515,118 @@
       "note": "Jenkins Groovy sandbox static call interception"
     },
     {
+      "method": "onGetProperty",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox property read interception (issue #17)"
+    },
+    {
+      "method": "onSetProperty",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox property write interception (issue #17)"
+    },
+    {
+      "method": "onGetAttribute",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox attribute read interception (issue #17)"
+    },
+    {
+      "method": "onSetAttribute",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox attribute write interception (issue #17)"
+    },
+    {
+      "method": "onMethodPointer",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox method-pointer interception (issue #17)"
+    },
+    {
+      "method": "onSuperCall",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox super-call interception (issue #17)"
+    },
+    {
+      "method": "onSuperConstructor",
+      "class": "SandboxInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins Groovy sandbox super-constructor interception (issue #17)"
+    },
+    {
+      "method": "onMethodCall",
+      "class": "GroovyInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy sandbox parent class — some plugins extend GroovyInterceptor directly (issue #17)"
+    },
+    {
+      "method": "onNewInstance",
+      "class": "GroovyInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy sandbox parent class — constructor interception (issue #17)"
+    },
+    {
+      "method": "onStaticCall",
+      "class": "GroovyInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy sandbox parent class — static-call interception (issue #17)"
+    },
+    {
+      "method": "onGetProperty",
+      "class": "GroovyInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy sandbox parent class — property read (issue #17)"
+    },
+    {
+      "method": "onSetProperty",
+      "class": "GroovyInterceptor",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy sandbox parent class — property write (issue #17)"
+    },
+    {
+      "method": "call",
+      "class": "SandboxTransformer",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Groovy AST transformer that wires interceptor callbacks — bypass target (issue #17, CVE-2023-24422)"
+    },
+    {
+      "method": "runInSandbox",
+      "class": "GroovySandbox",
+      "type": "code_injection",
+      "cwe": "CWE-094",
+      "severity": "critical",
+      "note": "Jenkins script-security outer sandbox wrapper (issue #17)"
+    },
+    {
       "method": "render",
       "class": "XWikiRenderer",
       "type": "code_injection",

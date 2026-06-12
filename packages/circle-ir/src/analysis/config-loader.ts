@@ -976,6 +976,32 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'parse', class: 'GroovyShell', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'parseClass', class: 'GroovyClassLoader', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'run', class: 'GroovyScriptEngine', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
+  // Jenkins script-security plugin — Groovy sandbox attack surface (issue #17, CVE-2023-24422).
+  // The sandbox is a documented-bypassable security control; the dispatch points that
+  // route tainted Groovy through the sandbox runtime are code-injection sinks, not
+  // sanitizers. SandboxInterceptor.onNewInstance already lives in command_injection above;
+  // these add the missing dispatch surface plus the parent GroovyInterceptor class and
+  // the AST transformer / outer GroovySandbox wrapper.
+  { method: 'onMethodCall', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onStaticCall', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onGetProperty', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onSetProperty', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onGetAttribute', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onSetAttribute', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onMethodPointer', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onSuperCall', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onSuperConstructor', class: 'SandboxInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  // Parent class — some plugins extend GroovyInterceptor directly.
+  { method: 'onMethodCall', class: 'GroovyInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onNewInstance', class: 'GroovyInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onStaticCall', class: 'GroovyInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onGetProperty', class: 'GroovyInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  { method: 'onSetProperty', class: 'GroovyInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  // AST transformer — converts unsafe Groovy AST into interceptor callbacks; bypasses target this.
+  { method: 'call', class: 'SandboxTransformer', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
+  // GroovySandbox.runInSandbox — Jenkins script-security outer wrapper (real API; the
+  // "sandbox" entry in command.yaml is fictional).
+  { method: 'runInSandbox', class: 'GroovySandbox', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [] },
   // JavaScript engine (Nashorn/Rhino)
   { method: 'eval', class: 'Bindings', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'eval', class: 'ScriptContext', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
