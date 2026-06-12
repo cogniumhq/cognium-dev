@@ -295,7 +295,7 @@ vulnerabilities are in embedded JS and template interpolation, not in HTML itsel
 - [x] Add MyBatis sink patterns (done in v3.22.x — 12 patterns covering `*Mapper.insert/update/delete/select*` for SQL injection)
 - [x] Jenkins `SCMFileSystem.child(String)` path-traversal sink (done in v3.23.2 — CVE-2022-25175)
 - [x] Jenkins `@DataBoundConstructor` method-level annotation source (done in v3.23.3 — all ctor params tainted at confidence 1.0)
-- [ ] **Cross-instance field-binding propagation** (Jenkins / general engine gap) — `this.field = param` write in one method → `other.field` read in another method on an aliased instance. Required to close the remaining CWE-Bench-Java Jenkins `ReadTrustedStep.run()` taint path end-to-end. Cross-instance flow analysis (DFG-level), not a YAML/config gap.
+- [x] **Cross-instance field-binding propagation** (done in v3.39.0) — `this.field = param` write in one method → `other.field` read in another method on an aliased instance. Closes the CWE-Bench-Java Jenkins `ReadTrustedStep.run()` taint path end-to-end. Covers `@DataBoundConstructor`, `@Autowired`/`@Inject`/`@Resource`, and setter-chain shapes; both direct field-read (`step.path`) and getter-mediated (`step.getPath()`) routes; caller-body and cross-file callee sinks.
 
 **Rust (P3):**
 - [ ] Add Axum framework patterns
