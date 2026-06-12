@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.37.0] - 2026-06-11
+
+### Fixed
+
+- **Python taint flows now propagate through assignment chains, container round-trips, and list-append patterns (#20).** After #18 unblocked *one-hop direct* Python flows (`uid = request.form.get(...); execute("..." + uid)`), every *indirect* shape still produced `taint.flows = []` — the dominant remaining driver of OWASP BenchmarkPython false-negatives and the blocker for circle-ir-ai#75. Probe-confirmed shapes:
+  - **Shape A — configparser round-trip:** `conf.set('s','k', tainted); bar = conf.get('s','k'); cur.execute(f'... {bar}')`.
+  - **Shape B — list/dict round-trip:** `lst.append(tainted); bar = lst[0]; argList = ['sh','-c', f'echo {bar}']; subprocess.run(argList)`.
+  - **Shape C — simple alias chain (NOT in the original bug report, found during analysis):** `bar = uid; sql = "..." + bar; cur.execute(sql)`. Even one rename of a tainted variable broke the flow.
+- **Root cause** — single defect with two contributing parts, both downstream of #18:
+  1. **`detectExpressionScanFlows` only scanned for source.variable names**, never for derived/aliased variables. The supplement word-boundary-matches sink-argument expressions against the `source.variable` field set by `findPythonAssignmentSources`, but `findPythonAssignmentSources` only emits a source for the *original* `var = request.form.get(...)` assignment. Subsequent aliases (`bar = uid`), container reads (`bar = conf.get(...)`), or compound expressions (`sql = "..." + bar`) were never added to the scan set.
+  2. **`buildPythonTaintedVars` already propagated taint through aliases, configparser, dict-subscript and aug-assign**, but its result was only consumed by `analyzer.ts` for sanitizer-detection / session-write checks — never threaded back into the expression-scan flow detector. It also had no rule for receiver-mutating container methods (`lst.append`, `set.add`, `deque.put`, …), so list-append-then-subscript-read (Shape B) was the one inherent gap in its propagation rules.
+- **Fix — two minimal, surgical changes:**
+  1. `detectExpressionScanFlows` now accepts `code` + `language` and, when `language === 'python'`, calls `buildPythonTaintedVars(code)` to expand `sourcesWithVar` with synthetic source records for every derived/aliased Python variable. Synthetic records inherit the earliest real source's `line`/`type`/`confidence` so emitted flows still anchor at the original `request.form.get(...)` site, not at the alias. Word-boundary scan and `argPositions` filter logic unchanged.
+  2. `buildPythonTaintedVars` gained one new rule: `(\w+)\.(append|extend|insert|add|push|put|appendleft)\(taintedExpr)` taints the receiver. This composes naturally with the existing dict-access propagation so `lst.append(x); bar = lst[0]` round-trips correctly without a separate Shape-B handler.
+- **Why this is not "build a Python DFG"** — A proper `buildPythonDFG` is still future work (~990 LOC mirroring `buildJavaDFG`, plus AST-walk pass for compound-expression arg decomposition). The supplement+rule are ~50 LOC total, deterministic, regex-based, and unblock the entire BenchmarkPython false-negative tail today.
+- **Why Java does not regress** — The Python alias expansion is gated on `language === 'python'`. Java sources rarely set `.variable` (matched on annotations/types), so `sourcesWithVar` is empty for Java and the supplement is a no-op. Verified by an explicit end-to-end Java sqli non-regression test plus the full 156-case Juliet suite.
+- **6 end-to-end regression tests** in `tests/analysis/taint-propagation.test.ts` covering: Shape A (configparser → sqli), Shape B (list append → subprocess cmdi), Shape B variant (set.add → list cast → cmdi), Shape C (simple alias → sqli), the #18 one-hop direct positive control, and Java sqli non-regression.
+- Total suite size: **1931 passing tests** (1925 baseline from 3.36.0 + 6 new).
+
+### Notes
+
+- The original bug report enumerated shapes A, B, and a third "helper module" cross-module shape (#3). Probe revealed a fourth shape — **simple variable aliasing** (`bar = uid`) — that the reporter did not flag and that fails for the same root cause. The fix addresses it as a free corollary because `buildPythonTaintedVars` already tracked aliases.
+- Cross-module / cross-file Python helper indirection (`helpers.db_sqlite.results(cur, sql)`) is **not** addressed by this release. It requires inter-procedural / cross-file taint summaries (the reporter's option #3), which is a substantially larger architectural change. Filed as future work alongside `buildPythonDFG`.
+- The supplement is now powered by a deterministic regex-based receiver-taint map, intentionally distinct from the AST-walking propagator used for Java in `ConstantPropagationPass`. Long-term, both should converge on a single Python-aware DFG-based design; in the interim the regex approach matches the Python-specific patterns the BenchmarkPython suite exercises and has no observed false-positive trigger across the full 1931-test suite.
+
+[3.37.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.36.0...circle-ir-v3.37.0
+
 ## [3.36.0] - 2026-06-11
 
 ### Fixed

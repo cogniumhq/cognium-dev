@@ -582,4 +582,123 @@ public class Handler {
       expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // End-to-end Python multi-hop / indirection (issue #20)
+  //
+  // After #18, one-hop direct flows (`uid = request.form.get(...); execute(... + uid)`)
+  // worked. But every form of indirection still produced flows=0:
+  //
+  //   Shape A — configparser round-trip:
+  //     conf.set('s','k', tainted); bar = conf.get('s','k'); sink(... bar)
+  //
+  //   Shape B — list/dict round-trip:
+  //     lst.append(tainted); bar = lst[0]; argList = ['sh','-c', f'echo {bar}']; subprocess.run(argList)
+  //
+  //   Shape C — simple alias:
+  //     bar = uid; sql = "..." + bar; cur.execute(sql)
+  //
+  // Root cause: `detectExpressionScanFlows` only scanned for source.variable
+  // names from `findPythonAssignmentSources` — never for derived/aliased vars.
+  // Fix: thread code+language into the supplement and seed the scan from
+  // `buildPythonTaintedVars`, which already propagates taint through these
+  // shapes (added a `.append/.extend/.add/...` receiver-tainting rule for
+  // Shape B which was the one gap in that map).
+  // -------------------------------------------------------------------------
+  describe('Python taint flows — issue #20 regression (multi-hop / indirection)', () => {
+    it('Shape C: simple alias chain (bar = uid; sql = "..." + bar) → sql_injection', async () => {
+      const code = `
+from flask import request
+import sqlite3
+def handler():
+    uid = request.form.get('uid')
+    bar = uid
+    sql = "SELECT * FROM users WHERE id = " + bar
+    conn = sqlite3.connect('db')
+    cur = conn.cursor()
+    cur.execute(sql)
+`;
+      const r = await analyze(code, 'alias.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+
+    it('Shape A: configparser round-trip (conf.set → conf.get → sink) → sql_injection', async () => {
+      const code = `
+from flask import request
+import configparser
+import sqlite3
+def handler():
+    param = request.form.get('x')
+    conf = configparser.ConfigParser()
+    conf.set('s', 'k', param)
+    bar = conf.get('s', 'k')
+    sql = f'SELECT * FROM users WHERE id = {bar}'
+    conn = sqlite3.connect('db')
+    cur = conn.cursor()
+    cur.execute(sql)
+`;
+      const r = await analyze(code, 'configparser.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+
+    it('Shape B: list append → subscript read → list literal → subprocess.run → command_injection', async () => {
+      const code = `
+from flask import request
+import subprocess
+def handler():
+    param = request.form.get('x')
+    lst = []
+    lst.append(param)
+    bar = lst[0]
+    argList = ['sh', '-c', f'echo {bar}']
+    subprocess.run(argList)
+`;
+      const r = await analyze(code, 'listappend.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'command_injection')).toBe(true);
+    });
+
+    it('Shape B variant: set.add → membership pass-through still propagates', async () => {
+      const code = `
+from flask import request
+import subprocess
+def handler():
+    param = request.form.get('x')
+    s = set()
+    s.add(param)
+    args = list(s)
+    subprocess.run(args)
+`;
+      const r = await analyze(code, 'setadd.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'command_injection')).toBe(true);
+    });
+
+    it('one-hop direct still works (#18 regression guard)', async () => {
+      const code = `
+from flask import request
+import sqlite3
+def handler():
+    uid = request.form.get('uid')
+    conn = sqlite3.connect('db')
+    cur = conn.cursor()
+    cur.execute("SELECT * WHERE id = " + uid)
+`;
+      const r = await analyze(code, 'direct.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+
+    it('Java direct flow remains unaffected by Python-only expansion', async () => {
+      const code = `
+import javax.servlet.http.HttpServletRequest;
+import java.sql.Statement;
+public class Handler {
+    public void handle(HttpServletRequest req, Statement stmt) throws Exception {
+        String uid = req.getParameter("uid");
+        stmt.executeQuery("SELECT * FROM users WHERE id = " + uid);
+    }
+}
+`;
+      const r = await analyze(code, 'Handler.java', 'java');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+  });
 });

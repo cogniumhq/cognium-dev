@@ -372,6 +372,21 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
       continue;
     }
 
+    // Mutating container methods that taint the receiver (#20):
+    //   lst.append(taintedVar) / lst.extend(taintedVar) / lst.insert(i, taintedVar) /
+    //   set.add(taintedVar) / queue.put(taintedVar)
+    // Mark the receiver as tainted so subsequent reads (`lst[0]`, `lst.pop()`,
+    // bare `lst` in a list literal, etc.) propagate taint via the standard
+    // word-boundary scan below.
+    const containerAppendMatch = line.match(/^\s*(\w+)\.(append|extend|insert|add|push|put|appendleft)\s*\(\s*(.+?)\s*\)\s*$/);
+    if (containerAppendMatch) {
+      const [, receiver, , argExpr] = containerAppendMatch;
+      const argIsTainted = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(argExpr));
+      const argIsDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(argExpr));
+      if (argIsTainted || argIsDirectSource) tainted.set(receiver, tainted.get(receiver) ?? (i + 1));
+      continue;
+    }
+
     const augAssign = line.match(/^\s*(\w+)\s*\+=\s*(.+)$/);
     if (augAssign) {
       const [, augLhs, augRhs] = augAssign;

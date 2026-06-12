@@ -18,6 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
+import { buildPythonTaintedVars } from './language-sources-pass.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -125,7 +126,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // scan each sink's call-argument expressions for that variable name as
     // an identifier-boundary match. This is language-agnostic but in practice
     // benefits Python the most because Java sources rarely set `variable`.
-    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, constProp.unreachableLines) ?? [];
+    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, constProp.unreachableLines, ctx.code, ctx.language) ?? [];
     for (const f of exprScanFlows) {
       if (flows.some(x =>
         x.source_line === f.source_line &&
@@ -411,6 +412,8 @@ function detectExpressionScanFlows(
   sources: CircleIR['taint']['sources'],
   sinks: CircleIR['taint']['sinks'],
   unreachableLines: Set<number>,
+  code?: string,
+  language?: string,
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
 
@@ -419,6 +422,41 @@ function detectExpressionScanFlows(
     typeof s.variable === 'string' && s.variable.length > 0
   );
   if (sourcesWithVar.length === 0) return flows;
+
+  // Python alias expansion (#20): seed the scan with not only direct source
+  // variables (e.g. `uid` from `uid = request.form.get(...)`) but also any
+  // derived/aliased variables produced by simple assignment chains, compound
+  // expressions, container set/get round-trips (configparser), list append +
+  // subscript reads, dict access, aug-assigns and for-loops. These are already
+  // computed deterministically by `buildPythonTaintedVars` for sanitizer and
+  // session-boundary checks; here we reuse the same map to fix the long tail
+  // of "container round-trip / helper / alias" flows=0 false-negatives that
+  // are the dominant driver of OWASP BenchmarkPython misses.
+  //
+  // We synthesize a virtual source for each derived var, anchored to the
+  // earliest real source's line/type so reported flows still point at the
+  // original `request.form.get(...)`-style source, not the alias.
+  if (language === 'python' && typeof code === 'string') {
+    const derived = buildPythonTaintedVars(code);
+    if (derived.size > 0) {
+      // Earliest real source — used as the anchor for synthetic source lines.
+      let anchor: typeof sourcesWithVar[0] = sourcesWithVar[0];
+      for (const s of sourcesWithVar) {
+        if (s.line < anchor.line) anchor = s;
+      }
+      const existingVars = new Set(sourcesWithVar.map(s => s.variable));
+      for (const [varName] of derived) {
+        if (!varName || existingVars.has(varName)) continue;
+        // Don't shadow real sources; build a minimal synthetic record that
+        // satisfies the scan loop below.
+        sourcesWithVar.push({
+          ...anchor,
+          variable: varName,
+        });
+        existingVars.add(varName);
+      }
+    }
+  }
 
   // Pre-compile word-boundary regexes per unique source variable.
   // Escape regex-special characters defensively (variable names should be
