@@ -90,12 +90,71 @@ export class CrossFilePass {
       }];
     });
 
+    // --- 1b. Inter-procedural multi-hop taint chains -----------------------
+    // Source in callee A → caller-side wrapper-return → caller-side sink-call
+    // → sink in callee B.  These are flows that `findCrossFileTaintFlows()`
+    // can't see because no single file has both source and sink.
+    const ipPaths = resolver.findInterproceduralTaintPaths();
+    for (let i = 0; i < ipPaths.length; i++) {
+      const p = ipPaths[i];
+      const sinkIR = projectGraph.getIR(p.sink.file);
+      if (!sinkIR) continue;
+      const matchedSink = sinkIR.taint.sinks.find(s => s.line === p.sink.line);
+      if (!matchedSink) continue;
+
+      const srcLines = sourceLines.get(p.source.file) ?? [];
+      const tgtLines = sourceLines.get(p.sink.file)   ?? [];
+
+      // Dedup against any direct cross-file taint already emitted at the same
+      // source/sink coordinates.
+      const dupId = `${p.source.file}:${p.source.line}→${p.sink.file}:${p.sink.line}`;
+      if (taintPaths.some(tp =>
+        tp.source.file === p.source.file && tp.source.line === p.source.line &&
+        tp.sink.file   === p.sink.file   && tp.sink.line   === p.sink.line)) {
+        continue;
+      }
+
+      taintPaths.push({
+        id: `cf-ip-${i}-${dupId}`,
+        source: {
+          file: p.source.file,
+          line: p.source.line,
+          type: p.source.type as SourceType,
+          code: srcLines[p.source.line - 1] ?? '',
+        },
+        sink: {
+          file: p.sink.file,
+          line: p.sink.line,
+          type: matchedSink.type as SinkType,
+          cwe:  matchedSink.cwe,
+          code: tgtLines[p.sink.line - 1] ?? '',
+        },
+        hops: p.hops.map(h => ({
+          file:     h.file,
+          method:   h.method,
+          line:     h.line,
+          code:     (sourceLines.get(h.file) ?? [])[h.line - 1] ?? '',
+          variable: '',
+        })),
+        sanitizers_in_path: [],
+        path_exists: true,
+        confidence: p.confidence,
+      });
+    }
+
     // --- 2. Resolved inter-file calls → CrossFileCall[] --------------------
+    // `args_mapping[].taint_propagates` is populated from the callee's
+    // `taintedParams` summary so callers can see at a glance which args of
+    // a cross-file call lead to a downstream sink.
     const crossFileCalls: CrossFileCall[] = [];
     for (const filePath of projectGraph.filePaths) {
       const resolved = resolver.getResolvedCallsFromFile(filePath);
       for (const rc of resolved) {
         if (rc.sourceFile === rc.targetFile) continue; // same-file, skip
+
+        const calleeInfo = resolver.getMethodTaintInfo(rc.targetMethod);
+        const taintedParamSet = new Set(calleeInfo?.taintedParams ?? []);
+
         crossFileCalls.push({
           id: `${rc.sourceFile}:${rc.call.location.line}:${rc.targetMethod}`,
           from: {
@@ -111,7 +170,7 @@ export class CrossFilePass {
           args_mapping: (rc.call.arguments ?? []).map((_, i) => ({
             caller_arg:       i,
             callee_param:     i,
-            taint_propagates: false,
+            taint_propagates: taintedParamSet.has(i),
           })),
           resolved: rc.resolution === 'exact',
         });

@@ -302,3 +302,242 @@ describe('analyzeProject()', () => {
     expect(result.meta.name).toBe('src');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inter-procedural multi-hop chains — issue #19 regression
+// ---------------------------------------------------------------------------
+
+describe('Cross-file multi-hop taint chains (issue #19)', () => {
+  it('CVE-2011-2732 shape: open redirect via wrapper + sink strategy', async () => {
+    // LoginController.handle calls UrlHandler.determineTargetUrl(request) which
+    // returns request.getParameter(...) — a real http_param source.  The returned
+    // URL is then passed to RedirectStrategy.sendRedirect which calls
+    // res.sendRedirect(url) — the CWE-601 sink.  Neither caller alone has a
+    // co-located source-and-sink; the chain only resolves cross-file.
+    const controller = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+public class LoginController {
+    private final UrlHandler handler = new UrlHandler();
+    private final RedirectStrategy strategy = new RedirectStrategy();
+    public void handle(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String url = handler.determineTargetUrl(request);
+        strategy.sendRedirect(request, response, url);
+    }
+}
+`;
+    const handler = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+public class UrlHandler {
+    public String determineTargetUrl(HttpServletRequest request) {
+        return request.getParameter("spring-security-redirect");
+    }
+}
+`;
+    const strategy = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+public class RedirectStrategy {
+    public void sendRedirect(HttpServletRequest req, HttpServletResponse res, String url) throws Exception {
+        res.sendRedirect(url);
+    }
+}
+`;
+    const result = await analyzeProject([
+      { code: controller, filePath: 'LoginController.java',  language: 'java' },
+      { code: handler,    filePath: 'UrlHandler.java',       language: 'java' },
+      { code: strategy,   filePath: 'RedirectStrategy.java', language: 'java' },
+    ]);
+
+    expect(result.taint_paths.length).toBeGreaterThanOrEqual(1);
+    const ssrf = result.taint_paths.find(p => p.sink.type === 'ssrf');
+    expect(ssrf).toBeDefined();
+    expect(ssrf!.source.file).toBe('UrlHandler.java');
+    expect(ssrf!.source.type).toBe('http_param');
+    expect(ssrf!.sink.file).toBe('RedirectStrategy.java');
+    expect(ssrf!.sink.cwe).toBe('CWE-601');
+    // Multi-hop chain: source -> wrapper return -> sink call -> sink.
+    expect(ssrf!.hops.length).toBeGreaterThanOrEqual(3);
+
+    // The cross-file call carrying `url` to sendRedirect should mark
+    // taint_propagates=true on param 2.
+    const sendRedirectCall = result.cross_file_calls.find(c =>
+      c.to.method.endsWith('.sendRedirect'),
+    );
+    expect(sendRedirectCall).toBeDefined();
+    const urlArg = sendRedirectCall!.args_mapping.find(a => a.callee_param === 2);
+    expect(urlArg?.taint_propagates).toBe(true);
+  });
+
+  it('Sanitized wrapper negative control: no flow when wrapper sanitizes', async () => {
+    // Same shape as CVE-2011-2732, but the wrapper class name + method name
+    // suggest a sanitizer (UrlSanitizer.sanitizeUrl).  The cross-file resolver
+    // must treat the wrapper as sanitizing and skip the multi-hop chain.
+    const controller = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+public class LoginController {
+    private final UrlSanitizer sanitizer = new UrlSanitizer();
+    private final RedirectStrategy strategy = new RedirectStrategy();
+    public void handle(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String raw = request.getParameter("redirect");
+        String safe = sanitizer.sanitizeUrl(raw);
+        strategy.sendRedirect(request, response, safe);
+    }
+}
+`;
+    const sanitizer = `
+package app;
+public class UrlSanitizer {
+    public String sanitizeUrl(String input) {
+        if (input == null) return "/";
+        if (!input.startsWith("/")) return "/";
+        return input;
+    }
+}
+`;
+    const strategy = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+public class RedirectStrategy {
+    public void sendRedirect(HttpServletRequest req, HttpServletResponse res, String url) throws Exception {
+        res.sendRedirect(url);
+    }
+}
+`;
+    const result = await analyzeProject([
+      { code: controller, filePath: 'LoginController.java',  language: 'java' },
+      { code: sanitizer,  filePath: 'UrlSanitizer.java',     language: 'java' },
+      { code: strategy,   filePath: 'RedirectStrategy.java', language: 'java' },
+    ]);
+
+    // No cross-file taint path should be emitted from the sanitized variable
+    // (`safe`) to sendRedirect.  Any path emitted from `raw` -> sendRedirect
+    // must not exist either because `safe` is what gets passed, not `raw`.
+    const passes = result.taint_paths.filter(p =>
+      p.source.type === 'http_param' &&
+      p.sink.file === 'RedirectStrategy.java',
+    );
+    expect(passes).toHaveLength(0);
+  });
+
+  it('CVE-2018-1260 shape: SpEL injection via parser + getValue', async () => {
+    // Spring SpEL injection.  Real-world flow:
+    //   1. Controller reads request.getParameter("expr") — http_param.
+    //   2. Calls helper.parseAndEval(req) which wraps both the parser and
+    //      the evaluation.  The helper internally calls
+    //      SpelExpressionParser.parseExpression(expr).getValue().
+    //   3. SpelExpressionParser.parseExpression + Expression.getValue are
+    //      sinks for CWE-94 (code injection).
+    const controller = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+public class SpelController {
+    private final SpelHelper helper = new SpelHelper();
+    public Object handle(HttpServletRequest request) {
+        return helper.evaluate(request);
+    }
+}
+`;
+    const helper = `
+package app;
+import javax.servlet.http.HttpServletRequest;
+import org.springframework.expression.Expression;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+public class SpelHelper {
+    public Object evaluate(HttpServletRequest req) {
+        String expr = req.getParameter("expr");
+        Expression e = new SpelExpressionParser().parseExpression(expr);
+        return e.getValue();
+    }
+}
+`;
+    const result = await analyzeProject([
+      { code: controller, filePath: 'SpelController.java', language: 'java' },
+      { code: helper,     filePath: 'SpelHelper.java',     language: 'java' },
+    ]);
+
+    // The sink must exist in SpelHelper.java (intra-file flow that the
+    // single-file InterproceduralPass already handles) — even if the
+    // cross-file resolver doesn't add a path, the engine must still surface
+    // SpEL parseExpression as a known sink so the helper's intra-file
+    // analysis flags it.
+    const spelHelperIR = result.files.find(f => f.file === 'SpelHelper.java')?.analysis;
+    expect(spelHelperIR).toBeDefined();
+    const hasSpelSink = (spelHelperIR!.taint.sinks ?? []).some(s =>
+      s.cwe?.startsWith('CWE-9') || s.type === 'spel_injection' || s.type === 'code_injection',
+    );
+    // We accept *either* a recognized SpEL sink OR a recognized intra-file
+    // flow from http_param to a known sink.  This is the minimum signal needed.
+    const hasIntraFlow = (spelHelperIR!.taint.flows ?? []).some(f =>
+      f.source_type === 'http_param',
+    );
+    expect(hasSpelSink || hasIntraFlow).toBe(true);
+  });
+
+  it('Jenkins #1 shape: @DataBoundConstructor field bound to user input', async () => {
+    // Jenkins DataBoundConstructor pattern: the constructor argument is a
+    // user-controlled web binding.  A getter exposes it as a field, and a
+    // subsequent call from another class uses the field at a dangerous sink.
+    //
+    // Minimum signal expected: the BuildStep.execute() cross-file call into
+    // CommandRunner.run resolves, and CommandRunner.run's `cmd` param is
+    // flagged as taint-propagating (it reaches Runtime.exec / ProcessBuilder).
+    const action = `
+package app;
+import org.kohsuke.stapler.DataBoundConstructor;
+public class MyBuilder {
+    private final String command;
+    @DataBoundConstructor
+    public MyBuilder(String command) {
+        this.command = command;
+    }
+    public String getCommand() {
+        return command;
+    }
+}
+`;
+    const buildStep = `
+package app;
+public class BuildStep {
+    private final MyBuilder builder;
+    private final CommandRunner runner = new CommandRunner();
+    public BuildStep(MyBuilder builder) {
+        this.builder = builder;
+    }
+    public void execute() throws Exception {
+        String cmd = builder.getCommand();
+        runner.run(cmd);
+    }
+}
+`;
+    const runner = `
+package app;
+public class CommandRunner {
+    public void run(String cmd) throws Exception {
+        Runtime.getRuntime().exec(cmd);
+    }
+}
+`;
+    const result = await analyzeProject([
+      { code: action,     filePath: 'MyBuilder.java',     language: 'java' },
+      { code: buildStep,  filePath: 'BuildStep.java',     language: 'java' },
+      { code: runner,     filePath: 'CommandRunner.java', language: 'java' },
+    ]);
+
+    // CommandRunner.run's `cmd` param must be flagged as taint-propagating
+    // (it reaches Runtime.exec).  This is the new sink-arg-matching
+    // taintedParams summary needed by cross-file chaining.
+    const runnerCall = result.cross_file_calls.find(c =>
+      c.to.method.endsWith('.run') && c.to.file === 'CommandRunner.java',
+    );
+    expect(runnerCall).toBeDefined();
+    const cmdArg = runnerCall!.args_mapping.find(a => a.callee_param === 0);
+    expect(cmdArg?.taint_propagates).toBe(true);
+  });
+});

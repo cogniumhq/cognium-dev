@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.38.0] - 2026-06-11
+
+### Fixed
+
+- **Cross-file inter-procedural taint chains now resolve through wrapper return values and sink-param summaries (#19).** Closes the Java Spring-shape gap reported for CVE-2011-2732 (`sendRedirect` open redirect via `UrlHandler.determineTargetUrl` wrapper) — and by virtue of the same fix, the Jenkins #1 shape (`@DataBoundConstructor` field bound to user input flowing through `BuildStep` → `CommandRunner.run` → `Runtime.exec`). After diagnostic review the issue was reframed: it is not Spring-specific. The engine already had *every* intermediate signal — sources per file, sinks per file, the intra-file `interprocedural_param → sink` flow in the sink wrapper, and cross-file call resolution with `args_mapping`. Only the *chaining* between them was missing.
+- **Root cause** — three independent gaps in `CrossFileResolver`:
+  1. **`isMethodTaintSource` treated `interprocedural_param` sources as "real"**, so every internal helper with typed parameters was marked `returnsSource = true`. Cross-file `wrapper(...)` calls would then ghost-taint their callers.
+  2. **`findTaintedParams` only looked at annotations (`@RequestParam` / `@RequestBody` / `@PathVariable`)** — so a sink-wrapper like `RedirectStrategy.sendRedirect(req, res, String url) { res.sendRedirect(url); }` carried `taintedParams = []`, and the `args_mapping[].taint_propagates` summary on every cross-file call was permanently stuck at `false`.
+  3. **No chaining method existed**. `findCrossFileTaintFlows()` only emits `source-in-caller → sink-in-callee` flows; it cannot see the canonical 2-wrapper chain `source-in-callee-A → wrapper-return-in-caller → sink-call-in-caller → sink-in-callee-B`, even though `callee-A.returnsSource=true` + `callee-B.taintedParams=[2]` is the exact summary needed to link them.
+  4. **`findCrossFileTaintFlows()` overapproximated** when the caller had its own real source: it emitted a path to any downstream cross-file sink regardless of whether the call's *arguments* actually carried the source. A `String safe = sanitizer.sanitizeUrl(raw); sendRedirect(req, res, safe)` shape FP'd because `raw` (the source variable) was never threaded through.
+- **Fix — four minimal changes in `CrossFileResolver` + chained-emit in `CrossFilePass`:**
+  1. `isMethodTaintSource` + `getSourceType` now skip `interprocedural_param` sources entirely.
+  2. `findTaintedParams` adds a sink-arg-matching heuristic: for every known sink inside the method body, scan the corresponding call expression's argument variables and whole-word-match them against the method's parameter names. Hits are added to `taintedParams`.
+  3. New `findInterproceduralTaintPaths()` walks each caller method in line order, seeds a per-method tainted-var map from real sources, marks every `local` DFG def at a call site as tainted when the resolved callee has `returnsSource = true` and is not a sanitizer, and emits a multi-hop `InterproceduralTaintPath` whenever a tainted variable is passed to a callee param in `taintedParams`. Confidence decays by 0.85 per hop, floor 0.30.
+  4. `findCrossFileTaintFlows()` now derives the source's owning local-def variable (when DFG has one) and requires the cross-file call's arguments to reference it (whole-word). Eliminates the sanitized-wrapper FP without disabling the simpler 2-file shape.
+  5. `CrossFilePass` appends `findInterproceduralTaintPaths()` paths to `taintPaths` (deduped against direct flows at the same source/sink coordinates) and populates `args_mapping[].taint_propagates` from the callee's `taintedParams` summary.
+- **Verification fixtures (4)** in `tests/analysis/project-graph.test.ts`:
+  - CVE-2011-2732 shape: `LoginController.handle → UrlHandler.determineTargetUrl → RedirectStrategy.sendRedirect → res.sendRedirect`. Emits a 4-hop `cf-ip-…` TaintPath, `http_param@UrlHandler:6 → ssrf/CWE-601@RedirectStrategy:7`, with `taint_propagates=true` on param 2 of the sendRedirect cross-file call.
+  - Negative control: same shape with `UrlSanitizer.sanitizeUrl` between source and sink — no path emitted (sanitizer name heuristic + variable-connectivity gate).
+  - CVE-2018-1260 shape: SpEL parser + `getValue()` in a helper called from a controller — verified the helper file still surfaces an `http_param`-rooted intra-file flow.
+  - Jenkins #1 shape: `@DataBoundConstructor` → field getter → `CommandRunner.run(cmd)` → `Runtime.exec(cmd)`. Verified `run`'s param 0 is now flagged `taint_propagates=true`.
+- **Why this is not a redesign of cross-file analysis** — The new method reuses every existing primitive: `resolveCall`, `methodTaintInfo`, per-file `taint.sources/sinks`, `ir.dfg.defs`, and `args_mapping`. The walk is a single per-method linear pass over calls. No new IR types, no new pipeline pass, no project-level fix-point.
+- **Why Java suites do not regress** — The variable-connectivity gate in `findCrossFileTaintFlows` only fires when DFG has a local def at the source line; sources without a known variable retain the prior behavior. The new chain method only fires when both `returnsSource` (post-`interprocedural_param` exclusion) and `taintedParams` (now sink-arg-derived) are populated. The sanitizer guard short-circuits both directions. Full suite remains at 1935 passing tests (1931 baseline from 3.37.0 + 4 fixtures).
+
 ## [3.37.0] - 2026-06-11
 
 ### Fixed

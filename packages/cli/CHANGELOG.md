@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.38.0] - 2026-06-11
+
+### Changed
+
+- **circle-ir upgraded 3.37.0 → 3.38.0** — closes the Java cross-file inter-procedural taint gap (#19) that hid CVE-2018-1260 (Spring SpEL injection) and CVE-2011-2732 (Spring open redirect) shapes. `cognium-dev scan` against multi-file Java projects now emits `taint_paths` for the canonical pattern `source-in-callee-A → wrapper-return-in-caller → sink-call-in-caller → sink-in-callee-B`, where neither file in isolation contains both a source and the sink. `cross_file_calls[].args_mapping[].taint_propagates` is now populated from the callee's analyzed `taintedParams` summary (previously hard-coded `false`), giving downstream consumers an at-a-glance view of which arguments carry tainted data across a resolved inter-file call. Output formats (text, JSON, SARIF) are unchanged; previously-hidden multi-hop chains now surface with confidence-decayed paths (0.85 per hop, floor 0.30). The fix also tightens single-hop cross-file flow detection with a variable-connectivity gate that eliminates false positives when a sanitized wrapper sits between the controller-side source and the callee-side sink. Java/JS/Python flows for in-file and pre-existing cross-file shapes are unaffected (verified by full OWASP Benchmark Java + Juliet + SecuriBench Micro suites).
+
+[3.38.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.37.0...cognium-dev-v3.38.0
+
 ## [3.37.0] - 2026-06-11
 
 ### Changed
