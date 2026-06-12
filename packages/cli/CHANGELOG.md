@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.36.0] - 2026-06-11
+
+### Changed
+
+- **circle-ir upgraded 3.35.0 → 3.36.0** — fixes a long-standing structural defect that left `result.taint.flows` empty for every Python sink category (#18). `cognium-dev scan` against Python projects now emits cross-source/sink flows for sql_injection, command_injection (`os.system`, `subprocess.call(..., shell=True)`), path_traversal, code_injection (`eval`, `exec`), deserialization (`pickle.loads`), xxe (`ET.fromstring`), ldap_injection, and open_redirect. Output formats (text, JSON, SARIF) are unchanged; previously-hidden flows now surface in all three. Java/JS/Bash flows are unaffected (verified by 156-case Juliet suite + targeted non-regression test).
+
+[3.36.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.35.0...cognium-dev-v3.36.0
+
 ## [3.35.0] - 2026-06-11
 
 ### Changed

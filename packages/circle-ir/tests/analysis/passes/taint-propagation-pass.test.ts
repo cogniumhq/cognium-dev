@@ -345,3 +345,233 @@ describe('TaintPropagationPass — dead-code FP filter', () => {
     expect(result.flows.filter(f => f.sink_line === 10)).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: expression-scan flows (issue #18)
+//
+// These tests validate the language-agnostic fallback added to bridge two
+// gaps that previously suppressed Python flows for every non-XSS category:
+//   1. Languages without a per-language DFG builder produce empty DFGs, so
+//      the def-use-chain propagator can never emit a flow.
+//   2. Call-argument extraction may leave `arg.variable` null when the
+//      argument is a compound expression (e.g. concatenation), defeating
+//      the equality check used by the DFG-based propagator.
+//
+// The expression-scan supplement keys off the explicit `source.variable`
+// set by `findPythonAssignmentSources` and word-boundary-matches it against
+// each sink call argument's expression text. Language-agnostic by design.
+// ---------------------------------------------------------------------------
+
+function makeSourceWithVar(line: number, variable: string, type: TaintSource['type'] = 'http_param'): TaintSource {
+  return { type, location: `line ${line}`, severity: 'high', line, confidence: 0.9, variable };
+}
+
+describe('TaintPropagationPass — expression-scan flows (#18)', () => {
+  it('emits a sql_injection flow when a tainted variable appears in a concatenation expression at the sink', () => {
+    // Simulates Python `cur.execute("SELECT ... " + uid)` where Python's call-
+    // arg extractor leaves arg.variable null because the arg is a binary_operator.
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      receiver:    'cur',
+      arguments:   [{ position: 0, expression: '"SELECT * FROM users WHERE id = " + uid', variable: undefined, literal: null }],
+      location:    { line: 8, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'uid', 'http_body')],
+      sinks:    [makeSink(8, 'sql_injection', 'CWE-89')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    const flow = result.flows.find(f => f.source_line === 5 && f.sink_line === 8);
+    expect(flow).toBeDefined();
+    expect(flow?.sink_type).toBe('sql_injection');
+  });
+
+  it('emits a command_injection flow for `os.system(cmd)` where cmd is a tainted assignment variable', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'system',
+      receiver:    'os',
+      arguments:   [{ position: 0, expression: 'cmd', variable: undefined, literal: null }],
+      location:    { line: 5, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(4, 'cmd', 'http_param')],
+      sinks:    [makeSink(5, 'command_injection', 'CWE-78')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.some(f => f.sink_line === 5 && f.sink_type === 'command_injection')).toBe(true);
+  });
+
+  it('emits a path_traversal flow for `open(fname, "rb")` where fname is a tainted assignment variable', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'open',
+      arguments:   [{ position: 0, expression: 'fname', variable: undefined, literal: null }],
+      location:    { line: 4, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(3, 'fname', 'http_param')],
+      sinks:    [makeSink(4, 'path_traversal', 'CWE-22')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.some(f => f.sink_line === 4 && f.sink_type === 'path_traversal')).toBe(true);
+  });
+
+  it('emits TWO distinct flows when two sinks of different types coexist at the same line', () => {
+    // Probe-confirmed: cur.execute("SELECT..." + uid) registers both xss
+    // (heuristic) and sql_injection sinks at the same line. Both must emit.
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      receiver:    'cur',
+      arguments:   [{ position: 0, expression: '"SELECT * FROM users WHERE id = " + uid', variable: undefined, literal: null }],
+      location:    { line: 8, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'uid', 'http_body')],
+      sinks:    [
+        makeSink(8, 'xss',           'CWE-79'),
+        makeSink(8, 'sql_injection', 'CWE-89'),
+      ],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    const types = result.flows.filter(f => f.sink_line === 8).map(f => f.sink_type).sort();
+    expect(types).toEqual(['sql_injection', 'xss']);
+  });
+
+  it('respects sink argPositions — does NOT emit when matching variable is in a non-tainted argument position', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      receiver:    'cur',
+      arguments:   [
+        { position: 0, expression: '"SELECT * FROM users WHERE id = ?"', variable: undefined, literal: null },
+        { position: 1, expression: 'uid',                                  variable: undefined, literal: null },
+      ],
+      location:    { line: 8, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'uid', 'http_body')],
+      // sink declares only position 0 is tainted (parameterised query)
+      sinks:    [{ type: 'sql_injection', cwe: 'CWE-89', line: 8, location: 'line 8', confidence: 0.9, argPositions: [0] }],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.filter(f => f.source_line === 5 && f.sink_line === 8)).toHaveLength(0);
+  });
+
+  it('does NOT match substrings (word-boundary required)', () => {
+    // Source variable 'id' must NOT match identifiers like 'fid' or 'user_id'.
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      arguments:   [{ position: 0, expression: '"SELECT * FROM t WHERE k = " + fid', variable: undefined, literal: null }],
+      location:    { line: 10, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'id', 'http_param')],
+      sinks:    [makeSink(10, 'sql_injection', 'CWE-89')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.filter(f => f.source_line === 5 && f.sink_line === 10)).toHaveLength(0);
+  });
+
+  it('does NOT emit when sink line is in unreachable (dead) code', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      arguments:   [{ position: 0, expression: '"x = " + uid', variable: undefined, literal: null }],
+      location:    { line: 10, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'uid', 'http_param')],
+      sinks:    [makeSink(10, 'sql_injection', 'CWE-89')],
+      constProp: makeConstProp({ unreachableLines: new Set([10]) }),
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.filter(f => f.sink_line === 10)).toHaveLength(0);
+  });
+
+  it('does NOT emit when source has no `variable` field (Java-style sources are unaffected)', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      arguments:   [{ position: 0, expression: 'something + uid', variable: undefined, literal: null }],
+      location:    { line: 10, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'java');
+    const ctx = makeCtx({
+      language: 'java',
+      ir,
+      // makeSource() does NOT set .variable — typical for Java HTTP sources.
+      sources:  [makeSource(5, 'http_param')],
+      sinks:    [makeSink(10, 'sql_injection', 'CWE-89')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    // Expression-scan supplement must NOT fire — there's no variable to scan for.
+    expect(result.flows.filter(f => f.source_line === 5 && f.sink_line === 10)).toHaveLength(0);
+  });
+
+  it('does NOT emit when source line is at or after sink line', () => {
+    const calls: CallInfo[] = [{
+      method_name: 'execute',
+      arguments:   [{ position: 0, expression: '"x = " + uid', variable: undefined, literal: null }],
+      location:    { line: 5, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      // source line >= sink line: assignment-after-use is impossible flow.
+      sources:  [makeSourceWithVar(5, 'uid', 'http_param')],
+      sinks:    [makeSink(5, 'sql_injection', 'CWE-89')],
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    expect(result.flows.filter(f => f.source_line === 5 && f.sink_line === 5)).toHaveLength(0);
+  });
+
+  it('deduplicates flows when invoked alongside DFG-based propagator producing the same (source,sink,type) triple', () => {
+    // Simulate the case where both propagators reach the same flow: the
+    // expression-scan supplement must skip if an identical triple already
+    // exists in the flows list.
+    const calls: CallInfo[] = [{
+      method_name: 'executeQuery',
+      arguments:   [{ position: 0, variable: 'uid', expression: 'uid', literal: null }],
+      location:    { line: 10, column: 0 },
+      in_method:   'handler',
+    }];
+    const ir  = makeIR(calls, 'python');
+    const ctx = makeCtx({
+      language: 'python',
+      ir,
+      sources:  [makeSourceWithVar(5, 'uid', 'http_param')],
+      sinks:    [makeSink(10, 'sql_injection', 'CWE-89')],
+      constProp: makeConstProp({ tainted: new Set(['uid']) }),
+    });
+    const result = new TaintPropagationPass().run(ctx);
+    const sqli = result.flows.filter(f => f.source_line === 5 && f.sink_line === 10 && f.sink_type === 'sql_injection');
+    expect(sqli).toHaveLength(1);
+  });
+});

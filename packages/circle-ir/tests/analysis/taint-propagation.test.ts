@@ -429,4 +429,157 @@ public class Handler {
       expect(stats.flowsBySinkType.get('xss')).toBe(1);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // End-to-end Python taint propagation (issue #18)
+  //
+  // Before the fix, every non-XSS Python category produced 0 flows because:
+  //   - Python had no per-language DFG builder (fell through to buildJavaDFG
+  //     which looks for `method_declaration` nodes; Python uses
+  //     `function_definition`). The DFG was always empty (defs=[], uses=[],
+  //     chains=[]) so the def-use propagator could not fire.
+  //   - Python `extractPythonArguments` only set arg.variable when the
+  //     argument node was a bare `identifier`. Compound expressions
+  //     (binary_operator, subscript, attribute) had arg.variable=null.
+  //
+  // These tests exercise the full analyze() pipeline against canonical
+  // patterns from each non-XSS sink category to prevent regression.
+  // -------------------------------------------------------------------------
+  describe('Python taint flows — issue #18 regression', () => {
+    it('sql_injection (concatenated string in cur.execute)', async () => {
+      const code = `
+from flask import request
+import sqlite3
+def handler():
+    uid = request.form.get('uid')
+    conn = sqlite3.connect('db')
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = " + uid)
+`;
+      const r = await analyze(code, 'sqli.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+
+    it('command_injection (os.system)', async () => {
+      const code = `
+from flask import request
+import os
+def handler():
+    cmd = request.form.get('cmd')
+    os.system(cmd)
+`;
+      const r = await analyze(code, 'cmdi.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'command_injection')).toBe(true);
+    });
+
+    it('command_injection (subprocess with shell=True)', async () => {
+      const code = `
+from flask import request
+import subprocess
+def handler():
+    cmd = request.form.get('cmd')
+    subprocess.call(cmd, shell=True)
+`;
+      const r = await analyze(code, 'cmdi2.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'command_injection')).toBe(true);
+    });
+
+    it('path_traversal (open with tainted filename)', async () => {
+      const code = `
+from flask import request
+def handler():
+    fname = request.form.get('filename')
+    f = open(fname, 'rb')
+    return f.read()
+`;
+      const r = await analyze(code, 'pathtraver.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'path_traversal')).toBe(true);
+    });
+
+    it('code_injection (eval of tainted input)', async () => {
+      const code = `
+from flask import request
+def handler():
+    code = request.args.get('code')
+    eval(code)
+`;
+      const r = await analyze(code, 'codeinj.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'code_injection')).toBe(true);
+    });
+
+    it('deserialization (pickle.loads of tainted input)', async () => {
+      const code = `
+from flask import request
+import pickle
+def handler():
+    blob = request.data
+    obj = pickle.loads(blob)
+`;
+      const r = await analyze(code, 'deser.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'deserialization')).toBe(true);
+    });
+
+    it('xxe (XML fromstring of tainted input)', async () => {
+      const code = `
+from flask import request
+import xml.etree.ElementTree as ET
+def handler():
+    xml = request.data
+    root = ET.fromstring(xml)
+`;
+      const r = await analyze(code, 'xxe.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'xxe')).toBe(true);
+    });
+
+    it('ldap_injection (ldap search filter concatenation)', async () => {
+      const code = `
+from flask import request
+import ldap
+def handler():
+    u = request.args.get('u')
+    conn = ldap.initialize('ldap://x')
+    conn.search_s('dc=x', ldap.SCOPE_SUBTREE, '(uid=' + u + ')')
+`;
+      const r = await analyze(code, 'ldapi.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'ldap_injection')).toBe(true);
+    });
+
+    it('open_redirect (flask redirect with tainted url)', async () => {
+      const code = `
+from flask import request, redirect
+def handler():
+    url = request.args.get('url')
+    return redirect(url)
+`;
+      const r = await analyze(code, 'redirect.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'open_redirect')).toBe(true);
+    });
+
+    it('xss positive control still works (regression guard)', async () => {
+      const code = `
+from flask import request
+from flask import render_template_string
+def handler():
+    name = request.args.get('name')
+    return render_template_string('Hello ' + name)
+`;
+      const r = await analyze(code, 'xss.py', 'python');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'xss')).toBe(true);
+    });
+
+    it('Java SQL injection still works (no regression on existing path)', async () => {
+      const code = `
+import javax.servlet.http.HttpServletRequest;
+import java.sql.Statement;
+public class Handler {
+    public void handle(HttpServletRequest req, Statement stmt) throws Exception {
+        String uid = req.getParameter("uid");
+        stmt.executeQuery("SELECT * FROM users WHERE id = " + uid);
+    }
+}
+`;
+      const r = await analyze(code, 'Handler.java', 'java');
+      expect((r.taint.flows ?? []).some(f => f.sink_type === 'sql_injection')).toBe(true);
+    });
+  });
 });

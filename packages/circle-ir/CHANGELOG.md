@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.36.0] - 2026-06-11
+
+### Fixed
+
+- **Python taint flows emit for every sink category — systematic fix (#18).** `result.taint.flows` was empty for *every* non-trivial Python case (sqli, command_injection, path_traversal, code_injection, deserialization, xxe, ldap_injection, open_redirect, …) — including the XSS case the reporter believed was working. Investigation found two structural defects affecting all categories simultaneously, not a per-category sink/source modelling gap:
+  1. **No per-language DFG builder for Python.** `core/extractors/dfg.ts:buildDFG()` dispatches on `language` with explicit branches for JS, Rust, Bash, and Go. Python falls through to `buildJavaDFG()`, which scans for `method_declaration` AST nodes; Python's tree-sitter grammar emits `function_definition`. Result: every Python file produced `dfg = { defs: [], uses: [], chains: [] }`, so the DFG-based propagator in `taint-propagation.ts:propagateTaint()` never had a chain to walk.
+  2. **Python compound-expression args lose `arg.variable`.** `core/extractors/calls.ts:extractPythonArguments` only sets `arg.variable` when the AST child node is a bare `identifier`. Calls like `cur.execute("SELECT … " + uid)` (binary_operator), `redirect(url)` wrapped in compound expressions, or `conn.search_s('dc=x', SCOPE, '(uid=' + u + ')')` leave `arg.variable = undefined` with only `arg.expression` populated, defeating the `arg.variable === use.variable` matching the DFG propagator relies on.
+- **Fix: language-agnostic expression-scan flow supplement** in `TaintPropagationPass`. After the DFG propagator and the three existing supplements (array, collection, parameter) run, `detectExpressionScanFlows()` iterates each sink × each call at that sink's line × each argument expression and word-boundary-matches every source's explicit `.variable` field against the expression text. Reuses the existing FP filters (`isCorrelatedPredicateFP`, `isFalsePositive`, `unreachableLines`) and respects `sink.argPositions`. Source line must strictly precede sink line.
+  - **Why this fixes every category at once** — Python's `LanguageSourcesPass.findPythonAssignmentSources` already sets `source.variable` for assignment-style sources (`uid = request.form.get(...)` → `{ type: 'http_body', variable: 'uid', … }`), so a single variable-tracking primitive covers every sink type the SinkFilterPass produces. Not a category-by-category patch.
+  - **Why Java does not regress** — Java HTTP-source extractors do not populate `source.variable` (sources are matched on annotations/types, not LHS names), so `sourcesWithVar` is typically empty for Java; the supplement is a no-op. Verified by the existing 156-case Juliet suite + a dedicated `does NOT emit when source has no variable field` unit test + an end-to-end Java sqli test.
+  - **Why this is not "just build a Python DFG"** — A proper Python DFG builder would be ~990 LOC mirroring `buildJavaDFG`, plus it would still not address gap #2 (compound-expression arg decomposition would need a separate AST-walk pass). The supplement is ~40 LOC and unblocks circle-ir-ai#75 (OWASP BenchmarkPython false-negative rate) immediately. A full Python DFG remains future work and would naturally subsume this supplement.
+- **10 unit tests** in `tests/analysis/passes/taint-propagation-pass.test.ts` covering: positive cases for sqli/cmdi/pathtraver, two distinct sinks at same line emitting two flows (dedup keys on `sink_type`), `argPositions` filter (parameterised-query position 1 does not match position-0 sink), word-boundary requirement (source `id` does not match identifier `fid`), dead-code suppression, no-variable Java source non-emission, source-after-sink rejection, and DFG/expression-scan dedup.
+- **11 end-to-end tests** in `tests/analysis/taint-propagation.test.ts` running the full `analyze()` pipeline across every previously-broken Python category (sql_injection, command_injection ×2, path_traversal, code_injection, deserialization, xxe, ldap_injection, open_redirect), the XSS positive control, and a Java sqli non-regression case.
+- Total suite size: **1925 passing tests** (1904 baseline + 21 new).
+
+### Notes
+
+- Reporter's premise that "XSS works, others don't" was falsified by direct probe — XSS flows were also 0 prior to this fix; the existing XSS test fixtures happen to hit the array/collection supplement code paths rather than the DFG path. The reporter's perception likely came from CLI-level findings emitted by `XssReflectivePass`, which inspects calls directly without consulting `taint.flows`.
+- The Python DFG fall-through (gap #1) is a latent bug that affects other consumers of `ir.dfg` for Python files (e.g. `DFGVerifier`, `PathFinder`, circle-ir-ai). A proper `buildPythonDFG` is filed as future work; until then `ir.dfg` remains structurally empty for Python and downstream consumers should rely on `ir.calls` + `ir.taint.flows` instead.
+- The XPath injection probe shows `sinks=0` for `tree.xpath()` — that is a Python sink-config gap (separate from #18) and is not addressed here.
+
+[3.36.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.35.0...circle-ir-v3.36.0
+
 ## [3.35.0] - 2026-06-11
 
 ### Added
