@@ -79,6 +79,7 @@ function makeProjectGraph(opts: {
       return {
         findCrossFileTaintFlows: () => opts.flows ?? [],
         findInterproceduralTaintPaths: () => [],
+        findFieldBindingTaintPaths: () => [],
         getResolvedCallsFromFile: (path: string) => opts.resolvedCallsMap?.get(path) ?? [],
         getMethodTaintInfo: () => undefined,
       };

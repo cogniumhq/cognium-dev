@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.39.0] - 2026-06-11
+
+### Added
+
+- **Cross-instance field-binding taint propagation.** Closes the canonical
+  CWE-Bench-Java Jenkins shape and adjacent framework-DI patterns that
+  3.38.0 still could not surface, where the source is bound onto a field by
+  one class (`@DataBoundConstructor`, `@Autowired`, setter chain) and
+  consumed by another class reading that field on an aliased instance.
+  Two surgical changes in `CrossFileResolver` + the project-level pass:
+  1. **`findInterproceduralTaintPaths` — caller-body sink emission (step 2c).**
+     After marking caller-side locals tainted via a wrapper return, also
+     check whether any sink in the *caller's own* method body consumes a
+     tainted variable. Closes shapes where the final sink (`Paths.get(p)`,
+     `Runtime.exec(cmd)`) lives in the caller's file rather than in a
+     cross-file callee — previously only callee-side sinks were emitted.
+  2. **New `FieldTaintInfo` summary + `findFieldBindingTaintPaths()`.**
+     `analyzeFieldTaint(ir)` runs per file, recording:
+     - Constructor-bound fields (via existing `constructor_field` sources).
+     - Setter writers (`set<Field>(<param>)` with one param).
+     - `@Autowired` / `@Inject` / `@Resource`-annotated fields.
+     `findFieldBindingTaintPaths()` per caller method scans local DFG defs
+     and co-located uses to detect `local = receiver.field` field-reads
+     (handles both expression-bearing defs and the DFG-only case where the
+     `expression` field is absent — falls back to co-located use-pair
+     matching `(receiver, field)` against the receiver's declared type's
+     field list). When the receiver's declared type owns a tainted field,
+     the local is marked tainted with origin anchored to the writer, and
+     paths are emitted via both caller-body-sink and cross-file-callee
+     forwarding paths. Hop kind union extended to include `field_write`
+     and `field_read`.
+  3. **`CrossFilePass` integration.** Field-binding paths are merged into
+     the existing `ipPaths` flow and converted with the same TaintPath
+     conversion logic (dedup against direct cross-file flows + IP paths).
+- **Verification fixtures (4)** in `tests/analysis/project-graph.test.ts`:
+  - Jenkins ReadTrustedStep — ctor-bound field + direct `step.path` read +
+    `Paths.get` sink in caller body. Emits 4-hop `constructor_field` →
+    `path_traversal` (CWE-22) path with source on `ReadTrustedStep`.
+  - Jenkins ReadTrustedStep — ctor-bound field + `step.getPath()` getter
+    + `Paths.get` sink in caller body. Closed by the caller-body-sink
+    emission in step 2c.
+  - `@Autowired` — Spring `@Autowired` field on a service read by an
+    aliased instance reaching `Paths.get`. Emits `autowired_field` source.
+  - Ctor + setter mix — class with both `@DataBoundConstructor` and a
+    setter for the same field still surfaces the ctor-bound path; setter
+    presence does not regress ctor detection.
+- **Why this is not a redesign** — Both changes reuse every existing
+  primitive: `methodTaintInfo`, `resolveCall`, `taint.sources/sinks`,
+  `ir.dfg.defs`/`uses`, and the existing `matchTaintedArg` heuristic. The
+  walk is two linear passes per caller method, with the second activated
+  only when `fieldTaintInfo` is non-empty.
+- Total suite size: **1939 passing tests** (1935 baseline from 3.38.0 + 4
+  new fixtures).
+
 ## [3.38.0] - 2026-06-11
 
 ### Fixed

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.39.0] - 2026-06-11
+
+### Changed
+
+- **circle-ir upgraded 3.38.0 → 3.39.0** — adds cross-instance field-binding taint propagation. `cognium-dev scan` against multi-file Java projects now emits `taint_paths` for the canonical CWE-Bench-Java Jenkins shape and adjacent framework-DI patterns where the source is bound onto a field by one class (`@DataBoundConstructor`, `@Autowired` / `@Inject` / `@Resource`, or setter chain) and consumed by another class reading that field on an aliased instance. Both direct field reads (`String p = step.path`) and getter-mediated reads (`String p = step.getPath()`) are now closed, and the sink may live either in the caller's own method body (`Files.newInputStream(Paths.get(p))`) or in a downstream cross-file callee. Output formats (text, JSON, SARIF) are unchanged; previously-hidden field-binding chains now surface with `constructor_field` or `autowired_field` source types and confidence-decayed multi-hop paths. No regressions: full circle-ir suite at 1939 passing tests (1935 baseline + 4 new fixtures).
+
+[3.39.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.38.0...cognium-dev-v3.39.0
+
 ## [3.38.0] - 2026-06-11
 
 ### Changed

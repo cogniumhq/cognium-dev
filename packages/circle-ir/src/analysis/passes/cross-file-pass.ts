@@ -94,7 +94,16 @@ export class CrossFilePass {
     // Source in callee A → caller-side wrapper-return → caller-side sink-call
     // → sink in callee B.  These are flows that `findCrossFileTaintFlows()`
     // can't see because no single file has both source and sink.
-    const ipPaths = resolver.findInterproceduralTaintPaths();
+    //
+    // Also includes cross-instance field-binding flows
+    // (`findFieldBindingTaintPaths()`): canonical Jenkins shape where one
+    // class writes `this.field = param` in a `@DataBoundConstructor` and
+    // another class reads that field on an aliased instance and forwards to
+    // a sink.
+    const ipPaths = [
+      ...resolver.findInterproceduralTaintPaths(),
+      ...resolver.findFieldBindingTaintPaths(),
+    ];
     for (let i = 0; i < ipPaths.length; i++) {
       const p = ipPaths[i];
       const sinkIR = projectGraph.getIR(p.sink.file);

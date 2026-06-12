@@ -67,8 +67,34 @@ export interface CrossFileTaintFlow {
 export interface InterproceduralTaintPath {
   source: { file: string; line: number; type: string };
   sink:   { file: string; line: number; type: string; cwe: string };
-  hops:   Array<{ file: string; line: number; method: string; kind: 'source' | 'wrapper_return' | 'sink_call' | 'sink' }>;
+  hops:   Array<{ file: string; line: number; method: string; kind: 'source' | 'wrapper_return' | 'field_write' | 'field_read' | 'sink_call' | 'sink' }>;
   confidence: number;
+}
+
+/**
+ * Per-type field-binding taint summary.
+ *
+ * Records which fields on a class hold tainted data because a method in the
+ * class wrote a tainted parameter into the field (`this.field = param`).
+ * Used to surface cross-instance flows of the canonical Jenkins shape:
+ *   `@DataBoundConstructor C(p)` writes `this.f = p` → another class holds a
+ *   `C` instance and reads `instance.f` → that read flows to a sink.
+ */
+export interface FieldTaintInfo {
+  typeFqn: string;
+  fieldName: string;
+  fieldType: string | null;
+  file: string;
+  /** Methods that write tainted data into this field. */
+  writers: Array<{
+    methodFqn: string;
+    methodName: string;
+    writeLine: number;
+    /** Source type carried into the field (`http_param`, `autowired`, etc.). */
+    sourceType: string;
+    /** Original source line in the writer's method body. */
+    sourceLine: number;
+  }>;
 }
 
 /**
@@ -83,6 +109,9 @@ export class CrossFileResolver {
 
   // Cache: method FQN -> taint info
   private methodTaintInfo: Map<string, MethodTaintInfo> = new Map();
+
+  // Cache: `${typeFqn}.${fieldName}` -> field taint info
+  private fieldTaintInfo: Map<string, FieldTaintInfo> = new Map();
 
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
@@ -105,6 +134,9 @@ export class CrossFileResolver {
 
     // Analyze methods for taint propagation characteristics
     this.analyzeMethodTaint(ir, filePath);
+
+    // Analyze cross-instance field bindings (constructor + setter writers)
+    this.analyzeFieldTaint(ir, filePath);
   }
 
   /**
@@ -351,6 +383,148 @@ export class CrossFileResolver {
         };
 
         this.methodTaintInfo.set(methodFqn, taintInfo);
+      }
+    }
+  }
+
+  /**
+   * Per-file analysis of cross-instance field bindings.
+   *
+   * Records `FieldTaintInfo` entries for fields written by:
+   *   1. `@DataBoundConstructor`-style constructors  — surfaced as
+   *      `constructor_field` sources by `LanguageSourcesPass`.
+   *   2. Setter methods `set<Field>(<param>)` — assume the canonical
+   *      `this.<field> = <param>` body shape, so the setter PARAMETER acts
+   *      as the taint conduit at call sites.
+   *   3. `@Autowired` field annotations — the field itself is a framework
+   *      injection point; the writer is synthetic (line = field decl).
+   *
+   * The entries are keyed `${typeFqn}.${fieldName}` and consumed by
+   * `findFieldBindingTaintPaths()` to surface flows of the canonical Jenkins
+   * shape: ctor writes field → another class reads instance.field → sink.
+   */
+  private analyzeFieldTaint(ir: CircleIR, filePath: string): void {
+    const pkg = ir.meta.package || '';
+
+    // (1) Constructor-bound fields surfaced by LanguageSourcesPass via
+    //     `constructor_field` sources. Location string format:
+    //       `${className}.${methodName}() returns tainted field '${field}'
+    //        (from constructor param '${sourceParam}')`
+    const ctorFieldRe =
+      /^(\w+)\.(\w+)\(\) returns tainted field '([^']+)' \(from constructor param '([^']+)'\)/;
+    for (const src of ir.taint.sources) {
+      if (src.type !== 'constructor_field') continue;
+      const m = ctorFieldRe.exec(src.location);
+      if (!m) continue;
+      const [, className, , fieldName, sourceParam] = m;
+      const typeFqn = pkg ? `${pkg}.${className}` : className;
+      const type = ir.types.find(t => t.name === className);
+      if (!type) continue;
+
+      // Locate the constructor (or first method) whose param name matches.
+      const writerMethod =
+        type.methods.find(
+          mth => mth.name === className && mth.parameters.some(p => p.name === sourceParam),
+        ) ??
+        type.methods.find(mth => mth.parameters.some(p => p.name === sourceParam));
+      if (!writerMethod) continue;
+
+      const field = type.fields?.find(f => f.name === fieldName);
+      const key = `${typeFqn}.${fieldName}`;
+      const existing = this.fieldTaintInfo.get(key);
+      const writer = {
+        methodFqn: `${typeFqn}.${writerMethod.name}`,
+        methodName: writerMethod.name,
+        writeLine: writerMethod.start_line,
+        sourceType: 'constructor_field',
+        sourceLine: src.line,
+      };
+      if (existing) {
+        if (!existing.writers.some(w => w.methodFqn === writer.methodFqn)) {
+          existing.writers.push(writer);
+        }
+      } else {
+        this.fieldTaintInfo.set(key, {
+          typeFqn,
+          fieldName,
+          fieldType: field?.type ?? null,
+          file: filePath,
+          writers: [writer],
+        });
+      }
+    }
+
+    // (2) Setter chains: `setX(x)` with one param. The PARAMETER acts as the
+    //     taint conduit — the writer record reflects this so caller-side
+    //     `obj.setX(tainted)` followed by `obj.x` read can be wired by
+    //     `findFieldBindingTaintPaths()`. We do NOT pre-mark the field as
+    //     tainted; tainting requires a tainted argument at call site (handled
+    //     by the consumer pass).
+    for (const type of ir.types) {
+      const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
+      for (const method of type.methods) {
+        if (!method.name.startsWith('set') || method.name.length <= 3) continue;
+        if (method.parameters.length !== 1) continue;
+        const fieldName = method.name.charAt(3).toLowerCase() + method.name.substring(4);
+        const field = type.fields?.find(f => f.name === fieldName);
+        if (!field) continue;
+
+        const key = `${typeFqn}.${fieldName}`;
+        const writer = {
+          methodFqn: `${typeFqn}.${method.name}`,
+          methodName: method.name,
+          writeLine: method.start_line,
+          sourceType: 'setter_param',
+          sourceLine: method.start_line,
+        };
+        const existing = this.fieldTaintInfo.get(key);
+        if (existing) {
+          if (!existing.writers.some(w => w.methodFqn === writer.methodFqn)) {
+            existing.writers.push(writer);
+          }
+        } else {
+          this.fieldTaintInfo.set(key, {
+            typeFqn,
+            fieldName,
+            fieldType: field.type ?? null,
+            file: filePath,
+            writers: [writer],
+          });
+        }
+      }
+    }
+
+    // (3) @Autowired / @Inject fields: framework-injected. Treat the field
+    //     as unconditionally tainted (writer is synthetic at the field's
+    //     declaration line). Covers Spring `@Autowired`, JSR-330 `@Inject`,
+    //     CDI `@Inject`, Micronaut `@Inject`, Quarkus `@Inject`.
+    const injectAnnotations = new Set(['Autowired', 'Inject', 'Resource']);
+    for (const type of ir.types) {
+      const typeFqn = pkg ? `${pkg}.${type.name}` : type.name;
+      for (const field of type.fields ?? []) {
+        if (!field.annotations?.some(a => injectAnnotations.has(a))) continue;
+        const key = `${typeFqn}.${field.name}`;
+        const writer = {
+          methodFqn: `${typeFqn}.<injected>`,
+          methodName: '<injected>',
+          writeLine: type.start_line,
+          sourceType: 'autowired_field',
+          sourceLine: type.start_line,
+        };
+        const existing = this.fieldTaintInfo.get(key);
+        if (existing) {
+          if (!existing.writers.some(w => w.methodFqn === writer.methodFqn)) {
+            existing.writers.push(writer);
+          }
+        } else {
+          this.fieldTaintInfo.set(key, {
+            typeFqn,
+            fieldName: field.name,
+            fieldType: field.type ?? null,
+            file: filePath,
+            writers: [writer],
+          });
+        }
       }
     }
   }
@@ -742,11 +916,363 @@ export class CrossFileResolver {
               }
             }
           }
+
+          // 2c. Caller-body sinks: after marking locals tainted via wrapper-return,
+          //     check whether any sink in the CALLER'S OWN method body consumes a
+          //     tainted variable. This closes the canonical Jenkins shape where the
+          //     final sink (e.g. `Paths.get(p)`, `Runtime.exec(cmd)`) lives in the
+          //     caller's file rather than in a cross-file callee.
+          if (tainted.size > 0) {
+            const sinksInCaller = callerIR.taint.sinks.filter(
+              s => s.line >= method.start_line && s.line <= method.end_line,
+            );
+            for (const sink of sinksInCaller) {
+              const callsAtSink = callerIR.calls.filter(c => c.location.line === sink.line);
+              for (const sinkCall of callsAtSink) {
+                for (const arg of sinkCall.arguments ?? []) {
+                  const matched = this.matchTaintedArg(arg, tainted);
+                  if (!matched) continue;
+                  const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+
+                  const hops: InterproceduralTaintPath['hops'] = [
+                    ...matched.origin.hopChain,
+                    { file: callerFile, line: sink.line, method: method.name, kind: 'sink' },
+                  ];
+                  const decay = Math.max(0.3, Math.pow(0.85, Math.max(hops.length - 1, 0)));
+                  paths.push({
+                    source: {
+                      file: matched.origin.file,
+                      line: matched.origin.line,
+                      type: matched.origin.type,
+                    },
+                    sink: {
+                      file: callerFile,
+                      line: sink.line,
+                      type: sink.type,
+                      cwe: sink.cwe,
+                    },
+                    hops,
+                    confidence: decay,
+                  });
+                }
+              }
+            }
+          }
         }
       }
     }
 
     return paths;
+  }
+
+  /**
+   * Find cross-instance field-binding taint paths.
+   *
+   * Closes the canonical Jenkins / framework-DI shape that
+   * `findInterproceduralTaintPaths()` cannot cover because the "source" lives
+   * on an aliased object's field, not in a callee return:
+   *
+   *   File A:  class C { @DataBoundConstructor C(p) { this.f = p; } }
+   *   File B:  class E { final C step; E(C step){ this.step = step; }
+   *                      m() { String x = step.f; sink(x); } }
+   *
+   * Algorithm (per caller method M in file B):
+   *   1. Seed `tainted` with sources inside M (mirrors findInterproc step 1).
+   *   2. Scan M's local-def DFG entries for expressions of shape
+   *      `<receiver>.<field>` where receiver's declared type owns `<field>`
+   *      in the FieldTaintInfo cache. Mark the LHS local as tainted, anchor
+   *      its origin to the field-binding writer (e.g. the ctor in file A).
+   *   3. After seeding, walk caller-body sinks the same way
+   *      `findInterproceduralTaintPaths()` step 2c does, and also forward
+   *      tainted locals into cross-file callees whose `taintedParams` mark
+   *      the arg position as sink-propagating.
+   */
+  findFieldBindingTaintPaths(): InterproceduralTaintPath[] {
+    const paths: InterproceduralTaintPath[] = [];
+    const seen = new Set<string>();
+    if (this.fieldTaintInfo.size === 0) return paths;
+
+    const fieldExprRe = /^(\w+)\.(\w+)$/;
+    const methodIndex = this.buildMethodIndex();
+
+    for (const [callerFile, callerIR] of this.fileIRs) {
+      for (const type of callerIR.types) {
+        const callerTypeFqn = callerIR.meta.package
+          ? `${callerIR.meta.package}.${type.name}`
+          : type.name;
+
+        for (const method of type.methods) {
+          // 1. Seed real sources in method.
+          type Origin = {
+            file: string;
+            line: number;
+            type: string;
+            hopChain: InterproceduralTaintPath['hops'];
+          };
+          const tainted = new Map<string, Origin>();
+          for (const src of callerIR.taint.sources) {
+            if (src.type === 'interprocedural_param') continue;
+            if (src.line < method.start_line || src.line > method.end_line) continue;
+            if (!src.variable) continue;
+            tainted.set(src.variable, {
+              file: callerFile,
+              line: src.line,
+              type: src.type,
+              hopChain: [{ file: callerFile, line: src.line, method: method.name, kind: 'source' }],
+            });
+          }
+
+          // 2. Scan local defs for `receiver.field` patterns.
+          //
+          // DFG defs don't carry RHS expressions on locals, so we co-locate:
+          //   - a `local` def at line L
+          //   - two uses at line L: a known receiver variable (param or
+          //     containing-class field) AND a token matching a field on the
+          //     receiver's declared type.
+          const defsInMethod = callerIR.dfg.defs.filter(
+            d =>
+              d.kind === 'local' &&
+              d.line >= method.start_line &&
+              d.line <= method.end_line &&
+              !!d.variable,
+          );
+
+          for (const def of defsInMethod) {
+            const usesAtLine = callerIR.dfg.uses.filter(u => u.line === def.line);
+            if (usesAtLine.length < 2) continue;
+
+            // First pass: expression-based (preferred if available).
+            let receiver: string | null = null;
+            let fieldName: string | null = null;
+            if (def.expression) {
+              const exprMatch = fieldExprRe.exec(def.expression.trim());
+              if (exprMatch) {
+                receiver = exprMatch[1];
+                fieldName = exprMatch[2];
+              }
+            }
+
+            // Resolve receiver type from local context.
+            const resolveReceiverType = (rcv: string): string | null => {
+              const param = method.parameters.find(p => p.name === rcv);
+              if (param?.type) return param.type;
+              const fieldOnSelf = type.fields?.find(f => f.name === rcv);
+              if (fieldOnSelf?.type) return fieldOnSelf.type;
+              return null;
+            };
+
+            // Fallback: co-located uses heuristic. For each (receiverUse,
+            // fieldUse) pair, check whether receiver's declared type owns
+            // fieldUse.variable as a field.
+            let receiverType: string | null = null;
+            if (receiver && fieldName) {
+              receiverType = resolveReceiverType(receiver);
+            }
+            if (!receiverType) {
+              for (const rcvUse of usesAtLine) {
+                if (!rcvUse.variable || rcvUse.variable === def.variable) continue;
+                const rt = resolveReceiverType(rcvUse.variable);
+                if (!rt) continue;
+                // Find any other use at this line matching a field on rt.
+                const fieldUse = usesAtLine.find(
+                  u =>
+                    u !== rcvUse &&
+                    !!u.variable &&
+                    u.variable !== def.variable &&
+                    u.variable !== rcvUse.variable &&
+                    this.typeHasField(rt, u.variable),
+                );
+                if (fieldUse) {
+                  receiver = rcvUse.variable;
+                  fieldName = fieldUse.variable!;
+                  receiverType = rt;
+                  break;
+                }
+              }
+            }
+
+            if (!receiver || !fieldName || !receiverType) continue;
+
+            // FieldTaintInfo is keyed by FQN, but the receiver type may be a
+            // simple name. Resolve via symbol table / scan fileIRs.
+            const fieldKey = this.resolveFieldTaintKey(receiverType, fieldName, callerIR);
+            if (!fieldKey) continue;
+            const fieldInfo = this.fieldTaintInfo.get(fieldKey);
+            if (!fieldInfo || fieldInfo.writers.length === 0) continue;
+
+            // Anchor origin to the most informative writer (prefer ctor /
+            // autowired over setter). Setter writers require a tainted arg
+            // at call-site to be relevant; without seeing the call we treat
+            // them as non-anchoring here.
+            const writer =
+              fieldInfo.writers.find(
+                w => w.sourceType === 'constructor_field' || w.sourceType === 'autowired_field',
+              ) ?? null;
+            if (!writer) continue;
+
+            const hopChain: InterproceduralTaintPath['hops'] = [
+              {
+                file: fieldInfo.file,
+                line: writer.sourceLine,
+                method: writer.methodName,
+                kind: 'source',
+              },
+              {
+                file: fieldInfo.file,
+                line: writer.writeLine,
+                method: writer.methodName,
+                kind: 'field_write',
+              },
+              {
+                file: callerFile,
+                line: def.line,
+                method: method.name,
+                kind: 'field_read',
+              },
+            ];
+            tainted.set(def.variable, {
+              file: fieldInfo.file,
+              line: writer.sourceLine,
+              type: writer.sourceType,
+              hopChain,
+            });
+          }
+
+          if (tainted.size === 0) continue;
+
+          // 3a. Caller-body sinks consuming a tainted local.
+          const sinksInCaller = callerIR.taint.sinks.filter(
+            s => s.line >= method.start_line && s.line <= method.end_line,
+          );
+          for (const sink of sinksInCaller) {
+            const callsAtSink = callerIR.calls.filter(c => c.location.line === sink.line);
+            for (const sinkCall of callsAtSink) {
+              for (const arg of sinkCall.arguments ?? []) {
+                const matched = this.matchTaintedArg(arg, tainted);
+                if (!matched) continue;
+                const key = `fb:${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const hops: InterproceduralTaintPath['hops'] = [
+                  ...matched.origin.hopChain,
+                  { file: callerFile, line: sink.line, method: method.name, kind: 'sink' },
+                ];
+                const decay = Math.max(0.3, Math.pow(0.85, Math.max(hops.length - 1, 0)));
+                paths.push({
+                  source: {
+                    file: matched.origin.file,
+                    line: matched.origin.line,
+                    type: matched.origin.type,
+                  },
+                  sink: {
+                    file: callerFile,
+                    line: sink.line,
+                    type: sink.type,
+                    cwe: sink.cwe,
+                  },
+                  hops,
+                  confidence: decay,
+                });
+              }
+            }
+          }
+
+          // 3b. Cross-file callees: forward tainted locals into resolved
+          //     callees whose taintedParams mark the arg as sink-propagating.
+          const callsInMethod = callerIR.calls
+            .filter(c => c.location.line >= method.start_line && c.location.line <= method.end_line)
+            .sort((a, b) => a.location.line - b.location.line);
+          for (const call of callsInMethod) {
+            const resolved = this.resolveCall(call, callerFile);
+            if (!resolved) continue;
+            const callee = this.methodTaintInfo.get(resolved.targetMethod);
+            if (!callee || callee.sanitizes || callee.taintedParams.length === 0) continue;
+
+            for (let argIdx = 0; argIdx < call.arguments.length; argIdx++) {
+              if (!callee.taintedParams.includes(argIdx)) continue;
+              const matched = this.matchTaintedArg(call.arguments[argIdx], tainted);
+              if (!matched) continue;
+              const calleeNode = methodIndex.get(resolved.targetMethod);
+              if (!calleeNode) continue;
+              const sinksInCallee = calleeNode.ir.taint.sinks.filter(
+                s => s.line >= calleeNode.method.start_line && s.line <= calleeNode.method.end_line,
+              );
+              for (const sink of sinksInCallee) {
+                const key = `fb:${matched.origin.file}:${matched.origin.line}→${callee.file}:${sink.line}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const hops: InterproceduralTaintPath['hops'] = [
+                  ...matched.origin.hopChain,
+                  { file: callerFile, line: call.location.line, method: method.name, kind: 'sink_call' },
+                  { file: callee.file, line: sink.line, method: resolved.targetMethod, kind: 'sink' },
+                ];
+                const decay = Math.max(0.3, Math.pow(0.85, Math.max(hops.length - 1, 0)));
+                paths.push({
+                  source: {
+                    file: matched.origin.file,
+                    line: matched.origin.line,
+                    type: matched.origin.type,
+                  },
+                  sink: {
+                    file: callee.file,
+                    line: sink.line,
+                    type: sink.type,
+                    cwe: sink.cwe,
+                  },
+                  hops,
+                  confidence: decay,
+                });
+              }
+            }
+          }
+
+          // (silence unused warning for callerTypeFqn — reserved for future
+          //  same-class field-read detection)
+          void callerTypeFqn;
+        }
+      }
+    }
+
+    return paths;
+  }
+
+  /**
+   * Check whether any loaded type with name `typeName` (simple or FQN suffix)
+   * declares a field named `fieldName`.
+   */
+  private typeHasField(typeName: string, fieldName: string): boolean {
+    for (const [, ir] of this.fileIRs) {
+      for (const t of ir.types) {
+        if (t.name !== typeName) continue;
+        if ((t.fields ?? []).some(f => f.name === fieldName)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Resolve a receiver type-name + field-name to the cache key used by
+   * `fieldTaintInfo`. Handles simple-name receivers (e.g. `ReadTrustedStep`)
+   * by looking up matching FQN keys across loaded files.
+   */
+  private resolveFieldTaintKey(
+    receiverType: string,
+    fieldName: string,
+    _callerIR: CircleIR,
+  ): string | undefined {
+    // Exact FQN hit.
+    const direct = `${receiverType}.${fieldName}`;
+    if (this.fieldTaintInfo.has(direct)) return direct;
+
+    // Simple-name match: scan keys for `*.<receiver>.<field>` suffix.
+    const suffix = `.${receiverType}.${fieldName}`;
+    for (const key of this.fieldTaintInfo.keys()) {
+      if (key === direct) return key;
+      if (key.endsWith(suffix)) return key;
+    }
+    return undefined;
   }
 
   /**
@@ -872,7 +1398,13 @@ export class CrossFileResolver {
   clear(): void {
     this.fileIRs.clear();
     this.methodTaintInfo.clear();
+    this.fieldTaintInfo.clear();
     this.resolvedCalls.clear();
+  }
+
+  /** Expose field-taint summary (for tests + diagnostics). */
+  getFieldTaintInfo(typeFqn: string, fieldName: string): FieldTaintInfo | undefined {
+    return this.fieldTaintInfo.get(`${typeFqn}.${fieldName}`);
   }
 }
 

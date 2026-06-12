@@ -541,3 +541,188 @@ public class CommandRunner {
     expect(cmdArg?.taint_propagates).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-instance field-binding taint paths (3.39.0)
+// ---------------------------------------------------------------------------
+//
+// Closes the canonical CWE-Bench-Java Jenkins shape and adjacent
+// framework-DI patterns where the source is bound onto a field by one class
+// and consumed by another class reading that field on an aliased instance.
+describe('Cross-instance field-binding taint paths (3.39.0)', () => {
+  it('Jenkins ReadTrustedStep: ctor field bound + direct field-read sink', async () => {
+    // File A binds `path` (DataBoundConstructor param) into `this.path`.
+    // File B holds a ReadTrustedStep field, reads `step.path` directly, and
+    // forwards the value to a path-traversal sink in its own body.
+    const stepFile = `
+package com.example;
+public class ReadTrustedStep {
+    private String path;
+    @DataBoundConstructor
+    public ReadTrustedStep(String path) {
+        this.path = path;
+    }
+    public String getPath() {
+        return path;
+    }
+}
+`;
+    const execFile = `
+package com.example;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+public class ExecutionImpl {
+    private final ReadTrustedStep step;
+    public ExecutionImpl(ReadTrustedStep step) {
+        this.step = step;
+    }
+    public boolean start() throws Exception {
+        String p = step.path;
+        Files.newInputStream(Paths.get(p));
+        return true;
+    }
+}
+`;
+    const result = await analyzeProject([
+      { filePath: 'src/com/example/ReadTrustedStep.java', code: stepFile, language: 'java' },
+      { filePath: 'src/com/example/ExecutionImpl.java',   code: execFile, language: 'java' },
+    ]);
+
+    const path = result.taint_paths.find(p =>
+      p.sink.file.includes('ExecutionImpl') &&
+      (p.sink.type === 'path_traversal' || p.sink.cwe === 'CWE-22'),
+    );
+    expect(path).toBeDefined();
+    expect(path!.source.file).toContain('ReadTrustedStep');
+    expect(path!.source.type).toBe('constructor_field');
+  });
+
+  it('Jenkins ReadTrustedStep: ctor field bound + getter-mediated sink', async () => {
+    // Same shape as above but ExecutionImpl reads via `step.getPath()`.
+    // Closed by Change 1 (caller-body-sink emission) in 3.39.0.
+    const stepFile = `
+package com.example;
+public class ReadTrustedStep {
+    private String path;
+    @DataBoundConstructor
+    public ReadTrustedStep(String path) {
+        this.path = path;
+    }
+    public String getPath() {
+        return path;
+    }
+}
+`;
+    const execFile = `
+package com.example;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+public class ExecutionImpl {
+    private final ReadTrustedStep step;
+    public ExecutionImpl(ReadTrustedStep step) {
+        this.step = step;
+    }
+    public boolean start() throws Exception {
+        String p = step.getPath();
+        Files.newInputStream(Paths.get(p));
+        return true;
+    }
+}
+`;
+    const result = await analyzeProject([
+      { filePath: 'src/com/example/ReadTrustedStep.java', code: stepFile, language: 'java' },
+      { filePath: 'src/com/example/ExecutionImpl.java',   code: execFile, language: 'java' },
+    ]);
+
+    const path = result.taint_paths.find(p =>
+      p.sink.file.includes('ExecutionImpl') &&
+      (p.sink.type === 'path_traversal' || p.sink.cwe === 'CWE-22'),
+    );
+    expect(path).toBeDefined();
+  });
+
+  it('@Autowired field: framework-injected field reaches sink via aliased read', async () => {
+    // Spring `@Autowired` field is an injection point; another class reads
+    // that field on an aliased instance and forwards to a sink.
+    const repoFile = `
+package app;
+public class UserRepository {
+    @Autowired
+    private String userInput;
+}
+`;
+    const sinkFile = `
+package app;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+public class FileService {
+    private final UserRepository repo;
+    public FileService(UserRepository repo) {
+        this.repo = repo;
+    }
+    public void open() throws Exception {
+        String x = repo.userInput;
+        Files.newInputStream(Paths.get(x));
+    }
+}
+`;
+    const result = await analyzeProject([
+      { filePath: 'src/app/UserRepository.java', code: repoFile, language: 'java' },
+      { filePath: 'src/app/FileService.java',    code: sinkFile, language: 'java' },
+    ]);
+
+    const path = result.taint_paths.find(p =>
+      p.sink.file.includes('FileService') &&
+      (p.sink.type === 'path_traversal' || p.sink.cwe === 'CWE-22'),
+    );
+    expect(path).toBeDefined();
+    expect(path!.source.type).toBe('autowired_field');
+  });
+
+  it('Ctor + setter mix: ctor-bound field still surfaces when class also has setter', async () => {
+    // Confirms ctor-bound field-binding analysis still fires when the same
+    // class also exposes a setter for the field (no regression).
+    const configFile = `
+package app;
+public class Config {
+    private String target;
+    @DataBoundConstructor
+    public Config(String target) {
+        this.target = target;
+    }
+    public void setTarget(String target) {
+        this.target = target;
+    }
+    public String getTarget() {
+        return target;
+    }
+}
+`;
+    const userFile = `
+package app;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+public class Loader {
+    private final Config config;
+    public Loader(Config config) {
+        this.config = config;
+    }
+    public void load() throws Exception {
+        String t = config.target;
+        Files.newInputStream(Paths.get(t));
+    }
+}
+`;
+    const result = await analyzeProject([
+      { filePath: 'src/app/Config.java', code: configFile, language: 'java' },
+      { filePath: 'src/app/Loader.java', code: userFile,   language: 'java' },
+    ]);
+
+    const path = result.taint_paths.find(p =>
+      p.sink.file.includes('Loader') &&
+      (p.sink.type === 'path_traversal' || p.sink.cwe === 'CWE-22'),
+    );
+    expect(path).toBeDefined();
+    expect(path!.source.type).toBe('constructor_field');
+  });
+});
