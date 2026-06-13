@@ -144,99 +144,99 @@
     {
       "method": "insert",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in entity may be interpolated via ${} syntax"
     },
     {
       "method": "insertSelective",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in entity may be interpolated via ${} syntax"
     },
     {
       "method": "update",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in entity may be interpolated via ${} syntax"
     },
     {
       "method": "updateByPrimaryKey",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in entity may be interpolated via ${} syntax"
     },
     {
       "method": "updateByPrimaryKeySelective",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in entity may be interpolated via ${} syntax"
     },
     {
       "method": "delete",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted parameter may be interpolated via ${} syntax"
     },
     {
       "method": "deleteByPrimaryKey",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted parameter may be interpolated via ${} syntax"
     },
     {
       "method": "selectOne",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted parameter may be interpolated via ${} syntax"
     },
     {
       "method": "selectList",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted parameter may be interpolated via ${} syntax"
     },
     {
       "method": "selectByPrimaryKey",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted parameter may be interpolated via ${} syntax"
     },
     {
       "method": "selectByExample",
       "class": "*Mapper",
-      "type": "sql_injection",
+      "type": "mybatis_mapper_call",
       "cwe": "CWE-89",
-      "severity": "critical",
+      "severity": "medium",
       "arg_positions": [0],
       "note": "MyBatis ORM - tainted fields in example criteria may be interpolated via ${} syntax"
     }

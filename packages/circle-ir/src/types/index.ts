@@ -223,6 +223,11 @@ export type SinkType =
   | "open_redirect"
   | "code_injection"
   | "log_injection"
+  // MyBatis ORM mapper-interface call — the actual SQL lives in the mapper's
+  // XML/annotation binding, not at the call site. Distinct from sql_injection
+  // so consumers can route, downgrade, or require an interprocedural binding
+  // check (e.g. `${...}` interpolation) before reporting.
+  | "mybatis_mapper_call"
   // Weak cryptography (no taint flow required)
   | "weak_random"
   | "weak_hash"

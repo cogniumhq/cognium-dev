@@ -544,6 +544,24 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'queryForList', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
   { method: 'queryForLong', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0] },
 
+  // MyBatis mapper-interface methods (CWE-89, classified as mybatis_mapper_call)
+  // The actual SQL lives in the mapper's XML or @Select/@Update annotation —
+  // exploitability depends on whether the binding uses ${...} interpolation
+  // vs #{...} parameter binding. Surface as a distinct sink type so consumers
+  // can resolve the binding before reporting. See cognium-dev#24.
+  // The `class: '*Mapper'` suffix wildcard matches userMapper, OrderMapper, …
+  { method: 'insert', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'insertSelective', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'update', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'updateByPrimaryKey', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'updateByPrimaryKeySelective', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'delete', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'deleteByPrimaryKey', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'selectOne', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'selectList', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'selectByPrimaryKey', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'selectByExample', class: '*Mapper', type: 'mybatis_mapper_call', cwe: 'CWE-89', severity: 'medium', arg_positions: [0], languages: ['java'] },
+
   // Command Injection (CWE-78)
   { method: 'exec', class: 'Runtime', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
   { method: 'start', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [] },

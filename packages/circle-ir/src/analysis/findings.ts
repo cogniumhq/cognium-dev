@@ -128,19 +128,19 @@ export function generateFindings(
  */
 function canSourceReachSink(sourceType: string, sinkType: SinkType): boolean {
   const sourceToSinkMapping: Record<string, SinkType[]> = {
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf'],
-    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection'],
-    http_header: ['sql_injection', 'xss', 'ssrf'],
-    http_cookie: ['sql_injection', 'xss'],
-    http_path: ['path_traversal', 'sql_injection', 'ssrf'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf'],
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call'],
+    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call'],
+    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call'],
     io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss'],
     env_input: ['command_injection', 'path_traversal'],
     db_input: ['xss', 'sql_injection'], // Second-order injection
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
     network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf'],
     config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf'], // Servlet init params
-    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection'], // Cross-method taint
+    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call'], // Cross-method taint
     plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection'], // Plugin/config parameters
   };
 

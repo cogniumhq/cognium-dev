@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.42.0] - 2026-06-12
+
+### Added
+
+- **MyBatis mapper-interface call classification.** Closes the MyBatis half
+  of [cognium-dev#24](https://github.com/cogniumhq/cognium-dev/issues/24).
+  Mapper-interface method calls on identifiers like `userMapper`,
+  `OrderMapper`, or `org.example.userMapper` are now emitted as a distinct
+  sink type so downstream consumers (circle-ir-ai, cognium-dev) can route
+  them differently from raw SQL execution sinks. The dangerous shape is the
+  mapper's XML / `@Select` / `@Update` binding using `${...}` interpolation —
+  the call site itself is only a candidate that needs binding resolution.
+
+  Implementation:
+  1. **New `mybatis_mapper_call` SinkType** (`types/index.ts`). CWE-89,
+     `medium` severity. Wired through `RULE_DEFINITIONS`, `KNOWN_SINK_TYPES`
+     (so existing SQL sanitizers like `@Param` and `setParameter` apply),
+     and the `canSourceReachSink` HTTP-source mapping.
+  2. **Suffix-wildcard receiver matching in `receiverMightBeClass`.** A
+     `pattern.class` value beginning with `*` (e.g. `*Mapper`, `*Repository`)
+     now matches any identifier whose simple name ends with the suffix,
+     case-insensitively. Drops a dotted prefix so
+     `org.example.userMapper.insert(...)` still matches `*Mapper`.
+  3. **`DEFAULT_SINKS` extended** with 11 MyBatis mapper-interface methods
+     (`insert`, `insertSelective`, `update`, `updateByPrimaryKey`,
+     `updateByPrimaryKeySelective`, `delete`, `deleteByPrimaryKey`,
+     `selectOne`, `selectList`, `selectByPrimaryKey`, `selectByExample`),
+     all `class: '*Mapper'`, `type: 'mybatis_mapper_call'`,
+     `languages: ['java']` to prevent cross-language collisions. The same
+     entries in `configs/sinks/sql.yaml` were also retyped for parity with
+     external YAML-config consumers.
+
+### Tests
+
+- New `tests/analysis/taint-mybatis-mapper.test.ts` (17 tests):
+  - `userMapper.insert(user)` emits `mybatis_mapper_call`, never
+    `sql_injection`.
+  - `orderMapper.selectByExample(criteria)` and all 9 other configured
+    mapper methods (`insertSelective`, `update`, `updateByPrimaryKey`,
+    `updateByPrimaryKeySelective`, `delete`, `deleteByPrimaryKey`,
+    `selectOne`, `selectList`, `selectByPrimaryKey`) emit the new type.
+  - Wildcard variants: `UserMapper.insert(...)` (static-style) and
+    `org.example.userMapper.insert(...)` (dotted receiver) both match.
+  - Regressions confirmed: `Statement.execute(sql)` and
+    `JdbcTemplate.update(sql)` still emit `sql_injection`;
+    `userService.insert(user)` does not match the wildcard;
+    `userMapper.findById(id)` (not in the configured method list) emits
+    no sink.
+
+- Full circle-ir suite: **1978 tests passing** (was 1961).
+
+[3.42.0]: https://github.com/cogniumhq/cognium-dev/compare/circle-ir-v3.41.0...circle-ir-v3.42.0
+
 ## [3.41.0] - 2026-06-12
 
 ### Added

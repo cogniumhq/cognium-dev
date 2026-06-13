@@ -232,6 +232,15 @@ export const RULE_DEFINITIONS: Record<SinkType, RuleInfo> = {
     severityLevel: 'medium',
     cwe: 'CWE-668',
   },
+  mybatis_mapper_call: {
+    name: 'MyBatis Mapper Method Call',
+    shortDescription: 'Tainted argument passed to a MyBatis mapper interface method',
+    fullDescription: 'The application invokes a MyBatis mapper-interface method (e.g. UserMapper.selectByExample) with user-controlled data. The actual SQL is defined in the mapper XML or @Select/@Update annotations, so exploitability depends on whether ${...} interpolation is used in the binding. The call itself is not a definitive sink; consumers should resolve the mapper binding before reporting.',
+    remediation: 'Audit the mapper XML/annotations for ${...} interpolation of the tainted parameter. Use #{...} parameter binding (PreparedStatement-backed) for any user-controlled value. Reject the call from SQL-injection reports unless the binding is confirmed vulnerable.',
+    cvssScore: '5.0',
+    severityLevel: 'medium',
+    cwe: 'CWE-89',
+  },
 };
 
 // =============================================================================

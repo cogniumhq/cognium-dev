@@ -51,6 +51,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   insecure_cookie: 'low',
   trust_boundary: 'medium',
   external_taint_escape: 'medium',
+  mybatis_mapper_call: 'medium',
 };
 
 export const SINK_CWE: Record<SinkType, string> = {
@@ -73,6 +74,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   insecure_cookie: 'CWE-614',
   trust_boundary: 'CWE-501',
   external_taint_escape: 'CWE-20',
+  mybatis_mapper_call: 'CWE-89',
 };
 
 // Help text for each vulnerability type
@@ -152,6 +154,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   external_taint_escape: {
     description: 'External input reaches a sensitive sink without proper validation',
     fix: 'Validate, sanitize, or escape external input before use in sensitive operations'
+  },
+  mybatis_mapper_call: {
+    description: 'Tainted argument passed to a MyBatis mapper interface method — actual SQL lives in the mapper XML/annotation binding, so exploitability depends on whether ${...} string interpolation is used',
+    fix: 'Audit the mapper XML/annotations: use #{...} parameter binding (PreparedStatement-backed) for any user-controlled value. Reject from SQL-injection reports unless ${...} interpolation is confirmed'
   },
 
   // Reliability & performance findings from analysis passes

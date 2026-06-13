@@ -754,6 +754,22 @@ function matchesAnnotation(annotations: string[], targetAnnotation: string): boo
  * This is a heuristic - full type inference would be more accurate.
  */
 function receiverMightBeClass(receiver: string, className: string): boolean {
+  // Suffix-wildcard pattern (e.g. `*Mapper`, `*Repository`) — matches any
+  // identifier whose simple name ends in the suffix (case-insensitive).
+  // Used by MyBatis ORM patterns (UserMapper, OrderMapper, …) and similar
+  // framework conventions where the class name follows a fixed naming pattern
+  // rather than a single hardcoded class.
+  if (className.startsWith('*') && className.length > 1) {
+    const suffix = className.slice(1).toLowerCase();
+    // Simple-name view: drop trailing `()` chains and any dotted prefix
+    // (e.g. `org.example.userMapper` → `userMapper`).
+    let simpleReceiver = receiver;
+    if (simpleReceiver.includes('.') && !simpleReceiver.endsWith(')')) {
+      simpleReceiver = simpleReceiver.substring(simpleReceiver.lastIndexOf('.') + 1);
+    }
+    return simpleReceiver.toLowerCase().endsWith(suffix);
+  }
+
   // Direct match
   if (receiver === className) {
     return true;

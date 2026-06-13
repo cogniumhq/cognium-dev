@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.42.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.41.0 → 3.42.0** — MyBatis mapper-interface call classification (cognium-dev#24, MyBatis half). `cognium-dev scan` against Java code that uses MyBatis mappers (e.g. `userMapper.insert(user)`, `OrderMapper.selectByExample(criteria)`) no longer emits these as raw `sql_injection` findings; they surface as the new `mybatis_mapper_call` sink type (CWE-89, medium severity) so downstream consumers can resolve the mapper's XML/`@Select` binding before reporting. The CLI's SARIF, JSON, and text output formats include the new type via formatter additions (`SINK_SEVERITY`, `SINK_CWE`, `VULNERABILITY_HELP`). Real SQL execution sinks (Statement.execute, JdbcTemplate.query, …) remain `sql_injection`. Full circle-ir suite at 1978 passing tests.
+
+[3.42.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.41.0...cognium-dev-v3.42.0
+
 ## [3.41.0] - 2026-06-12
 
 ### Changed
