@@ -264,6 +264,16 @@ export interface TaintSource {
   method?: string;         // Method that produces tainted data
   annotation?: string;     // Annotation that marks parameter as tainted
   code?: string;           // Trimmed source-line text at `line` (when available)
+
+  /**
+   * How this source was discovered. `'static'` (or absent) = identified by
+   * circle-ir's deterministic pattern-matching. `'llm'` = identified by an
+   * upstream LLM-enhanced consumer (e.g. circle-ir-ai). Used by
+   * `generateFindings` to stamp provenance onto the resulting Finding so
+   * downstream reporters can filter/weight LLM-discovered vulnerabilities
+   * differently. Has no effect on the DFG-reachability gate.
+   */
+  discoveryMethod?: 'static' | 'llm';
 }
 
 export interface TaintSink {
@@ -277,6 +287,16 @@ export interface TaintSink {
   method?: string;          // Method being called
   argPositions?: number[];  // Which arguments are dangerous
   code?: string;            // Trimmed source-line text at `line` (when available)
+
+  /**
+   * How this sink was discovered. `'static'` (or absent) = identified by
+   * circle-ir's deterministic pattern-matching. `'llm'` = identified by an
+   * upstream LLM-enhanced consumer (e.g. circle-ir-ai). Used by
+   * `generateFindings` to stamp provenance onto the resulting Finding so
+   * downstream reporters can filter/weight LLM-discovered vulnerabilities
+   * differently. Has no effect on the DFG-reachability gate.
+   */
+  discoveryMethod?: 'static' | 'llm';
 }
 
 export interface TaintSanitizer {
@@ -578,6 +598,15 @@ export interface Finding {
     graph_path_exists: boolean;
     llm_verified: boolean;
     llm_confidence: number;
+    /**
+     * Provenance of the source/sink pair that produced this finding.
+     * `'static'` (or absent) = both inputs came from circle-ir's
+     * pattern-matching. `'llm'` = both inputs came from an LLM-enhanced
+     * consumer. `'mixed'` = one of each (e.g. LLM-discovered source flowing
+     * to a statically-detected sink). Lets downstream reporters filter or
+     * weight LLM-influenced findings without re-deriving provenance.
+     */
+    discoveryMethod?: 'static' | 'llm' | 'mixed';
   };
   evidence?: Record<string, unknown>;
 }

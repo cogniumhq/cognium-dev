@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.45.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.44.0 → 3.45.0** — `discoveryMethod` provenance plumbing on `generateFindings()` (cognium-dev#26 precondition). `TaintSource`, `TaintSink`, and `Finding.verification` carry an optional `discoveryMethod` (`'static' | 'llm'`, with `'mixed'` on findings) so circle-ir-ai's `runReport` can replace its N×M LLM cross-product with a single `generateFindings(mergedSources, mergedSinks, dfg, fileName)` call and inherit the DFG-reachability gate. Static-path findings are unchanged byte-for-byte aside from the new `verification.discoveryMethod: 'static'` field; CLI text/JSON/SARIF output formats are pass-through (the new field appears in JSON output verbatim). Full circle-ir suite at 2018 passing tests.
+
+[3.45.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.44.0...cognium-dev-v3.45.0
+
 ## [3.44.0] - 2026-06-12
 
 ### Changed

@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.45.0] - 2026-06-12
+
+### Added
+
+- **`discoveryMethod` provenance plumbing on `generateFindings()`.**
+  Enables the cognium-ai #26 fix to land — the LLM path of
+  `runReport` can now call `generateFindings(mergedSources,
+  mergedSinks, dfg, fileName)` instead of cross-producting every
+  sink against every source, inheriting the existing DFG-reachability
+  gate while keeping the LLM-origin signal on the output.
+
+  New optional fields:
+  - `TaintSource.discoveryMethod?: 'static' | 'llm'`
+  - `TaintSink.discoveryMethod?: 'static' | 'llm'`
+  - `Finding.verification.discoveryMethod?: 'static' | 'llm' | 'mixed'`
+
+  Semantics:
+  - Absent on input is treated as `'static'` (backwards compatible —
+    existing callers that don't set the field keep their pre-3.45.0
+    output verbatim except that `verification.discoveryMethod` is now
+    populated with `'static'`).
+  - On the finding: `'static'` if both contributing source and sink
+    are static (or absent); `'llm'` if both are `'llm'`; `'mixed'`
+    otherwise.
+  - During dedup: when multiple sources reach the same sink and
+    collapse into one finding, the merged `discoveryMethod`
+    incorporates every contributing source's label (any disagreement
+    collapses to `'mixed'`).
+  - The DFG-reachability gate, the `canSourceReachSink` mapping, the
+    severity rules, and the confidence math are unchanged. This is
+    pure metadata plumbing — no static-path findings move.
+
+### Changed
+
+- `src/types/index.ts` — added documented `discoveryMethod` to
+  `TaintSource`, `TaintSink`, and `Finding.verification`.
+- `src/analysis/findings.ts` — `generateFindings` now computes
+  `Finding.verification.discoveryMethod` from each source/sink pair
+  via the new `computeDiscoveryMethod` helper, and the dedup loop
+  collapses sources into a merged label via `mergeDiscoveryMethod`
+  (preserving provenance across higher-confidence overwrites).
+
+### Tests
+
+- New `tests/analysis/findings-discovery-method.test.ts` — 12 tests
+  in three suites: (1) finding-level provenance (six cases: static,
+  absent, llm, llm+static, static+llm, llm+absent); (2) dedup merge
+  semantics (four cases: two-static, two-llm, mixed, mixed surviving
+  a confidence overwrite); (3) DFG gate invariants under
+  LLM-tagged inputs (two cases: far-apart drops, incompatible
+  source/sink types still gated).
+- Full suite: 2018/2018 passing (2006 baseline + 12 new).
+
 ## [3.44.0] - 2026-06-12
 
 ### Added

@@ -76,6 +76,7 @@ export function generateFindings(
             graph_path_exists: pathResult.pathExists,
             llm_verified: false,
             llm_confidence: 0,
+            discoveryMethod: computeDiscoveryMethod(source, sink),
           },
         });
       }
@@ -98,6 +99,10 @@ export function generateFindings(
       const sources = ((existing.evidence?.sources as Array<{ file: string; line: number }>) ?? []);
       sources.push({ file: f.source.file, line: f.source.line });
       existing.evidence = { ...existing.evidence, sources };
+      const mergedDiscovery = mergeDiscoveryMethod(
+        existing.verification.discoveryMethod,
+        f.verification.discoveryMethod,
+      );
       if (f.confidence > existing.confidence) {
         existing.confidence = f.confidence;
         existing.source = f.source;
@@ -107,6 +112,7 @@ export function generateFindings(
         existing.exploitable = f.exploitable;
         existing.severity = f.severity;
       }
+      existing.verification.discoveryMethod = mergedDiscovery;
     }
   }
 
@@ -121,6 +127,37 @@ export function generateFindings(
   });
 
   return deduped;
+}
+
+/**
+ * Compute the provenance label for a finding from its contributing
+ * source and sink. Absent `discoveryMethod` on an input is treated as
+ * `'static'` (preserves pre-3.45.0 behavior for callers that don't tag
+ * their inputs).
+ */
+function computeDiscoveryMethod(
+  source: TaintSource,
+  sink: TaintSink,
+): 'static' | 'llm' | 'mixed' {
+  const src = source.discoveryMethod ?? 'static';
+  const snk = sink.discoveryMethod ?? 'static';
+  if (src === snk) return src;
+  return 'mixed';
+}
+
+/**
+ * Combine two finding-level discoveryMethod values during dedup. Any
+ * disagreement (including 'mixed' meeting either base label) collapses
+ * to 'mixed'; identical labels are preserved.
+ */
+function mergeDiscoveryMethod(
+  a: 'static' | 'llm' | 'mixed' | undefined,
+  b: 'static' | 'llm' | 'mixed' | undefined,
+): 'static' | 'llm' | 'mixed' {
+  const left = a ?? 'static';
+  const right = b ?? 'static';
+  if (left === right) return left;
+  return 'mixed';
 }
 
 /**
