@@ -245,6 +245,7 @@ export interface TaintSource {
   variable?: string;       // Variable name that is tainted
   method?: string;         // Method that produces tainted data
   annotation?: string;     // Annotation that marks parameter as tainted
+  code?: string;           // Trimmed source-line text at `line` (when available)
 }
 
 export interface TaintSink {
@@ -257,6 +258,7 @@ export interface TaintSink {
   // Optional fields for LLM enrichment
   method?: string;          // Method being called
   argPositions?: number[];  // Which arguments are dangerous
+  code?: string;            // Trimmed source-line text at `line` (when available)
 }
 
 export interface TaintSanitizer {

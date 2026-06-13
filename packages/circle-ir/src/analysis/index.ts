@@ -15,6 +15,7 @@ export {
 
 export {
   analyzeTaint,
+  attachSourceLineCode,
 } from './taint-matcher.js';
 
 export {

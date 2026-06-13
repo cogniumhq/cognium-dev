@@ -122,6 +122,7 @@ export {
   getDefaultConfig,
   createTaintConfig,
   analyzeTaint,
+  attachSourceLineCode,
   detectUnresolved,
   propagateTaint,
   generateFindings,

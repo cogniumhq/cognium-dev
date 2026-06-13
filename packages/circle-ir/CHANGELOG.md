@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.40.0] - 2026-06-12
+
+### Added
+
+- **`code` field on `TaintSource` and `TaintSink`.** Closes
+  [cognium-dev#23](https://github.com/cogniumhq/cognium-dev/issues/23). Every
+  emitted `TaintSource` / `TaintSink` now carries the trimmed source-line text
+  at its recorded `line`, so downstream consumers (LLM enrichment pipelines,
+  SARIF reporters, the circle-ir-ai boundary harness) can render the offending
+  line without re-parsing the file. This matters because the tree-sitter tree
+  is disposed after analysis (3.x source-disposal contract) — by the time
+  enrichment runs the AST is gone and the consumer's only options were
+  reading the file again or guessing from `location`/`method`. Two paths:
+  1. **`analyzeTaint(calls, types, config, hierarchy, language, code?)`** — new
+     optional `code` arg. When supplied, `findSources` / `findSinks` populate
+     `code` on every emitted entry after dedup using
+     `code.split('\n')[line - 1].trim()`.
+  2. **Exported `attachSourceLineCode(sources, sinks, code)`** helper for
+     passes that emit sources/sinks outside `analyzeTaint` (currently
+     `LanguageSourcesPass` for Python/JS assignment sources, Bash patterns,
+     and Java getter sources). Idempotent — only fills missing `code` values
+     so callers can pre-seed if they have a richer rendering.
+  Backward compatible: `code` is optional everywhere, and `analyzeTaint`
+  without the new arg leaves the field unset (verified by regression test).
+  Threaded through `analyzer.ts:626` and `TaintMatcherPass` via the existing
+  `PassContext.code` channel, and re-exported from `analysis/index.ts`,
+  `core-lib.ts`, and the top-level `index.ts`.
+
 ## [3.39.0] - 2026-06-11
 
 ### Added

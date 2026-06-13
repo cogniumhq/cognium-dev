@@ -18,6 +18,7 @@ import type { TaintSource, TaintSink, TypeInfo, SourceType, SastFinding, DFG } f
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
+import { attachSourceLineCode } from '../taint-matcher.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -206,6 +207,11 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
     }
+
+    // Attach trimmed source-line text to each emitted source/sink so consumers
+    // (LLM enrichment, SARIF reporters) can render the offending line without
+    // re-reading the file.
+    attachSourceLineCode(additionalSources, additionalSinks, code);
 
     return { additionalSources, additionalSinks, pyTaintedVars, pySanitizedVars, jsTaintedVars };
   }

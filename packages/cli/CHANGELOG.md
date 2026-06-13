@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.40.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.39.0 → 3.40.0** — adds the `code` field on every emitted `TaintSource` and `TaintSink` (cognium-dev#23). The trimmed source-line text at each entry's recorded `line` is now available in JSON output without re-reading the file, which matters for downstream pipelines that consume `ir.taint.sources` / `ir.taint.sinks` after the tree-sitter AST has been disposed. SARIF and text output formats are unchanged; the JSON `taint` block carries the new optional `code` string per source and per sink. Backward compatible — consumers that don't need the field can ignore it. Full circle-ir suite at 1946 passing tests.
+
+[3.40.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.39.0...cognium-dev-v3.40.0
+
 ## [3.39.0] - 2026-06-11
 
 ### Changed

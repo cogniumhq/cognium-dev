@@ -80,7 +80,7 @@ export {
 } from './core/extractors/index.js';
 
 // Taint analysis - import directly to avoid LLM dependencies
-export { analyzeTaint } from './analysis/taint-matcher.js';
+export { analyzeTaint, attachSourceLineCode } from './analysis/taint-matcher.js';
 
 export {
   getDefaultConfig,

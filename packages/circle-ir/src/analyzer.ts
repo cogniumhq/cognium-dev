@@ -623,7 +623,7 @@ export async function analyzeForAPI(
   const constPropResult = analyzeConstantPropagation(tree, code);
 
   const config = options.taintConfig ?? getDefaultConfig();
-  const taint = analyzeTaint(calls, types, config, undefined, language);
+  const taint = analyzeTaint(calls, types, config, undefined, language, code);
 
   // Filter sinks in dead code
   let filteredSinks = taint.sinks.filter(sink => !constPropResult.unreachableLines.has(sink.line));

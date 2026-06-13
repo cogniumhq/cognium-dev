@@ -28,7 +28,7 @@ export class TaintMatcherPass implements AnalysisPass<TaintMatcherResult> {
   readonly category = 'security' as const;
 
   run(ctx: PassContext): TaintMatcherResult {
-    const { graph, language, config } = ctx;
+    const { graph, language, config, code } = ctx;
     const { calls, types } = graph.ir;
 
     // Merge language-plugin built-in sources/sinks.
@@ -73,7 +73,7 @@ export class TaintMatcherPass implements AnalysisPass<TaintMatcherResult> {
     const hierarchy = createWithJdkTypes();
     hierarchy.addFromIR(graph.ir, graph.ir.meta.file);
 
-    const taint = analyzeTaint(calls, types, mergedConfig, hierarchy, language as import('../../types/index.js').SupportedLanguage);
+    const taint = analyzeTaint(calls, types, mergedConfig, hierarchy, language as import('../../types/index.js').SupportedLanguage, code);
 
     // Extract method names annotated with @sanitizer (Javadoc comments).
     const sanitizerMethods: string[] = [];

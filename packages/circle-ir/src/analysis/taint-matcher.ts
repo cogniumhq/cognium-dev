@@ -31,6 +31,11 @@ const PYTHON_TAINTED_PATTERNS: Array<{ pattern: RegExp; sourceType: SourceType }
 
 /**
  * Analyze code for taint sources, sinks, and sanitizers.
+ *
+ * When `code` is provided, each emitted TaintSource/TaintSink is annotated with
+ * its trimmed source-line text in the `code` field. Consumers (LLM enrichment
+ * pipelines, SARIF reporters) can then render the offending line without
+ * re-reading the file.
  */
 export function analyzeTaint(
   calls: CallInfo[],
@@ -38,12 +43,37 @@ export function analyzeTaint(
   config: TaintConfig = getDefaultConfig(),
   typeHierarchy?: TypeHierarchyResolver,
   language?: SupportedLanguage,
+  code?: string,
 ): Taint {
-  const sources = findSources(calls, types, config.sources);
-  const sinks = findSinks(calls, config.sinks, typeHierarchy, language);
+  const sourceLines = code !== undefined ? code.split('\n') : undefined;
+  const sources = findSources(calls, types, config.sources, sourceLines);
+  const sinks = findSinks(calls, config.sinks, typeHierarchy, language, sourceLines);
   const sanitizers = findSanitizers(calls, types, config.sanitizers);
 
   return { sources, sinks, sanitizers };
+}
+
+/**
+ * Attach trimmed source-line text to each TaintSource / TaintSink at its
+ * recorded line. Idempotent — only fills `code` when missing. Used by passes
+ * that emit sources/sinks outside of `analyzeTaint()` (e.g. LanguageSourcesPass).
+ */
+export function attachSourceLineCode(
+  sources: TaintSource[],
+  sinks: TaintSink[],
+  code: string,
+): void {
+  const lines = code.split('\n');
+  for (const s of sources) {
+    if (s.code === undefined) {
+      s.code = lines[s.line - 1]?.trim();
+    }
+  }
+  for (const s of sinks) {
+    if (s.code === undefined) {
+      s.code = lines[s.line - 1]?.trim();
+    }
+  }
 }
 
 /**
@@ -52,7 +82,8 @@ export function analyzeTaint(
 function findSources(
   calls: CallInfo[],
   types: TypeInfo[],
-  patterns: SourcePattern[]
+  patterns: SourcePattern[],
+  sourceLines?: string[],
 ): TaintSource[] {
   const sources: TaintSource[] = [];
 
@@ -236,7 +267,13 @@ function findSources(
     }
   }
 
-  return Array.from(sourceMap.values());
+  const result = Array.from(sourceMap.values());
+  if (sourceLines) {
+    for (const s of result) {
+      s.code = sourceLines[s.line - 1]?.trim();
+    }
+  }
+  return result;
 }
 
 /**
@@ -362,6 +399,7 @@ function findSinks(
   patterns: SinkPattern[],
   typeHierarchy?: TypeHierarchyResolver,
   language?: SupportedLanguage,
+  sourceLines?: string[],
 ): TaintSink[] {
   // Use a map to deduplicate by location+line+cwe
   const sinkMap = new Map<string, TaintSink>();
@@ -394,7 +432,13 @@ function findSinks(
     }
   }
 
-  return Array.from(sinkMap.values());
+  const result = Array.from(sinkMap.values());
+  if (sourceLines) {
+    for (const s of result) {
+      s.code = sourceLines[s.line - 1]?.trim();
+    }
+  }
+  return result;
 }
 
 /**
