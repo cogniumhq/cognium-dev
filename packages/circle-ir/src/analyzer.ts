@@ -58,6 +58,7 @@ import {
   initParser,
   parse,
   disposeTree,
+  extractParseStatus,
   extractMeta,
   extractTypes,
   extractCalls,
@@ -376,6 +377,22 @@ export async function analyze(
   try {
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 
+  // Issue #27: surface parse health to the caller. Tree-sitter happily
+  // returns a Tree object for files it can't fully grok (it inserts
+  // ERROR / MISSING nodes and recovers), so downstream silence is not a
+  // signal that the file parsed cleanly. Compute the report once here and
+  // attach it to the IR so consumers can distinguish "no findings" from
+  // "no findings because the parser dropped half the file".
+  const parseStatus = extractParseStatus(tree);
+  if (parseStatus.has_errors) {
+    logger.warn('Partial parse — IR may be incomplete', {
+      filePath,
+      language,
+      errorCount: parseStatus.error_count,
+      firstErrorLine: parseStatus.error_locations[0]?.line,
+    });
+  }
+
   // Collect all node types in a single traversal for better performance
   const nodeCache = collectAllNodes(tree.rootNode, getNodeTypesForLanguage(language));
 
@@ -491,6 +508,7 @@ export async function analyze(
     findings: findings.length > 0 ? findings : undefined,
     metrics: { file: filePath, metrics: metricValues },
     runtime_registrations: runtimeRegistrations.length > 0 ? runtimeRegistrations : undefined,
+    parse_status: parseStatus,
   };
   } finally {
     disposeTree(tree);
@@ -517,6 +535,16 @@ async function analyzeHtmlFile(
   const tree = await parse(code, 'html');
   try {
   const meta = extractMeta(code, tree, filePath, 'html');
+
+  const htmlParseStatus = extractParseStatus(tree);
+  if (htmlParseStatus.has_errors) {
+    logger.warn('Partial parse — IR may be incomplete', {
+      filePath,
+      language: 'html',
+      errorCount: htmlParseStatus.error_count,
+      firstErrorLine: htmlParseStatus.error_locations[0]?.line,
+    });
+  }
 
   // Extract script blocks and event handlers
   const { scriptBlocks, eventHandlers } = extractHtmlContent(tree.rootNode);
@@ -574,6 +602,7 @@ async function analyzeHtmlFile(
 
   // Merge everything
   const result = mergeHtmlResults(meta, scriptResults, attributeFindings);
+  result.parse_status = htmlParseStatus;
 
   logger.debug('HTML analysis complete', {
     filePath,

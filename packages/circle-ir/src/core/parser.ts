@@ -256,6 +256,68 @@ export async function parse(
 }
 
 /**
+ * Walk a parsed tree once and report its parse health (issue #27).
+ *
+ * Tree-sitter's `parse()` returns a Tree even when the input doesn't match
+ * the grammar — error-recovery inserts ERROR / MISSING nodes around the
+ * unrecognized region and keeps going. The Tree object itself carries
+ * `rootNode.hasError`, but no count or per-location report; circle-ir's
+ * extractors then run on the partial tree and silently drop whatever was
+ * under the ERROR nodes. This helper surfaces a structured signal that the
+ * top-level `analyze()` can attach to the IR so consumers can distinguish
+ * "no findings" from "no findings because half the file didn't parse".
+ *
+ * Locations are capped at 50 entries to bound memory on pathological inputs.
+ */
+export function extractParseStatus(tree: Tree): {
+  success: boolean;
+  has_errors: boolean;
+  error_count: number;
+  error_locations: Array<{ line: number; column: number }>;
+} {
+  const root = tree.rootNode;
+  // Fast path: no errors anywhere in the tree — skip the full walk.
+  if (!root.hasError) {
+    return { success: true, has_errors: false, error_count: 0, error_locations: [] };
+  }
+
+  const MAX_LOCATIONS = 50;
+  const locations: Array<{ line: number; column: number }> = [];
+  let errorCount = 0;
+
+  // Iterative DFS using a stack — avoids recursion limits on deeply nested
+  // trees that already failed parsing.
+  const stack: Node[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'ERROR' || node.isMissing) {
+      errorCount++;
+      if (locations.length < MAX_LOCATIONS) {
+        locations.push({
+          line: node.startPosition.row + 1,
+          column: node.startPosition.column,
+        });
+      }
+    }
+    // Only descend into subtrees that themselves carry errors — saves a
+    // huge amount of walking on otherwise-clean files with one bad region.
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child && (child.hasError || child.isMissing)) {
+        stack.push(child);
+      }
+    }
+  }
+
+  return {
+    success: false,
+    has_errors: true,
+    error_count: errorCount,
+    error_locations: locations,
+  };
+}
+
+/**
  * Free the WASM memory backing a parsed Tree. Safe to call multiple times.
  */
 export function disposeTree(tree: Tree | null | undefined): void {

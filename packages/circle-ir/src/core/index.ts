@@ -10,6 +10,7 @@ export {
   createFreshParser,
   parse,
   disposeTree,
+  extractParseStatus,
   walkTree,
   findNodes,
   findAncestor,

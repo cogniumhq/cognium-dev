@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.46.0] - 2026-06-12
+
+### Added
+
+- **Structured parse-failure signal (`CircleIR.parse_status`)** — closes #27.
+  Previously, tree-sitter error-recovery silently inserted `ERROR`/`MISSING`
+  nodes when a source file failed to parse cleanly: extractors ran on the
+  partial tree and the IR was indistinguishable from a clean parse, so the
+  CLI and circle-ir-ai treated dropped files as legitimate 0-finding scans.
+  This was traced from top-100 Java repo runs that intermittently lost
+  coverage with no user-visible signal.
+
+  New optional field on `CircleIR`:
+
+  ```ts
+  interface ParseStatus {
+    success: boolean;
+    has_errors: boolean;
+    error_count: number;
+    error_locations: Array<{ line: number; column: number }>;
+  }
+  ```
+
+  Behavior:
+  - Populated by every `analyze()` and `analyzeHtmlFile()` return — both
+    success and partial-parse paths.
+  - When `has_errors` is true, `logger.warn('Partial parse — IR may be
+    incomplete', { filePath, language, errorCount, firstErrorLine })` is
+    emitted so CLI users see the message at default log level.
+  - `error_locations` is capped at 50 entries (memory bound on adversarial
+    inputs); `error_count` reflects the true total.
+  - Lines are 1-based to match the rest of the IR.
+
+  Also exported: `extractParseStatus(tree: Tree)` helper from
+  `circle-ir/core` for callers that parse manually.
+
+  No findings are added, removed, or moved by this change. It is pure
+  observability plumbing — the existing partial-tree extractor behavior is
+  preserved (best-effort analysis on whatever the grammar recovered).
+
 ## [3.45.0] - 2026-06-12
 
 ### Added

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.46.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.45.0 → 3.46.0** — structured parse-failure signal (`CircleIR.parse_status`), closes cognium-dev#27. Previously, intermittent tree-sitter parse failures on top-100 Java repos silently dropped files: the IR looked normal, the CLI reported "0 vulnerabilities found", and there was no signal to the user that coverage had been lost. Every `analyze()` and `analyzeHtmlFile()` return now carries a `parse_status: { success, has_errors, error_count, error_locations[] }` field, and `logger.warn('Partial parse — IR may be incomplete', ...)` is emitted at default log level on partial parses. The CLI text/JSON/SARIF output formats are pass-through; the new field appears in JSON output verbatim and downstream consumers (cognium-dev CI, circle-ir-ai) can surface dropped files instead of treating them as clean scans. Static-path findings are unchanged. Full circle-ir suite at 2029 passing tests.
+
+[3.46.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.45.0...cognium-dev-v3.46.0
+
 ## [3.45.0] - 2026-06-12
 
 ### Changed

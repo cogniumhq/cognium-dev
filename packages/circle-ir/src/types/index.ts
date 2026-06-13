@@ -741,6 +741,50 @@ export interface CircleIR {
    * entry roots when computing reachability.
    */
   runtime_registrations?: RuntimeRegistration[];
+  /**
+   * Structured report of tree-sitter parse health for this file (issue #27).
+   * Populated on every `analyze()` call. When `success: false`, downstream
+   * IR fields (`types`, `calls`, `cfg`, `dfg`) were derived from a partial
+   * parse and may be incomplete — extractors run on whatever ERROR / MISSING
+   * nodes tree-sitter recovered, so taint sources/sinks can be silently
+   * dropped. Consumers (CLI, circle-ir-ai) should surface this to the user
+   * instead of treating an empty `findings` array as a clean bill of health.
+   */
+  parse_status?: ParseStatus;
+}
+
+/**
+ * Tree-sitter parse health for a single analyzed file. See `CircleIR.parse_status`.
+ *
+ * `tree.rootNode.hasError` returns true when tree-sitter encountered any
+ * grammar mismatch and inserted ERROR or MISSING nodes during error
+ * recovery. The parse still produces a Tree (extractors run), but the
+ * sub-tree under every ERROR node is opaque to the extractors.
+ */
+export interface ParseStatus {
+  /**
+   * `true` when tree-sitter parsed the file without any ERROR or MISSING
+   * nodes. Equivalent to `!tree.rootNode.hasError`.
+   */
+  success: boolean;
+  /**
+   * Mirror of `tree.rootNode.hasError`. `true` indicates the parse is
+   * partial — at least one ERROR or MISSING node exists somewhere in the
+   * tree and IR derived from it may be incomplete.
+   */
+  has_errors: boolean;
+  /**
+   * Total count of ERROR and MISSING nodes the recovery walk found. `0`
+   * when `success: true`. Useful for ranking which files in a project
+   * scan have the worst parse health.
+   */
+  error_count: number;
+  /**
+   * 1-based line / 0-based column of each ERROR or MISSING node, in
+   * tree-walk order, capped at 50 entries to bound memory. Lets consumers
+   * highlight specific lines without re-walking the tree.
+   */
+  error_locations: Array<{ line: number; column: number }>;
 }
 
 /**
