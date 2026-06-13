@@ -4,7 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
-import type { CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SupportedLanguage } from '../types/index.js';
+import type { CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
@@ -664,6 +664,39 @@ function isKnownSafeReceiverForMethod(receiver: string, method: string, sinkType
 }
 
 /**
+ * Known false-positive FQN doppelgangers per sink type. A receiver whose
+ * resolved fully-qualified type starts with one of these prefixes is
+ * dropped from sink matching even when the method name and simple class
+ * name would otherwise match.
+ *
+ * Rationale — Java in particular has multiple libraries that reuse the
+ * same simple class name as the JDBC API but with completely different
+ * semantics. JSqlParser (`net.sf.jsqlparser.*`) ships a
+ * `Statement` type with `execute(StatementVisitor)` and `accept(...)`
+ * methods that are visitor-pattern dispatch over an in-memory SQL AST —
+ * not database execution. The simple-name pattern `Statement.execute()`
+ * cannot tell them apart, so without this filter every JSqlParser
+ * visitor call becomes a critical `sql_injection` finding.
+ *
+ * Prefixes are package-level (trailing dot) so they cover everything in
+ * the namespace. Drops are silent — no finding is emitted, so downstream
+ * consumers see consistent absence rather than a downgraded finding.
+ *
+ * `receiver_type_fqn` is populated by Java call extraction (see
+ * `src/core/extractors/calls.ts`). When the FQN is unresolvable (e.g.
+ * wildcard imports), the exclusion does not fire and the call is
+ * processed by the normal heuristic path — conservative on both sides.
+ */
+const SINK_FQN_EXCLUSIONS: Partial<Record<SinkType, string[]>> = {
+  sql_injection: [
+    // JSqlParser AST library: Statement.execute(StatementVisitor),
+    // Select.accept(SelectVisitor), Insert/Update/Delete.execute(...),
+    // Expression.accept(ExpressionVisitor), etc.
+    'net.sf.jsqlparser.',
+  ],
+};
+
+/**
  * Check if a call matches a sink pattern.
  */
 function matchesSinkPattern(
@@ -697,6 +730,22 @@ function matchesSinkPattern(
 
   if (!methodMatches) {
     return false;
+  }
+
+  // FQN doppelganger exclusion: drop the match if the receiver's resolved
+  // fully-qualified type belongs to a library known to share simple class
+  // names with the sink target without sharing the dangerous semantics.
+  // Skipped when receiver_type_fqn is undefined/null (i.e. the simple-name
+  // matcher remains the source of truth for unresolvable receivers).
+  if (call.receiver_type_fqn) {
+    const exclusions = SINK_FQN_EXCLUSIONS[pattern.type];
+    if (exclusions) {
+      for (const prefix of exclusions) {
+        if (call.receiver_type_fqn.startsWith(prefix)) {
+          return false;
+        }
+      }
+    }
   }
 
   // Check class if specified

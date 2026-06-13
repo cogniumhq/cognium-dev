@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.44.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.43.0 → 3.44.0** — JSqlParser AST visitor exclusion for SQL-injection sinks (cognium-dev#24, JSqlParser half). `cognium-dev scan` against Java code that uses JSqlParser (`net.sf.jsqlparser.statement.Statement.execute(StatementVisitor)`, `Select.execute(visitor)`, etc.) no longer emits these visitor-pattern AST dispatch calls as `sql_injection` findings. The exclusion is FQN-precise: it only fires when the receiver's resolved type starts with `net.sf.jsqlparser.`. Real JDBC sinks (`java.sql.Statement.execute(sql)`, `executeQuery`, `executeUpdate`, `JdbcTemplate.execute`, …) remain `sql_injection`. Unresolvable receivers and wildcard JSqlParser imports fall back to the simple-name heuristic (recall preserved). CLI output formats unchanged. Full circle-ir suite at 2006 passing tests.
+
+[3.44.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.43.0...cognium-dev-v3.44.0
+
 ## [3.43.0] - 2026-06-12
 
 ### Changed

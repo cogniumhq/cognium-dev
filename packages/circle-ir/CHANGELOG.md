@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.44.0] - 2026-06-12
+
+### Added
+
+- **JSqlParser AST visitor exclusion for SQL-injection sinks (Java).**
+  Closes the JSqlParser half of
+  [cognium-dev#24](https://github.com/cogniumhq/cognium-dev/issues/24).
+  `matchesSinkPattern` now consults `CallInfo.receiver_type_fqn` (added
+  in 3.43.0) and skips matches whose receiver type belongs to a known
+  library namespace that shares simple class names with real sink
+  targets without sharing the dangerous semantics. The first entry of
+  the new `SINK_FQN_EXCLUSIONS` table drops `sql_injection` matches
+  whose receiver FQN starts with `net.sf.jsqlparser.` — these are
+  in-memory AST visitor dispatch calls (`Statement.execute(visitor)`,
+  `Select.execute(visitor)`, …), not database execution.
+
+  Behavior:
+  - Receiver resolved to `net.sf.jsqlparser.*` → exclusion fires, no
+    `sql_injection` sink emitted.
+  - Receiver resolved to `java.sql.Statement`, `JdbcTemplate`, etc. →
+    unchanged, `sql_injection` still emitted.
+  - Receiver FQN null/undefined (wildcard imports, unresolvable
+    receivers) → exclusion does not fire, simple-name heuristic
+    continues to apply (recall preserved).
+
+### Changed
+
+- `src/analysis/taint-matcher.ts` — added `SinkType` to type imports,
+  introduced data-driven `SINK_FQN_EXCLUSIONS: Partial<Record<SinkType,
+  string[]>>` table, inserted FQN exclusion check inside
+  `matchesSinkPattern` after the method-name match passes and before
+  pattern.class checks.
+
+### Tests
+
+- New `tests/analysis/taint-jsqlparser-exclusion.test.ts` — 10 tests in
+  three suites: (1) exclusion fires when receiver FQN is JSqlParser
+  (4 cases: parameter, JSqlParser Select, field-typed, local-var-typed);
+  (2) exclusion does not fire for real JDBC types (4 cases:
+  `java.sql.Statement.execute/executeQuery/executeUpdate`,
+  `JdbcTemplate.execute`); (3) conservative behavior when FQN
+  unresolvable (2 cases: no imports, wildcard import).
+- Full suite: 2006/2006 passing (1996 baseline + 10 new).
+
 ## [3.43.0] - 2026-06-12
 
 ### Added
