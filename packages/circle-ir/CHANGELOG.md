@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.0] - 2026-06-12
+
+### Fixed
+
+- **Parser / analyzer stack overflow on deeply nested AST shapes** — closes
+  cognium-ai#88. Scanning generated Java sources such as CoreNLP's
+  `DefaultTeXHyphenData.java` (which contains 4500+ segment
+  `"a" + "b" + "c" + …` string concatenation chains) raised
+  `RangeError: Maximum call stack size exceeded` because tree-walk helpers
+  were recursive and tree-sitter parses `+` chains as left-associative
+  binary AST whose depth equals the number of segments. All recursive
+  walkers in the hot path are now iterative DFS with an explicit stack and
+  preserve pre-order visit semantics:
+
+  - `walkTree` (`src/core/parser.ts`) — primary tree walker used by
+    `findNodes`, `collectAllNodes`, and direct callers in `dfg.ts`.
+  - `BaseLanguagePlugin.findNodes` (`src/languages/plugins/base.ts`) —
+    replaced the `TreeCursor` recursion that overflowed.
+  - Java plugin's internal `walk` (`src/languages/plugins/java.ts`).
+  - `ConstantPropagator.visit` and
+    `ConstantPropagator.isTaintedExpression`
+    (`src/analysis/constant-propagation/propagator.ts`) — refactored to
+    iterative wrappers that dispatch to a private step method per node;
+    structured handlers (`if`/`switch`/`loop`/method) still manage their
+    own descent. `isTaintedExpression` now returns `boolean` from a
+    wrapper that drives an internal step returning
+    `boolean | undefined` (`undefined` meaning "descend").
+  - `ConstantPropagator.collectClassFields` and
+    `ConstantPropagator.findAllMethods` — defensive iterative DFS.
+  - HTML pre-processing walks (`walkNode` in
+    `src/analysis/html/html-extractor.ts` and `walkForSecurityChecks`
+    in `src/analysis/html/html-attribute-security-pass.ts`) — defensive
+    iterative DFS.
+
+  Regression coverage: `tests/core/deep-nesting.test.ts` parses synthetic
+  Java files with 6000 and 10000 segment `+`-concatenation chains and
+  asserts `parse_status.success === true` without overflow. Full test
+  suite (2102 tests) continues to pass.
+
 ## [3.47.0] - 2026-06-12
 
 ### Added

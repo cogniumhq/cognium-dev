@@ -331,16 +331,30 @@ export function disposeTree(tree: Tree | null | undefined): void {
 
 /**
  * Walk the syntax tree and call the visitor for each node.
+ *
+ * Iterative pre-order DFS — visits the parent before its children and walks
+ * children left-to-right, matching the semantics of the previous recursive
+ * implementation. The iterative form is required because tree-sitter parses
+ * left-associative binary expressions (e.g. long `"a" + "b" + "c" + ...`
+ * concatenations as found in generated Java sources like CoreNLP's
+ * `DefaultTeXHyphenData.java`, 4500+ segments) into a deeply nested AST.
+ * A recursive walker blows V8's call stack at ~5K depth and crashes the
+ * entire analysis with `RangeError: Maximum call stack size exceeded`
+ * (cognium-ai#88). The iterative walker has no such limit.
  */
 export function walkTree(
   node: Node,
   visitor: (node: Node) => void
 ): void {
-  visitor(node);
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child) {
-      walkTree(child, visitor);
+  const stack: Node[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    visitor(current);
+    // Push children right-to-left so subsequent pops yield left-to-right
+    // pre-order visitation.
+    for (let i = current.childCount - 1; i >= 0; i--) {
+      const child = current.child(i);
+      if (child) stack.push(child);
     }
   }
 }

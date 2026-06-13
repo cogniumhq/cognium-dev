@@ -36,16 +36,19 @@ function walkForSecurityChecks(
   filePath: string,
   findings: SastFinding[],
 ): void {
-  // tree-sitter-html uses special node types for <script> and <style>
-  if (node.type === 'element' || node.type === 'self_closing_tag' ||
-      node.type === 'script_element' || node.type === 'style_element') {
-    checkElement(node, filePath, findings);
-  }
-
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child) {
-      walkForSecurityChecks(child, filePath, findings);
+  // Iterative DFS — guards against stack overflow on pathological HTML.
+  // Visits parent before children, children left-to-right.
+  const stack: SyntaxNode[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    // tree-sitter-html uses special node types for <script> and <style>
+    if (current.type === 'element' || current.type === 'self_closing_tag' ||
+        current.type === 'script_element' || current.type === 'style_element') {
+      checkElement(current, filePath, findings);
+    }
+    for (let i = current.childCount - 1; i >= 0; i--) {
+      const child = current.child(i);
+      if (child) stack.push(child);
     }
   }
 }

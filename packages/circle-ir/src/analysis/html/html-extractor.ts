@@ -80,19 +80,21 @@ function walkNode(
   scriptBlocks: HtmlScriptBlock[],
   eventHandlers: HtmlEventHandler[],
 ): void {
-  if (node.type === 'script_element') {
-    extractScriptBlock(node, scriptBlocks);
-  }
-
-  // Check for event handler attributes on any element or self-closing tag
-  if (node.type === 'element' || node.type === 'self_closing_tag') {
-    extractEventHandlers(node, eventHandlers);
-  }
-
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child) {
-      walkNode(child, scriptBlocks, eventHandlers);
+  // Iterative DFS — guards against stack overflow on pathological HTML
+  // (deeply nested elements / huge generated documents). Visits parent
+  // before children, children left-to-right.
+  const stack: SyntaxNode[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.type === 'script_element') {
+      extractScriptBlock(current, scriptBlocks);
+    }
+    if (current.type === 'element' || current.type === 'self_closing_tag') {
+      extractEventHandlers(current, eventHandlers);
+    }
+    for (let i = current.childCount - 1; i >= 0; i--) {
+      const child = current.child(i);
+      if (child) stack.push(child);
     }
   }
 }

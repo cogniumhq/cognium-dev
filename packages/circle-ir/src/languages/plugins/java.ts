@@ -396,17 +396,20 @@ export class JavaPlugin extends BaseLanguagePlugin {
       }
     };
 
-    const walk = (node: SyntaxNode): void => {
+    // Iterative DFS — guards against stack overflow on deeply nested AST
+    // shapes such as `"a" + "b" + "c" + ...` chains in generated Java
+    // sources (cognium-ai#88).
+    const stack: SyntaxNode[] = [tree.rootNode];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
       if (node.type === 'field_declaration' || node.type === 'local_variable_declaration') {
         collectDecl(node);
       }
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
-        if (child) walk(child);
+        if (child) stack.push(child);
       }
-    };
-
-    walk(tree.rootNode);
+    }
     this._typeMapCache.set(tree, map);
     return map;
   }

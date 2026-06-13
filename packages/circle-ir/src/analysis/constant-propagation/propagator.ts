@@ -531,15 +531,18 @@ export class ConstantPropagator {
    * These are variables declared directly in the class body, not inside methods.
    */
   private collectClassFields(root: Node): void {
-    const traverse = (n: Node, inClass: boolean, inMethod: boolean) => {
-      if (!n) return;
-
-      // Track when we enter a class body
+    // Iterative DFS — guards against stack overflow on deeply nested AST
+    // shapes such as `"a" + "b" + "c" + ...` chains in generated Java
+    // sources (cognium-ai#88). Only class_body direct children qualify
+    // as class fields; nested classes are still walked because their
+    // bodies are pushed onto the stack.
+    const stack: Node[] = [root];
+    while (stack.length > 0) {
+      const n = stack.pop();
+      if (!n) continue;
       if (n.type === 'class_body') {
         for (const child of n.children) {
-          // Field declarations are direct children of class_body
           if (child.type === 'field_declaration') {
-            // Find the variable declarator(s) in this field declaration
             for (const declarator of child.children) {
               if (declarator.type === 'variable_declarator') {
                 const nameNode = declarator.childForFieldName('name');
@@ -550,38 +553,31 @@ export class ConstantPropagator {
               }
             }
           }
-          // Recurse into methods without marking them as fields
-          if (child.type === 'method_declaration' || child.type === 'constructor_declaration') {
-            traverse(child, true, true);
-          } else {
-            traverse(child, true, false);
-          }
+          stack.push(child);
         }
-        return;
+        continue;
       }
-
       for (const child of n.children) {
-        traverse(child, inClass, inMethod);
+        stack.push(child);
       }
-    };
-
-    traverse(root, false, false);
+    }
   }
 
   private findAllMethods(node: Node): Node[] {
+    // Iterative DFS — guards against stack overflow on deeply nested AST
+    // shapes (cognium-ai#88).
     const methods: Node[] = [];
-
-    const traverse = (n: Node) => {
-      if (!n) return;
+    const stack: Node[] = [node];
+    while (stack.length > 0) {
+      const n = stack.pop();
+      if (!n) continue;
       if (n.type === 'method_declaration' || n.type === 'function_declaration') {
         methods.push(n);
       }
       for (const child of n.children) {
-        if (child) traverse(child);
+        if (child) stack.push(child);
       }
-    };
-
-    traverse(node);
+    }
     return methods;
   }
 
@@ -648,10 +644,34 @@ export class ConstantPropagator {
   // ===========================================================================
 
   private visit(node: Node): void {
+    // Iterative pre-order DFS with explicit stack — guards against stack
+    // overflow on pathological ASTs (e.g. 4500+ segment string concatenation
+    // chains in generated Java sources, cognium-ai#88).
+    //
+    // The structured handlers (method/if/switch/loop/synchronized) keep
+    // managing their own descent because their semantics depend on scope
+    // and control-flow ordering. For unhandled node types we push children
+    // onto our own stack instead of recursing.
+    const stack: Node[] = [node];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (this.visitOne(current)) continue; // handler took care of descent
+      for (let i = current.children.length - 1; i >= 0; i--) {
+        stack.push(current.children[i]);
+      }
+    }
+  }
+
+  /**
+   * Visit a single node. Returns true if the handler already descended into
+   * children (and the caller should NOT push them), false to fall through to
+   * the default pre-order descent.
+   */
+  private visitOne(node: Node): boolean {
     const line = getNodeLine(node);
 
     if (this.unreachableLines.has(line)) {
-      return;
+      return true; // skip subtree
     }
 
     // Track which condition this line is under for correlated predicate analysis
@@ -664,52 +684,50 @@ export class ConstantPropagator {
       case 'method_declaration':
       case 'constructor_declaration':
         this.handleMethodDeclaration(node);
-        return; // Don't visit children directly, handleMethodDeclaration does it
+        return true; // Don't visit children directly, handleMethodDeclaration does it
 
       case 'local_variable_declaration':
         this.handleVariableDeclaration(node);
-        break;
+        return false;
 
       case 'assignment_expression':
         this.handleAssignment(node);
-        break;
+        return false;
 
       case 'update_expression':
         this.handleUpdateExpression(node);
-        break;
+        return false;
 
       case 'if_statement':
         this.handleIfStatement(node);
-        return;
+        return true;
 
       case 'switch_expression':
       case 'switch_statement':
         this.handleSwitch(node);
-        return;
+        return true;
 
       case 'ternary_expression':
         this.handleTernary(node);
-        break;
+        return false;
 
       case 'expression_statement':
         this.handleExpressionStatement(node);
-        break;
+        return false;
 
       case 'for_statement':
       case 'enhanced_for_statement':
       case 'while_statement':
       case 'do_statement':
         this.handleLoopStatement(node);
-        return;
+        return true;
 
       case 'synchronized_statement':
         this.handleSynchronizedStatement(node);
-        return;
+        return true;
 
       default:
-        for (const child of node.children) {
-          this.visit(child);
-        }
+        return false;
     }
   }
 
@@ -1689,6 +1707,27 @@ export class ConstantPropagator {
   }
 
   isTaintedExpression(node: Node): boolean {
+    // Iterative wrapper that calls isTaintedExpressionStep per node.
+    // The step returns true/false to short-circuit, or undefined to indicate
+    // "descend into children". This guards against stack overflow on
+    // pathological ASTs (cognium-ai#88). Internal recursive calls inside the
+    // step method route back through this wrapper, so each one starts a fresh
+    // explicit stack rather than blowing the JS call stack.
+    const stack: Node[] = [node];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      const result = this.isTaintedExpressionStep(current);
+      if (result === true) return true;
+      if (result === false) continue;
+      // undefined → descend pre-order (children pushed right-to-left)
+      for (let i = current.children.length - 1; i >= 0; i--) {
+        stack.push(current.children[i]);
+      }
+    }
+    return false;
+  }
+
+  private isTaintedExpressionStep(node: Node): boolean | undefined {
     const text = getNodeText(node, this.source);
 
     if (node.type === 'method_invocation') {
@@ -2040,13 +2079,8 @@ export class ConstantPropagator {
       return isTainted;
     }
 
-    for (const child of node.children) {
-      if (this.isTaintedExpression(child)) {
-        return true;
-      }
-    }
-
-    return false;
+    // No verdict at this node — let the wrapper descend into children.
+    return undefined;
   }
 
   private checkCollectionTaint(node: Node): void {

@@ -88,22 +88,23 @@ export abstract class BaseLanguagePlugin implements LanguagePlugin {
    * Helper to find all nodes of a given type
    */
   protected findNodes(root: SyntaxNode, type: string): SyntaxNode[] {
+    // Iterative DFS — guards against stack overflow on deeply nested AST
+    // shapes such as `"a" + "b" + "c" + ...` chains in generated Java
+    // sources (cognium-ai#88). Walks the tree directly rather than via a
+    // TreeCursor because the recursive cursor pattern blew the stack on
+    // 4500+-segment string concatenations.
     const nodes: SyntaxNode[] = [];
-    const cursor = root.walk();
-
-    const visit = (): void => {
-      if (cursor.nodeType === type) {
-        nodes.push(cursor.currentNode);
+    const stack: SyntaxNode[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (node.type === type) {
+        nodes.push(node);
       }
-      if (cursor.gotoFirstChild()) {
-        do {
-          visit();
-        } while (cursor.gotoNextSibling());
-        cursor.gotoParent();
+      for (let i = node.childCount - 1; i >= 0; i--) {
+        const child = node.child(i);
+        if (child) stack.push(child);
       }
-    };
-
-    visit();
+    }
     return nodes;
   }
 

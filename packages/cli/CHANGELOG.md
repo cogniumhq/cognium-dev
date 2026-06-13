@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.0] - 2026-06-12
+
+### Fixed
+
+- **circle-ir upgraded 3.47.0 → 3.48.0** — fixes `RangeError: Maximum call stack size exceeded` raised by `cognium-dev scan` on Java sources with deeply nested AST shapes (e.g. CoreNLP's `DefaultTeXHyphenData.java` with 4500+ segment `"a" + "b" + …` string concatenation chains parsed as left-associative binary expressions), closes cognium-ai#88. All recursive tree walkers in the hot path are now iterative DFS with an explicit stack: `walkTree`, `BaseLanguagePlugin.findNodes`, the Java plugin's internal `walk`, `ConstantPropagator.visit` / `isTaintedExpression` / `collectClassFields` / `findAllMethods`, and the HTML pre-processing walks (`walkNode`, `walkForSecurityChecks`). The wrapper/step pattern preserves pre-order visit semantics for `isTaintedExpression` (step returns `boolean | undefined`). Regression coverage at 6000- and 10000-segment chains in `tests/core/deep-nesting.test.ts`. CLI text/JSON/SARIF formats are unchanged; previously-crashing scans now complete and report findings normally. Full circle-ir suite at 2102 passing tests.
+
+[3.48.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.47.0...cognium-dev-v3.48.0
+
 ## [3.47.0] - 2026-06-12
 
 ### Changed
