@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.43.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.42.0 → 3.43.0** — receiver-type resolution on `CallInfo` for Java (cognium-dev#25). Every Java method invocation and constructor call now carries `receiver_type` (the resolved class/interface name of its receiver) and, when statically derivable, `receiver_type_fqn` (the fully-qualified name). Resolution covers local variables typed at declaration, method/constructor parameters, fields (bare `field.foo()` and `this.field.foo()`), static class receivers, and `new Foo(...)`. FQN sources: explicit imports, same-package inference via the `package` declaration, and implicit `java.lang.*` fallback for the common subset. Wildcard imports keep `receiver_type` populated but conservatively set `receiver_type_fqn` to `null` to avoid mis-disambiguation. Generics are stripped (`List<String>` → `List`). The CLI output format is unchanged — the new fields are passthrough on the IR for downstream consumers (circle-ir-ai dead-code/feature-envy/coupling, cross-file taint stitching). Full circle-ir suite at 1996 passing tests.
+
+[3.43.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.42.0...cognium-dev-v3.43.0
+
 ## [3.42.0] - 2026-06-12
 
 ### Changed

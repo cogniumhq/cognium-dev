@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.43.0] - 2026-06-12
+
+### Added
+
+- **Receiver-type resolution on `CallInfo` (Java).** Closes
+  [cognium-dev#25](https://github.com/cogniumhq/cognium-dev/issues/25).
+  Every Java method invocation and constructor call now carries the
+  resolved class/interface name of its receiver, and (when derivable
+  from the file's imports / package) the fully-qualified name. This
+  eliminates the need for downstream substring-on-receiver heuristics
+  that produced false reachability across classes whose identifiers
+  happened to share prefixes (`userService` matching `UserServiceImpl`,
+  `MockUserService`, `AbstractUserService` indiscriminately) and false
+  dead-code on receivers renamed via parameter (`function f(svc:
+  UserService)`).
+
+  New `CallInfo` shape:
+  ```ts
+  interface CallInfo {
+    receiver: string | null;
+    receiver_type?: string | null;       // simple class/interface name
+    receiver_type_fqn?: string | null;   // FQN if statically derivable
+    // ... unchanged fields
+  }
+  ```
+
+  Resolution scope (Java):
+  1. **Local variable typed at declaration** — `UserService svc = ...;
+     svc.foo()` → `receiver_type: 'UserService'`.
+  2. **Method parameter with declared type** — newly tracked via
+     `paramTypes` map populated from `method_declaration` and
+     `constructor_declaration` formal parameters.
+  3. **Field with declared type** — both bare `field.foo()` and
+     `this.field.foo()` forms.
+  4. **Static class receiver** — uppercase identifier matched against
+     imports (`Collections.emptyList()` →
+     `java.util.Collections`).
+  5. **Constructor calls** — `new Foo(...)` populates `receiver_type:
+     'Foo'` plus the FQN.
+
+  FQN resolution sources:
+  - Explicit `import com.foo.Bar;` declarations (per-file imports map).
+  - Same-package inference via `package` declaration when the receiver
+    type matches a class defined in the current file.
+  - Implicit `java.lang.*` for the common subset (`String`, `Object`,
+    `Math`, `System`, `Thread`, …).
+  - Wildcard imports (`import com.foo.*;`) intentionally do **not**
+    populate the FQN — too ambiguous without cross-file resolution.
+    The simple `receiver_type` still resolves; only the FQN drops to
+    `null` to preserve precision.
+
+  Generics are stripped from declared types (`List<String>` → `List`),
+  so the resolved `receiver_type` is always the bare type identifier.
+  `super`, chained method-call expressions (`getThing().foo()`), and
+  undeclared identifiers all conservatively return `null` for both
+  fields — consumers should treat absence as "use the fallback
+  heuristic", not "definitely external".
+
+  Internal refactor:
+  - `ResolutionContext` for Java now carries `packageName`, `paramTypes:
+    Map<string, string>`, an FQN-indexed `imports: Map<string, string>`
+    (previously a write-only `Set` of bare simple names), and
+    `wildcardImports: string[]`.
+  - New `resolveReceiverType(receiver, context)` and `resolveFqn(simple,
+    context)` helpers; both pure.
+  - JS/Python/Rust/Go/Bash extractors are unchanged — Rust's existing
+    `receiver_type` population (scoped-identifier prefix) continues
+    to work. Other-language receiver-type resolution will land in a
+    follow-up when consumed by circle-ir-ai.
+
+### Tests
+
+- 18 new tests in `tests/extractors/receiver-type-resolution.test.ts`:
+  - Local-var, parameter, field, and `this.field` receiver kinds.
+  - FQN resolution via imports, `java.lang.*` fallback, same-package
+    inference, and the wildcard-import → `null` FQN case.
+  - Static class receiver, including dotted prefix stripping.
+  - Constructor calls (`new Foo(...)`) populate type fields.
+  - Conservative `null` fallback for `getThing().foo()`, `super.foo()`,
+    `this.undeclared.foo()`.
+  - Local variable shadowing a field of the same name.
+- Full suite: **1996/1996** passing (1978 baseline + 18 new, no
+  regressions).
+
 ## [3.42.0] - 2026-06-12
 
 ### Added

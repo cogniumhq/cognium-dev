@@ -67,7 +67,20 @@ export interface FieldInfo {
 export interface CallInfo {
   method_name: string;
   receiver: string | null;
+  /**
+   * Resolved class/interface name of the receiver — the simple type name
+   * the receiver expression was declared as (local variable type, method
+   * parameter type, field type, or static class). `null` when the receiver
+   * cannot be resolved (dynamic dispatch, complex expression, missing decl).
+   */
   receiver_type?: string | null;
+  /**
+   * Fully-qualified name of `receiver_type` when resolvable via the file's
+   * import declarations or by being declared in the same package. `null`
+   * when the simple type was resolved but its FQN cannot be determined
+   * (e.g. wildcard imports, same-package types without explicit imports).
+   */
+  receiver_type_fqn?: string | null;
   arguments: ArgumentInfo[];
   location: {
     line: number;

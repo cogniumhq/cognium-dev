@@ -9,10 +9,22 @@ import { findNodes, findAncestor, getNodeText, getNodesFromCache, type NodeCache
 // Context for tracking types in the current file
 interface ResolutionContext {
   className: string | null;
+  /** Package declared by the current file (`null` if default package). */
+  packageName: string | null;
   methodNames: Set<string>;
   fieldTypes: Map<string, string>;
   localVarTypes: Map<string, string>;
-  imports: Set<string>;
+  /**
+   * All method-parameter types in the file, flattened across methods.
+   * Last-write-wins on name collisions; acceptable for v1 because Java
+   * parameter names rarely collide across methods in real code, and the
+   * miss falls back to the conservative `null` receiver_type.
+   */
+  paramTypes: Map<string, string>;
+  /** Map from simple class name to fully-qualified name (from `import ...`). */
+  imports: Map<string, string>;
+  /** Wildcard imports like `import java.util.*;` — package prefixes only. */
+  wildcardImports: string[];
 }
 
 /**
@@ -596,11 +608,24 @@ function inferJSTypeFromReceiver(receiver: string): string | null {
 function buildResolutionContext(tree: Tree, cache?: NodeCache): ResolutionContext {
   const context: ResolutionContext = {
     className: null,
+    packageName: null,
     methodNames: new Set(),
     fieldTypes: new Map(),
     localVarTypes: new Map(),
-    imports: new Set(),
+    paramTypes: new Map(),
+    imports: new Map(),
+    wildcardImports: [],
   };
+
+  // Find package declaration (java grammar: `package_declaration`)
+  const packages = getNodesFromCache(tree.rootNode, 'package_declaration', cache);
+  if (packages.length > 0) {
+    const text = getNodeText(packages[0]);
+    const match = text.match(/package\s+([a-zA-Z0-9_.]+)/);
+    if (match) {
+      context.packageName = match[1];
+    }
+  }
 
   // Find class name
   const classes = getNodesFromCache(tree.rootNode, 'class_declaration', cache);
@@ -611,12 +636,25 @@ function buildResolutionContext(tree: Tree, cache?: NodeCache): ResolutionContex
     }
   }
 
-  // Collect method names from the class
+  // Collect method names + parameter types from the class
   const methods = getNodesFromCache(tree.rootNode, 'method_declaration', cache);
   for (const method of methods) {
     const nameNode = method.childForFieldName('name');
     if (nameNode) {
       context.methodNames.add(getNodeText(nameNode));
+    }
+    const paramsNode = method.childForFieldName('parameters');
+    if (paramsNode) {
+      collectParameterTypes(paramsNode, context.paramTypes);
+    }
+  }
+
+  // Also collect parameters from constructors
+  const constructors = getNodesFromCache(tree.rootNode, 'constructor_declaration', cache);
+  for (const ctor of constructors) {
+    const paramsNode = ctor.childForFieldName('parameters');
+    if (paramsNode) {
+      collectParameterTypes(paramsNode, context.paramTypes);
     }
   }
 
@@ -652,20 +690,152 @@ function buildResolutionContext(tree: Tree, cache?: NodeCache): ResolutionContex
     }
   }
 
-  // Collect imports
+  // Collect imports — map simple class name to FQN
   const imports = getNodesFromCache(tree.rootNode, 'import_declaration', cache);
   for (const imp of imports) {
     const text = getNodeText(imp);
-    // Extract class name from import (last part)
-    const match = text.match(/import\s+(?:static\s+)?([a-zA-Z0-9_.]+)/);
-    if (match) {
-      const parts = match[1].split('.');
-      context.imports.add(parts[parts.length - 1]);
+    // Match `import [static] some.qualified.Name;` (with optional trailing `.*`)
+    const match = text.match(/import\s+(?:static\s+)?([a-zA-Z0-9_.]+)(\.\*)?/);
+    if (!match) continue;
+    const fqn = match[1];
+    const isWildcard = match[2] === '.*';
+    if (isWildcard) {
+      context.wildcardImports.push(fqn);
+    } else {
+      const parts = fqn.split('.');
+      const simple = parts[parts.length - 1];
+      context.imports.set(simple, fqn);
     }
   }
 
   return context;
 }
+
+/**
+ * Collect `paramName → typeName` from a `formal_parameters` node.
+ * Handles formal_parameter and spread_parameter; receiver_parameter (Java
+ * inner-class `this` reference) is skipped because it has no `name`.
+ */
+function collectParameterTypes(paramsNode: Node, out: Map<string, string>): void {
+  for (let i = 0; i < paramsNode.childCount; i++) {
+    const child = paramsNode.child(i);
+    if (!child) continue;
+    if (child.type !== 'formal_parameter' && child.type !== 'spread_parameter') {
+      continue;
+    }
+    const typeNode = child.childForFieldName('type');
+    const nameNode = child.childForFieldName('name');
+    if (typeNode && nameNode) {
+      out.set(getNodeText(nameNode), getNodeText(typeNode));
+    }
+  }
+}
+
+/**
+ * Strip generic parameters from a Java type expression.
+ * `List<String>` → `List`, `Map<String, User>` → `Map`, `User` → `User`.
+ */
+function stripGenerics(type: string): string {
+  const ltIdx = type.indexOf('<');
+  return ltIdx === -1 ? type : type.substring(0, ltIdx);
+}
+
+/**
+ * Resolve the receiver expression to its declared simple type and (if
+ * available) fully-qualified name. Returns `{ simpleName: null, fqn: null }`
+ * for receivers that cannot be statically resolved — dynamic dispatch,
+ * complex chained expressions, and missing declarations all fall back to
+ * the conservative null result so downstream consumers can choose their
+ * own heuristic (substring matching, hierarchy walk, etc.).
+ */
+function resolveReceiverType(
+  receiver: string | null,
+  context: ResolutionContext,
+): { simpleName: string | null; fqn: string | null } {
+  if (!receiver) return { simpleName: null, fqn: null };
+
+  // `this` and `this.field` — current class methods/fields
+  if (receiver === 'this') {
+    return resolveFqn(context.className, context);
+  }
+  if (receiver.startsWith('this.')) {
+    const fieldName = receiver.substring('this.'.length);
+    const fieldType = context.fieldTypes.get(fieldName);
+    if (fieldType) return resolveFqn(stripGenerics(fieldType), context);
+    return { simpleName: null, fqn: null };
+  }
+
+  // `super` — defer; cannot determine parent class without hierarchy
+  if (receiver === 'super') return { simpleName: null, fqn: null };
+
+  // Local variable, parameter, or field declared in this file
+  const declaredType =
+    context.localVarTypes.get(receiver) ??
+    context.paramTypes.get(receiver) ??
+    context.fieldTypes.get(receiver);
+  if (declaredType) {
+    return resolveFqn(stripGenerics(declaredType), context);
+  }
+
+  // Receiver starts with uppercase letter — likely a static class reference.
+  // Strip dotted prefix (`com.example.Foo` → `Foo`) and look up imports.
+  if (/^[A-Z]/.test(receiver)) {
+    const simple = receiver.includes('.')
+      ? receiver.substring(receiver.lastIndexOf('.') + 1)
+      : receiver;
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(simple)) {
+      return resolveFqn(simple, context);
+    }
+  }
+
+  return { simpleName: null, fqn: null };
+}
+
+/**
+ * Look up the FQN of a simple type name in the file's imports map.
+ * Falls back to same-package resolution when the type was declared in
+ * the file's package, or `null` when only wildcards / external types
+ * exist (the simple name is still surfaced).
+ */
+function resolveFqn(
+  simpleName: string | null,
+  context: ResolutionContext,
+): { simpleName: string | null; fqn: string | null } {
+  if (!simpleName) return { simpleName: null, fqn: null };
+
+  // Explicit import wins
+  const importedFqn = context.imports.get(simpleName);
+  if (importedFqn) {
+    return { simpleName, fqn: importedFqn };
+  }
+
+  // Type declared in this file → use the file's package
+  if (context.className === simpleName && context.packageName) {
+    return { simpleName, fqn: `${context.packageName}.${simpleName}` };
+  }
+
+  // java.lang.* is implicitly imported
+  if (JAVA_LANG_TYPES.has(simpleName)) {
+    return { simpleName, fqn: `java.lang.${simpleName}` };
+  }
+
+  // Wildcard imports — cannot disambiguate, return simple name only
+  return { simpleName, fqn: null };
+}
+
+/**
+ * Common types from `java.lang` that are implicitly imported in every
+ * compilation unit. Not exhaustive; kept to the subset most likely to
+ * appear as call receivers (String, Object, Class, Thread, …) so we
+ * can answer the FQN for the common cases without false-positive risk.
+ */
+const JAVA_LANG_TYPES = new Set([
+  'String', 'StringBuilder', 'StringBuffer', 'Object', 'Class',
+  'Integer', 'Long', 'Double', 'Float', 'Boolean', 'Character', 'Byte', 'Short',
+  'Number', 'Math', 'System', 'Thread', 'Runnable', 'Throwable', 'Exception',
+  'RuntimeException', 'Error', 'Process', 'ProcessBuilder',
+  'Iterable', 'Comparable', 'CharSequence', 'Enum',
+]);
 
 /**
  * Extract call information from a method_invocation node.
@@ -689,9 +859,14 @@ function extractCallInfo(node: Node, context: ResolutionContext): CallInfo {
   // Resolve the call
   const { resolved, resolution } = resolveMethodCall(methodName, receiver, context);
 
+  // Resolve the receiver's declared type and FQN
+  const { simpleName, fqn } = resolveReceiverType(receiver, context);
+
   return {
     method_name: methodName,
     receiver,
+    receiver_type: simpleName,
+    receiver_type_fqn: fqn,
     arguments: args,
     location: {
       line: node.startPosition.row + 1,
@@ -726,9 +901,17 @@ function extractObjectCreation(node: Node, context: ResolutionContext): CallInfo
     target: `${typeName}.<init>`,
   };
 
+  // For a constructor `new Foo(...)`, the call site already names the class —
+  // surface that as receiver_type/receiver_type_fqn so downstream consumers
+  // see consistent type info regardless of dispatch shape.
+  const simpleType = stripGenerics(typeName);
+  const { simpleName, fqn } = resolveFqn(simpleType, context);
+
   return {
     method_name: typeName, // Constructor name is the class name
     receiver: null,
+    receiver_type: simpleName,
+    receiver_type_fqn: fqn,
     arguments: args,
     location: {
       line: node.startPosition.row + 1,
