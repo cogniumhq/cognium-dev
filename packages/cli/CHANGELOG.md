@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.47.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.46.0 → 3.47.0** — new pass #91 `spring4shell` detecting Spring4Shell (CVE-2022-22965) implicit form-data binding RCE on Spring MVC controllers, closes cognium-dev#28. Fires (severity `high`, CWE-94, SARIF `error`) when a `@Controller`/`@RestController`/`@ControllerAdvice` class has a route-annotated method (`@RequestMapping`/`@GetMapping`/`@PostMapping`/`@PutMapping`/`@DeleteMapping`/`@PatchMapping`) with a parameter that has no binding annotation (`@RequestBody`, `@RequestParam`, `@PathVariable`, `@ModelAttribute`, `@RequestHeader`, `@CookieValue`, `@MatrixVariable`, `@RequestPart`, `@Valid`, `@Validated`, `@SessionAttribute`, `@RequestAttribute` all suppress), is not a Spring framework-resolved type (`HttpServletRequest`, `Model`, `Principal`, `MultipartFile`, `BindingResult`, `RedirectAttributes`, `WebRequest`, `UriComponentsBuilder`, `HttpEntity`, `ServerWebExchange`, etc.), and is not a scalar (`String`/primitives/`BigDecimal`/`UUID`/`LocalDate`/`List`/`Optional`, etc.). The pass complements the existing `code-injection` (#11) which covers explicit `DataBinder.bind()` / `DataBinder.setPropertyValues()` sinks. CLI text/JSON/SARIF formats are pass-through; the new `spring4shell` rule_id flows through existing rendering. Full circle-ir suite at 2100 passing tests (+71 new in `tests/analysis/passes/spring4shell.test.ts`).
+
+[3.47.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.46.0...cognium-dev-v3.47.0
+
 ## [3.46.0] - 2026-06-12
 
 ### Changed

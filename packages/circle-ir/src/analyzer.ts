@@ -46,6 +46,7 @@
  *  39. GodClassPass            — class with high WMC/LCOM2/CBO metrics (CWE-1060)
  *  40. NamingConventionPass    — class/method names violate language conventions
  *  41. ScanSecretsPass         — hardcoded credentials: provider regexes + Shannon entropy (CWE-798)
+ *  42. Spring4ShellPass        — Spring MVC implicit form-data binding RCE (CVE-2022-22965, CWE-94)
  *
  * Removed from default pipeline (raw IR signals still available for circle-ir-ai):
  *  – MissingGuardDomPass  — false positives in framework-auth codebases (see pass file)
@@ -131,6 +132,7 @@ import { GodClassPass } from './analysis/passes/god-class-pass.js';
 import { NamingConventionPass, type NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
 import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
+import { Spring4ShellPass } from './analysis/passes/spring4shell-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -470,6 +472,7 @@ export async function analyze(
   if (!disabledPasses.has('god-class'))             pipeline.add(new GodClassPass());
   if (!disabledPasses.has('naming-convention'))     pipeline.add(new NamingConventionPass(passOpts.namingConvention));
   if (!disabledPasses.has('security-headers'))      pipeline.add(new SecurityHeadersPass(passOpts.securityHeaders));
+  if (!disabledPasses.has('spring4shell'))          pipeline.add(new Spring4ShellPass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

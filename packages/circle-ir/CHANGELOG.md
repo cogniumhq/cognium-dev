@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.47.0] - 2026-06-12
+
+### Added
+
+- **Pass #91 `spring4shell` — Spring4Shell (CVE-2022-22965) implicit
+  form-data binding RCE detection** — closes cognium-dev#28.
+  A new Java-only pattern pass (category `security`, CWE-94, SARIF level
+  `error`, severity `high`) that detects the vulnerable controller shape:
+
+  ```java
+  @Controller
+  public class FooController {
+      @RequestMapping("/bar")
+      public String bar(MyBean bean) { ... }   // implicit form-data binding
+  }
+  ```
+
+  Spring's `WebDataBinder` walks the parameter's class graph and populates
+  setters from request parameters via reflection; CVE-2022-22965 abuses
+  this chain (`class.module.classLoader.resources.context…`) for arbitrary
+  code execution on Spring < 5.3.18 / 5.2.20. The existing `code-injection`
+  pass (#11) covers explicit `DataBinder.bind()` /
+  `DataBinder.setPropertyValues()` sink calls; the vulnerable code typically
+  does NOT make those calls (Spring does it implicitly), so a taint flow
+  alone misses the shape. This pass closes that gap by inspecting the
+  controller method signature directly.
+
+  Conservative trigger conditions (all required):
+  - Class has `@Controller`, `@RestController`, `@ControllerAdvice`, or
+    `@RestControllerAdvice`.
+  - Method has a route annotation (`@RequestMapping`, `@GetMapping`,
+    `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`).
+  - A parameter has NO binding annotation. Any of `@RequestBody`,
+    `@RequestParam`, `@PathVariable`, `@RequestHeader`, `@CookieValue`,
+    `@MatrixVariable`, `@ModelAttribute`, `@RequestPart`, `@Valid`,
+    `@Validated`, `@SessionAttribute`, or `@RequestAttribute` on the
+    parameter suppresses the finding.
+  - The parameter type is not a Spring framework-resolved type
+    (`HttpServletRequest`, `HttpServletResponse`, `HttpSession`, `Model`,
+    `ModelMap`, `BindingResult`, `Errors`, `Principal`, `Authentication`,
+    `Locale`, `MultipartFile`, `Part`, `RedirectAttributes`, `WebRequest`,
+    `NativeWebRequest`, `UriComponentsBuilder`, `HttpEntity`,
+    `RequestEntity`, `ResponseEntity`, `HttpHeaders`, `InputStream`,
+    `OutputStream`, `Reader`, `Writer`, `Cookie`, `ServerHttpRequest`,
+    `ServerHttpResponse`, `ServerWebExchange`, `ServletContext`).
+  - The parameter type is not a scalar / boxed primitive / standard
+    collection (`String`, `CharSequence`, primitives + boxed forms,
+    `BigInteger`, `BigDecimal`, `UUID`, `Date`, `LocalDate`,
+    `LocalDateTime`, `Instant`, `Duration`, `Period`, `List`, `Set`,
+    `Collection`, `Iterable`, `Optional`, etc.).
+  - Generics are stripped (`GenericBean<String, Integer>` → `GenericBean`)
+    and POJO arrays (`UserDto[]`) are honored.
+
+  Behavior:
+  - Per-parameter findings — a method with two naked POJO params produces
+    two findings.
+  - Disable via `disabledPasses: ['spring4shell']`.
+  - Non-Java languages are a no-op.
+
+  Output:
+  - `rule_id: 'spring4shell'`, `cwe: 'CWE-94'`, `severity: 'high'`,
+    `level: 'error'`, category `security`.
+  - Fix hint: "Annotate the parameter with @RequestBody (JSON) or
+    @ModelAttribute + @InitBinder/setAllowedFields whitelisting, upgrade
+    Spring to ≥ 5.3.18 / 5.2.20, and ensure JDK is patched."
+  - `evidence` carries the controller class name, controller annotations,
+    method name, method annotations, and the offending parameter name +
+    type.
+
+  Test coverage: 71 new tests in
+  `tests/analysis/passes/spring4shell.test.ts` — positive cases for each
+  controller stereotype and route annotation, parameter-binding suppression
+  for every binding annotation, framework-type and scalar-type allowlists,
+  multi-parameter methods, generics + array handling, language gating, and
+  4 end-to-end `analyze()` integration tests covering the canonical
+  Spring4Shell shape, `@RequestBody` JSON safe shape, scalar
+  `@RequestParam` shape, and the legacy `HttpServlet` shape (no Spring
+  annotations, must not fire). Full suite at 2100 passing tests.
+
 ## [3.46.0] - 2026-06-12
 
 ### Added

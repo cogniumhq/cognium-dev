@@ -105,6 +105,29 @@ against the legacy Bash `hardcoded-credential` detection in
 | 90a | `hardcoded-credential` | CWE-798 | error | shipped | Provider-specific regex hits (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT, PEM private key, npm `npm_`) |
 | 90b | `hardcoded-credential-entropy` | CWE-798 | warning | shipped | Shannon-entropy ≥ 4.3 bits/char (base64) or ≥ 3.5 bits/char (hex) on string literals 20–200 chars; UUID/hash/placeholder/base64-JSON denylisted; threshold lowered by 0.2 when surrounding line names a credential variable |
 
+### A5. Spring4Shell Pass (category = `security`, Java only)
+
+Pass #91 `spring4shell` is a pattern pass (no taint graph required) that detects
+the Spring4Shell (CVE-2022-22965) implicit form-data binding RCE shape on
+Spring MVC controller methods. Fires when ALL hold: (a) class has `@Controller`
+/ `@RestController` / `@ControllerAdvice`, (b) method has a route annotation
+(`@RequestMapping` / `@GetMapping` / `@PostMapping` / `@PutMapping` /
+`@DeleteMapping` / `@PatchMapping`), (c) a parameter has NO binding annotation
+(`@RequestBody` / `@RequestParam` / `@PathVariable` / `@ModelAttribute` /
+`@RequestHeader` / `@CookieValue` / `@MatrixVariable` / `@RequestPart` /
+`@Valid` / `@Validated` / `@SessionAttribute` / `@RequestAttribute` all
+suppress), (d) the parameter type is not a Spring framework type
+(`HttpServletRequest`, `Model`, `Principal`, `MultipartFile`, …), (e) the
+parameter type is not a scalar (`String`, primitives, `BigDecimal`, `UUID`,
+`LocalDate`, …). Complements the existing `code-injection` pass (#11) which
+covers explicit `DataBinder.bind()` / `DataBinder.setPropertyValues()` sinks;
+Spring4Shell-vulnerable code typically does not make those calls (Spring does
+it implicitly), so a taint flow alone misses the shape.
+
+| # | rule_id | CWE | level | status | Description |
+|---|---------|-----|-------|--------|-------------|
+| 91 | `spring4shell` | CWE-94 | error | shipped | Spring MVC controller method binds a POJO parameter via implicit form-data binding (no `@RequestBody`/`@RequestParam`/`@ModelAttribute`) — vulnerable to CVE-2022-22965 on Spring < 5.3.18 / 5.2.20 |
+
 ---
 
 ## B. Reliability Passes (category = `reliability`)
