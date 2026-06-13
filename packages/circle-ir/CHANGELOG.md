@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.41.0] - 2026-06-12
+
+### Added
+
+- **Typed-overload-aware deserialization sink classification.** Closes
+  [cognium-dev#22](https://github.com/cogniumhq/cognium-dev/issues/22). The
+  Jackson / Gson / FastJson / SnakeYAML deserialization sinks now distinguish
+  the polymorphic (untyped or dynamic-class) calls from the safe typed
+  overloads where the target type is a compile-time `Foo.class` literal:
+
+  ```java
+  mapper.readValue(json)                       // UNSAFE — sink emitted
+  mapper.readValue(json, User.class)           // SAFE   — no sink
+  mapper.readValue(json, Class.forName(t))     // UNSAFE — sink emitted
+  gson.fromJson(json, User.class)              // SAFE   — no sink
+  gson.fromJson(json, type)                    // UNSAFE — sink emitted
+  JSON.parseObject(json, User.class)           // SAFE   — no sink (FastJson)
+  yaml.load(stream, User.class)                // SAFE   — no sink (SnakeYAML)
+  yaml.load(stream)                            // UNSAFE — sink emitted
+  ```
+
+  Implementation:
+  1. **New `SinkPattern.safe_if_class_literal_at?: number`** field in
+     `types/config.ts`. Declares the 0-indexed argument position where a
+     compile-time class literal makes the call safe. Optional and backward
+     compatible — patterns without it are unchanged.
+  2. **Class-literal gate in `findSinks`** (`taint-matcher.ts`). Uses the
+     regex `^(?:[A-Za-z_]\w*\.)*[A-Z]\w*(?:\[\])*\.class$` against the
+     argument's `literal ?? expression`, which matches `User.class`,
+     `com.example.User.class`, and `String[].class` but **never** matches
+     `Class.forName(...)`, `getClass()`, `type`, or any non-literal — those
+     remain dangerous and still match.
+  3. **`DEFAULT_SINKS` annotated** for `ObjectMapper.readValue`,
+     `JSON.parseObject`, `JSONObject.parseObject`, `Gson.fromJson`,
+     `Yaml.load`, and `Yaml.loadAs` with `safe_if_class_literal_at: 1`.
+
+- **Language scoping for Python deserialization sinks.** While auditing the
+  collision space for #22, found that the Python `pickle.load*`,
+  `marshal.loads`, and `yaml.load*` patterns had no `languages` guard, so
+  the lowercase `yaml` class name was matching Java locals named `yaml` (the
+  conventional SnakeYAML variable name) and emitting spurious Python-flavoured
+  deserialization sinks on Java code. Added `languages: ['python']` to all
+  five entries in `config-loader.ts:1445-1449`.
+
+### Tests
+
+- 15 new tests in `tests/analysis/taint-typed-deserialization.test.ts`
+  covering Jackson, Gson, FastJson, SnakeYAML typed/untyped/dynamic overloads,
+  fully-qualified and array class-literal shapes, and a regression that
+  `ObjectInputStream.readObject()` (no safe overload) is still a sink.
+- Full suite: **1961 / 1961 passing** (101 files).
+
+### Downstream
+
+`circle-ir-ai` can now delete the 3 regex entries in
+`security-scan/sink-filters.ts:NON_SINK_PATTERNS`
+(`readValue` / `fromJson` / `parseObject`) — the AST is doing the AST's job.
+
 ## [3.40.0] - 2026-06-12
 
 ### Added

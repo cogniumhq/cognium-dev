@@ -63,6 +63,17 @@ export interface SinkPattern {
    * `cursor.execute()` vs Java `Executor.execute()`).
    */
   languages?: SupportedLanguage[];
+  /**
+   * Suppress the sink when the argument at the given 0-indexed position is a
+   * class literal (e.g. `Foo.class`, `com.example.Bar.class`). Used by
+   * deserialization sinks whose typed overload — `ObjectMapper.readValue(json,
+   * User.class)`, `Gson.fromJson(json, User.class)`, `JSON.parseObject(json,
+   * User.class)` — is safe because the deserialized type is fixed at compile
+   * time. The untyped overload (1 arg) and the dynamic overload
+   * (`Class.forName(...)`, `getClass()`, any non-literal expression) remain
+   * dangerous and still match.
+   */
+  safe_if_class_literal_at?: number;
   note?: string;
 }
 

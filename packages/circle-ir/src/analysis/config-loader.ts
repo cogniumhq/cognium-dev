@@ -1115,15 +1115,22 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'readObject', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [] },
   { method: 'readUnshared', class: 'ObjectInputStream', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [] },
   { method: 'fromXML', class: 'XStream', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'readValue', class: 'ObjectMapper', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  // YAML deserialization
-  { method: 'load', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+  // Jackson ObjectMapper — the 1-arg `readValue(json)` form is polymorphic and
+  // can deserialize attacker-controlled types (default-typing gadget chains).
+  // The 2-arg typed form `readValue(json, User.class)` is safe because the
+  // deserialized type is fixed at compile time; suppressed via
+  // safe_if_class_literal_at. The `readValue(json, Class.forName(x))` shape
+  // is NOT a class literal and remains a sink.
+  { method: 'readValue', class: 'ObjectMapper', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
+  // YAML deserialization — `Yaml.load(InputStream, Class<T>)` typed overload
+  // is safe; `Yaml.load(InputStream)` and dynamic-class forms are not.
+  { method: 'load', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], safe_if_class_literal_at: 1 },
   { method: 'loadAll', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'loadAs', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+  { method: 'loadAs', class: 'Yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], safe_if_class_literal_at: 1 },
   // JSON deserialization (Java FastJSON / Jackson — NOT JavaScript's safe JSON.parse)
-  { method: 'parseObject', class: 'JSON', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  { method: 'parseObject', class: 'JSONObject', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  { method: 'fromJson', class: 'Gson', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
+  { method: 'parseObject', class: 'JSON', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
+  { method: 'parseObject', class: 'JSONObject', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
+  { method: 'fromJson', class: 'Gson', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0], safe_if_class_literal_at: 1 },
   // XMLDecoder
   { method: 'readObject', class: 'XMLDecoder', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [] },
   // Java serialization constructors
@@ -1433,12 +1440,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'compile', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: '__import__', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
 
-  // Python Deserialization
-  { method: 'loads', class: 'pickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'load', class: 'pickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'loads', class: 'marshal', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'load', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
-  { method: 'loads', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+  // Python Deserialization — language-scoped so the lowercase `yaml` / `pickle`
+  // module names don't collide with Java locals named `yaml` (SnakeYAML usage).
+  { method: 'loads', class: 'pickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load', class: 'pickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'loads', class: 'marshal', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'loads', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
 
   // Python SQL Injection
   // Language-scoped: classless `execute`/`raw` collide with Java util.concurrent

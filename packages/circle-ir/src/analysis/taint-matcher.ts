@@ -391,6 +391,28 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
 }
 
 /**
+ * Match a Java class-literal expression: `Foo.class`, `com.example.Foo.class`,
+ * `User<T>.class` (loose), `Foo[].class`. Does NOT match `Class.forName(...)`,
+ * `getClass()`, locals, or any non-literal expression — those remain dangerous
+ * for typed-overload deserialization sinks.
+ */
+const CLASS_LITERAL_RE = /^(?:[A-Za-z_][\w]*\.)*[A-Z][\w]*(?:\[\])*\.class$/;
+
+/**
+ * Check if a call's argument at `position` is a fixed-at-compile-time class
+ * literal (e.g. `User.class`). Used by SinkPattern.safe_if_class_literal_at to
+ * suppress typed deserialization overloads. The untyped 1-arg form and the
+ * dynamic-class form (`Class.forName(x)`) never match.
+ */
+function argIsClassLiteral(call: CallInfo, position: number): boolean {
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg) return false;
+  const expr = (arg.literal ?? arg.expression ?? '').trim();
+  if (!expr) return false;
+  return CLASS_LITERAL_RE.test(expr);
+}
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -409,6 +431,18 @@ function findSinks(
       if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
+          continue;
+        }
+
+        // Skip typed deserialization overloads where the target type is a
+        // compile-time class literal (e.g. `ObjectMapper.readValue(json,
+        // User.class)`). Jackson/Gson/FastJson cannot deserialize arbitrary
+        // gadgets when the type is fixed; the dangerous shape is the untyped
+        // 1-arg form or a dynamic-class second arg (`Class.forName(x)`).
+        if (
+          pattern.safe_if_class_literal_at !== undefined &&
+          argIsClassLiteral(call, pattern.safe_if_class_literal_at)
+        ) {
           continue;
         }
 

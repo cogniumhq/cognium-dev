@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.41.0] - 2026-06-12
+
+### Changed
+
+- **circle-ir upgraded 3.40.0 → 3.41.0** — adds typed-overload-aware deserialization sink classification (cognium-dev#22). `cognium-dev scan` against Java code that uses Jackson `ObjectMapper.readValue(json, User.class)`, Gson `gson.fromJson(json, User.class)`, FastJson `JSON.parseObject(json, User.class)`, or SnakeYAML `yaml.load(stream, User.class)` no longer emits a `deserialization` finding — these typed overloads are safe because the deserialized type is fixed at compile time. The dangerous shapes (`readValue(json)` / `fromJson(json, type)` / `Class.forName(t)` second arg / untyped `yaml.load(stream)`) remain sinks. Output formats unchanged. Also: Python `pickle`/`marshal`/`yaml` deserialization sinks are now language-scoped, eliminating spurious cross-language matches when a Java local is named `yaml`. Full circle-ir suite at 1961 passing tests.
+
+[3.41.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.40.0...cognium-dev-v3.41.0
+
 ## [3.40.0] - 2026-06-12
 
 ### Changed
