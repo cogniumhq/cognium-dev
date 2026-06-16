@@ -44,7 +44,10 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     const { sources, sinks, sanitizers } = sinkFilter;
 
     if (sources.length === 0) {
-      return { additionalSinks: [], additionalFlows: [] };
+      // Preserve flows synthesized by TaintPropagationPass (e.g. Python alias
+      // expansion for-loop / inline-source cases from cognium-dev #76/#83 where
+      // no real source was registered but a derived var reaches a sink).
+      return { additionalSinks: [], additionalFlows: [...taintProp.flows] };
     }
 
     const additionalSinks: TaintSink[] = [];

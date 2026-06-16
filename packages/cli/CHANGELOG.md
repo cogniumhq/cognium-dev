@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.50.0] - 2026-06-16
+
+### Fixed
+
+- **circle-ir upgraded 3.49.0 → 3.50.0** — closes cognium-dev#83
+  (subsumes #76). Inline taint sources used as a call/concat
+  argument now fire without an intermediate variable: Java
+  `exec("echo " + req.getParameter("u"))` / `exec(req.getParameter("u"))`,
+  JS `eval(req.query.x)` / `vm.runInThisContext(req.cookies.c)` /
+  `child_process.exec(req.body.cmd)`, Python
+  `os.system("echo " + request.args.get("u"))` and
+  `for p in request.args.getlist("p"): os.system(p)`. CLI text/JSON/SARIF
+  output is unchanged; previously-missed flows now appear as normal
+  command_injection / code_injection / sql_injection findings.
+
+[3.50.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.49.0...cognium-dev-v3.50.0
+
 ## [3.48.0] - 2026-06-12
 
 ### Fixed

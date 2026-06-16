@@ -19,6 +19,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
+import { canSourceReachSink } from '../findings.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -36,7 +37,14 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     const sinkFilter  = ctx.getResult<SinkFilterResult>('sink-filter');
     const { sources, sinks, sanitizers } = sinkFilter;
 
-    if (sources.length === 0 || sinks.length === 0) {
+    if (sinks.length === 0) {
+      return { flows: [] };
+    }
+    // No real sources, but Python may still synthesize sources from derived
+    // tainted vars (e.g. for-loop iterables — cognium-dev #76/#83). Defer the
+    // empty-source early-return for Python so detectExpressionScanFlows runs.
+    const canSynthesize = ctx.language === 'python' && typeof ctx.code === 'string';
+    if (sources.length === 0 && !canSynthesize) {
       return { flows: [] };
     }
 
@@ -418,11 +426,12 @@ function detectExpressionScanFlows(
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
 
-  // Only consider sources that carry an explicit variable name to scan for.
+  // Variable-name scan path: only consider sources that carry an explicit
+  // variable name. The colocation path below (cognium-dev #83) runs even
+  // when this set is empty, so we no longer early-return.
   const sourcesWithVar = sources.filter((s): s is typeof s & { variable: string } =>
     typeof s.variable === 'string' && s.variable.length > 0
   );
-  if (sourcesWithVar.length === 0) return flows;
 
   // Per-alias sanitizer coverage (cognium-dev #65 pt2).
   //
@@ -458,20 +467,40 @@ function detectExpressionScanFlows(
   if (language === 'python' && typeof code === 'string') {
     const derived = buildPythonTaintedVars(code);
     if (derived.size > 0) {
-      // Earliest real source — used as the anchor for synthetic source lines.
-      let anchor: typeof sourcesWithVar[0] = sourcesWithVar[0];
-      for (const s of sourcesWithVar) {
-        if (s.line < anchor.line) anchor = s;
-      }
       const existingVars = new Set(sourcesWithVar.map(s => s.variable));
-      for (const [varName] of derived) {
+      // Earliest real source — used as the anchor for synthetic source lines.
+      // When no real source has a `variable` field, we fall back to a per-var
+      // synthetic anchor at the derivation line (typical for the for-loop /
+      // bare-inline cases targeted by cognium-dev #76 / #83).
+      const hasRealSource = sourcesWithVar.length > 0;
+      let anchor: typeof sourcesWithVar[0] | undefined = sourcesWithVar[0];
+      if (anchor) {
+        for (const s of sourcesWithVar) {
+          if (s.line < anchor.line) anchor = s;
+        }
+      }
+      for (const [varName, originLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
         // Don't shadow real sources; build a minimal synthetic record that
-        // satisfies the scan loop below.
-        sourcesWithVar.push({
-          ...anchor,
-          variable: varName,
-        });
+        // satisfies the scan loop below. When no real source exists, anchor
+        // the synthetic source at the derivation line itself with a generic
+        // `http_param` type — the for-loop / bare-inline patterns we want
+        // to recover here are all web-request-derived in practice.
+        if (hasRealSource && anchor) {
+          sourcesWithVar.push({
+            ...anchor,
+            variable: varName,
+          });
+        } else {
+          sourcesWithVar.push({
+            type: 'http_param',
+            location: `<derived> ${varName}`,
+            severity: 'high',
+            line: originLine,
+            confidence: 0.9,
+            variable: varName,
+          });
+        }
         existingVars.add(varName);
       }
 
@@ -516,7 +545,7 @@ function detectExpressionScanFlows(
   // produce a flow back to the original `web::Form<T>` parameter source.
   // `buildRustTaintedVars` does a fixpoint over let-bindings + assignments
   // seeded with the real source variables.
-  if (language === 'rust' && typeof code === 'string') {
+  if (language === 'rust' && typeof code === 'string' && sourcesWithVar.length > 0) {
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
     const derived = buildRustTaintedVars(code, seedVars);
     if (derived.size > 0) {
@@ -607,6 +636,68 @@ function detectExpressionScanFlows(
           break; // one source per arg is enough
         }
       }
+    }
+  }
+
+  // cognium-dev #83: inline-source colocation.
+  //
+  // When a source expression is used INLINE as a sink argument — e.g.
+  // `Runtime.getRuntime().exec(req.getParameter("u"))` (Java),
+  // `eval(req.query.x)` (JS), `os.system(request.args.get("u"))` (Python) —
+  // the source pattern matcher emits a source at `sink.line`, and no
+  // `variable` is bound (the arg node isn't a simple identifier).
+  // The DFG-based `propagateTaint` skips it (no `arg.variable`) and the
+  // variable-name scan above ignores it (no `source.variable`).
+  //
+  // Emit a direct flow when (a) the source line is the sink line, and
+  // (b) the source type can reach the sink type. Sanitizer checks are
+  // intentionally not applied here because an inline source has no
+  // intermediate assignment line for a sanitizer to wrap, and the
+  // sink-call expression itself either contains the raw source or
+  // doesn't; if a sanitizer wraps the source inside the arg expression
+  // (e.g. `exec(escape(req.query.x))`), the sanitizer pass will already
+  // mark the sink as sanitized via `sinkSanitizationMap`.
+  //
+  // Subsumes cognium-dev#76's "Python for-loop iterable inline source"
+  // for the simple cases where the source pattern matches the iterable
+  // and the loop variable is used on the same line.
+  //
+  // Restricted to sources with no `variable` field: an inline-pattern
+  // source has no enclosing assignment, so it can't be confused with an
+  // assignment-style source whose use happens to land on the same line
+  // (the latter must still respect "source precedes sink" — see the
+  // taint-propagation-pass "does NOT emit when source line is at or
+  // after sink line" regression guard).
+  const sourcesByLine = new Map<number, typeof sources>();
+  for (const s of sources) {
+    if (s.variable && s.variable.length > 0) continue;
+    const arr = sourcesByLine.get(s.line) ?? [];
+    arr.push(s);
+    sourcesByLine.set(s.line, arr);
+  }
+  for (const sink of sinks) {
+    if (unreachableLines.has(sink.line)) continue;
+    const colocSources = sourcesByLine.get(sink.line);
+    if (!colocSources || colocSources.length === 0) continue;
+    for (const source of colocSources) {
+      if (!canSourceReachSink(source.type, sink.type)) continue;
+      if (flows.some(f =>
+        f.source_line === source.line &&
+        f.sink_line === sink.line &&
+        f.sink_type === sink.type
+      )) continue;
+      flows.push({
+        source_line: source.line,
+        sink_line:   sink.line,
+        source_type: source.type,
+        sink_type:   sink.type,
+        path: [
+          { variable: '<inline>', line: source.line, type: 'source' as const },
+          { variable: '<inline>', line: sink.line,   type: 'sink'   as const },
+        ],
+        confidence: source.confidence * sink.confidence * 0.85,
+        sanitized: false,
+      });
     }
   }
 

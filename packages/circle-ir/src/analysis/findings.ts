@@ -162,15 +162,22 @@ function mergeDiscoveryMethod(
 
 /**
  * Check if a source type can potentially reach a sink type.
+ *
+ * Exported so detection passes (e.g. `detectExpressionScanFlows` in
+ * `taint-propagation-pass.ts`) can gate emit-time flows on the same
+ * source-to-sink coverage matrix that `generateFindings` uses below.
  */
-function canSourceReachSink(sourceType: string, sinkType: SinkType): boolean {
+export function canSourceReachSink(sourceType: string, sinkType: SinkType): boolean {
   const sourceToSinkMapping: Record<string, SinkType[]> = {
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call'],
+    // code_injection added to http_param/http_query/http_header/http_cookie:
+    // `eval(req.query.x)`, `Function(req.header('x'))`, `vm.runInThisContext(req.cookies.c)`
+    // are all real RCE patterns in JS web apps (cognium-dev #83).
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
     http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call'],
-    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection'],
     http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
     io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss'],
     env_input: ['command_injection', 'path_traversal'],
     db_input: ['xss', 'sql_injection'], // Second-order injection

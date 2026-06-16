@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.50.0] - 2026-06-16
+
+### Fixed
+
+- **Inline-source expression loses taint (cross-language FN)** —
+  closes #83 (subsumes #76). A taint **source used inline** as a
+  call/concat argument was not tracked; only an intermediate variable
+  recovered the flow. This was the dominant recall gap on
+  OWASP BenchmarkPython, OWASP Benchmark Java with bare-arg variants,
+  and the JS `eval(req.query.x)` shape:
+
+  - Java: `Runtime.getRuntime().exec("echo " + req.getParameter("u"))`
+    and `exec(req.getParameter("u"))`
+  - JS: `eval(req.query.x)`, `vm.runInThisContext(req.cookies.c)`,
+    `child_process.exec(req.body.cmd)`
+  - Python: `os.system("echo " + request.args.get("u"))` and
+    `for p in request.args.getlist("p"): os.system(p)` (#76)
+
+  Root causes and fixes:
+
+  1. **Inline-source colocation pass** (`taint-propagation-pass.ts`).
+     The DFG-based propagator skipped inline sources because
+     `arg.variable` was null; the existing variable-name scan
+     skipped them because `source.variable` was unset. Added a
+     colocation pass that emits a direct flow when (a) the source
+     line equals the sink line, (b) the source carries no
+     `variable` field (assignment-style sources at the sink line
+     still respect the source-precedes-sink rule), and (c)
+     `canSourceReachSink(source.type, sink.type)` allows the pair.
+
+  2. **Python for-loop iterable** (`taint-propagation-pass.ts`).
+     `buildPythonTaintedVars` already adds the loop variable to its
+     derived map when the iterable matches a tainted pattern, but
+     the Python alias expansion path only ran when at least one
+     real source carried a `variable` field. Synthesize a virtual
+     `http_param` anchor at the derivation line when no real source
+     is registered, so the variable-name scan picks up
+     `os.system(... + p)` on the next line.
+
+  3. **Empty-source early returns dropped synthesized flows**
+     (`taint-propagation-pass.ts`, `interprocedural-pass.ts`).
+     Both passes returned early on `sources.length === 0`,
+     discarding flows produced by the Python alias synthesis. Loosen
+     both early-returns to allow Python flows through and to
+     propagate `taintProp.flows` to `additionalFlows`.
+
+  4. **`canSourceReachSink` coverage** (`findings.ts`). Added
+     `code_injection` as a valid sink for `http_param`,
+     `http_query`, `http_header`, `http_cookie` so JS RCE patterns
+     such as `eval(req.query.x)`, `Function(req.header('x'))`, and
+     `vm.runInThisContext(req.cookies.c)` survive the source-to-sink
+     gating step. Exported `canSourceReachSink` so detection passes
+     gate emit-time flows on the same matrix that `generateFindings`
+     uses.
+
+  Regression coverage: `tests/analysis/repro-issue-83.test.ts`
+  (8 cases — Java concat+bare, JS `eval`/`cp.exec`, Python concat
+  and for-iterable, plus var-first regression guards). Full
+  taint-propagation regression suite (2179 tests) passes; the
+  prior "does NOT emit when source line is at or after sink line"
+  guard is preserved by restricting colocation to inline-only
+  (`source.variable` absent) sources.
+
 ## [3.49.0] - 2026-06-16
 
 ### Added
