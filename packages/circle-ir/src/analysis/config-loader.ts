@@ -1196,30 +1196,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'post', class: 'WebClient', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [] },
 
   // =============================================================================
-  // Weak Cryptography Sinks (no taint flow required - presence alone is vulnerability)
+  // Config / Absence Vulnerabilities (handled by dedicated pattern passes)
   // =============================================================================
-
-  // Weak Random (CWE-330) - java.util.Random is not cryptographically secure
-  { method: 'Random', class: 'constructor', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextInt', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextLong', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextFloat', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextDouble', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextBoolean', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-  { method: 'nextBytes', class: 'Random', type: 'weak_random', cwe: 'CWE-330', severity: 'medium', arg_positions: [] },
-
-  // Weak Hash (CWE-328) - MD5/SHA1 are cryptographically broken
-  // Note: Detection requires checking algorithm argument - handled in runner
-  { method: 'getInstance', class: 'MessageDigest', type: 'weak_hash', cwe: 'CWE-328', severity: 'medium', arg_positions: [0] },
-
-  // Weak Crypto (CWE-327) - DES/RC4/Blowfish are weak ciphers
-  // Note: Detection requires checking algorithm argument - handled in runner
-  { method: 'getInstance', class: 'Cipher', type: 'weak_crypto', cwe: 'CWE-327', severity: 'high', arg_positions: [0] },
-  { method: 'getInstance', class: 'KeyGenerator', type: 'weak_crypto', cwe: 'CWE-327', severity: 'high', arg_positions: [0] },
-
-  // Insecure Cookie (CWE-614) - cookies without secure/httpOnly flags
-  // Note: Detection requires checking if setSecure(true)/setHttpOnly(true) called - handled in runner
-  { method: 'Cookie', class: 'constructor', type: 'insecure_cookie', cwe: 'CWE-614', severity: 'medium', arg_positions: [] },
+  // weak_random  → WeakRandomPass        (src/analysis/passes/weak-random-pass.ts)
+  // weak_hash    → WeakHashPass          (src/analysis/passes/weak-hash-pass.ts)
+  // weak_crypto  → WeakCryptoPass        (src/analysis/passes/weak-crypto-pass.ts)
+  // insecure_cookie → InsecureCookiePass (src/analysis/passes/insecure-cookie-pass.ts)
+  // tls_verify_disabled → TlsVerifyDisabledPass
+  // These patterns are detected by call-site literal inspection, not taint flow,
+  // so they are NOT registered here as sinks (they could never match a "tainted
+  // value flowing into a sink" because the bad value is a hard-coded constant).
 
   // Trust Boundary (CWE-501) - using untrusted data as session attribute NAME
   // The vulnerability is attacker controlling which key to use, not the value

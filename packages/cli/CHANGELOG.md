@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.52.0] - 2026-06-16
+
+### Changed
+
+- **circle-ir upgraded 3.51.0 → 3.52.0** — replaces broken
+  `weak_random` / `weak_hash` / `weak_crypto` / `insecure_cookie`
+  taint-sink registrations with four dedicated pattern passes
+  (`weak-hash`, `weak-crypto`, `weak-random`, `tls-verify-disabled`)
+  and extends `insecure-cookie` to Java + Python.
+
+  Detection now fires across Java, Python, JS/TS, and Go on the
+  hard-coded algorithm string / missing flag / disabled TLS
+  verification — no source-to-sink taint flow needed. `scan` and the
+  text/JSON/SARIF formatters surface these findings without any CLI
+  changes. Closes cognium-dev#60. See circle-ir 3.52.0 CHANGELOG for
+  per-language detection details.
+
 ## [3.51.0] - 2026-06-16
 
 ### Added

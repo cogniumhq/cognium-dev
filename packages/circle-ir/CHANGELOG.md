@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.52.0] - 2026-06-16
+
+### Added
+
+- **Config / absence pattern passes (#60)** — Replaced the broken
+  `weak_random` / `weak_hash` / `weak_crypto` / `insecure_cookie`
+  taint-sink registrations in `configs/sinks/java.json` and
+  `config-loader.ts` with five dedicated `AnalysisPass`
+  implementations that detect the bad value as a *constant* — no
+  source / sanitizer / sink graph is needed because the vulnerability
+  is the hard-coded algorithm string (or the absence of a flag), not a
+  data flow.
+  - `weak-hash` (#17, CWE-328) — MD2/MD4/MD5/SHA-1 via Java
+    `MessageDigest.getInstance` / Apache Commons `DigestUtils`,
+    Python `hashlib.{md5,sha1,new("md5",…)}`, JS `crypto.createHash`
+    / `createHmac`, Go `crypto/md5` + `crypto/sha1`.
+  - `weak-crypto` (#18, CWE-327) — DES/3DES/RC2/RC4/Blowfish/IDEA/
+    SEED/CAST5 + ECB mode (incl. Java AES default = ECB) via
+    `Cipher.getInstance`, pycryptodome `*.new` / `AES.MODE_ECB`,
+    `cryptography.hazmat algorithms.{TripleDES,…}`,
+    `crypto.createCipher` (deprecated) / `createCipheriv("…-ecb")`,
+    Go `des.NewCipher` / `rc4.NewCipher`.
+  - `weak-random` (#16, CWE-330) — non-CSPRNG: Java `new Random()`
+    / `Math.random` / `ThreadLocalRandom`, Python `random.*`,
+    JS `Math.random`, Go `math/rand` (import-aware: skipped when
+    `crypto/rand` aliases the bare `rand` symbol).
+  - `tls-verify-disabled` (#92, **new**, CWE-295) — Go
+    `tls.Config{InsecureSkipVerify: true}` (source-text scan),
+    Python `requests/httpx(verify=False)` +
+    `ssl._create_unverified_context` + module override, JS
+    `rejectUnauthorized: false` + `NODE_TLS_REJECT_UNAUTHORIZED='0'`,
+    Java `setHostnameVerifier((h,s)->true)` /
+    `NoopHostnameVerifier.INSTANCE` / `AllowAllHostnameVerifier`.
+- **`insecure-cookie` (#19) extended to Java + Python** — was JS/TS
+  only. Now also flags Flask/Django/Starlette
+  `response.set_cookie(...)` without `secure=True`/`httponly=True`
+  and `new javax.servlet.http.Cookie(name, value)` whose enclosing
+  file has no `.setSecure(true)` + `.setHttpOnly(true)` (text-based
+  heuristic; documented in the pass docstring).
+
+### Changed
+
+- **`config-loader.ts`** — removed the unreachable `weak_random`,
+  `weak_hash`, `weak_crypto`, and `insecure_cookie` sink registrations
+  (lines 1198–1227). They could never match a "tainted value flowing
+  into a sink" because the bad value is a hard-coded constant; the new
+  pattern passes detect them directly. `trust_boundary` (CWE-501) is
+  retained because it is a genuine taint-flow sink (attacker controls
+  the session-attribute *name*).
+- **`analyzer.ts`** — registered `WeakHashPass`, `WeakCryptoPass`,
+  `WeakRandomPass`, `TlsVerifyDisabledPass`, alongside the existing
+  `Spring4ShellPass` and `InsecureCookiePass`. Each is disable-able via
+  `disabledPasses: ['weak-hash', 'weak-crypto', 'weak-random',
+  'tls-verify-disabled']`.
+
+### Tests
+
+- Added 4 new test files (`weak-hash.test.ts`, `weak-crypto.test.ts`,
+  `weak-random.test.ts`, `tls-verify-disabled.test.ts`) plus 6 new Java
+  + Python cases in `insecure-cookie.test.ts`. Total: 57 new tests.
+  Full circle-ir suite: 2243 passing (was 2186), 1 skipped.
+
 ## [3.51.0] - 2026-06-16
 
 ### Added

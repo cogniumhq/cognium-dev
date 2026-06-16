@@ -134,6 +134,10 @@ import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHea
 import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
 import { Spring4ShellPass } from './analysis/passes/spring4shell-pass.js';
 import { InsecureCookiePass } from './analysis/passes/insecure-cookie-pass.js';
+import { WeakHashPass } from './analysis/passes/weak-hash-pass.js';
+import { WeakCryptoPass } from './analysis/passes/weak-crypto-pass.js';
+import { WeakRandomPass } from './analysis/passes/weak-random-pass.js';
+import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -475,6 +479,10 @@ export async function analyze(
   if (!disabledPasses.has('security-headers'))      pipeline.add(new SecurityHeadersPass(passOpts.securityHeaders));
   if (!disabledPasses.has('spring4shell'))          pipeline.add(new Spring4ShellPass());
   if (!disabledPasses.has('insecure-cookie'))       pipeline.add(new InsecureCookiePass());
+  if (!disabledPasses.has('weak-hash'))             pipeline.add(new WeakHashPass());
+  if (!disabledPasses.has('weak-crypto'))           pipeline.add(new WeakCryptoPass());
+  if (!disabledPasses.has('weak-random'))           pipeline.add(new WeakRandomPass());
+  if (!disabledPasses.has('tls-verify-disabled'))   pipeline.add(new TlsVerifyDisabledPass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

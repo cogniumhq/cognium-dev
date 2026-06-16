@@ -146,7 +146,7 @@ jar.cookie('session', 'value', { maxAge: 0 });
     expect(insecureCookieFindings(r)).toHaveLength(0);
   });
 
-  it('does NOT flag on non-JS/TS languages (Java has its own sink)', async () => {
+  it('does NOT flag Java res.cookie(...) method call (Java arm matches new Cookie ctor, not method calls)', async () => {
     const code = `
 public class Foo {
   public void f(HttpServletResponse res) {
@@ -156,6 +156,98 @@ public class Foo {
 `;
     const r = await analyze(code, 'Foo.java', 'java');
     expect(insecureCookieFindings(r)).toHaveLength(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // Python (Flask / Django / Starlette response.set_cookie)
+  // -----------------------------------------------------------------------
+
+  it('Python: response.set_cookie() without flags is flagged', async () => {
+    const code = `
+def handler(request, response):
+    response.set_cookie('session', request.GET['uid'])
+    return response
+`;
+    const r = await analyze(code, 'a.py', 'python');
+    const f = insecureCookieFindings(r);
+    expect(f.length).toBeGreaterThanOrEqual(1);
+    expect(f[0].cwe).toBe('CWE-614');
+  });
+
+  it('Python: response.set_cookie(..., secure=True, httponly=True) is NOT flagged', async () => {
+    const code = `
+def handler(request, response):
+    response.set_cookie('session', request.GET['uid'], secure=True, httponly=True)
+    return response
+`;
+    const r = await analyze(code, 'b.py', 'python');
+    expect(insecureCookieFindings(r)).toHaveLength(0);
+  });
+
+  it('Python: response.set_cookie(..., secure=True) (missing httponly) is flagged', async () => {
+    const code = `
+def handler(request, response):
+    response.set_cookie('session', request.GET['uid'], secure=True)
+    return response
+`;
+    const r = await analyze(code, 'c.py', 'python');
+    const f = insecureCookieFindings(r);
+    expect(f.length).toBeGreaterThanOrEqual(1);
+    expect(f[0].message.toLowerCase()).toContain('httponly');
+  });
+
+  // -----------------------------------------------------------------------
+  // Java (javax.servlet.http.Cookie)
+  // -----------------------------------------------------------------------
+
+  it('Java: new Cookie(...) without setSecure/setHttpOnly is flagged', async () => {
+    const code = `
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse res) {
+    Cookie c = new Cookie("session", "value");
+    res.addCookie(c);
+  }
+}
+`;
+    const r = await analyze(code, 'A.java', 'java');
+    const f = insecureCookieFindings(r);
+    expect(f.length).toBeGreaterThanOrEqual(1);
+    expect(f[0].cwe).toBe('CWE-614');
+  });
+
+  it('Java: new Cookie(...) WITH setSecure(true) + setHttpOnly(true) is NOT flagged', async () => {
+    const code = `
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse res) {
+    Cookie c = new Cookie("session", "value");
+    c.setSecure(true);
+    c.setHttpOnly(true);
+    res.addCookie(c);
+  }
+}
+`;
+    const r = await analyze(code, 'B.java', 'java');
+    expect(insecureCookieFindings(r)).toHaveLength(0);
+  });
+
+  it('Java: new Cookie(...) with only setSecure(true) (missing setHttpOnly) is flagged', async () => {
+    const code = `
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse res) {
+    Cookie c = new Cookie("session", "value");
+    c.setSecure(true);
+    res.addCookie(c);
+  }
+}
+`;
+    const r = await analyze(code, 'C.java', 'java');
+    expect(insecureCookieFindings(r).length).toBeGreaterThanOrEqual(1);
   });
 
   it('emits one finding per call site (no duplicates)', async () => {

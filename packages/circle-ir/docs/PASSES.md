@@ -53,10 +53,10 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 | 13 | `log-injection` | CWE-117 | User input written to log without sanitization |
 | 14 | `trust-boundary` | CWE-501 | Tainted data crosses trust boundary (e.g. session write) |
 | 15 | `external-taint` | CWE-668 | External input reaches sensitive operation (interprocedural) |
-| 16 | `weak-random` | CWE-330 | Math.random / java.util.Random in security context |
-| 17 | `weak-hash` | CWE-327 | MD5 or SHA-1 used for security purposes |
-| 18 | `weak-crypto` | CWE-327 | DES, RC4, or ECB mode encryption |
-| 19 | `insecure-cookie` | CWE-614 | Cookie set without Secure or HttpOnly flag |
+| 16 | `weak-random` | CWE-330 | Math.random / java.util.Random / random.* / math/rand in security context (pattern pass — see §A6) |
+| 17 | `weak-hash` | CWE-328 | MD5 or SHA-1 used for security purposes (pattern pass — see §A6) |
+| 18 | `weak-crypto` | CWE-327 | DES, RC4, Blowfish, or ECB mode encryption (pattern pass — see §A6) |
+| 19 | `insecure-cookie` | CWE-614 | Cookie set without Secure or HttpOnly flag (pattern pass — see §A6) |
 
 ### A2. HTML Security Passes (category = `security`, HTML files only)
 
@@ -127,6 +127,24 @@ it implicitly), so a taint flow alone misses the shape.
 | # | rule_id | CWE | level | status | Description |
 |---|---------|-----|-------|--------|-------------|
 | 91 | `spring4shell` | CWE-94 | error | shipped | Spring MVC controller method binds a POJO parameter via implicit form-data binding (no `@RequestBody`/`@RequestParam`/`@ModelAttribute`) — vulnerable to CVE-2022-22965 on Spring < 5.3.18 / 5.2.20 |
+
+### A6. Config / Absence Pattern Passes (category = `security`)
+
+Passes #16–#19 + #92 detect **configuration-or-absence vulnerabilities** — the
+bad value is a hard-coded constant (or a missing flag), not a tainted value
+flowing from a source. Detection inspects call-site literals, argument
+expression text, and (for shapes that do not surface as IR calls) the file
+source text. These passes do **not** require sources/sinks/sanitizers; they
+ran as broken taint-sink registrations before 3.52.0 and have been moved out
+of `config-loader.ts` into dedicated `AnalysisPass` implementations.
+
+| # | rule_id | CWE | level | status | Description |
+|---|---------|-----|-------|--------|-------------|
+| 16 | `weak-random` | CWE-330 | warning | shipped | Non-cryptographic PRNG used (Java `new Random()` / `Math.random` / `ThreadLocalRandom`, Python `random.*`, JS `Math.random`, Go `math/rand` — import-aware to avoid `crypto/rand` FPs). Mirrors gosec G404 / Bandit B311 |
+| 17 | `weak-hash` | CWE-328 | warning | shipped | MD2/MD4/MD5/SHA-1 via Java `MessageDigest.getInstance`, Apache Commons `DigestUtils.{md5,sha1}{,Hex}`, Python `hashlib.{md5,sha1,new("md5",…)}`, JS `crypto.createHash`/`createHmac`, Go `crypto/md5` + `crypto/sha1`. Mirrors gosec G401 / Bandit B303 |
+| 18 | `weak-crypto` | CWE-327 | error | shipped | Weak symmetric cipher (DES/3DES/RC2/RC4/Blowfish/IDEA/SEED/CAST5) **or** ECB mode (incl. Java AES default = ECB) via Java `Cipher.getInstance`, Python pycryptodome `*.new(...)`/`AES.new(key, MODE_ECB)` and `cryptography.hazmat algorithms.{TripleDES,Blowfish,ARC4,…}`, JS `crypto.createCipher` (deprecated) / `createCipheriv("…-ecb"|"des-…")`, Go `des.NewCipher`/`des.NewTripleDESCipher`/`rc4.NewCipher`. Mirrors gosec G401/G405 / Bandit B304/B305 |
+| 19 | `insecure-cookie` | CWE-614 | warning | shipped | Cookie set without Secure / HttpOnly: Express `res.cookie(name, val, opts)` and Fastify `reply.cookie`, Python Flask/Django/Starlette `response.set_cookie(...)`, Java `new javax.servlet.http.Cookie(...)` without `setSecure(true)` + `setHttpOnly(true)` (text-based heuristic — full DFG-based version requires variable-to-call linkage) |
+| 92 | `tls-verify-disabled` | CWE-295 | error | shipped | TLS certificate / hostname verification disabled: Go `tls.Config{InsecureSkipVerify: true}` (source-text scan — composite literals are not IR calls), Python `requests/httpx(verify=False)` + `ssl._create_unverified_context` + module-level `ssl._create_default_https_context` override, JS `rejectUnauthorized: false` in any args + `process.env.NODE_TLS_REJECT_UNAUTHORIZED='0'` assignment, Java `setHostnameVerifier((h,s)->true)` / `NoopHostnameVerifier.INSTANCE` / `AllowAllHostnameVerifier`. Mirrors gosec G402 / Bandit B501/B504/B505 |
 
 ---
 
