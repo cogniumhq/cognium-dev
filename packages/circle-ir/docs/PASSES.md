@@ -59,7 +59,7 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 | 15d | `mass_assignment` | CWE-915 | Untrusted attribute bag splatted into a domain object: JS `Object.assign(user, req.body)`, lodash `_.merge/_.extend(target, req.body)`, jQuery `$.extend(target, req.body)`. Also see pattern pass #96 for Python `User(**request.form)` and JS `{...req.body}` (issue #86, Sprint 6) |
 | 16 | `weak-random` | CWE-330 | Math.random / java.util.Random / random.* / math/rand in security context (pattern pass — see §A6) |
 | 17 | `weak-hash` | CWE-328 | MD5 or SHA-1 used for security purposes (pattern pass — see §A6) |
-| 18 | `weak-crypto` | CWE-327 / CWE-329 / CWE-321 / CWE-326 | Weak ciphers, ECB mode, static/zero IV, hardcoded symmetric key, weak RSA key size (< 2048) (pattern pass — see §A6) |
+| 18 | `weak-crypto` | CWE-327 / CWE-329 / CWE-321 / CWE-326 | Weak ciphers, ECB mode, static/zero IV, hardcoded symmetric key, weak RSA key size (< 2048) (pattern pass — see §A6). Sprint 7 (3.56.0) finished cross-language parity: Python `modes.ECB()` / `AES.new(b"…", …)` / `rsa.generate_private_key(key_size<2048)`; Go `aes.NewCipher([]byte("…"))` / `rsa.GenerateKey(_, <2048)` (issue #87) |
 | 19 | `insecure-cookie` | CWE-614 | Cookie set without Secure or HttpOnly flag (pattern pass — see §A6) |
 
 ### A2. HTML Security Passes (category = `security`, HTML files only)

@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.56.0] - 2026-06-16
+
+### Added
+
+- **Issue #87 — Sprint 7: cross-language `weak-crypto` parity.** Finishes the
+  Python and Go side of the insecure-cryptographic-config family so all four
+  supported languages (Java, Python, JS/TS, Go) detect the same set of issues
+  (`weak-cipher`, `ecb-mode`, `deprecated-api`, `static-iv`, `hardcoded-key`,
+  `weak-rsa-key`).
+
+  Python additions to the `weak-crypto` pattern pass:
+  - `modes.ECB()` from `cryptography.hazmat.primitives.ciphers` — CWE-327
+  - `AES.new(b"literal", …)` and `algorithms.AES(b"literal")` — CWE-321
+    (hardcoded symmetric key)
+  - `rsa.generate_private_key(key_size=N)` with `N < 2048` — CWE-326
+    (weak RSA key)
+
+  Go additions:
+  - `aes.NewCipher([]byte("literal"))` (and the `des`/`rc4` siblings) —
+    CWE-321 hardcoded symmetric key
+  - `rsa.GenerateKey(rand.Reader, N)` with `N < 2048` — CWE-326 weak RSA
+
+  Both languages additionally support a regex-fallback "literal-binding"
+  scan that recognises the very common pattern of binding a literal to a
+  variable on one line and passing the variable to the cipher constructor
+  on the next:
+
+  ```python
+  key = b"1234567890123456"
+  c = AES.new(key, AES.MODE_CBC)    # flagged
+  ```
+
+  ```go
+  key := []byte("1234567890123456")
+  c, _ := aes.NewCipher(key)        // flagged
+  ```
+
+  Function parameters and runtime values continue to be ignored — no false
+  positives are introduced for code that loads keys from KMS/Vault/env.
+
+### Fixed
+
+- The Python plugin emits bytes literals as `b"…"` in `argument.expression`
+  but the `argument.literal` field strips the trailing quote, so the
+  `weak-crypto` pass now prefers `expression` over `literal` when matching
+  the inline `b"…"` regex.
+
 ## [3.55.0] - 2026-06-16
 
 ### Added

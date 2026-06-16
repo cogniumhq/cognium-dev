@@ -27,6 +27,12 @@
  *       `Crypto.Cipher.Blowfish.new(...)` (pycryptodome / pycrypto)
  *     - `cryptography.hazmat.primitives.ciphers.algorithms.{TripleDES,Blowfish,ARC4,IDEA,SEED,CAST5}`
  *     - `AES.new(key, AES.MODE_ECB)` — ECB mode argument
+ *     - `modes.ECB()` (cryptography.hazmat) — issue #87
+ *     - `AES.new(b"literal", …)` / `algorithms.AES(b"literal")` — hardcoded
+ *       symmetric key (CWE-321, issue #87). Detected for both inline byte
+ *       literals and variables resolved via constant propagation.
+ *     - `rsa.generate_private_key(key_size=<2048)` — weak RSA key size
+ *       (CWE-326, issue #87)
  *   JavaScript / TypeScript:
  *     - `crypto.createCipher(...)` (deprecated; always weak)
  *     - `crypto.createCipheriv("des-..."|"rc4"|"bf-..."|"des-ede"|".*-ecb")`
@@ -34,12 +40,17 @@
  *     - `des.NewCipher(...)` / `des.NewTripleDESCipher(...)` / `rc4.NewCipher(...)`
  *       (from `crypto/des` and `crypto/rc4`)
  *     - `cipher.NewECBEncrypter(...)` (custom ECB wrappers — best-effort)
+ *     - `aes.NewCipher([]byte("literal"))` — hardcoded symmetric key
+ *       (CWE-321, issue #87)
+ *     - `rsa.GenerateKey(rand.Reader, <2048)` — weak RSA key size
+ *       (CWE-326, issue #87)
  *
  * Aligned with: gosec G401/G405, Bandit B304/B305/B306, OWASP Benchmark `crypto` category.
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
+import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 
 // Weak symmetric ciphers (algorithm name set, lowercased).
 const WEAK_CIPHER_BASES = new Set([
@@ -168,6 +179,189 @@ function detectHardcodedKeyJava(call: CallInfo): string | null {
   return null;
 }
 
+/**
+ * Detect a hardcoded symmetric key passed as the first positional argument
+ * of a Python cipher constructor (`AES.new`, `DES.new`, `algorithms.AES(…)`,
+ * etc.).
+ *
+ * Patterns flagged (returns a human-readable detail string):
+ *   - inline bytes literal `b"…"` / `b'…'`
+ *   - inline string literal `"…"` / `'…'` (legacy pycrypto style)
+ *   - variable resolved by constant propagation to a string/bytes constant
+ *
+ * Returns null when the key argument is a runtime value (function call,
+ * env-var lookup, parameter, etc.).
+ */
+function detectHardcodedKeyPython(
+  call: CallInfo,
+  constProp: ConstantPropagatorResult | null,
+  literalBindings: Map<string, string>,
+): string | null {
+  const arg = call.arguments.find((a) => a.position === 0);
+  if (!arg) return null;
+  // Prefer `expression` over `literal` — the Python plugin's `literal`
+  // field strips the trailing quote on bytes literals, breaking the
+  // `^b"…"$` regex.
+  const expr = (arg.expression ?? arg.literal ?? '').trim();
+  if (!expr) return null;
+
+  // Inline bytes literal: b"…" / b'…' / rb"…" / br"…"
+  if (/^[bB][rR]?["'][^"']*["']$/.test(expr) || /^[rR][bB]["'][^"']*["']$/.test(expr)) {
+    return `literal bytes ${expr.slice(0, 24)}${expr.length > 24 ? '…' : ''}`;
+  }
+  // Inline plain string literal: "…" / '…'
+  if (/^["'][^"']*["']$/.test(expr)) {
+    return `literal string ${expr.slice(0, 24)}${expr.length > 24 ? '…' : ''}`;
+  }
+  // Variable resolved by constant propagation (Java symbol table).
+  if (arg.variable && constProp) {
+    const sym = constProp.symbols.get(arg.variable);
+    if (sym && sym.type === 'string' && typeof sym.value === 'string') {
+      return `constant-propagated bytes from \`${arg.variable}\``;
+    }
+  }
+  // Variable bound to a literal RHS earlier in the file (regex scan
+  // fallback for languages whose const-prop pass does not yet track
+  // string/bytes assignments).
+  if (arg.variable) {
+    const lit = literalBindings.get(arg.variable);
+    if (lit) {
+      return `literal-bound ${arg.variable} = ${lit.slice(0, 24)}${lit.length > 24 ? '…' : ''}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Detect a hardcoded symmetric key passed as the first positional argument
+ * of a Go cipher constructor (`aes.NewCipher`, `des.NewCipher`, etc.).
+ *
+ * Patterns flagged:
+ *   - inline `[]byte("literal")` conversion
+ *   - inline `[]byte{0x00, 0x01, …}` composite literal
+ *   - variable resolved by constant propagation to a string constant
+ *
+ * Returns null when the key argument is a runtime value.
+ */
+function detectHardcodedKeyGo(
+  call: CallInfo,
+  constProp: ConstantPropagatorResult | null,
+  literalBindings: Map<string, string>,
+): string | null {
+  const arg = call.arguments.find((a) => a.position === 0);
+  if (!arg) return null;
+  const expr = (arg.literal ?? arg.expression ?? '').trim();
+  if (!expr) return null;
+
+  // []byte("literal") / []byte(`literal`)
+  if (/^\[\s*\]\s*byte\s*\(\s*["'`][^"'`]*["'`]\s*\)$/.test(expr)) {
+    return `literal []byte("…")`;
+  }
+  // []byte{0x00, 0x01, …}
+  if (/^\[\s*\]\s*byte\s*\{[^}]*\}$/.test(expr)) {
+    return `literal []byte{…} composite`;
+  }
+  // Variable resolved by constant propagation.
+  if (arg.variable && constProp) {
+    const sym = constProp.symbols.get(arg.variable);
+    if (sym && sym.type === 'string' && typeof sym.value === 'string') {
+      return `constant-propagated key from \`${arg.variable}\``;
+    }
+  }
+  // Regex fallback: `var key = []byte("…")` / `key := []byte("…")` /
+  // `const key = "…"` earlier in the same file.
+  if (arg.variable) {
+    const lit = literalBindings.get(arg.variable);
+    if (lit) {
+      return `literal-bound ${arg.variable} = ${lit.slice(0, 24)}${lit.length > 24 ? '…' : ''}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract a weak (< 2048) `key_size` argument from a Python
+ * `…rsa.generate_private_key(...)` call.
+ *
+ * The Python plugin renders keyword arguments as `name=value` in
+ * `argument.expression` and exposes the numeric RHS in `argument.literal`,
+ * so we scan every positional and keyword argument for a `key_size=N`
+ * spelling first, then fall back to a positional `key_size` (uncommon in
+ * the cryptography API but accepted via `**kwargs`).
+ */
+function parseWeakRsaKeySizePython(call: CallInfo): number | null {
+  for (const arg of call.arguments) {
+    const expr = (arg.expression ?? '').trim();
+    const lit = (arg.literal ?? '').trim();
+    const m = expr.match(/^key_size\s*=\s*(-?\d+)\s*$/);
+    if (m && m[1]) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > 0 && n < 2048) return n;
+      return null;
+    }
+    // Keyword arg where expression='key_size=…' but literal already isolated.
+    if (/^key_size\s*=/.test(expr) && lit) {
+      const n = parseInt(lit, 10);
+      if (Number.isFinite(n) && n > 0 && n < 2048) return n;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a `<name> → <literal>` map by regex-scanning the file's source.
+ *
+ * Recognised forms per language (only inline literal RHSes — not function
+ * calls, attribute lookups, parameters, etc.):
+ *
+ *   Python:
+ *     `name = b"…"` / `name = b'…'`     (bytes literal)
+ *     `name = "…"` / `name = '…'`        (string literal)
+ *
+ *   Go:
+ *     `name := []byte("…")` / `var name = []byte("…")`
+ *     `name := "…"` / `const name = "…"`
+ *
+ * Used by `detectHardcodedKeyPython` / `detectHardcodedKeyGo` to recognise
+ * the common pattern `key = b"…"; AES.new(key, …)`. Returns an empty map
+ * for unsupported languages or when the source is empty.
+ */
+function scanLiteralBindings(code: string, language: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!code) return out;
+
+  if (language === 'python') {
+    // `name = b"…"` (preferred form) or `name = "…"` (legacy / Python 2).
+    const re = /^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(b[rR]?["'][^"']*["']|[rR]?b["'][^"']*["']|["'][^"']*["'])\s*(?:$|#)/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      if (m[1] && m[2]) out.set(m[1], m[2]);
+    }
+    return out;
+  }
+
+  if (language === 'go') {
+    // `name := []byte("…")` / `var name = []byte("…")` / `const name = "…"` /
+    // `name := "…"`.
+    const reByte = /^[ \t]*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*(\[\s*\]\s*byte\s*\(\s*["'`][^"'`]*["'`]\s*\))/gm;
+    let m: RegExpExecArray | null;
+    while ((m = reByte.exec(code)) !== null) {
+      if (m[1] && m[2]) out.set(m[1], m[2]);
+    }
+    const reStr = /^[ \t]*(?:var|const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["'`][^"'`]*["'`])/gm;
+    while ((m = reStr.exec(code)) !== null) {
+      if (m[1] && m[2]) out.set(m[1], m[2]);
+    }
+    const reShort = /^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*(["'`][^"'`]*["'`])/gm;
+    while ((m = reShort.exec(code)) !== null) {
+      if (m[1] && m[2]) out.set(m[1], m[2]);
+    }
+    return out;
+  }
+
+  return out;
+}
+
 export type WeakCryptoIssue =
   | 'weak-cipher'      // CWE-327
   | 'ecb-mode'         // CWE-327
@@ -201,12 +395,27 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
   readonly category = 'security' as const;
 
   run(ctx: PassContext): WeakCryptoResult {
-    const { graph, language } = ctx;
+    const { graph, language, code } = ctx;
     const file = graph.ir.meta.file;
     const findings: WeakCryptoResult['findings'] = [];
 
+    // Optional constant-propagation result — used to resolve a variable whose
+    // assigned value is a literal bytes/string (Python `key = b"…"` → AES.new).
+    const constProp = ctx.hasResult('constant-propagation')
+      ? ctx.getResult<ConstantPropagatorResult>('constant-propagation')
+      : null;
+
+    // Lightweight per-language source scan for `<name> = <literal>`
+    // bindings. Python's constant-propagation pass does not yet track
+    // `name = b"…"` style assignments, and Go's does not track
+    // `name := []byte("…")`. We do a one-pass regex over `ctx.code` to
+    // build a `name → literal` map used by hardcoded-key detection.
+    // This is a conservative augmentation — only inline literal RHSes
+    // are recognised; runtime values stay invisible.
+    const literalBindings = scanLiteralBindings(code, language);
+
     for (const call of graph.ir.calls) {
-      const detections = this.detect(call, language);
+      const detections = this.detect(call, language, constProp, literalBindings);
       for (const det of detections) {
         const line = call.location.line;
         findings.push({ line, language, ...det });
@@ -301,7 +510,12 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
     }
   }
 
-  private detect(call: CallInfo, language: string): Array<{
+  private detect(
+    call: CallInfo,
+    language: string,
+    constProp: ConstantPropagatorResult | null,
+    literalBindings: Map<string, string>,
+  ): Array<{
     issue: WeakCryptoIssue;
     detail: string;
     api: string;
@@ -387,6 +601,17 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
             out.push({ issue: 'ecb-mode', detail: 'AES.MODE_ECB', api: `${receiver}.new` });
           }
         }
+        // Hardcoded symmetric key — issue #87 (CWE-321). First arg is a bytes
+        // literal `b"…"` either inline or via a constant-propagated variable.
+        if (
+          lastSeg === 'aes' || lastSeg.endsWith('.aes') ||
+          WEAK_CIPHER_BASES.has(lastSeg)
+        ) {
+          const keyDetail = detectHardcodedKeyPython(call, constProp, literalBindings);
+          if (keyDetail) {
+            out.push({ issue: 'hardcoded-key', detail: keyDetail, api: `${receiver}.new` });
+          }
+        }
       }
       // cryptography.hazmat ciphers — algorithms.TripleDES(key) / Blowfish(key) / ARC4(key) / IDEA(key) / SEED(key) / CAST5(key)
       // Receiver here is `algorithms` (or full path); method is the algo name.
@@ -396,6 +621,34 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
         const normalized = m === 'tripledes' ? '3des' : m;
         if (WEAK_CIPHER_BASES.has(normalized)) {
           out.push({ issue: 'weak-cipher', detail: normalized, api: `algorithms.${method}` });
+        }
+        // algorithms.AES(b"literal") — hardcoded key (CWE-321, issue #87).
+        if (m === 'aes') {
+          const keyDetail = detectHardcodedKeyPython(call, constProp, literalBindings);
+          if (keyDetail) {
+            out.push({ issue: 'hardcoded-key', detail: keyDetail, api: `algorithms.${method}` });
+          }
+        }
+      }
+      // cryptography.hazmat modes — modes.ECB() — issue #87 (CWE-327).
+      // Receiver is `modes` (or full path ending in `.modes`); method is `ECB`.
+      if (method === 'ECB' && (receiver === 'modes' || receiver.endsWith('.modes'))) {
+        out.push({ issue: 'ecb-mode', detail: 'modes.ECB()', api: `${receiver}.ECB` });
+      }
+      // cryptography.hazmat asymmetric — rsa.generate_private_key(key_size=N)
+      // / dsa.generate_private_key(key_size=N) — issue #87 (CWE-326).
+      if (
+        method === 'generate_private_key' &&
+        (receiver === 'rsa' || receiver === 'dsa' ||
+         receiver.endsWith('.rsa') || receiver.endsWith('.dsa'))
+      ) {
+        const n = parseWeakRsaKeySizePython(call);
+        if (n !== null) {
+          out.push({
+            issue: 'weak-rsa-key',
+            detail: String(n),
+            api: `${receiver}.generate_private_key`,
+          });
         }
       }
       return out;
@@ -444,6 +697,33 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
       // — Go stdlib intentionally omits ECB, so any such call is suspect).
       if ((method === 'NewECBEncrypter' || method === 'NewECBDecrypter') && receiver === 'cipher') {
         out.push({ issue: 'ecb-mode', detail: method, api: `cipher.${method}` });
+      }
+      // aes.NewCipher / des.NewCipher / des.NewTripleDESCipher hardcoded key —
+      // issue #87 (CWE-321). First arg is `[]byte("literal")` or a variable
+      // assigned from such a literal.
+      if (
+        (receiver === 'aes' && method === 'NewCipher') ||
+        (receiver === 'des' && (method === 'NewCipher' || method === 'NewTripleDESCipher')) ||
+        (receiver === 'rc4' && method === 'NewCipher')
+      ) {
+        const keyDetail = detectHardcodedKeyGo(call, constProp, literalBindings);
+        if (keyDetail) {
+          out.push({ issue: 'hardcoded-key', detail: keyDetail, api: `${receiver}.${method}` });
+        }
+      }
+      // crypto/rsa: rsa.GenerateKey(rand.Reader, bits) — issue #87 (CWE-326).
+      // Second positional arg is the key size in bits.
+      if (receiver === 'rsa' && method === 'GenerateKey') {
+        const bitsArg = call.arguments.find((a) => a.position === 1);
+        const expr = (bitsArg?.literal ?? bitsArg?.expression ?? '').trim();
+        const n = parseInt(expr, 10);
+        if (Number.isFinite(n) && n > 0 && n < 2048) {
+          out.push({
+            issue: 'weak-rsa-key',
+            detail: String(n),
+            api: 'rsa.GenerateKey',
+          });
+        }
       }
       return out;
     }

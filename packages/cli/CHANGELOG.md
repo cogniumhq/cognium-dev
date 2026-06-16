@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.56.0] - 2026-06-16
+
+### Changed
+
+- **circle-ir upgraded 3.55.0 → 3.56.0** — Sprint 7 finishes the cross-
+  language `weak-crypto` family (issue #87). Python and Go now detect the
+  same set of insecure-cryptographic-config issues already shipped for
+  Java in 3.55.0:
+  - Python `modes.ECB()` (cryptography.hazmat) — CWE-327
+  - Python `AES.new(b"literal", …)` / `algorithms.AES(b"literal")` — CWE-321
+  - Python `rsa.generate_private_key(key_size<2048)` — CWE-326
+  - Go `aes.NewCipher([]byte("literal"))` — CWE-321
+  - Go `rsa.GenerateKey(rand.Reader, <2048)` — CWE-326
+
+  Both languages additionally support a regex-fallback "literal-binding"
+  scan so the common two-line idiom
+  `key = b"…"` / `c = AES.new(key, …)` is also flagged. Function
+  parameters and runtime values are still excluded.
+
 ## [3.55.0] - 2026-06-16
 
 ### Changed
