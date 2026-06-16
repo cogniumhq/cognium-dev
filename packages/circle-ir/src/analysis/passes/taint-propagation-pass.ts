@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildPythonTaintedVars } from './language-sources-pass.js';
+import { buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -126,7 +126,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // scan each sink's call-argument expressions for that variable name as
     // an identifier-boundary match. This is language-agnostic but in practice
     // benefits Python the most because Java sources rarely set `variable`.
-    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, constProp.unreachableLines, ctx.code, ctx.language) ?? [];
+    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, ctx.code, ctx.language) ?? [];
     for (const f of exprScanFlows) {
       if (flows.some(x =>
         x.source_line === f.source_line &&
@@ -411,6 +411,7 @@ function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
   sinks: CircleIR['taint']['sinks'],
+  sanitizers: CircleIR['taint']['sanitizers'],
   unreachableLines: Set<number>,
   code?: string,
   language?: string,
@@ -422,6 +423,24 @@ function detectExpressionScanFlows(
     typeof s.variable === 'string' && s.variable.length > 0
   );
   if (sourcesWithVar.length === 0) return flows;
+
+  // Per-alias sanitizer coverage (cognium-dev #65 pt2).
+  //
+  // When Python alias expansion (below) adds a derived variable like
+  // `cmd` from `cmd = "ping " + shlex.quote(host)`, the assignment
+  // line itself usually carries the sanitizer call. We record which
+  // sink types each derived alias is sanitized against so flows of
+  // those types can be marked sanitized at emission time. Without
+  // this, `subprocess.run(cmd, shell=True)` on the next line is
+  // reported as a command-injection FP even though `shlex.quote`
+  // wraps the only tainted operand of the concat.
+  //
+  // Scope: only the alias map populated below uses this; bare-source
+  // flows where the user passes the raw tainted var to a separate
+  // `shlex.quote(host)` call (not part of an assignment) are
+  // unaffected, because the sanitizer call alone does not actually
+  // sanitize the original `host` variable.
+  const aliasSanitizedFor = new Map<string, Set<string>>();
 
   // Python alias expansion (#20): seed the scan with not only direct source
   // variables (e.g. `uid` from `uid = request.form.get(...)`) but also any
@@ -449,6 +468,65 @@ function detectExpressionScanFlows(
         if (!varName || existingVars.has(varName)) continue;
         // Don't shadow real sources; build a minimal synthetic record that
         // satisfies the scan loop below.
+        sourcesWithVar.push({
+          ...anchor,
+          variable: varName,
+        });
+        existingVars.add(varName);
+      }
+
+      // cognium-dev #65 pt2: record per-alias sanitizer coverage.
+      // For each derived alias `lhs = ... sanitizer(taintedVar) ...`,
+      // pick up the sink types the sanitizer covers so flows of those
+      // types can be marked sanitized when emitted below.
+      if (sanitizers && sanitizers.length > 0) {
+        const sanitizersByLine = new Map<number, typeof sanitizers>();
+        for (const s of sanitizers) {
+          const arr = sanitizersByLine.get(s.line) ?? [];
+          arr.push(s);
+          sanitizersByLine.set(s.line, arr);
+        }
+        const codeLines = code.split('\n');
+        for (const [varName, originLine] of derived) {
+          const lineSans = sanitizersByLine.get(originLine);
+          if (!lineSans || lineSans.length === 0) continue;
+          const lineText = codeLines[originLine - 1] ?? '';
+          const rhsMatch = lineText.match(/^\s*\w+\s*=\s*(.+)$/);
+          if (!rhsMatch) continue;
+          const rhs = rhsMatch[1];
+          for (const san of lineSans) {
+            const sanMatch = san.method.match(/^(?:(\w+)\.)?(\w+)\(\)$/);
+            if (!sanMatch) continue;
+            const sanName = sanMatch[1] ? `${sanMatch[1]}.${sanMatch[2]}` : sanMatch[2];
+            if (!rhs.includes(`${sanName}(`)) continue;
+            let set = aliasSanitizedFor.get(varName);
+            if (!set) { set = new Set<string>(); aliasSanitizedFor.set(varName, set); }
+            for (const t of san.sanitizes) set.add(t);
+          }
+        }
+      }
+    }
+  }
+
+  // Rust alias expansion (#71): mirror the Python branch above so that
+  // multi-level extractor chains like
+  //   let form = f.into_inner();
+  //   let path = form.path;
+  //   fs::write(path, ...);
+  // produce a flow back to the original `web::Form<T>` parameter source.
+  // `buildRustTaintedVars` does a fixpoint over let-bindings + assignments
+  // seeded with the real source variables.
+  if (language === 'rust' && typeof code === 'string') {
+    const seedVars = new Set(sourcesWithVar.map(s => s.variable));
+    const derived = buildRustTaintedVars(code, seedVars);
+    if (derived.size > 0) {
+      let anchor: typeof sourcesWithVar[0] = sourcesWithVar[0];
+      for (const s of sourcesWithVar) {
+        if (s.line < anchor.line) anchor = s;
+      }
+      const existingVars = new Set(sourcesWithVar.map(s => s.variable));
+      for (const [varName] of derived) {
+        if (!varName || existingVars.has(varName)) continue;
         sourcesWithVar.push({
           ...anchor,
           variable: varName,
@@ -505,6 +583,14 @@ function detectExpressionScanFlows(
             f.sink_line === sink.line &&
             f.sink_type === sink.type
           )) continue;
+
+          // cognium-dev #65 pt2: suppress flows where the derived alias
+          // was created by an assignment that wraps the tainted operand
+          // in a sanitizer covering this sink type (e.g.
+          // `cmd = "ping " + shlex.quote(host)` → command_injection).
+          if (aliasSanitizedFor.get(source.variable)?.has(sink.type)) {
+            break;
+          }
 
           flows.push({
             source_line: source.line,

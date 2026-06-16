@@ -5,6 +5,363 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.49.0] - 2026-06-16
+
+### Added
+
+- **`insecure-cookie` pattern pass for JavaScript / TypeScript
+  (CWE-614)** — closes #43. Previously `insecure_cookie` was only
+  modelled as a Java sink for `new Cookie(...)`. Express's
+  `res.cookie(name, value, options)` is a shape-based vulnerability
+  (the absence of `Secure` / `HttpOnly` flags is not a taint-flow
+  problem), so a new dedicated pattern pass scans
+  `graph.ir.calls` for `cookie` invocations whose receiver looks
+  like an Express/Fastify response (`res`, `response`, `reply`) and
+  flags any call where the literal options object is missing or does
+  not contain both `secure: true` and `httpOnly: true`. One finding
+  per call site, severity `medium`, level `warning`. The pass is
+  registered in `src/analyzer.ts` after `spring4shell` and can be
+  disabled via `disabledPasses: ['insecure-cookie']`. Regression
+  coverage: `tests/analysis/passes/insecure-cookie.test.ts`
+  (12 cases — vulnerable JS/TS shapes, partial-flag mixes,
+  Fastify `reply.cookie`, clearCookie negative, non-response
+  receiver negative, Java-language negative, multi-call dedupe).
+
+- **`log_injection` (CWE-117) sinks for Java and JavaScript/TypeScript** —
+  closes #44. Previously only Python `class: 'logger'` and Rust
+  `info!`/`warn!`/`error!`/etc. macros emitted `log_injection` findings.
+  The default sink registry now includes:
+  - Java (scoped to `languages: ['java']`): `Logger.info`/`warn`/`error`/
+    `debug`/`trace` (slf4j / logback signatures including format-string
+    arguments) and `severe`/`warning`/`config`/`fine`/`finer`/`finest`/
+    `log` for `java.util.logging.Logger`.
+  - JavaScript/TypeScript (scoped to `languages: ['javascript',
+    'typescript']`, `class: 'console'`): `console.log`/`warn`/`error`/
+    `info`/`debug`/`trace`.
+
+  All entries are severity `low` (CWE-117 log forging / log forgery
+  is informational unless paired with downstream parsers that act on
+  log content). Regression coverage in
+  `tests/analysis/sink-config-coverage.test.ts`.
+
+- **`nosql_injection` (CWE-943) coverage for mongoose `Model`/`Query`
+  fluent chains and classless MongoDB-specific method names** —
+  closes #45. The previous `class: 'Collection'`-only entries missed
+  `User.findOne({ username })`, `User.findOneAndUpdate(...)`,
+  `mongoose.connection.db.collection('x').find({...})`, and similar
+  patterns because the call-site receiver type does not resolve to
+  `Collection`. Added:
+  - `class: 'Model'` entries for `find`, `findOne`, `findById`,
+    `findOneAndUpdate`/`Delete`/`Replace`, `updateOne`/`Many`,
+    `deleteOne`/`Many`, `countDocuments`, `aggregate`.
+  - `class: 'Query'` entries for `where`, `equals`.
+  - Classless + `languages: ['javascript', 'typescript']` entries for
+    `findOne`, `findOneAndUpdate`/`Delete`/`Replace`, `updateOne`/`Many`,
+    `deleteOne`/`Many`, `aggregate`. Bare `find` intentionally stays
+    class-scoped to avoid colliding with `Array.prototype.find`.
+
+- **Classless `open_redirect` (CWE-601) entry for Express
+  `res.redirect()`** — closes #46. Mirrors Python's classless
+  `redirect` entry and removes the dependency on receiver type
+  resolution for the Express `res` parameter. Language-scoped to
+  `javascript`/`typescript`; method name `redirect` is rare outside
+  HTTP frameworks so the FP risk is low.
+
+- **Python `path_traversal` sanitizers for `os.path.realpath` and
+  `os.path.abspath`** — closes #48 part 2. `os.path.realpath` (resolves
+  symlinks + canonicalizes) and `os.path.abspath` (canonicalizes the
+  path string) are the standard Python equivalents of Java's
+  `File.getCanonicalPath`. Registered on both `os.path` and the bare
+  `path` receiver (covers `import os.path as path`). `os.path.normpath`
+  was already registered and is unchanged. Regression coverage in
+  `tests/analysis/sink-config-coverage.test.ts` (`#48 Python:` block).
+
+### Fixed
+
+- **Rust actix-web / axum typed extractors now produce taint flows** —
+  closes #71. Three fixes in `src/analysis/taint-matcher.ts` and
+  `src/analysis/passes/{language-sources-pass,taint-propagation-pass}.ts`:
+  1. The typed-extractor regex (`RUST_EXTRACTOR_KIND`) now accepts both
+     bare and module-prefixed forms (`Path<…>`, `web::Path<…>`,
+     `axum::extract::Path<…>`). Previously the bare anchor
+     `^(?:Json|Form|Query|Path|…)(?:<|$)` rejected actix's
+     `web::Path<String>` param type, so the typed extractor was never
+     recognised as a source.
+  2. Source `type` is now selected per extractor kind:
+     `Form`/`Query`/`Path` → `http_param` (covers `sql`,
+     `command_injection`, `path_traversal`, `xss`, `ssrf`, …);
+     `Json`/`Body`/`Bytes`/`Multipart` → `http_body`. Previously the
+     type was hard-coded to `http_body`, which `canSourceReachSink`
+     does NOT map to `path_traversal` or `ssrf` — so even the cases
+     that did produce a source produced no flows. `Extension<T>` is
+     explicitly excluded (server-injected state, not user input).
+  3. Sources now carry `variable`: typed extractors use `param.name`,
+     and the existing method-call-based sources (`match_info().get`,
+     `uri().query()`, `headers().get()`, …) get their LHS attached via
+     a Rust let-binding scan in `findSources`. The expression-scan flow
+     detector requires `source.variable` to be set.
+
+  Plus a new Rust alias expansion in `detectExpressionScanFlows` —
+  `buildRustTaintedVars(code, seedVars)` does a fixpoint over Rust
+  let-bindings and assignments, mirroring `buildPythonTaintedVars`.
+  This propagates taint through multi-level extractor chains such as
+  ```
+  let form = f.into_inner();
+  let path = form.path;
+  fs::write(path, …);
+  ```
+  so the flow still anchors to the original `web::Form<T>` parameter
+  source. Regression coverage: `tests/analysis/repro-issue-71.test.ts`
+  (8 cases — actix `match_info`/`uri.query`/`Path`/`Query`/`Form`
+  extractors, http_param type assertion, axum-style `extract::Path`,
+  and an `Extension<T>` negative case).
+
+- **Python `subprocess.*([list], shell=False)` no longer mis-flagged as
+  `command_injection`** — closes #48 part 1. The canonical safe-shape
+  invocation
+
+  ```python
+  subprocess.run(["ping", "-c", "3", "--", host],
+                 shell=False, capture_output=True, timeout=10)
+  ```
+
+  produces no shell — Python invokes `execve(argv)` directly with each
+  list element as a separate argv slot, so a tainted element cannot
+  escape into shell metacharacters. The previous matcher emitted a
+  `command_injection` sink for every `subprocess.run`/`call`/
+  `check_output`/`check_call`/`Popen` call regardless of arg[0] shape
+  or the `shell` kwarg, and the flow detector then paired it with any
+  tainted variable in scope.
+
+  Fix in `src/analysis/taint-matcher.ts`:
+  - Added `isSafePythonSubprocessCall(call, pattern, language)` that
+    returns true when `language === 'python'`, the matched pattern is
+    `command_injection` + `class: 'subprocess'`, arg[0] is a list
+    literal (`[...]`), AND no `shell=True` kwarg is present.
+  - `findSinks` skips emission when the helper matches, mirroring the
+    existing `isParameterizedQueryCall` skip pattern.
+
+  Preserved behaviour:
+  - Single-string form (`subprocess.run("ping " + host)`) still fires —
+    a tainted executable name is a real CWE-78 vector even without a
+    shell.
+  - `shell=True` with a list (`subprocess.run([list], shell=True)`)
+    still fires — Python's argv-to-shell mapping is surprising and
+    keeping the flag is the conservative choice.
+  - `os.system`, `os.popen`, and other non-`subprocess` command sinks
+    are unaffected (the skip is gated on `pattern.class === 'subprocess'`).
+
+  Regression coverage in `tests/analysis/repro-issue-48-pt1.test.ts` —
+  8 cases covering all 5 subprocess methods × {list/string, shell={absent,
+  False, True}}, plus an `os.system` guard.
+
+- **`cur.execute(...)` no longer mis-classified as `xss` (CWE-79)** —
+  closes #65 part 1 and #48 part 3. The receiver `cur` (3 chars) was
+  loosely matching the XWiki XSS sink class `CurrentTimePlugin` via the
+  CamelCase word prefix heuristic in `receiverMightBeClass`
+  (`'current'.startsWith('cur')` with ratio 3/7 ≥ 0.4), producing a
+  spurious `xss` finding on every Python DB-API parameterized query.
+  Fix in `src/analysis/taint-matcher.ts`:
+  - Added `cur` to the `ambiguousIdentifiers` denylist so the
+    prefix/suffix/includes/CamelCase heuristics short-circuit for this
+    receiver and fall through to explicit `commonMappings`.
+  - Added `cur` / `cursor` → `['Cursor']` in `commonMappings` so
+    legitimate DB cursor matches still resolve.
+  - Added a 40% coverage gate to the bare prefix/suffix heuristic
+    (mirroring the existing `includes` gate at line 922) as a
+    defensive measure against similar short-receiver mismatches.
+
+  Net effect on the existing test suite: 20 more tests pass
+  (previously-failing benchmark-debug and downstream cases that were
+  blocked by the same over-matching), 0 regressions among passing
+  tests. Regression coverage in
+  `tests/analysis/sink-config-coverage.test.ts` (`#65 Python:` block)
+  including a guard that real string-concatenation SQLi still fires.
+
+- **`shlex.quote(...)` no longer lost through `+`-concat assignment in
+  Python** — closes #65 part 2. Code shaped like
+
+  ```python
+  host = request.args.get("host", "")
+  cmd  = "ping -c 3 " + shlex.quote(host)
+  subprocess.run(cmd, shell=True, ...)
+  ```
+
+  was being reported as `command_injection` even though
+  `taint.sanitizers` correctly listed the `shlex.quote()` call as
+  covering `command_injection`. Root cause: the Python alias expansion
+  in `detectExpressionScanFlows` (TaintPropagationPass) widens the
+  seed source set with every variable produced by
+  `buildPythonTaintedVars`, but it had no notion of which aliases
+  came from a sanitized RHS. The synthetic source for `cmd` therefore
+  appeared in the per-sink expression scan and emitted a flow with
+  `sanitized: false`.
+
+  Fix in `src/analysis/passes/taint-propagation-pass.ts`:
+  - `detectExpressionScanFlows` now accepts `sanitizers` and builds a
+    per-alias `Map<varName, Set<sinkType>>` of the sink types each
+    derived alias is sanitized against. The check is gated on the
+    sanitizer's method name actually appearing on the assignment
+    line's RHS (e.g. `shlex.quote(` in
+    `cmd = "ping -c 3 " + shlex.quote(host)`).
+  - Flow emission skips entries where
+    `aliasSanitizedFor.get(source.variable)?.has(sink.type)` is
+    true, so `command_injection` flows are suppressed for aliases
+    sanitized by `shlex.quote`, while `sql_injection` flows from the
+    same alias remain — coverage is sink-type-aware.
+
+  Bare sanitizer calls without an assignment
+  (`_ = shlex.quote(host); subprocess.run(host, shell=True)`) are
+  unaffected: the underlying tainted variable is not sanitized and
+  the flow still fires. Regression coverage in
+  `tests/analysis/repro-issue-65-pt2.test.ts` — 5 cases including
+  `+`-concat, f-string interpolation, raw-concat TP guard, the
+  type-awareness guard against suppressing SQLi when only the
+  command-injection sanitizer applies, and the bare-call TP guard.
+
+- **`InterproceduralPass` now populates `code` on every emitted
+  `TaintSink`** — closes epic #21 MED item ("surface `code` on
+  TaintSource/TaintSink"). Previously, additional sinks surfaced by
+  inter-procedural analysis (both Scenario A propagated callee sinks and
+  Scenario B `external_taint_escape` sinks) reached the final merged
+  `taint.sinks` array without the trimmed source-line text in `code`.
+  Downstream consumers (LLM-enrichment pipelines such as circle-ir-ai,
+  SARIF reporters) had to re-read the source file to render the offending
+  line. The pass now calls the existing `attachSourceLineCode()` helper
+  on `additionalSinks` before returning, matching the pattern already
+  used by `LanguageSourcesPass`. Idempotent — pre-populated `code` values
+  are preserved. No change to the DFG-reachability gate or sink
+  classification.
+
+- **TypeScript decorator annotations now extracted on methods and
+  parameters** — closes cognium-dev#67. NestJS controllers
+  (`@Controller`, `@Get('search')`, `async search(@Query('q') q: string)`)
+  and Angular components were silently producing `method.annotations: []`
+  and `parameter.annotations: []`, because the JS/TS type extractor in
+  `src/core/extractors/types.ts` hardcoded both arrays to `[]`.
+
+  Effect: the `taint-matcher.ts` annotation-based source path (sources
+  declared with `{ annotation: 'Query', type: 'http_param', ... }` in
+  `config-loader.ts:436-441`) never matched on TypeScript, so framework
+  parameter sources for NestJS / Angular went undetected. `@Query` was
+  accidentally caught via the unrelated Axum `{ method: 'Query',
+  return_tainted: true }` rule at `config-loader.ts:498` (which treats
+  `Query('q')` as a tainting *function call*, not a parameter decorator),
+  while `@Param` / `@Body` had no fallback and produced zero sources.
+
+  Fix:
+  1. New `extractDecoratorName(node)` helper handles the four
+     `decorator` shapes the TS grammar emits: `@Foo` (identifier),
+     `@Foo('x')` (call_expression > identifier), `@ns.Foo` and
+     `@ns.Foo('x')` (member_expression — uses `.property`).
+  2. `extractJSMethods()` now accumulates `decorator` siblings inside
+     `class_body` and attaches them to the very next `method_definition`.
+     **Pending decorators are reset on ANY non-decorator class member**
+     (field, accessor, abstract signature, …) so that a decorated field
+     between two methods cannot transfer its decorator to the method
+     below it — e.g. `@Inject('USER_REPO') private repo: any;` followed
+     by `@Get('search') search() {}` correctly attaches only `Get` to
+     `search`, never `Inject`.
+  3. `extractJSParameters()` now scans `required_parameter` /
+     `optional_parameter` children for nested `decorator` nodes.
+
+  Regression coverage in `tests/analysis/repro-issue-67.test.ts`
+  (5 tests: direct assertion on `method.annotations` / `param.annotations`
+  for NestJS `Controller`/`Get`/`Post`/`Query`/`Param`/`Body`, ≥2 SQLi
+  flows on the controller, explicit `@Inject` field → `@Get` method
+  leakage guard, a comment-between-decorator-and-method guard
+  (tree-sitter emits `// comment` nodes as anonymous siblings inside
+  `class_body`; the reset rule skips them), and all four decorator
+  grammar shapes).
+
+- **JS taint analysis no longer silently collapses to zero findings on
+  realistic multi-handler Express files** — closes cognium-dev#77.
+  Files mixing `await`/`.then`/`fs.readFile`/`setTimeout` callback handlers
+  with `res.send` boilerplate and a trailing `module.exports = app` reported
+  `flows: []` even though every isolated handler pattern fired on its own.
+  Bisection isolated the trigger to any top-level
+  `<member_expression> = <expr>` statement (`module.exports = app`,
+  `exports.x = 1`, `obj.foo = bar`) — a single such assignment flipped 3
+  flows to 0.
+
+  Root cause: `isFalsePositive()` in
+  `src/analysis/constant-propagation/index.ts` was using
+  `result.symbols.size > 0` as a proxy for "did const-prop track any
+  variables". This is brittle for JavaScript, where the engine doesn't
+  process `lexical_declaration` inside arrow-function bodies, so
+  request-handler locals (`c`, `req.body.code`) never appear in `symbols`.
+  A top-level `module.exports = app` assignment goes through the JS
+  `assignment_expression` visitor and adds the `module.exports` key to
+  `symbols`. That single entry flipped `size > 0` from false to true,
+  activating reason 3 (`variable_not_tainted`) for every flow path
+  variable — none of which were in `tainted` either (because JS const-prop
+  hadn't tracked them), so all flows were rejected at
+  `taint-propagation-pass.ts:51`.
+
+  Fix: tighten the gate to `result.symbols.has(taintedVar)` — only
+  conclude "clean unknown" when const-prop specifically tracked this
+  variable and didn't tag it tainted. Strictly tighter than the previous
+  check: never causes a new FP, only stops over-suppressing real flows
+  where const-prop never saw the variable. Java/Python paths unaffected
+  (their tracked locals do appear in `symbols` so the gate still fires
+  on truly-clean variables). Regression coverage in
+  `tests/analysis/repro-issue-77.test.ts` (5 cases: N1 await, N4 fs
+  callback, Q4 3-route compact, `async_taint.js` 4-handler shape, N2
+  `.then` arrow skipped as separate pre-existing bug).
+
+- **Python compound-concat sinks no longer dropped when the argument
+  begins and ends with a quote** — closes cognium-dev#63.
+  `cur.execute("SELECT … '" + u + "'")` (3+-part `+` concat where the
+  outer characters are quotes) was being filtered out by
+  `filterCleanVariableSinks` because `isStringLiteralExpression()` only
+  checked the first and last characters — so any expression that *looked*
+  like it started and ended with a quote was treated as a pure string
+  literal. The check now walks the leading quoted segment honoring
+  backslash escapes and only returns `true` when the closing quote is
+  the last non-whitespace character of the expression. Two-part right-
+  operand concats (`"a" + u`) and left-operand concats (`u + "b"`) were
+  unaffected because their last character is not a quote — the bug only
+  manifested when both ends happened to be quotes (3-part and deeper).
+  Regression coverage in `tests/analysis/repro-issue-63.test.ts` (5
+  cases: V5/V6, V2-control, LEFT, N-way 4-part).
+
+- **Jinja2 `render_template_string` reclassified from `xss` (CWE-79) to
+  `code_injection` (CWE-94), severity `critical`** — closes #54.
+  Flask's `render_template_string(template_str)` with an
+  attacker-controlled template string is Server-Side Template Injection
+  (Jinja2 SSTI → RCE), not reflected XSS. The previous mapping
+  understated severity (a `low`/`medium` XSS rating versus the true RCE
+  impact) and miscategorized the CWE. The companion sinks
+  `jinja2.Template(body).render()` and `Template.from_string(...)` were
+  already classified correctly as `code_injection`/`CWE-94`; this change
+  brings the Flask helper in line.
+
+### Test coverage
+
+- New `tests/analysis/sink-config-coverage.test.ts` pins the expected
+  behaviour for issues #44 (5 tests), #45 (2), #46 (2), #54 (2),
+  #48 part 2 (5), and #65 part 1 (4) — 20 tests total.
+- New `tests/analysis/repro-issue-63.test.ts` pins LEFT/middle-operand
+  Python `+` concat taint propagation through `cur.execute(...)` for
+  cognium-dev#63 (5 tests: V5/V6/V2/LEFT/N-way).
+- New `tests/analysis/repro-issue-77.test.ts` pins JS multi-handler
+  taint-flow stability for cognium-dev#77 (5 tests: N1 await, N2 .then
+  skip, N4 fs callback, Q4 3-route compact, async_taint.js 4-handler
+  with `res.send` + `module.exports`).
+- New `tests/analysis/repro-issue-67.test.ts` pins TypeScript decorator
+  extraction for cognium-dev#67 (5 tests: explicit annotation
+  assertions on `method.annotations` / `param.annotations`, SQLi flows
+  through `@Query`/`@Param`/`@Body`, `@Inject` field → `@Get` method
+  leakage guard, comment-between-decorator-and-method guard, and all
+  four decorator grammar shapes — `@Foo`, `@Foo(...)`, `@ns.Foo`,
+  `@ns.Foo(...)`).
+- Updated `tests/analysis/benchmark-debug.test.ts` `xss_eval_safe_json`
+  assertion to filter on XSS / code-injection / SQL / command-injection
+  sink types rather than total sink count. `console.log` is now a
+  modeled `log_injection` sink (issue #44) and `JSON.parse` does not
+  sanitize CRLF for log forging, so log_injection findings are
+  expected to remain.
+
 ## [3.48.0] - 2026-06-12
 
 ### Fixed

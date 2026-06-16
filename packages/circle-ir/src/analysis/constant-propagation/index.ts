@@ -71,12 +71,22 @@ export function isFalsePositive(
     return { isFalsePositive: true, reason: `variable_is_constant: ${varValue.value}` };
   }
 
-  // Reason 3: Variable not tainted
-  // Only apply this check when constant propagation actually tracked symbols.
-  // When the symbols map is empty (e.g. JavaScript code where the constant propagation
-  // engine doesn't process variable declarations), we can't conclude anything about
-  // taint status — return false to avoid suppressing real flows.
-  if (result.symbols.size > 0 && !result.tainted.has(taintedVar)) {
+  // Reason 3: Variable not tainted.
+  //
+  // Only fire when const-prop *specifically* tracked this variable (it's in
+  // the symbols map) AND didn't mark it tainted. Using `symbols.size > 0` as
+  // a proxy for "const-prop ran" is brittle: in JavaScript, the engine
+  // doesn't process arrow-function-scoped `const c = ...` declarations, so
+  // request-handler locals never appear in symbols — but a single unrelated
+  // top-level assignment like `module.exports = app` adds `module.exports`
+  // to symbols, flips size from 0 to 1, and then incorrectly flags every
+  // flow path variable as `variable_not_tainted`. This silently zeroed JS
+  // taint analysis on any realistic multi-handler Express file
+  // (cognium-dev#77).
+  //
+  // Switching to `symbols.has(taintedVar)` is strictly tighter: we only
+  // suppress when we actually tracked the var and concluded it's clean.
+  if (result.symbols.has(taintedVar) && !result.tainted.has(taintedVar)) {
     return { isFalsePositive: true, reason: 'variable_not_tainted' };
   }
 

@@ -611,18 +611,87 @@ function extractJSClassInfo(node: Node): TypeInfo {
 }
 
 /**
+ * Extract the name of a `decorator` node (TypeScript / NestJS / Angular etc).
+ *
+ * The grammar permits three shapes:
+ *   @Foo            → decorator > identifier
+ *   @Foo('bar')     → decorator > call_expression > identifier
+ *   @ns.Foo         → decorator > member_expression (use .property)
+ *   @ns.Foo('bar')  → decorator > call_expression > member_expression
+ */
+function extractDecoratorName(node: Node): string | null {
+  // tree-sitter-typescript stores the decorator expression as namedChild(0)
+  const child = node.namedChildCount > 0 ? node.namedChild(0) : null;
+  if (!child) return null;
+  if (child.type === 'identifier') return getNodeText(child);
+  if (child.type === 'call_expression') {
+    const fn = child.childForFieldName('function');
+    if (fn) {
+      if (fn.type === 'identifier') return getNodeText(fn);
+      if (fn.type === 'member_expression') {
+        const propNode = fn.childForFieldName('property');
+        if (propNode) return getNodeText(propNode);
+      }
+    }
+  }
+  if (child.type === 'member_expression') {
+    const propNode = child.childForFieldName('property');
+    if (propNode) return getNodeText(propNode);
+  }
+  return null;
+}
+
+/**
  * Extract JavaScript methods from a class body.
+ *
+ * Method-level decorators (TS / NestJS / Angular) appear as preceding
+ * `decorator` siblings of `method_definition` inside `class_body`. We accumulate
+ * them as we walk children and attach to the very next `method_definition`.
+ *
+ * IMPORTANT: `pendingDecorators` is reset on ANY non-decorator class member
+ * (field, accessor, abstract signature, …), not just method_definition. A
+ * decorator preceding a field like
+ *
+ *   @Inject('USER_REPO') private repo: Repository<User>;
+ *   @Get('search') async search(...) { ... }
+ *
+ * belongs to the field, not the method below. Failing to reset after the
+ * field_definition would silently transfer `Inject` onto `search.annotations`,
+ * polluting the IR consumed by taint-matcher.ts (`matchesAnnotation` against
+ * `pattern.method_annotation`).
  */
 function extractJSMethods(body: Node): MethodInfo[] {
   const methods: MethodInfo[] = [];
+  let pendingDecorators: string[] = [];
 
   for (let i = 0; i < body.childCount; i++) {
     const child = body.child(i);
     if (!child) continue;
 
-    if (child.type === 'method_definition') {
-      methods.push(extractJSMethodInfo(child));
+    if (child.type === 'decorator') {
+      const name = extractDecoratorName(child);
+      if (name) pendingDecorators.push(name);
+      continue;
     }
+
+    // Tree-sitter emits comments as anonymous children of `class_body`.
+    // A `// note` line between a decorator and its method must NOT clear
+    // the pending decorator list — skip without resetting.
+    if (child.type === 'comment') continue;
+
+    if (child.type === 'method_definition') {
+      const m = extractJSMethodInfo(child);
+      if (pendingDecorators.length > 0) {
+        m.annotations = pendingDecorators;
+      }
+      methods.push(m);
+    }
+
+    // Reset pending decorators on ANY non-decorator, non-comment child
+    // (method, field, accessor, abstract_method_signature,
+    // public_field_definition, …). Decorators only ever apply to the
+    // immediately-following member.
+    pendingDecorators = [];
   }
 
   return methods;
@@ -837,10 +906,21 @@ function extractJSParameters(params: Node): ParameterInfo[] {
         paramType = getNodeText(typeNode).replace(/^:\s*/, '');
       }
 
+      // Parameter decorators (NestJS @Query/@Param/@Body, Angular @Inject, etc.)
+      // appear as `decorator` children of the required_parameter node itself.
+      const decorators: string[] = [];
+      for (let j = 0; j < child.childCount; j++) {
+        const c = child.child(j);
+        if (c && c.type === 'decorator') {
+          const name = extractDecoratorName(c);
+          if (name) decorators.push(name);
+        }
+      }
+
       parameters.push({
         name: paramName,
         type: paramType,
-        annotations: [],
+        annotations: decorators,
         line: child.startPosition.row + 1,
       });
     }

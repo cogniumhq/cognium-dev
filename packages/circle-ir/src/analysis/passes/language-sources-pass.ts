@@ -600,6 +600,59 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   return tainted;
 }
 
+/**
+ * Rust let-binding alias expansion (cognium-dev #71).
+ *
+ * Given a seed set of already-tainted variable names (typed-extractor
+ * parameters like `name: web::Path<String>`, plus method-call sources whose
+ * `let <var> = req.match_info()...` binding was reverse-engineered in
+ * `taint-matcher.ts`), iteratively propagate taint through `let X = ...`
+ * and `X = ...` lines whose RHS references any already-tainted name.
+ *
+ * The fixpoint loop is bounded by the number of distinct let-bindings, so
+ * it terminates in O(lines × tainted) worst case — fine for any realistic
+ * Rust source file.
+ */
+export function buildRustTaintedVars(
+  sourceCode: string,
+  seedVars: Set<string>,
+): Map<string, number> {
+  const derived = new Map<string, number>();
+  const knownTainted = new Set(seedVars);
+  const lines = sourceCode.split('\n');
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('//')) continue;
+      // Prefer let-binding match. Falls back to bare assignment.
+      const letMatch = line.match(
+        /^\s*let\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=]+)?=\s*(.+?)(?:;|$)/,
+      );
+      const assignMatch = !letMatch
+        ? line.match(/^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;|$)/)
+        : null;
+      const m = letMatch ?? assignMatch;
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      // Skip Rust keywords that can appear in LHS-like positions of the regex.
+      if (lhs === 'if' || lhs === 'while' || lhs === 'for' || lhs === 'match' || lhs === 'return') continue;
+      if (knownTainted.has(lhs)) continue;
+      const ref = [...knownTainted].some(v => new RegExp(`\\b${v}\\b`).test(rhs));
+      if (ref) {
+        derived.set(lhs, i + 1);
+        knownTainted.add(lhs);
+        changed = true;
+      }
+    }
+  }
+  return derived;
+}
+
 // ---------------------------------------------------------------------------
 // Bash/Shell taint sources
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ export function analyzeTaint(
   code?: string,
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
-  const sources = findSources(calls, types, config.sources, sourceLines);
+  const sources = findSources(calls, types, config.sources, sourceLines, language);
   const sinks = findSinks(calls, config.sinks, typeHierarchy, language, sourceLines);
   const sanitizers = findSanitizers(calls, types, config.sanitizers);
 
@@ -84,6 +84,7 @@ function findSources(
   types: TypeInfo[],
   patterns: SourcePattern[],
   sourceLines?: string[],
+  language?: SupportedLanguage,
 ): TaintSource[] {
   const sources: TaintSource[] = [];
 
@@ -148,24 +149,40 @@ function findSources(
   }
 
   // Rust web framework extractors: Axum/Actix/Rocket parameter types that carry HTTP input.
-  // e.g. Json<T>, Form<T>, Query<T>, Path<T>, Body, Bytes, Multipart
-  const RUST_EXTRACTOR_TYPES = /^(?:Json|Form|Query|Path|Extension|Multipart)(?:<|$)|^(?:Body|Bytes)$/;
+  // The parameter type after Tree-sitter extraction may be the bare name
+  // (`Path<String>`) or the qualified name (`web::Path<String>` for actix,
+  // `axum::extract::Path<T>` for axum). cognium-dev #71.
+  //
+  // Source-type assignment is sink-coverage aware (see findings.ts
+  // canSourceReachSink): `http_body` does not cover `path_traversal`/`ssrf`,
+  // so `Form`/`Query`/`Path` extractors are modelled as `http_param` (which
+  // covers the full sink set the issue lists). `Json`/`Multipart`/`Body`/
+  // `Bytes` remain `http_body` — they're typically deserialized payloads.
+  const RUST_EXTRACTOR_KIND = /(?:^|::)(Json|Form|Query|Path|Extension|Multipart|Body|Bytes)(?:<|$)/;
   for (const type of types) {
     for (const method of type.methods) {
       for (const param of method.parameters) {
-        if (param.type && RUST_EXTRACTOR_TYPES.test(param.type)) {
-          const paramLine = param.line ?? method.start_line;
-          const alreadyExists = sources.some(s => s.line === paramLine && s.type === 'http_body');
-          if (!alreadyExists) {
-            sources.push({
-              type: 'http_body',
-              location: `${param.type} ${param.name} in ${method.name}`,
-              severity: 'high',
-              line: paramLine,
-              confidence: 1.0,
-            });
-          }
-        }
+        if (!param.type) continue;
+        const kindMatch = RUST_EXTRACTOR_KIND.exec(param.type);
+        if (!kindMatch) continue;
+        const kind = kindMatch[1];
+        // `Extension<T>` carries shared app state, not HTTP input — skip.
+        if (kind === 'Extension') continue;
+        const sourceType: 'http_param' | 'http_body' =
+          (kind === 'Form' || kind === 'Query' || kind === 'Path') ? 'http_param' : 'http_body';
+        const paramLine = param.line ?? method.start_line;
+        const alreadyExists = sources.some(
+          s => s.line === paramLine && s.variable === param.name,
+        );
+        if (alreadyExists) continue;
+        sources.push({
+          type: sourceType,
+          location: `${param.type} ${param.name} in ${method.name}`,
+          severity: 'high',
+          line: paramLine,
+          confidence: 1.0,
+          variable: param.name,
+        });
       }
     }
   }
@@ -273,6 +290,23 @@ function findSources(
       s.code = sourceLines[s.line - 1]?.trim();
     }
   }
+
+  // Rust: method-call sources (e.g. `req.match_info()`, `req.uri()`) land on
+  // the source-line without a `variable` field — `detectExpressionScanFlows`
+  // (taint-propagation-pass.ts) needs the variable name to scan downstream
+  // sink-line arguments. Recover it from the surrounding `let <var> = ...`
+  // binding, which is the idiomatic shape in actix/axum/rocket handlers.
+  // cognium-dev #71.
+  if (language === 'rust' && sourceLines) {
+    const LET_BINDING = /^\s*let\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=]+)?=/;
+    for (const s of result) {
+      if (s.variable && s.variable.length > 0) continue;
+      const lineText = sourceLines[s.line - 1] ?? '';
+      const m = LET_BINDING.exec(lineText);
+      if (m) s.variable = m[1];
+    }
+  }
+
   return result;
 }
 
@@ -391,6 +425,46 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
 }
 
 /**
+ * Check if a Python subprocess.* call is safe-by-shape: arg[0] is a list
+ * literal AND `shell=True` is NOT present. In that shape Python invokes
+ * `execve(argv)` directly with no shell interpolation, so a tainted element
+ * inside the list cannot escape into shell metacharacters.
+ *
+ * Cases:
+ *   subprocess.run(["ping", "-c", host])                  → safe  (list, default shell=False)
+ *   subprocess.run(["ping", "-c", host], shell=False)     → safe  (list, explicit shell=False)
+ *   subprocess.run(["ping", "-c", host], shell=True)      → unsafe (shell=True with list — Python
+ *                                                                  passes argv[0] as the shell command,
+ *                                                                  so behaviour is surprising but per
+ *                                                                  CWE-78 keep flagging)
+ *   subprocess.run("ping " + host)                        → unsafe (single-string form: a tainted
+ *                                                                  command name is a real attack vector)
+ *   subprocess.run("ping " + host, shell=True)            → unsafe (classic shell injection)
+ *
+ * Only applies to the `subprocess` class — `os.system`, `os.exec*` etc. have
+ * their own semantics and are handled by their own sink entries.
+ */
+function isSafePythonSubprocessCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+  if (language !== 'python') return false;
+  if (pattern.type !== 'command_injection') return false;
+  if (pattern.class !== 'subprocess') return false;
+
+  // arg[0] must be a list literal (Python `[...]`).
+  const arg0 = call.arguments.find(a => a.position === 0);
+  if (!arg0) return false;
+  const expr0 = (arg0.literal ?? arg0.expression ?? '').trim();
+  if (!expr0.startsWith('[')) return false;
+
+  // shell=True (any kwarg form) disqualifies the safe-shape skip.
+  for (const a of call.arguments) {
+    const e = (a.expression ?? '').trim();
+    if (/^shell\s*=\s*True\b/.test(e)) return false;
+  }
+
+  return true;
+}
+
+/**
  * Match a Java class-literal expression: `Foo.class`, `com.example.Foo.class`,
  * `User<T>.class` (loose), `Foo[].class`. Does NOT match `Class.forName(...)`,
  * `getClass()`, locals, or any non-literal expression — those remain dangerous
@@ -431,6 +505,14 @@ function findSinks(
       if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
+          continue;
+        }
+
+        // Skip Python subprocess.* calls in safe shape: list arg[0] without
+        // shell=True. Python invokes execve() directly with no shell
+        // interpolation, so tainted list elements can never escape into
+        // shell metacharacters. cognium-dev #48 pt1.
+        if (isSafePythonSubprocessCall(call, pattern, language)) {
           continue;
         }
 
@@ -910,6 +992,11 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   const ambiguousIdentifiers = new Set([
     'executor', 'pool', 'connection', 'manager',
     'handler', 'controller', 'task', 'thread', 'job',
+    // Short Python DB abbreviation; would otherwise prefix-match obscure XSS
+    // sink classes like XWiki's `CurrentTimePlugin` ('current'.startsWith('cur'))
+    // via the CamelCase word prefix heuristic and produce an xss FP on every
+    // `cur.execute(...)`. Resolved via commonMappings → ['Cursor']. See #65 / #48 pt3.
+    'cur',
   ]);
   const isAmbiguous = ambiguousIdentifiers.has(lowerReceiver);
 
@@ -925,12 +1012,19 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     }
   }
 
-  // Short-prefix/suffix heuristic: "ev" might be ExpressionEvaluator (prefix),
+  // Short-prefix/suffix heuristic: "stmt" might be StatementImpl (prefix),
   // "sink" might be CustomSink (suffix).
-  // Only match if the class name starts or ends with the receiver (2+ chars).
+  // Require the receiver to cover ≥40% of the class name (mirroring the
+  // `includes` heuristic at line 922) so short receivers like `cur` do not
+  // loosely match unrelated long class names (e.g. `cur` vs
+  // `CurrentTimePlugin` — the XWiki XSS sink that caused #65 / #48 pt3).
+  // Receivers with explicit commonMappings entries (`ev`, `sb`, `pb`, etc.)
+  // are still resolved by the commonMappings check below.
   if (!isAmbiguous && lowerReceiver.length >= 2) {
     if (lowerClass.startsWith(lowerReceiver) || lowerClass.endsWith(lowerReceiver)) {
-      return true;
+      if (lowerReceiver.length / lowerClass.length >= 0.4) {
+        return true;
+      }
     }
   }
 
@@ -962,6 +1056,8 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     ps: ['PreparedStatement'],
     rs: ['ResultSet'],
     template: ['JdbcTemplate'],
+    cur: ['Cursor'],         // Python DB-API cursor — see ambiguousIdentifiers note
+    cursor: ['Cursor'],
 
     // I/O
     writer: ['PrintWriter'],

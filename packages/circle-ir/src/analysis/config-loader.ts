@@ -1348,6 +1348,27 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Sandbox/script security
   { method: 'onNewInstance', class: 'SandboxInterceptor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
+  // Java Log Injection (slf4j / logback / java.util.logging) — CWE-117
+  // Issue #44: log.info/warn/error/debug emit the message argument and any
+  // {} format arguments to the log stream. Untrusted input forwarded into
+  // these calls allows log forging (newline injection) and downstream log
+  // analyzer pollution. Scoped to `java` so the generic method names don't
+  // collide with JS console / Python logger entries below.
+  { method: 'info',     class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'warn',     class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'error',    class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'debug',    class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'trace',    class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  // java.util.logging.Logger uses the same class name `Logger` — same entries above cover it.
+  // Severity-tagged levels: SEVERE/WARNING/INFO/CONFIG/FINE/FINER/FINEST
+  { method: 'severe',   class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'warning',  class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'config',   class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'fine',     class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'finer',    class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'finest',   class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['java'] },
+  { method: 'log',      class: 'Logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1, 2, 3], languages: ['java'] },
+
   // =========================================================================
   // Node.js/Express Sinks
   // =========================================================================
@@ -1407,13 +1428,47 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'runInNewContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInThisContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
 
-  // Node.js NoSQL Injection (MongoDB)
+  // Node.js NoSQL Injection (MongoDB native driver + mongoose) — CWE-943
+  // Issue #45: the bare `class: 'Collection'` constraint missed mongoose's
+  // fluent chains (mongoose.connection.db.collection('x').find({...})) and
+  // Model.find calls because the call-site receiver type does not resolve
+  // to `Collection`. Add classless+language-scoped entries for the
+  // MongoDB-specific method names (findOne/aggregate/updateOne/etc.) and
+  // mongoose `Model`/`Query` class entries. Bare `find` stays class-scoped
+  // to avoid colliding with Array.prototype.find.
   { method: 'find', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'findOne', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'updateOne', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'updateMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteOne', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
+  // Mongoose Model/Query class entries — Model.find/findOne/etc.
+  { method: 'find',                class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findOne',             class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findById',            class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndUpdate',    class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndDelete',    class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndReplace',   class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'updateOne',           class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'updateMany',          class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'deleteOne',           class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'deleteMany',          class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'countDocuments',      class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'aggregate',           class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Mongoose Query class entries — chain methods returning Query
+  { method: 'where',               class: 'Query', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'equals',              class: 'Query', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Classless MongoDB-specific method names (rare outside MongoDB APIs) —
+  // language-scoped to JS/TS. Excludes plain `find` (Array.prototype.find FP).
+  { method: 'findOne',           type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndUpdate',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndDelete',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findOneAndReplace', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'updateOne',         type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'updateMany',        type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['javascript', 'typescript'] },
+  { method: 'deleteOne',         type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'deleteMany',        type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'aggregate',         type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Node.js SSRF (HTTP clients)
   { method: 'get', class: 'axios', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
@@ -1436,6 +1491,26 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'post', class: 'superagent', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   // node-fetch
   { method: 'default', class: 'node-fetch', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+
+  // Node.js / JavaScript Log Injection (console.*) — CWE-117
+  // Issue #44: console.log/warn/error/info with tainted template literals
+  // allow log forging (newline-injection) and downstream log analyzer
+  // pollution. Scoped to JS/TS so the bare class `console` doesn't collide
+  // with Python `console` module or Java identifiers.
+  { method: 'log',   class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'warn',  class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'error', class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'info',  class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'debug', class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'trace', class: 'console', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+
+  // Node.js / Express Open Redirect — CWE-601
+  // Issue #46: `res.redirect(req.query.next)` did not fire because the
+  // legacy `class: 'Response'` constraint depended on receiver type
+  // resolution of the Express `res` parameter. Mirror Python's classless
+  // pattern with a language-scoped classless entry. The method name
+  // `redirect` is rare outside HTTP frameworks so the FP risk is low.
+  { method: 'redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // =========================================================================
   // Python Sinks
@@ -1484,7 +1559,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'send_file', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python XSS / SSTI
-  { method: 'render_template_string', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // Issue #54: Flask's `render_template_string(template_str)` with an
+  // attacker-controlled template string is Server-Side Template Injection
+  // (Jinja2 SSTI → RCE), not reflected XSS. Classify as code_injection
+  // (CWE-94) with critical severity to match `jinja2.Template().render()`
+  // and `Template.from_string()` entries above.
+  { method: 'render_template_string', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['python'] },
   { method: 'Markup', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: 'mark_safe', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['python'] },
 
@@ -1898,6 +1978,13 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'secure_filename', class: 'werkzeug.utils', removes: ['path_traversal'] },
   { method: 'basename', class: 'os.path', removes: ['path_traversal'] },
   { method: 'normpath', class: 'os.path', removes: ['path_traversal'] },
+  // Issue #48 part 2: realpath/abspath are canonical Python path-canonicalization
+  // functions (analogous to Java File.getCanonicalPath). Register on both
+  // `os.path` and the bare `path` receiver to cover `import os.path as path`.
+  { method: 'realpath', class: 'os.path', removes: ['path_traversal'] },
+  { method: 'abspath', class: 'os.path', removes: ['path_traversal'] },
+  { method: 'realpath', class: 'path', removes: ['path_traversal'] },
+  { method: 'abspath', class: 'path', removes: ['path_traversal'] },
 
   // Python Type coercion
   { method: 'int', removes: ['sql_injection', 'command_injection', 'xss'] },

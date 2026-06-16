@@ -18,6 +18,7 @@ import {
 import { getDefaultConfig } from '../../src/analysis/config-loader.js';
 import { LanguageSourcesPass } from '../../src/analysis/passes/language-sources-pass.js';
 import { CodeGraph } from '../../src/graph/code-graph.js';
+import { analyze, initAnalyzer } from '../../src/analyzer.js';
 import type {
   CircleIR,
   TaintSource,
@@ -29,6 +30,7 @@ import type { TaintConfig } from '../../src/types/config.js';
 describe('TaintSource/TaintSink — code field', () => {
   beforeAll(async () => {
     await initParser();
+    await initAnalyzer();
   });
 
   it('analyzeTaint() populates code on each emitted source when code is provided', async () => {
@@ -169,6 +171,36 @@ public class Controller {
     attachSourceLineCode(sources, [], code);
     // Out-of-range → undefined?.trim() → undefined.
     expect(sources[0].code).toBeUndefined();
+  });
+
+  it('InterproceduralPass populates code on every sink in the final taint output', async () => {
+    // Multi-method Java that exercises inter-procedural propagation:
+    // taint from `request.getParameter("q")` flows through `execute(input)` into
+    // `stmt.executeQuery(query)` in a callee method. Verifies that every sink
+    // in the final merged taint.sinks array (including any surfaced by
+    // InterproceduralPass) has its `code` field populated.
+    const code = `
+public class Service {
+    public void entry(HttpServletRequest request) {
+        String input = request.getParameter("q");
+        execute(input);
+    }
+    public void execute(String query) {
+        Statement stmt = conn.createStatement();
+        stmt.executeQuery(query);
+    }
+}
+`;
+    const result = await analyze(code, 'Service.java', 'java');
+    expect(result.taint.sinks.length).toBeGreaterThan(0);
+    for (const sink of result.taint.sinks) {
+      expect(
+        sink.code,
+        `sink at line ${sink.line} (${sink.type}) is missing code`,
+      ).toBeDefined();
+      expect(typeof sink.code).toBe('string');
+      expect(sink.code!.startsWith(' ')).toBe(false);
+    }
   });
 
   it('LanguageSourcesPass emits sources with code populated', () => {

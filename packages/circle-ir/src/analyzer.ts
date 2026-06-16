@@ -133,6 +133,7 @@ import { NamingConventionPass, type NamingConventionOptions } from './analysis/p
 import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
 import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
 import { Spring4ShellPass } from './analysis/passes/spring4shell-pass.js';
+import { InsecureCookiePass } from './analysis/passes/insecure-cookie-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -473,6 +474,7 @@ export async function analyze(
   if (!disabledPasses.has('naming-convention'))     pipeline.add(new NamingConventionPass(passOpts.namingConvention));
   if (!disabledPasses.has('security-headers'))      pipeline.add(new SecurityHeadersPass(passOpts.securityHeaders));
   if (!disabledPasses.has('spring4shell'))          pipeline.add(new Spring4ShellPass());
+  if (!disabledPasses.has('insecure-cookie'))       pipeline.add(new InsecureCookiePass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

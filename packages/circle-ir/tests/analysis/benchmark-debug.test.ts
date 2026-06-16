@@ -62,8 +62,14 @@ console.log(parsed);
     console.log('SANITIZERS:', JSON.stringify(result.taint.sanitizers, null, 2));
     // JSON.parse should appear as sanitizer
     expect(result.taint.sanitizers.some(s => s.method.includes('parse'))).toBe(true);
-    // No dangerous sinks should remain (console.log is not a sink, JSON.parse is not a sink)
-    expect(result.taint.sinks.length).toBe(0);
+    // No XSS / code-injection sinks should remain (JSON.parse sanitizes those).
+    // console.log is now modeled as a low-severity log_injection sink (issue #44);
+    // that is unrelated to XSS and JSON.parse does not sanitize CRLF for log forging,
+    // so it is expected to remain in the sinks list.
+    const dangerous = result.taint.sinks.filter(s =>
+      s.type === 'xss' || s.type === 'code_injection' || s.type === 'sql_injection' || s.type === 'command_injection'
+    );
+    expect(dangerous.length).toBe(0);
   });
 
   it('xss_location_safe_validated: validated URL redirect is safe', async () => {

@@ -314,8 +314,21 @@ function evaluateSimpleExpression(expr: string, symbols: Symbols): string {
 
 function isStringLiteralExpression(expr: string): boolean {
   const trimmed = expr.trim();
-  return (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-         (trimmed.startsWith("'") && trimmed.endsWith("'"));
+  if (trimmed.length < 2) return false;
+  const quote = trimmed[0];
+  if (quote !== '"' && quote !== "'") return false;
+  // Walk to find where the leading quoted string ends, honoring backslash escapes.
+  // If the closing quote is the last character, this is a pure string literal.
+  // Otherwise it's a compound expression like `"a" + u + "b"` that just happens to
+  // begin and end with a quote — those must NOT be treated as literal (cognium-dev#63).
+  let i = 1;
+  while (i < trimmed.length) {
+    const c = trimmed[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === quote) return i === trimmed.length - 1;
+    i++;
+  }
+  return false; // unterminated string literal — be conservative
 }
 
 function filterCleanArraySinks(

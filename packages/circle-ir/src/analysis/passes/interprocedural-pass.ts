@@ -19,6 +19,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
 import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js';
+import { attachSourceLineCode } from '../taint-matcher.js';
 
 export interface InterproceduralPassResult {
   /** Additional sinks surfaced by inter-procedural analysis. */
@@ -189,6 +190,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
           });
         }
       }
+    }
+
+    // Attach trimmed source-line text to each emitted sink so consumers
+    // (LLM enrichment, SARIF reporters) can render the offending line without
+    // re-reading the file. Idempotent — only fills `code` when missing.
+    if (additionalSinks.length > 0) {
+      attachSourceLineCode([], additionalSinks, ctx.code);
     }
 
     return { additionalSinks, additionalFlows, interprocedural };
