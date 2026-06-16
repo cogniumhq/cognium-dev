@@ -337,6 +337,24 @@ export class GoPlugin extends BaseLanguagePlugin {
         severity: 'high',
         argPositions: [0],
       },
+      // text/template XSS — Execute(w, data) and ExecuteTemplate(w, name, data)
+      // do not HTML-escape (unlike html/template). cognium-dev#88.
+      {
+        method: 'Execute',
+        class: 'Template',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [1],
+      },
+      {
+        method: 'ExecuteTemplate',
+        class: 'Template',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [2],
+      },
 
       // SSRF
       {

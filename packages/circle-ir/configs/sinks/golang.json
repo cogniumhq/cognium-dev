@@ -91,6 +91,24 @@
       "arg_positions": [0]
     },
     {
+      "method": "Execute",
+      "class": "Template",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [1],
+      "note": "text/template renders user data without HTML escaping. html/template auto-escapes (handled by html-escape sanitizer)."
+    },
+    {
+      "method": "ExecuteTemplate",
+      "class": "Template",
+      "type": "xss",
+      "cwe": "CWE-79",
+      "severity": "high",
+      "arg_positions": [2],
+      "note": "text/template.ExecuteTemplate renders named template with user data — no auto-escape."
+    },
+    {
       "method": "Get",
       "class": "http",
       "type": "ssrf",

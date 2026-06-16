@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.51.0] - 2026-06-16
+
+### Added
+
+- **Recognize `.jsx` and `.cjs` as JavaScript** in the CLI `LANG_MAP`
+  (`src/cli.ts`). Previously `cognium-dev scan` silently skipped React
+  `.jsx` components and CommonJS `.cjs` modules because no entry mapped
+  the extension to a circle-ir language. Both now route to the
+  `javascript` plugin. Closes part of cognium-dev#88 (sub-issue #88.1).
+  Regression coverage in `tests/glob.test.ts`.
+
+### Fixed
+
+- **circle-ir upgraded 3.50.0 → 3.51.0** — Go `text/template` XSS
+  sinks (`Template.Execute` / `Template.ExecuteTemplate`) are now
+  reported as `xss` findings (CWE-79). HTTP-derived data passed to
+  `text/template` reaches the browser un-escaped; `html/template` is
+  unaffected (auto-escaping). See circle-ir 3.51.0 CHANGELOG for
+  details.
+
+[3.51.0]: https://github.com/cogniumhq/cognium-dev/compare/cognium-dev-v3.50.0...cognium-dev-v3.51.0
+
 ## [3.50.0] - 2026-06-16
 
 ### Fixed

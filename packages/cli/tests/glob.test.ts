@@ -121,6 +121,9 @@ describe('detectLanguage', () => {
   test('detects JavaScript', () => {
     expect(detectLanguage('app.js')).toBe('javascript');
     expect(detectLanguage('module.mjs')).toBe('javascript');
+    // cognium-dev#88: .jsx and .cjs were missing from LANG_MAP
+    expect(detectLanguage('Component.jsx')).toBe('javascript');
+    expect(detectLanguage('legacy.cjs')).toBe('javascript');
   });
 
   test('detects TypeScript', () => {

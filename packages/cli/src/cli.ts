@@ -208,7 +208,9 @@ export function isTestFile(filePath: string): boolean {
 const LANG_MAP: Record<string, string> = {
   '.java': 'java',
   '.js': 'javascript',
+  '.jsx': 'javascript',
   '.mjs': 'javascript',
+  '.cjs': 'javascript',
   '.ts': 'typescript',
   '.tsx': 'typescript',
   '.py': 'python',

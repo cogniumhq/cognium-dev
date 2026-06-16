@@ -964,6 +964,23 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
         return true;
       }
     }
+
+    // Chained-call-with-args return-type heuristics for Go text/template
+    // factories (cognium-dev#88). The standard idiom is e.g.
+    //   `template.Must(template.New("p").Parse(src)).Execute(w, data)`
+    // where the receiver is the chained `template.Must(...)` returning
+    // *Template. The factory names are sufficiently specific that we only
+    // recognise them in the `template.X(...)` form (receiver-prefix gated)
+    // to avoid colliding with unrelated Parse/Clone/New methods.
+    const goTemplateFactoryMatch = receiver.match(/\.(Must|New|Parse|ParseFiles|ParseGlob|ParseFS|Clone|Funcs|Option|Lookup|Delims)\(.+\)$/);
+    if (goTemplateFactoryMatch && className === 'Template') {
+      // Receiver must start with `template.` or `tmpl.` or an aliased template
+      // package — keep this conservative by requiring the chain to contain
+      // a literal `template.` segment.
+      if (/(?:^|\b)template\./.test(receiver) || /(?:^|\b)tmpl\./.test(receiver)) {
+        return true;
+      }
+    }
   }
 
   // Handle Rust scoped calls like "Response::builder()" — extract type before ::
@@ -1055,7 +1072,11 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     em: ['EntityManager'],
     ps: ['PreparedStatement'],
     rs: ['ResultSet'],
-    template: ['JdbcTemplate'],
+    // `template` resolves to either Spring's JdbcTemplate (Java) or Go's
+    // text/template `Template` — both are common idioms and the sink patterns
+    // they participate in are language-scoped, so the joint mapping is safe.
+    template: ['JdbcTemplate', 'Template'],
+    tmpl: ['Template'],   // Go text/template idiom (cognium-dev#88)
     cur: ['Cursor'],         // Python DB-API cursor — see ambiguousIdentifiers note
     cursor: ['Cursor'],
 

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.51.0] - 2026-06-16
+
+### Added
+
+- **Go `text/template` XSS sinks** — `Template.Execute(w, data)` and
+  `Template.ExecuteTemplate(w, name, data)` are now recognized as
+  `xss` sinks (CWE-79, severity `high`). Unlike `html/template`,
+  `text/template` does not HTML-escape interpolated values, so any
+  HTTP-derived `data` argument reaches the browser as raw HTML.
+  Closes part of #88 (sub-issue #88.3). New patterns in
+  `configs/sinks/golang.json` and `src/languages/plugins/go.ts`;
+  regression cases in `tests/analysis/repro-issue-88.test.ts`.
+
+### Fixed
+
+- **Receiver-name → class resolution for Go templates**
+  (`src/analysis/taint-matcher.ts`). The variable name `tmpl` is the
+  canonical Go idiom for `*text/template.Template` but is not a
+  substring of `template`, so the existing substring heuristic could
+  not match `tmpl.Execute(...)` against the new `class: Template`
+  sink pattern. Added `tmpl: ['Template']` to `commonMappings` and
+  extended `template` to `['JdbcTemplate', 'Template']` (the joint
+  mapping is safe because the sink patterns are language-scoped).
+  Also added a chained-call factory regex
+  (`.Must(...).New(...).Parse(...).Funcs(...)…`) so that the inline
+  shape `template.Must(template.New("p").Parse(...)).Execute(w, x)`
+  resolves its receiver type to `Template`.
+
 ## [3.50.0] - 2026-06-16
 
 ### Fixed
