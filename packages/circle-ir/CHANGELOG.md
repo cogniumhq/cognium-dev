@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.53.0] - 2026-06-16
+
+### Added
+
+- **Issue #52 — Java sink/source patterns previously missed by the matcher.**
+  Three high-impact Java patterns now fire:
+  - **Text4Shell (CVE-2022-42889, CWE-94)** — Apache Commons Text
+    `StringSubstitutor.replace(taint)` is now reported as a `code_injection`
+    sink. Both the explicit-ctor form (`new StringSubstitutor()` + `ss.replace(x)`)
+    and the chained-variable form (`StringSubstitutor.createInterpolator()` →
+    `interp.replace(x)`) flow correctly.
+  - **FreeMarker SSTI (CWE-94)** — `new Template(name, new StringReader(taint), cfg)`
+    is reported as a `code_injection` sink; `tpl.process(...)` continues to fire.
+  - **Zip-Slip (CWE-22)** — `ZipEntry.getName()` (and
+    `ZipArchiveEntry` / `TarArchiveEntry` / `ArchiveEntry`) is now modeled as a
+    **taint source** (was previously a sink, which produced 3 findings per vuln).
+    The correct source → `new File()` / `new FileOutputStream()` flow yields
+    exactly one `path_traversal` finding.
+
+- **Issue #87 (partial) — weak-crypto configuration patterns.** Extended the
+  `weak-crypto` pass with three constant-pattern detectors for Java:
+  - **CWE-329 static / zero IV** — `new IvParameterSpec(new byte[N])`,
+    `new IvParameterSpec("literal".getBytes())`, and literal `byte[]{…}`.
+  - **CWE-321 hardcoded symmetric key** — `new SecretKeySpec("literal".getBytes(), "AES")`
+    and literal byte-array key material.
+  - **CWE-326 weak RSA key size** — `KeyPairGenerator.initialize(<2048)`
+    (uses the IR-resolved `receiver_type === "KeyPairGenerator"` enabled by the
+    matcher fix below).
+  - ECB and weak-cipher detection unchanged. The `weak-crypto` rule now emits
+    findings with per-issue CWE (327 / 329 / 321 / 326).
+
+### Fixed
+
+- **Taint matcher ignored IR-resolved receiver types.** Both
+  `matchesSinkPattern` and `matchesSourcePattern` in `taint-matcher.ts` only
+  checked the receiver-name string heuristic — they ignored
+  `call.receiver_type` populated by the Java/TypeScript language plugins. This
+  caused sinks like `ss.replace(x)` (after `StringSubstitutor ss = new ...`)
+  and sources like `entry.getName()` (after `ZipEntry entry = …`) to silently
+  miss. Both matchers now check IR-resolved `receiver_type` /
+  `receiver_type_fqn` before falling back to the name heuristic. This unblocks
+  #52 and improves precision across all class-qualified sink/source patterns.
+
+### Tests
+
+- **+16 regression tests** (6 for #52, 10 for #87). Full suite: **2259 passing**
+  (was 2243).
+
 ## [3.52.0] - 2026-06-16
 
 ### Added

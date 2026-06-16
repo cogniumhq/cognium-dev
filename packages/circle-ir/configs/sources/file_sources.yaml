@@ -145,6 +145,38 @@
       "note": "File content as InputStream"
     },
     {
+      "method": "getName",
+      "class": "ZipEntry",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Zip entry name - may contain ../ (Zip-Slip CWE-22, issue #52)"
+    },
+    {
+      "method": "getName",
+      "class": "ZipArchiveEntry",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Commons Compress zip entry name - may contain ../ (Zip-Slip)"
+    },
+    {
+      "method": "getName",
+      "class": "TarArchiveEntry",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Apache Commons Compress tar entry name - may contain ../ (Tar-Slip)"
+    },
+    {
+      "method": "getName",
+      "class": "ArchiveEntry",
+      "type": "file_input",
+      "severity": "high",
+      "return_tainted": true,
+      "note": "Generic archive entry name - may contain ../ (Zip/Tar-Slip)"
+    },
+    {
       "method": "getProperty",
       "class": "Properties",
       "type": "config_file",

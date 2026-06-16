@@ -669,22 +669,6 @@
       "note": "Unzip operation - zip slip"
     },
     {
-      "method": "getPath",
-      "class": "ZipEntry",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "note": "Zip entry path - may contain ../"
-    },
-    {
-      "method": "getName",
-      "class": "ZipEntry",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "note": "Zip entry name - may contain ../"
-    },
-    {
       "method": "getEnvironment",
       "class": "ConfigServicePropertySourceLocator",
       "type": "path_traversal",

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.53.0] - 2026-06-16
+
+### Changed
+
+- **circle-ir upgraded 3.52.0 → 3.53.0** — Sprint 4 Java precision/coverage:
+  - **Issue #52** — three previously-missed Java patterns now fire:
+    Text4Shell (`StringSubstitutor.replace`, CWE-94), FreeMarker SSTI
+    (`new Template(...)`, CWE-94), and Zip-Slip (`ZipEntry.getName()` →
+    `new File(...)`, CWE-22). The Zip-Slip rule is also re-modeled
+    (source instead of sink), eliminating duplicate findings.
+  - **Issue #87 (partial)** — `weak-crypto` extended to flag static/zero
+    IVs (CWE-329), hardcoded symmetric keys (CWE-321), and weak RSA key
+    sizes < 2048 (CWE-326). Per-issue CWE in the SARIF / JSON output.
+  - **Matcher fix** — sink and source matchers now use IR-resolved
+    `receiver_type` before the receiver-name heuristic, improving Java/TS
+    precision across all class-qualified patterns.
+
+  All findings surface through `scan` and the text / JSON / SARIF
+  formatters without CLI changes. Closes cognium-dev#52; partial #87.
+
 ## [3.52.0] - 2026-06-16
 
 ### Changed

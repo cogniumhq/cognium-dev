@@ -220,6 +220,14 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getFileName', class: 'MimeBodyPart', type: 'file_input', severity: 'high', return_tainted: true },
   { method: 'getDisposition', class: 'Part', type: 'file_input', severity: 'medium', return_tainted: true },
 
+  // Archive entry names (Zip-Slip / Tar-Slip CWE-22, issue #52)
+  // entry.getName() returns a path that may contain ../ — flowing into File()/FileOutputStream()
+  // is a classic Zip-Slip vulnerability.
+  { method: 'getName', class: 'ZipEntry', type: 'file_input', severity: 'high', return_tainted: true },
+  { method: 'getName', class: 'ZipArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
+  { method: 'getName', class: 'TarArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
+  { method: 'getName', class: 'ArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
+
   // Command line arguments
   { method: 'getArgs', type: 'io_input', severity: 'high', return_tainted: true },
   { method: 'getOptionValue', class: 'CommandLine', type: 'io_input', severity: 'high', return_tainted: true },
@@ -704,7 +712,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'staticFileLocation', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   // Zip/archive handling
   { method: 'getEntry', class: 'ZipFile', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'getName', class: 'ZipEntry', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [] },
+  // ZipEntry.getName moved to file_sources.yaml as a taint SOURCE (type=archive_entry, issue #52)
   // Resource loading classes (various frameworks)
   { method: 'ClassPathResource', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileSystemResource', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },

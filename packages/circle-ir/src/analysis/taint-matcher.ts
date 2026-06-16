@@ -569,17 +569,21 @@ function matchesSourcePattern(call: CallInfo, pattern: SourcePattern): boolean {
 
     // If class is specified, check receiver
     if (pattern.class && pattern.class !== 'constructor') {
-      // A bare function call with no receiver can never match a class-qualified method.
-      // Without this guard, ANY call named `get()` matches ALL Map/HashMap/Properties
-      // patterns, producing false positives for unrelated local functions (e.g. a
-      // metric helper `const get = (name) => acc.find(...)`).
-      if (!call.receiver) {
+      // Prefer IR-resolved receiver type when available (Java/TS plugins).
+      if (call.receiver_type && call.receiver_type === pattern.class) {
+        // resolved type matches — accept
+      } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
+        // FQN tail matches
+      } else if (!call.receiver) {
+        // A bare function call with no receiver can never match a class-qualified method.
+        // Without this guard, ANY call named `get()` matches ALL Map/HashMap/Properties
+        // patterns, producing false positives for unrelated local functions (e.g. a
+        // metric helper `const get = (name) => acc.find(...)`).
         return false;
-      }
-      // The receiver might be a variable name, not the class name
-      // For now, we do a simple match - in a full implementation,
-      // we'd need type inference
-      if (!receiverMightBeClass(call.receiver, pattern.class)) {
+      } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
+        // The receiver might be a variable name, not the class name
+        // For now, we do a simple match - in a full implementation,
+        // we'd need type inference
         return false;
       }
     }
@@ -837,17 +841,21 @@ function matchesSinkPattern(
       return true;
     }
 
-    // Check receiver - if pattern has class, receiver should match
-    if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
+    // Prefer the IR-resolved receiver type when the language plugin populates it
+    // (Java/TS resolve simple types). Falls back to the receiver-name heuristic
+    // when the type is unresolved.
+    if (call.receiver_type && call.receiver_type === pattern.class) {
+      // Resolved type matches — accept directly.
+    } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
+      // FQN tail matches simple class name.
+    } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {
         return true;
       }
       return false;
-    }
-
-    // If no receiver but class is required, don't match
-    if (!call.receiver) {
+    } else if (!call.receiver && !call.receiver_type) {
+      // If no receiver and no resolved type but class is required, don't match
       return false;
     }
   }
