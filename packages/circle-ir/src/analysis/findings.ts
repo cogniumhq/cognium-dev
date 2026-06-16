@@ -172,19 +172,24 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // code_injection added to http_param/http_query/http_header/http_cookie:
     // `eval(req.query.x)`, `Function(req.header('x'))`, `vm.runInThisContext(req.cookies.c)`
     // are all real RCE patterns in JS web apps (cognium-dev #83).
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
-    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call'],
-    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection'],
+    // crlf added to http_param/http_query/http_header/http_cookie/http_body:
+    // setHeader/setCookie/redirect of any user-controlled string is CRLF / response
+    // splitting (CWE-113) — Sprint 6, issue #86.
+    // mass_assignment added to http_body / http_param: Object.assign(user, req.body),
+    // User(**request.form) — CWE-915.
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment'],
+    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf'],
     http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment'],
     io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss'],
     env_input: ['command_injection', 'path_traversal'],
     db_input: ['xss', 'sql_injection'], // Second-order injection
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
     network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf'],
     config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf'], // Servlet init params
-    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call'], // Cross-method taint
+    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment'], // Cross-method taint
     plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection'], // Plugin/config parameters
   };
 

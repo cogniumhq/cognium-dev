@@ -244,6 +244,18 @@ export type SinkType =
   // format-string sink (e.g. Java `String.format`, Python `str.format`,
   // C-style `printf`). Issue #86 — Sprint 5.
   | "format_string"
+  // CRLF / HTTP response splitting (CWE-113): tainted value reaches a
+  // response-header / cookie / status-line sink that has not been validated
+  // against \r and \n. Distinct from xss because the attack vector is the
+  // response header (cache poisoning, session fixation, smuggling), not the
+  // response body. Issue #86 — Sprint 6.
+  | "crlf"
+  // Mass-assignment / over-posting (CWE-915): an untrusted bag of
+  // attributes (HTTP body / form / JSON) is splatted into a domain object
+  // constructor or assignment helper without an allow-list, letting
+  // attackers set privileged fields (`is_admin`, `role`, `owner_id`).
+  // Issue #86 — Sprint 6.
+  | "mass_assignment"
   // MyBatis ORM mapper-interface call — the actual SQL lives in the mapper's
   // XML/annotation binding, not at the call site. Distinct from sql_injection
   // so consumers can route, downgrade, or require an interprocedural binding

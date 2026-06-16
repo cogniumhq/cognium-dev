@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.55.0] - 2026-06-16
+
+### Added
+
+- **Issue #86 — Sprint 6: four more vulnerability categories.** Completes the
+  9-category #86 gap analysis. Adds two new `SinkType` values and three new
+  pattern passes.
+
+  - **`crlf` SinkType (CWE-113)** — HTTP response splitting / header injection.
+    Re-routed from `xss` for header-only sinks. Sinks:
+    - Java `HttpServletResponse.setHeader`/`addHeader`
+    - JS Express `res.setHeader`/`writeHead`/`cookie`/`location`/`redirect`
+    - Go `http.Header.Set`/`Add`
+    Severity: medium. `sendRedirect` stays classified as `ssrf` / open-redirect
+    (CWE-601) to preserve the multi-hop cross-file chain semantics.
+
+  - **`mass_assignment` SinkType (CWE-915)** — over-posting through
+    `Object.assign(target, untrusted)`, lodash `_.merge`/`_.extend`,
+    jQuery `$.extend`. Severity: high.
+
+  - **`csrf-protection-disabled` (CWE-352, pass #94)** — pure pattern pass.
+    Flags explicit CSRF disablement: Spring Security `http.csrf().disable()`,
+    lambda DSL `http.csrf(c -> c.disable())`, method-ref `csrf(CsrfConfigurer::disable)`,
+    `csrfTokenRepository(null)`, and Django `@csrf_exempt`. Severity: critical.
+
+  - **`xml-entity-expansion` (CWE-776, pass #95)** — pure pattern pass for
+    XML bomb / billion-laughs. Flags Java factory `.newInstance()` for
+    `SAXParserFactory`/`DocumentBuilderFactory`/`XMLInputFactory`/
+    `SchemaFactory`/`TransformerFactory` unless the file contains
+    `disallow-doctype-decl`/`external-general-entities`/`SUPPORT_DTD`/
+    `ACCESS_EXTERNAL_DTD`/`setXIncludeAware(false)`/
+    `setExpandEntityReferences(false)`. Flags Python `lxml.etree.parse`/
+    `fromstring`/`XML` and `xml.etree.ElementTree.parse`/`fromstring`
+    unless `defusedxml` is imported or `resolve_entities=False` is passed.
+    Severity: high.
+
+  - **`mass-assignment` (CWE-915, pass #96)** — pure pattern pass.
+    Flags Python kwargs-splat `User(**request.{form,args,values,json,
+    get_json(),files,data})` and JS object spread `{...req.body}`/
+    `{...req.query}`/`{...req.params}`/`{...ctx.request.body}`.
+    Complements the `mass_assignment` taint sink for `Object.assign` and
+    friends. Severity: high.
+
+### Fixed
+
+- **`canSourceReachSink` coverage matrix** — `crlf` and `mass_assignment`
+  added to the `http_param`/`http_body`/`http_header`/`http_cookie`/
+  `http_query`/`interprocedural_param` source-to-sink mapping in
+  `analysis/findings.ts`. Without this, the inline source-as-argument flow
+  path in `detectExpressionScanFlows` (and the `generateFindings` matrix)
+  silently rejected the new sink types and no flow was emitted for
+  `res.setHeader('X-Tag', req.query.t)` or `Object.assign(user, req.body)`.
+
+### Notes
+
+- Total security passes: 24 (21 → 24) and 8 pattern passes (5 → 8).
+- 2287 tests passing (+18 net), zero regressions.
+
 ## [3.54.0] - 2026-06-16
 
 ### Added

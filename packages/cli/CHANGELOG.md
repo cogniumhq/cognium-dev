@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.55.0] - 2026-06-16
+
+### Changed
+
+- **circle-ir upgraded 3.54.0 → 3.55.0** — Sprint 6 closes out the
+  cognium-dev#86 9-category gap analysis with four new categories:
+  - **CRLF / HTTP response splitting (CWE-113)** — new `crlf` taint sink.
+    Header-writing sinks (`HttpServletResponse.setHeader`/`addHeader`,
+    Express `res.setHeader`/`writeHead`/`cookie`/`location`/`redirect`,
+    Go `http.Header.Set`/`Add`) are re-routed from `xss` to `crlf`.
+    `sendRedirect` retains its primary `ssrf` / open-redirect classification.
+  - **Mass-assignment / over-posting (CWE-915)** — new `mass_assignment`
+    taint sink for `Object.assign(target, req.body)`, lodash `_.merge`/
+    `_.extend`, and jQuery `$.extend`. New `mass-assignment` pattern pass
+    (#96) flags Python kwargs-splat `User(**request.form)` and JS object
+    spread `{...req.body}`.
+  - **CSRF protection disabled (CWE-352)** — new `csrf-protection-disabled`
+    pattern pass (#94, `critical`). Flags Spring Security `http.csrf().disable()`,
+    lambda DSL `http.csrf(c -> c.disable())`, method-ref
+    `csrf(CsrfConfigurer::disable)`, `csrfTokenRepository(null)`, and
+    Django `@csrf_exempt`.
+  - **XML entity expansion (CWE-776)** — new `xml-entity-expansion` pattern
+    pass (#95, `high`). Flags Java XML factory `.newInstance()` without
+    `disallow-doctype-decl`/`external-general-entities`/`SUPPORT_DTD`/
+    `ACCESS_EXTERNAL_DTD` evidence in file, and Python `lxml.etree.parse`/
+    `fromstring`/`XML` and `xml.etree.ElementTree.parse`/`fromstring`
+    unless `defusedxml` is imported.
+
+  All findings surface through `scan` and the text / JSON / SARIF formatters
+  without CLI changes. See circle-ir 3.55.0 CHANGELOG for per-language
+  detection details and the `canSourceReachSink` coverage fix that unblocked
+  inline source-as-argument flows for the new sink types.
+
 ## [3.54.0] - 2026-06-16
 
 ### Changed

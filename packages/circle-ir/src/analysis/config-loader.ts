@@ -828,9 +828,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'println', class: 'ServletOutputStream', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // XSS in error messages (CWE-81)
   { method: 'sendError', class: 'HttpServletResponse', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
-  // Response header injection (can lead to header XSS)
-  { method: 'setHeader', class: 'HttpServletResponse', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
-  { method: 'addHeader', class: 'HttpServletResponse', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
+  // Response header injection — re-categorised from `xss` to `crlf`
+  // (CWE-113) in Sprint 6 of #86. Header injection is HTTP response
+  // splitting / cache-poisoning / cookie forging; reflected XSS via header
+  // reflection remains a downstream concern of body-writing sinks.
+  { method: 'setHeader', class: 'HttpServletResponse', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1] },
+  { method: 'addHeader', class: 'HttpServletResponse', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1] },
+  // Note: `sendRedirect` is primarily classified as `ssrf` / open-redirect
+  // (CWE-601) further down — see entry near line 1195. CRLF via Location
+  // header is a secondary concern; keeping the canonical SSRF entry avoids
+  // double-emission that would mask the open-redirect chain.
   { method: 'setContentType', class: 'HttpServletResponse', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
   // JSP output
   { method: 'setAttribute', class: 'PageContext', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
@@ -1871,6 +1878,34 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Printf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Errorf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Fprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [1], languages: ['go'] },
+
+  // CRLF / HTTP response splitting (CWE-113) — Sprint 6, #86.
+  // Node.js / Express response header / cookie sinks. The header *name* (arg 0)
+  // is also CRLF-sensitive but is almost always a string literal; we model
+  // arg 1 (the value) as the primary sink.
+  { method: 'setHeader', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  { method: 'writeHead', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [2], languages: ['javascript', 'typescript'] },
+  // Express: res.cookie(name, value, options) — value is CRLF-sensitive.
+  { method: 'cookie',    type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  // Express: res.location(url) and res.redirect(url) — Location header.
+  { method: 'location',  type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'redirect',  type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Go net/http: w.Header().Set(k, v) / Add(k, v) — first arg is the value
+  // (Header is a map; the actual `value` is arg 1 of the call). We flag the
+  // value position so a tainted variable is detected.
+  { method: 'Set', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
+  { method: 'Add', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
+
+  // Mass-assignment (CWE-915) — Sprint 6, #86.
+  // JS Object.assign(target, ...sources) — sources are arg 1..N, and if any
+  // source is request-tainted, every key gets written onto the target. We
+  // flag the source positions; the analyzer only needs one tainted to fire.
+  { method: 'assign', class: 'Object', type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  // Lodash bulk-merge helpers behave identically.
+  { method: 'merge',  class: '_',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'extend', class: '_',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  // jQuery $.extend(target, source) (legacy).
+  { method: 'extend', class: '$',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
