@@ -138,6 +138,7 @@ import { WeakHashPass } from './analysis/passes/weak-hash-pass.js';
 import { WeakCryptoPass } from './analysis/passes/weak-crypto-pass.js';
 import { WeakRandomPass } from './analysis/passes/weak-random-pass.js';
 import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
+import { JwtVerifyDisabledPass } from './analysis/passes/jwt-verify-disabled-pass.js';
 
 // Project-level pass imports
 import { ImportGraph } from './graph/import-graph.js';
@@ -483,6 +484,7 @@ export async function analyze(
   if (!disabledPasses.has('weak-crypto'))           pipeline.add(new WeakCryptoPass());
   if (!disabledPasses.has('weak-random'))           pipeline.add(new WeakRandomPass());
   if (!disabledPasses.has('tls-verify-disabled'))   pipeline.add(new TlsVerifyDisabledPass());
+  if (!disabledPasses.has('jwt-verify-disabled'))   pipeline.add(new JwtVerifyDisabledPass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

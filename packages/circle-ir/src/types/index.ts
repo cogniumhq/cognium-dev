@@ -236,6 +236,14 @@ export type SinkType =
   | "open_redirect"
   | "code_injection"
   | "log_injection"
+  // ReDoS (CWE-1333): tainted regex pattern reaches a regex compile/match
+  // call (e.g. Python `re.match`, Java `Pattern.compile`, JS `new RegExp`).
+  // Issue #86 — Sprint 5.
+  | "redos"
+  // Format-string injection (CWE-134): tainted format string reaches a
+  // format-string sink (e.g. Java `String.format`, Python `str.format`,
+  // C-style `printf`). Issue #86 — Sprint 5.
+  | "format_string"
   // MyBatis ORM mapper-interface call — the actual SQL lives in the mapper's
   // XML/annotation binding, not at the call site. Distinct from sql_injection
   // so consumers can route, downgrade, or require an interprocedural binding

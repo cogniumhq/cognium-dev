@@ -1818,6 +1818,59 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'from_reader', class: 'serde_yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'from_str', class: 'serde_json', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
   { method: 'from_slice', class: 'serde_json', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
+
+  // =========================================================================
+  // ReDoS sinks (CWE-1333) — issue #86 / Sprint 5
+  // =========================================================================
+  // First argument of regex compile/match functions is the pattern. Tainted
+  // patterns enable catastrophic-backtracking DoS.
+  // Python: re.{match,search,compile,findall,fullmatch,sub,subn,split}
+  { method: 'match',     class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'search',    class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'fullmatch', class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'compile',   class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'findall',   class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'finditer',  class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'sub',       class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'subn',      class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'split',     class: 're', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // Java: Pattern.compile / Pattern.matches; String.matches/replaceAll/replaceFirst/split
+  { method: 'compile',     class: 'Pattern', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'matches',     class: 'Pattern', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'matches',     class: 'String',  type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'replaceAll',  class: 'String',  type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'replaceFirst',class: 'String',  type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'split',       class: 'String',  type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['java'] },
+  // JS/TS: new RegExp(pat) ctor; receiver_type === 'RegExp'. Also string.match
+  // and string.matchAll, replace, search take a regex/string pattern.
+  { method: 'RegExp',  class: 'constructor', type: 'redos', cwe: 'CWE-1333', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Go: regexp.Compile / MustCompile / Match / MatchString
+  { method: 'Compile',     class: 'regexp', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'MustCompile', class: 'regexp', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Match',       class: 'regexp', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'MatchString', class: 'regexp', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['go'] },
+
+  // =========================================================================
+  // Format-string sinks (CWE-134) — issue #86 / Sprint 5
+  // =========================================================================
+  // First argument is the format string. Tainted format strings enable
+  // information disclosure and (for C-style runtimes) memory writes.
+  // Java: String.format / Formatter.format / printf / format on PrintStream
+  // (note: printf/format on PrintWriter/PrintStream are already XSS sinks above)
+  { method: 'format',  class: 'String',    type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'format',  class: 'Formatter', type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'printf',  class: 'System.out',type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  // NOTE: Python `userFmt.format(...)` and `userFmt % args` require
+  // receiver-taint or operator-LHS-taint tracking — the format string is the
+  // receiver, not an argument. Deferred to Sprint 6 (#86 follow-up).
+  // C-style: printf / fprintf / sprintf / snprintf via ctypes/cffi.
+  { method: 'printf',  type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'fprintf', type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [1], languages: ['python'] },
+  // Go: fmt.Sprintf/Printf/Fprintf/Errorf — format string is first/second arg
+  { method: 'Sprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Printf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Errorf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Fprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [1], languages: ['go'] },
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [

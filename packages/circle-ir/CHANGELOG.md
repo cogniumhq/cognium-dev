@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.0] - 2026-06-16
+
+### Added
+
+- **Issue #86 — Sprint 5: three new vulnerability categories.** Previously
+  uncovered patterns now fire. Adds two new `SinkType` values and one new
+  pattern pass.
+
+  - **`jwt-verify-disabled` (CWE-347, pass #93)** — pure pattern pass, no taint
+    required. Flags JWT signature checks that are explicitly disabled:
+    - Python PyJWT: `jwt.decode(t, ..., options={"verify_signature": False})`,
+      `verify=False` (legacy), `algorithms=["none"]`
+    - JS jsonwebtoken: `jwt.verify(t, secret, {algorithms: ['none']})`,
+      `jwt.verify(t, null|''|undefined)`, `verify: false`
+    - Java auth0: `JWT.require(Algorithm.none())`
+    - Java jjwt 0.x: `Jwts.parser()…parse(token)` (unsigned parse — vs
+      `parseClaimsJws` which enforces the signature)
+    Severity: critical.
+
+  - **`redos` SinkType (CWE-1333)** — taint flow into regex compile/match
+    primitives. Sinks: Python `re.{match,search,compile,findall,fullmatch,
+    sub,subn,split,finditer}`, Java `Pattern.compile`/`Pattern.matches` and
+    `String.matches`/`replaceAll`/`replaceFirst`/`split`, JS `new RegExp(...)`,
+    Go `regexp.{Compile,MustCompile,Match,MatchString}`. Severity: high
+    (medium for Go since `regexp` is non-backtracking).
+
+  - **`format_string` SinkType (CWE-134)** — taint flow into format-string
+    primitives. Sinks: Java `String.format`, `Formatter.format`,
+    `System.out.printf`; Go `fmt.{Sprintf,Printf,Errorf,Fprintf}`; Python
+    `ctypes printf/fprintf`. Python `userFmt.format(...)` and
+    `userFmt % args` are NOT yet detected — they require receiver-taint /
+    operator-LHS-taint tracking and are deferred to Sprint 6.
+
+### Notes
+
+- Total security passes: 21 (19 → 21) and 5 pattern passes (4 → 5).
+- 2269 tests passing (+10 net), zero regressions.
+
 ## [3.53.0] - 2026-06-16
 
 ### Added

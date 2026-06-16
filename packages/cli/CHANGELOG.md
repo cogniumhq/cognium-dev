@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.0] - 2026-06-16
+
+### Changed
+
+- **circle-ir upgraded 3.53.0 → 3.54.0** — Sprint 5 coverage additions for
+  cognium-dev#86 (9-category gap analysis):
+  - **JWT verification disabled (CWE-347)** — new `jwt-verify-disabled`
+    pattern pass (#93, `critical`). Flags PyJWT `jwt.decode` with
+    `verify_signature: False` / `verify=False` / `algorithms=["none"]`,
+    `jsonwebtoken` `jwt.verify` with `algorithms: ['none']` / null key,
+    auth0-java `JWT.require(Algorithm.none())`, and jjwt
+    `Jwts.parser()...parse(token)` (unverified parse).
+  - **ReDoS (CWE-1333)** — new `redos` taint sink type. Tainted regex
+    patterns flowing into `re.{match,search,compile,findall,…}` (Python),
+    `Pattern.compile` / `String.matches|replaceAll|replaceFirst|split`
+    (Java), `new RegExp(...)` (JS), and `regexp.{Compile,MustCompile,Match,
+    MatchString}` (Go) are now flagged.
+  - **Format-string injection (CWE-134)** — new `format_string` taint sink
+    type. Tainted format strings flowing into `String.format` /
+    `Formatter.format` / `System.out.printf` (Java), `ctypes.printf` (Python),
+    and `fmt.{Sprintf,Printf,Errorf,Fprintf}` (Go) are flagged. Python
+    `userFmt.format(...)` (receiver-taint) is deferred to Sprint 6.
+
+  All findings surface through `scan` and the text / JSON / SARIF formatters
+  without CLI changes. See circle-ir 3.54.0 CHANGELOG for per-language
+  detection details.
+
 ## [3.53.0] - 2026-06-16
 
 ### Changed
