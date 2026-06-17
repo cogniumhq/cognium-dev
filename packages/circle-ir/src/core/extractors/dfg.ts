@@ -53,7 +53,7 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' {
 export function buildDFG(tree: Tree, cache?: NodeCache, language?: SupportedLanguage): DFG {
   // Auto-detect language if not provided
   const effectiveLanguage = language ?? detectLanguage(tree);
-  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript';
+  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
 
   if (isJavaScript) {
     return buildJavaScriptDFG(tree, cache);

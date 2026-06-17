@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.60.0] - 2026-06-17
+
+### Fixed — cognium-dev JS/TS batch (issues #88, #80, #69, #68)
+
+This release closes the JS/TS sprint covering five distinct problem areas. The
+ground-truth investigation against 3.59.0 revealed three claims that were
+already stale (Sprint 6–9 widening had already addressed them); those are
+locked in with regression fixtures so they cannot silently regress. The four
+real fixes touch the HTML pre-processor, the JSX parser grammar, the JS call
+extractor, and the runtime sink catalog.
+
+**#88.1 / #69 — Regression guards for stale-close claims.**
+- `.jsx` file recognition: `eval(location.hash)` in a `.jsx` source fires
+  `code_injection`. Original failure on the reporter's site was masked by their
+  `cognium.config.json include: src/**/*.ts` glob, not a circle-ir bug.
+- `exec(req.query.host)`, `exec(req.body.cmd)`, and the local-var copy variant
+  all fire `command_injection`. Negative control `exec("ls")` does not fire.
+- New: `tests/analysis/repro-jsts-batch.test.ts` Phase A.
+
+**#80 — HTML `<script>` taint flows propagated through merge.**
+`mergeHtmlResults()` (`src/analysis/html/html-merge.ts`) was building the
+merged `Taint` object as `{ sources, sinks, sanitizers }`, silently dropping
+the per-block `taint.flows` array. Downstream consumers (CLI vulnerability
+builder, SARIF) read `result.taint.flows` and saw `undefined`, so HTML pages
+with `<script>document.write(...)</script>` or `<script>eval(location.hash)</script>`
+reported zero vulnerabilities. Fix accumulates each script block's flows,
+shifts `source_line` / `sink_line` by the block's HTML offset, and includes
+them in the merged result.
+
+**#88.2 — `.tsx` / `.jsx` JSX grammar swap.**
+`tree-sitter-typescript.wasm` does not parse JSX. Any code path located after
+the first JSX fragment in a `.tsx` / `.jsx` source was silently dropped
+because the parser inserted an ERROR node and the call extractor stopped
+collecting calls. Fix adds `tree-sitter-tsx.wasm` to `wasm/`, extends the
+language-plugin grammar selector to route `.tsx` / `.jsx` extensions to the
+JSX-aware grammar, and adjusts the parser cache key. The TSX grammar is a
+superset of the TS grammar; non-JSX `.ts` files are unaffected.
+
+**#68.1 — `dangerouslySetInnerHTML` JSX XSS sink.**
+React's `<div dangerouslySetInnerHTML={{__html: tainted}}/>` renders raw HTML
+and is a first-class XSS sink. New `extractJSXAttributeSink()` helper in
+`src/core/extractors/calls.ts` walks `jsx_attribute` nodes, locates the
+`__html` field inside the object expression, and emits a synthetic `CallInfo`
+so the existing method-call taint matcher catches it. The sink definition
+itself already existed in the JavaScript plugin's `getBuiltinSinks()`.
+
+**#68.2 — Prototype-pollution CWE re-tag.**
+`_.merge({}, req.body)`, `Object.assign({}, req.body)`, `_.extend`,
+`Object.defineProperty`, `lodash.merge`, `lodash.extend`, `_.defaultsDeep`,
+and `jQuery.extend` are now stamped with `CWE-1321` (Improperly Controlled
+Modification of Object Prototype Attributes) instead of the previous
+`CWE-915` (Improperly Controlled Modification of Dynamically-Determined
+Object Attributes). The `mass_assignment` `SinkType` union is preserved
+intentionally — adding a new `prototype_pollution` type would cascade through
+the CWE map, severity map, and every formatter consumer.
+
+**#68.3 — `node-serialize.unserialize` deserialization RCE.**
+Three new sink entries added to `DEFAULT_SINKS` in
+`src/analysis/config-loader.ts`: class-bound `serialize.unserialize(...)`,
+class-bound `node-serialize.unserialize(...)`, and the classless destructured
+variant. All three are `deserialization` / `CWE-502` / `critical`.
+
+**#68.4 — DOM-XSS via `innerHTML` / `outerHTML` property assignment.**
+`javascript_dom_xss.yaml` declared these as `property` sinks but the runtime
+taint matcher only handled method calls. Fix mirrors the JSX-attribute
+approach: new `extractDomPropertyAssignmentSink()` walks `assignment_expression`
+nodes, matches LHS member expressions whose property is `innerHTML` /
+`outerHTML`, and emits a synthetic `CallInfo` so the standard sink-matching
+path catches `el.innerHTML = location.hash.slice(1)` and friends.
+
+**Coverage.** 18 new regression cases in
+`tests/analysis/repro-jsts-batch.test.ts` (Phase A through Phase D.4). Full
+suite: 2379 passed, 1 skipped.
+
 ## [3.59.0] - 2026-06-17
 
 ### Fixed — Issue #78: OOP constructor-injected field flow (Java + Python)

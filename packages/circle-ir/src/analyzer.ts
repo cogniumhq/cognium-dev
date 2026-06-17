@@ -324,10 +324,14 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       ]);
     case 'javascript':
     case 'typescript':
+    case 'tsx':
       return new Set([
         'call_expression', 'new_expression', 'class_declaration', 'function_declaration',
         'arrow_function', 'method_definition', 'variable_declaration', 'lexical_declaration',
         'import_statement', 'export_statement', 'member_expression', 'assignment_expression',
+        // JSX node types — tree-sitter-tsx grammar (.tsx/.jsx routing)
+        'jsx_element', 'jsx_self_closing_element', 'jsx_opening_element',
+        'jsx_attribute', 'jsx_expression',
       ]);
     case 'bash':
       return new Set([
@@ -379,12 +383,26 @@ export async function analyze(
     return analyzeHtmlFile(code, filePath, options);
   }
 
-  logger.debug('Analyzing file', { filePath, language, codeLength: code.length });
+  // JSX/TSX routing: tree-sitter-typescript does NOT parse JSX. Route
+  // `.tsx`/`.jsx` files to the sibling `tree-sitter-tsx` grammar (loaded
+  // from `tree-sitter-tsx.wasm`) which is a JSX-aware superset. We keep
+  // `language` as 'javascript'/'typescript' so all downstream extractors
+  // and passes treat the tree the same way; only the grammar used to
+  // produce the tree differs. (cognium-dev #88.2)
+  let parseGrammar: SupportedLanguage = language;
+  if (language === 'javascript' || language === 'typescript') {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith('.tsx') || lower.endsWith('.jsx')) {
+      parseGrammar = 'tsx';
+    }
+  }
+
+  logger.debug('Analyzing file', { filePath, language, parseGrammar, codeLength: code.length });
 
   // Parse the code. The Tree holds tree-sitter WASM memory; we MUST dispose
   // it before returning, otherwise the WASM heap grows unboundedly across
   // many analyze() calls in the same process (issue #16).
-  const tree = await parse(code, language);
+  const tree = await parse(code, parseGrammar);
   try {
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 

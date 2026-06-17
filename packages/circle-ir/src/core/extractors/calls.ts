@@ -93,7 +93,7 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
 
   // Use language hint if provided, otherwise detect from tree
   const detectedLanguage = language ?? detectLanguageFromTree(tree, cache);
-  const isJavaScript = detectedLanguage === 'javascript' || detectedLanguage === 'typescript';
+  const isJavaScript = detectedLanguage === 'javascript' || detectedLanguage === 'typescript' || detectedLanguage === 'tsx';
   const isPython = detectedLanguage === 'python';
   const isRust = detectedLanguage === 'rust';
 
@@ -165,7 +165,191 @@ function extractJavaScriptCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     }
   }
 
+  // Find JSX attributes that act as XSS sinks (e.g. dangerouslySetInnerHTML).
+  // The TSX/JSX grammar represents these as `jsx_attribute` nodes, not
+  // `call_expression`. To let the taint matcher reuse the standard method-
+  // call sink path, we emit a synthetic CallInfo per matching attribute.
+  // (cognium-dev #68 — Phase D.1)
+  const jsxAttributes = getNodesFromCache(tree.rootNode, 'jsx_attribute', cache);
+  for (const attr of jsxAttributes) {
+    const callInfo = extractJSXAttributeSink(attr);
+    if (callInfo) {
+      calls.push(callInfo);
+    }
+  }
+
+  // Find DOM property assignments that act as XSS sinks
+  // (e.g. `el.innerHTML = userInput`). Same rationale as JSX attributes:
+  // emit a synthetic CallInfo so the standard taint matcher path picks them
+  // up via property-named sink entries. (cognium-dev #68 — Phase D.3)
+  const assignments = getNodesFromCache(tree.rootNode, 'assignment_expression', cache);
+  for (const assign of assignments) {
+    const callInfo = extractDomPropertyAssignmentSink(assign);
+    if (callInfo) {
+      calls.push(callInfo);
+    }
+  }
+
   return calls;
+}
+
+/**
+ * DOM properties whose assignment is an XSS sink. Keeping this list small
+ * and explicit so we don't over-flag (the YAML config in
+ * `configs/sinks/javascript_dom_xss.yaml` lists more, but most of those are
+ * element-conditional and would need DOM-type tracking to flag without FPs).
+ */
+const DOM_XSS_ASSIGNMENT_PROPERTIES = new Set([
+  'innerHTML',
+  'outerHTML',
+]);
+
+/**
+ * Emit a synthetic CallInfo for DOM property assignments that are XSS sinks.
+ *
+ * Matches `<obj>.<prop> = <expr>` where `<prop>` is in
+ * `DOM_XSS_ASSIGNMENT_PROPERTIES`. The synthetic call has method=`<prop>`,
+ * receiver=`<obj>` text, single argument=`<expr>`.
+ */
+function extractDomPropertyAssignmentSink(node: Node): CallInfo | null {
+  const leftNode = node.childForFieldName('left');
+  const rightNode = node.childForFieldName('right');
+  if (!leftNode || !rightNode) return null;
+  if (leftNode.type !== 'member_expression') return null;
+
+  const propertyNode = leftNode.childForFieldName('property');
+  const objectNode = leftNode.childForFieldName('object');
+  if (!propertyNode) return null;
+
+  const propertyName = getNodeText(propertyNode);
+  if (!DOM_XSS_ASSIGNMENT_PROPERTIES.has(propertyName)) return null;
+
+  const receiver = objectNode ? getNodeText(objectNode) : null;
+  const expression = getNodeText(rightNode);
+  const { variable, literal } = analyzeJSArgument(rightNode);
+  const enclosingFunc = findJSEnclosingFunction(node);
+
+  return {
+    method_name: propertyName,
+    receiver,
+    arguments: [
+      {
+        position: 0,
+        expression,
+        variable,
+        literal,
+      },
+    ],
+    location: {
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    },
+    in_method: enclosingFunc,
+    resolved: true,
+    resolution: {
+      status: 'resolved',
+      target: `DOM.${propertyName}`,
+    },
+  };
+}
+
+/**
+ * Emit a synthetic CallInfo for JSX attributes that are known XSS sinks.
+ *
+ * Currently handles `dangerouslySetInnerHTML={{ __html: expr }}` on any JSX
+ * element. The synthetic call has method `dangerouslySetInnerHTML`, no
+ * receiver, and a single argument carrying the `__html` value expression.
+ * The taint matcher then catches the call via the standard
+ * `dangerouslySetInnerHTML` sink entry in `configs/sinks/nodejs.json`.
+ */
+function extractJSXAttributeSink(attr: Node): CallInfo | null {
+  // `jsx_attribute` has children: property_identifier '=' jsx_expression
+  // Get the attribute name (first property_identifier child).
+  let nameNode: Node | null = null;
+  for (let i = 0; i < attr.childCount; i++) {
+    const child = attr.child(i);
+    if (child && child.type === 'property_identifier') {
+      nameNode = child;
+      break;
+    }
+  }
+  if (!nameNode) return null;
+
+  const attrName = getNodeText(nameNode);
+  if (attrName !== 'dangerouslySetInnerHTML') return null;
+
+  // Find the `jsx_expression` value child (the `{{__html: x}}` part).
+  let valueExpr: Node | null = null;
+  for (let i = 0; i < attr.childCount; i++) {
+    const child = attr.child(i);
+    if (child && child.type === 'jsx_expression') {
+      valueExpr = child;
+      break;
+    }
+  }
+  if (!valueExpr) return null;
+
+  // Inside the jsx_expression, find the inner `object` literal, then the
+  // `pair` whose key is `__html`, then that pair's `value`.
+  let htmlValue: Node | null = null;
+  for (let i = 0; i < valueExpr.childCount; i++) {
+    const inner = valueExpr.child(i);
+    if (!inner || inner.type !== 'object') continue;
+    for (let j = 0; j < inner.childCount; j++) {
+      const pair = inner.child(j);
+      if (!pair || pair.type !== 'pair') continue;
+      const keyNode = pair.childForFieldName('key');
+      if (!keyNode) continue;
+      const keyText = getNodeText(keyNode).replace(/^["']|["']$/g, '');
+      if (keyText === '__html') {
+        htmlValue = pair.childForFieldName('value');
+        break;
+      }
+    }
+    if (htmlValue) break;
+  }
+
+  // If the `__html` field wasn't found (or the prop was passed a spread/var
+  // like `{...props}`), fall back to using the entire jsx_expression body
+  // so the matcher still sees the data dependency.
+  if (!htmlValue) {
+    for (let i = 0; i < valueExpr.childCount; i++) {
+      const inner = valueExpr.child(i);
+      if (inner && inner.type !== '{' && inner.type !== '}') {
+        htmlValue = inner;
+        break;
+      }
+    }
+  }
+  if (!htmlValue) return null;
+
+  const expression = getNodeText(htmlValue);
+  const { variable, literal } = analyzeJSArgument(htmlValue);
+
+  const enclosingFunc = findJSEnclosingFunction(attr);
+
+  return {
+    method_name: 'dangerouslySetInnerHTML',
+    receiver: null,
+    arguments: [
+      {
+        position: 0,
+        expression,
+        variable,
+        literal,
+      },
+    ],
+    location: {
+      line: attr.startPosition.row + 1,
+      column: attr.startPosition.column,
+    },
+    in_method: enclosingFunc,
+    resolved: true,
+    resolution: {
+      status: 'resolved',
+      target: 'react.dangerouslySetInnerHTML',
+    },
+  };
 }
 
 /**

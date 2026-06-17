@@ -43,7 +43,7 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' {
  */
 export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
   const effectiveLanguage = language ?? detectLanguage(tree);
-  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript';
+  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
 
   const allBlocks: CFGBlock[] = [];
   const allEdges: CFGEdge[] = [];

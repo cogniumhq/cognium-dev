@@ -40,6 +40,7 @@ function hasDeclKeyword(lineText: string, language: string): boolean {
 
     case 'javascript':
     case 'typescript':
+    case 'tsx':
       return /\b(?:let|const|var)\s+[\w{[]/.test(lineText);
 
     case 'rust':

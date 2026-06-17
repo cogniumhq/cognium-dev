@@ -23,6 +23,7 @@ import type {
   TaintSource,
   TaintSink,
   TaintSanitizer,
+  TaintFlowInfo,
   ImportInfo,
   ExportInfo,
   SastFinding,
@@ -54,6 +55,7 @@ export function mergeHtmlResults(
   const allSources: TaintSource[] = [];
   const allSinks: TaintSink[] = [];
   const allSanitizers: TaintSanitizer[] = [];
+  const allFlows: TaintFlowInfo[] = [];
   const allImports: ImportInfo[] = [];
   const allExports: ExportInfo[] = [];
   const allFindings: SastFinding[] = [];
@@ -151,6 +153,14 @@ export function mergeHtmlResults(
         line: sanitizer.line + lineShift,
       });
     }
+    for (const flow of ir.taint.flows ?? []) {
+      allFlows.push({
+        ...flow,
+        source_line: flow.source_line + lineShift,
+        sink_line: flow.sink_line + lineShift,
+        path: flow.path.map(step => ({ ...step, line: step.line + lineShift })),
+      });
+    }
 
     // Shift imports
     for (const imp of ir.imports) {
@@ -180,6 +190,7 @@ export function mergeHtmlResults(
     sources: allSources,
     sinks: allSinks,
     sanitizers: allSanitizers.length > 0 ? allSanitizers : undefined,
+    flows: allFlows.length > 0 ? allFlows : undefined,
   };
 
   const cfg: CFG = {

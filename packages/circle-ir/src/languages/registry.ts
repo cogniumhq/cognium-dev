@@ -28,6 +28,12 @@ class DefaultLanguageRegistry implements LanguageRegistry {
   }
 
   get(language: SupportedLanguage): LanguagePlugin | undefined {
+    // 'tsx' is a parser-only routing tag: it selects the JSX-aware
+    // tree-sitter-tsx grammar but reuses the JavaScript plugin for taint
+    // patterns, type extraction, and framework detection.
+    if (language === 'tsx') {
+      return this.plugins.get('javascript');
+    }
     return this.plugins.get(language);
   }
 

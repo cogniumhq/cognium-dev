@@ -112,6 +112,7 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
           '`secrets.token_hex`, `secrets.choice`, `secrets.randbelow`).';
       case 'javascript':
       case 'typescript':
+      case 'tsx':
         return 'Use `crypto.randomBytes(n)` (Node.js) or ' +
           '`crypto.getRandomValues(typedArray)` (browser).';
       case 'go':
@@ -159,7 +160,7 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
       return null;
     }
 
-    if (language === 'javascript' || language === 'typescript') {
+    if (language === 'javascript' || language === 'typescript' || language === 'tsx') {
       if (method === 'random' && (receiver === 'Math' || receiver.endsWith('.Math'))) {
         return 'Math.random';
       }

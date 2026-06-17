@@ -57,7 +57,7 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' | 'python' | 'rust' {
  */
 export function extractTypes(tree: Tree, cache?: NodeCache, language?: SupportedLanguage): TypeInfo[] {
   const effectiveLanguage = language ?? detectLanguage(tree);
-  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript';
+  const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
   const isPython = effectiveLanguage === 'python';
   const isRust = effectiveLanguage === 'rust';
 

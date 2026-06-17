@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.60.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.60.0 which closes the JS/TS batch (issues #88, #80, #69,
+  #68): HTML `<script>` taint flows now propagate through the HTML merge step,
+  `.tsx` / `.jsx` files route to the JSX-aware `tree-sitter-tsx` grammar,
+  React's `dangerouslySetInnerHTML` is recognised as an XSS sink, DOM-XSS via
+  `el.innerHTML` / `el.outerHTML` property assignment is detected,
+  `node-serialize.unserialize` is modelled as a deserialization sink, and
+  prototype-pollution patterns (`_.merge`, `Object.assign`, `lodash.merge`,
+  etc.) now carry CWE-1321. See `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.59.0] - 2026-06-17
 
 ### Changed

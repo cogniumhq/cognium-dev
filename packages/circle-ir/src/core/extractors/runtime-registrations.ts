@@ -83,7 +83,7 @@ export function extractRuntimeRegistrations(
   language: SupportedLanguage | string,
   imports?: ImportInfo[],
 ): RuntimeRegistration[] {
-  if (language === 'javascript' || language === 'typescript') {
+  if (language === 'javascript' || language === 'typescript' || language === 'tsx') {
     return extractJSRuntimeRegistrations(tree, cache, imports);
   }
   if (language === 'python') {

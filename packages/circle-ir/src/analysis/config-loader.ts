@@ -1904,16 +1904,44 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Set', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
   { method: 'Add', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
 
-  // Mass-assignment (CWE-915) — Sprint 6, #86.
-  // JS Object.assign(target, ...sources) — sources are arg 1..N, and if any
-  // source is request-tainted, every key gets written onto the target. We
-  // flag the source positions; the analyzer only needs one tainted to fire.
-  { method: 'assign', class: 'Object', type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
-  // Lodash bulk-merge helpers behave identically.
-  { method: 'merge',  class: '_',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
-  { method: 'extend', class: '_',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  // Mass-assignment (CWE-915 / CWE-1321) — Sprint 6, #86; cognium-dev #68 Sprint 10.
+  // JS Object.assign(target, ...sources), `_.merge`, `_.extend`, `$.extend`,
+  // `Object.defineProperty` — when fed an attacker-controlled bag, they write
+  // arbitrary keys onto the target (or, for `__proto__`/`constructor.prototype`,
+  // pollute the prototype chain). The CWE is CWE-1321 (Prototype Pollution),
+  // which subsumes mass assignment for JS sinks operating on plain Objects.
+  // We keep the existing `mass_assignment` SinkType so consumers route the
+  // findings the same way; only the CWE shifts to flag prototype-pollution.
+  { method: 'assign',           class: 'Object', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'defineProperty',   class: 'Object', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2], languages: ['javascript', 'typescript'] },
+  { method: 'defineProperties', class: 'Object', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  // Lodash bulk-merge helpers behave identically. `_.merge` and `lodash.merge`
+  // are aliases — match both receivers.
+  { method: 'merge',  class: '_',      type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'merge',  class: 'lodash', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'extend', class: '_',      type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'extend', class: 'lodash', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'defaultsDeep', class: '_',      type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'defaultsDeep', class: 'lodash', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
   // jQuery $.extend(target, source) (legacy).
-  { method: 'extend', class: '$',      type: 'mass_assignment', cwe: 'CWE-915', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'extend', class: '$',      type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'extend', class: 'jQuery', type: 'mass_assignment', cwe: 'CWE-1321', severity: 'high', arg_positions: [1, 2, 3], languages: ['javascript', 'typescript'] },
+
+  // DOM-XSS via property assignment (CWE-79) — cognium-dev #68 Sprint 10.
+  // `el.innerHTML = tainted` / `el.outerHTML = tainted`. The JS call extractor
+  // emits a synthetic CallInfo with method=`innerHTML`/`outerHTML` for each
+  // matching assignment_expression. These classless entries catch them.
+  { method: 'innerHTML', type: 'xss', cwe: 'CWE-79', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'outerHTML', type: 'xss', cwe: 'CWE-79', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // node-serialize.unserialize (CWE-502) — cognium-dev #68 Sprint 10.
+  // The node-serialize package evaluates `_$$ND_FUNC$$_` IIFE payloads on
+  // decode, turning untrusted input into RCE. Match both receiver-bound
+  // calls (`serialize.unserialize(x)`) and destructured imports
+  // (`const { unserialize } = require('node-serialize')`).
+  { method: 'unserialize', class: 'serialize',      type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'unserialize', class: 'node-serialize', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'unserialize',                          type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [

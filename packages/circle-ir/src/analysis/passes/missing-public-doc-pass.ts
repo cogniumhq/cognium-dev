@@ -72,6 +72,7 @@ function isPublicMethod(method: MethodInfo, language: string): boolean {
       return method.modifiers.includes('public');
     case 'javascript':
     case 'typescript':
+    case 'tsx':
       return !method.modifiers.includes('private') &&
              !method.modifiers.includes('protected');
     case 'python':
@@ -105,7 +106,7 @@ export class MissingPublicDocPass implements AnalysisPass<MissingPublicDocPassRe
     }
 
     // Only supported languages.
-    if (!['java', 'javascript', 'typescript', 'python'].includes(language)) {
+    if (!['java', 'javascript', 'typescript', 'tsx', 'python'].includes(language)) {
       return { missingDocMethods: [], missingDocTypes: [] };
     }
 
