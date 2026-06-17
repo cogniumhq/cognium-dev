@@ -145,6 +145,17 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java: getter methods that return tainted constructor fields ----------
     additionalSources.push(...findGetterSources(types, constProp.instanceFieldTaint, code));
 
+    // -- Cross-language: OOP constructor-injected field flow (issue #78) ------
+    //
+    // Pattern: a constructor assigns a tainted value (HTTP source or a
+    // tainted constructor parameter) to a `this.<field>` / `self.<field>`
+    // slot. Methods of the same class read the field directly or through a
+    // getter / @property. We emit synthetic sources bound to `this.<field>`
+    // / `self.<field>` (and to the getter name) at the assignment / getter
+    // line, so the variable-name scan in TaintPropagationPass connects them
+    // to sinks in other methods of the same class.
+    additionalSources.push(...findOopFieldReadSources(types, code, language));
+
     // -- JavaScript/TypeScript: assignment sources and DOM XSS sinks ---------
     additionalSources.push(...findJavaScriptAssignmentSources(code, language));
 
@@ -276,6 +287,159 @@ function findGetterSources(
             }
           }
         }
+      }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * Issue #78 — OOP constructor-injected field flow (Java + Python).
+ *
+ * For each class, identify fields that the constructor assigns from either
+ * (a) a constructor parameter, or (b) an HTTP source expression. Then emit
+ * synthetic sources keyed on the field-access expression itself
+ * (`this.<field>`, `self.<field>`) and — for single-return getters /
+ * properties — on the getter name. Downstream `TaintPropagationPass`
+ * connects these to sinks in OTHER methods of the same class via its
+ * variable-name scan.
+ *
+ * Scoped to Java + Python because those are the languages where the
+ * constructor-field flow is the dominant OOP taint pattern. JS uses
+ * `this.<field>` too, but DOM/HTTP sources there are already covered by
+ * `findJavaScriptAssignmentSources`.
+ */
+function findOopFieldReadSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java' && language !== 'python') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const isPython = language === 'python';
+  const SELF = isPython ? 'self' : 'this';
+
+  // Common Java HTTP-source receivers / methods. Conservative: matches
+  // `request.getParameter` style calls but not arbitrary `foo.getName()`.
+  const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+
+  const fieldAssignRe = new RegExp(`^\\s*${SELF}\\.([A-Za-z_]\\w*)\\s*=\\s*(.+?)(?:;\\s*)?$`);
+  const commentPrefix = isPython ? '#' : '//';
+
+  for (const type of types) {
+    if (type.kind !== 'class') continue;
+    if (type.name === '<module>') continue;
+
+    // Locate constructor.
+    let ctor: typeof type.methods[number] | undefined;
+    for (const m of type.methods) {
+      if (isPython) {
+        if (m.name === '__init__') { ctor = m; break; }
+      } else {
+        if (m.name === type.name) { ctor = m; break; }
+      }
+    }
+    if (!ctor) continue;
+
+    // Constructor parameter name set (skip the implicit `self` / `this`).
+    const paramNames = new Set<string>();
+    for (const p of ctor.parameters) {
+      if (p.name === 'self' || p.name === 'this') continue;
+      paramNames.add(p.name);
+    }
+
+    // Field → { assignment line, derived source type } map.
+    const fieldTaint = new Map<string, { line: number; type: SourceType }>();
+    const ctorStart = ctor.start_line;
+    const ctorEnd = ctor.end_line;
+    for (let i = ctorStart - 1; i < Math.min(ctorEnd, lines.length); i++) {
+      const line = lines[i] ?? '';
+      if (line.trim().startsWith(commentPrefix)) continue;
+      const m = line.match(fieldAssignRe);
+      if (!m) continue;
+      const fieldName = m[1];
+      const rhs = m[2].trim().replace(/;\s*$/, '');
+
+      let sourceType: SourceType | null = null;
+      if (paramNames.has(rhs)) {
+        sourceType = 'interprocedural_param';
+      } else if (!isPython && javaHttpPattern.test(rhs)) {
+        sourceType = 'http_param';
+      } else if (isPython) {
+        for (const { pattern, type } of PYTHON_TAINTED_PATTERNS) {
+          if (pattern.test(rhs)) { sourceType = type; break; }
+        }
+      }
+      if (sourceType) {
+        fieldTaint.set(fieldName, { line: i + 1, type: sourceType });
+      }
+    }
+
+    if (fieldTaint.size === 0) continue;
+
+    // Emit one source per tainted field, bound to `(self|this).<field>` so
+    // any method whose body references that expression on a sink line is
+    // matched by the variable-name scan in TaintPropagationPass.
+    for (const [fieldName, info] of fieldTaint) {
+      sources.push({
+        type: info.type,
+        location: `${type.name}.${SELF}.${fieldName} (constructor-injected field, #78)`,
+        severity: 'high',
+        line: info.line,
+        confidence: 0.85,
+        variable: `${SELF}.${fieldName}`,
+      });
+    }
+
+    // Detect getters / @property accessors whose body is a single
+    // `return (this|self).<taintedField>` and emit a source bound to the
+    // call-shape used by callers.
+    for (const m of type.methods) {
+      if (m === ctor) continue;
+      // A getter takes only the implicit receiver (Python) or no params (Java).
+      const nonSelfParams = m.parameters.filter(p => p.name !== 'self' && p.name !== 'this');
+      if (nonSelfParams.length !== 0) continue;
+
+      const mStart = m.start_line;
+      const mEnd = m.end_line;
+      let returnedField: string | null = null;
+      let returnStatementCount = 0;
+      // Match `return (this|self).<field>` anywhere on a line — handles
+      // both single-line Java getters (`public String getName() { return this.name; }`)
+      // and multi-line getters / @property bodies.
+      const returnRe = new RegExp(`\\breturn\\s+${SELF}\\.([A-Za-z_]\\w*)\\s*[;}]?`);
+      for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
+        const raw = lines[i] ?? '';
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith(commentPrefix)) continue;
+        const rm = trimmed.match(returnRe);
+        if (rm) {
+          returnedField = rm[1];
+          returnStatementCount++;
+        } else if (/\breturn\b/.test(trimmed)) {
+          // Body contains a non-matching return → not a simple getter.
+          returnStatementCount = 99;
+          break;
+        }
+      }
+      if (returnStatementCount === 1 && returnedField && fieldTaint.has(returnedField)) {
+        const fieldInfo = fieldTaint.get(returnedField)!;
+        // Java: caller writes `getName()` / `this.getName()` / `obj.getName()`.
+        //   → match `\bgetName\b`.
+        // Python @property: caller writes `self.target` / `obj.target`.
+        //   → match `\bself\.target\b` (paren-less access).
+        const getterVar = isPython ? `${SELF}.${m.name}` : m.name;
+        sources.push({
+          type: fieldInfo.type,
+          location: `${type.name}.${m.name} returns tainted field '${returnedField}' (#78)`,
+          severity: 'high',
+          line: m.start_line,
+          confidence: 0.85,
+          variable: getterVar,
+        });
       }
     }
   }

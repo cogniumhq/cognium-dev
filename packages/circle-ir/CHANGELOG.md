@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.59.0] - 2026-06-17
+
+### Fixed — Issue #78: OOP constructor-injected field flow (Java + Python)
+
+- **Java + Python** — A class whose constructor assigns a tainted value to
+  a `this.<field>` / `self.<field>` slot now propagates that taint to
+  sinks in OTHER methods of the same class. Two access patterns covered:
+  - Direct field/attribute read: `st.executeQuery("... " + this.name)`,
+    `os.system("... " + self.host)`.
+  - Getter / `@property` indirection: `st.executeQuery("... " + getName())`,
+    `os.system("... " + self.target)` where the accessor body is a single
+    `return (this|self).<taintedField>`.
+- **Implementation.** New helper `findOopFieldReadSources()` in
+  `analysis/passes/language-sources-pass.ts` walks each class, locates its
+  constructor (`name === class.name` for Java, `__init__` for Python),
+  scans the constructor body for `(this|self).<field> = <expr>` where
+  `<expr>` is either a constructor parameter or an HTTP source pattern
+  (e.g. `req.getParameter`, `request.args.get`), and emits synthetic
+  `TaintSource` entries bound to the field-access expression and to any
+  single-return getter / property that returns it. The variable-name scan
+  in `TaintPropagationPass` then connects these to sinks via the existing
+  pipeline — no changes to downstream propagation logic.
+- **Coverage** — Java 5a/5b + Python 5a/5b from issue #78 now report.
+  Tests added at `tests/analysis/repro-issue-78.test.ts` (5 cases
+  including a negative control).
+
 ## [3.58.0] - 2026-06-16
 
 ### Fixed — Sprint 9: FP-precision cluster (#48, #50, #51, #55, #56, #57, #58, #79, #85, #92)
