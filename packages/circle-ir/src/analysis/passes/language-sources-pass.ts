@@ -534,18 +534,18 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
     const line = lines[i];
     if (line.trimStart().startsWith('#')) continue;
 
-    const subscriptAssign = line.match(/^\s*(\w+)\[(['"])([^'"]+)\2\]\s*=\s*(.+)$/);
+    const subscriptAssign = line.match(/^\s*([\p{L}\p{N}_]+)\[(['"])([^'"]+)\2\]\s*=\s*(.+)$/u);
     if (subscriptAssign) {
       const [, container, , key, rhs2] = subscriptAssign;
-      const isTaintedRhs = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(rhs2));
+      const isTaintedRhs = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(rhs2));
       if (isTaintedRhs) containerTainted.set(`${container}['${key}']`, i + 1);
       continue;
     }
 
-    const setCallMatch = line.match(/^\s*(\w+)\.set\s*\(\s*(['"])([^'"]+)\2\s*,\s*(['"])([^'"]+)\4\s*,\s*(.+?)\s*\)$/);
+    const setCallMatch = line.match(/^\s*([\p{L}\p{N}_]+)\.set\s*\(\s*(['"])([^'"]+)\2\s*,\s*(['"])([^'"]+)\4\s*,\s*(.+?)\s*\)$/u);
     if (setCallMatch) {
       const [, obj, , section, , key, rhs2] = setCallMatch;
-      const isTaintedRhs = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(rhs2));
+      const isTaintedRhs = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(rhs2));
       if (isTaintedRhs) containerTainted.set(`${obj}['${section}']['${key}']`, i + 1);
       continue;
     }
@@ -556,47 +556,47 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
     // Mark the receiver as tainted so subsequent reads (`lst[0]`, `lst.pop()`,
     // bare `lst` in a list literal, etc.) propagate taint via the standard
     // word-boundary scan below.
-    const containerAppendMatch = line.match(/^\s*(\w+)\.(append|extend|insert|add|push|put|appendleft)\s*\(\s*(.+?)\s*\)\s*$/);
+    const containerAppendMatch = line.match(/^\s*([\p{L}\p{N}_]+)\.(append|extend|insert|add|push|put|appendleft)\s*\(\s*(.+?)\s*\)\s*$/u);
     if (containerAppendMatch) {
       const [, receiver, , argExpr] = containerAppendMatch;
-      const argIsTainted = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(argExpr));
+      const argIsTainted = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(argExpr));
       const argIsDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(argExpr));
       if (argIsTainted || argIsDirectSource) tainted.set(receiver, tainted.get(receiver) ?? (i + 1));
       continue;
     }
 
-    const augAssign = line.match(/^\s*(\w+)\s*\+=\s*(.+)$/);
+    const augAssign = line.match(/^\s*([\p{L}\p{N}_]+)\s*\+=\s*(.+)$/u);
     if (augAssign) {
       const [, augLhs, augRhs] = augAssign;
-      const rhsTainted = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(augRhs));
+      const rhsTainted = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(augRhs));
       if (rhsTainted || tainted.has(augLhs)) tainted.set(augLhs, tainted.get(augLhs) ?? (i + 1));
       continue;
     }
 
-    const forLoopMatch = line.match(/^\s*for\s+(\w+)\s+in\s+(.+?)(?:\s*:\s*)?$/);
+    const forLoopMatch = line.match(/^\s*for\s+([\p{L}\p{N}_]+)\s+in\s+(.+?)(?:\s*:\s*)?$/u);
     if (forLoopMatch) {
       const [, iterVar, iterExpr] = forLoopMatch;
       const isDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(iterExpr));
-      const isPropagated = [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(iterExpr));
+      const isPropagated = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(iterExpr));
       if (isDirectSource || isPropagated) tainted.set(iterVar, i + 1);
       continue;
     }
 
-    const assignMatch = line.match(/^\s*(\w+)\s*=\s*(.+)$/);
+    const assignMatch = line.match(/^\s*([\p{L}\p{N}_]+)\s*=\s*(.+)$/u);
     if (!assignMatch) continue;
     const [, lhs, rhs] = assignMatch;
 
     const isDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
     let propagatedFrom: string | undefined;
 
-    const dictAccessMatch = rhs.trim().match(/^(\w+)\[(['"])([^'"]+)\2\]$/);
+    const dictAccessMatch = rhs.trim().match(/^([\p{L}\p{N}_]+)\[(['"])([^'"]+)\2\]$/u);
     if (dictAccessMatch) {
       const [, container, , key] = dictAccessMatch;
       if (containerTainted.has(`${container}['${key}']`)) propagatedFrom = `${container}['${key}']`;
     }
 
     if (!propagatedFrom) {
-      const confGetMatch = rhs.trim().match(/^(\w+)\.get\s*\(\s*(['"])([^'"]+)\2\s*,\s*(['"])([^'"]+)\4\s*\)$/);
+      const confGetMatch = rhs.trim().match(/^([\p{L}\p{N}_]+)\.get\s*\(\s*(['"])([^'"]+)\2\s*,\s*(['"])([^'"]+)\4\s*\)$/u);
       if (confGetMatch) {
         const [, obj, , section, , key] = confGetMatch;
         if (containerTainted.has(`${obj}['${section}']['${key}']`)) propagatedFrom = `${obj}['${section}']['${key}']`;
@@ -605,7 +605,7 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
 
     if (!propagatedFrom) {
       const isSafeEnvRead = /\bos\.environ\.get\s*\(/.test(rhs) || /\bos\.getenv\s*\(/.test(rhs);
-      if (!isSafeEnvRead) propagatedFrom = [...tainted.keys()].find(v => new RegExp(`\\b${v}\\b`).test(rhs));
+      if (!isSafeEnvRead) propagatedFrom = [...tainted.keys()].find(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(rhs));
     }
 
     if (isDirectSource) {

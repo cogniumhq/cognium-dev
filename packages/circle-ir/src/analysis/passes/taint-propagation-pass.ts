@@ -697,7 +697,8 @@ function detectExpressionScanFlows(
   for (const s of sourcesWithVar) {
     if (reCache.has(s.variable)) continue;
     const escaped = s.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    reCache.set(s.variable, new RegExp(`\\b${escaped}\\b`));
+    // Unicode-aware word boundary so non-ASCII identifiers (e.g. `café`) match.
+    reCache.set(s.variable, new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u'));
   }
 
   // Group calls by line for O(1) sink-line lookup.

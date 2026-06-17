@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.62.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.62.0 which closes the Python batch (issues #66, #59):
+  `zipfile.ZipFile($p).extractall(...)` now produces a `path_traversal`
+  flow via new lowercase Python-scoped `extractall` and `ZipFile`
+  constructor sinks; Flask `send_from_directory('/dir', $f)` is detected
+  as CWE-22; Flask method/property sources `request.get_data()`,
+  `request.get_json()`, and `request.stream` are recognised
+  (`pickle.loads(request.get_data())` → `deserialization`);
+  bare-imported functions like `from urllib.request import urlopen` are
+  now matched against class-qualified patterns via
+  `call.resolution.target` (recovers SSRF flow); non-ASCII identifiers
+  such as `café` propagate taint correctly (Python alias map and the
+  word-boundary regex in `taint-propagation-pass` are now Unicode-aware,
+  using `[\p{L}\p{N}_]+` with the `u` flag). See
+  `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.61.0] - 2026-06-17
 
 ### Changed

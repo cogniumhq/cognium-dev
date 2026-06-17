@@ -588,11 +588,21 @@ function matchesSourcePattern(call: CallInfo, pattern: SourcePattern): boolean {
       } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
         // FQN tail matches
       } else if (!call.receiver) {
-        // A bare function call with no receiver can never match a class-qualified method.
-        // Without this guard, ANY call named `get()` matches ALL Map/HashMap/Properties
-        // patterns, producing false positives for unrelated local functions (e.g. a
-        // metric helper `const get = (name) => acc.find(...)`).
-        return false;
+        // Bare function call: accept when import resolution produced a fully
+        // qualified target whose tail is `<pattern.class>.<pattern.method>`.
+        // Handles Python `from urllib.request import urlopen; urlopen(x)`
+        // where `call.resolution.target === 'urllib.request.urlopen'`.
+        const target = call.resolution?.target;
+        const expectedTail = `${pattern.class}.${pattern.method}`;
+        if (target && (target === expectedTail || target.endsWith('.' + expectedTail))) {
+          // Resolved bare-import alias matches the class-qualified pattern.
+        } else {
+          // A bare function call with no receiver can never match a class-qualified method.
+          // Without this guard, ANY call named `get()` matches ALL Map/HashMap/Properties
+          // patterns, producing false positives for unrelated local functions (e.g. a
+          // metric helper `const get = (name) => acc.find(...)`).
+          return false;
+        }
       } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         // The receiver might be a variable name, not the class name
         // For now, we do a simple match - in a full implementation,
@@ -868,8 +878,18 @@ function matchesSinkPattern(
       }
       return false;
     } else if (!call.receiver && !call.receiver_type) {
-      // If no receiver and no resolved type but class is required, don't match
-      return false;
+      // Bare function call: accept when import resolution produced a fully
+      // qualified target whose tail is `<pattern.class>.<pattern.method>`.
+      // Handles `from urllib.request import urlopen; urlopen(x)` against
+      // sink pattern { method: 'urlopen', class: 'urllib.request' }.
+      const target = call.resolution?.target;
+      const expectedTail = `${pattern.class}.${pattern.method}`;
+      if (target && (target === expectedTail || target.endsWith('.' + expectedTail))) {
+        // accept
+      } else {
+        // If no receiver and no resolved type but class is required, don't match
+        return false;
+      }
     }
   }
 

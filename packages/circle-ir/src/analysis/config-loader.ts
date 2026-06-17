@@ -411,8 +411,12 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'get', class: 'cookies', type: 'http_cookie', severity: 'high', return_tainted: true },
   { property: 'json', object: 'request', type: 'http_body', severity: 'high', property_tainted: true },
   { property: 'data', object: 'request', type: 'http_body', severity: 'high', property_tainted: true },
+  { property: 'stream', object: 'request', type: 'http_body', severity: 'high', property_tainted: true },
   { property: 'path', object: 'request', type: 'http_path', severity: 'medium', property_tainted: true },
   { property: 'query_string', object: 'request', type: 'http_query', severity: 'high', property_tainted: true },
+  // Flask request.get_data() — raw request bytes (method form, parallel to request.data property)
+  { method: 'get_data', class: 'request', type: 'http_body', severity: 'high', return_tainted: true },
+  { method: 'get_json', class: 'request', type: 'http_body', severity: 'high', return_tainted: true },
 
   // Django request object
   { method: 'get', class: 'GET', type: 'http_param', severity: 'high', return_tainted: true },
@@ -751,6 +755,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'unzip', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0, 1] },
   { method: 'extract', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0, 1] },
   { method: 'extractAll', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0, 1] },
+  // Python zipfile/tarfile use lowercase extractall (PEP 8 naming)
+  { method: 'extractall', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // Python zipfile.ZipFile(path) — tainted archive path enables Zip-Slip via malicious archive
+  { method: 'ZipFile', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // Flask send_from_directory: untrusted filename can escape directory via ../
+  { method: 'send_from_directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [1], languages: ['python'] },
   { method: 'unjar', type: 'path_traversal', cwe: 'CWE-22', severity: 'critical', arg_positions: [0, 1] },
   // Additional file constructors — BufferedReader(Reader) is NOT a path traversal sink; it wraps a Reader, not a file path
   { method: 'PrintWriter', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },

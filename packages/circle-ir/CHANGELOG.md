@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.62.0] - 2026-06-17
+
+### Fixed — cognium-dev Python batch (issues #66, #59)
+
+This release closes the Python sprint covering nine sub-claims from the
+FN/FP sweep. Four stale-close claims are locked in with regression
+fixtures; five real fixes touch the sink/source catalog, the
+class-qualified pattern matcher, and the Python alias-map / taint flow
+regex paths for non-ASCII identifiers.
+
+**Phase A — Regression guards for stale-close claims (#66.1b / #66.3b /
+#66.4b / #59.2).**
+- `tarfile.open(tainted).extractall('/x')` → `path_traversal` flow.
+- `pickle.loads(request.data)` → `deserialization` flow.
+- `import urllib.request; urllib.request.urlopen(tainted)` → `ssrf` flow.
+- Single-line compound `def d(): q=request.args.get(...);os.system('echo '+q)`
+  → `command_injection` flow.
+- New: `tests/analysis/repro-python-batch.test.ts`.
+
+**Phase B — Python `extractall` (lowercase) + `ZipFile` constructor
+sinks (#66.1a).** `DEFAULT_SINKS` in
+`src/analysis/config-loader.ts` shipped only `extractAll` (camelCase) for
+JS/Java/Go. Python tree-sitter emits the lowercase identifier
+`extractall`; the matcher is case-sensitive, so
+`zipfile.ZipFile(tainted).extractall(...)` did not fire. A
+Python-scoped `extractall` sink (`type: path_traversal`, `cwe: CWE-22`,
+`arg_positions: [0]`) is added. A Python-scoped `ZipFile` constructor
+sink is also added because `zf.extractall('/constant')` carries the
+taint on the receiver — matching the constructor mirrors how
+`tarfile.open` already matches the generic Python `open` sink.
+
+**Phase C — Flask `send_from_directory` sink (#66.2).**
+`DEFAULT_SINKS` now includes
+`{ method: 'send_from_directory', type: 'path_traversal', cwe: 'CWE-22',
+  severity: 'high', arg_positions: [1], languages: ['python'] }`.
+Untrusted `filename` arguments can escape the base directory via `../`.
+
+**Phase D — Flask method/property sources (#66.3a).**
+`DEFAULT_SOURCES` now includes `request.get_data` (method) and
+`request.get_json` (method) as `http_body` sources with
+`return_tainted: true`, plus `request.stream` as a property source with
+`property_tainted: true`. Previously only the canonical
+`request.data`/`request.json`/`request.form` properties were registered,
+which missed `pickle.loads(request.get_data())`-style flows.
+
+**Phase E — Bare-imported function class-qualified match (#66.4a).**
+`matchesSourcePattern` and `matchesSinkPattern` in
+`src/analysis/taint-matcher.ts` previously rejected calls with no
+receiver when the pattern had a `class:` constraint, even when Python
+import resolution had already populated `call.resolution.target` with
+the fully qualified name. Both matchers now accept a bare call when
+`call.resolution.target === \`${pattern.class}.${pattern.method}\`` or
+ends with `.${pattern.class}.${pattern.method}`, recovering flows like
+`from urllib.request import urlopen; urlopen(tainted)` → `ssrf` while
+leaving locally defined functions of the same name (no import
+resolution) untouched.
+
+**Phase F — Non-ASCII identifier propagation (#59.1).**
+`buildPythonTaintedVars` in
+`src/analysis/passes/language-sources-pass.ts` used ASCII-only `\w+`
+and `\b...\b` patterns to extract assignment LHS/RHS variables and check
+for taint propagation. JavaScript regex `\w` is `[A-Za-z0-9_]`, so an
+identifier like `café` never matched `(\w+)\s*=` and was dropped from
+the alias map. The standard taint-flow regex in
+`src/analysis/passes/taint-propagation-pass.ts` had the same problem at
+the `reCache` construction. All identifier patterns now use
+`[\p{L}\p{N}_]+` for the match and
+`(?<![\p{L}\p{N}_])${v}(?![\p{L}\p{N}_])` for the boundary check, both
+with the `u` flag. The non-ASCII `café` repro now produces the expected
+`command_injection` flow.
+
+### Tests
+
+- 2402 vitest cases passing (1 skipped) — up from 2391.
+
 ## [3.61.0] - 2026-06-17
 
 ### Fixed — cognium-dev Bash batch (issues #72, #73)
