@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.63.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.63.0 which closes Sprint 13 (issues #70, #74):
+  taint-flow source lines emitted by `detectCollectionFlows` and
+  `detectArrayElementFlows` are now reported correctly per method scope
+  (previously every collection/array-element flow in a multi-method file
+  pointed at the file's first source). Cross-file Python taint paths
+  (source in `controller.py` → sink in `db_helper.py` /
+  `shell_helper.py`) are locked in with positive regression fixtures —
+  `analyzeProject()` already wires `CrossFilePass` →
+  `CrossFileResolver` → `findCrossFileTaintFlows` correctly. See
+  `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.62.0] - 2026-06-17
 
 ### Changed

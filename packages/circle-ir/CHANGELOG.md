@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.63.0] - 2026-06-17
+
+### Fixed — Source-line attribution in supplementary flow detectors (#70)
+
+`detectCollectionFlows` and `detectArrayElementFlows` in
+`src/analysis/passes/taint-propagation-pass.ts` historically anchored every
+flow to `sources[0]` — the file's first source — once they decided a sink
+was tainted. In multi-method files this misattributed every collection /
+array-element flow to the *first* method's source line (e.g. line 8's
+`getHeader` showed up as the source for cookie/db flows in methods 2 and 3).
+
+Both detectors now receive `types: CircleIR['types']` and call a shared
+`pickScopedSource(sources, sinkLine, methodName, types, taintedVar)` helper
+that mirrors the matching strategy used by the already-correct
+`detectParameterSinkFlows` / `detectExpressionScanFlows`:
+
+1. **Variable match** — prefer any source whose `variable` equals the
+   tainted variable name (closest strict-preceding wins).
+2. **Scope match** — restrict to sources whose `line` falls inside the
+   sink's enclosing method (via `types[].methods[].start_line/end_line`).
+3. **Global closest-preceding** — fallback when neither variable nor scope
+   produces a candidate.
+4. **Last resort** — `sources[0]` (preserves pre-fix behaviour when no
+   source precedes the sink).
+
+`closestPreceding` uses **strict** preceding (`s.line < sinkLine`) so
+synthetic same-line sources stamped on the sink itself (e.g. the
+`plugin_param` source emitted for `m.get("k")` on the same line as
+`Runtime.getRuntime().exec(m.get("k"))`) do not shadow the real upstream
+`req.getParameter` source on the line above.
+
+### Locked — Cross-file Python taint already works (#74)
+
+Investigation confirmed `analyzeProject()` already produces the expected
+cross-file `TaintPath` entries for the issue #74 scenarios (source in
+`controller.py` → sink in `db_helper.py` / `shell_helper.py`). The
+end-to-end pipeline (`CrossFilePass` → `CrossFileResolver` → Python
+`<module>` synthetic-type wrapping → `findCrossFileTaintFlows`) is wired
+correctly. The capability is now locked in with positive regression
+fixtures rather than re-engineered.
+
+### Added
+
+- `tests/analysis/repro-sprint13.test.ts` — five fixtures:
+  three single-file Java cases for #70 (three-method source distinction,
+  two-method header-source repeat, `Map.put`/`Map.get` collection flow)
+  and two multi-file Python cases for #74 (cross-file SQL injection,
+  cross-file command injection).
+
+### Notes
+
+- Public API unchanged; no `SastFinding` schema change.
+- 2407 vitest tests passing (5 new + 2402 baseline), 1 skipped — no
+  regressions.
+
 ## [3.62.0] - 2026-06-17
 
 ### Fixed — cognium-dev Python batch (issues #66, #59)

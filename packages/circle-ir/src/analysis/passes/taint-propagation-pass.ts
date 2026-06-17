@@ -85,7 +85,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }));
 
     // Supplement: array element flows
-    const arrayFlows = detectArrayElementFlows(calls, sources, sinks, constProp.taintedArrayElements, constProp.unreachableLines) ?? [];
+    const arrayFlows = detectArrayElementFlows(calls, sources, sinks, constProp.taintedArrayElements, constProp.unreachableLines, types) ?? [];
     for (const f of arrayFlows) {
       if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) {
         flows.push(f);
@@ -93,7 +93,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: collection/iterator flows — with FP filtering
-    const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code) ?? [];
+    const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code, types) ?? [];
     for (const f of collectionFlows) {
       if (flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) continue;
 
@@ -193,6 +193,7 @@ function detectCollectionFlows(
   taintedVars: Set<string>,
   unreachableLines: Set<number>,
   code?: string,
+  types?: CircleIR['types'],
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
   const callsByLine = new Map<number, typeof calls>();
@@ -217,7 +218,12 @@ function detectCollectionFlows(
           const varName = arg.variable;
           const scopedName = call.in_method ? `${call.in_method}:${varName}` : varName;
           if (taintedVars.has(varName) || taintedVars.has(scopedName)) {
-            const source = sources[0];
+            // Sprint 13 #70 — pick a source in the same method scope as the
+            // sink, not blanket sources[0]. The varName-based match is
+            // primary; method-scope is the tiebreaker; sources[0] is the
+            // last-resort fallback to preserve existing behaviour when no
+            // better source is available.
+            const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, varName);
             if (source) {
               // Sprint 9 #56 / #58.3 — same reassign-to-literal guard as
               // detectExpressionScanFlows. Suppress when the variable is
@@ -259,7 +265,8 @@ function detectCollectionFlows(
               const collectionVar = match[1];
               const scopedCollection = call.in_method ? `${call.in_method}:${collectionVar}` : collectionVar;
               if (taintedVars.has(collectionVar) || taintedVars.has(scopedCollection)) {
-                const source = sources[0];
+                // Sprint 13 #70 — same method-scoped picker as above.
+                const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, collectionVar);
                 if (source) {
                   if (
                     typeof code === 'string' &&
@@ -294,6 +301,7 @@ function detectArrayElementFlows(
   sinks: CircleIR['taint']['sinks'],
   taintedArrayElements: Map<string, Set<string>>,
   unreachableLines: Set<number>,
+  types?: CircleIR['types'],
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
   const callsByLine = new Map<number, typeof calls>();
@@ -322,7 +330,8 @@ function detectArrayElementFlows(
           if (taintedIndices) {
             const isTainted = taintedIndices.has(indexStr) || taintedIndices.has('*');
             if (isTainted) {
-              const source = sources[0];
+              // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
+              const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, arrayName);
               if (source) {
                 flows.push({
                   source_line: source.line, sink_line: sink.line,
@@ -869,4 +878,85 @@ function detectExpressionScanFlows(
   }
 
   return flows;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 13 #70 — method-scoped source picker.
+//
+// `detectCollectionFlows` and `detectArrayElementFlows` historically grabbed
+// `sources[0]` once they decided a sink was tainted. When a file contained
+// multiple methods each with its own source/sink, every supplementary flow
+// was misattributed to the first method's source line.
+//
+// `pickScopedSource` reproduces the matching strategy used by the already-
+// correct `detectParameterSinkFlows` / `detectExpressionScanFlows`:
+//
+//   1. Variable match: if any source carries `source.variable === taintedVar`,
+//      prefer it (closest preceding wins).
+//   2. Scope match: prefer sources whose `line` falls within the same method
+//      as the sink (via `types[].methods[].start_line/end_line`). Closest
+//      preceding wins.
+//   3. Fallback: closest preceding source globally.
+//   4. Last resort: `sources[0]` (preserves pre-fix behaviour when nothing
+//      preceding exists — keeps existing test coverage green).
+// ---------------------------------------------------------------------------
+function pickScopedSource(
+  sources: CircleIR['taint']['sources'],
+  sinkLine: number,
+  methodName: string | null,
+  types: CircleIR['types'] | undefined,
+  taintedVar: string | undefined,
+): CircleIR['taint']['sources'][0] | undefined {
+  if (sources.length === 0) return undefined;
+
+  // Closest-preceding selector over a candidate list. Strict-preceding
+  // (`s.line < sinkLine`): synthetic same-line sources stamped on the sink
+  // itself (e.g. `plugin_param` for `m.get("k")`) are not the true taint
+  // origin and would shadow the real upstream source.
+  const closestPreceding = (cands: CircleIR['taint']['sources']): CircleIR['taint']['sources'][0] | undefined => {
+    let best: CircleIR['taint']['sources'][0] | undefined;
+    for (const s of cands) {
+      if (s.line >= sinkLine) continue;
+      if (!best || s.line > best.line) best = s;
+    }
+    return best;
+  };
+
+  // 1. Variable match (preferred — even across methods, falls within the
+  //    method scope check below for the tiebreak).
+  if (taintedVar) {
+    const byVar = sources.filter(s => s.variable === taintedVar);
+    const pick = closestPreceding(byVar);
+    if (pick) return pick;
+  }
+
+  // 2. Scope match — restrict to sources whose line is inside the same
+  //    method as the sink.
+  if (methodName && types && types.length > 0) {
+    let methodStart = -1;
+    let methodEnd = -1;
+    for (const t of types) {
+      for (const m of t.methods) {
+        if (m.name === methodName) {
+          methodStart = m.start_line;
+          methodEnd = m.end_line;
+          break;
+        }
+      }
+      if (methodStart > 0) break;
+    }
+    if (methodStart > 0 && methodEnd >= methodStart) {
+      const inScope = sources.filter(s => s.line >= methodStart && s.line <= methodEnd);
+      const pick = closestPreceding(inScope);
+      if (pick) return pick;
+    }
+  }
+
+  // 3. Closest preceding source globally.
+  const globalPick = closestPreceding(sources);
+  if (globalPick) return globalPick;
+
+  // 4. Last resort — preserve historical behaviour when there's nothing
+  //    preceding the sink (e.g. synthetic same-line sources).
+  return sources[0];
 }
