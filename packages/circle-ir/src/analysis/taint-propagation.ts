@@ -268,6 +268,27 @@ function findInitialTaint(
         });
       }
     }
+
+    // Bash positional params ($1..$9, $@, $*) are extracted as synthetic param
+    // defs at line 0 in the DFG, but the source emission happens at the use line
+    // (the line the param is referenced on). Seed by variable name against line-0
+    // param defs so the taint enters the DFG. Guarded on def.kind === 'param' to
+    // keep the new path narrow.
+    if (source.variable) {
+      const paramDefs = defsByLine.get(0) ?? [];
+      for (const def of paramDefs) {
+        if (def.kind === 'param' && def.variable === source.variable) {
+          tainted.push({
+            variable: def.variable,
+            defId: def.id,
+            line: def.line,
+            sourceType: source.type,
+            sourceLine: source.line,
+            confidence: source.confidence,
+          });
+        }
+      }
+    }
   }
 
   return tainted;

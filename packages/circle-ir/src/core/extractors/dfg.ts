@@ -1144,7 +1144,22 @@ function buildBashDFG(tree: Tree): DFG {
       if (varNameNode) {
         const varName = getNodeText(varNameNode);
         if (varName && !varName.startsWith('?') && !varName.startsWith('#')) {
-          const reachingDef = findReachingDef(varName, scopeStack);
+          let reachingDef = findReachingDef(varName, scopeStack);
+          // If the variable has no reaching def (i.e. it's an env var or an
+          // unbound identifier), synthesize a `param`-kind def at line 0 so that
+          // env-sourced taint can be seeded and propagated through the DFG.
+          // Skip single-character special parameters (already created above).
+          if (reachingDef === null && !positionalParams.includes(varName)) {
+            const def: DFGDef = {
+              id: defIdCounter++,
+              variable: varName,
+              line: 0,
+              kind: 'param',
+            };
+            defs.push(def);
+            scopeStack[0].set(varName, def.id);
+            reachingDef = def.id;
+          }
           uses.push({
             id: useIdCounter++,
             variable: varName,
@@ -1159,7 +1174,18 @@ function buildBashDFG(tree: Tree): DFG {
       const varNameNode = node.namedChildCount > 0 ? node.namedChild(0) : null;
       if (varNameNode && varNameNode.type === 'variable_name') {
         const varName = getNodeText(varNameNode);
-        const reachingDef = findReachingDef(varName, scopeStack);
+        let reachingDef = findReachingDef(varName, scopeStack);
+        if (reachingDef === null && !positionalParams.includes(varName)) {
+          const def: DFGDef = {
+            id: defIdCounter++,
+            variable: varName,
+            line: 0,
+            kind: 'param',
+          };
+          defs.push(def);
+          scopeStack[0].set(varName, def.id);
+          reachingDef = def.id;
+        }
         uses.push({
           id: useIdCounter++,
           variable: varName,

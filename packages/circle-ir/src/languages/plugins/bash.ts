@@ -230,6 +230,24 @@ export class BashPlugin extends BaseLanguagePlugin {
         severity: 'high',
         argPositions: [0],
       },
+
+      // File inclusion — `source` and POSIX `.` execute arbitrary shell code
+      // from the file at the supplied path. With user-controlled input this is
+      // an RCE primitive equivalent to eval() on file contents (CWE-98).
+      {
+        method: 'source',
+        type: 'path_traversal',
+        cwe: 'CWE-98',
+        severity: 'critical',
+        argPositions: [0],
+      },
+      {
+        method: '.',
+        type: 'path_traversal',
+        cwe: 'CWE-98',
+        severity: 'critical',
+        argPositions: [0],
+      },
     ];
   }
 

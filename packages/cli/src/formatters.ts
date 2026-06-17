@@ -52,6 +52,10 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   trust_boundary: 'medium',
   external_taint_escape: 'medium',
   mybatis_mapper_call: 'medium',
+  redos: 'medium',
+  format_string: 'high',
+  crlf: 'medium',
+  mass_assignment: 'high',
 };
 
 export const SINK_CWE: Record<SinkType, string> = {
@@ -75,6 +79,10 @@ export const SINK_CWE: Record<SinkType, string> = {
   trust_boundary: 'CWE-501',
   external_taint_escape: 'CWE-20',
   mybatis_mapper_call: 'CWE-89',
+  redos: 'CWE-1333',
+  format_string: 'CWE-134',
+  crlf: 'CWE-113',
+  mass_assignment: 'CWE-915',
 };
 
 // Help text for each vulnerability type

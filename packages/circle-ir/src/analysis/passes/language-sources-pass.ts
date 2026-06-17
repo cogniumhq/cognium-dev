@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
@@ -110,6 +110,12 @@ export interface LanguageSourcesResult {
   additionalSources: TaintSource[];
   additionalSinks: TaintSink[];
   /**
+   * Language-specific sanitizers (e.g. Bash regex-allowlist guards) emitted
+   * alongside sources/sinks. Merged into the sanitizer set in
+   * `SinkFilterPass`.
+   */
+  additionalSanitizers: TaintSanitizer[];
+  /**
    * Python forward-taint map: variable name → first tainted line.
    * Used by SinkFilterPass to reduce XPath/XSS false positives.
    */
@@ -141,6 +147,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     const additionalSources: TaintSource[] = [];
     const additionalSinks: TaintSink[] = [];
+    const additionalSanitizers: TaintSanitizer[] = [];
 
     // -- Java: getter methods that return tainted constructor fields ----------
     additionalSources.push(...findGetterSources(types, constProp.instanceFieldTaint, code));
@@ -217,6 +224,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of bashFindings) {
         ctx.addFinding(finding);
       }
+      additionalSanitizers.push(...findBashRegexAllowlistSanitizers(code));
     }
 
     // Attach trimmed source-line text to each emitted source/sink so consumers
@@ -224,7 +232,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // re-reading the file.
     attachSourceLineCode(additionalSources, additionalSinks, code);
 
-    return { additionalSources, additionalSinks, pyTaintedVars, pySanitizedVars, jsTaintedVars };
+    return { additionalSources, additionalSinks, additionalSanitizers, pyTaintedVars, pySanitizedVars, jsTaintedVars };
   }
 }
 
@@ -1084,4 +1092,99 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
   }
 
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Bash regex-allowlist sanitizers (Sprint 11 — #73.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the idiomatic bash regex-allowlist guard:
+ *
+ *   if [[ ! "$var" =~ ^[a-zA-Z0-9_]+$ ]]; then exit 1; fi
+ *
+ * When the guard's `then` branch terminates execution (exit/return/die) and
+ * the regex is a tight character-class allowlist, subsequent uses of `$var`
+ * are constrained to the allowlisted alphabet — effectively a sanitizer.
+ *
+ * We emit `TaintSanitizer` entries at every line from the line AFTER the
+ * `if` through end-of-file. This is intentionally coarse: the test
+ * `checkSanitized` only consults the sink's line, so a per-line emission
+ * gives a simple forward-scoped clear without DFG block tracking. The
+ * sanitizer covers the injection sink-types most relevant to user input
+ * fed to shell utilities.
+ *
+ * Safe-regex predicate rejects anything that isn't anchored, contains
+ * `.*` / `.+`, contains alternation, or contains backrefs.
+ */
+function findBashRegexAllowlistSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Captures: 1=variable, 2=regex body, 3=terminator (exit|return|die)
+  const guardRe = /^\s*if\s+\[\[\s*!\s*"?\$\{?(\w+)\}?"?\s*=~\s*(\S+)\s*\]\]\s*;\s*then\s+(exit|return|die)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardRe.exec(lines[i]);
+    if (!m) continue;
+    const regexLiteral = m[2];
+    if (!isSafeBashAllowlistRegex(regexLiteral)) continue;
+
+    // Sanitizer applies from the next source line through end-of-file. We
+    // emit per-line entries so the line-keyed `checkSanitized` lookup
+    // finds them at any downstream sink line.
+    const ifLine1Indexed = i + 1;
+    for (let l = ifLine1Indexed + 1; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'regex_allowlist',
+        method: '=~',
+        line: l,
+        sanitizes: [
+          'command_injection',
+          'path_traversal',
+          'sql_injection',
+          'code_injection',
+          'ssrf',
+          'xss',
+          'open_redirect',
+          'log_injection',
+        ],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * A regex literal is a "safe allowlist" if:
+ *  - It is anchored at both ends (`^…$`).
+ *  - It contains no wildcard quantifier (`.*` / `.+`).
+ *  - It contains no alternation (`|`).
+ *  - It contains no backreference (`\1`, `\2`, …).
+ *  - Every token is a bracketed character class, a plain alnum / safe punct,
+ *    an escape, or a `+`/`*`/`?` quantifier — no free-form `.`, no shell
+ *    expansion characters.
+ */
+function isSafeBashAllowlistRegex(literal: string): boolean {
+  if (!literal.startsWith('^') || !literal.endsWith('$')) return false;
+  const body = literal.slice(1, -1);
+  if (body.length === 0) return false;
+  if (body.includes('.*') || body.includes('.+')) return false;
+  if (body.includes('|')) return false;
+  if (/\\\d/.test(body)) return false;
+
+  // Token whitelist:
+  //  - `\[[^\]]+\][+*?]?` — char class with optional quantifier
+  //  - `\\.`              — escaped metacharacter
+  //  - `[A-Za-z0-9_\-./]` — literal safe chars
+  //  - `[+*?]`            — quantifier on the preceding token
+  const safeToken = /\[[^\]]+\][+*?]?|\\.|[A-Za-z0-9_\-./]|[+*?]/g;
+  let consumed = 0;
+  let match: RegExpExecArray | null;
+  while ((match = safeToken.exec(body)) !== null) {
+    if (match.index !== consumed) return false;
+    consumed += match[0].length;
+  }
+  return consumed === body.length;
 }

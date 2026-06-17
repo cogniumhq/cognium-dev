@@ -156,6 +156,16 @@ export function analyzeInterprocedural(
     for (const def of graph.defsAtLine(source.line)) {
       seedIds.add(def.id);
     }
+    // Bash positional params ($1..$9, $@, $*) live as synthetic param defs at
+    // line 0; the source emits at the use line. Seed by variable name against
+    // line-0 param defs so cross-procedure taint actually starts.
+    if (source.variable) {
+      for (const def of graph.defsAtLine(0)) {
+        if (def.kind === 'param' && def.variable === source.variable) {
+          seedIds.add(def.id);
+        }
+      }
+    }
   }
   const taintedDefIds = graph.propagateTaintedDefIds(seedIds);
 
@@ -251,17 +261,41 @@ export function analyzeInterprocedural(
           !collectionMethods.has(call.method_name) &&
           !sanitizerMethods.has(call.method_name) &&
           !safeUtilityMethods.has(call.method_name)) {
-        // Create an "external_taint_escape" sink for this call
-        // This represents tainted data being passed to code we can't analyze
-        const sink: TaintSink = {
-          type: 'external_taint_escape',
-          cwe: 'CWE-668',  // Exposure of Resource to Wrong Sphere
-          location: `Tainted data (${taintedArgVars.join(', ')}) passed to external method ${call.receiver ? call.receiver + '.' : ''}${call.method_name}()`,
-          line: call.location.line,
-          confidence: 0.7,  // Lower confidence since we can't verify the external method is dangerous
-          method: call.method_name,
-          argPositions: taintedArgPositions,
-        };
+        // Bash specialization: every external utility (ping, whois, curl, nc,
+        // …) is an unknown call, but an unquoted tainted positional yields
+        // word-splitting/arg-injection that is concretely CWE-78 command
+        // injection — not a generic CWE-668 escape. Re-classify, except for a
+        // small allowlist of side-effect-free builtins.
+        const isBash = graph.ir.meta.language === 'bash';
+        const bashSafeBuiltins = new Set([
+          'echo', 'printf', 'test', '[', '[[', 'true', 'false', ':',
+          'declare', 'local', 'export', 'readonly', 'typeset',
+        ]);
+        if (isBash && bashSafeBuiltins.has(call.method_name)) {
+          continue;
+        }
+
+        const sink: TaintSink = isBash
+          ? {
+              type: 'command_injection',
+              cwe: 'CWE-78',
+              location: `Tainted data (${taintedArgVars.join(', ')}) passed unquoted to shell utility ${call.method_name}`,
+              line: call.location.line,
+              confidence: 0.6,
+              method: call.method_name,
+              argPositions: taintedArgPositions,
+            }
+          : {
+              // Create an "external_taint_escape" sink for this call
+              // This represents tainted data being passed to code we can't analyze
+              type: 'external_taint_escape',
+              cwe: 'CWE-668',  // Exposure of Resource to Wrong Sphere
+              location: `Tainted data (${taintedArgVars.join(', ')}) passed to external method ${call.receiver ? call.receiver + '.' : ''}${call.method_name}()`,
+              line: call.location.line,
+              confidence: 0.7,  // Lower confidence since we can't verify the external method is dangerous
+              method: call.method_name,
+              argPositions: taintedArgPositions,
+            };
 
         // Only add if not already present
         if (!propagatedSinks.some(s => s.line === sink.line && s.type === sink.type)) {

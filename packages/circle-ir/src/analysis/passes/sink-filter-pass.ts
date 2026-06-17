@@ -75,7 +75,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         sinks.push(s);
       }
     }
-    const sanitizers = taintMatcher.sanitizers;
+    const sanitizers: TaintSanitizer[] = [
+      ...taintMatcher.sanitizers,
+      ...(langSources.additionalSanitizers ?? []),
+    ];
 
     // Stage 1 — dead code
     let filtered = sinks.filter(sink => !constProp.unreachableLines.has(sink.line));

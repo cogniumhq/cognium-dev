@@ -646,14 +646,19 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'setCommand', class: 'ExecTask', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'execute', class: 'Java', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
-  // Shell/Bash utilities
-  { method: 'bash', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'shell', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'sh', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'spawn', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'fork', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'popen', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'system', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // Shell/Bash utilities — these are method-call sinks in host languages
+  // (Java Runtime/ProcessBuilder, JS child_process spawn/exec, Python subprocess, etc.).
+  // When the analyzed file IS a bash/shell script, the bash plugin's per-flag entries
+  // (argPositions: [1] for `bash -c <cmd>`) MUST win. Restrict these generic entries
+  // to non-shell languages so they don't collide on the dedup key
+  // `${location}:${call.location.line}:${pattern.cwe}`.
+  { method: 'bash', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'shell', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'sh', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'spawn', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'fork', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'popen', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'system', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Apache Commons Exec
   // Note: bare class 'Executor' removed (see comment above) — DefaultExecutor matched explicitly.

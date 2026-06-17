@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.61.0] - 2026-06-17
+
+### Fixed — cognium-dev Bash batch (issues #72, #73)
+
+This release closes the Bash sprint covering six sub-claims from the FN/FP
+sweep. Two stale-close claims are locked in with regression fixtures. The
+four real fixes touch the sink dedup model, the DFG positional-parameter
+seeding, the BashPlugin sink catalog, the interprocedural escape sink
+classification, and the language-sources pass.
+
+**#72.5 / #73.1 — Regression guards for stale-close claims.**
+- Cross-line `eval "echo $REQUEST_URI"` continues to fire as
+  `code_injection`.
+- Function-local `$1` inside a `format_name()` definition continues to be
+  suppressed (does not leak as a top-level positional-param source).
+- New: `tests/analysis/repro-bash-batch.test.ts` Phase A.
+
+**#72.1, #72.2 — Bash sink `argPositions` collision repaired (Phase B).**
+`DEFAULT_SINKS` in `src/analysis/config-loader.ts` shipped `bash`, `sh`,
+`shell`, `spawn`, `fork`, `popen`, `system` entries with `arg_positions:
+[0]` and NO `languages:` filter. The Bash plugin's `getBuiltinSinks()`
+provides per-flag entries with `argPositions: [1]` (the `-c` flag), but the
+matcher's first-match-wins dedup key
+(`${location}:${line}:${cwe}`) meant the DEFAULT_SINKS entry won. Fix adds
+a `languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust']`
+filter to those seven entries so they no longer shadow the bash plugin's
+correct positions when analyzing bash files. The taint-matcher already
+honors `pattern.languages`.
+
+**#72.1, #72.2 — Positional-param source seeding fixed (Phase C).**
+`buildBashDFG` synthesizes def entries for `$1..$9, $@, $*` at `line: 0`,
+but `findInitialTaint` in `taint-propagation.ts` only consulted
+`defsByLine.get(source.line)` — so the seed taint for a source emitted at
+the use-line never connected to the synthetic line-0 def. Same bug in
+`interprocedural.ts`'s `seedIds` construction. Both now also walk
+`defsByLine.get(0)` and seed param-kind defs whose `variable` matches
+`source.variable`. The new seeding path is guarded by `def.kind === 'param'`
+to keep other languages unaffected.
+
+**#72.6 — `source` / `.` file-inclusion sinks added (Phase D).**
+`BashPlugin.getBuiltinSinks()` now emits `source` and `.` as
+`path_traversal` sinks with `cwe: 'CWE-98'`, `severity: 'critical'`,
+`argPositions: [0]`. Both are RCE primitives equivalent to `eval()` on the
+file contents when the path is attacker-controlled. As a supporting fix,
+`buildBashDFG` (`src/core/extractors/dfg.ts`) now lazily synthesizes
+`param`-kind defs at `line: 0` for any `simple_expansion` /
+`expansion` reference (`$VAR` / `${VAR}`) that has no reaching def and is
+not a positional parameter. This unifies env-vars with positional params so
+Phase C's variable-name seeding handles both uniformly.
+
+**#72.3, #72.4 — Bash external escape re-classified (Phase E).**
+`interprocedural.ts` previously emitted a generic
+`external_taint_escape` (CWE-668, medium, 0.7) when tainted args flowed
+into an unknown external call. For bash, virtually every shell utility
+(`ping`, `whois`, `curl`, `nc`, …) is "unknown" and the user-facing
+severity was wrong: an unquoted positional like `ping -c 3 $host` is
+concretely `command_injection` via word-splitting. When the analyzed
+language is `bash`, we now emit `command_injection` (CWE-78, high, 0.6)
+instead, except for a small allowlist of side-effect-free builtins
+(`echo`, `printf`, `test`, `[`, `[[`, `true`, `false`, `:`, `declare`,
+`local`, `export`, `readonly`, `typeset`) which are skipped.
+
+**#73.2 — Bash regex-allowlist sanitizer (Phase F).**
+The idiomatic guard
+```bash
+if [[ ! "$var" =~ ^[a-zA-Z0-9_]+$ ]]; then exit 1; fi
+```
+was previously ignored, producing false positive `command_injection` /
+`path_traversal` findings on subsequent `$var` uses. A new detector in
+`language-sources-pass.ts` (`findBashRegexAllowlistSanitizers`) recognizes
+the `if [[ ! "$var" =~ <regex> ]]; then exit|return|die` pattern when the
+regex is a safe anchored character-class allowlist (no `.*`/`.+`, no
+alternation, no backrefs) and emits `TaintSanitizer { type:
+'regex_allowlist', method: '=~' }` entries covering downstream sink lines.
+`SinkFilterPass` merges these into the sanitizer set alongside the
+`TaintMatcherPass` output. Negative control: `.+` and other unsafe regex
+bodies do NOT emit a sanitizer.
+
+**Test coverage:** new `tests/analysis/repro-bash-batch.test.ts` (12
+cases). Full suite: 2392 tests passing.
+
+---
+
 ## [3.60.0] - 2026-06-17
 
 ### Fixed — cognium-dev JS/TS batch (issues #88, #80, #69, #68)

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.61.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.61.0 which closes the Bash batch (issues #72, #73):
+  bash `bash -c "$1"` / `host=$1; bash -c "$host"` now produce
+  `command_injection` flows (sink dedup collision repaired + positional-param
+  seeding fixed); `source "$URL"` / `. "$URL"` are detected as CWE-98 file
+  inclusion sinks; tainted args into unknown shell utilities (`ping`,
+  `whois`, `curl`, …) are re-classified from generic `external_taint_escape`
+  to CWE-78 `command_injection`; the idiomatic
+  `if [[ ! "$var" =~ ^[a-zA-Z0-9_]+$ ]]; then exit; fi` regex-allowlist
+  guard is now recognised as a sanitizer. CLI formatters gain
+  SINK_SEVERITY / SINK_CWE entries for `redos`, `format_string`, `crlf`,
+  and `mass_assignment` (unblocks `tsc --noEmit`). See
+  `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.60.0] - 2026-06-17
 
 ### Changed
