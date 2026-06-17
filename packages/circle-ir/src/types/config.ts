@@ -37,6 +37,14 @@ export interface SourcePattern {
   param_tainted?: boolean;   // Annotated parameter is tainted
   property_tainted?: boolean; // Property access is tainted (for JS)
 
+  /**
+   * Restrict the pattern to specific source languages. When omitted, the
+   * pattern matches regardless of language. Use this for sources whose
+   * method name collides across language ecosystems (e.g. Rust Axum's
+   * `Path<T>` extractor vs Python's `pathlib.Path` constructor).
+   */
+  languages?: SupportedLanguage[];
+
   note?: string;
 }
 

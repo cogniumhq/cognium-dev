@@ -400,11 +400,27 @@ export function filterCleanVariableSinks(
       ? callsAtSink.filter(c => c.method_name === sink.method)
       : callsAtSink;
 
+    // Whether to trust sink.argPositions for narrowing the cleanness check. In shell-like
+    // languages, flag-vs-positional ambiguity makes statically declared argument positions
+    // unreliable (e.g. `rm -rf "$DIR"` has the path at position 1, but `rm "$DIR"` at
+    // position 0). For typed languages (JS/TS, Java, Python, Go, Rust) the declared
+    // positions reliably correspond to dangerous arguments.
+    const trustArgPositions = language !== 'bash' && language !== 'shell';
+
     for (const call of relevantCalls) {
       let allArgsAreClean = true;
+      let dangerousArgCount = 0;
       const methodName = call.in_method;
 
       for (const arg of call.arguments) {
+        // Restrict cleanness check to the dangerous argument positions for this sink (e.g.
+        // SQL sinks like `db.query(query, callback)` are dangerous only at arg[0]; a callback
+        // variable at arg[1] must not cause the whole sink to appear "dirty"). Mirrors the
+        // pattern used by taint-propagation.ts when matching tainted args to sinks. Skipped
+        // for bash/shell where argPositions is unreliable (see comment above the loop).
+        if (trustArgPositions && sink.argPositions && sink.argPositions.length > 0 && !sink.argPositions.includes(arg.position)) continue;
+        dangerousArgCount++;
+
         // Skip the command-name argument in shell calls (e.g., arg[0]="curl" for `curl -s URL`).
         // The command name itself has literal=null and expression matching the method name.
         // Only applies to Bash — in other languages a variable can legitimately share its name
@@ -430,7 +446,7 @@ export function filterCleanVariableSinks(
         }
       }
 
-      if (allArgsAreClean && call.arguments.length > 0) return false;
+      if (allArgsAreClean && dangerousArgCount > 0) return false;
     }
 
     return true;

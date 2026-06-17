@@ -262,6 +262,59 @@
       "removes": [
         "sql_injection"
       ]
+    },
+    {
+      "method": "parseInt",
+      "class": "Integer",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Java numeric cast — output cannot carry string injection"
+    },
+    {
+      "method": "parseLong",
+      "class": "Long",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "parseDouble",
+      "class": "Double",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "parseFloat",
+      "class": "Float",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "parseShort",
+      "class": "Short",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "parseByte",
+      "class": "Byte",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "valueOf",
+      "class": "Integer",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "valueOf",
+      "class": "Long",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "fromString",
+      "class": "UUID",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "UUID.fromString throws on non-UUID input — output is a typed UUID"
+    },
+    {
+      "method": "valueOf",
+      "class": "Enum",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Enum.valueOf throws on unknown name — output is a typed enum"
     }
   ]
 }

@@ -121,6 +121,19 @@ export const SANITIZER_METHODS = new Set([
   // General
   'sanitize', 'encode', 'escape', 'clean', 'filter', 'validate', 'validatePath',
   'validateCityName', 'validateInput', 'sanitizeInput',
+
+  // Type-cast barriers (#57) — numeric/boolean casts cannot carry a string
+  // injection payload. Conservative whitelist; ambiguous names like `valueOf`,
+  // `Parse`, `fromString` are intentionally excluded.
+  // Java
+  'parseInt', 'parseLong', 'parseFloat', 'parseDouble', 'parseShort', 'parseByte',
+  'fromString', // UUID.fromString — parses strict UUID format, rejects injection
+  // JS/TS (parseInt/parseFloat covered above)
+  'Number', 'BigInt',
+  // Go
+  'Atoi', 'ParseInt', 'ParseFloat', 'ParseUint', 'ParseBool',
+  // Python
+  'int', 'float', 'bool',
 ]);
 
 // =============================================================================

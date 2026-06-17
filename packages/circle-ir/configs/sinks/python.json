@@ -505,6 +505,30 @@
       "class": "werkzeug.utils",
       "sanitizes": ["path_traversal"],
       "note": "werkzeug secure_filename() - filename sanitization"
+    },
+    {
+      "method": "int",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Python numeric cast — output cannot carry string injection"
+    },
+    {
+      "method": "float",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "bool",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "UUID",
+      "class": "uuid",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "uuid.UUID() throws on non-UUID input — output is a typed UUID"
+    },
+    {
+      "method": "Decimal",
+      "class": "decimal",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
     }
   ]
 }

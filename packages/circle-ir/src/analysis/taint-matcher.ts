@@ -48,7 +48,7 @@ export function analyzeTaint(
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
   const sources = findSources(calls, types, config.sources, sourceLines, language);
   const sinks = findSinks(calls, config.sinks, typeHierarchy, language, sourceLines);
-  const sanitizers = findSanitizers(calls, types, config.sanitizers);
+  const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
 
   return { sources, sinks, sanitizers };
 }
@@ -91,6 +91,19 @@ function findSources(
   // Check method calls
   for (const call of calls) {
     for (const pattern of patterns) {
+      // Honor language restriction on source patterns (added Sprint 9):
+      // some Axum extractors (`Path<T>`, `Json<T>`) collide with stdlib
+      // names in other languages (e.g. Python `pathlib.Path(raw)` was
+      // being matched as the Rust Axum `Path` extractor → spurious
+      // `http_path` source). Skip when language is known and excluded.
+      if (
+        pattern.languages &&
+        pattern.languages.length > 0 &&
+        language !== undefined &&
+        !pattern.languages.includes(language)
+      ) {
+        continue;
+      }
       if (matchesSourcePattern(call, pattern)) {
         sources.push({
           type: pattern.type,
@@ -914,6 +927,22 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     return true;
   }
 
+  // Constructor-call receiver: `ClassName(args)` — Python `Path(raw)`,
+  // JS `new URL(s)` (handled separately), etc. When the receiver is a
+  // direct function call whose function name equals the target class
+  // name, the resulting object is an instance of that class.
+  // Required for the `pathlib.Path(x).resolve()` sanitizer to match
+  // class: "Path" against receiver "Path(raw)" — Sprint 9 #48.2.
+  if (receiver.endsWith(')')) {
+    const ctorMatch = receiver.match(/^(\w+)\(/);
+    if (ctorMatch) {
+      const ctorName = ctorMatch[1];
+      if (ctorName === className || ctorName.toLowerCase() === className.toLowerCase()) {
+        return true;
+      }
+    }
+  }
+
   // Rust/C++ scoped receivers: extract the type name before ::
   // Handles both single-line and multi-line chained calls, e.g.:
   //   "Command::new(\"sh\").arg(\"-c\").arg(&input)"          (single-line)
@@ -1285,7 +1314,8 @@ export function isInDangerousPosition(
 function findSanitizers(
   calls: CallInfo[],
   types: TypeInfo[],
-  patterns: SanitizerPattern[]
+  patterns: SanitizerPattern[],
+  sourceLines?: string[]
 ): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
 
@@ -1297,6 +1327,86 @@ function findSanitizers(
         sanitizerMethods.add(method.name);
       }
     }
+  }
+
+  // Sprint 9 #79 (Phase L): derive wrapper sanitizers.
+  // A method qualifies as a derived sanitizer when its body is exactly
+  // `return <known_sanitizer>(<param>)` (optionally `await`-prefixed).
+  // We require:
+  //   1. Method body span ≤ 2 lines (signature + single return).
+  //   2. Exactly one non-recursive call inside the method's line range.
+  //   3. That call matches a configured sanitizer pattern with non-empty
+  //      `removes`.
+  //   4. The inner call's argument is exactly one of the wrapper's params.
+  //   5. When source is available, the inner call's source line, after
+  //      `return ` / `return await `, starts with the inner call's
+  //      `[receiver.]method(` prefix and ends with `)` — rejecting
+  //      unsafe shapes like `return x + shlex.quote(x)`.
+  const wrapperSanitizers = new Map<string, SinkType[]>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      const bodySize = method.end_line - method.start_line;
+      if (bodySize < 0 || bodySize > 2) continue;
+      const paramNames = new Set(method.parameters.map(p => p.name));
+      if (paramNames.size === 0) continue;
+
+      const inside: CallInfo[] = [];
+      for (const c of calls) {
+        if (c.location.line < method.start_line || c.location.line > method.end_line) continue;
+        if (c.method_name === method.name) continue; // recursion guard
+        inside.push(c);
+      }
+      if (inside.length !== 1) continue;
+      const innerCall = inside[0]!;
+
+      let matched: SanitizerPattern | undefined;
+      for (const pattern of patterns) {
+        if (matchesSanitizerPattern(innerCall, pattern)) {
+          matched = pattern;
+          break;
+        }
+      }
+      if (!matched || !matched.removes || matched.removes.length === 0) continue;
+
+      let argOk = false;
+      for (const arg of innerCall.arguments) {
+        if (arg.variable && paramNames.has(arg.variable)) { argOk = true; break; }
+      }
+      if (!argOk) continue;
+
+      if (sourceLines) {
+        const lineText = sourceLines[innerCall.location.line - 1] ?? '';
+        const stripped = lineText.trim();
+        const returnMatch = stripped.match(/^return\s+(?:await\s+)?(.*)$/);
+        if (!returnMatch) continue;
+        const after = returnMatch[1]!.replace(/;\s*$/, '').trimEnd();
+        const callPrefix = innerCall.receiver
+          ? `${innerCall.receiver}.${innerCall.method_name}(`
+          : `${innerCall.method_name}(`;
+        if (!after.startsWith(callPrefix)) continue;
+        if (!after.endsWith(')')) continue;
+      }
+
+      const existing = wrapperSanitizers.get(method.name);
+      if (existing) {
+        const set = new Set<SinkType>([...existing, ...matched.removes]);
+        wrapperSanitizers.set(method.name, Array.from(set));
+      } else {
+        wrapperSanitizers.set(method.name, [...matched.removes]);
+      }
+    }
+  }
+
+  // Emit a derived-sanitizer entry at each call site to a wrapper method.
+  for (const call of calls) {
+    const removes = wrapperSanitizers.get(call.method_name);
+    if (!removes) continue;
+    sanitizers.push({
+      type: 'derived_wrapper',
+      method: formatSanitizerMethod(call),
+      line: call.location.line,
+      sanitizes: removes,
+    });
   }
 
   // Check method calls for sanitizer methods

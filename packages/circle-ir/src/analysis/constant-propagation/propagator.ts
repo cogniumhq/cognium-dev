@@ -77,6 +77,10 @@ export class ConstantPropagator {
   private inConstructor: boolean = false;
   // Map constructor parameter names to their positions (0-indexed)
   private constructorParamPositions: Map<string, number> = new Map();
+  // Sprint 9 #58.1 — names of `static final Pattern` fields whose compiled
+  // regex is strict-anchored (provably matches a bounded character set).
+  // Populated lazily on first access via `getSafePatternFields()`.
+  private safePatternFieldsCache: Set<string> | null = null;
 
   /**
    * Analyze source code and build constant propagation state.
@@ -111,6 +115,7 @@ export class ConstantPropagator {
     this.currentClassName = null;
     this.inConstructor = false;
     this.constructorParamPositions.clear();
+    this.safePatternFieldsCache = null;
 
     // Pre-pass: identify class fields
     this.collectClassFields(tree.rootNode);
@@ -128,6 +133,15 @@ export class ConstantPropagator {
 
     // Pre-pass: identify methods that always return constants or sanitized values
     this.analyzeMethodReturns(tree.rootNode);
+
+    // Sprint 9 #55 — Pre-pass: fold Python module-level constant assignments
+    // (`DEBUG = False`, `FOO = "bar"`) into the symbol table so dead-code
+    // detection of `if DEBUG:` guards inside functions can mark the body
+    // unreachable. We do this only for top-level `assignment` nodes whose
+    // RHS is a primitive literal — keeps the change narrow and avoids the
+    // recursion hazards of dispatching the full `handleAssignment` path
+    // on Python ASTs.
+    this.seedPythonModuleConstants(tree.rootNode);
 
     // First pass: collect symbols, taint, and unreachable lines
     this.visit(tree.rootNode);
@@ -563,6 +577,180 @@ export class ConstantPropagator {
     }
   }
 
+  /**
+   * Sprint 9 #55 — seed the symbol table with Python module-level constant
+   * assignments. Walks only direct children of the `module` root and adds
+   * `IDENT = <primitive literal>` to `symbols` so `if IDENT:` guards inside
+   * downstream functions can be folded to dead code.
+   *
+   * Recognized literal RHS kinds: `true`/`false` (booleans), integer/float
+   * literals, string literals. The ExpressionEvaluator already understands
+   * each via the same lookup callback; we just need the symbol present.
+   */
+  /**
+   * Sprint 9 #55 — gate `field_declaration` folding to primitive literals.
+   *
+   * The deep-nesting regression (cognium-ai#88) constructs a Java
+   * `static final String hyphenData = "a" + "b" + ... (10k segments)` at the
+   * class level. `handleVariableDeclaration` would otherwise dispatch
+   * `evaluateExpression` on the deeply nested binary AST and blow the V8
+   * stack. The dead-code-by-const-guard pattern (`if (DEBUG)`) only requires
+   * `boolean`/`integer`/`string` (single-literal) RHS folding, so restrict
+   * to those node types.
+   */
+  private fieldDeclHasPrimitiveLiteralValue(node: Node): boolean {
+    const primitive = new Set([
+      // Java literal node types
+      'true', 'false', 'null_literal',
+      'decimal_integer_literal', 'hex_integer_literal',
+      'octal_integer_literal', 'binary_integer_literal',
+      'decimal_floating_point_literal',
+      'hex_floating_point_literal',
+      'character_literal', 'string_literal',
+      // JS/TS literal node types (defensive, in case other langs reuse it)
+      'number', 'string',
+    ]);
+    for (const child of node.children) {
+      if (child.type !== 'variable_declarator') continue;
+      const value = child.childForFieldName('value');
+      if (!value) continue;
+      if (!primitive.has(value.type)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Sprint 9 #58.1 — collect the set of class-level `Pattern` field names
+   * whose compiled regex is strict-anchored, i.e. provably matches a
+   * bounded character set with no wildcard escape. A subsequent
+   * `if (!FIELD.matcher(var).matches()) throw ...;` guard then proves
+   * `var` is sanitized after the if.
+   *
+   * Recognized initializer shapes (scanned via source-text regex to avoid
+   * threading another AST walk):
+   *   `static final Pattern FIELD = Pattern.compile("regex");`
+   *
+   * Strict-anchored regex criteria:
+   *   - starts with `^` and ends with `$`
+   *   - after stripping `[...]` character classes, must not contain `.` or
+   *     `|` (a `.` could match anything; `|` admits an arbitrary alternative)
+   */
+  private getSafePatternFields(): Set<string> {
+    if (this.safePatternFieldsCache !== null) return this.safePatternFieldsCache;
+    const set = new Set<string>();
+    // Match `static final Pattern NAME = Pattern.compile("REGEX")` allowing
+    // arbitrary modifier order and optional `public/private/protected`.
+    const re = /\b(?:public\s+|private\s+|protected\s+)?(?:static\s+final|final\s+static)\s+(?:java\.util\.regex\.)?Pattern\s+(\w+)\s*=\s*(?:java\.util\.regex\.)?Pattern\s*\.\s*compile\s*\(\s*"((?:[^"\\]|\\.)*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(this.source)) !== null) {
+      const name = m[1];
+      const regex = m[2];
+      if (this.isStrictAnchoredRegex(regex)) set.add(name);
+    }
+    this.safePatternFieldsCache = set;
+    return set;
+  }
+
+  private isStrictAnchoredRegex(re: string): boolean {
+    if (!re.startsWith('^') || !re.endsWith('$')) return false;
+    // Strip [..] character classes (and escaped brackets) — wildcards inside
+    // a class are fine because they only match the listed characters.
+    const stripped = re.replace(/\[(?:[^\]\\]|\\.)*\]/g, '');
+    // Forbid bare `.` (any char) and `|` (alternation) outside classes.
+    // `\.` (escaped dot) is fine; same for `\|`.
+    const cleaned = stripped.replace(/\\./g, '');
+    if (cleaned.includes('.')) return false;
+    if (cleaned.includes('|')) return false;
+    return true;
+  }
+
+  /**
+   * Sprint 9 #58.1 — detect the regex-allowlist guard pattern.
+   *
+   *   if (!SAFE_NAME.matcher(var).matches()) { throw ...; }
+   *
+   * Returns the guarded variable name if the pattern matches AND
+   * `SAFE_NAME` is a recognized strict-anchored Pattern field, otherwise
+   * null. Caller drops the variable from `tainted` after the if-block.
+   */
+  private detectRegexAllowlistGuard(condition: Node, consequence: Node | null): string | null {
+    if (!consequence) return null;
+    let condText = getNodeText(condition, this.source).replace(/\s+/g, '');
+    // Strip balanced outer parens (Java's `if_statement` condition is a
+    // `parenthesized_expression`, so `(!SAFE.matcher(x).matches())` arrives
+    // wrapped). Repeat in case of redundant parens.
+    while (condText.startsWith('(') && condText.endsWith(')')) {
+      const inner = condText.slice(1, -1);
+      let depth = 0;
+      let balanced = true;
+      for (let i = 0; i < inner.length; i++) {
+        if (inner[i] === '(') depth++;
+        else if (inner[i] === ')') depth--;
+        if (depth < 0) { balanced = false; break; }
+      }
+      if (!balanced || depth !== 0) break;
+      condText = inner;
+    }
+    const m = condText.match(/^!(\w+)\.matcher\((\w+)\)\.matches\(\)$/);
+    if (!m) return null;
+    const patternName = m[1];
+    const varName = m[2];
+    if (!this.getSafePatternFields().has(patternName)) return null;
+    if (!this.consequenceContainsThrow(consequence)) return null;
+    return varName;
+  }
+
+  private consequenceContainsThrow(node: Node): boolean {
+    if (node.type === 'throw_statement') return true;
+    // For block bodies, look for any throw_statement child.
+    const stack: Node[] = [node];
+    while (stack.length > 0) {
+      const n = stack.pop();
+      if (!n) continue;
+      if (n.type === 'throw_statement') return true;
+      // Don't descend into nested control-flow that may not actually throw.
+      if (n.type === 'if_statement' || n.type === 'switch_statement') continue;
+      for (const c of n.children) stack.push(c);
+    }
+    return false;
+  }
+
+  private seedPythonModuleConstants(root: Node): void {
+    if (root.type !== 'module') return; // Python-only — Java/JS roots differ.
+    for (const child of root.children) {
+      // Top-level Python statements are wrapped in an `expression_statement`
+      // whose first child is the actual expression. Module-level `x = y`
+      // produces `expression_statement → assignment`.
+      const target =
+        child.type === 'assignment'
+          ? child
+          : child.type === 'expression_statement' && child.children.length > 0
+            ? child.children[0]
+            : null;
+      if (!target || target.type !== 'assignment') continue;
+      const left  = target.childForFieldName('left');
+      const right = target.childForFieldName('right');
+      if (!left || !right) continue;
+      if (left.type !== 'identifier') continue;
+      // Constrain RHS to PRIMITIVE literal nodes only. Evaluating compound
+      // expressions (e.g. `"a" + "b" + ...`) via the full evaluator can
+      // recurse arbitrarily deep on pathological generated sources — the
+      // deep-nesting regression (cognium-ai#88) constructs 10k-segment
+      // string concatenations at module level. We don't need that here.
+      const allowed = new Set([
+        'true', 'false', 'none',
+        'integer', 'float',
+        'string',
+      ]);
+      if (!allowed.has(right.type)) continue;
+      const name = getNodeText(left, this.source);
+      if (!name) continue;
+      const value = this.evaluateExpression(right);
+      if (!isKnown(value)) continue;
+      this.symbols.set(name, value);
+    }
+  }
+
   private findAllMethods(node: Node): Node[] {
     // Iterative DFS — guards against stack overflow on deeply nested AST
     // shapes (cognium-ai#88).
@@ -688,6 +876,25 @@ export class ConstantPropagator {
 
       case 'local_variable_declaration':
         this.handleVariableDeclaration(node);
+        return false;
+
+      case 'field_declaration':
+        // Sprint 9 #55 — fold class-level `static final` constants into the
+        // symbols table so `if (DEBUG) { ... }` style guards can be evaluated
+        // and the unreachable branch marked as dead code. Structurally
+        // identical to `local_variable_declaration` (both have
+        // `variable_declarator` children with `name`/`value`), so the same
+        // handler applies.
+        //
+        // Constrain to primitive-literal initializers only. Java
+        // `public static final String hyphenData = "a" + "b" + ...` at the
+        // class level can be arbitrarily deep (cognium-ai#88), and the
+        // evaluator's binary recursion blows the stack at ~5k segments. The
+        // dead-code-by-const-guard pattern (`if (DEBUG)`) only needs
+        // booleans/numbers/single strings folded; nothing else.
+        if (this.fieldDeclHasPrimitiveLiteralValue(node)) {
+          this.handleVariableDeclaration(node);
+        }
         return false;
 
       case 'assignment_expression':
@@ -1340,6 +1547,21 @@ export class ConstantPropagator {
 
       this.inConditionalBranch = wasInConditional;
       this.tainted = new Set([...taintedBefore, ...taintedAfterThen, ...taintedAfterElse]);
+
+      // Sprint 9 #58.1 — regex-allowlist sanitizer.
+      //   if (!SAFE_NAME.matcher(var).matches()) throw ...;
+      // After this if, `var` is provably one of the strict-anchored regex's
+      // matches. Drop it from `tainted` (and from any scoped variant).
+      const guardedVar = this.detectRegexAllowlistGuard(condition, consequence);
+      if (guardedVar) {
+        this.tainted.delete(guardedVar);
+        this.sanitizedVars.add(guardedVar);
+        const scoped = this.getScopedName(guardedVar);
+        if (scoped !== guardedVar) {
+          this.tainted.delete(scoped);
+          this.sanitizedVars.add(scoped);
+        }
+      }
     }
   }
 
@@ -1564,19 +1786,44 @@ export class ConstantPropagator {
   /**
    * Check if an expression is a call to a sanitizer method.
    * This includes both built-in sanitizers and @sanitizer annotated methods.
+   * Handles Java (`method_invocation`), Go/JS/TS (`call_expression`), and
+   * Python (`call`) AST shapes.
    */
   isSanitizerMethodCall(node: Node): boolean {
-    if (node.type !== 'method_invocation') {
-      return false;
-    }
-
-    const nameNode = node.childForFieldName('name');
-    if (!nameNode) {
-      return false;
-    }
-
-    const methodName = getNodeText(nameNode, this.source);
+    const methodName = this.extractCallName(node);
+    if (!methodName) return false;
     return SANITIZER_METHODS.has(methodName) || this.methodReturnsSanitized.has(methodName);
+  }
+
+  /**
+   * Extract the trailing method/function name from any call node shape:
+   *   Java   `method_invocation`        — name field
+   *   Go/JS  `call_expression`          — function field (identifier or selector/member)
+   *   Python `call`                     — function field (identifier or attribute)
+   */
+  private extractCallName(node: Node): string | null {
+    let fnNode: Node | null = null;
+    if (node.type === 'method_invocation') {
+      fnNode = node.childForFieldName('name');
+    } else if (node.type === 'call_expression' || node.type === 'call') {
+      fnNode = node.childForFieldName('function');
+    }
+    if (!fnNode) return null;
+
+    // For selector_expression (Go), member_expression (JS), attribute (Python),
+    // take the trailing identifier.
+    if (
+      fnNode.type === 'selector_expression' ||
+      fnNode.type === 'member_expression' ||
+      fnNode.type === 'attribute'
+    ) {
+      const tail =
+        fnNode.childForFieldName('field') ||
+        fnNode.childForFieldName('property') ||
+        fnNode.childForFieldName('attribute');
+      if (tail) return getNodeText(tail, this.source);
+    }
+    return getNodeText(fnNode, this.source);
   }
 
   /**

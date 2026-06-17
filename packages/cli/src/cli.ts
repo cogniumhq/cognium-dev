@@ -198,6 +198,7 @@ const TEST_PATTERNS = [
   /_tests\.py$/,
   /test_.*\.py$/,
   /_test\.rs$/,
+  /_test\.go$/,
 ];
 
 export function isTestFile(filePath: string): boolean {

@@ -157,6 +157,67 @@
       "class": "template",
       "removes": ["xss"],
       "note": "template.HTMLEscapeString escapes HTML"
+    },
+    {
+      "method": "Atoi",
+      "class": "strconv",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Numeric cast — output cannot carry string injection"
+    },
+    {
+      "method": "ParseInt",
+      "class": "strconv",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "ParseFloat",
+      "class": "strconv",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "ParseUint",
+      "class": "strconv",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "ParseBool",
+      "class": "strconv",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "Parse",
+      "class": "uuid",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "uuid.Parse() — throws on non-UUID input"
+    },
+    {
+      "method": "MustParse",
+      "class": "uuid",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"]
+    },
+    {
+      "method": "Base",
+      "class": "filepath",
+      "removes": ["path_traversal"],
+      "note": "filepath.Base returns final element only — strips traversal segments"
+    },
+    {
+      "method": "EvalSymlinks",
+      "class": "filepath",
+      "removes": ["path_traversal"],
+      "note": "filepath.EvalSymlinks resolves symlinks to absolute path"
+    },
+    {
+      "method": "Clean",
+      "class": "path",
+      "removes": ["path_traversal"],
+      "note": "path.Clean (slash-only) normalizes ../ segments"
+    },
+    {
+      "method": "Base",
+      "class": "path",
+      "removes": ["path_traversal"],
+      "note": "path.Base returns final slash-element only"
     }
   ]
 }

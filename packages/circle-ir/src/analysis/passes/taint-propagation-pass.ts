@@ -62,6 +62,10 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
 
+      // Note: Sprint 9 #58.1 sanitizer-guard suppression (regex-allowlist
+      // and similar positive sanitizer evidence) is applied as a uniform
+      // final-pass filter below — see `sanitizedNames` block before return.
+
       return true;
     });
 
@@ -89,7 +93,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: collection/iterator flows — with FP filtering
-    const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines) ?? [];
+    const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code) ?? [];
     for (const f of collectionFlows) {
       if (flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) continue;
 
@@ -110,7 +114,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: direct parameter-to-sink flows
-    const paramFlows = detectParameterSinkFlows(types, calls, sources, sinks, constProp.unreachableLines) ?? [];
+    const paramFlows = detectParameterSinkFlows(types, calls, sources, sinks, constProp.unreachableLines, constProp.tainted, ctx.code) ?? [];
     for (const f of paramFlows) {
       if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) {
         flows.push(f);
@@ -134,7 +138,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // scan each sink's call-argument expressions for that variable name as
     // an identifier-boundary match. This is language-agnostic but in practice
     // benefits Python the most because Java sources rarely set `variable`.
-    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, ctx.code, ctx.language) ?? [];
+    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, constProp.tainted, ctx.code, ctx.language) ?? [];
     for (const f of exprScanFlows) {
       if (flows.some(x =>
         x.source_line === f.source_line &&
@@ -158,7 +162,23 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       flows.push(f);
     }
 
-    return { flows };
+    // Sprint 9 #58.1 — final pass: drop any flow whose source variable was
+    // explicitly marked sanitized by a guard (e.g. regex-allowlist).
+    // Applied to ALL flow generators (DFG-built and the four supplements)
+    // so the suppression is uniform regardless of which path emitted the flow.
+    const sanitizedNames = constProp.sanitizedVars;
+    const finalFlows = sanitizedNames.size === 0 ? flows : flows.filter(f => {
+      if (f.path.length === 0) return true;
+      const sourceVar = f.path[0].variable;
+      if (!sourceVar) return true;
+      if (sanitizedNames.has(sourceVar)) return false;
+      for (const s of sanitizedNames) {
+        if (s.endsWith(`:${sourceVar}`)) return false;
+      }
+      return true;
+    });
+
+    return { flows: finalFlows };
   }
 }
 
@@ -172,6 +192,7 @@ function detectCollectionFlows(
   sinks: CircleIR['taint']['sinks'],
   taintedVars: Set<string>,
   unreachableLines: Set<number>,
+  code?: string,
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
   const callsByLine = new Map<number, typeof calls>();
@@ -198,6 +219,15 @@ function detectCollectionFlows(
           if (taintedVars.has(varName) || taintedVars.has(scopedName)) {
             const source = sources[0];
             if (source) {
+              // Sprint 9 #56 / #58.3 — same reassign-to-literal guard as
+              // detectExpressionScanFlows. Suppress when the variable is
+              // demonstrably rewritten to a literal between source and sink.
+              if (
+                typeof code === 'string' &&
+                isReassignedToLiteralBetween(code, varName, source.line, sink.line)
+              ) {
+                continue;
+              }
               flows.push({
                 source_line: source.line, sink_line: sink.line,
                 source_type: source.type, sink_type: sink.type,
@@ -231,6 +261,12 @@ function detectCollectionFlows(
               if (taintedVars.has(collectionVar) || taintedVars.has(scopedCollection)) {
                 const source = sources[0];
                 if (source) {
+                  if (
+                    typeof code === 'string' &&
+                    isReassignedToLiteralBetween(code, collectionVar, source.line, sink.line)
+                  ) {
+                    continue;
+                  }
                   flows.push({
                     source_line: source.line, sink_line: sink.line,
                     source_type: source.type, sink_type: sink.type,
@@ -314,6 +350,8 @@ function detectParameterSinkFlows(
   sources: CircleIR['taint']['sources'],
   sinks: CircleIR['taint']['sinks'],
   unreachableLines: Set<number>,
+  tainted: Set<string>,
+  code?: string,
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
 
@@ -362,6 +400,14 @@ function detectParameterSinkFlows(
           if (paramSource) {
             const exists = flows.some(f => f.source_line === paramSource.line && f.sink_line === sink.line);
             if (!exists) {
+              if (
+                typeof code === 'string' &&
+                isReassignedToLiteralBetween(code, arg.variable, paramSource.line, sink.line)
+              ) {
+                continue;
+              }
+              // Note: DFG-flow filter handles sanitizer-guard suppression
+              // via `sanitizedVars` (positive-evidence check).
               flows.push({
                 source_line: paramSource.line, sink_line: sink.line,
                 source_type: paramSource.type, sink_type: sink.type,
@@ -415,12 +461,83 @@ function detectParameterSinkFlows(
  * (they come from getter pattern detection, `@RequestParam` annotations,
  * or YAML sink/source matches that operate at the receiver-type level).
  */
+
+/**
+ * Sprint 9 #56 / #58.3 — detect "reassign-to-literal" between a tainted
+ * source line and a downstream sink line. When a tainted variable is
+ * reassigned to a pure string literal on any intermediate line, the
+ * original taint can no longer reach the sink and the flow is suppressed.
+ *
+ * Recognized patterns (one per line, considering only `srcLine+1 .. sinkLine-1`):
+ *
+ *   1. Naked literal reassignment (any language):
+ *        var = "literal"
+ *        var = 'literal'
+ *        var := "literal"     (Go short var decl)
+ *      Trailing `;` allowed.
+ *
+ *   2. Allowlist guard with literal fallback (Java/JS/TS):
+ *        if (!ALLOWLIST.contains(var))      var = "literal";
+ *        if (!ALLOWLIST.includes(var))      var = "literal";
+ *        if (ALLOWLIST.indexOf(var) === -1) var = "literal";
+ *
+ *   3. Allowlist guard with literal fallback (Python):
+ *        if var not in ALLOWLIST: var = "literal"
+ *
+ * Both the single-line and split-across-two-lines forms of (2)/(3) are
+ * caught because (1) matches the literal-assignment line regardless of
+ * what precedes it on the previous line.
+ *
+ * Conservatively requires the LHS to be exactly `var` (no attribute access,
+ * no array indexing) so we never drop a flow whose downstream use is a
+ * different member of the same object.
+ */
+function isReassignedToLiteralBetween(
+  code: string,
+  variable: string,
+  srcLine: number,
+  sinkLine: number,
+): boolean {
+  if (!variable || sinkLine - srcLine < 2) return false;
+  // Bare identifiers only — attribute paths like `obj.attr` are not
+  // simple variables and we shouldn't claim they were reassigned.
+  if (!/^[A-Za-z_][\w]*$/.test(variable)) return false;
+  const lines = code.split('\n');
+  const lo = Math.max(0, srcLine); // line numbers are 1-based; lines[] 0-based.
+  const hi = Math.min(lines.length, sinkLine - 1);
+  // String-literal sub-pattern: double-quoted, single-quoted, or backtick.
+  const strLit =
+    `(?:"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"|'[^'\\\\]*(?:\\\\.[^'\\\\]*)*'|\`[^\`\\\\]*(?:\\\\.[^\`\\\\]*)*\`)`;
+  // (1) Naked literal reassignment, anchored at start of line.
+  //     Accepts `=` and `:=` (Go).
+  const reNaked = new RegExp(
+    `^\\s*${variable}\\s*(?::?=)\\s*${strLit}\\s*;?\\s*$`,
+  );
+  // (2) Single-line allowlist guard with literal fallback. We accept any
+  //     line that begins with an `if` and ends with `var = "literal"` on
+  //     the same line. This matches Java's
+  //     `if (!COLUMNS.contains(col)) col = "name";` and equivalents,
+  //     including Python's `if col not in COLUMNS: col = "name"`. Greedy
+  //     `.*` (not `.*?`) tolerates nested parentheses in the guard
+  //     condition without needing a full expression parser.
+  const reGuarded = new RegExp(
+    `^\\s*if\\b.*\\b${variable}\\s*=\\s*${strLit}\\s*;?\\s*$`,
+  );
+  for (let i = lo; i < hi; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    if (reNaked.test(line) || reGuarded.test(line)) return true;
+  }
+  return false;
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
   sinks: CircleIR['taint']['sinks'],
   sanitizers: CircleIR['taint']['sanitizers'],
   unreachableLines: Set<number>,
+  tainted: Set<string>,
   code?: string,
   language?: string,
 ): CircleIR['taint']['flows'] {
@@ -524,9 +641,17 @@ function detectExpressionScanFlows(
           if (!rhsMatch) continue;
           const rhs = rhsMatch[1];
           for (const san of lineSans) {
-            const sanMatch = san.method.match(/^(?:(\w+)\.)?(\w+)\(\)$/);
+            // Extract the final method-name token before the trailing `()`.
+            // Handles:
+            //   `realpath()`                → realpath
+            //   `os.path.realpath()`        → realpath
+            //   `Path(raw).resolve()`       → resolve (chained constructor)
+            // Then verify by substring-matching `<name>(` in the RHS text,
+            // which is sufficient evidence that the sanitizer call is on
+            // this assignment's RHS.
+            const sanMatch = san.method.match(/(\w+)\(\)$/);
             if (!sanMatch) continue;
-            const sanName = sanMatch[1] ? `${sanMatch[1]}.${sanMatch[2]}` : sanMatch[2];
+            const sanName = sanMatch[1];
             if (!rhs.includes(`${sanName}(`)) continue;
             let set = aliasSanitizedFor.get(varName);
             if (!set) { set = new Set<string>(); aliasSanitizedFor.set(varName, set); }
@@ -621,6 +746,22 @@ function detectExpressionScanFlows(
             break;
           }
 
+          // Sprint 9 #58.3 / #56: between source.line and sink.line, if
+          // the tainted variable is reassigned to a pure string literal
+          // (either naked `var = "lit"` or guarded by an allowlist check
+          // such as `if (!ALLOWLIST.contains(var)) var = "lit"` /
+          // `if var not in ALLOWLIST: var = "lit"`), the original taint
+          // no longer reaches the sink — suppress the flow.
+          if (
+            typeof code === 'string' &&
+            isReassignedToLiteralBetween(code, source.variable, source.line, sink.line)
+          ) {
+            break;
+          }
+
+          // Note: DFG-flow filter handles sanitizer-guard suppression
+          // via `sanitizedVars` (positive-evidence check).
+
           flows.push({
             source_line: source.line,
             sink_line:   sink.line,
@@ -681,6 +822,31 @@ function detectExpressionScanFlows(
     if (!colocSources || colocSources.length === 0) continue;
     for (const source of colocSources) {
       if (!canSourceReachSink(source.type, sink.type)) continue;
+      // Skip the degenerate `file_input` → `path_traversal` colocation
+      // where the source and sink describe the SAME call (one being the
+      // chained accessor of the other). Example: Python
+      //   open(safe).read()
+      // matches both the `file_input` source pattern (`read` on a file
+      // object) and the `path_traversal` sink pattern (`open(...)`),
+      // but here `open()` is the sink target, not a downstream consumer
+      // of itself. We detect this by checking whether `sink.method(`
+      // appears INSIDE the source's location string — if it does, the
+      // source's call is a chained derivative of the sink's call (i.e.
+      // `<sink>(...).<srcMethod>()`), not a distinct consumer at the
+      // same line. Real cross-call cases like Java Zip-Slip —
+      //   new File(dir, entry.getName())
+      // — are unaffected because the sink location is `File() in m`
+      // while the source location is `entry.getName() in m`; neither
+      // string contains the other's method-name marker, so the flow is
+      // still emitted. Sprint 9 #48.2 / #51.1.
+      if (
+        source.type === 'file_input' &&
+        sink.type === 'path_traversal' &&
+        sink.method &&
+        source.location.includes(`${sink.method}(`)
+      ) {
+        continue;
+      }
       if (flows.some(f =>
         f.source_line === source.line &&
         f.sink_line === sink.line &&

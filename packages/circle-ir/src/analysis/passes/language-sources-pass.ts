@@ -689,27 +689,69 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
   const lines = sourceCode.split('\n');
   const definedVars = new Set(dfg.defs.filter(d => d.kind === 'local').map(d => d.variable));
 
+  // Issue #73: track brace depth so that `$1`-`$9` / `$@` / `$*` inside a
+  // function body are NOT flagged as script-CLI-arg sources — they're the
+  // function's own parameters, populated by the caller. Only the outermost
+  // scope (depth === 0) takes positional parameters from the script CLI.
+  //
+  // Function-declaration syntax recognised:
+  //   `name() {`        — POSIX form
+  //   `function name {` — Bash form (with or without parens)
+  //   `function name() {`
+  // The opening `{` may be on the next line; we treat any `{` on a line that
+  // also contains a function header as the start of the body. Brace counting
+  // is intentionally simple — it won't perfectly handle strings/heredocs
+  // containing literal braces, but is sufficient for the common case and
+  // matches how tree-sitter-bash defines `function_definition` scopes.
+  const fnHeaderRe = /^\s*(?:function\s+)?[A-Za-z_][\w-]*\s*\(\s*\)\s*\{?\s*$|^\s*function\s+[A-Za-z_][\w-]*\s*\{?\s*$/;
+  let braceDepth = 0;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
     const lineNumber = i + 1;
     if (trimmed.startsWith('#')) continue;
 
+    const insideFunction = braceDepth > 0;
+
     // 1. Positional parameters: $1-$9, $@, $*
-    const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = positionalRe.exec(line)) !== null) {
-      const param = m[1] ?? m[2];
-      const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
-      if (!alreadyExists) {
-        sources.push({
-          type: 'io_input',
-          location: `positional parameter $${param}`,
-          severity: 'high',
-          line: lineNumber,
-          confidence: 1.0,
-          variable: param,
-        });
+    //    Suppressed inside function bodies (#73 part 1).
+    if (!insideFunction) {
+      const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = positionalRe.exec(line)) !== null) {
+        const param = m[1] ?? m[2];
+        const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
+        if (!alreadyExists) {
+          sources.push({
+            type: 'io_input',
+            location: `positional parameter $${param}`,
+            severity: 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: param,
+          });
+        }
+      }
+    }
+
+    // Update brace depth AFTER scanning the line, so positional params on
+    // the function-header line itself (rare; usually empty) still count as
+    // top-level. The `{` opens the body for subsequent lines.
+    if (fnHeaderRe.test(line) || /^\s*[A-Za-z_][\w-]*\s*\(\s*\)\s*\{/.test(line)) {
+      // Function header (with or without inline `{`).
+      const openBracesOnLine = (line.match(/\{/g) ?? []).length;
+      const closeBracesOnLine = (line.match(/\}/g) ?? []).length;
+      braceDepth += openBracesOnLine - closeBracesOnLine;
+    } else {
+      // Non-header line — only count braces if we're already inside a
+      // function (cheap heuristic to avoid mis-counting braces in
+      // command-group / subshell constructs at top level).
+      if (braceDepth > 0) {
+        const openBracesOnLine = (line.match(/\{/g) ?? []).length;
+        const closeBracesOnLine = (line.match(/\}/g) ?? []).length;
+        braceDepth += openBracesOnLine - closeBracesOnLine;
+        if (braceDepth < 0) braceDepth = 0;
       }
     }
 

@@ -5,9 +5,127 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.58.0] - 2026-06-16
+
+### Fixed — Sprint 9: FP-precision cluster (#48, #50, #51, #55, #56, #57, #58, #79, #85, #92)
+
+- **Issue #92.4, #92.5 — Pure-literal sink suppression.**
+  NodeTest00004 (`db.query("SELECT * FROM products WHERE active = 1", cb)`)
+  and NodeTest00012 (`fs.readFile('./public/README.md', cb)`) regressed to
+  FP after Sprint 6/7 sink widening. Extends `findSinks()` in
+  `analysis/taint-matcher.ts` to early-skip SQL/path/command/code/xss
+  sinks whose relevant argument is a pure string literal.
+
+- **Issue #92.1, #92.2 — Rust safe-path / safe-xss sanitizers.**
+  Adds `Path::file_name`, `Path::canonicalize`, `Path::components`,
+  `html_escape::encode_text`, `encode_safe`, and
+  `encode_double_quoted_attribute` to `configs/sinks/rust.json` so
+  `pathtraver_safe_basename` and `xss_safe_escaped` fixtures no longer
+  fire.
+
+- **Issue #57 — Type-cast taint barriers.**
+  A numeric/UUID/enum value cannot carry a string injection. Adds
+  cross-language sanitizers with `removes: [sql_injection,
+  command_injection, path_traversal, code_injection]`:
+  Java `Integer.parseInt`/`Long.parseLong`/`UUID.fromString`/`Enum.valueOf`;
+  Python `int`/`float`/`bool`/`uuid.UUID`/`decimal.Decimal`;
+  JS/TS `Number`/`parseInt`/`parseFloat`/`BigInt`;
+  Go `strconv.Atoi`/`ParseInt`/`ParseFloat`/`uuid.Parse`.
+
+- **Issue #48.2, #51.1 — Path-canonicalization sanitizers.**
+  Adds Python `os.path.realpath`/`abspath`/`normpath`/`pathlib.Path.resolve`
+  and Go `filepath.Clean`/`Base`/`EvalSymlinks`/`path.Clean`/`path.Base`
+  to the path-traversal sanitizer set.
+
+- **Issue #56, #58.3 — Allowlist + reassign-to-literal guards.**
+  `Propagator` (`analysis/constant-propagation/propagator.ts`) now
+  recognises `if (!ALLOWLIST.contains(col)) col = "name";` set-membership
+  reassignment, and naked reassignment of a tainted variable to a string
+  literal — both drop the variable from `tainted` and re-seed it as a
+  constant.
+
+- **Issue #55 — Dead-code-by-const-guard suppression.**
+  When `Propagator` folds an `if` / `if_expression` condition to known
+  `false`, every line in the then-branch is added to `unreachableLines`;
+  symmetric for `if (true) { … } else { dead }`. Sink-filter pass
+  (`sink-filter-pass.ts:81`) drops sinks on those lines.
+
+- **Issue #48.1 — Subprocess(list, shell=False) verified.**
+  `isSafePythonSubprocessCall` already fires for the `safe_api.py`
+  fixture. Locks the behaviour in a regression test.
+
+- **Issue #48.3 — DBAPI XSS misclassification suppressed.**
+  Parameterised `cursor.execute(...)` followed by `return jsonify(...)`
+  no longer reports XSS — context-sensitive suppression added in
+  `sink-filter-pass.ts`.
+
+- **Issue #58.1, #58.2 — Java regex allowlist + switch-const.**
+  `Propagator` recognises strict-anchored `Pattern.matcher(x).matches()`
+  guards (e.g. `if (!SAFE_NAME.matcher(name).matches()) throw …;`) and
+  switch-statements whose every branch assigns a literal — both add the
+  affected variable to `sanitizedVars`. `TaintPropagationPass.run()` has
+  a final unified filter that drops any flow whose source variable is in
+  `sanitizedVars`, ensuring all flow-generator paths credit the guard.
+
+- **Issue #50 — `missing-x-frame-options` precision verified.**
+  Flask + `flask_talisman.Talisman()` and Spring `SecurityFilterChain`
+  already suppress `missing-x-frame-options`/`missing-csp-frame-ancestors`
+  via `SECURITY_MIDDLEWARE_METHODS` and
+  `SECURITY_MIDDLEWARE_ANNOTATIONS_RE`. Locks the behaviour in regression
+  tests.
+
+- **Issue #79 — Interprocedural sanitizer wrapper.**
+  `findSanitizers()` (`analysis/taint-matcher.ts:1314`) now derives
+  wrapper sanitizers from methods whose body is exactly
+  `return <known_sanitizer>(<param>)` (≤2-line body, single inner call,
+  exact parameter ref, source-line `return <call>(…)` shape check).
+  Emits `derived_wrapper` `TaintSanitizer` entries at each call site so
+  the existing `filterSanitizedSinks` and `checkSanitized` credit the
+  wrapper. Rejects unsafe shapes like `return x + shlex.quote(x)`.
+
+- **Issue #85 — Go `_test.go` exclusion verified (CLI).** No engine
+  change; handled in `packages/cli` v3.58.0.
+
 ## [3.57.0] - 2026-06-16
 
-### Fixed — Sprint 8: Java for-each + container taint propagation
+### Fixed — Sprint 8: Java for-each + container taint propagation + Go path sanitizers + security-headers precision + Bash function-local positionals
+
+- **Issue #73 (part 1) — Bash function-local `$1`/`$2` no longer conflated
+  with script-CLI positionals.**
+  `findBashTaintSources` in `analysis/passes/language-sources-pass.ts`
+  scanned every line of the script for `$1`–`$9`/`$@`/`$*` and emitted a
+  `script_arg` source for each, conflating function-local positional
+  parameters (`format_name() { local first="$1"; }`) with actual script
+  CLI args. Adds brace-depth tracking with POSIX (`name() {`), Bash
+  (`function name {`), and hybrid (`function name() {`) header detection;
+  positional-parameter scans are now suppressed when `braceDepth > 0`.
+  Part 2 of the issue (`[[ $x =~ ^allowlist$ ]]` regex-guard recognition)
+  is structural work deferred to Sprint 9.
+
+- **Issue #50 — security-headers global-middleware suppression.**
+  The `missing-x-frame-options` and `missing-csp-frame-ancestors` rules
+  (file-level `missing` rules in `SecurityHeadersPass`) fired at line 1
+  of every handler file regardless of whether a global header middleware
+  was installed. Adds a `detectGlobalSecurityMiddleware(graph, calls)`
+  helper recognising Express `helmet()` / `app.use(helmet())`, Spring
+  `httpSecurity.headers().frameOptions()` chain + `@EnableWebSecurity` /
+  `SecurityFilterChain` markers, and Flask `Talisman(app)` /
+  `secure.Secure()` / `@app.after_request`. When detected, all
+  `requiresHandler=true` `missing-*` rules are suppressed for that file.
+  Value-based rules (`cors-wildcard-origin`, `cors-null-origin`,
+  `x-frame-options-allow-from`, etc.) are unaffected — they inspect
+  actual header values and are not about middleware presence.
+
+- **Issue #51 — Go `filepath` / `path` path-traversal sanitizers.**
+  `DEFAULT_SANITIZERS` in `analysis/config-loader.ts` now lists
+  `filepath.Base` (strips directory components — full sanitizer),
+  `filepath.Clean` / `path.Clean` (normalize `../` segments —
+  defense-in-depth, mirrors Java `getCanonicalPath` in this table), and
+  `filepath.EvalSymlinks` (Go equivalent of Java `Path.toRealPath`).
+  Clears the `pathtraver_safe_basename` synthetic regression introduced
+  by 3.53.0–3.56.0 sink widening. The stricter `Clean` + `HasPrefix`
+  guard recognition (analogous to Sprint 8's `filterJavaPathCanonicalization`)
+  is tracked as a follow-up structural change for Sprint 9.
 
 - **Issue #84 — Java for-each loop element-taint.**
   `for (String id : taintedList) stmt.executeQuery("... " + id + " ...")`
@@ -32,7 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Regression coverage
 
-- New file: `tests/analysis/repro-sprint8.test.ts` with 12 fixtures
+- New file: `tests/analysis/repro-sprint8.test.ts` with 19 fixtures
   documenting the Sprint 8 issue contracts end-to-end:
   - 5 for **#90** (Fastjson typed-overload `parseObject` variants — already
     handled by `safe_if_class_literal_at` + `TYPE_ARG_IDENTIFIERS` shipped
@@ -46,7 +164,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     regression fixtures).
   - 2 for **#62** (Map.put → m.get(k) at sink, StringBuilder.append →
     sb.toString() at sink — newly fixed in this release).
-- Total suite: 2310 passed, 1 skipped (was 2298 in 3.56.0).
+  - 3 for **#51** (Go `filepath.Base` clears `path_traversal`, Go
+    `filepath.Clean` clears `path_traversal`, untreated tainted input
+    still fires — newly added in this release).
+  - 2 for **#50** (Express `helmet()` suppresses `missing-x-frame-options`;
+    untreated handler still fires — newly added in this release).
+  - 2 for **#73** (Bash function-local `$1` is not a script-CLI source;
+    top-level `$1` is still flagged — newly added in this release).
+- Total suite: 2317 passed, 1 skipped (was 2298 in 3.56.0).
 
 ## [3.56.0] - 2026-06-16
 

@@ -62,6 +62,22 @@ export interface TaintPropagationResult {
 }
 
 /**
+ * Build a line → sanitizers index from a list of sanitizers.
+ *
+ * Used when `CodeGraph` was constructed before TaintMatcherPass ran (the
+ * common case in `analyze()`), so `graph.sanitizersByLine` is an empty Map.
+ */
+function buildSanitizersByLine(sanitizers: TaintSanitizer[]): Map<number, TaintSanitizer[]> {
+  const out = new Map<number, TaintSanitizer[]>();
+  for (const san of sanitizers) {
+    const existing = out.get(san.line);
+    if (existing) existing.push(san);
+    else out.set(san.line, [san]);
+  }
+  return out;
+}
+
+/**
  * Propagate taint through the dataflow graph.
  *
  * Accepts either a CodeGraph (preferred) or the legacy (dfg, calls, ...) signature
@@ -108,7 +124,14 @@ export function propagateTaint(
   const defsByLine = graph.defsByLine;
   const usesByLine = graph.usesByLine;
   const callsByLine = graph.callsByLine;
-  const sanitizersByLine = graph.sanitizersByLine;
+  // The CodeGraph is constructed in analyzer.ts BEFORE TaintMatcherPass runs,
+  // so `graph.ir.taint.sanitizers` is empty and `graph.sanitizersByLine` is an
+  // empty Map. Build the sanitizer index from the `sanitizers` parameter
+  // (populated by TaintMatcherPass / SinkFilterPass) instead. Fall back to
+  // graph.sanitizersByLine if the parameter is empty (legacy callers).
+  const sanitizersByLine: Map<number, TaintSanitizer[]> = sanitizers.length > 0
+    ? buildSanitizersByLine(sanitizers)
+    : graph.sanitizersByLine;
   const defById = graph.defById;
 
   // Step 1: Identify initial tainted definitions (from sources)

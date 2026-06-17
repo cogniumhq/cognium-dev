@@ -5,22 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.58.0] - 2026-06-16
+
+### Changed
+
+- Tracks circle-ir 3.58.0 which ships the Sprint 9 FP-precision cluster
+  (#48, #50, #51, #55, #56, #57, #58, #79, #85, #92): pure-literal sink
+  suppression, Rust safe-path/xss sanitizers, type-cast taint barriers,
+  path-canonicalization sanitizers, allowlist + reassign-to-literal
+  guards, dead-code-by-const-guard suppression, DBAPI XSS misclassification
+  suppression, Java regex-allowlist + switch-const guards, security-headers
+  global-middleware verification, and interprocedural sanitizer wrappers.
+  See `packages/circle-ir/CHANGELOG.md` for per-issue detail.
+
+### Added
+
+- `packages/cli/src/exclude-tests.test.ts` locks in `--exclude-tests`
+  behaviour across Go (`_test.go`), Python (`_test.py`, `test_*.py`),
+  JS/TS (`.test.ts`, `.spec.js`), Java (`*Test.java`, `*IT.java`),
+  Rust (`_test.rs`), and `test/`, `tests/`, `__tests__/`, `spec/`
+  directories.
+
 ## [3.57.0] - 2026-06-16
+
+### Fixed
+
+- **Issue #85 — `--exclude-tests` now suppresses Go `_test.go` files.**
+  `TEST_PATTERNS` in `src/cli.ts` already covered Java (`Test.java`,
+  `Tests.java`, `IT.java`), JS/TS (`.test.ts`, `.spec.js`, etc.),
+  Python (`_test.py`, `_tests.py`, `test_*.py`), and Rust (`_test.rs`),
+  but Go's `_test.go` convention was missing. Adds `/_test\.go$/` so
+  `inj_test.go` fires by default and is suppressed under
+  `--exclude-tests`, matching the engine-level `scan-secrets-pass.ts`
+  regex.
 
 ### Changed
 
 - **circle-ir upgraded 3.56.0 → 3.57.0** — Sprint 8 adds Java for-each and
-  container taint propagation:
+  container taint propagation, plus Go path sanitizers:
   - **#84** `for (String x : taintedList)` now correctly propagates collection
     taint to the loop variable, so downstream uses at sinks fire.
   - **#62-partial** `m.put(k, tainted)` → `m.get(k)` at a sink fires SQLi;
     `StringBuilder.append(tainted)` → `sb.toString()` at a sink fires SQLi.
+  - **#51** Go `filepath.Base` / `filepath.Clean` / `path.Clean` /
+    `filepath.EvalSymlinks` are now recognized as `path_traversal`
+    sanitizers, mirroring the Java `getCanonicalPath` / `Path.toRealPath`
+    treatment and the Rust `file_name` / `canonicalize` entries.
+  - **#50** `SecurityHeadersPass` now suppresses `missing-x-frame-options`
+    and `missing-csp-frame-ancestors` when a global security middleware
+    (Express `helmet()`, Spring `SecurityFilterChain`, Flask `Talisman`)
+    is detected in the same file.
+  - **#73** (part 1) Bash `findBashTaintSources` now tracks brace depth so
+    `$1`/`$2` inside function bodies are not conflated with script-CLI
+    positionals. The regex-allowlist guard (`[[ $x =~ ^… ]]`) is deferred
+    to Sprint 9.
 
   Sprint 8 also adds a new regression-fixture file
-  (`tests/analysis/repro-sprint8.test.ts`, 12 fixtures) that codifies the
-  end-to-end contracts for issues #49, #62, #84, #90, and #91 — most of
-  which were already handled by earlier sprints. See
-  `packages/circle-ir/CHANGELOG.md` for full detail.
+  (`tests/analysis/repro-sprint8.test.ts`, 19 fixtures) that codifies the
+  end-to-end contracts for issues #49, #50, #51, #62, #73, #84, #90, and #91.
+  See `packages/circle-ir/CHANGELOG.md` for full detail.
 
 ## [3.56.0] - 2026-06-16
 

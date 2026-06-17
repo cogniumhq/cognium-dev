@@ -240,4 +240,137 @@ public class Svc {
     const flows = (r.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
     expect(flows.length).toBeGreaterThanOrEqual(1);
   });
+
+  // ===========================================================================
+  // #51 — Go filepath sanitizers
+  // ===========================================================================
+
+  it('#51: filepath.Base on tainted input suppresses path_traversal on os.ReadFile', async () => {
+    const code = `package main
+
+import (
+	"net/http"
+	"os"
+	"path/filepath"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	name := filepath.Base(r.URL.Query().Get("name"))
+	p := filepath.Join("/var/uploads", name)
+	data, _ := os.ReadFile(p)
+	_ = data
+}
+`;
+    const r = await analyze(code, 'handler.go', 'go');
+    const fp = (r.findings ?? []).filter(f => f.cwe === 'CWE-22' || f.cwe === 'CWE-022');
+    expect(fp).toHaveLength(0);
+  });
+
+  it('#51: filepath.Clean on tainted input suppresses path_traversal on os.ReadFile', async () => {
+    const code = `package main
+
+import (
+	"net/http"
+	"os"
+	"path/filepath"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	clean := filepath.Clean(filepath.Join("/var/uploads", r.URL.Query().Get("name")))
+	data, _ := os.ReadFile(clean)
+	_ = data
+}
+`;
+    const r = await analyze(code, 'handler.go', 'go');
+    const fp = (r.findings ?? []).filter(f => f.cwe === 'CWE-22' || f.cwe === 'CWE-022');
+    expect(fp).toHaveLength(0);
+  });
+
+  it('#51: untreated tainted input still fires path_traversal on os.ReadFile', async () => {
+    const code = `package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	data, _ := os.ReadFile("/var/uploads/" + name)
+	_ = data
+}
+`;
+    const r = await analyze(code, 'handler.go', 'go');
+    const sinks = r.taint.sinks.filter(s => s.type === 'path_traversal');
+    expect(sinks.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ===========================================================================
+  // #50 — security-headers global-middleware suppression
+  // ===========================================================================
+
+  it('#50: app.use(helmet()) suppresses missing-x-frame-options on handler file', async () => {
+    const code = `
+const express = require('express');
+const helmet = require('helmet');
+const app = express();
+app.use(helmet());
+app.get('/hello', (req, res) => {
+  res.send('hi');
+});
+`;
+    const r = await analyze(code, 'safe_routes.js', 'javascript');
+    const fp = (r.findings ?? []).filter(
+      f => f.rule_id === 'missing-x-frame-options' || f.rule_id === 'missing-csp-frame-ancestors'
+    );
+    expect(fp).toHaveLength(0);
+  });
+
+  it('#50: handler without middleware still fires missing-x-frame-options', async () => {
+    const code = `
+const express = require('express');
+const app = express();
+app.get('/hello', (req, res) => {
+  res.send('hi');
+});
+`;
+    const r = await analyze(code, 'unsafe_routes.js', 'javascript');
+    const findings = (r.findings ?? []).filter(
+      f => f.rule_id === 'missing-x-frame-options'
+    );
+    expect(findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ===========================================================================
+  // #73 — Bash function-local $1/$2 not conflated with script CLI args
+  // ===========================================================================
+
+  it('#73: $1 inside a function body is NOT a script-CLI positional source', async () => {
+    const code = `#!/usr/bin/env bash
+format_name() {
+  local first="$1" last="$2"
+  echo "\${last}, \${first}"
+}
+main() { format_name "Ada" "Lovelace"; }
+main "$@"
+`;
+    const r = await analyze(code, 'benign.sh', 'bash');
+    // $1/$2 inside format_name() must not be reported as positional sources.
+    const fnLocalSources = (r.taint.sources ?? []).filter(
+      s => (s.variable === '1' || s.variable === '2') && s.line >= 2 && s.line <= 5
+    );
+    expect(fnLocalSources).toHaveLength(0);
+  });
+
+  it('#73: top-level $1 IS still a script-CLI positional source', async () => {
+    const code = `#!/usr/bin/env bash
+target="/etc/app/\${1}.conf"
+cat "$target"
+`;
+    const r = await analyze(code, 'unsafe.sh', 'bash');
+    const topLevelSources = (r.taint.sources ?? []).filter(
+      s => s.variable === '1' && s.line === 2
+    );
+    expect(topLevelSources.length).toBeGreaterThanOrEqual(1);
+  });
 });

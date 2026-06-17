@@ -625,18 +625,23 @@
     },
     {
       "method": "parseInt",
-      "removes": ["sql_injection", "command_injection"],
-      "note": "Converts to integer - safe for numeric values"
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Numeric cast — output cannot carry string injection"
     },
     {
       "method": "parseFloat",
-      "removes": ["sql_injection", "command_injection"],
-      "note": "Converts to float - safe for numeric values"
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Numeric cast — output cannot carry string injection"
     },
     {
       "method": "Number",
-      "removes": ["sql_injection", "command_injection"],
-      "note": "Number constructor - safe for numeric values"
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "Number() constructor — output cannot carry string injection"
+    },
+    {
+      "method": "BigInt",
+      "removes": ["sql_injection", "command_injection", "path_traversal", "code_injection"],
+      "note": "BigInt() constructor — output cannot carry string injection"
     },
     {
       "method": "encodeURIComponent",

@@ -475,6 +475,18 @@
       "note": "html_escape::encode_quoted_attribute()"
     },
     {
+      "method": "encode_safe",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_safe() — broad-safe HTML entity encoding"
+    },
+    {
+      "method": "encode_double_quoted_attribute",
+      "class": "html_escape",
+      "removes": ["xss"],
+      "note": "html_escape::encode_double_quoted_attribute()"
+    },
+    {
       "method": "clean",
       "class": "ammonia",
       "removes": ["xss"],
@@ -485,6 +497,24 @@
       "class": "Builder",
       "removes": ["xss"],
       "note": "ammonia::Builder::clean() HTML sanitizer"
+    },
+    {
+      "method": "file_name",
+      "class": "Path",
+      "removes": ["path_traversal"],
+      "note": "Path::file_name() returns final component only — strips traversal segments"
+    },
+    {
+      "method": "canonicalize",
+      "class": "Path",
+      "removes": ["path_traversal"],
+      "note": "Path::canonicalize() resolves symlinks and `..` to absolute path"
+    },
+    {
+      "method": "components",
+      "class": "Path",
+      "removes": ["path_traversal"],
+      "note": "Path::components() — iterator gives normalized components, used for prefix checks"
     }
   ]
 }

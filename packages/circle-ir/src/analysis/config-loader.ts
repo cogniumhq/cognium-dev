@@ -501,11 +501,14 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'param', class: 'Request', type: 'http_param', severity: 'high', return_tainted: true },
   { method: 'cookies', class: 'Request', type: 'http_cookie', severity: 'high', return_tainted: true },
 
-  // Axum extractors
-  { method: 'Json', type: 'http_body', severity: 'high', return_tainted: true },
-  { method: 'Query', type: 'http_param', severity: 'high', return_tainted: true },
-  { method: 'Path', type: 'http_path', severity: 'high', return_tainted: true },
-  { method: 'Form', type: 'http_param', severity: 'high', return_tainted: true },
+  // Axum extractors — Rust-only. The simple names `Json`/`Query`/`Path`/`Form`
+  // collide with stdlib types in other ecosystems (notably Python's
+  // `pathlib.Path` constructor and `flask.Form`), so they MUST be
+  // language-scoped to Rust to avoid spurious source matches.
+  { method: 'Json', type: 'http_body', severity: 'high', return_tainted: true, languages: ['rust'] },
+  { method: 'Query', type: 'http_param', severity: 'high', return_tainted: true, languages: ['rust'] },
+  { method: 'Path', type: 'http_path', severity: 'high', return_tainted: true, languages: ['rust'] },
+  { method: 'Form', type: 'http_param', severity: 'high', return_tainted: true, languages: ['rust'] },
 
   // Rust std library
   { method: 'var', class: 'env', type: 'env_input', severity: 'medium', return_tainted: true },
@@ -720,10 +723,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'PathResource', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   // Additional resource/file patterns
   { method: 'forFile', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'resolve', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'resolve', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'resolveSibling', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'relativize', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
+  // Java NIO `Path.resolve(other)` — joining with an untrusted `other` can
+  // escape the parent directory. Language-scoped to Java because the simple
+  // name `resolve` collides with Python `pathlib.Path.resolve()`
+  // (a canonicalization SANITIZER, no argument), JS `Promise.resolve(...)`,
+  // and Rust `Path::canonicalize` variants. Sprint 9 #48.2.
+  { method: 'resolve', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'resolve', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'resolveSibling', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'relativize', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0], languages: ['java'] },
   // Static file configuration
   { method: 'staticFiles', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'setRoot', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
@@ -1948,6 +1956,16 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // Rust path sanitizers
   { method: 'file_name', removes: ['path_traversal'] },  // Returns just filename, strips path
   { method: 'canonicalize', removes: ['path_traversal'] },  // Resolves symlinks and normalizes
+  // Go path sanitizers (#51) — filepath.Base strips directory components
+  // (fully sanitizes), filepath.Clean / path.Clean normalize away ../ segments
+  // (defense-in-depth — mirrors Java getCanonicalPath in this table; the
+  // stricter Clean+HasPrefix guard recognition is tracked separately).
+  // EvalSymlinks is the Go equivalent of Java's Path.toRealPath.
+  { method: 'Base', class: 'filepath', removes: ['path_traversal'] },
+  { method: 'Base', class: 'path', removes: ['path_traversal'] },
+  { method: 'Clean', class: 'filepath', removes: ['path_traversal'] },
+  { method: 'Clean', class: 'path', removes: ['path_traversal'] },
+  { method: 'EvalSymlinks', class: 'filepath', removes: ['path_traversal'] },
 
   // Log Injection sanitizers
   { method: 'replace', removes: ['log_injection'] },  // Used to remove newlines/control chars
@@ -2067,6 +2085,8 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'abspath', class: 'os.path', removes: ['path_traversal'] },
   { method: 'realpath', class: 'path', removes: ['path_traversal'] },
   { method: 'abspath', class: 'path', removes: ['path_traversal'] },
+  // pathlib.Path.resolve() — canonicalizes path, resolves symlinks (Python 3)
+  { method: 'resolve', class: 'Path', removes: ['path_traversal'] },
 
   // Python Type coercion
   { method: 'int', removes: ['sql_injection', 'command_injection', 'xss'] },
@@ -2104,6 +2124,39 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
 
   // Rust Type coercion (parsing)
   { method: 'parse', removes: ['sql_injection', 'command_injection', 'xss'] },  // str.parse::<i32>()
+
+  // =========================================================================
+  // Type-cast taint barriers (#57)
+  // Numeric/UUID casts cannot carry a string-injection payload.
+  // =========================================================================
+
+  // Java numeric parse — Integer.parseInt, Long.parseLong, etc.
+  { method: 'parseInt', class: 'Integer', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'parseLong', class: 'Long', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'parseFloat', class: 'Float', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'parseDouble', class: 'Double', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'parseShort', class: 'Short', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'parseByte', class: 'Byte', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  // Java UUID parse — UUID.fromString rejects non-UUID strings
+  { method: 'fromString', class: 'UUID', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+
+  // JavaScript numeric coercion (Number/parseInt/parseFloat already covered above; add path_traversal/code_injection)
+  { method: 'BigInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+
+  // Go numeric parse — strconv.Atoi, ParseInt, ParseFloat, ParseUint, ParseBool
+  { method: 'Atoi', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'ParseInt', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'ParseFloat', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'ParseUint', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'ParseBool', class: 'strconv', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  // Go UUID parse
+  { method: 'Parse', class: 'uuid', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'MustParse', class: 'uuid', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+
+  // Python — int/float already covered above; add bool + UUID/Decimal casts
+  { method: 'bool', removes: ['sql_injection', 'command_injection', 'xss', 'code_injection'] },
+  { method: 'UUID', class: 'uuid', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  { method: 'Decimal', class: 'decimal', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
 ];
 
 /**

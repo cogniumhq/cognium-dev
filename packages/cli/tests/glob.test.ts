@@ -94,6 +94,13 @@ describe('isTestFile', () => {
     expect(isTestFile('src/foo.rs')).toBe(false);
   });
 
+  // Go
+  test('detects Go test files', () => {
+    expect(isTestFile('src/foo_test.go')).toBe(true);
+    expect(isTestFile('cmd/inj_test.go')).toBe(true);
+    expect(isTestFile('src/foo.go')).toBe(false);
+  });
+
   // Test directories
   test('detects test directory paths', () => {
     expect(isTestFile('src/test/Foo.java')).toBe(true);

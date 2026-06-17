@@ -72,6 +72,49 @@ const JS_ROUTE_METHODS = new Set([
   'get', 'post', 'put', 'delete', 'patch', 'all', 'use', 'head', 'options',
 ]);
 
+/**
+ * Issue #50: Global security-middleware detection.
+ *
+ * When a file installs a well-known security-headers middleware, the
+ * `missing-*` rules (which fire once per handler file) over-fire on
+ * production code that delegates clickjacking / CSP / HSTS / X-Content-Type
+ * defenses to a global filter chain or reverse proxy. We suppress those
+ * rules when any of the following names appear as call targets, type names,
+ * or annotations in the same file:
+ *
+ *   - Node/Express: helmet(), app.use(helmet.frameguard()), etc.
+ *   - Spring (Java/Kotlin): httpSecurity.headers().frameOptions() chain,
+ *     @EnableWebSecurity, SecurityFilterChain bean.
+ *   - Flask/Python: Talisman(app), secure.Secure(), @app.after_request.
+ *
+ * Value-based rules (cors-wildcard-origin etc.) still fire — they inspect
+ * actual header values and are not about middleware presence.
+ */
+const SECURITY_MIDDLEWARE_METHODS = new Set([
+  // Node helmet (and sub-modules)
+  'helmet',
+  'frameguard',
+  'contentSecurityPolicy',
+  'hsts',
+  'noSniff',
+  'xssFilter',
+  'referrerPolicy',
+  'permittedCrossDomainPolicies',
+  'dnsPrefetchControl',
+  // Spring HttpSecurity builder chain
+  'frameOptions',
+  'headers',
+  'httpStrictTransportSecurity',
+  'contentTypeOptions',
+  'xssProtection',
+  // Flask / Python
+  'Talisman',
+  'Secure',
+]);
+
+const SECURITY_MIDDLEWARE_ANNOTATIONS_RE =
+  /\b(EnableWebSecurity|SecurityFilterChain|after_request|before_request)\b/;
+
 export class SecurityHeadersPass
   implements AnalysisPass<SecurityHeadersPassResult>
 {
@@ -114,6 +157,13 @@ export class SecurityHeadersPass
     const hasHandler = detectHandler(graph, calls);
 
     // -------------------------------------------------------------------
+    // Step 2b (issue #50): detect global security middleware so we can
+    // suppress the noisy `missing-*` rules on files that delegate headers
+    // to Helmet / SecurityFilterChain / Talisman / etc.
+    // -------------------------------------------------------------------
+    const hasGlobalMiddleware = detectGlobalSecurityMiddleware(graph, calls);
+
+    // -------------------------------------------------------------------
     // Step 3: evaluate rules.
     // -------------------------------------------------------------------
     for (const rule of this.rules) {
@@ -126,6 +176,9 @@ export class SecurityHeadersPass
         // Gate on handler detection when requested (default behavior for
         // 'missing' rules, since they are noisy on library files).
         if (rule.requiresHandler !== false && !hasHandler) continue;
+        // Suppress when a global security middleware is installed in the
+        // same file (issue #50).
+        if (hasGlobalMiddleware) continue;
 
         ctx.addFinding({
           id: `${rule.rule_id}-${file}`,
@@ -379,6 +432,53 @@ function detectHandler(
     if (!first) continue;
     const literal = literalOf(first);
     if (literal !== null && literal.startsWith('/')) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Issue #50: Detect global security-headers middleware in the same file.
+ *
+ * Returns true if any of the well-known middleware call names appear,
+ * or if a class/method carries an `@EnableWebSecurity` /
+ * `SecurityFilterChain` / `@app.after_request` marker. When true, the
+ * per-handler `missing-*` rules are suppressed because the middleware is
+ * presumed to set the headers globally.
+ *
+ * Note: this is a conservative call-site heuristic. It deliberately
+ * doesn't try to resolve imports — a Spring `headers()` call on something
+ * unrelated would still suppress, but the false-suppression risk on
+ * production code is far smaller than the false-positive cost of firing
+ * a clickjacking warning on every handler in a Helmet-protected app.
+ */
+function detectGlobalSecurityMiddleware(
+  graph: { ir: { types: Array<{
+    annotations: string[];
+    methods: Array<{ name: string; annotations: string[] }>;
+  }> } },
+  calls: CallInfo[],
+): boolean {
+  // 1. Call to any known security-middleware method (helmet(), Talisman(),
+  //    httpSecurity.headers(), etc.).
+  for (const call of calls) {
+    if (SECURITY_MIDDLEWARE_METHODS.has(call.method_name)) return true;
+    // Express idiom: app.use(helmet()) — helmet appears as the first arg
+    // expression rather than the call's method_name.
+    if (call.method_name === 'use' && call.arguments.length > 0) {
+      const firstArg = call.arguments[0].expression ?? '';
+      if (/\b(helmet|Talisman|secure)\b/.test(firstArg)) return true;
+    }
+  }
+
+  // 2. Spring / Flask annotation markers on class or methods.
+  for (const type of graph.ir.types) {
+    if (type.annotations.some(a => SECURITY_MIDDLEWARE_ANNOTATIONS_RE.test(a))) return true;
+    for (const method of type.methods) {
+      if (method.annotations.some(a => SECURITY_MIDDLEWARE_ANNOTATIONS_RE.test(a))) return true;
+      // Spring `@Bean SecurityFilterChain securityFilterChain(...)` declarations.
+      if (/^security[A-Za-z]*FilterChain$/i.test(method.name)) return true;
+    }
   }
 
   return false;
