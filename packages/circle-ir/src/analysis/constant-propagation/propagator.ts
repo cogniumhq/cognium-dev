@@ -869,6 +869,32 @@ export class ConstantPropagator {
       if (nameNode) {
         const varName = getNodeText(nameNode, this.source);
         loopVarNames.add(varName);
+        // Sprint 8 #84: propagate taint from iterated collection to the loop variable.
+        // If the collection is tainted (whole-collection taint), or contains tainted
+        // elements/keys, mark the loop variable as tainted so downstream uses at
+        // sinks fire as expected.
+        const collectionNode = node.childForFieldName('value');
+        if (collectionNode) {
+          const collectionName = getNodeText(collectionNode, this.source);
+          const scopedCollection = this.currentMethod
+            ? `${this.currentMethod}:${collectionName}`
+            : collectionName;
+          let elementIsTainted =
+            this.tainted.has(collectionName) || this.tainted.has(scopedCollection);
+          if (!elementIsTainted) {
+            const taintedIndices = this.taintedArrayElements.get(collectionName);
+            if (taintedIndices && taintedIndices.size > 0) elementIsTainted = true;
+          }
+          if (!elementIsTainted) {
+            const taintedKeys = this.taintedCollections.get(collectionName);
+            if (taintedKeys && taintedKeys.size > 0) elementIsTainted = true;
+          }
+          if (elementIsTainted) {
+            const scopedVar = this.currentMethod ? `${this.currentMethod}:${varName}` : varName;
+            this.tainted.add(varName);
+            this.tainted.add(scopedVar);
+          }
+        }
       }
     }
 
@@ -2110,7 +2136,29 @@ export class ConstantPropagator {
             this.taintedCollections.set(collectionName, new Set());
           }
           this.taintedCollections.get(collectionName)!.add(keyStr);
+          // Sprint 8 #62: also mark the map variable itself as tainted so that
+          // downstream `map.get(k)` reads at sinks are detected by
+          // detectCollectionFlows (which checks taintedVars by container name).
+          const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
+          this.tainted.add(scopedCollection);
+          this.tainted.add(collectionName);
         }
+      }
+    }
+
+    // Sprint 8 #62: StringBuilder / StringBuffer append/insert taint propagation.
+    // When tainted data is appended to a builder, mark the builder variable as
+    // tainted so that `sb.toString()` at sinks is detected by detectCollectionFlows.
+    if (methodName === 'append' || methodName === 'insert') {
+      const args = argsNode.children.filter(
+        (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ','
+      );
+      // For append the value is arg[0]; for insert(int offset, value) the value is arg[1].
+      const valueArg = methodName === 'insert' && args.length >= 2 ? args[1] : args[0];
+      if (valueArg && this.isTaintedExpression(valueArg)) {
+        const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
+        this.tainted.add(scopedCollection);
+        this.tainted.add(collectionName);
       }
     }
 

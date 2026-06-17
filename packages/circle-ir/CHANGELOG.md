@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.57.0] - 2026-06-16
+
+### Fixed — Sprint 8: Java for-each + container taint propagation
+
+- **Issue #84 — Java for-each loop element-taint.**
+  `for (String id : taintedList) stmt.executeQuery("... " + id + " ...")`
+  now correctly propagates collection taint to the loop variable. The
+  propagator's `enhanced_for_statement` handler reads the iterated
+  collection via `childForFieldName('value')` and checks
+  `tainted`/`taintedArrayElements`/`taintedCollections` (scoped and
+  unscoped). If the collection (or any of its tracked elements/keys) is
+  tainted, the loop variable is seeded into `tainted` so downstream
+  uses at sinks fire as expected.
+
+- **Issue #62-partial — Map.put + StringBuilder taint propagation.**
+  Two additions to `propagator.checkCollectionTaint`:
+  - `m.put(k, tainted)` now seeds `m` into `tainted` (in addition to
+    `taintedCollections`), so the existing `detectCollectionFlows`
+    matcher in `taint-propagation-pass` finds `m.get(k)` at sinks
+    (`query("... " + m.get("k") + " ...")`).
+  - `StringBuilder.append(tainted)` and `StringBuffer.insert(off, tainted)`
+    seed the builder receiver into `tainted`, so
+    `stmt.executeQuery(sb.toString())` fires via the existing
+    `toString()` collection pattern matcher.
+
+### Regression coverage
+
+- New file: `tests/analysis/repro-sprint8.test.ts` with 12 fixtures
+  documenting the Sprint 8 issue contracts end-to-end:
+  - 5 for **#90** (Fastjson typed-overload `parseObject` variants — already
+    handled by `safe_if_class_literal_at` + `TYPE_ARG_IDENTIFIERS` shipped
+    in earlier sprints; codified here as regression fixtures).
+  - 1 for **#91** (`*Template.render(body)` template-receiver suppression
+    — already handled by `SAFE_RECEIVER_SUBSTRINGS_BY_METHOD` from 3.55.0).
+  - 1 for **#84** (for-each over tainted List → SQLi — newly fixed in
+    this release).
+  - 3 for **#49** (path canonicalization guard, XXE `setFeature` hardening,
+    sink dedupe — already handled by earlier sprints; codified here as
+    regression fixtures).
+  - 2 for **#62** (Map.put → m.get(k) at sink, StringBuilder.append →
+    sb.toString() at sink — newly fixed in this release).
+- Total suite: 2310 passed, 1 skipped (was 2298 in 3.56.0).
+
 ## [3.56.0] - 2026-06-16
 
 ### Added
