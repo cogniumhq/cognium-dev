@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.72.1] - 2026-06-18
+
+### Added — cross-file taint regression matrix (#106 closure lock)
+
+Critical review of #106 ("cross-file taint unresolved across Python/JS/Java/Go")
+against the post-Sprint-22 engine showed the issue's premise had been
+invalidated: cross-file source→sink chaining works end-to-end in Python,
+JavaScript, and Java, and partially in Go. The residual Go failures the
+issue cited are orthogonal — they trace to #53 (Go string-concat taint
+loss) and to missing Go sink configs (refiled as #107 `log_injection`
+and #108 `code_injection`/SSTI).
+
+Before this release the only cross-file regression coverage was Python
+SQL + command-injection (`repro-sprint13.test.ts`, #74). The matrix this
+test locks in:
+
+| Lang | Sink shape |
+|---|---|
+| Python | flask → helper → `ldap.search_s`, `lxml.etree.fromstring` (XXE) |
+| JavaScript | express → helper → `xpath.select`, `ldap.search` |
+| Java | servlet → helper class → `Statement.executeQuery`, `Runtime.exec`, `DocumentBuilder.parse` |
+| Go | `net/http` handler → helper → `db.Query` |
+
+Each test asserts ≥1 `TaintPath` where `source.file !== sink.file`,
+`source.type === 'http_param'` (the controller's HTTP source — not the
+helper's `interprocedural_param` fallback), and `sink.type` matches the
+expected vulnerability. This is the disambiguation #106 asked for: the
+controller's HTTP source is attributed correctly, proving the cross-file
+chain is real and not a relabeled per-file param heuristic.
+
+- New file: `tests/analysis/repro-cross-file.test.ts` (8 fixtures).
+- No engine changes; sink-config and pass behaviour unchanged from 3.72.0.
+
+Full vitest suite: 2499 passed across 143 files.
+
 ## [3.72.0] - 2026-06-18
 
 ### Fixed — Sprint 22: OOP object-flow taint FN, sink-agnostic closure (#104)
