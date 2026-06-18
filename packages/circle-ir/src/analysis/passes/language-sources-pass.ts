@@ -424,6 +424,27 @@ function findOopFieldReadSources(
       // both single-line Java getters (`public String getName() { return this.name; }`)
       // and multi-line getters / @property bodies.
       const returnRe = new RegExp(`\\breturn\\s+${SELF}\\.([A-Za-z_]\\w*)\\s*[;}]?`);
+      // cognium-dev #105 (Sprint 21 B.1) — recognise allowlist-style
+      // guards inside the getter body. When the getter contains an
+      // `if <ref> (not in|in) <UPPER_CONST>:` membership check followed
+      // within ≤2 lines by `raise` / `abort` / `return None` / `return ""`,
+      // treat the getter as a sanitizer rather than a taint source: the
+      // unmatched-host branch raises, so the value that flows past the
+      // guard is constrained to the allowlist. Conventional UPPER_SNAKE
+      // constant naming distinguishes a true allowlist from an incidental
+      // cache lookup (e.g. `if x in self.CACHE: return self.url` — the
+      // GUARD.1-noisy fixture).
+      // Python:  `if [self.]url not in self.ALLOWED:` + `raise`/`abort`/`return None`
+      // Java/JS: `if (!ALLOWED.contains(x))` / `!ALLOWED.includes(x)`/`!ALLOWED.has(x)`
+      //          + `throw`/`return null`
+      const guardRePy = /\bif\s+[\w.]+\s+(?:not\s+)?in\s+(?:self\.)?[A-Z_][A-Z0-9_]*\s*:/;
+      const guardThrowRePy = /^\s*(?:raise\b|abort\b|return\s+(?:None\b|''|""|\)?$))/;
+      const guardReJv = /\bif\s*\(\s*!\s*(?:this\.)?[A-Z_][A-Z0-9_]*\s*\.\s*(?:contains|includes|has|matches)\s*\(/;
+      const guardThrowReJv = /^\s*(?:throw\b|return\s+null\b)/;
+      const guardRe = isPython ? guardRePy : guardReJv;
+      const guardThrowRe = isPython ? guardThrowRePy : guardThrowReJv;
+      let hasAllowlistGuard = false;
+
       for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
         const raw = lines[i] ?? '';
         const trimmed = raw.trim();
@@ -438,8 +459,15 @@ function findOopFieldReadSources(
           returnStatementCount = 99;
           break;
         }
+        // Allowlist guard detection — look ahead ≤2 lines for the throw/raise.
+        if (guardRe.test(trimmed)) {
+          for (let j = i + 1; j < Math.min(i + 4, mEnd, lines.length); j++) {
+            const next = (lines[j] ?? '');
+            if (guardThrowRe.test(next)) { hasAllowlistGuard = true; break; }
+          }
+        }
       }
-      if (returnStatementCount === 1 && returnedField && fieldTaint.has(returnedField)) {
+      if (returnStatementCount === 1 && returnedField && fieldTaint.has(returnedField) && !hasAllowlistGuard) {
         const fieldInfo = fieldTaint.get(returnedField)!;
         // Java: caller writes `getName()` / `this.getName()` / `obj.getName()`.
         //   → match `\bgetName\b`.

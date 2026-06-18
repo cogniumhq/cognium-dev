@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.71.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.71.0 which closes #105 (Sprint 21) — OOP safe-mirror
+  sanitizer false positives:
+  - **FP-31** — allowlist-guarded getters
+    (`if x not in self.ALLOWED: raise; return self.url`) no longer fire
+    `ssrf` when called from a sink. Cache-shape lookups and plain getters
+    still propagate (regression-locked).
+  - **FP-32** — MongoDB value-bound filter dicts
+    (`findOne({ user: name })`) no longer fire `nosql_injection`.
+    Operator-injection shapes (`findOne(filter)`,
+    `findOne({$where: ...})`) still fire.
+  - Regression locks for FP-33 (hardened lxml parser), FP-34 (EJS `<%=`
+    auto-escape), and FN-INV (direct `self.url` read) — all
+    already-correct behavior pinned by `repro-sprint21.test.ts`.
+- No CLI surface changes; output formats unchanged.
+
 ## [3.70.0] - 2026-06-18
 
 ### Changed

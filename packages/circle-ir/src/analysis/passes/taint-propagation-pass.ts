@@ -196,6 +196,31 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #105 (Sprint 21 B.2) — MongoDB value-bound filter sanitizer.
+    // The `find/findOne/updateOne/deleteOne/aggregate` sinks fire on any
+    // tainted dict-literal at arg[0], but pure value-equality dicts
+    // (`{ user: name }`) are NOT operator-injection vectors: MongoDB only
+    // interprets keys with a `$` prefix (e.g. `$where`, `$ne`, `$gt`) as
+    // operators. When the sink's arg[0] is a literal object whose keys are
+    // all non-`$`-prefixed identifiers/strings, drop the flow. The
+    // operator-injection shape (`findOne(filter)` where `filter` is opaque
+    // and may carry `$where`) remains a sink because the arg is not a
+    // literal object.
+    if (typeof ctx.code === 'string') {
+      const sinkByLine = new Map<number, typeof sinks[number]>();
+      for (const s of sinks) {
+        if (s.type === 'nosql_injection') sinkByLine.set(s.line, s);
+      }
+      if (sinkByLine.size > 0) {
+        finalFlows = finalFlows.filter(f => {
+          if (f.sink_type !== 'nosql_injection') return true;
+          const sink = sinkByLine.get(f.sink_line);
+          if (!sink || !sink.code || !sink.method) return true;
+          return !isMongoValueBoundFilter(sink.code, sink.method);
+        });
+      }
+    }
+
     // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
     // The DFG propagator and the four supplementary detectors each emit
     // independently; merge-time dedup at the supplement seams is partial
@@ -221,6 +246,85 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
     return { flows: finalFlows };
   }
+}
+
+/**
+ * cognium-dev #105 (Sprint 21 B.2). Recognise MongoDB value-bound filter
+ * dicts at the first argument of `find/findOne/updateOne/deleteOne/aggregate`
+ * sink calls.
+ *
+ * MongoDB only interprets keys with a `$` prefix as query operators
+ * (`$where`, `$ne`, `$gt`, `$regex`, …). A literal object whose top-level
+ * keys are all plain identifiers/strings reduces to pure value-equality,
+ * which is structurally incapable of operator-injection regardless of the
+ * value expressions (the values are bound, not the keys).
+ *
+ * Recognised:
+ *   - `findOne({ user: name })`
+ *   - `findOne({ "user_id": id, status: 'active' })`
+ *   - `find({ name })`  // shorthand
+ *
+ * NOT recognised (still fires):
+ *   - `findOne(filter)`                 // opaque variable — may carry $where
+ *   - `findOne({ $where: 'this.x' })`   // explicit operator
+ *   - `findOne({ ...filter, name })`    // spread — opaque subset
+ *
+ * Scope: same-line literal at arg[0]. Multi-line dicts are conservatively
+ * left alone — we prefer FP over FN on the operator-injection class.
+ */
+function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string): boolean {
+  if (!sinkCode || !sinkMethod) return false;
+  // Locate the call site for the specific sink method to avoid matching
+  // an inner call that happens to share a name.
+  const callIdx = sinkCode.indexOf(`${sinkMethod}(`);
+  if (callIdx < 0) return false;
+  const openIdx = callIdx + sinkMethod.length;
+  // Walk to matching close-paren, tracking nested `()` `{}` `[]` and skipping
+  // string literals. Cap at 4 KiB to bound the scan on pathological inputs.
+  let depth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let inString: string | null = null;
+  let firstArgEnd = -1;
+  let firstArgComma = -1;
+  const limit = Math.min(sinkCode.length, openIdx + 4096);
+  for (let i = openIdx; i < limit; i++) {
+    const ch = sinkCode[i];
+    if (inString) {
+      if (ch === '\\' && i + 1 < limit) { i++; continue; }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) { firstArgEnd = i; break; }
+    } else if (ch === '{') braceDepth++;
+    else if (ch === '}') braceDepth--;
+    else if (ch === '[') bracketDepth++;
+    else if (ch === ']') bracketDepth--;
+    else if (ch === ',' && depth === 1 && braceDepth === 0 && bracketDepth === 0) {
+      if (firstArgComma < 0) firstArgComma = i;
+    }
+  }
+  if (firstArgEnd < 0) return false;
+  const argEnd = firstArgComma >= 0 ? firstArgComma : firstArgEnd;
+  const firstArg = sinkCode.slice(openIdx + 1, argEnd).trim();
+  if (!firstArg) return false;
+  // Must be a literal object (`{...}`), not a bare identifier or spread.
+  if (firstArg[0] !== '{' || firstArg[firstArg.length - 1] !== '}') return false;
+  const body = firstArg.slice(1, -1).trim();
+  if (!body) return false;
+  // Strip string literals so `$` inside string values doesn't false-trip.
+  const stripped = body.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+  // Spread / rest disqualifies (opaque subset).
+  if (/\.\.\./.test(stripped)) return false;
+  // Any `$<word>:` key is an operator → not value-bound.
+  if (/(^|[,{\s])\$[A-Za-z_]\w*\s*:/.test(stripped)) return false;
+  // Quoted-string key starting with `$`.
+  if (/(['"])\$[A-Za-z_]\w*\1\s*:/.test(body)) return false;
+  return true;
 }
 
 /**

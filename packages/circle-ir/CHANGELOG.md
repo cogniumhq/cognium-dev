@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.71.0] - 2026-06-18
+
+### Fixed — Sprint 21: OOP safe-mirror sanitizer FPs (#105)
+
+Sprint 21 closes the two remaining false-positive families on the OOP
+safe-mirror corpus exercised by the cognium-dev safe-corpus benchmark
+(`safe_oop_*.{py,js}`). The other three call-outs in #105 (FP-33 hardened
+lxml parser, FP-34 EJS auto-escape template, FN-INV direct `self.url`
+read) were already handled by the Sprint 16 / 18 machinery once #3.70.0
+shipped; they are now locked by Sprint 21 regression fixtures.
+
+This is taint-engine precision work — no new pass, no new `rule_id`,
+no `SinkType` enum change.
+
+**FP-31 — allowlist-guarded getter wrongly emitted as a taint source.**
+`findOopFieldReadSources` (`src/analysis/passes/language-sources-pass.ts`)
+now recognises allowlist-style guards inside single-return getters and
+suppresses the synthetic source emission. The shape
+
+```py
+class HttpClient:
+    ALLOWED = {'api.internal.example.com', 'cdn.example.com'}
+    def _checked(self):
+        if self.url not in self.ALLOWED:
+            raise ValueError("host not allowed")
+        return self.url
+```
+
+no longer fires `ssrf` when `requests.get(self._checked())` is called.
+The check requires (a) an `if <ref> (not in|in) <UPPER_SNAKE_CONST>:`
+membership test, and (b) `raise`/`abort`/`return None`/`return ''`
+within ≤2 lines of the guard. Cache-shape lookups
+(`if self.url in self.CACHE: return self.url`, no `raise`) and plain
+getters (`def get_url(self): return self.url`) are explicitly NOT
+treated as sanitizers — the `GETTER.1-vuln` and `GUARD.1-noisy`
+fixtures lock those negative cases. Java/JS variants of the guard
+(`!ALLOWED.contains(x)` / `!ALLOWED.includes(x)` + `throw`) are also
+recognised.
+
+**FP-32 — MongoDB value-bound filter dict wrongly classified as
+operator-injection.** `TaintPropagationPass` (`src/analysis/passes/
+taint-propagation-pass.ts`) now post-filters `nosql_injection` flows
+through a new `isMongoValueBoundFilter` helper. MongoDB only interprets
+`$`-prefixed keys (`$where`, `$ne`, `$gt`, …) as operators; a literal
+object whose top-level keys are all plain identifiers/strings reduces
+to pure value-equality and is structurally incapable of operator
+injection regardless of how its values were computed. The shape
+
+```js
+this.db.collection('users').findOne({ user: name })
+```
+
+no longer fires `nosql_injection` for `find/findOne/updateOne/
+deleteOne/aggregate` sinks. The operator-injection mirror
+(`findOne(filter)` where `filter` is opaque, or
+`findOne({$where: ...})`) still fires — locked by `NOSQL.2-vuln`.
+The helper uses a depth-aware paren walker (cap 4 KiB) so nested
+braces and string-literal `$` characters don't false-trip.
+
+**Regression locks (already-passing fixtures pinned in
+`repro-sprint21.test.ts`):**
+
+- FP-33 hardened lxml parser (`resolve_entities=False, no_network=True,
+  load_dtd=False`) — 0 xxe flows.
+- FP-34 EJS `<%= n %>` auto-escape template — 0 xss / 0
+  template_injection flows.
+- FN-INV direct `self.url` read on a constructor-injected field — ≥1
+  ssrf flow (relies on the Sprint 16 #78 field-source machinery).
+
+**Verification:** 2475 tests pass / 1 skipped across 141 files.
+Targeted: `repro-sprint21.test.ts` 8/8; `repro-issue-78.test.ts`,
+`repro-sprint16/18/9.test.ts` no regressions on the OOP /
+wrapper-sanitizer / Python-safe-corpus suites.
+
+Closes #105.
+
 ## [3.70.0] - 2026-06-18
 
 ### Added — Sprint 20: `cache-no-vary` pass (#96 L91)
