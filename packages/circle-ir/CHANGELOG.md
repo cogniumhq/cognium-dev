@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.65.0] - 2026-06-17
+
+### Fixed — Duplicate taint flow emission (#49 dedup gap)
+
+Sprint 15 closes the duplicate-emission sub-gap of cognium-dev #49:
+unsanitized Java fixtures were emitting the same `(source_line, sink_line,
+sink_type)` triple two or three times when multiple internal detectors
+(the DFG-based propagator + the four supplementary detectors) all reached
+the same sink call from different tainted-variable chains.
+
+The merge-time dedup at the supplement seams in `TaintPropagationPass.run()`
+keys on `(source_line, sink_line)` only — not `sink_type` — and the DFG
+result itself was not deduped at all. As a result an unsanitized
+`builder.parse(new ByteArrayInputStream(body.getBytes()))` would emit
+`xxe ×2` from the same `(source_line=19, sink_line=22, sink_type='xxe')`
+key.
+
+A final dedup pass now runs at the end of `TaintPropagationPass.run()`,
+keyed on `(source_line, sink_line, sink_type)`. The highest-confidence
+flow per key is retained; ties keep the first occurrence. This does not
+affect the per-method Java FP suppression added in 3.64.0 (the dedup runs
+after the method-level filter).
+
+### Tests
+
+- New `tests/analysis/repro-sprint15.test.ts` (3 cases) locks the dedup
+  behaviour on an unsanitized Java fixture, while asserting that real
+  `xxe` and `path_traversal` flows still fire.
+- Full suite: 2414 passed, 1 skipped, 0 failed.
+
 ## [3.64.0] - 2026-06-17
 
 ### Fixed — Java FP corpus regression (cognium-dev #101)

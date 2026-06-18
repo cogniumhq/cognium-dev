@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.65.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.65.0 which closes the dedup sub-gap of #49:
+  unsanitized Java fixtures no longer emit the same
+  `(source_line, sink_line, sink_type)` triple twice from independent
+  internal detectors (DFG propagator + four supplementary detectors). A
+  final dedup pass in `TaintPropagationPass.run()` retains the
+  highest-confidence flow per triple. Real `xxe` and `path_traversal`
+  flows still fire on unsanitized code. See
+  `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.64.0] - 2026-06-17
 
 ### Changed

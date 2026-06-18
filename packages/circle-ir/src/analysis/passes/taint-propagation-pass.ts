@@ -196,6 +196,29 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
+    // The DFG propagator and the four supplementary detectors each emit
+    // independently; merge-time dedup at the supplement seams is partial
+    // (some only key on source_line+sink_line, not sink_type) and the
+    // DFG result itself can contain near-duplicates when multiple
+    // tainted-variable chains reach the same sink call (e.g. `xxe ×2` /
+    // `xxe ×3` from #49). Keep the highest-confidence flow per key; on a
+    // confidence tie keep the first occurrence.
+    if (finalFlows.length > 1) {
+      const bestByKey = new Map<string, TaintFlowInfo>();
+      for (const f of finalFlows) {
+        const key = `${f.source_line}|${f.sink_line}|${f.sink_type}`;
+        const cur = bestByKey.get(key);
+        if (!cur || f.confidence > cur.confidence) {
+          bestByKey.set(key, f);
+        }
+      }
+      finalFlows = finalFlows.filter(f => {
+        const key = `${f.source_line}|${f.sink_line}|${f.sink_type}`;
+        return bestByKey.get(key) === f;
+      });
+    }
+
     return { flows: finalFlows };
   }
 }
