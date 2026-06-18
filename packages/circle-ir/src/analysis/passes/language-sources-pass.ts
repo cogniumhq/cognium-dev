@@ -163,6 +163,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // to sinks in other methods of the same class.
     additionalSources.push(...findOopFieldReadSources(types, code, language));
 
+    // -- Java (#78 round 2): static field stores inside the same class -------
+    additionalSources.push(...findStaticFieldSources(types, code, language));
+
+    // -- Java (#78 round 2): non-bean setter/getter chains -------------------
+    additionalSources.push(...findSetterChainSources(types, code, language));
+
     // -- JavaScript/TypeScript: assignment sources and DOM XSS sinks ---------
     additionalSources.push(...findJavaScriptAssignmentSources(code, language));
 
@@ -447,6 +453,229 @@ function findOopFieldReadSources(
           line: m.start_line,
           confidence: 0.85,
           variable: getterVar,
+        });
+      }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * Issue #78 round 2 — Static field stores (intra-class, Java).
+ *
+ * Pattern:
+ *   class Config {
+ *     private static String dbHost;
+ *     public static void init(HttpServletRequest req) {
+ *       dbHost = req.getParameter("h");   // taint flows in
+ *     }
+ *     public static Process query() {
+ *       return Runtime.getRuntime().exec(dbHost);  // tainted use
+ *     }
+ *   }
+ *
+ * For each Java class, walk static-method bodies for assignments to a
+ * static field (either bare `<field>` or `<ClassName>.<field>`). When the
+ * RHS matches a known HTTP source receiver expression, emit a synthetic
+ * source with `variable: '<field>'` (and `'<ClassName>.<field>'` for
+ * qualified reads). The variable-name scan in `TaintPropagationPass`
+ * then matches sink expressions in sibling methods that reference the
+ * field by its bare name.
+ *
+ * Confidence 0.85 — same band as the constructor-injected field path.
+ * Java only (Python `staticmethod` patterns are handled separately by
+ * `findPythonAssignmentSources`).
+ */
+function findStaticFieldSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+
+  for (const type of types) {
+    if (type.kind !== 'class') continue;
+    if (type.name === '<module>') continue;
+
+    const staticFields = new Set<string>();
+    for (const f of type.fields) {
+      if (f.modifiers.includes('static')) staticFields.add(f.name);
+    }
+    if (staticFields.size === 0) continue;
+
+    const qualifiedAssignRe = new RegExp(
+      `^\\s*${type.name}\\.([A-Za-z_]\\w*)\\s*=\\s*(.+?)(?:;\\s*)?$`,
+    );
+    const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+
+    for (const m of type.methods) {
+      if (!m.modifiers.includes('static')) continue;
+      const mStart = m.start_line;
+      const mEnd = m.end_line;
+
+      for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
+        const line = lines[i] ?? '';
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+
+        let fieldName: string | null = null;
+        let rhs: string | null = null;
+        const qm = trimmed.match(qualifiedAssignRe);
+        if (qm) {
+          fieldName = qm[1];
+          rhs = qm[2];
+        } else {
+          const bm = trimmed.match(bareAssignRe);
+          if (bm) {
+            fieldName = bm[1];
+            rhs = bm[2];
+          }
+        }
+        if (!fieldName || !rhs) continue;
+        if (!staticFields.has(fieldName)) continue;
+        rhs = rhs.trim().replace(/;\s*$/, '');
+
+        if (!javaHttpPattern.test(rhs)) continue;
+
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${fieldName} static field set in ${m.name}() — #78 round 2`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.85,
+          variable: fieldName,
+        });
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${fieldName} static field (qualified read alias) — #78 round 2`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.85,
+          variable: `${type.name}.${fieldName}`,
+        });
+      }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * Issue #78 round 2 — Non-bean setter/getter chains (Java).
+ *
+ * Pattern:
+ *   class User {
+ *     private String cred;
+ *     public void setCred(String c) { this.cred = c; }
+ *     public String getCred() { return this.cred; }
+ *   }
+ *   // caller:
+ *   User u = new User();
+ *   u.setCred(req.getParameter("c"));
+ *   stmt.executeQuery("... " + u.getCred() + " ...");
+ *
+ * Strategy: for each class, build a `field -> { setter, getter }` map.
+ * A setter is a 1-param method whose only body statement is
+ * `this.<field> = <param>;`. A getter is a 0-param method whose only
+ * body statement is `return this.<field>;`. Then walk the whole source
+ * for setter call sites whose argument matches a known HTTP source —
+ * emit a synthetic source on the setter call line bound to the *getter*
+ * method name, so the variable-name scan in `TaintPropagationPass`
+ * matches `\bgetX\b` in any downstream sink expression.
+ *
+ * Confidence 0.75 — slightly lower than the direct constructor-field
+ * path because the call ordering is heuristic.
+ */
+function findSetterChainSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+
+  for (const type of types) {
+    if (type.kind !== 'class') continue;
+    if (type.name === '<module>') continue;
+
+    // Build setter/getter pairs by inspecting per-method bodies.
+    const pairs = new Map<string, { setter?: string; getter?: string }>();
+    const setterRe = /this\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?/;
+    const getterRe = /return\s+this\.([A-Za-z_]\w*)\s*;?/;
+
+    for (const m of type.methods) {
+      if (m.name === type.name) continue; // skip constructor
+      const mStart = m.start_line;
+      const mEnd = m.end_line;
+
+      // Join the method declaration + body into one string, then isolate the
+      // content between the first `{` and the matching last `}`. Handles
+      // both single-line methods (`void setX(String x){ this.x = x; }`) and
+      // multi-line bodies.
+      const fullBody = lines.slice(mStart - 1, Math.min(mEnd, lines.length)).join('\n');
+      const open = fullBody.indexOf('{');
+      const close = fullBody.lastIndexOf('}');
+      if (open < 0 || close < 0 || close <= open) continue;
+      const inner = fullBody
+        .slice(open + 1, close)
+        .replace(/\/\/[^\n]*/g, '') // strip line comments
+        .trim();
+      if (!inner) continue;
+
+      // Setter?
+      const sm = inner.match(setterRe);
+      if (sm && m.parameters.length === 1 && sm[2] === m.parameters[0].name) {
+        // Reject if there's *another* statement beyond the matched one.
+        const remainder = inner.replace(sm[0], '').trim();
+        if (!remainder) {
+          const entry = pairs.get(sm[1]) ?? {};
+          entry.setter = m.name;
+          pairs.set(sm[1], entry);
+          continue;
+        }
+      }
+      // Getter?
+      const gm = inner.match(getterRe);
+      if (gm && m.parameters.length === 0) {
+        const remainder = inner.replace(gm[0], '').trim();
+        if (!remainder) {
+          const entry = pairs.get(gm[1]) ?? {};
+          entry.getter = m.name;
+          pairs.set(gm[1], entry);
+        }
+      }
+    }
+
+    // For each (field, setter, getter) triple, search the whole source
+    // for `<recv>.<setter>(<arg>)` where <arg> matches an HTTP source.
+    for (const [, { setter, getter }] of pairs) {
+      if (!setter || !getter) continue;
+      const setterCallRe = new RegExp(
+        `\\b([A-Za-z_]\\w*)\\.${setter}\\s*\\(\\s*([^)]+?)\\s*\\)\\s*;?`,
+      );
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const cm = trimmed.match(setterCallRe);
+        if (!cm) continue;
+        const arg = cm[2];
+        if (!javaHttpPattern.test(arg)) continue;
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${setter}(tainted) → ${type.name}.${getter}() chain — #78 round 2`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.75,
+          variable: getter,
         });
       }
     }

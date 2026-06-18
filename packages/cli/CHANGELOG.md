@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.66.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.66.0 which ships Sprint 16:
+  - **#78 round 2 (OOP field-sensitivity)** — Java static field stores
+    (`Config.dbHost = req.getParameter(...)` flowed to
+    `Runtime.exec(dbHost)`), non-bean setter/getter pairs
+    (`u.setCred(taint)` → `u.getCred()` in SQL sink), and cross-instance
+    aliasing via constructor-stored receivers (`Service` writes
+    `this.repo.sql = taint`, `Repo.run()` executes it).
+  - **#74 follow-up (cross-file Java taint)** — `CrossFileResolver` now
+    consults `call.receiver_type_fqn` first, unlocking SymbolTable FQN
+    lookups for direct-instance, `import static`, and Spring `@Autowired`
+    cross-file dispatch. Interface dispatch falls through to polymorphic
+    candidates when the resolved parent type is an `interface`.
+  - **#52** — FreeMarker `Configuration.getTemplate(filename)` SSTI
+    fixture locked.
+- Cross-file Java taint paths now render in the standard cross-file
+  section of text/JSON/SARIF output for the above patterns.
+- See `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.65.0] - 2026-06-17
 
 ### Changed

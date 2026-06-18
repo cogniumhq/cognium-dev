@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.66.0] - 2026-06-18
+
+### Added — Sprint 16: OOP field-sensitivity r2 (#78) + Java cross-file taint (#74)
+
+Sprint 16 ships three workstreams in a single release:
+
+#### D — OOP field-sensitivity round 2 (#78)
+
+Round 1 (v3.39.0+) shipped constructor-injected field flow with direct
+field read and getter-chain detection. Round 2 adds three new Java
+patterns covered by `tests/analysis/repro-sprint16.test.ts`:
+
+1. **Static field stores (intra-class)** — `findStaticFieldSources` in
+   `src/analysis/passes/language-sources-pass.ts` walks static-method
+   bodies for `<ClassName>.<staticField> = <rhs>` and `<staticField> = <rhs>`
+   assignments. When the RHS matches a known HTTP source pattern, it
+   emits synthetic taint sources with `variable: '<field>'` and
+   `variable: '<ClassName>.<field>'` so downstream sinks in sibling
+   static methods (e.g. `Runtime.exec(dbHost)`) get attributed correctly.
+   Gates on `FieldInfo.modifiers` containing `static`. Confidence 0.85.
+
+2. **Non-bean setter/getter pairs** — `findSetterChainSources` in the
+   same file builds a `Map<field, {setters, getters}>` by parsing
+   single-statement method bodies (joined-line + `{...}` extraction so
+   one-line Java methods like `void setX(String x){this.x=x;}` parse
+   correctly). When a setter call site receives a tainted argument, a
+   subsequent getter call (`u.getCred()`) in a sink expression emits a
+   synthetic source on the getter call site with `variable: getter.name`.
+   Confidence 0.75 (matches round-1 getter path).
+
+3. **Cross-instance aliasing via constructor-stored receiver** — new
+   `findCrossInstanceAliasingPaths` helper in
+   `src/analysis/passes/cross-file-pass.ts` walks each Java class for
+   `this.<aliasField>.<innerField> = <rhs>` assignments. Strictly gates
+   on (a) `aliasField` being a declared field whose type FQN resolves
+   inside the project's IRs, (b) `innerField` being a declared field on
+   the aliased type, (c) RHS matching a known HTTP source. Then scans
+   the aliased class's methods for sinks whose call args reference
+   `innerField` and emits a full `InterproceduralTaintPath`
+   (source → field_write → field_read → sink). Confidence 0.65.
+
+#### E — Cross-file Java taint (#74 follow-up)
+
+The Java extractor already populates `call.receiver_type_fqn` for
+invocations whose receiver type resolves via imports/locals/fields
+(`extractors/calls.ts`), and the SymbolTable already indexes Java
+methods under their FQN. The missing link was in `CrossFileResolver`:
+
+1. **FQN preflight** — `resolveWithReceiver` in
+   `src/resolution/cross-file.ts` now consults `call.receiver_type_fqn`
+   first, before falling back to context-derived `inferReceiverType`.
+   This unlocks the SymbolTable's FQN index for Java multi-file
+   resolution (direct instance, static import, @Autowired).
+
+2. **Interface dispatch** — when the resolved method's parent type is
+   an `interface` (looked up via `symbolTable.getSymbol(parentType)`),
+   `resolveWithReceiver` now prefers polymorphic candidates from
+   `findPolymorphicCandidates(receiverType, methodName)` over the
+   interface symbol itself. This routes `userRepo.load(taint)` to the
+   `UserRepoJdbc.load` implementor's SQL sink across files.
+
+#### B — FreeMarker SSTI (#52)
+
+No code changes — the `Configuration.getTemplate(filename)` pattern
+already fires `code_injection` via existing sink coverage. Added the
+fixture to `repro-sprint16.test.ts` to lock the behaviour.
+
+### Tests
+
+- New `tests/analysis/repro-sprint16.test.ts`:
+  - B.1 — FreeMarker `Configuration.getTemplate(taint)` → `code_injection`
+  - D.1 — static field intra-class (`Config.dbHost`) → `command_injection`
+  - D.2 — non-bean setter/getter (`u.setCred`/`u.getCred`) → `sql_injection`
+  - D.3 — cross-instance aliasing (`Service` → `Repo`) → `sql_injection`
+  - E.1 — direct instance (`Controller` → `DbHelper`) → cross-file SQLi
+  - E.2 — `import static` (`runUserQuery`) → cross-file SQLi
+  - E.3 — Spring `@Autowired` (`@Autowired DbHelper helper`) → cross-file SQLi
+  - E.4 — interface dispatch (`UserRepo` → `UserRepoJdbc`) → cross-file SQLi
+  - N.1 — same-file negative control for E.1 (locks single-file path)
+- Full suite: 2423 passed, 1 skipped, 0 failed (136 test files).
+
 ## [3.65.0] - 2026-06-17
 
 ### Fixed — Duplicate taint flow emission (#49 dedup gap)

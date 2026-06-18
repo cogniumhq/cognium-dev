@@ -17,8 +17,11 @@ import type {
   TypeHierarchy,
   SourceType,
   SinkType,
+  TypeInfo,
+  CircleIR,
 } from '../../types/index.js';
 import type { ProjectGraph } from '../../graph/project-graph.js';
+import type { InterproceduralTaintPath } from '../../resolution/cross-file.js';
 
 export interface CrossFilePassResult {
   /** Inter-file method calls (source file → target file). */
@@ -103,6 +106,7 @@ export class CrossFilePass {
     const ipPaths = [
       ...resolver.findInterproceduralTaintPaths(),
       ...resolver.findFieldBindingTaintPaths(),
+      ...findCrossInstanceAliasingPaths(projectGraph, sourceLines),
     ];
     for (let i = 0; i < ipPaths.length; i++) {
       const p = ipPaths[i];
@@ -191,4 +195,143 @@ export class CrossFilePass {
 
     return { crossFileCalls, taintPaths, typeHierarchy };
   }
+}
+
+/**
+ * Issue #78 round 2 — Cross-instance aliasing via constructor-stored receiver.
+ *
+ * Pattern:
+ *   // Service.java
+ *   class Service {
+ *     private Repo repo;
+ *     public Service(Repo r) { this.repo = r; }      // stores alias
+ *     public void handle(HttpServletRequest req) {
+ *       this.repo.sql = req.getParameter("c");        // tainted write
+ *     }
+ *   }
+ *   // Repo.java
+ *   class Repo {
+ *     public String sql;
+ *     public Statement stmt;
+ *     public void run() throws Exception {
+ *       stmt.executeQuery(sql);                       // sink reads field
+ *     }
+ *   }
+ *
+ * Algorithm:
+ *   For each loaded Java class S, walk its method bodies for assignments
+ *   of shape `this.<aliasField>.<innerField> = <rhs>`. Gate strictly:
+ *     - aliasField is a declared field of S whose type T is a Java class
+ *       defined elsewhere in the project, AND
+ *     - innerField is a declared field of T, AND
+ *     - RHS matches a known HTTP source.
+ *   When the trigger fires, scan T's methods for sinks whose call
+ *   arguments contain `\b<innerField>\b`. Emit one
+ *   `InterproceduralTaintPath` per (write, sink) pair.
+ *
+ * Confidence 0.65 — strictly gated but the cross-instance reasoning is
+ * still pattern-based.
+ */
+function findCrossInstanceAliasingPaths(
+  projectGraph: ProjectGraph,
+  _sourceLines: Map<string, string[]>,
+): InterproceduralTaintPath[] {
+  const paths: InterproceduralTaintPath[] = [];
+
+  const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+  const aliasWriteRe = /^\s*this\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+
+  // Build a project-wide simple-name → (file, type, IR) index for Java classes.
+  const typeIndex = new Map<string, { file: string; type: TypeInfo; ir: CircleIR }>();
+  for (const filePath of projectGraph.filePaths) {
+    const ir = projectGraph.getIR(filePath);
+    if (!ir) continue;
+    if (ir.meta.language !== 'java') continue;
+    for (const t of ir.types) {
+      if (t.kind === 'class') typeIndex.set(t.name, { file: filePath, type: t, ir });
+    }
+  }
+  if (typeIndex.size === 0) return paths;
+
+  for (const filePath of projectGraph.filePaths) {
+    const ir = projectGraph.getIR(filePath);
+    if (!ir) continue;
+    if (ir.meta.language !== 'java') continue;
+    const lines = _sourceLines.get(filePath);
+    if (!lines || lines.length === 0) continue;
+
+    for (const type of ir.types) {
+      if (type.kind !== 'class') continue;
+
+      // Map<aliasFieldName, aliasFieldDeclaredType>
+      const aliasFields = new Map<string, string>();
+      for (const f of type.fields) {
+        if (!f.type) continue;
+        // Strip generics; keep simple class name.
+        const simple = f.type.replace(/<.*>/g, '').replace(/\[\]$/, '').trim();
+        if (typeIndex.has(simple)) aliasFields.set(f.name, simple);
+      }
+      if (aliasFields.size === 0) continue;
+
+      for (const m of type.methods) {
+        if (m.name === type.name) continue; // skip constructor
+        const mStart = m.start_line;
+        const mEnd = m.end_line;
+
+        for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
+          const trimmed = (lines[i] ?? '').trim();
+          if (!trimmed || trimmed.startsWith('//')) continue;
+          const wm = trimmed.match(aliasWriteRe);
+          if (!wm) continue;
+          const aliasField = wm[1];
+          const innerField = wm[2];
+          const rhs = wm[3].trim().replace(/;\s*$/, '');
+
+          const aliasType = aliasFields.get(aliasField);
+          if (!aliasType) continue;
+          const target = typeIndex.get(aliasType);
+          if (!target) continue;
+          if (!target.type.fields.some(f => f.name === innerField)) continue;
+          if (!javaHttpPattern.test(rhs)) continue;
+
+          // Find sinks in any method of the aliased type whose call args
+          // reference the inner field by name.
+          const innerRe = new RegExp(`\\b${innerField}\\b`);
+          for (const tm of target.type.methods) {
+            const sinksInTarget = target.ir.taint.sinks.filter(
+              s => s.line >= tm.start_line && s.line <= tm.end_line,
+            );
+            for (const sink of sinksInTarget) {
+              const callsAtSink = target.ir.calls.filter(c => c.location.line === sink.line);
+              let matched = false;
+              for (const c of callsAtSink) {
+                for (const a of c.arguments ?? []) {
+                  if (innerRe.test(a.expression ?? '') || a.variable === innerField) {
+                    matched = true;
+                    break;
+                  }
+                }
+                if (matched) break;
+              }
+              if (!matched) continue;
+
+              paths.push({
+                source: { file: filePath, line: i + 1, type: 'http_param' },
+                sink: { file: target.file, line: sink.line, type: sink.type, cwe: sink.cwe },
+                hops: [
+                  { file: filePath, line: i + 1, method: m.name, kind: 'source' },
+                  { file: filePath, line: i + 1, method: m.name, kind: 'field_write' },
+                  { file: target.file, line: tm.start_line, method: tm.name, kind: 'field_read' },
+                  { file: target.file, line: sink.line, method: tm.name, kind: 'sink' },
+                ],
+                confidence: 0.65,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return paths;
 }

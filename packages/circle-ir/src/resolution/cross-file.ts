@@ -171,14 +171,41 @@ export class CrossFileResolver {
   private resolveWithReceiver(call: CallInfo, fromFile: string): ResolvedCall | undefined {
     const receiver = call.receiver!;
 
-    // Try to determine receiver type
-    const receiverType = this.inferReceiverType(receiver, fromFile);
+    // Preflight (#74 follow-up / Java cross-file E): the Java extractor
+    // already populates `receiver_type_fqn` for invocations whose receiver
+    // type can be resolved via imports/locals/fields. Honour it before
+    // falling through to context-derived inference (which only handles a
+    // few common abbreviations and constructor-defined locals).
+    const receiverType: string | undefined =
+      call.receiver_type_fqn ?? this.inferReceiverType(receiver, fromFile);
 
     if (receiverType) {
       // Look for method in the type
       const methodSymbol = this.symbolTable.findMethod(receiverType, call.method_name);
 
       if (methodSymbol) {
+        // If the resolved method's parent is an interface, prefer a unique
+        // implementor when one exists (Java cross-file E — interface
+        // dispatch). The interface declaration carries no body so
+        // taint-flow analysis through it is a dead end.
+        const parent = methodSymbol.parentType
+          ? this.symbolTable.getSymbol(methodSymbol.parentType)
+          : undefined;
+        if (parent && parent.kind === 'interface') {
+          const candidates = this.findPolymorphicCandidates(receiverType, call.method_name);
+          if (candidates.length > 0) {
+            const primary = candidates[0];
+            return {
+              call,
+              sourceFile: fromFile,
+              targetFile: primary.file,
+              targetMethod: primary.fqn,
+              targetClass: primary.parentType || receiverType,
+              resolution: 'polymorphic',
+              candidates: candidates.map(c => c.fqn),
+            };
+          }
+        }
         return {
           call,
           sourceFile: fromFile,
