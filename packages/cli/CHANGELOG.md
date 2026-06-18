@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.64.0] - 2026-06-17
+
+### Changed
+
+- Tracks circle-ir 3.64.0 which closes Sprint 14 (cognium-dev #101 — Java
+  FP corpus regression). Four false-positives from
+  `coggiyadmin/java-vuln-demo` are suppressed without regressing the 2402
+  pre-existing tests:
+  - FP-01 `path_traversal` on `new File(base, filename)` inside a method
+    using the canonical-path-startsWith-throw idiom.
+  - FP-02 `xxe` inside methods that harden `DocumentBuilderFactory` /
+    `SAXParserFactory` via `setFeature("disallow-doctype-decl", true)` /
+    `setFeature("external-general-entities", false)` /
+    `setFeature("external-parameter-entities", false)` /
+    `setFeature("load-external-dtd", false)` or
+    `setProperty(SUPPORT_DTD, false)`.
+  - FP-03 `command_injection` on the switch→constant pattern
+    (`String cmd; switch(type){ case "x": cmd = "/bin/x"; ...} exec(cmd);`).
+  - FP-04 `sql_injection` on the bounded-allowlist pattern
+    (`if (!ALLOWLIST.contains(col)) col = "name";`) — already suppressed
+    in 3.63.0, now locked behind a regression test.
+
+  See `packages/circle-ir/CHANGELOG.md` for the detailed engine-level
+  changes (new `isInJavaSanitizedMethod()` helper, `TaintSource.in_method`
+  method-scope plumbing across all seven source-emission sites,
+  cross-method bleed gate in `detectCollectionFlows`, switch-case
+  literal-reassignment pattern in `isReassignedToLiteralBetween`).
+
 ## [3.63.0] - 2026-06-17
 
 ### Changed

@@ -111,6 +111,7 @@ function findSources(
           severity: pattern.severity,
           line: call.location.line,
           confidence: 1.0,
+          in_method: call.in_method ?? undefined,
         });
       }
     }
@@ -131,6 +132,7 @@ function findSources(
                 severity: pattern.severity,
                 line: paramLine,
                 confidence: 1.0,
+                in_method: method.name,
               });
             }
           }
@@ -155,6 +157,7 @@ function findSources(
             severity: pattern.severity,
             line: paramLine,
             confidence: 1.0,
+            in_method: method.name,
           });
         }
       }
@@ -195,6 +198,7 @@ function findSources(
           line: paramLine,
           confidence: 1.0,
           variable: param.name,
+          in_method: method.name,
         });
       }
     }
@@ -228,6 +232,7 @@ function findSources(
             severity: 'medium',
             line: paramLine,
             confidence: param.type ? 0.7 : 0.5, // Lower confidence for untyped params
+            in_method: method.name,
           });
         }
       }
@@ -254,6 +259,7 @@ function findSources(
               severity: 'high',
               line: call.location.line,
               confidence: 1.0,
+              in_method: call.in_method ?? undefined,
             });
           }
         }
@@ -279,6 +285,7 @@ function findSources(
               severity: 'high',
               line: call.location.line,
               confidence: 1.0,
+              in_method: call.in_method ?? undefined,
             });
           }
           break;
@@ -317,6 +324,51 @@ function findSources(
       const lineText = sourceLines[s.line - 1] ?? '';
       const m = LET_BINDING.exec(lineText);
       if (m) s.variable = m[1];
+    }
+  }
+
+  // Java: YAML/call-pattern source emission (above) records the call site but
+  // not the binding identifier. Variable-scoped sanitizer detectors
+  // (`isReassignedToLiteralBetween`, allowlist-bounded variable checks,
+  // expression-scan sourcesWithVar gate) all short-circuit when
+  // `source.variable` is undefined. Recover the LHS from the source line so
+  // they keep working for Java tainted-variable patterns. cognium-dev #101.
+  //
+  // Covers:
+  //   `String x = req.getParameter(...)`         → x
+  //   `int id = Integer.parseInt(req.getParameter("id"))` → id  (parseInt
+  //                                                              sanitizer
+  //                                                              clears
+  //                                                              downstream)
+  //   `final List<String> xs = req.getParameter(...)` → xs
+  //   `x = req.getParameter(...)`                → x  (no type)
+  //
+  // SKIPPED — RHS is `new <Ctor>(...)`: when a source call is nested inside a
+  // constructor, the LHS holds the constructor's result, not the source's
+  // tainted value. Example (Zip-Slip, cognium-dev #52):
+  //   `File outFile = new File(destDir, entry.getName());`
+  // Here `outFile` is a File handle, not the tainted entry name; binding
+  // `entry.getName()` to `outFile` would break the same-line source→sink
+  // flow detection that #52 depends on. The regex rejects `= new ` via the
+  // `(?!new\b)` lookahead after the `=`.
+  //
+  // Conservative: when no clear LHS, leave variable undefined (no regression
+  // vs. today's behaviour). `==` is excluded via `(?!=)`.
+  if (language === 'java' && sourceLines) {
+    // `(?!=)` rejects `==` so the LHS regex doesn't fire on equality
+    // comparisons.
+    const JAVA_ASSIGN_LHS = /^\s*(?:(?:final|public|private|protected|static|synchronized|volatile|transient)\s+)*(?:[A-Za-z_][\w.]*(?:\s*<[^=]*>)?(?:\s*\[\s*\])*\s+)?([A-Za-z_]\w*)\s*=(?!=)/;
+    for (const s of result) {
+      if (s.variable && s.variable.length > 0) continue;
+      const lineText = sourceLines[s.line - 1] ?? '';
+      const m = JAVA_ASSIGN_LHS.exec(lineText);
+      if (!m) continue;
+      // RHS guard — refuse to bind when the source is nested inside a
+      // constructor call. Done in JS (not via regex lookahead) because the
+      // post-`=` `\s*` would backtrack to zero and defeat the lookahead.
+      const rhs = lineText.slice(m[0].length).trimStart();
+      if (/^new\b/.test(rhs)) continue;
+      s.variable = m[1];
     }
   }
 

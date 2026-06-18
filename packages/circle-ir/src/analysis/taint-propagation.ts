@@ -253,11 +253,22 @@ function findInitialTaint(
     }
 
     // Also check the next line (for cases like: String x = request.getParameter("foo"))
+    //
+    // cognium-dev #101 (Sprint 14 Phase E): when the source carries a binding
+    // variable (Java/JS/Python now set this via the LHS-recovery postprocess
+    // in `taint-matcher.ts`), restrict next-line seeding to defs whose
+    // variable matches `source.variable`. Without this guard, a bare
+    // declaration on `source.line + 1` (e.g. `String cmd;` immediately after
+    // `String type = req.getParameter("type");`) would be marked tainted
+    // purely by line adjacency, then `propagateThroughChains` carries the
+    // bogus taint forward to any sink that consumes `cmd` later in the
+    // method — that was the FP-03 root cause from issue #101.
     const defsNextLine = defsByLine.get(source.line + 1) ?? [];
     for (const def of defsNextLine) {
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
       if (callsOnSourceLine.length > 0) {
+        if (source.variable && def.variable !== source.variable) continue;
         tainted.push({
           variable: def.variable,
           defId: def.id,

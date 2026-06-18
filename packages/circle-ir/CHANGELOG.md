@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.64.0] - 2026-06-17
+
+### Fixed — Java FP corpus regression (cognium-dev #101)
+
+Sprint 14 closes the four false-positives flagged by the upstream Java FP
+corpus (`coggiyadmin/java-vuln-demo`) without regressing any of the 2411
+existing tests:
+
+1. **FP-01 path_traversal (`SafeService.java`)** — `new File(base, filename)`
+   inside a method that follows the canonical-path-startsWith-throw idiom no
+   longer fires. A new `isInJavaSanitizedMethod()` helper in
+   `src/analysis/passes/taint-propagation-pass.ts` walks the enclosing method
+   body and recognises:
+   - `.getCanonicalPath()` call
+   - `.startsWith(<base>.getCanonicalPath(...)` guard
+   - `throw new <Exception>` on the failure branch
+2. **FP-02 xxe (`SafeService.java`)** — `DocumentBuilderFactory` /
+   `SAXParserFactory` configurations that call
+   `setFeature("...disallow-doctype-decl"|"external-general-entities"|
+   "external-parameter-entities"|"load-external-dtd", …)` or
+   `setProperty(SUPPORT_DTD, false)` are now treated as method-level
+   sanitizers and suppress XXE flows inside the same method scope.
+3. **FP-03 command_injection (`FalsePositiveCorpus.java`)** — the
+   switch→constant pattern (`String cmd; switch(type){ case "x": cmd =
+   "/bin/x"; ...} exec(cmd);`) no longer fires. Three coordinated fixes:
+   - `taint-propagation.ts` `findInitialTaint()` next-line def-seeding
+     heuristic now requires `def.variable === source.variable` when both
+     are present, preventing an unrelated declaration on `source.line + 1`
+     from inheriting the source's taint.
+   - `detectCollectionFlows` in `taint-propagation-pass.ts` adds a
+     cross-method bleed gate: when the picked source's binding variable
+     differs from the sink arg variable AND lives in a different method
+     scope, the match is discarded as a `constProp.tainted` cross-method
+     bleed (e.g. `cmd` tainted in `debugExec` reused as a key in
+     `runReport`). Same-method cross-variable matches (e.g. `id` loop var
+     derived from `input` source) are preserved.
+   - `isReassignedToLiteralBetween()` learns a third pattern for
+     `case "x": var = "literal"; break;` and `default: var = "literal"; break;`
+     forms to recognise the switch-case literal reassignment as a
+     sanitizer.
+4. **FP-04 sql_injection (`FalsePositiveCorpus.java`)** — the
+   `if (!ALLOWLIST.contains(col)) col = "name";` pattern was already
+   suppressed by the existing single-line `if` guard branch of
+   `isReassignedToLiteralBetween`. Now locked behind a Sprint 14
+   regression test in `tests/analysis/repro-sprint14.test.ts`.
+
+### Added — Method-scope plumbing for taint sources
+
+All seven source-emission sites in `src/analysis/taint-matcher.ts` now stamp
+`TaintSource.in_method` (new field on the `TaintSource` interface) with the
+enclosing method name:
+
+- YAML call-pattern sources
+- Annotated parameters
+- Method-level annotations
+- Rust web framework extractors
+- Interprocedural parameter sources
+- JS Express regex sweep
+- Python regex sweep
+
+`detectExpressionScanFlows` gates on this field to refuse cross-method
+variable-name collisions (e.g. two methods both with a `cmd` variable but
+only one is tainted). This complements the cross-method bleed gate in
+`detectCollectionFlows`.
+
+### Tests
+
+- New `tests/analysis/repro-sprint14.test.ts` (4 cases) locks the four
+  FP categories from cognium-dev #101.
+- Full suite: 2411 passed, 1 skipped, 0 failed (was 2402 + 1 skipped in
+  3.63.0).
+
 ## [3.63.0] - 2026-06-17
 
 ### Fixed — Source-line attribution in supplementary flow detectors (#70)

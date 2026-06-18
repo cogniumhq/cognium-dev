@@ -286,6 +286,15 @@ export interface TaintSource {
   code?: string;           // Trimmed source-line text at `line` (when available)
 
   /**
+   * Name of the enclosing method/function that contains this source. When set,
+   * variable-name-based flow detectors (e.g. `detectExpressionScanFlows`)
+   * restrict source→sink matching to sinks in the same method, so that
+   * unrelated methods that happen to reuse a common variable name (e.g. `cmd`,
+   * `name`, `id`) don't produce spurious cross-method flows. cognium-dev #101.
+   */
+  in_method?: string;
+
+  /**
    * How this source was discovered. `'static'` (or absent) = identified by
    * circle-ir's deterministic pattern-matching. `'llm'` = identified by an
    * upstream LLM-enhanced consumer (e.g. circle-ir-ai). Used by

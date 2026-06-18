@@ -167,7 +167,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // Applied to ALL flow generators (DFG-built and the four supplements)
     // so the suppression is uniform regardless of which path emitted the flow.
     const sanitizedNames = constProp.sanitizedVars;
-    const finalFlows = sanitizedNames.size === 0 ? flows : flows.filter(f => {
+    let finalFlows = sanitizedNames.size === 0 ? flows : flows.filter(f => {
       if (f.path.length === 0) return true;
       const sourceVar = f.path[0].variable;
       if (!sourceVar) return true;
@@ -178,8 +178,86 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       return true;
     });
 
+    // cognium-dev #101 (Sprint 14 Phase C/D) — method-level Java post-sink
+    // sanitizer idioms:
+    //   - path_traversal: canonical-path-startsWith-throw guard
+    //     (`new File(base, x)` followed by `x.getCanonicalPath().startsWith(
+    //      base.getCanonicalPath() + File.separator)` + `throw`)
+    //   - xxe: DocumentBuilderFactory hardening
+    //     (`setFeature(...disallow-doctype-decl..., true)` or
+    //      `setFeature(...external-general-entities..., false)`)
+    // These idioms protect the entire method, so suppress all path_traversal /
+    // xxe flows whose sink lies inside a method that contains the pattern.
+    if (ctx.language === 'java' && typeof ctx.code === 'string') {
+      finalFlows = finalFlows.filter(f => {
+        if (f.sink_type !== 'path_traversal' && f.sink_type !== 'xxe') return true;
+        if (!isInJavaSanitizedMethod(ctx.code as string, types, f.sink_line, f.sink_type)) return true;
+        return false;
+      });
+    }
+
     return { flows: finalFlows };
   }
+}
+
+/**
+ * cognium-dev #101 (Sprint 14 Phase C/D). Detect Java method-level sanitizer
+ * idioms that protect the entire method body from a given sink type.
+ *
+ * `path_traversal` — canonical-path-startsWith-throw guard. Used in OWASP
+ *   path-traversal cheatsheet examples and is the standard Java idiom for
+ *   confining a derived `new File(base, userInput)` to a known root.
+ * `xxe` — DocumentBuilderFactory hardening via `setFeature`. The OWASP XXE
+ *   cheatsheet lists `disallow-doctype-decl=true` and the two
+ *   external-entity features as the canonical fix; presence of any of them
+ *   on the factory in the method suffices.
+ *
+ * The check is method-scoped (using `types[].methods[]` start/end lines) and
+ * conservative — it does NOT verify that the guarded factory is the one used
+ * by the sink call. False-negatives are preferred over false-positives in
+ * the FP corpus regression context the issue is about.
+ */
+function isInJavaSanitizedMethod(
+  code: string,
+  types: CircleIR['types'] | undefined,
+  sinkLine: number,
+  sinkType: string,
+): boolean {
+  if (!types || types.length === 0) return false;
+  let methodStart = -1;
+  let methodEnd = -1;
+  for (const t of types) {
+    for (const m of t.methods) {
+      if (sinkLine >= m.start_line && sinkLine <= m.end_line) {
+        methodStart = m.start_line;
+        methodEnd = m.end_line;
+        break;
+      }
+    }
+    if (methodStart > 0) break;
+  }
+  if (methodStart < 0) return false;
+  const lines = code.split('\n');
+  // Lines are 1-indexed; slice is 0-indexed [start, end).
+  const body = lines.slice(methodStart - 1, methodEnd).join('\n');
+  if (sinkType === 'path_traversal') {
+    // Canonical-path-startsWith-throw idiom.
+    if (!/\.getCanonicalPath\s*\(/.test(body)) return false;
+    if (!/\.startsWith\s*\([^)]*getCanonicalPath/.test(body)) return false;
+    if (!/\bthrow\s+new\b/.test(body)) return false;
+    return true;
+  }
+  if (sinkType === 'xxe') {
+    // DocumentBuilderFactory / SAXParserFactory / XMLInputFactory hardening.
+    // Any one of these features suffices per the OWASP XXE cheatsheet.
+    const setFeatureRe =
+      /\.setFeature\s*\(\s*"(?:[^"]*disallow-doctype-decl|[^"]*external-general-entities|[^"]*external-parameter-entities|[^"]*load-external-dtd)"/;
+    if (setFeatureRe.test(body)) return true;
+    // setProperty variant for XMLInputFactory: `XMLInputFactory.SUPPORT_DTD`.
+    if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
+    return false;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +303,24 @@ function detectCollectionFlows(
             // better source is available.
             const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, varName);
             if (source) {
+              // cognium-dev #101 (Sprint 14 Phase E): when the picked source
+              // has a binding variable that differs from the sink arg's
+              // variable, AND the picked source's enclosing method differs
+              // from the sink's enclosing method, treat the
+              // taintedVars-set match as a cross-method bleed (e.g.
+              // `cmd` from method-X's tainted set firing in method-Y
+              // against an unrelated picker-fallback source). Same-method
+              // cross-variable matches (e.g. `id` loop-var derived from
+              // `input` source in the same method body) are preserved.
+              if (
+                source.variable &&
+                source.variable !== varName &&
+                source.in_method &&
+                call.in_method &&
+                source.in_method !== call.in_method
+              ) {
+                continue;
+              }
               // Sprint 9 #56 / #58.3 — same reassign-to-literal guard as
               // detectExpressionScanFlows. Suppress when the variable is
               // demonstrably rewritten to a literal between source and sink.
@@ -268,6 +364,20 @@ function detectCollectionFlows(
                 // Sprint 13 #70 — same method-scoped picker as above.
                 const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, collectionVar);
                 if (source) {
+                  // cognium-dev #101 (Sprint 14 Phase E): cross-method
+                  // bleed guard. See the analogous guard in the
+                  // arg.variable branch above — only suppress when the
+                  // picked source's binding variable differs AND lives
+                  // in a different method scope from the sink.
+                  if (
+                    source.variable &&
+                    source.variable !== collectionVar &&
+                    source.in_method &&
+                    call.in_method &&
+                    source.in_method !== call.in_method
+                  ) {
+                    continue;
+                  }
                   if (
                     typeof code === 'string' &&
                     isReassignedToLiteralBetween(code, collectionVar, source.line, sink.line)
@@ -532,10 +642,19 @@ function isReassignedToLiteralBetween(
   const reGuarded = new RegExp(
     `^\\s*if\\b.*\\b${variable}\\s*=\\s*${strLit}\\s*;?\\s*$`,
   );
+  // (3) Switch-case / default literal reassignment (Java/JS/TS/Go).
+  //     Matches single-line forms like:
+  //       `case "daily":  cmd = "/usr/bin/report-daily";  break;`
+  //       `default:       cmd = "/usr/bin/report-default"; break;`
+  //     The fall-through `break;` is optional. Used by cognium-dev #101
+  //     to suppress the switch→constant FP corpus.
+  const reSwitchCase = new RegExp(
+    `^\\s*(?:case\\b.*?|default\\s*):\\s*${variable}\\s*=\\s*${strLit}\\s*;?\\s*(?:break\\s*;?)?\\s*$`,
+  );
   for (let i = lo; i < hi; i++) {
     const line = lines[i];
     if (!line) continue;
-    if (reNaked.test(line) || reGuarded.test(line)) return true;
+    if (reNaked.test(line) || reGuarded.test(line) || reSwitchCase.test(line)) return true;
   }
   return false;
 }
@@ -735,6 +854,22 @@ function detectExpressionScanFlows(
         for (const source of sourcesWithVar) {
           // Source must appear before the sink (no backward flows).
           if (source.line >= sink.line) continue;
+
+          // cognium-dev #101 (Sprint 14 Phase B): when both the source and
+          // the sink carry a method-scope tag, restrict variable-name
+          // matching to within the same method. Without this guard, a
+          // common identifier (e.g. `cmd`, `name`, `id`) used in two
+          // unrelated methods would link source-A in method-1 to sink-B in
+          // method-2 purely by name collision. The new
+          // `TaintSource.in_method` field (taint-matcher.ts) plus
+          // `call.in_method` make the gate cheap and precise.
+          if (
+            source.in_method &&
+            call.in_method &&
+            source.in_method !== call.in_method
+          ) {
+            continue;
+          }
 
           const re = reCache.get(source.variable);
           if (!re || !re.test(expr)) continue;
