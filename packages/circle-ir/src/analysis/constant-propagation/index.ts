@@ -86,6 +86,20 @@ export function isFalsePositive(
   //
   // Switching to `symbols.has(taintedVar)` is strictly tighter: we only
   // suppress when we actually tracked the var and concluded it's clean.
+  //
+  // cognium-dev#104 (Sprint 22) — OOP field-path variables (`self.X`,
+  // `this.X`) are emitted as synthetic sources by `findOopFieldReadSources`
+  // in `LanguageSourcesPass`, an entirely separate mechanism from
+  // const-prop's symbol tracking. If the JS const-prop happens to record
+  // `this.X = ...` while analysing the constructor body, the symbol shows
+  // up but is never tagged tainted (the OOP source uses
+  // `interprocedural_param`, not const-prop's intra-procedural seed). The
+  // resulting FP suppression silently zeroed all JS OOP-source flows. Skip
+  // the symbol check for OOP field paths — their taint provenance is
+  // tracked at the source-emission layer, not in const-prop.
+  if (taintedVar.startsWith('self.') || taintedVar.startsWith('this.')) {
+    return { isFalsePositive: false, reason: null };
+  }
   if (result.symbols.has(taintedVar) && !result.tainted.has(taintedVar)) {
     return { isFalsePositive: true, reason: 'variable_not_tainted' };
   }

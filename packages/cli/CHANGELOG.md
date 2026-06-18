@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.72.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.72.0 which closes #104 (Sprint 22) — OOP object-flow
+  taint FN, sink-agnostic. Sixteen new positive-recall fixtures across
+  Python (9) and JavaScript (7) covering path_traversal, open_redirect,
+  log_injection, ldap_injection, xpath_injection, nosql_injection, xxe,
+  deserialization, and code_injection/SSTI from constructor-injected
+  fields (`self.X` / `this.X`) consumed by sibling methods.
+- New sink-config coverage:
+  - Python `logging.{info,warning,error,debug,critical,log,exception}`
+    (CWE-117 log_injection) module-level functions.
+  - Python pymongo classless `find_one`/`update_one`/`delete_one`/...
+    (CWE-943 nosql_injection) for `db.users.find_one({...})` dynamic
+    attribute access.
+  - JS ldapjs `ldap.search`/`searchSync` (CWE-90 ldap_injection).
+  - JS xpath module `xpath.select`/`select1`/`evaluate`/`parse`
+    (CWE-643 xpath_injection).
+  - JS libxmljs `parseXml`/`parseXmlString` and xmldom
+    `parseFromString` (CWE-611 xxe).
+  - JS ejs/handlebars/pug/mustache/nunjucks template render/compile
+    (CWE-94 code_injection — SSTI).
+- No CLI surface changes; output formats unchanged.
+
 ## [3.71.0] - 2026-06-18
 
 ### Changed

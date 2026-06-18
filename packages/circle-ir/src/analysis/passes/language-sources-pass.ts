@@ -329,17 +329,29 @@ function findOopFieldReadSources(
   sourceCode: string,
   language: string,
 ): TaintSource[] {
-  if (language !== 'java' && language !== 'python') return [];
+  if (
+    language !== 'java' &&
+    language !== 'python' &&
+    language !== 'javascript' &&
+    language !== 'typescript'
+  ) return [];
   const sources: TaintSource[] = [];
   const lines = sourceCode.split('\n');
   const isPython = language === 'python';
+  const isJs = language === 'javascript' || language === 'typescript';
+  const isJava = language === 'java';
   const SELF = isPython ? 'self' : 'this';
 
   // Common Java HTTP-source receivers / methods. Conservative: matches
   // `request.getParameter` style calls but not arbitrary `foo.getName()`.
   const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
 
+  // Match `this.<field> = <rhs>` or `self.<field> = <rhs>`. Anchored variant
+  // (Python/Java line-per-stmt convention) AND a global variant for JS/TS,
+  // whose constructors commonly inline assignments on the same line as the
+  // opening brace:  `constructor(name) { this.name = name; }`.
   const fieldAssignRe = new RegExp(`^\\s*${SELF}\\.([A-Za-z_]\\w*)\\s*=\\s*(.+?)(?:;\\s*)?$`);
+  const fieldAssignReG = new RegExp(`${SELF}\\.([A-Za-z_]\\w*)\\s*=\\s*([^;}\\n]+)`, 'g');
   const commentPrefix = isPython ? '#' : '//';
 
   for (const type of types) {
@@ -347,11 +359,16 @@ function findOopFieldReadSources(
     if (type.name === '<module>') continue;
 
     // Locate constructor.
+    //   - Python: __init__
+    //   - JavaScript/TypeScript: literal method name `constructor`
+    //   - Java: method whose name === class name
     let ctor: typeof type.methods[number] | undefined;
     for (const m of type.methods) {
       if (isPython) {
         if (m.name === '__init__') { ctor = m; break; }
-      } else {
+      } else if (isJs) {
+        if (m.name === 'constructor') { ctor = m; break; }
+      } else if (isJava) {
         if (m.name === type.name) { ctor = m; break; }
       }
     }
@@ -371,23 +388,40 @@ function findOopFieldReadSources(
     for (let i = ctorStart - 1; i < Math.min(ctorEnd, lines.length); i++) {
       const line = lines[i] ?? '';
       if (line.trim().startsWith(commentPrefix)) continue;
-      const m = line.match(fieldAssignRe);
-      if (!m) continue;
-      const fieldName = m[1];
-      const rhs = m[2].trim().replace(/;\s*$/, '');
 
-      let sourceType: SourceType | null = null;
-      if (paramNames.has(rhs)) {
-        sourceType = 'interprocedural_param';
-      } else if (!isPython && javaHttpPattern.test(rhs)) {
-        sourceType = 'http_param';
-      } else if (isPython) {
-        for (const { pattern, type } of PYTHON_TAINTED_PATTERNS) {
-          if (pattern.test(rhs)) { sourceType = type; break; }
+      // Collect (fieldName, rhs) pairs from this line. Anchored regex
+      // catches one-stmt-per-line shapes (Python/Java); global regex
+      // additionally catches inline assignments in JS/TS constructors.
+      const pairs: Array<{ field: string; rhs: string }> = [];
+      const anchored = line.match(fieldAssignRe);
+      if (anchored) pairs.push({ field: anchored[1], rhs: anchored[2].trim().replace(/;\s*$/, '') });
+      if (isJs) {
+        for (const m of line.matchAll(fieldAssignReG)) {
+          const field = m[1];
+          const rhs = m[2].trim().replace(/;\s*$/, '');
+          if (!pairs.some(p => p.field === field)) pairs.push({ field, rhs });
         }
       }
-      if (sourceType) {
-        fieldTaint.set(fieldName, { line: i + 1, type: sourceType });
+      if (pairs.length === 0) continue;
+
+      for (const { field: fieldName, rhs } of pairs) {
+        let sourceType: SourceType | null = null;
+        if (paramNames.has(rhs)) {
+          sourceType = 'interprocedural_param';
+        } else if (isJava && javaHttpPattern.test(rhs)) {
+          sourceType = 'http_param';
+        } else if (isPython) {
+          for (const { pattern, type } of PYTHON_TAINTED_PATTERNS) {
+            if (pattern.test(rhs)) { sourceType = type; break; }
+          }
+        } else if (isJs) {
+          for (const { pattern, type } of JS_TAINTED_PATTERNS) {
+            if (pattern.test(rhs)) { sourceType = type; break; }
+          }
+        }
+        if (sourceType) {
+          fieldTaint.set(fieldName, { line: i + 1, type: sourceType });
+        }
       }
     }
 

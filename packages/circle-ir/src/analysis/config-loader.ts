@@ -1543,6 +1543,45 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // `redirect` is rare outside HTTP frameworks so the FP risk is low.
   { method: 'redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
+  // Node.js LDAP Injection (ldapjs) — CWE-90
+  // cognium-dev#104 Sprint 22: receiver matches the canonical ldapjs
+  // import name (`const ldap = require('ldapjs')` → ldap.search/...).
+  { method: 'search',     class: 'ldap',   type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [1, 2], languages: ['javascript', 'typescript'] },
+  { method: 'searchSync', class: 'ldap',   type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [1, 2], languages: ['javascript', 'typescript'] },
+  { method: 'search',     class: 'ldapjs', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [1, 2], languages: ['javascript', 'typescript'] },
+  { method: 'searchSync', class: 'ldapjs', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [1, 2], languages: ['javascript', 'typescript'] },
+
+  // Node.js XPath Injection (xpath module) — CWE-643
+  // cognium-dev#104 Sprint 22: `const xpath = require('xpath')` → xpath.select/select1/evaluate.
+  { method: 'select',   class: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'select1',  class: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'evaluate', class: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parse',    class: 'xpath', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // Node.js XXE (libxmljs, xmldom) — CWE-611
+  // cognium-dev#104 Sprint 22: `const libxml = require('libxmljs')` (or 'libxml')
+  // → libxml.parseXml(src, {noent: true}). xmldom DOMParser via parseFromString.
+  { method: 'parseXml',        class: 'libxml',   type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parseXmlString',  class: 'libxml',   type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parseXml',        class: 'libxmljs', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parseXmlString',  class: 'libxmljs', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parseFromString', class: 'DOMParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parseFromString', class: 'xmldom',    type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // Node.js Server-Side Template Injection (SSTI) — CWE-94
+  // cognium-dev#104 Sprint 22: ejs/handlebars/pug template render with
+  // tainted templates → arbitrary JS execution. Uses `code_injection`
+  // SinkType to mirror the Python Jinja2/Mako pattern above.
+  { method: 'render',   class: 'ejs',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'ejs',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'pug',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'compile',  class: 'pug',        type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'mustache',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'render',   class: 'nunjucks',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'renderString', class: 'nunjucks', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
   // =========================================================================
   // Python Sinks
   // =========================================================================
@@ -1666,6 +1705,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'delete_one', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0] },
   { method: 'delete_many', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0] },
   { method: 'aggregate', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0] },
+  // pymongo dynamic attribute-access pattern: `db.users.find({...})` — receiver
+  // class isn't statically known. Method-only entries restricted to Python.
+  // cognium-dev#104 Sprint 22.
+  { method: 'find_one',    type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
+  { method: 'update_one',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'update_many', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1] , languages: ['python'] },
+  { method: 'delete_one',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
+  { method: 'delete_many', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
+  { method: 'replace_one', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'count_documents', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0], languages: ['python'] },
 
   // Python Template Injection (Jinja2, Mako)
   { method: 'from_string', class: 'Template', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
@@ -1678,6 +1727,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'error', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
   { method: 'debug', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
   { method: 'critical', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  // Python `logging` module top-level functions (e.g. logging.info(...))
+  // — cognium-dev#104 Sprint 22: OOP fixtures use `import logging; logging.info(self.msg)`.
+  { method: 'info', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'warning', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'error', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'debug', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'critical', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'log', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1] },
+  { method: 'exception', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
 
   // =========================================================================
   // Java CWE-Bench Enhancement Patterns (Collection/Builder)

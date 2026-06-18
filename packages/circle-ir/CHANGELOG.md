@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.72.0] - 2026-06-18
+
+### Fixed — Sprint 22: OOP object-flow taint FN, sink-agnostic closure (#104)
+
+Sprint 16/18 (#78) introduced OOP field-sensitivity for **injection** sinks
+(sql_injection, command_injection). Sprint 21 (#105) confirmed the same
+mechanism worked for ssrf and nosql_injection. Sprint 22 closes the
+remaining sixteen non-injection OOP object-flow false negatives across
+Python and JavaScript (path_traversal, open_redirect, log_injection,
+ldap_injection, xpath_injection, nosql_injection, code_injection/SSTI,
+deserialization, xxe).
+
+This is precision/recall work — no new analysis pass, no new
+`SinkType` enum value.
+
+**LanguageSourcesPass — `findOopFieldReadSources` extended to JS/TS.**
+The function previously gated on `java` and `python` only; JS/TS classes
+emit constructor methods named `constructor` (not the class name), and
+JS constructors are commonly written inline
+(`constructor(name) { this.name = name; }`). The pass now:
+
+- gates on `java | python | javascript | typescript`,
+- detects constructors per-language (Python `__init__`, JS/TS
+  `constructor`, Java class-name match),
+- adds a global `this.<field> = <rhs>` regex pass so inline single-line
+  constructor bodies are matched (not just per-line anchored
+  assignments),
+- dispatches RHS classification to `JS_TAINTED_PATTERNS` when language is
+  JS/TS, mirroring the existing Python/Java branches.
+
+This restores `this.<field>` synthetic-source emission for JS OOP
+shapes, which was the upstream cause of three of the seven JS FN
+regressions in this sprint.
+
+**constant-propagation `isFalsePositive` — OOP field-path exemption.**
+The const-prop FP suppressor at `constant-propagation/index.ts` was
+flipping every flow whose path-variable was `this.X`/`self.X` to a
+false positive (`reason: 'variable_not_tainted'`) when const-prop had
+tracked the assignment but not classified it as tainted. That
+silently zeroed JS OOP flows for nosql_injection, log_injection, and
+deserialization (and would have done the same for the new sink types
+this sprint adds). The OOP source-emission mechanism in
+`findOopFieldReadSources` is entirely separate from const-prop's
+intra-procedural seed; if the path step starts with `self.` or
+`this.`, `isFalsePositive` now short-circuits to `false` and lets the
+flow through. Same pattern as the existing cognium-dev#77 fix for
+arrow-function-scoped `const c = ...` decls.
+
+**SinkFilterPass Stage 5 — OOP-source recognition for xpath_injection.**
+Stage 5 (Python xpath FP reducer) drops xpath sinks when no
+`pyTaintedVars` entry appears in the sink line text. That set is
+populated by intra-procedural textual scanning and doesn't include
+OOP synthetic sources (`self.q`, etc.) emitted by
+`findOopFieldReadSources`. Stage 5 now also scans `sources` for
+`self.<field>` entries and accepts the sink if any such field-path
+appears in the sink line. Lock fixture: PY.xpath_injection in
+`repro-sprint22.test.ts`.
+
+**Sink-config additions (`config-loader.ts`).** New sink entries
+covering the canonical libraries for each non-injection sink:
+
+- **Python `log_injection` (CWE-117).** `logging.{info, warning, error,
+  debug, critical, log, exception}` (top-level module functions). The
+  pre-existing `logger.<method>` entries only matched when the
+  receiver was named `logger`; module-level calls like
+  `logging.info(...)` need the parallel `class: 'logging'` set.
+- **Python `nosql_injection` (CWE-943).** Classless pymongo methods
+  (`find_one`, `update_one`, `update_many`, `delete_one`, `delete_many`,
+  `replace_one`, `count_documents`) restricted to Python. pymongo
+  collections are accessed via dynamic attribute (`db.users.find_one(
+  ...)`) so the receiver-class isn't statically known. Bare `find`
+  is intentionally NOT classless to avoid `str.find`/`list.find` FPs;
+  mirrors the existing JS Mongo pattern at line 1494-1502.
+- **JS `ldap_injection` (CWE-90).** `ldap.search` / `ldap.searchSync`
+  (and the `ldapjs` import alias) with the filter at arg index 1 or 2,
+  language-scoped to JS/TS.
+- **JS `xpath_injection` (CWE-643).** `xpath.{select, select1, evaluate,
+  parse}` matching the canonical `xpath` npm module receiver.
+- **JS `xxe` (CWE-611).** libxmljs `parseXml` / `parseXmlString`
+  (receiver matches the canonical `libxml` import alias as well as
+  `libxmljs`), and xmldom `parseFromString` (`DOMParser`/`xmldom`
+  receivers).
+- **JS SSTI → `code_injection` (CWE-94).** ejs / handlebars / pug /
+  mustache / nunjucks `render` / `compile` / `renderString` entries.
+  Uses the existing `code_injection` SinkType to mirror Python
+  Jinja2/Mako; no new enum value introduced.
+
+**Regression test.** `tests/analysis/repro-sprint22.test.ts` locks all
+sixteen OOP shapes (9 Python, 7 JS) as inline fixtures, each asserting
+`flowsByType(r.taint.flows, '<sink_type>').length >= 1`. Full vitest
+suite: 2491 passing (was 2475 on 3.71.0; +16 new fixtures, 0
+regressions).
+
 ## [3.71.0] - 2026-06-18
 
 ### Fixed — Sprint 21: OOP safe-mirror sanitizer FPs (#105)

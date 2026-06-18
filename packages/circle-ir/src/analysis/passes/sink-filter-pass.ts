@@ -99,12 +99,32 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     if (language === 'python') {
       const { pyTaintedVars, pySanitizedVars } = langSources;
       const sourceLines = ctx.code.split('\n');
+      // cognium-dev#104 (Sprint 22) — OOP field-path sources (`self.<field>`)
+      // emitted by `findOopFieldReadSources` aren't captured in
+      // `pyTaintedVars` (which is built by intra-procedural textual scanning).
+      // Collect OOP field-path source variables so xpath sinks reachable
+      // via constructor-injected fields aren't pruned as "no tainted var on
+      // line" in OOP shapes such as
+      //   class Q: __init__(self, q): self.q = q
+      //          def find(self, tree): return tree.xpath(f"...{self.q}...")
+      const oopFieldVars = new Set<string>();
+      for (const s of sources) {
+        if (s.variable && s.variable.startsWith('self.')) {
+          oopFieldVars.add(s.variable);
+        }
+      }
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xpath_injection') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         const taintedVarOnLine = [...pyTaintedVars.keys()].find(v =>
           new RegExp(`\\b${v}\\b`).test(sinkLineText)
         );
+        // OOP escape — if the sink line references `self.<field>` for one
+        // of the constructor-injected OOP sources, accept it (#104).
+        const oopVarOnLine = [...oopFieldVars].find(v =>
+          sinkLineText.includes(v)
+        );
+        if (oopVarOnLine) return true;
         if (!taintedVarOnLine) return false;
         if (pySanitizedVars.has(taintedVarOnLine)) return false;
         if (new RegExp(`\\.xpath\\s*\\([^)]*\\b\\w+\\s*=\\s*\\b${taintedVarOnLine}\\b`).test(sinkLineText)) return false;
