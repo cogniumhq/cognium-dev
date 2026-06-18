@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.70.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.70.0 which ships Sprint 20 — `cache-no-vary` pass
+  (#98 in PASSES.md, CWE-524, severity `medium`, level `warning`):
+  - **#96 L91** — Python (Flask/Django/FastAPI) and cross-language
+    (JS/TS Express, Go net/http, Java Spring) handlers that set
+    `Cache-Control: public` (or `max-age>0` / `s-maxage>0`) on a
+    response in a handler that also reads authenticated / user-scoped
+    state (cookies, `Authorization`, session, `@CookieValue`,
+    `Principal`, `Authentication`) but do not set a covering
+    `Vary: Cookie` / `Vary: Authorization` are now flagged.
+  - Strict auth-qualifier mode — `/health`, `/version`, and static-asset
+    endpoints (no auth signal) do **not** fire.
+  - Covered by `res.vary('Cookie')` (JS), `@vary_on_cookie` (Python),
+    `w.Header().Set("Vary", "Cookie")` (Go), or
+    `response.addHeader("Vary", "Cookie")` (Java).
+
 ## [3.69.0] - 2026-06-18
 
 ### Changed

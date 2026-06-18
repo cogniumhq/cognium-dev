@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.70.0] - 2026-06-18
+
+### Added — Sprint 20: `cache-no-vary` pass (#96 L91)
+
+Sprint 20 ships pass #98 detecting cross-language CWE-524 (Use of Cache
+Containing Sensitive Information) shared-cache leaks. A handler that sets
+`Cache-Control: public` (or `max-age>0`/`s-maxage>0`) on a response while
+also reading authenticated / user-scoped state, but does not set a
+covering `Vary: Cookie`/`Vary: Authorization`/`Vary: *`, can be served
+from a shared cache (CDN, reverse proxy, browser disk cache shared between
+profiles) to a different user.
+
+`rule_id: cache-no-vary`, `cwe: CWE-524`, severity `medium`, level
+`warning`. Category `security`. Per-file pass; runs after
+`module-side-effect` in the optional-pass block.
+
+**Strict auth-qualifier mode.** The pass fires only when **all three**
+signals appear in the same handler (`in_method` group, +5 line widening
+for decorators/annotations):
+
+1. cache-public signal (call or source-text)
+2. auth signal (cookies, `Authorization`, session, `@CookieValue`,
+   `@RequestHeader("Authorization")`, `Principal`, `Authentication`,
+   `SecurityContextHolder`)
+3. **no** covering `Vary` signal
+
+This eliminates the static-asset / `/health` / `/version` FP class.
+
+**Languages covered:**
+
+- **JS/TS** (Express/Fastify/Koa) — `res.setHeader('Cache-Control', V)`,
+  `res.set(...)`, `res.header(...)`; covered by `res.vary('Cookie')` or
+  `res.setHeader('Vary', ...)`. Auth signals: `req.cookies.*`,
+  `req.headers.cookie`, `req.headers.authorization`, `req.session.*`,
+  `req.user`, `res.cookie(...)` (Set-Cookie write).
+- **Python** (Flask/FastAPI/Django) — `response.headers['Cache-Control'] = V`
+  subscript assign (source-text), `@cache_control(public=True, max_age=N)`
+  decorator, `patch_cache_control(...)`, `response.cache_control.public = True`;
+  covered by `@vary_on_cookie`, `@vary_on_headers(...)`,
+  `response.headers['Vary'] = V` (source-text), `patch_vary_headers(...)`.
+  Auth signals: `request.cookies.*`, `request.headers['Authorization']`,
+  `request.authorization`, `session[...]`, `g.user`, `current_user`,
+  `set_cookie(...)`.
+- **Go** (net/http, gin) — `w.Header().Set("Cache-Control", V)` /
+  `.Add(...)`, `c.Header("Cache-Control", V)`; covered by
+  `w.Header().Set("Vary", V)` etc. Auth signals: `r.Cookie(...)`,
+  `r.Header.Get("Cookie"|"Authorization")`, `r.BasicAuth()`,
+  `http.SetCookie(w, ...)`, gin `c.GetHeader/Cookie/SetCookie`.
+- **Java** (Spring, Servlet) — `response.setHeader("Cache-Control", V)` /
+  `addHeader(...)`, `headers.setCacheControl(...)`,
+  `headers.add("Cache-Control", V)`, `CacheControl.maxAge(...).cachePublic()`;
+  covered by `response.setHeader("Vary", V)` / `addHeader("Vary", V)`,
+  `headers.setVary(...)`, `headers.add("Vary", V)`. Auth signals:
+  `@CookieValue`, `@RequestHeader("Authorization")`,
+  `request.getCookies()`, `request.getHeader("Cookie"|"Authorization")`,
+  `response.addCookie(...)`, `SecurityContextHolder`, `Principal` /
+  `Authentication` params.
+
+**Allowlist guardrails:**
+
+- `Cache-Control` values containing `private`, `no-store`, or `no-cache`
+  are skipped — explicitly non-shared-cacheable.
+- `max-age=0` (without `public`) is skipped — effectively non-cacheable.
+- Test/spec files (`**/test/**`, `**/__tests__/**`, `**/*.test.*`,
+  `**/*.spec.*`) are skipped.
+- `Vary: *` is treated as covering everything.
+
+**Issue closure:** #96 L91 — Python cache-header CWE-524 sub-finding
+shipped (extended cross-language). Other #96 Python residuals
+(`urlretrieve` + `subprocess` chains, git traversal) remain open as
+separate sprint material.
+
+12 new regression fixtures (`tests/analysis/repro-sprint20.test.ts`),
+3 per language (1 positive + 2 negatives covering vary-set and no-auth
+static-asset shapes). Total test count: 2467 pass / 1 skip.
+
 ## [3.69.0] - 2026-06-18
 
 ### Added — Sprint 19: `module-side-effect` pass (#93, #96 L47, #98)
