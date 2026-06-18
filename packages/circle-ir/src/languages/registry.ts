@@ -34,6 +34,13 @@ class DefaultLanguageRegistry implements LanguageRegistry {
     if (language === 'tsx') {
       return this.plugins.get('javascript');
     }
+    // 'typescript' shares the JavaScript plugin (single plugin id='javascript'
+    // covers both). Without this fallback, TaintMatcherPass would miss the
+    // plugin-defined sinks (e.g. dangerouslySetInnerHTML) for .ts/.tsx files.
+    // (cognium-dev #88.2)
+    if (language === 'typescript') {
+      return this.plugins.get('javascript');
+    }
     return this.plugins.get(language);
   }
 

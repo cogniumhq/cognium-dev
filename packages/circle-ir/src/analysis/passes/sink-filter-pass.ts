@@ -218,6 +218,41 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 8 — JavaScript open_redirect / crlf / header_injection FP reduction.
+    // Suppresses res.redirect(url) and res.setHeader(...) sinks when an
+    // allowlist/validation guard appears within 6 lines above the sink, OR
+    // when the sink call's tainted argument is a literal (CORS '*' etc).
+    // (cognium-dev #99)
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      const guardPatterns = /\b(?:includes|startsWith|endsWith|indexOf|test|match)\s*\(/;
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'open_redirect' && sink.type !== 'crlf') {
+          return true;
+        }
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // 8a. Conditional-allowlist guard: if (allowed.includes(x)) res.redirect(x);
+        const startLine = Math.max(0, sink.line - 7);
+        for (let i = startLine; i < sink.line - 1; i++) {
+          const line = sourceLines[i] ?? '';
+          if (/\bif\s*\(/.test(line) && guardPatterns.test(line)) {
+            return false;
+          }
+        }
+        // 8b. Sanitized via encodeURIComponent/encodeURI on the sink line.
+        if (/\bencodeURIComponent\s*\(|\bencodeURI\s*\(/.test(sinkLineText)) {
+          return false;
+        }
+        // 8c. setHeader literal value: res.setHeader('Name', '*') / 'literal'.
+        // Match e.g. `res.setHeader('X-Foo', '*')` where 2nd arg is a literal.
+        const setHeaderMatch = sinkLineText.match(/setHeader\s*\(\s*[^,]+,\s*(['"`])([^'"`]*)\1\s*\)/);
+        if (setHeaderMatch) {
+          return false;
+        }
+        return true;
+      });
+    }
+
     return { sources, sinks: filtered, sanitizers };
   }
 }

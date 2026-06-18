@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.67.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.67.0 which ships Sprint 17 (JS/TS/JSX consolidation):
+  - **#94** — `protobufjs.parse(taint)` / `Root.parse(taint)` now emit
+    `code_injection`/CWE-94 (CVE-2026-41242).
+  - **#88.2** — `.tsx` files with `dangerouslySetInnerHTML={{__html: taint}}`
+    now fire the React XSS sink (typescript → javascript plugin fallback
+    in the language registry).
+  - **#95** — Per-sink `allow_unresolved_receiver: true` flag detects
+    Express runtime-decorated receivers (`req.db.query(taint)`,
+    `req.db.execute(taint)`) for `Connection`/`Pool`/`Client` SQL sinks.
+  - **#97** — Lock test for TS partial-parse robustness
+    (`execSync(\`git diff \${branch}\`)` at L18 with noisy
+    `process.env.npm_package_*` access in scope).
+  - **#99** — Stage-8 FP filter in `sink-filter-pass.ts` drops JS/TS
+    `open_redirect` and `crlf` findings under conditional-allowlist
+    guards (`if (allowed.includes(url))`), `encodeURIComponent`
+    sanitizers, and constant-literal `setHeader` calls.
+  - **#68** — `mass_assignment` / CWE-1321 verification lock for
+    `Object.assign({}, req.body)` and `_.merge({}, req.body)`.
+- See `packages/circle-ir/CHANGELOG.md` for detail.
+
 ## [3.66.0] - 2026-06-18
 
 ### Changed

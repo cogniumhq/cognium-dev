@@ -5,6 +5,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.67.0] - 2026-06-18
+
+### Added — Sprint 17: JS/TS/JSX consolidation (#88.2, #94, #95, #97, #99, #68)
+
+Sprint 17 ships four FN fixes, one FP cleanup, and one verification lock
+in a single release.
+
+#### #94 — protobufjs.parse code_injection sink (CVE-2026-41242)
+
+`protobufjs` (and its `Root` class) compile a textual schema into JS at
+runtime via `parse(schemaText)`. A tainted schema therefore executes
+arbitrary code. `DEFAULT_SINKS` in `src/analysis/config-loader.ts` now
+registers three sink entries (`protobuf.parse`, `protobufjs.parse`,
+`Root.parse`) typed as `code_injection`/CWE-94/critical with
+`arg_positions: [0]` and `languages: ['javascript', 'typescript']`.
+
+Documentation mirror added to `configs/sinks/nodejs.json` for parity with
+the static catalog.
+
+#### #88.2 — `.tsx` JSX-attribute sink detection
+
+`.tsx` files routed to the `tsx` parse grammar (analyzer.ts:386-398)
+produced no `xss` flows for `dangerouslySetInnerHTML={{__html: taint}}`
+attribute calls. Root cause was in `DefaultLanguageRegistry.get()`
+(`src/languages/registry.ts`): `get('tsx')` correctly fell back to the
+`javascript` plugin, but `get('typescript')` returned `undefined` because
+no plugin is registered under that id. Sink-matching for `.tsx` files
+(which analyzer keeps at `language='typescript'`) therefore had no plugin
+context.
+
+Fix: added a `typescript` → `javascript` fallback inside
+`DefaultLanguageRegistry.get()`. The synthetic JSX-attribute call emitted
+by `synthesiseJsxAttributeCall` in `src/core/extractors/calls.ts:259-350`
+now reaches the XSS sink in both `.jsx` and `.tsx` files.
+
+#### #95 — `allow_unresolved_receiver` flag for runtime-decorated receivers
+
+Express middleware patterns like `app.use((req, _, next) => { req.db = pool; next(); })`
+followed by `req.db.query(taint)` previously missed the SQL sink because
+`call.receiver_type` is unresolved (the decoration is runtime-only). The
+existing `receiverMightBeClass` heuristic extracts the last segment
+(`db`) which never matches `Connection`/`Pool`/`Client`.
+
+New per-sink opt-in flag `allow_unresolved_receiver: boolean` added to
+the `SinkPattern` interface (`src/types/config.ts`). When set, the
+matcher (`matchesSinkPattern` in `src/analysis/taint-matcher.ts:926-944`)
+accepts the sink iff:
+1. `pattern.allow_unresolved_receiver === true`
+2. `call.receiver_type` is empty
+3. `call.receiver_type_fqn` is empty
+4. `call.receiver` contains a dotted property chain
+
+Applied to SQL sinks in `DEFAULT_SINKS`: `Connection.query`,
+`Pool.query`, `Client.query`, plus newly-added `Pool.execute` and
+`Connection.execute`. The flag is opt-in per entry to keep the FP
+surface narrow.
+
+#### #97 — TS partial-parse robustness lock
+
+Issue #97 reported that a TS file with ambient `declare const TAINT`,
+`process.env.npm_package_dependencies_*` access at L37, and
+`execSync(\`git diff \${branch}\`)` at L18 dropped all analysis. Direct
+investigation found the TS grammar handles these patterns without
+ERROR-node fallout (`parse_errors === 0`), and the existing extractor
+already reaches the L18 sink. The remaining gap was source extraction
+for ambient `declare const` (deferred — out of acceptance scope).
+
+Lock test in `tests/analysis/repro-sprint17.test.ts` (#97 fixture)
+uses `process.argv[2]` as the source so the canonical
+`command_injection` flow at the `execSync` call site is now regression-locked.
+
+#### #99 — Safe-corpus FP cleanup (xss / open_redirect / crlf)
+
+`src/analysis/passes/sink-filter-pass.ts` gained a Stage 8 filter for
+JS/TS `open_redirect` and `crlf` sinks. It runs only when
+`language ∈ {javascript, typescript}` and drops a sink finding if any of:
+1. **Conditional-allowlist guard** — an `if (...)` clause within the
+   preceding 7 lines uses one of `includes`/`startsWith`/`endsWith`/
+   `indexOf`/`test`/`match` (recognises
+   `if (allowed.includes(url)) res.redirect(url)`).
+2. **`encodeURIComponent` / `encodeURI` sanitizer** present on the
+   sink line.
+3. **`setHeader` literal value** (`res.setHeader('CORS', '*')` etc.).
+
+Stage 7 XSS sanitizer-guard (existing) already covers DOMPurify-style
+patterns for `xss` sinks.
+
+#### #68 — mass_assignment / CWE-1321 verification lock
+
+`Object.assign({}, req.body)` and `_.merge({}, req.body)` already emit
+`mass_assignment`/CWE-1321 findings via the entries in `config-loader.ts:1922-1943`.
+Lock test (#68 fixture) asserts this behaviour to prevent regression.
+
+### Testing
+
+- New: `tests/analysis/repro-sprint17.test.ts` (12 fixtures, 10 plan +
+  2 #68 lock variants — all passing).
+- Full suite: 137 test files, 2435 passed + 1 skipped. No regressions.
+- `npm run typecheck` clean.
+
 ## [3.66.0] - 2026-06-18
 
 ### Added — Sprint 16: OOP field-sensitivity r2 (#78) + Java cross-file taint (#74)

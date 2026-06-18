@@ -82,6 +82,15 @@ export interface SinkPattern {
    * dangerous and still match.
    */
   safe_if_class_literal_at?: number;
+  /**
+   * When true, the sink matches even if `receiver_type` is unresolved at the
+   * call site, provided the receiver expression is a dotted property chain
+   * (e.g. `req.db.query`, `ctx.app.db.execute`). This handles Express-style
+   * runtime decoration where middleware attaches a DB client to the request
+   * object — the static type is opaque but the call shape is unambiguous.
+   * Use sparingly: each opt-in entry widens the FP surface. (cognium-dev #95)
+   */
+  allow_unresolved_receiver?: boolean;
   note?: string;
 }
 

@@ -1427,9 +1427,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Node.js SQL (mysql, pg, sqlite, etc.)
   // Language-scoped: generic class names `Pool`/`Connection`/`Client` substring-match
   // unrelated Java identifiers like `cachedThreadPool`, `dbConnection`. See issue #14.
-  { method: 'query', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'query', class: 'Pool', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
-  { method: 'query', class: 'Client', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'query', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'query', class: 'Pool',       type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'query', class: 'Client',     type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'execute', class: 'Pool',       type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'execute', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   // Note: classless { method: 'query' } removed — too many FPs (UriComponentsBuilder.query(), etc.)
   // SQL query calls are covered by class-specific patterns above (Connection, Pool, Client, JdbcTemplate)
   // Note: `raw` is shared with Python (Django ORM) — scoped to JS+TS to avoid leaking.
@@ -1451,6 +1453,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'runInContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInNewContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInThisContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
+  // protobufjs Root.parse(schemaText) compiles a textual schema into JS at runtime;
+  // tainted schema → code execution (CVE-2026-41242). Issue #94.
+  { method: 'parse', class: 'protobuf',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parse', class: 'protobufjs', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'parse', class: 'Root',       type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Node.js NoSQL Injection (MongoDB native driver + mongoose) — CWE-943
   // Issue #45: the bare `class: 'Collection'` constraint missed mongoose's

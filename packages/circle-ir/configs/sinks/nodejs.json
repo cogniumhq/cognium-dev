@@ -451,6 +451,33 @@
       "note": "VM code execution in current context"
     },
     {
+      "method": "parse",
+      "class": "protobuf",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "protobufjs parse(schemaText) compiles a textual schema into JS at runtime; tainted schema = code execution (CVE-2026-41242)"
+    },
+    {
+      "method": "parse",
+      "class": "protobufjs",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "protobufjs.parse(schemaText) - same as protobuf.parse (CVE-2026-41242)"
+    },
+    {
+      "method": "parse",
+      "class": "Root",
+      "type": "code_injection",
+      "cwe": "CWE-94",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "protobufjs Root.parse(schemaText) - alternate API for schema compilation (CVE-2026-41242)"
+    },
+    {
       "method": "compileFunction",
       "class": "vm",
       "type": "code_injection",

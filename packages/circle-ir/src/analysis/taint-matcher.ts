@@ -928,6 +928,19 @@ function matchesSinkPattern(
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {
         return true;
       }
+      // Last-resort opt-in: when the sink declares allow_unresolved_receiver
+      // and the call has an unresolved type with a dotted receiver expression
+      // (e.g. `req.db.query`, `ctx.app.db.execute` — Express-style runtime
+      // decoration), accept the match. Strictly gated to avoid widening the
+      // FP surface on every sink. (cognium-dev #95)
+      if (
+        pattern.allow_unresolved_receiver &&
+        !call.receiver_type &&
+        !call.receiver_type_fqn &&
+        call.receiver.includes('.')
+      ) {
+        return true;
+      }
       return false;
     } else if (!call.receiver && !call.receiver_type) {
       // Bare function call: accept when import resolution produced a fully
