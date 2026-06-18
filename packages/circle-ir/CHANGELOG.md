@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.69.0] - 2026-06-18
+
+### Added — Sprint 19: `module-side-effect` pass (#93, #96 L47, #98)
+
+Sprint 19 ships a new analysis pass (#97 in PASSES.md) detecting dangerous
+side effects executed at module load / install / build time, where no
+taint flow is involved — the canonical delivery vector for supply-chain
+droppers (shai-hulud-style TruffleHog harvesters, malicious typosquats,
+`build.rs` exfil).
+
+`rule_id: module-side-effect`, `cwe: CWE-829`, severity `high`, level
+`error`. Category `security`. Per-file pass; runs after
+`tls-verify-disabled` in the optional-pass block.
+
+#### Detection layers per language
+
+- **JavaScript / TypeScript** — module-level (`in_method === null`) call
+  to `child_process.{exec,spawn,execSync,spawnSync}`, `https.request`,
+  `http.request`, `http.get`, `https.get`, or `fetch` when an arg
+  expression references `process.env`/`os.homedir`/`/etc/passwd`/SSH
+  private keys.
+- **`package.json` source-text scan** — `scripts.(pre|post)?install`
+  invoking `curl`/`wget`/`nc`/`node -e`/`sh -c`/`bash -c`/`eval`/`base64
+  -d`. Benign install scripts (`node-gyp rebuild`, `prebuild-install`,
+  `husky install`, `patch-package`, `npm run build`) are allowlisted.
+- **Python** — module-level (`in_method === null`) call to
+  `requests.{post,put}`, `urllib.request.urlopen`,
+  `socket.{connect,create_connection}`, `subprocess.{run,Popen}`, or
+  `os.system` whose arg expressions reference `os.environ`,
+  `pwd.getpw*`, `~/.ssh/id_*`, `/etc/passwd`, `Path.home`, or
+  `glob.glob` of secret paths.
+- **Go** — call inside `func init()` (`in_method === 'init'`) where the
+  callee is `exec.Command`, `http.{Post,Get}`, `net.LookupTXT`, or
+  `os.Setenv`.
+- **Rust** — file gated to `build.rs` (`meta.file` endsWith
+  `build.rs`); fires on `Command::new` / `std::process::Command::new`
+  and `reqwest::*` calls. `println!("cargo:...")` directives emit no IR
+  call so the legitimate build-script API is unaffected.
+
+#### Tests
+
+- New file: `tests/analysis/repro-sprint19.test.ts` with 8 locking
+  fixtures (5 positive + 3 negative-control), one per delivery shape.
+- Full suite: **2455 pass** (2447 baseline + 8 new), 1 skipped, zero
+  regressions across 139 test files.
+
+#### Out of scope (deferred)
+
+- **Caret-trap manifest/lockfile drift** (#93 FN-SC-06/07) — requires
+  project-graph access; separate sprint.
+- **#96 L91 — `Cache-Control` without `Vary`** (CWE-524) — separate
+  cache-timing pass.
+- **Cross-file taint into module-side-effect** — current pass is
+  single-file; supply-chain analysis across the dep tree is out of
+  scope.
+
+#### Files changed
+
+- `src/analysis/passes/module-side-effect-pass.ts` — NEW.
+- `src/analyzer.ts` — register pass; import added.
+- `tests/analysis/repro-sprint19.test.ts` — NEW.
+- `docs/PASSES.md` — pass #97 row.
+
 ## [3.68.0] - 2026-06-18
 
 ### Added — Sprint 18: Python consolidation (#100, #96, #65)

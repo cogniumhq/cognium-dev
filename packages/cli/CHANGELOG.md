@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.69.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.69.0 which ships Sprint 19 — `module-side-effect`
+  pass (#97 in PASSES.md):
+  - **#93** — npm `postinstall` / `preinstall` lifecycle droppers
+    (`scripts.{pre,post}install` invoking curl/wget/node -e/sh -c/eval)
+    and JS module-top `child_process` / `https.request` /
+    `fetch(process.env)` are now flagged. Benign install scripts
+    (`node-gyp rebuild`, `prebuild-install`, `husky install`,
+    `patch-package`) are allowlisted.
+  - **#96 L47** — Python module-import-time credential POST harvest
+    (`requests.post(URL, data=dict(os.environ))` at module top) now
+    fires `module-side-effect` (CWE-829). Same call inside a function
+    body does not.
+  - **#98** — Go `func init()` running `exec.Command` / `http.{Post,Get}`
+    / `net.LookupTXT` / `os.Setenv` and Rust `build.rs` invoking
+    `Command::new` are now flagged. `println!("cargo:...")` directives
+    in `build.rs` continue to produce no finding.
+
 ## [3.68.0] - 2026-06-18
 
 ### Changed

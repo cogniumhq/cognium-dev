@@ -138,6 +138,7 @@ import { WeakHashPass } from './analysis/passes/weak-hash-pass.js';
 import { WeakCryptoPass } from './analysis/passes/weak-crypto-pass.js';
 import { WeakRandomPass } from './analysis/passes/weak-random-pass.js';
 import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
+import { ModuleSideEffectPass } from './analysis/passes/module-side-effect-pass.js';
 import { JwtVerifyDisabledPass } from './analysis/passes/jwt-verify-disabled-pass.js';
 import { CsrfProtectionDisabledPass } from './analysis/passes/csrf-protection-disabled-pass.js';
 import { XmlEntityExpansionPass } from './analysis/passes/xml-entity-expansion-pass.js';
@@ -505,6 +506,7 @@ export async function analyze(
   if (!disabledPasses.has('weak-crypto'))           pipeline.add(new WeakCryptoPass());
   if (!disabledPasses.has('weak-random'))           pipeline.add(new WeakRandomPass());
   if (!disabledPasses.has('tls-verify-disabled'))   pipeline.add(new TlsVerifyDisabledPass());
+  if (!disabledPasses.has('module-side-effect'))    pipeline.add(new ModuleSideEffectPass());
   if (!disabledPasses.has('jwt-verify-disabled'))   pipeline.add(new JwtVerifyDisabledPass());
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
