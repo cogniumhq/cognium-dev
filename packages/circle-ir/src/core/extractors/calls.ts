@@ -1818,6 +1818,12 @@ function extractPythonArguments(node: Node): ArgumentInfo[] {
 
 /**
  * Extract literal value from a Python node.
+ *
+ * f-strings with interpolations (e.g. `f"hello {name}"`) are NOT literals —
+ * the interpolated expression may carry tainted data. Return null in that
+ * case so the taint-matcher treats the argument as a potentially tainted
+ * expression rather than a safe literal. Plain f-strings without `{}`
+ * interpolations (e.g. `f"hello world"`) are still treated as literals.
  */
 function extractPythonLiteral(node: Node): string | null {
   const literalTypes = ['string', 'integer', 'float', 'true', 'false', 'none'];
@@ -1825,6 +1831,15 @@ function extractPythonLiteral(node: Node): string | null {
     const text = getNodeText(node);
     // Remove quotes from strings
     if (node.type === 'string') {
+      // tree-sitter-python produces an `interpolation` child node for each
+      // `{expr}` block inside an f-string. If any are present, the string
+      // cannot be treated as a safe literal.
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child && child.type === 'interpolation') {
+          return null;
+        }
+      }
       return text.replace(/^['"]|['"]$/g, '').replace(/^f['"]|['"]$/g, '');
     }
     return text;

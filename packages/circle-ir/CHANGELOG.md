@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.68.0] - 2026-06-18
+
+### Added — Sprint 18: Python consolidation (#100, #96, #65)
+
+Sprint 18 ships one f-string taint bug fix, two new Python sinks for
+`urllib.request.urlretrieve`, and a 12-fixture regression test file
+locking the Python FP/FN inventory tracked in #100, #96, and #65.
+
+#### #100 — Python safe-corpus FP suppression (regression locks)
+
+The Python FP inventory in `fp_corpus.py` and `sanitizer_combos.py`
+is already correctly suppressed by existing engine machinery
+(parameterized-query detection, type-cast barriers in
+`SANITIZER_METHODS`, sanitizer-wrapper recognition via the
+interprocedural pass). Sprint 18 adds explicit regression fixtures so
+the suppression cannot silently regress:
+
+- `#100.1` — `cursor.execute("... %s", (uid,))` → zero `sql_injection`.
+- `#100.2` — `int(request.args.get(...))` → zero `xss`.
+- `#100.3` — `os.path.realpath(...).startswith(SAFE)` guard →
+  zero `path_traversal`.
+- `#100.4` — sqlite3 `?` placeholder + tuple → zero `sql_injection`.
+- `#100.5` — `def my_clean(x): return shlex.quote(x); subprocess.run(
+  'echo ' + my_clean(taint), shell=True)` → zero `command_injection`
+  (interproc wrapper detection of `shlex.quote`).
+- `#100.6` / `#100.7` — wrong-context sanitizer (`html.escape` used as
+  a SQL value) and fake identity-function sanitizer remain detected
+  (negative locks for true positives).
+
+#### #96 — `urllib.request.urlretrieve` ssrf + path_traversal sinks
+
+`getBuiltinSinks()` in `src/languages/plugins/python.ts` adds two new
+entries for `urllib.request.urlretrieve(url, dest)`:
+
+- `{ method: 'urlretrieve', class: 'urllib.request', type: 'ssrf',
+   cwe: 'CWE-918', argPositions: [0] }` — tainted URL.
+- `{ method: 'urlretrieve', class: 'urllib.request', type:
+   'path_traversal', cwe: 'CWE-22', argPositions: [1] }` — tainted
+   destination filename.
+
+Deferred to Sprint 19: `#96` L47 (import-time credential harvest —
+requires a new module-side-effects pass) and L91 (`Cache-Control`
+without `Vary` — requires a new cache-timing-attack pass).
+
+`#96.2` (git `format-patch` filename via subject) is also deferred to
+Sprint 19: the deliberate `isSafePythonSubprocessCall` safe-shape skip
+(cognium-dev #48) correctly suppresses list-form `subprocess.run`
+without `shell=True` because Python invokes `execve()` directly with
+no shell interpolation. The real vulnerability is `path_traversal` via
+git's patch-file naming side effect, which requires modeling subprocess
+side-effects.
+
+#### #65 — Python f-string interpolation now propagates taint to sinks
+
+**Bug fix.** `extractPythonLiteral` in `src/core/extractors/calls.ts`
+previously stripped the `f` prefix from f-strings and returned the raw
+text (with `{var}` braces preserved) as the argument literal. This
+made the taint matcher treat f-strings as compile-time literals,
+missing sinks like
+`cur.execute(f"SELECT * FROM users WHERE id = {uid}")`.
+
+Fix: f-strings with `interpolation` child nodes (tree-sitter-python
+production) now return `literal=null`, so the matcher sees the
+argument as a non-literal expression and runs taint propagation on
+the interpolated variables. Plain f-strings without interpolations
+(`f"hello"`) still return a literal value.
+
+`#65.1` parameterized psycopg2 calls (`cur.execute("... %s", (uid,))`)
+remain correctly suppressed via the existing parameterized-query
+path. `#65.2-neg` f-string interpolation now fires `sql_injection`
+as expected.
+
+#### Tests
+
+- `tests/analysis/repro-sprint18.test.ts` — 12 new fixtures covering
+  the four #100 FP families, two negative locks, three #96 conventional
+  cases, and two #65 controls.
+- Full vitest suite: **2447 passed | 1 skipped** across 138 files
+  (was 2435 in 3.67.0; +12 Sprint 18 fixtures).
+
 ## [3.67.0] - 2026-06-18
 
 ### Added — Sprint 17: JS/TS/JSX consolidation (#88.2, #94, #95, #97, #99, #68)

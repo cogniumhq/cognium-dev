@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.68.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.68.0 which ships Sprint 18 (Python consolidation):
+  - **#65 (bug fix)** — Python f-string interpolation
+    (`cur.execute(f"... {uid}")`) now propagates taint correctly. The
+    `extractPythonLiteral` helper previously treated f-strings as
+    compile-time literals and silently dropped the interpolated
+    variables; sinks behind f-strings now fire as expected.
+  - **#96 (FN, partial)** — `urllib.request.urlretrieve(url, dest)`
+    registered as a dual sink: `ssrf`/CWE-918 on arg 0 (URL) and
+    `path_traversal`/CWE-22 on arg 1 (destination filename).
+  - **#100 (FP, regression locks)** — 7 fixtures lock the Python safe
+    corpus (parameterized SQL, `int()` type-cast barrier,
+    `realpath()` + `startswith()` guard, sanitizer-wrapper
+    interproc recognition) plus two negative locks for wrong-context
+    and identity-function sanitizers.
+
 ## [3.67.0] - 2026-06-18
 
 ### Changed

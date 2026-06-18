@@ -420,6 +420,24 @@ export class PythonPlugin extends BaseLanguagePlugin {
         severity: 'high',
         argPositions: [0],
       },
+      // urllib.request.urlretrieve — dual sink: SSRF on the URL arg,
+      // path_traversal on the destination filename arg.
+      {
+        method: 'urlretrieve',
+        class: 'urllib.request',
+        type: 'ssrf',
+        cwe: 'CWE-918',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'urlretrieve',
+        class: 'urllib.request',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [1],
+      },
 
       // Deserialization
       {
