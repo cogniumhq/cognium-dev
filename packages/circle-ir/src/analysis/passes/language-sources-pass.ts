@@ -231,6 +231,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
       additionalSanitizers.push(...findBashRegexAllowlistSanitizers(code));
+      additionalSanitizers.push(...findBashRealpathPrefixGuardSanitizers(code));
     }
 
     // Attach trimmed source-line text to each emitted source/sink so consumers
@@ -1478,4 +1479,124 @@ function isSafeBashAllowlistRegex(literal: string): boolean {
     consumed += match[0].length;
   }
   return consumed === body.length;
+}
+
+// ---------------------------------------------------------------------------
+// Bash realpath + case prefix-guard sanitizer (Sprint 23 — #102)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the canonical "canonicalize-then-prefix-check" shape used by
+ * defensive shell scripts to keep tainted paths inside an allowed root:
+ *
+ *   resolved=$(realpath "$f")
+ *   case "$resolved" in
+ *     "$UPLOAD_ROOT"/*) cat "$resolved" ;;
+ *     *) echo denied; exit 1 ;;
+ *   esac
+ *
+ * Properties needed for the sanitizer to fire:
+ *   1. A `case "$VAR" in` block whose head matches a variable.
+ *   2. At least one literal/var prefix arm — e.g. `"$ROOT"/*)`, `"/tmp"/*)`,
+ *      `/var/uploads/*)`. The prefix must be anchored (no leading wildcard).
+ *   3. A catch-all `*)` arm whose body terminates execution
+ *      (`exit`, `return`, or `die`).
+ *
+ * When matched we emit a `realpath_prefix_guard` sanitizer for every line
+ * inside the `case…esac` block. Because `checkSanitized` is line-keyed,
+ * the sanitizer suppresses any path/command/code/ssrf/log sink that
+ * appears inside the case body — exactly where the safe branches live.
+ *
+ * Conservative by design: if the catch-all does NOT terminate, OR no
+ * prefix arm is present, no sanitizer is emitted (e.g. open-ended
+ * `case "$x" in *)` fall-through is still treated as tainted).
+ */
+function findBashRealpathPrefixGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const caseOpen = /^\s*case\s+"?\$\{?\w+\}?"?\s+in\b/;
+  const esacClose = /^\s*esac\b/;
+  // An arm pattern is everything up to the first unparenthesised `)`.
+  // `arm[1]` is the trimmed pattern text.
+  const armOpener = /^\s*([^)\s][^)]*?)\)/;
+  // A prefix arm starts with a literal path or a `"$VAR"` expansion and
+  // is followed by `/` (root prefix) or `*` (already anchored). The
+  // leading character must not itself be `*` — that's the catch-all.
+  const prefixArm = /^(?:"\$\{?\w+\}?"|"[^"]*"|\/[\w\-./]+|\$\{?\w+\}?|[\w\-./]+)(?:\/|\*)/;
+  // Catch-all is exactly `*` (with optional leading `|`).
+  const catchAllArm = /^(?:\*|\\\*)$/;
+
+  let i = 0;
+  while (i < lines.length) {
+    if (!caseOpen.test(lines[i])) {
+      i++;
+      continue;
+    }
+    // Find matching esac (no nesting support — bash case rarely nests
+    // inside another case, and the conservative early-exit means we'd
+    // simply skip emitting the sanitizer rather than mis-emit).
+    let caseEnd = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (esacClose.test(lines[j])) {
+        caseEnd = j;
+        break;
+      }
+    }
+    if (caseEnd === -1) {
+      i++;
+      continue;
+    }
+
+    let hasPrefixArm = false;
+    let hasTerminalCatchAll = false;
+
+    for (let j = i + 1; j < caseEnd; j++) {
+      const armMatch = armOpener.exec(lines[j]);
+      if (!armMatch) continue;
+      const pattern = armMatch[1].trim();
+
+      if (catchAllArm.test(pattern)) {
+        // Catch-all arm — search this line through the next arm (or
+        // esac) for a terminator. The body may span multiple lines if
+        // `;;` is on its own line.
+        let bodyEnd = caseEnd;
+        for (let k = j + 1; k < caseEnd; k++) {
+          if (armOpener.test(lines[k])) {
+            bodyEnd = k;
+            break;
+          }
+        }
+        const armBody = lines.slice(j, bodyEnd).join(' ');
+        if (/\b(exit|return|die)\b/.test(armBody)) {
+          hasTerminalCatchAll = true;
+        }
+      } else if (prefixArm.test(pattern)) {
+        hasPrefixArm = true;
+      }
+    }
+
+    if (hasPrefixArm && hasTerminalCatchAll) {
+      // Per-line sanitizer entries for the entire case body. 1-indexed.
+      for (let l = i + 1; l <= caseEnd + 1; l++) {
+        sanitizers.push({
+          type: 'realpath_prefix_guard',
+          method: 'case',
+          line: l,
+          sanitizes: [
+            'path_traversal',
+            'command_injection',
+            'code_injection',
+            'ssrf',
+            'open_redirect',
+            'log_injection',
+          ],
+        });
+      }
+    }
+
+    i = caseEnd + 1;
+  }
+
+  return sanitizers;
 }

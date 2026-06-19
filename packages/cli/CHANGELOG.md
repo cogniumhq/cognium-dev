@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.73.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.73.0 which closes the Sprint 23 bundled "S" set:
+  - **#53** Go string-concat taint preservation across `+` (right-,
+    left-, and middle-concat into `exec.Command`/`os.ReadFile`).
+  - **#102** Bash realpath + case prefix-guard FP suppression
+    (`resolved=$(realpath); case "$resolved" in "$ROOT"/*) ...; *) exit;;`).
+  - **#107** Go `log_injection` sink config for
+    `log.{Print,Println,Printf,Fatal,Fatalln,Fatalf,Panic,Panicln,Panicf}`.
+  - **#108** Go `code_injection`/SSTI sink config for `text/template`
+    and `html/template` `Parse`/`ParseFiles`/`ParseGlob`/`ParseFS`.
+- No CLI behaviour change; severity mapping for `code_injection` and
+  `log_injection` was already in place from Sprint 22 (#104).
+
 ## [3.72.0] - 2026-06-18
 
 ### Changed

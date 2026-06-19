@@ -372,6 +372,33 @@ function findSources(
     }
   }
 
+  // Go: method-call sources (`r.URL.Query().Get("h")`,
+  // `r.Header.Get("X-Forwarded-For")`) land on the source line without a
+  // `variable` field, so `detectExpressionScanFlows` cannot match the
+  // bound identifier in downstream concatenated sink arguments
+  // (`exec.Command("sh", "-c", "ping " + host)`). Recover the LHS from
+  // the surrounding Go assignment shape. cognium-dev #53.
+  //
+  // Covers:
+  //   `host := r.URL.Query().Get("h")`         → host  (short-var)
+  //   `var host = r.URL.Query().Get("h")`      → host  (typed declaration)
+  //   `var host string = r.URL.Query().Get("h")` → host (with explicit type)
+  //   `host = r.URL.Query().Get("h")`          → host  (reassignment)
+  //   `host, ok := r.URL.Query()["h"]`         → host  (first ident of multi-LHS)
+  //
+  // `(?!=)` rejects `==` so the regex doesn't fire on equality. A leading
+  // tuple `name, ok := ...` keeps only the first identifier because that
+  // is the value-binding; the rest are status / error idiomatic Go.
+  if (language === 'go' && sourceLines) {
+    const GO_ASSIGN_LHS = /^\s*(?:var\s+)?([A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)*\s*(?::\s*[A-Za-z_][\w.]*\s*)?(?::?=)(?!=)/;
+    for (const s of result) {
+      if (s.variable && s.variable.length > 0) continue;
+      const lineText = sourceLines[s.line - 1] ?? '';
+      const m = GO_ASSIGN_LHS.exec(lineText);
+      if (m) s.variable = m[1];
+    }
+  }
+
   return result;
 }
 

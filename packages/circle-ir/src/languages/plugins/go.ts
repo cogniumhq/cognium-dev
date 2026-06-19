@@ -276,14 +276,19 @@ export class GoPlugin extends BaseLanguagePlugin {
         argPositions: [0],
       },
 
-      // Command Injection
+      // Command Injection — argPositions intentionally empty so all variadic
+      // positions are scanned. `exec.Command("sh", "-c", taintedCmd)` puts the
+      // injection at arg[2]; `exec.Command(taintedName, args...)` puts it at
+      // arg[0]; `exec.Command("git", taintedFlag)` is argument-injection at
+      // arg[1] (CWE-88). All three shapes are dangerous when any positional
+      // arg is tainted. (cognium-dev #53)
       {
         method: 'Command',
         class: 'exec',
         type: 'command_injection',
         cwe: 'CWE-78',
         severity: 'critical',
-        argPositions: [0],
+        argPositions: [],
       },
       {
         method: 'CommandContext',
@@ -291,7 +296,7 @@ export class GoPlugin extends BaseLanguagePlugin {
         type: 'command_injection',
         cwe: 'CWE-78',
         severity: 'critical',
-        argPositions: [1],
+        argPositions: [],
       },
 
       // Path Traversal
@@ -390,6 +395,119 @@ export class GoPlugin extends BaseLanguagePlugin {
         cwe: 'CWE-502',
         severity: 'medium',
         argPositions: [0],
+      },
+
+      // Log Injection — `log.Printf("event=%s", userInput)` allows
+      // CRLF/log forging when the format string interpolates user data.
+      // CWE-117. (cognium-dev #107)
+      {
+        method: 'Print',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Println',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Printf',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Fatal',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Fatalln',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Fatalf',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Panic',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Panicln',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+      {
+        method: 'Panicf',
+        class: 'log',
+        type: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        argPositions: [],
+      },
+
+      // Server-Side Template Injection — `text/template` and `html/template`
+      // template parse-time injection. When the *template source itself*
+      // is tainted (not the data), the rendered output can execute
+      // arbitrary template directives. CWE-94. (cognium-dev #108)
+      {
+        method: 'Parse',
+        class: 'Template',
+        type: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'ParseFiles',
+        class: 'template',
+        type: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'high',
+        argPositions: [],
+      },
+      {
+        method: 'ParseGlob',
+        class: 'template',
+        type: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'ParseFS',
+        class: 'template',
+        type: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'high',
+        argPositions: [],
       },
     ];
   }

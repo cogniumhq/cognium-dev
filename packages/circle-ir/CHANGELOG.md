@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.73.0] - 2026-06-18
+
+### Fixed — Sprint 23: bundled "S" closure (#53, #102, #107, #108)
+
+Four independent small fixes ship together as the Sprint 23 bundle —
+three Go precision/recall gaps and one Bash precision FP.
+
+**#53 — Go string-concat taint preservation.** Two interlocking bugs
+combined to drop right-/left-/middle-concat Go fixtures:
+
+1. Method-call sources (`r.URL.Query().Get(...)`,
+   `r.Header.Get(...)`) landed at the source line without a `variable`
+   field, so `detectExpressionScanFlows` (taint-propagation-pass.ts)
+   could not match the bound identifier when it reappeared in
+   concatenated sink arguments like `exec.Command("sh","-c","ping "+host)`.
+2. `exec.Command`'s sink config declared `argPositions:[0]`, and
+   SinkFilterPass Stage 3 (`filterCleanVariableSinks`) dropped the
+   whole sink when arg[0] was a literal (`"sh"`) — regardless of
+   whether the tainted variable was at arg[1] or arg[2].
+
+Fix in `src/languages/plugins/go.ts`: widen
+`exec.Command`/`CommandContext` `argPositions` to `[]` so every
+positional argument is considered. Fix in `src/analysis/taint-matcher.ts`:
+recover the Go LHS identifier from `:=`, `var x =`, `var x string =`,
+`x =`, and `name, ok := ...` shapes (mirrors the Java pattern at
+line 357 and the Rust pattern at line 320).
+
+**#102 — Bash realpath + case prefix-guard FP.** Defensive shell
+scripts that canonicalise a path and then check it against an allowed
+root with a `case` block — e.g.
+
+```bash
+resolved=$(realpath "$f")
+case "$resolved" in
+  "$UPLOAD_ROOT"/*) cat "$resolved" ;;
+  *) echo denied; exit 1 ;;
+esac
+```
+
+were reported as `path_traversal`. Added
+`findBashRealpathPrefixGuardSanitizers` in
+`src/analysis/passes/language-sources-pass.ts` that emits per-line
+sanitizers over the `case…esac` body when (a) at least one prefix
+arm (`"$ROOT"/*)`, `"/tmp"/*)`, `/var/uploads/*)`, ...) is present and
+(b) the catch-all `*)` arm terminates execution (`exit`, `return`, or
+`die`). Conservative — open-ended `case "$x" in *)` fall-through stays
+tainted.
+
+**#107 — Go `log_injection` sink type missing.** Added CWE-117 sink
+entries in `src/languages/plugins/go.ts` for
+`log.{Print,Println,Printf,Fatal,Fatalln,Fatalf,Panic,Panicln,Panicf}`
+with `argPositions:[]` so any tainted positional argument (the format
+string OR any interpolation arg) fires.
+
+**#108 — Go SSTI / `code_injection` sink type missing for parse-time
+template injection.** The existing `Template.Execute` entry only models
+data-injection XSS (CWE-79). When the *template source itself* is
+tainted, the rendered output can execute arbitrary template directives
+(CWE-94). Added entries for `Template.Parse` (argPositions [0]),
+`template.ParseFiles` / `ParseFS` (argPositions []), and
+`template.ParseGlob` (argPositions [0]). Covers both `text/template`
+and `html/template` because the Go template factory match at
+`taint-matcher.ts:1090-1105` already routes both packages through
+`class === 'Template'` / `'template'`.
+
+### Locked regressions
+
+- New file: `tests/analysis/repro-sprint23.test.ts` — 9 fixtures
+  (3 #53 + 2 #107 + 2 #108 + 2 #102).
+- Full vitest suite: **2508 passed | 1 skipped** across 144 files.
+
 ## [3.72.1] - 2026-06-18
 
 ### Added — cross-file taint regression matrix (#106 closure lock)
