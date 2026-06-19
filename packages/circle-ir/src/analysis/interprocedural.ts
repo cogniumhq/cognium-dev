@@ -216,6 +216,22 @@ export function analyzeInterprocedural(
     'BufferedReader', 'BufferedWriter',
     'PrintStream', 'PrintWriter',
     'ObjectOutputStream',  // ObjectInputStream IS a sink (deserialization), keep it out
+    // Go database/sql query methods — when parameterised (?, $N, :name),
+    // these are safe boundaries; the sql_injection check governs the unsafe
+    // shape. Without this, parameterised queries fall through to
+    // external_taint_escape. (cognium-dev #102 FP-19a)
+    'Query', 'QueryRow', 'QueryContext', 'QueryRowContext',
+    'Exec', 'ExecContext',
+    // Go html/template escape helpers — explicit safe utilities.
+    // Belt-and-suspenders with the sanitizer config so external_taint_escape
+    // is suppressed regardless of class-prefix matching. (cognium-dev #102 FP-27)
+    'EscapeString', 'HTMLEscapeString', 'JSEscapeString', 'URLQueryEscaper',
+    // Go os/exec — when isSafeGoExecCommandCall has already cleared the
+    // command_injection sink (fixed program literal, non-shell), the call
+    // should not fall through to external_taint_escape on the variadic args.
+    // Genuine command_injection is still emitted via the configured sink.
+    // (cognium-dev #102 FP-25)
+    'Command', 'CommandContext',
   ]);
 
   // Build set of sanitizer method names (methods that clean tainted data)

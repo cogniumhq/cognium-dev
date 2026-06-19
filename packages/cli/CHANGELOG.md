@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.74.0] - 2026-06-18
+
+### Changed
+
+- Tracks circle-ir 3.74.0 which closes the Go portion of cognium-dev #102
+  (five Go safe-handler false positives left open after Sprint 23):
+  - **FP-19a** parameterised `db.Query`/`db.Exec` no longer triggers
+    `external_taint_escape`.
+  - **FP-19b** `html/template.Execute` auto-escape recognised via
+    import-aware sanitizer emission.
+  - **FP-20** map-allowlist host guard
+    (`if !allowedHosts[host] { return }`) suppresses downstream `ssrf`
+    flow.
+  - **FP-25** `exec.Command("ping", "-c", "1", host)` (literal non-shell
+    program) no longer fires `command_injection`. Sprint 23 #53
+    shell-shape lock preserved.
+  - **FP-27** `html.EscapeString` → `fmt.Fprintf` sanitization correctly
+    suppresses the synthetic CWE-668 fallback.
+- No CLI behaviour change; existing severity mappings cover all affected
+  sink types.
+
 ## [3.73.0] - 2026-06-18
 
 ### Changed

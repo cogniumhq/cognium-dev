@@ -2069,11 +2069,22 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // (defense-in-depth — mirrors Java getCanonicalPath in this table; the
   // stricter Clean+HasPrefix guard recognition is tracked separately).
   // EvalSymlinks is the Go equivalent of Java's Path.toRealPath.
-  { method: 'Base', class: 'filepath', removes: ['path_traversal'] },
-  { method: 'Base', class: 'path', removes: ['path_traversal'] },
-  { method: 'Clean', class: 'filepath', removes: ['path_traversal'] },
-  { method: 'Clean', class: 'path', removes: ['path_traversal'] },
-  { method: 'EvalSymlinks', class: 'filepath', removes: ['path_traversal'] },
+  // Sprint 24 (#102 FP-27): broadened to cover external_taint_escape (CWE-668)
+  // fallback so canonicalised paths don't trigger the synthetic sink.
+  { method: 'Base', class: 'filepath', removes: ['path_traversal', 'external_taint_escape'] },
+  { method: 'Base', class: 'path', removes: ['path_traversal', 'external_taint_escape'] },
+  { method: 'Clean', class: 'filepath', removes: ['path_traversal', 'external_taint_escape'] },
+  { method: 'Clean', class: 'path', removes: ['path_traversal', 'external_taint_escape'] },
+  { method: 'EvalSymlinks', class: 'filepath', removes: ['path_traversal', 'external_taint_escape'] },
+
+  // Go html/template escape helpers (#102 FP-27) — registered explicitly because
+  // configs/sinks/golang.json is not loaded at runtime.
+  { method: 'EscapeString', class: 'html', removes: ['xss', 'external_taint_escape', 'log_injection', 'open_redirect'] },
+  { method: 'HTMLEscapeString', class: 'template', removes: ['xss', 'external_taint_escape', 'log_injection', 'open_redirect'] },
+  { method: 'JSEscapeString', class: 'template', removes: ['xss', 'external_taint_escape', 'log_injection'] },
+  { method: 'URLQueryEscaper', class: 'template', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
+  { method: 'QueryEscape', class: 'url', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
+  { method: 'PathEscape', class: 'url', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
 
   // Log Injection sanitizers
   { method: 'replace', removes: ['log_injection'] },  // Used to remove newlines/control chars

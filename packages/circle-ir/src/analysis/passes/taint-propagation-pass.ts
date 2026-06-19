@@ -178,6 +178,59 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       return true;
     });
 
+    // Sprint 24 (cognium-dev #102) — uniform line-keyed sanitizer
+    // suppression. Drop any flow whose sink_line carries a registered
+    // sanitizer that covers the flow's sink_type. Several supplementary
+    // flow generators (detectCollectionFlows, detectArrayElementFlows,
+    // detectParameterSinkFlows, detectExpressionScanFlows DFG-fallback
+    // emission) push flows with `sanitized: false` without consulting
+    // `sanitizersByLine`. This pass applies the suppression uniformly so
+    // language-specific sanitizer detectors (e.g. Go map-allowlist guard,
+    // html/template auto-escape) work regardless of which generator
+    // emitted the flow.
+    if (sanitizers && sanitizers.length > 0) {
+      const sanitizersByLine = new Map<number, typeof sanitizers>();
+      for (const san of sanitizers) {
+        const arr = sanitizersByLine.get(san.line) ?? [];
+        arr.push(san);
+        sanitizersByLine.set(san.line, arr);
+      }
+      finalFlows = finalFlows.filter(f => {
+        // Two-tier filter:
+        //   - `external_taint_escape` (synthetic CWE-668 fallback): no
+        //     precise variable tracking; sanitizer anywhere on the
+        //     source→sink line range counts. (cognium-dev #102 FP-27.)
+        //   - configured sinks: only a sanitizer AT the sink_line counts
+        //     (the sanitizer call IS the sink call site, e.g. the
+        //     map-allowlist guard sanitizer for the http.Get line). This
+        //     preserves positive recall cases like cognium-dev #65 pt2
+        //     where a bare `shlex.quote(host)` on a non-sink line does NOT
+        //     sanitize a subsequent raw `host` reaching a command sink.
+        if (f.sink_type === 'external_taint_escape') {
+          const lo = Math.min(f.source_line, f.sink_line);
+          const hi = Math.max(f.source_line, f.sink_line);
+          for (let line = lo; line <= hi; line++) {
+            const sansAtLine = sanitizersByLine.get(line);
+            if (!sansAtLine) continue;
+            for (const san of sansAtLine) {
+              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+                return false;
+              }
+            }
+          }
+          return true;
+        }
+        const sansAtSink = sanitizersByLine.get(f.sink_line);
+        if (!sansAtSink || sansAtSink.length === 0) return true;
+        for (const san of sansAtSink) {
+          if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
     // cognium-dev #101 (Sprint 14 Phase C/D) — method-level Java post-sink
     // sanitizer idioms:
     //   - path_traversal: canonical-path-startsWith-throw guard

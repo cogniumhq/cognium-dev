@@ -234,6 +234,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findBashRealpathPrefixGuardSanitizers(code));
     }
 
+    // -- Go: safe-handler sanitizer detectors (cognium-dev #102 Sprint 24) --
+    if (language === 'go') {
+      additionalSanitizers.push(...findGoMapAllowlistGuardSanitizers(code));
+      additionalSanitizers.push(...findGoHtmlTemplateImportSanitizers(code));
+    }
+
     // Attach trimmed source-line text to each emitted source/sink so consumers
     // (LLM enrichment, SARIF reporters) can render the offending line without
     // re-reading the file.
@@ -1596,6 +1602,120 @@ function findBashRealpathPrefixGuardSanitizers(code: string): TaintSanitizer[] {
     }
 
     i = caseEnd + 1;
+  }
+
+  return sanitizers;
+}
+
+// ---------------------------------------------------------------------------
+// Go safe-handler sanitizer detectors (cognium-dev #102 Sprint 24)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect Go allow-list guard pattern:
+ *
+ *   if !allowedHosts[host] {
+ *     http.Error(w, "forbidden", 403)
+ *     return
+ *   }
+ *
+ * The map identifier must look like an allow-list (UPPER_SNAKE, or
+ * camelCase containing "allowed"/"accepted"/"whitelist"/"permitted").
+ * The if-block body must contain `return`, `panic(`, or `os.Exit(`
+ * within at most 25 lines from the guard.
+ *
+ * When matched we emit per-line sanitizers for every line downstream of
+ * the guard close brace so that any ssrf/path/sql/open_redirect sink in
+ * the safe branch is suppressed. (cognium-dev #102 FP-20)
+ */
+function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if !<mapName>[<key>] {`  — optional whitespace, optional `_ ,`
+  // ignored. Captures the map identifier in group 1.
+  const guardOpen = /^\s*if\s+!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*\s*\]\s*\{/;
+  // Allow-list naming heuristic.
+  const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const mapName = m[1];
+    if (!allowlistName.test(mapName)) continue;
+
+    // Search for terminator within 25 lines or until matching `}`.
+    let depth = 1;
+    let closeLine = -1;
+    let bodyHasTerminator = false;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (/\b(return|panic\s*\(|os\.Exit\s*\()/.test(line)) {
+        bodyHasTerminator = true;
+      }
+      // Crude brace tracking — counts braces outside string/comment.
+      // For the conservative allow-list shape this is sufficient.
+      for (const ch of line) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth === 0) {
+        closeLine = j;
+        break;
+      }
+    }
+    if (closeLine === -1 || !bodyHasTerminator) continue;
+
+    // Emit per-line sanitizers for every line AFTER the guard's closing
+    // brace through end of file. `checkSanitized` is line-keyed so this
+    // suppresses the relevant sink types in the safe branch.
+    for (let l = closeLine + 2; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'go_map_allowlist_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'ssrf',
+          'open_redirect',
+          'path_traversal',
+          'sql_injection',
+          'command_injection',
+          'external_taint_escape',
+        ],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Go `html/template` import and treat all `Execute` /
+ * `ExecuteTemplate` calls in the file as auto-escaping sanitizers for
+ * xss. `html/template` auto-escapes interpolated values; `text/template`
+ * does not. If BOTH packages are imported in the same file the
+ * detection bails out (ambiguous — fall back to per-call class
+ * resolution). (cognium-dev #102 FP-19b)
+ */
+function findGoHtmlTemplateImportSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+
+  const hasHtmlTemplate = /["\s]html\/template["\s]/.test(code);
+  const hasTextTemplate = /["\s]text\/template["\s]/.test(code);
+  if (!hasHtmlTemplate) return sanitizers;
+  if (hasTextTemplate) return sanitizers;
+
+  const lines = code.split('\n');
+  const execCall = /\.(Execute|ExecuteTemplate)\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!execCall.test(lines[i])) continue;
+    sanitizers.push({
+      type: 'html_template_auto_escape',
+      method: 'Execute',
+      line: i + 1,
+      sanitizes: ['xss', 'external_taint_escape', 'open_redirect'],
+    });
   }
 
   return sanitizers;

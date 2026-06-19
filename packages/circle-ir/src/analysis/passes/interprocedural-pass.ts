@@ -202,6 +202,61 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       attachSourceLineCode([], additionalSinks, ctx.code);
     }
 
-    return { additionalSinks, additionalFlows, interprocedural };
+    // Sprint 24 (cognium-dev #102 FP-27) — apply the uniform line-keyed
+    // sanitizer filter to inter-procedural fallback flows too. Scenario B
+    // generates external_taint_escape flows after TaintPropagationPass has
+    // already run, so its sanitizer filter never saw them. Drop any flow
+    // whose source→sink range overlaps a registered sanitizer covering
+    // `sink_type`.
+    let filteredAdditionalFlows = additionalFlows;
+    let filteredAdditionalSinks  = additionalSinks;
+    if (sanitizers && sanitizers.length > 0) {
+      const sanitizersByLine = new Map<number, typeof sanitizers>();
+      for (const san of sanitizers) {
+        const arr = sanitizersByLine.get(san.line) ?? [];
+        arr.push(san);
+        sanitizersByLine.set(san.line, arr);
+      }
+      const sanitizedSinkKeys = new Set<string>();
+      filteredAdditionalFlows = additionalFlows.filter(f => {
+        // Two-tier filter (mirrors TaintPropagationPass):
+        //   - external_taint_escape: any sanitizer covering sink_type on
+        //     the source→sink line range suppresses (FP-27).
+        //   - configured sinks: sanitizer must be AT sink_line and cover
+        //     sink_type (FP-20 map-allowlist guard at http.Get line).
+        if (f.sink_type === 'external_taint_escape') {
+          const lo = Math.min(f.source_line, f.sink_line);
+          const hi = Math.max(f.source_line, f.sink_line);
+          for (let line = lo; line <= hi; line++) {
+            const sansAtLine = sanitizersByLine.get(line);
+            if (!sansAtLine) continue;
+            for (const san of sansAtLine) {
+              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+                sanitizedSinkKeys.add(`${f.sink_line}:${f.sink_type}`);
+                return false;
+              }
+            }
+          }
+          return true;
+        }
+        const sansAtSink = sanitizersByLine.get(f.sink_line);
+        if (!sansAtSink || sansAtSink.length === 0) return true;
+        for (const san of sansAtSink) {
+          if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+            return false;
+          }
+        }
+        return true;
+      });
+      // Also drop additionalSinks whose flows were all filtered out and
+      // which are synthetic external_taint_escape (otherwise the sink
+      // remains in r.taint.sinks producing a stale finding).
+      filteredAdditionalSinks = additionalSinks.filter(s => {
+        if (s.type !== 'external_taint_escape') return true;
+        return !sanitizedSinkKeys.has(`${s.line}:${s.type}`);
+      });
+    }
+
+    return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };
   }
 }

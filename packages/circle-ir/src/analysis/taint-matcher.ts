@@ -557,6 +557,69 @@ function isSafePythonSubprocessCall(call: CallInfo, pattern: SinkPattern, langua
 }
 
 /**
+ * Check if a Go `exec.Command(...)` / `exec.CommandContext(...)` call is
+ * safe-by-shape: arg[0] (program) is a string literal AND that literal is
+ * NOT a shell program. In that shape Go invokes `execve(program, argv)`
+ * directly with no shell interpolation, so tainted subsequent arguments
+ * are just argv elements and cannot escape into shell metacharacters.
+ *
+ * Cases:
+ *   exec.Command("ping", "-c", "1", host)           → safe (non-shell program)
+ *   exec.Command("git", "clone", taintedURL)        → safe (non-shell program)
+ *   exec.Command("/bin/sh", "-c", taintedCmd)       → unsafe (shell program via basename)
+ *   exec.Command("sh", "-c", taintedCmd)            → unsafe (shell program, Sprint 23 #53 lock)
+ *   exec.Command("bash", "-c", taintedCmd)          → unsafe (shell program)
+ *   exec.Command(taintedProg, "-c", "code")         → unsafe (program itself tainted)
+ *
+ * Sprint 23 widened the exec.Command argPositions to `[]` in the Go plugin
+ * so all variadic positions are scanned (#53 shell-shape recall). That
+ * widening regressed precision on fixed-argv calls. This shape filter
+ * restores precision while preserving #53.
+ *
+ * cognium-dev #102 FP-25.
+ */
+function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+  if (language !== 'go') return false;
+  if (pattern.type !== 'command_injection') return false;
+  if (pattern.class !== 'exec') return false;
+  if (pattern.method !== 'Command' && pattern.method !== 'CommandContext') return false;
+
+  // CommandContext shifts: arg[0]=ctx, arg[1]=program
+  const programArgPos = pattern.method === 'CommandContext' ? 1 : 0;
+  const programArg = call.arguments.find(a => a.position === programArgPos);
+  if (!programArg) return false;
+
+  // Prefer the unquoted `literal` field when present — it's non-null only
+  // for string-literal arguments. If absent, fall back to the raw
+  // `expression` text (which may still be a quoted literal). A bare
+  // identifier (e.g. `taintedProg`) sets `literal=null` and `expression`
+  // to the identifier text with no surrounding quote — keep dangerous.
+  let program: string;
+  if (programArg.literal !== null && programArg.literal !== undefined) {
+    program = String(programArg.literal).split('/').pop() ?? String(programArg.literal);
+  } else {
+    const expr = (programArg.expression ?? '').trim();
+    if (!(expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'"))) {
+      return false;  // unknown / variable program — assume dangerous
+    }
+    const stripped = expr.slice(1, -1);
+    program = stripped.split('/').pop() ?? stripped;
+  }
+
+  // Shell programs interpret subsequent args as shell — keep dangerous.
+  const SHELL_PROGRAMS = new Set([
+    'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
+    'cmd', 'cmd.exe', 'powershell', 'pwsh',
+    'powershell.exe', 'pwsh.exe',
+  ]);
+  if (SHELL_PROGRAMS.has(program)) return false;
+
+  // Non-shell program literal: subsequent args are argv elements, not
+  // shell metacharacters. Sink is safe.
+  return true;
+}
+
+/**
  * Match a Java class-literal expression: `Foo.class`, `com.example.Foo.class`,
  * `User<T>.class` (loose), `Foo[].class`. Does NOT match `Class.forName(...)`,
  * `getClass()`, locals, or any non-literal expression — those remain dangerous
@@ -605,6 +668,16 @@ function findSinks(
         // interpolation, so tainted list elements can never escape into
         // shell metacharacters. cognium-dev #48 pt1.
         if (isSafePythonSubprocessCall(call, pattern, language)) {
+          continue;
+        }
+
+        // Skip Go exec.Command/CommandContext calls in safe shape: arg[0]
+        // (program) is a non-shell string literal. Go invokes execve()
+        // directly so subsequent argv elements cannot escape into shell
+        // metacharacters. Preserves Sprint 23 #53 shell-shape recall
+        // (sh/bash/zsh/etc.) while restoring fixed-argv precision.
+        // cognium-dev #102 FP-25.
+        if (isSafeGoExecCommandCall(call, pattern, language)) {
           continue;
         }
 

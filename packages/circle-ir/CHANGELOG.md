@@ -5,6 +5,154 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.74.0] - 2026-06-18
+
+### Fixed — Sprint 24: Go safe-handler false positives (#102 Go portion)
+
+Five Go safe-handler false positives left open after Sprint 23 are closed.
+Sprint 23 shipped the Bash FP-24 fix; this sprint addresses the Go FPs.
+
+**FP-19a — Parameterised SQL Query / Exec.**
+`db.Query("SELECT name FROM users WHERE id = ?", id)` was emitting
+`external_taint_escape` (CWE-668) because `Query`/`Exec` were not in the
+inter-procedural fallback's safe-utility allowlist. The
+sql_injection sink check already governs the unsafe shape; the fallback
+should not re-flag the safe parameterised case.
+
+Fix in `src/analysis/interprocedural.ts`: add Go `database/sql` query
+methods (`Query`, `QueryRow`, `QueryContext`, `QueryRowContext`, `Exec`,
+`ExecContext`) to `safeUtilityMethods`.
+
+**FP-19b — `html/template.Execute` auto-escape.** Calls of the form
+`t.Execute(w, name)` on a Go `html/template` template were emitting
+`external_taint_escape` because the per-call class resolution for the
+xss sink did not reliably resolve the receiver to `"Template"`.
+
+Fix in `src/analysis/passes/language-sources-pass.ts`: new
+`findGoHtmlTemplateImportSanitizers` emits a per-line sanitizer at
+every `.Execute(` / `.ExecuteTemplate(` call when the file imports
+`html/template`. Bails when `text/template` is also imported in the
+same file — that case preserves the positive `code_injection` lock
+from Sprint 23 #108.
+
+**FP-20 — Map-allowlist host guard.** The idiomatic
+`if !allowedHosts[host] { http.Error(...); return }` shape upstream of
+`http.Get("https://" + host)` was firing `ssrf`.
+
+Fix in `src/analysis/passes/language-sources-pass.ts`: new
+`findGoMapAllowlistGuardSanitizers` (modelled on Sprint 23's
+`findBashRealpathPrefixGuardSanitizers`) emits per-line sanitizer
+entries from the guard close-brace through end of file when the map
+name matches the allowlist naming heuristic (UPPER_SNAKE or contains
+`allowed`/`accepted`/`whitelist`/`permitted`/`valid`/`approved`) and the
+guard body terminates with `return`, `panic`, or `os.Exit`. Covers
+`ssrf`, `open_redirect`, `path_traversal`, `sql_injection`,
+`command_injection`, and `external_taint_escape`.
+
+**FP-25 — `exec.Command` with fixed program literal.**
+`exec.Command("ping", "-c", "1", host)` was firing `command_injection`
+because Sprint 23 #53 widened `argPositions` to `[]` (so every positional
+is scanned for taint). When `arg[0]` is a string literal naming a
+non-shell program, subsequent positionals are argv elements (not shell
+input) and the call is safe by construction.
+
+Fix in `src/analysis/taint-matcher.ts`: new `isSafeGoExecCommandCall`
+mirrors `isSafePythonSubprocessCall`. Reads `arg[0].literal` (already
+unquoted by the Go plugin), takes basename, suppresses the
+command_injection sink iff the program is NOT in `SHELL_PROGRAMS`
+(`sh`, `bash`, `zsh`, `dash`, `ash`, `ksh`, `cmd[.exe]`, `powershell[.exe]`,
+`pwsh[.exe]`). `CommandContext` shifts the program-arg index to 1
+(arg[0] = ctx).
+
+Sprint 23 #53 lock preserved: `exec.Command("sh", "-c", cmd)` →
+program = `sh` → SHELL_PROGRAMS hit → sink emitted.
+
+Tainted-program recall preserved: `exec.Command(taintedProg, "-c", "x")`
+→ `arg[0].literal` is null (identifier expression, not literal) →
+function returns false → sink emitted.
+
+Belt-and-suspenders in `src/analysis/interprocedural.ts`: `Command`,
+`CommandContext` added to `safeUtilityMethods` so the CWE-668 fallback
+doesn't re-fire on the variadic args after the command_injection sink
+was cleared.
+
+**FP-27 — `html.EscapeString` → `fmt.Fprintf`.** The shape
+```go
+safe := html.EscapeString(name)
+fmt.Fprintf(w, "<p>Hello, %s</p>", safe)
+```
+was firing `external_taint_escape` at the Fprintf line. Two
+sub-defects:
+
+1. `configs/sinks/golang.json` is not loaded at runtime — the runtime
+   sanitizer set comes exclusively from hardcoded `DEFAULT_SANITIZERS`
+   in `src/analysis/config-loader.ts`, and `html.EscapeString` /
+   `template.HTMLEscapeString` were absent from that set.
+2. Even with the sanitizer registered at the assignment line, the
+   InterproceduralPass Scenario B fallback generates flows after
+   TaintPropagationPass has already run, so its sanitizer filter never
+   sees them.
+
+Fix in `src/analysis/config-loader.ts`: register `html.EscapeString`,
+`template.HTMLEscapeString`, `template.JSEscapeString`,
+`template.URLQueryEscaper`, `url.QueryEscape`, `url.PathEscape` with
+broad `removes` lists that include `external_taint_escape`. Also
+broaden the existing Go path sanitizers (`filepath.Base`/`Clean`/
+`EvalSymlinks`, `path.Base`/`Clean`) to add `external_taint_escape`.
+
+Fix in `src/analysis/passes/taint-propagation-pass.ts` and
+`src/analysis/passes/interprocedural-pass.ts`: add a uniform two-tier
+line-keyed sanitizer filter. For `external_taint_escape` (synthetic
+CWE-668 fallback with no variable-precise tracking), a sanitizer
+anywhere on the source→sink line range that covers `external_taint_escape`
+suppresses the flow. For configured sinks (ssrf, sql_injection, …),
+the sanitizer must be AT `sink_line` — preserves cognium-dev #65 pt2
+positive lock (bare `shlex.quote(host)` on a non-sink line does NOT
+sanitize subsequent raw `host` reaching a command sink). The
+InterproceduralPass filter also drops synthetic `external_taint_escape`
+sinks whose flows were filtered out, to keep `r.taint.sinks` consistent
+with `r.taint.flows`.
+
+**FP-26 — `filepath.Clean` + `HasPrefix` regression lock.** Already
+passing on the Sprint 24 baseline (`filepath.Clean` is a registered
+`path_traversal` sanitizer). Regression test added so future changes
+don't regress it.
+
+**Verification.** `npm test` 2519 passing (2508 + 11 new),
+`npm run typecheck` clean, `bun run build` (CLI) clean. The Sprint 24
+probe (`/tmp/sprint24_probe.mjs`) shows all 6 FP fixtures `✅ no FP`
+and all 3 positive recall baselines fire — including the Sprint 23 #53
+shell-shape lock.
+
+### Files modified
+
+- `src/analysis/interprocedural.ts` — `safeUtilityMethods` extended
+  (Go SQL Query/Exec, html escape helpers, `Command`/`CommandContext`).
+- `src/analysis/config-loader.ts` — Go sanitizers added/broadened in
+  `DEFAULT_SANITIZERS`.
+- `src/analysis/taint-matcher.ts` — `isSafeGoExecCommandCall` added
+  and wired into `findSinks`.
+- `src/analysis/passes/language-sources-pass.ts` — `if (language === 'go')`
+  block + two new detectors (`findGoMapAllowlistGuardSanitizers`,
+  `findGoHtmlTemplateImportSanitizers`).
+- `src/analysis/passes/taint-propagation-pass.ts` — two-tier uniform
+  line-keyed sanitizer filter.
+- `src/analysis/passes/interprocedural-pass.ts` — two-tier uniform
+  filter + synthetic-sink dropping.
+- `configs/sinks/golang.json` — `removes` lists broadened (config file
+  is not consumed at runtime but kept in sync with the in-code defaults).
+- `tests/analysis/repro-sprint24.test.ts` — 6 FP negative locks + 5
+  positive recall locks.
+
+### Out of scope (deferred)
+
+- Rust FP-21/22/23 — separate sprint.
+- JS allowlist detector — JS `if (allowedHosts.includes(...))` shape,
+  future sprint.
+- Multi-line shell prefix shapes (`/bin/sh -c …`, busybox).
+- `html/template` chain detection without explicit import (e.g. type
+  alias) — accept FP under that shape; explicit import IS the standard.
+
 ## [3.73.0] - 2026-06-18
 
 ### Fixed — Sprint 23: bundled "S" closure (#53, #102, #107, #108)
