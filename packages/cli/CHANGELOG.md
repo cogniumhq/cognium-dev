@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.75.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.75.0 — Sprint 25 fast wins:
+  - **#112** Java `new Random().nextInt(...)` chained-constructor pattern
+    now fires `weak-random` (CWE-331). Typed-local form was already
+    detected; chained form was missed because the IR emits the method
+    call with `receiver_type=null`.
+  - **#111** Go `w.Header().Set/Add(k, tainted)` and Python
+    `resp.headers.set/add/setdefault/__setitem__/extend(...)` and
+    `resp.set_cookie(name, tainted)` now fire `crlf` (CWE-113). Go
+    sinks already existed but `receiverMightBeClass` didn't recognise
+    the `<expr>.ClassName()` chained-method shape; Python had no CRLF
+    sinks at all.
+- Known limitation: Python subscript assignment
+  `resp.headers['X-A'] = value` is not covered because the IR does not
+  emit subscript writes as calls.
+
 ## [3.74.0] - 2026-06-18
 
 ### Changed

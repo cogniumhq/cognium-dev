@@ -145,6 +145,15 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
           return `${rt}.${method}`;
         }
       }
+      // Chained constructor: `new Random().nextX()` / `new SplittableRandom().nextX()`.
+      // For chained `new C().m()`, the IR emits `m` with receiver_type=null
+      // (receiver is an expression, not a typed variable), so the receiver_type
+      // check above misses. Match the constructor prefix on the receiver
+      // expression instead. (cognium-dev #112)
+      if (JAVA_RANDOM_METHODS.has(method)) {
+        if (/^new\s+Random\s*\(/.test(receiver)) return `new Random.${method}`;
+        if (/^new\s+SplittableRandom\s*\(/.test(receiver)) return `new SplittableRandom.${method}`;
+      }
       // ThreadLocalRandom.current().nextX() — chained, receiver expression literal
       if (JAVA_RANDOM_METHODS.has(method) && /ThreadLocalRandom\.current\(\)/.test(receiver)) {
         return `ThreadLocalRandom.current.${method}`;

@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.75.0] - 2026-06-19
+
+### Fixed — Sprint 25 fast wins: cross-language FNs (#112, #111)
+
+Two cross-language false-negatives closed with surgical sink-wiring + a
+single matcher widening. No new analysis passes.
+
+**#112 — Java `java.util.Random` for security tokens (CWE-331).**
+`weak-random` was firing for the typed-local form
+(`Random r = new Random(); r.nextInt(...)`) via the existing
+`receiver_type === 'Random'` check, but missing the idiomatic chained
+form `new Random().nextInt(...)`. For chained `new C().m()` the Java IR
+emits `m` with `receiver_type = null` (the receiver is an expression,
+not a typed variable), so the receiver_type branch never fired.
+
+Fix in `src/analysis/passes/weak-random-pass.ts`: when the called method
+is in `JAVA_RANDOM_METHODS`, also match `^new\s+Random\s*\(` and
+`^new\s+SplittableRandom\s*\(` against the receiver expression. The
+existing typed-local path and the `ThreadLocalRandom.current()` chained
+path are unchanged.
+
+**#111 — Go and Python CRLF / header injection (CWE-113).**
+
+*Go:* the `{ method: 'Set'/'Add', class: 'Header', type: 'crlf' }` sink
+patterns existed in `config-loader.ts` but never matched. `receiverMightBeClass`
+only recognised direct identifiers, constructor-call patterns
+(`Path(raw)`), and Rust scoped paths (`Command::new`). The Go shape
+`w.Header().Set(k, v)` produces `receiver = "w.Header()"`, which none
+of those branches recognised.
+
+Fix in `src/analysis/taint-matcher.ts`: add a chained-method-call shape
+to `receiverMightBeClass` — `receiver.endsWith('.ClassName()')` resolves
+the call's receiver to `ClassName`. Targeted enough to require the
+literal class name as the trailing method; safe for unrelated calls.
+
+*Python:* no CRLF sinks existed. Added Flask/Werkzeug/FastAPI/Django
+sinks to `config-loader.ts`:
+- `{headers}.set(k, v)`, `.add(k, v)`, `.setdefault(k, v)`,
+  `.__setitem__(k, v)` — value at arg[1]
+- `{headers}.extend(mapping)` — mapping at arg[0]
+- `{response}.set_cookie(name, value, ...)` — value at arg[1]
+
+**Known limitation (Python subscript):** `resp.headers['X-A'] = name`
+is not covered because the IR does not emit subscript writes as calls.
+Documented inline in `config-loader.ts` and in the regression test.
+The method-call forms above (`headers.set(...)`, `headers.add(...)`,
+`headers.__setitem__(...)`) all match via the chained `.headers`
+suffix resolution.
+
+### Files changed
+
+- `src/analysis/passes/weak-random-pass.ts` — chained-constructor receiver match for Java.
+- `src/analysis/taint-matcher.ts` — `receiverMightBeClass` extended with
+  `.<ClassName>()` chained-method shape.
+- `src/analysis/config-loader.ts` — Python CRLF sinks (5 header method
+  patterns + `set_cookie`).
+- `tests/analysis/repro-sprint25-fastwins.test.ts` — 13 new tests
+  covering chained constructor (4), Go header (3), Python header (4),
+  JS/Java CRLF regression baselines (2).
+
+### Verification
+
+- `npm test` 2532 pass (was 2519; +13 new), 0 regressions.
+- `npm run typecheck` clean. `bun run build` (CLI) clean.
+- IR-level probe confirms `crlf` flow emitted for Go `w.Header().Set(name, tainted)`
+  and Python `resp.headers.set(name, tainted)`; `weak-random` finding
+  emitted for Java `new Random().nextInt(n)`.
+
 ## [3.74.0] - 2026-06-18
 
 ### Fixed — Sprint 24: Go safe-handler false positives (#102 Go portion)

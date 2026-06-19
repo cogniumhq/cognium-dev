@@ -1984,6 +1984,19 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Set', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
   { method: 'Add', class: 'Header', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['go'] },
 
+  // Python: Flask/Werkzeug/FastAPI/Django response header sinks (CWE-113).
+  // Subscript assignment (`resp.headers['X-A'] = name`) is NOT covered because
+  // the IR does not emit subscript writes as calls — a known limitation, see
+  // cognium-dev #111. The method-call forms below ARE captured (receiver
+  // suffix-match on `.headers` via receiverMightBeClass).
+  { method: 'set',         class: 'headers', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['python'] },
+  { method: 'add',         class: 'headers', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['python'] },
+  { method: 'setdefault',  class: 'headers', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['python'] },
+  { method: 'extend',      class: 'headers', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0], languages: ['python'] },
+  { method: '__setitem__', class: 'headers', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['python'] },
+  // Flask/Werkzeug response.set_cookie(name, value, ...) — value is CRLF-sensitive.
+  { method: 'set_cookie',  type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['python'] },
+
   // Mass-assignment (CWE-915 / CWE-1321) — Sprint 6, #86; cognium-dev #68 Sprint 10.
   // JS Object.assign(target, ...sources), `_.merge`, `_.extend`, `$.extend`,
   // `Object.defineProperty` — when fed an attacker-controlled bag, they write

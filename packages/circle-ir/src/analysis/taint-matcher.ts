@@ -1128,6 +1128,16 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
     }
   }
 
+  // Chained method-call receiver: `<expr>.ClassName()` — e.g. Go
+  // `w.Header()` where `http.ResponseWriter.Header()` returns
+  // `http.Header`. Required for sinks like `{ class: 'Header', method:
+  // 'Set' }` to match `w.Header().Set(k, v)`. (cognium-dev #111)
+  const chainedCallSuffix = `.${className}()`;
+  if (receiver.endsWith(chainedCallSuffix) ||
+      receiver.toLowerCase().endsWith(chainedCallSuffix.toLowerCase())) {
+    return true;
+  }
+
   // Rust/C++ scoped receivers: extract the type name before ::
   // Handles both single-line and multi-line chained calls, e.g.:
   //   "Command::new(\"sh\").arg(\"-c\").arg(&input)"          (single-line)
