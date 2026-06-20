@@ -525,18 +525,36 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
     const out: Array<{ issue: WeakCryptoIssue; detail: string; api: string }> = [];
 
     if (language === 'java') {
-      // Cipher.getInstance(...) / KeyGenerator.getInstance(...)
-      const isCipherFactory =
+      // Cipher.getInstance("ALG/MODE/PADDING") — both weak-base and ECB-mode
+      // checks apply. ECB is meaningful here because Cipher actually performs
+      // the encryption with the specified mode.
+      const isCipherInstance =
         method === 'getInstance' &&
-        (receiver === 'Cipher' || receiver.endsWith('.Cipher') ||
-         receiver === 'KeyGenerator' || receiver.endsWith('.KeyGenerator'));
-      if (isCipherFactory) {
+        (receiver === 'Cipher' || receiver.endsWith('.Cipher'));
+      // KeyGenerator.getInstance("ALG") — only the weak-base check applies.
+      // ECB is meaningless for KeyGenerator: it just generates key material
+      // for the named algorithm; the cipher mode is chosen later by the
+      // caller via Cipher.getInstance. `KeyGenerator.getInstance("AES")` is
+      // the canonical, safe way to generate AES key material — flagging it
+      // as ECB produces the bulk of CWE-327 FPs on OWASP Java benchmark
+      // (cognium-dev #116, 93 FPs / 85% of all Java FPs in v3.67.0 snapshot).
+      const isKeyGenInstance =
+        method === 'getInstance' &&
+        (receiver === 'KeyGenerator' || receiver.endsWith('.KeyGenerator'));
+      if (isCipherInstance) {
         const spec = literalAlgo(call, 0);
         if (spec) {
           const { weakBase, ecb } = classifyJavaCipherSpec(spec);
           const api = `${receiver}.getInstance`;
           if (weakBase) out.push({ issue: 'weak-cipher', detail: weakBase, api });
           if (ecb) out.push({ issue: 'ecb-mode', detail: spec, api });
+        }
+      } else if (isKeyGenInstance) {
+        const spec = literalAlgo(call, 0);
+        if (spec) {
+          const { weakBase } = classifyJavaCipherSpec(spec);
+          const api = `${receiver}.getInstance`;
+          if (weakBase) out.push({ issue: 'weak-cipher', detail: weakBase, api });
         }
       }
 

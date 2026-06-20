@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.79.0] - 2026-06-19
+
+### Fixed — #116 `weak-crypto` (CWE-327) Java FP on `KeyGenerator.getInstance("AES")`
+
+OWASP Java benchmark v3.67.0 snapshot showed CWE-327 Weak Crypto at
+**58.3% precision (130 TP / 93 FP)** — the 93 FPs were **85% of all
+Java FPs** in the run. The issue hypothesised the cause was over-firing
+on `Cipher.getInstance("AES/CBC/...")` safe modes; probe confirmed
+Cipher detection correctly distinguishes safe-mode (CBC/GCM/CTR) from
+ECB via `classifyJavaCipherSpec`. The actual root cause is one line:
+
+`KeyGenerator.getInstance("AES")` is the canonical, safe way to
+generate AES key material. `KeyGenerator` has **no cipher mode** — the
+mode is chosen later by `Cipher.getInstance("AES/CBC/PKCS5Padding")`.
+The pass treated `KeyGenerator` identically to `Cipher`, including the
+rule "AES with no mode defaults to ECB" — flagging every
+`KeyGenerator.getInstance("AES")` call as ECB-mode high-severity. Every
+OWASP Java test that performs key generation hits this; the
+`Cipher.getInstance("AES/CBC/PKCS5Padding")` next to it does NOT fire.
+
+Fix (`weak-crypto-pass.ts`): split `isCipherFactory` into:
+
+- **`isCipherInstance`** — full Cipher logic, both weak-base (DES/3DES/
+  RC4/Blowfish/RC2/RC5) and ECB-mode (`"AES"`, `"AES/ECB/..."`) checks.
+- **`isKeyGenInstance`** — weak-base check ONLY. `KeyGenerator.getInstance("DES")`,
+  `("RC4")`, `("Blowfish")` still flag as weak-cipher; `("AES")`,
+  `("HmacSHA256")` no longer flag.
+
+Cipher detection unchanged. The split adds zero new branches to the hot
+path; the existing `classifyJavaCipherSpec` is now called from two
+narrower gates instead of one wide one.
+
+### Test coverage
+
+11 new regression tests in `tests/analysis/repro-issue-116.test.ts`:
+- 3 FP locks: `KeyGenerator.getInstance("AES")` and FQ variant +
+  `KeyGenerator.getInstance("HmacSHA256")` must emit zero findings.
+- 3 recall locks: `KeyGenerator.getInstance("DES" | "RC4" | "Blowfish")`
+  must still flag as `weak-cipher`.
+- 4 Cipher behavior locks: `Cipher.getInstance("AES")` still flags as
+  `ecb-mode`; `("AES/ECB/PKCS5Padding")` still flags; `("AES/CBC/...")`
+  and `("AES/GCM/...")` continue NOT to flag.
+- 1 canonical OWASP shape lock: full doPost composite
+  `KeyGenerator.getInstance("AES") + Cipher.getInstance("AES/CBC/PKCS5Padding")
+  + SecureRandom IV + IvParameterSpec` emits zero weak-crypto findings.
+
+Suite: 2569 pass / 1 skipped (+11 vs 3.78.0).
+
+### Expected OWASP Java benchmark impact
+
+The fix removes ECB-mode false positives on every key-generation site
+that uses AES (the OWASP-recommended algorithm); CWE-327 precision is
+expected to move from **58.3%** toward parity with other CWEs. Other
+weak-crypto subtypes (`weak-cipher`, `deprecated-api`, `static-iv`,
+`hardcoded-key`, `weak-rsa-key`) are untouched.
+
 ## [3.78.0] - 2026-06-19
 
 ### Fixed — #119 `weak-hash` (CWE-328) Java recall gaps

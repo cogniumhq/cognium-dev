@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.79.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.79.0 — **#116** CWE-327 weak-crypto Java precision
+  was 58.3% (130 TP / 93 FP) on OWASP Java benchmark v3.67.0 — 85% of
+  all Java FPs. Root cause: `KeyGenerator.getInstance("AES")` (the
+  canonical, safe AES key-derivation API) was treated identically to
+  `Cipher.getInstance("AES")`, including the "AES with no mode → ECB"
+  rule. `KeyGenerator` has no cipher mode — the mode is chosen later by
+  `Cipher.getInstance("AES/CBC/...")`. Fix splits the gate into
+  `isCipherInstance` (full Cipher logic) and `isKeyGenInstance`
+  (weak-base only); `KeyGenerator.getInstance("DES" | "RC4" | "Blowfish")`
+  still flags. Cipher detection unchanged. No CLI changes — version
+  bump only.
+
 ## [3.78.0] - 2026-06-19
 
 ### Changed
