@@ -670,11 +670,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'parse', class: 'CommandLine', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'addArgument', class: 'CommandLine', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
-  // Process-related utilities
-  { method: 'waitFor', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'medium', arg_positions: [] },
-  { method: 'inheritIO', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'medium', arg_positions: [] },
-  { method: 'redirectOutput', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'medium', arg_positions: [0] },
-  { method: 'redirectInput', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'medium', arg_positions: [0] },
+  // Process-related utilities — removed in 3.83.0 (#124):
+  // - Process.waitFor() blocks on an already-spawned process; has no args,
+  //   no command string flows into it.
+  // - ProcessBuilder.inheritIO() takes no args.
+  // - ProcessBuilder.redirectOutput/redirectInput take a File destination/source,
+  //   not a command. If treated as sinks they would be path_traversal, not
+  //   command_injection — and even then the threat model is marginal.
+  // The actual command-execution sinks (Runtime.exec, ProcessBuilder.start,
+  // ProcessBuilder.command, ProcessBuilder(constructor)) remain configured
+  // elsewhere in this file / in configs/sinks/command.yaml.
 
   // Path Traversal (CWE-22)
   // File: covers both File(String pathname) and File(parent, child). The 2-arg
@@ -1014,7 +1019,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
 
   // Code Injection (CWE-94)
   { method: 'eval', class: 'ScriptEngine', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
-  { method: 'compile', class: 'Pattern', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Pattern.compile removed in 3.83.0 (#124): regex compilation does not execute
+  // code. The real risk from a tainted regex is ReDoS, covered by the
+  // `Pattern.compile` -> `redos` rule below (line ~1945).
   // Expression Language injection (SpEL, OGNL, MVEL, EL)
   { method: 'parseExpression', class: 'ExpressionParser', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'parseExpression', class: 'SpelExpressionParser', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
@@ -1755,7 +1762,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
 
   // Collection-based command injection (ProcessBuilder with List)
   { method: 'command', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'inheritIO', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [] },
+  // ProcessBuilder.inheritIO removed in 3.83.0 (#124): no args, no command
+  // string flows into it. See note above next to the Process-related cluster.
 
   // Jenkins DSL patterns
   { method: 'step', class: 'StepExecution', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },

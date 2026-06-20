@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.83.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.83.0 — Sprint 30 bundle closing **#124** (Java
+  sink-type mis-categorization on `Pattern.compile` / `Process.waitFor` /
+  `ProcessBuilder.inheritIO` / `redirectOutput` / `redirectInput`). Five
+  spurious `JAVA_SINK_RULES` entries removed; the real command-exec sinks
+  (`Runtime.exec`, `ProcessBuilder.start`, `ProcessBuilder.command(List)`,
+  `new ProcessBuilder(cmd)`) continue to fire on tainted args. See
+  `packages/circle-ir/CHANGELOG.md` for the full rule-removal breakdown.
+
 ## [3.82.0] - 2026-06-19
 
 ### Changed

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.83.0] - 2026-06-19
+
+Sprint 30 — issue **#124** (Java sink-type mis-categorization). Five entries
+in `JAVA_SINK_RULES` matched methods whose runtime semantics do NOT match
+the declared sink type, producing high-confidence FPs on benign Java code.
+
+### Fixed — #124 Java sink-type mis-categorization
+
+`src/analysis/config-loader.ts` — removed five spurious sink rules:
+
+- `Pattern.compile(...)` tagged `code_injection` (CWE-94) — regex compilation
+  does not execute code. The real risk from a tainted regex is ReDoS, which
+  is already covered by the separate `Pattern.compile -> redos` rule.
+- `Process.waitFor()` tagged `command_injection` (CWE-78) — `waitFor` blocks
+  on an already-spawned `Process`; it takes no args and no command string
+  flows into it.
+- `ProcessBuilder.inheritIO()` tagged `command_injection` (CWE-78) — no args.
+- `ProcessBuilder.redirectOutput(File)` / `redirectInput(File)` tagged
+  `command_injection` — both take a `File` destination/source, not a command
+  string. If anything, they are path-traversal — but the threat model is
+  marginal, so they are removed entirely.
+
+The real command-execution sinks remain configured (`Runtime.exec`,
+`ProcessBuilder.start`, `ProcessBuilder.command(List<String>)`,
+`new ProcessBuilder(cmd)`) and continue to fire on tainted inputs.
+
+### Tests
+
+- `tests/analysis/repro-issue-124.test.ts` — 7 new tests (5 negative locks
+  for the removed rules + 2 recall locks proving `Runtime.exec` and
+  `new ProcessBuilder(...)` still emit `command_injection` on tainted args).
+- Full suite: **2641 pass** / 1 skipped (was 2634; +7 new locks).
+- Typecheck + CLI build: clean.
+
+### Closes
+
+- #124 (Java sink-type mis-categorization on Pattern.compile / Process.*)
+
 ## [3.82.0] - 2026-06-19
 
 Sprint 29 — bundle fixes for **#113** (`external_taint_escape` over-fires on
