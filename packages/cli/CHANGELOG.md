@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.85.0] - 2026-06-20
+
+### Changed
+
+- Tracks circle-ir 3.85.0 — Sprint 32 closing **#125**
+  (`hardcoded-credential-entropy` 96.3% FP rate on top-20 Java OSS
+  harness). Four context gates added to the pass-#90 entropy layer:
+  - **Gate 1** annotation-arg suppression
+    (`@Annotation(...)` / `#[...]`)
+  - **Gate 2** generated-file wholesale skip (path + filename heuristics
+    including `gen/`, `generated/`, `*__c.java`, `*.pb.go`, `*_pb2.py`,
+    `*.generated.tsx`)
+  - **Gate 3** string-array constant-table suppression (≥3 string
+    literals inside `=\s*[{\[]` span)
+  - **Gate 4** field-name strengthening — credential-keyword identifier
+    on LHS now **required** for entropy emit; literal length floor raised
+    8 → 32 chars
+  Recall preserved via Layer 1 (16 provider regexes) and Layer 1b
+  (named-credential matcher). +10 regression tests; full circle-ir suite
+  **2662 pass | 1 skipped** (was 2652 / 1). See
+  `packages/circle-ir/CHANGELOG.md` for the full implementation
+  breakdown.
+
 ## [3.84.0] - 2026-06-19
 
 ### Changed

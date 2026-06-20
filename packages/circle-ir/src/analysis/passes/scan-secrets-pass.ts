@@ -54,6 +54,22 @@ function isTestFile(file: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Generated-code skip heuristic (#125)
+//
+// Generated files routinely embed high-entropy attribution keys, provenance
+// hashes, and embedded resource blobs that trip the entropy layer. Wholesale
+// skip them, same as test files. Cognium-dev #125.
+// ---------------------------------------------------------------------------
+
+const GENERATED_PATH_RE =
+  /(?:^|[\\/])(?:gen|generated|build[\\/]generated|src[\\/](?:main|test)[\\/]generated|target[\\/]generated-sources|target[\\/]generated-test-sources|node_modules[\\/]\.cache)(?:[\\/]|$)/i;
+const GENERATED_FILENAME_RE = /__[ch]\.java$|\.pb\.go$|_pb2\.py$|\.generated\.[cm]?[jt]sx?$/i;
+
+function isGeneratedFile(file: string): boolean {
+  return GENERATED_PATH_RE.test(file) || GENERATED_FILENAME_RE.test(file);
+}
+
+// ---------------------------------------------------------------------------
 // Provider patterns (layer 1)
 // ---------------------------------------------------------------------------
 
@@ -289,6 +305,156 @@ function shannonEntropy(s: string): number {
 const CREDENTIAL_NAME_RE = /(?:key|secret|token|password|passwd|credential|api[_-]?key)/i;
 
 // ---------------------------------------------------------------------------
+// Context-gate pre-scans (#125)
+//
+// The entropy layer alone fires on any high-entropy string. To kill the
+// noise from generated attribution keys, embedded resource blobs, and
+// public-spec constant tables, we layer three context-aware suppressions on
+// top of the entropy gate: annotation-arg span, array-literal span, and
+// enclosing field-name credential match.
+//
+// All three are regex-based (no AST), matching the existing pass design.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-scan: return the set of 1-indexed line numbers that fall inside any
+ * `@Annotation( ... )` argument span (Java annotations, JS/TS decorators,
+ * Python decorators) or `#[...]` attribute span (Rust). String literals on
+ * suppressed lines are treated as annotation metadata, not credentials.
+ *
+ * Cognium-dev #125 Gate 1.
+ */
+function findAnnotationLineRanges(code: string): Set<number> {
+  const lines = code.split('\n');
+  const inAnnotation = new Set<number>();
+  // Match `@SomeAnnotation(` (Java/TS/Python with optional `.qualifier`) OR `#[`.
+  const OPEN_RE = /(?:@[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*\(|#\[)/g;
+  for (let i = 0; i < lines.length; i++) {
+    OPEN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = OPEN_RE.exec(lines[i])) !== null) {
+      const isRustAttr = m[0].startsWith('#[');
+      const openCh = isRustAttr ? '[' : '(';
+      const closeCh = isRustAttr ? ']' : ')';
+      // Walk forward tracking paren/bracket depth, skipping inside string literals.
+      let depth = 1;
+      let li = i;
+      let col = m.index + m[0].length;
+      // Soft cap to avoid runaway on unmatched parens.
+      let lineBudget = 200;
+      inAnnotation.add(li + 1);
+      while (depth > 0 && li < lines.length && lineBudget > 0) {
+        const ln = lines[li];
+        let inStr: '"' | "'" | '`' | null = null;
+        while (col < ln.length && depth > 0) {
+          const ch = ln[col];
+          if (inStr !== null) {
+            if (ch === '\\') { col += 2; continue; }
+            if (ch === inStr) inStr = null;
+          } else if (ch === '"' || ch === "'" || ch === '`') {
+            inStr = ch as '"' | "'" | '`';
+          } else if (ch === openCh) {
+            depth++;
+          } else if (ch === closeCh) {
+            depth--;
+          }
+          col++;
+        }
+        if (depth > 0) {
+          li++;
+          col = 0;
+          lineBudget--;
+          if (li < lines.length) inAnnotation.add(li + 1);
+        }
+      }
+    }
+  }
+  return inAnnotation;
+}
+
+/**
+ * Pre-scan: return the set of 1-indexed line numbers that fall inside any
+ * array/object literal containing ≥3 string-literal elements (constant
+ * data table). Catches the `String[] X = { "...", "...", "...", ... }`
+ * shape (Java) and `const X = ["...", "...", "..."]` shape (JS/TS/Python).
+ *
+ * Cognium-dev #125 Gate 3.
+ */
+function findStringArrayLineRanges(code: string): Set<number> {
+  const lines = code.split('\n');
+  const inArray = new Set<number>();
+  // Match assignment opener to array/object literal: `= {`, `= [`.
+  const OPEN_RE = /=\s*([{\[])/g;
+  const STR_LITERAL_COUNT_RE = /(["'`])(?:\\.|(?!\1).)*\1/g;
+  for (let i = 0; i < lines.length; i++) {
+    OPEN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = OPEN_RE.exec(lines[i])) !== null) {
+      const openCh = m[1];
+      const closeCh = openCh === '{' ? '}' : ']';
+      let depth = 1;
+      let li = i;
+      let col = m.index + m[0].length;
+      let lineBudget = 500;
+      const spanLines: number[] = [li + 1];
+      let spanText = '';
+      while (depth > 0 && li < lines.length && lineBudget > 0) {
+        const ln = lines[li];
+        let inStr: '"' | "'" | '`' | null = null;
+        const start = col;
+        while (col < ln.length && depth > 0) {
+          const ch = ln[col];
+          if (inStr !== null) {
+            if (ch === '\\') { col += 2; continue; }
+            if (ch === inStr) inStr = null;
+          } else if (ch === '"' || ch === "'" || ch === '`') {
+            inStr = ch as '"' | "'" | '`';
+          } else if (ch === openCh) {
+            depth++;
+          } else if (ch === closeCh) {
+            depth--;
+          }
+          col++;
+        }
+        spanText += ln.substring(start, col) + '\n';
+        if (depth > 0) {
+          li++;
+          col = 0;
+          lineBudget--;
+          if (li < lines.length) spanLines.push(li + 1);
+        }
+      }
+      // Count string literals inside the span; if ≥3, mark all span lines.
+      STR_LITERAL_COUNT_RE.lastIndex = 0;
+      let strCount = 0;
+      while (STR_LITERAL_COUNT_RE.exec(spanText) !== null) {
+        strCount++;
+        if (strCount >= 3) break;
+      }
+      if (strCount >= 3) {
+        for (const ln of spanLines) inArray.add(ln);
+      }
+    }
+  }
+  return inArray;
+}
+
+/**
+ * Per-literal field-name extractor (#125 Gate 4).
+ *
+ * Extracts the assignment LHS identifier preceding the quoted string on the
+ * given line. Returns null if the literal is not an assignment value
+ * (e.g. annotation arg, function call arg, return expression).
+ */
+const FIELD_ASSIGN_RE =
+  /(?:^|[\s,(])([A-Za-z_$][\w$]*)\s*[:=]\s*["'`]/;
+
+function extractEnclosingFieldName(lineText: string): string | null {
+  const m = FIELD_ASSIGN_RE.exec(lineText);
+  return m ? m[1] : null;
+}
+
+// ---------------------------------------------------------------------------
 // Per-line FP-guard substrings (entropy layer only)
 // ---------------------------------------------------------------------------
 
@@ -312,7 +478,7 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
   run(ctx: PassContext): ScanSecretsPassResult {
     const file = ctx.graph.ir.meta.file;
 
-    if (isTestFile(file)) {
+    if (isTestFile(file) || isGeneratedFile(file)) {
       return { providerFindings: 0, entropyFindings: 0 };
     }
 
@@ -326,6 +492,12 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         seen.add(`${f.line}:${f.rule_id}`);
       }
     }
+
+    // Pre-scan: line ranges to suppress in the entropy layer (#125 Gates 1 & 3).
+    // Provider patterns and named-credential layers are intentionally NOT gated
+    // by these — they retain full recall on real credential shapes.
+    const annotationLines = findAnnotationLineRanges(ctx.code);
+    const arrayLines = findStringArrayLineRanges(ctx.code);
 
     let providerFindings = 0;
     let entropyFindings = 0;
@@ -404,6 +576,11 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
 
       if (TEST_CALL_RE.test(lineText)) continue;
       if (COMMENT_EXAMPLE_RE.test(lineText)) continue;
+      // #125 Gate 1: skip annotation-arg spans (e.g. `@Original(key="...")`).
+      if (annotationLines.has(lineNum)) continue;
+      // #125 Gate 3: skip array/object literal spans with ≥3 string elements
+      // (constant data tables — solar terms, encoding alphabets, etc.).
+      if (arrayLines.has(lineNum)) continue;
 
       // Reset regex state per line; STRING_LITERAL_RE is global.
       STRING_LITERAL_RE.lastIndex = 0;
@@ -411,6 +588,8 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       while ((match = STRING_LITERAL_RE.exec(lineText)) !== null) {
         const value = match[2];
         if (!this.isCandidate(value)) continue;
+        // #125 Gate 4 length floor: short high-entropy literals are too noisy.
+        if (value.length < 32) continue;
         if (!this.passesEntropyGate(value, lineText)) continue;
 
         const key = `${lineNum}:hardcoded-credential-entropy`;
@@ -457,16 +636,24 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
   }
 
   /**
-   * Shannon-entropy gate. Base64-shaped strings need higher entropy than
-   * hex-shaped (hex alphabet is 4 bits/char by construction). When the
-   * surrounding line contains a credential-shaped variable name, both
-   * thresholds drop by 0.2 bits/char.
+   * Shannon-entropy gate (#125 Gate 4 — REQUIRED field-name match).
+   *
+   * The entropy layer emits ONLY when the enclosing assignment LHS
+   * identifier matches a credential keyword (password / secret / token /
+   * api_key / etc.). Without this requirement, the layer flagged every
+   * high-entropy string — attribution keys, base64 resource blobs, public
+   * encoding alphabets — as credentials. Provider patterns (Layer 1) and
+   * named-credential matcher (Layer 1b) remain the recall safety net for
+   * credentials that don't fit the `FIELD = "..."` shape.
+   *
+   * Base64-shaped strings need higher entropy than hex-shaped (hex alphabet
+   * is 4 bits/char by construction).
    */
   private passesEntropyGate(value: string, lineText: string): boolean {
+    const fieldName = extractEnclosingFieldName(lineText);
+    if (fieldName === null || !CREDENTIAL_NAME_RE.test(fieldName)) return false;
     const isHex = HEXISH_RE.test(value);
-    const boost = CREDENTIAL_NAME_RE.test(lineText) ? 0.2 : 0;
-    const threshold = isHex ? (3.5 - boost) : (4.3 - boost);
-    const h = shannonEntropy(value);
-    return h >= threshold;
+    const threshold = isHex ? 3.3 : 4.1;
+    return shannonEntropy(value) >= threshold;
   }
 }

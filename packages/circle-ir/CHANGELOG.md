@@ -5,6 +5,114 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.85.0] - 2026-06-20
+
+Sprint 32 — fix **#125** (`hardcoded-credential-entropy` 96.3% FP rate on
+top-20 Java OSS harness). Single-issue release; entire fix confined to
+`scan-secrets-pass.ts`.
+
+### Fixed — #125 hardcoded-credential-entropy FP reduction (CWE-798)
+
+The pass-#90 entropy layer (`scan-secrets-pass.ts:Layer 2`) fired on any
+≥25-char base64-/hex-shape literal with Shannon entropy above threshold,
+with a -0.2 boost when any credential keyword appeared anywhere on the
+line. No AST context. No field-name precision. No generated-code
+suppression. No annotation/array-literal awareness. Harness exposed
+762/791 (96.3%) FPs across 5 distinct patterns:
+
+- ~530 — PlantUML `@Original(key="...")` graphviz-port attribution annotations
+- 110 — PlantUML `EmbeddedResources.java` base64 CSS blob string-concat
+- 24 — PlantUML `PSystemDonors.DONORS` obfuscated public-display string
+- 36 — hutool `SolarTerms.java` astronomical-data string array
+- 8 — hutool public-spec encoding alphabets (Base32/Base58 RFC 4648)
+
+`src/analysis/passes/scan-secrets-pass.ts`:
+
+- **Gate 1 — annotation-arg suppression** (`findAnnotationLineRanges`):
+  pre-scan file for `@Annotation(` (Java / TS / JS decorators / Python
+  decorators) and `#[...]` (Rust attributes), walk paren depth with
+  string-literal awareness, mark all 1-indexed line numbers in the span.
+  Entropy layer skips any line inside an annotation-arg span. Suppresses
+  pattern A (~530 FPs).
+
+- **Gate 2 — generated-file wholesale skip** (`isGeneratedFile`): mirror
+  of `isTestFile` early-exit. Path heuristic catches `gen/`, `generated/`,
+  `build/generated/`, `src/main/generated/`, `src/test/generated/`,
+  `target/generated-sources/`, `target/generated-test-sources/`,
+  `node_modules/.cache/`. Filename heuristic catches `*__c.java` /
+  `*__h.java` (graphviz/plantuml generated C ports), `*.pb.go` (protobuf),
+  `*_pb2.py` (Python protobuf), `*.generated.[cm]?[jt]sx?`. Skipped files
+  emit zero `hardcoded-credential` / `hardcoded-credential-entropy`
+  findings. Documented trade-off: real credentials accidentally committed
+  in generated paths are also suppressed (same precedent as test-file
+  skip).
+
+- **Gate 3 — string-array constant-table suppression**
+  (`findStringArrayLineRanges`): pre-scan for `=\s*[{\[]` assignment
+  opener, walk depth with string-literal awareness, count quoted strings
+  inside the span. If ≥3 string elements found, mark all enclosed line
+  numbers. Entropy layer skips any line inside an array span. Suppresses
+  pattern D (36 FPs).
+
+- **Gate 4 — field-name strengthening + length floor**
+  (`extractEnclosingFieldName` + rewritten `passesEntropyGate`): hard
+  requirement that the literal's enclosing assignment LHS identifier match
+  the credential-keyword regex (`password|secret|token|api[_-]?key|...`).
+  Without a credential field name match, the entropy gate returns `false`
+  regardless of entropy. Boost removed (redundant once name match is
+  required). Single threshold per shape: 3.3 hex, 4.1 base64. Literal
+  length floor raised from 8 (regex) to 32 (per-literal check in entropy
+  loop). Suppresses patterns B / C / E (142 FPs).
+
+**Recall is preserved** for the long tail of true positives via the two
+unaffected layers:
+
+- **Layer 1 (provider patterns)** — 16 high-confidence regexes (AWS AKIA,
+  GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`,
+  OpenAI `sk-`, Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`,
+  JWT `eyJ..eyJ..`, PEM private keys, npm `npm_`). Unconditional. Recall
+  test confirms AWS AKIA inside `@Schema(example = ...)` annotation arg
+  still fires.
+
+- **Layer 1b (named-credential matcher)** — `isLikelyCredentialAssignment`
+  catches custom credential field assignments (`DB_PASSWORD = "..."`,
+  `apiSecret: "..."`, etc.). Independent regex layer; unaffected by
+  entropy gates.
+
+### Tests
+
+`tests/analysis/passes/scan-secrets.test.ts` — added
+`describe('ScanSecretsPass — #125 context-gated entropy')` block with
+**10 new tests**: 7 negative locks (one per pattern A-E + 2 generated
+path/filename) + 3 recall locks (credential-named-field entropy still
+fires, AWS AKIA inside annotation still fires via Layer 1, Layer 1b
+named-credential still fires). All 49 scan-secrets tests pass; full suite
+**2662 pass | 1 skipped** (was 2652 / 1; +10 new, no regressions).
+
+### Risk notes
+
+- Gate 4 makes credential field name a **hard requirement** for the
+  entropy layer. Bare high-entropy strings without a credential-named LHS
+  no longer trigger via Layer 2. Provider patterns (Layer 1) are the
+  recall safety net for known credential shapes; named-credential matcher
+  (Layer 1b) catches the `FIELD = "..."` shape.
+- Generated-path wholesale skip — files matching the heuristics get zero
+  scan-secrets findings (provider patterns included). Matches the
+  pre-existing `isTestFile` precedent.
+- Perf — two new per-file pre-scans (annotation + array-literal
+  paren-walking). O(LOC) each. ≈1–3 ms / file. Full suite runtime
+  unchanged within noise (3.71s, was ~3.6s).
+
+### Out of scope (deferred)
+
+- `.gitattributes linguist-generated=true` — requires `fs`, violates
+  browser-compat charter.
+- AST-based annotation/array detection — would require passing the tree
+  to `ScanSecretsPass`; regex-only design preserved.
+- Cross-line credential string concat where the LHS itself contains a
+  credential keyword — only fires on the first line. Acceptable;
+  uncommon.
+
 ## [3.84.0] - 2026-06-19
 
 Sprint 31 — bundled FP-reduction for Python (**#114**) and Rust (**#115**)

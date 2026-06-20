@@ -394,3 +394,170 @@ describe('ScanSecretsPass — severity mapping', () => {
     expect(out[0].level).toBe('warning');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #125 — context-gated entropy (4-gate FP reduction)
+//
+// Top-20 Java OSS harness exposed 762/791 (96.3%) FPs on the entropy layer
+// across 5 distinct patterns (PlantUML annotations, base64 CSS blobs, public
+// display constants, hutool astronomical-data arrays, public encoding
+// alphabets). Sprint 32 added 4 context gates:
+//   Gate 1: annotation-arg suppression (@Annotation(...), #[derive(...)])
+//   Gate 2: generated-file wholesale skip (path + filename heuristics)
+//   Gate 3: string-array constant-table suppression (≥3 string literals in
+//           an enclosed `=\s*[{\[]` span)
+//   Gate 4: field-name strengthening (credential keyword required on LHS;
+//           literal length floor of 32 chars)
+// ---------------------------------------------------------------------------
+
+describe('ScanSecretsPass — #125 context-gated entropy', () => {
+  // High-entropy base64-shape literal, length 64 — well above gate's 32 floor
+  // and 4.1 threshold. Reused across negative tests below.
+  const HIGH_ENT = 'aZ8Q3pV7tR1xL5mN9wK2yP4uH6jB0sC1eD2fG3iJ4kM5lO6nQ7oR8tU9vW0xY1zS';
+
+  // -----------------------------------------------------------------------
+  // Negative locks — must NOT fire after the gates land
+  // -----------------------------------------------------------------------
+
+  it('pattern A: @Original(key="...") annotation arg → 0 entropy findings', () => {
+    // PlantUML graphviz-port attribution: ~530 of 762 harness FPs.
+    const code = [
+      `package net.sourceforge.plantuml.graphviz;`,
+      ``,
+      `public class FooPort {`,
+      `  @Original(key="${HIGH_ENT}")`,
+      `  public void foo() {}`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/FooPort.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(0);
+  });
+
+  it('pattern B: base64 CSS blob string-concat → 0 entropy findings', () => {
+    // PlantUML EmbeddedResources.java pattern: 110 of 762 harness FPs.
+    // No credential field name on LHS → Gate 4 alone is enough.
+    const code = [
+      `public class EmbeddedResources {`,
+      `  public static final String CSS_BLOB =`,
+      `    "${HIGH_ENT}" +`,
+      `    "${HIGH_ENT}" +`,
+      `    "${HIGH_ENT}";`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/EmbeddedResources.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(0);
+  });
+
+  it('pattern C: DONORS public-display string const → 0 entropy findings', () => {
+    // PlantUML PSystemDonors.DONORS pattern: 24 of 762 harness FPs.
+    const code = [
+      `public class PSystemDonors {`,
+      `  public static final String DONORS =`,
+      `    "${HIGH_ENT}" +`,
+      `    "${HIGH_ENT}";`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/PSystemDonors.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(0);
+  });
+
+  it('pattern D: SolarTerms astronomical-data array → 0 entropy findings', () => {
+    // hutool SolarTerms.java pattern: 36 of 762 harness FPs. Gate 3 catches
+    // this via the ≥3-string array opener.
+    const code = [
+      `public class SolarTerms {`,
+      `  public static final String[] solarTerms = {`,
+      `    "9778397bd097c36b0b6fc9274c91aa3b0bac",`,
+      `    "97b6b97bd19801ec9210c965cc920e97bcb0",`,
+      `    "97bd09801d98082c95f8c9761cc920f97bb0",`,
+      `    "97bd097c36b0b6fc9274c91aa3b0bac95f61",`,
+      `  };`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/SolarTerms.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(0);
+  });
+
+  it('pattern E: public Base32 alphabet → 0 entropy findings', () => {
+    // hutool DEFAULT_ALPHABET pattern: 8 of 762 harness FPs. RFC 4648
+    // Base32 alphabet — public spec, not a secret. No credential keyword on
+    // LHS, Gate 4 suppresses. (Length is exactly 32, ≥ floor.)
+    const code = [
+      `public class Base32 {`,
+      `  public static final String DEFAULT_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/Base32.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(0);
+  });
+
+  it('Gate 2: generated path (gen/) → 0 findings', () => {
+    // Wholesale skip — even provider patterns are suppressed inside
+    // generated paths (matches isTestFile precedent).
+    const code = `String key = "${HIGH_ENT}";`;
+    const out = runPass('src/main/java/gen/lib/foo.java', code, 'java');
+    expect(out).toHaveLength(0);
+  });
+
+  it('Gate 2: generated filename (__c.java) → 0 findings', () => {
+    // Wholesale skip — filename pattern from graphviz/plantuml
+    // generated-C-source naming convention.
+    const code = `String key = "${HIGH_ENT}";`;
+    const out = runPass('src/main/java/dtdisc__c.java', code, 'java');
+    expect(out).toHaveLength(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // Recall locks — true positives must STILL fire
+  // -----------------------------------------------------------------------
+
+  it('recall: credential-named field with high-entropy literal → 1 finding', () => {
+    // Field name matches CREDENTIAL_NAME_RE (`api_key`), literal length 64,
+    // base64-shape, high entropy. Gate 4 satisfied → entropy layer fires.
+    const code = [
+      `public class Cfg {`,
+      `  public static final String API_KEY = "${HIGH_ENT}";`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/Cfg.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(1);
+    expect(ent[0].severity).toBe('high');
+    expect(ent[0].level).toBe('warning');
+    expect(ent[0].cwe).toBe('CWE-798');
+  });
+
+  it('recall: AWS AKIA inside annotation arg still fires (Layer 1 unaffected by Gate 1)', () => {
+    // Gate 1 only suppresses the entropy layer. Provider patterns (Layer 1)
+    // are unconditional — known-shape AWS keys must still be reported even
+    // when embedded in a `@Schema(example = ...)` doc annotation.
+    const code = [
+      `public class UserDto {`,
+      `  @Schema(example = "AKIAIOSFODNN7EXAMPLE")`,
+      `  private String awsKey;`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/UserDto.java', code, 'java');
+    const provider = out.filter(f => f.rule_id === 'hardcoded-credential');
+    expect(provider).toHaveLength(1);
+    expect(provider[0].evidence?.provider).toBe('AWS access key');
+  });
+
+  it('recall: Layer 1b named-credential matcher unaffected by entropy gates', () => {
+    // `DB_PASSWORD = "..."` is the named-credential matcher in Layer 1b
+    // (not entropy). It uses its own credential-keyword regex on the LHS
+    // (requires prefix char + credential keyword, e.g. `DB_PASSWORD`) and
+    // emits `hardcoded-credential`, not `hardcoded-credential-entropy`.
+    // Must still fire — entropy gates don't touch Layer 1b.
+    const code = `DB_PASSWORD = "Pr0d-DB-pass!2024"`;
+    const out = runPass('app.py', code, 'python');
+    const named = out.filter(f => f.rule_id === 'hardcoded-credential');
+    expect(named.length).toBeGreaterThanOrEqual(1);
+    expect(named[0].evidence?.kind).toBe('named-credential');
+  });
+});
