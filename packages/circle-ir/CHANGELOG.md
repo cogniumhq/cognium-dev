@@ -5,6 +5,121 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.82.0] - 2026-06-19
+
+Sprint 29 — bundle fixes for **#113** (`external_taint_escape` over-fires on
+sanitized-input shapes) and **#86 remaining CWE coverage** (CWE-209
+info-disclosure / stack trace + CWE-434 unrestricted file upload). The other
+7 of 9 #86 gaps shipped earlier (CSRF #94, ReDoS, format-string, CRLF,
+mass-assignment, JWT-verify, XML-entity-expansion).
+
+### Fixed — #113 `external_taint_escape` (CWE-668) FP reduction
+
+`external_taint_escape` is synthesized at runtime as the Scenario-B fallback
+when an external value flows to a non-configured sink. Six sanitized-input
+shapes were over-firing because their guard/cast helpers did not declare
+`external_taint_escape` in their `removes:` set.
+
+Fix — `src/analysis/config-loader.ts` (`DEFAULT_SANITIZERS`):
+- Numeric casts (`parseInt` / `parseFloat` / `Number`) now also remove
+  `external_taint_escape`, `path_traversal`, `code_injection` — a numeric
+  cast cannot carry a string-injection payload.
+- `Math.min` / `Math.max` (bounds-clamp) now remove `external_taint_escape`
+  only — used as `Math.min(size, MAX_BYTES)` to bound a numeric value before
+  forwarding.
+- Allow-list / membership guards (`Array.prototype.includes`,
+  `Set.prototype.has`, `<collection>.contains`, `indexOf`) now remove
+  `external_taint_escape` only — a value tested against an allow-list before
+  being forwarded cannot escape unbounded. Real string-injection sinks still
+  rely on their own escaping.
+
+The remaining #113 shapes (regex-validator predicates such as
+`Pattern.matches(re, s)` / `re.match(re, s)` / `/re/.test(s)`, logger
+receiver expansion across SLF4J / pino / winston / slog / Python logging,
+and bounds-range checks `x >= 0 && x < len(buf)`) were already filtered by
+the existing `interprocedural-pass.ts` sanitizer block + `safeUtilityMethods`
+heuristic and verified via regression tests.
+
+### Added — pass #103 `info-disclosure-stacktrace` (CWE-209, security, warning)
+
+New file: `src/analysis/passes/info-disclosure-stacktrace-pass.ts`.
+
+Pattern-based; detects exception detail returned to a remote client via an
+HTTP response handle.
+
+Detection shapes:
+- **Java**: `e.printStackTrace(response.getWriter())` (receiver must look
+  like an exception variable, arg 0 must look like a response writer);
+  `response.getWriter().write(e.toString())` / `.println(e.getMessage())`.
+- **JS/TS**: `res.send(err.stack)` / `res.json({error: err.stack})` /
+  `res.json(err)` (whole error object). Chained `res.status(500).send(...)`
+  recognized via receiver-tail / `.status(`/`.set(`/`.header(`/`.cookie(`
+  intermediate-call match.
+- **Python**: line-scan for `return traceback.format_exc()` /
+  `return {"error": traceback.format_exc()}` / `jsonify(traceback.format_exc())`;
+  `return str(e)` / `return repr(e)` guarded by a ±8-line window containing
+  a `@app/router/blueprint.route|get|post|...` decorator (handler-context
+  marker).
+- **Go**: `http.Error(w, err.Error()+debug.Stack(), 500)`;
+  `fmt.Fprintln(w, err)` / `Fprintf` / `Fprint` where the first arg is a
+  response writer (`w`/`writer`/`resp`/`response`).
+
+Negative guards:
+- Logger receivers (`console`, `logger`, `log`, `slog`, `pino`, `winston`,
+  `sentry`) are suppressed — logging server-side is not a leak.
+
+Emits `{ rule_id: 'info-disclosure-stacktrace', cwe: 'CWE-209',
+severity: 'medium', level: 'warning' }`. Closes part of #86.
+
+### Added — pass #104 `unrestricted-file-upload` (CWE-434, security, error)
+
+New file: `src/analysis/passes/unrestricted-file-upload-pass.ts`.
+
+Pattern-based with a per-function safety-window heuristic; detects an
+HTTP-uploaded file being saved using its untrusted original name without an
+extension allow-list or filename canonicalization.
+
+Detection shapes:
+- **Java**: `MultipartFile.transferTo(new File(dir, file.getOriginalFilename()))`;
+  `Files.copy(part.getInputStream(), Path.of(dir, part.getSubmittedFileName()))`.
+- **JS/TS**: `multer({ dest: '...' })` with no `fileFilter` field in the
+  options object literal; `fs.writeFile(path, req.file.buffer)` /
+  `writeFileSync` / `appendFile`.
+- **Python**: `f.save(os.path.join(UPLOAD_DIR, f.filename))` (receiver
+  `f`/`file`/`upload`/`attachment` and an upload-name expression in args).
+- **Go**: `os.Create(header.Filename)` / `os.OpenFile(header.Filename)`;
+  `os.WriteFile` / `ioutil.WriteFile` with an upload-name expression.
+
+Per-function FP-guard: any function whose body contains a
+`secure_filename(...)`, `FilenameUtils.getExtension(...)`,
+`ALLOWED_EXT`/`ALLOWED_EXTENSIONS`/`allowedExtensions` reference, an inline
+`.lastIndexOf('.')` extension check, a `fileFilter` option, `path.extname`,
+or `filepath.Ext` is treated as safe — findings inside that function range
+are suppressed. When method-range information is unavailable, falls back to
+a ±20-line window around the call.
+
+Emits `{ rule_id: 'unrestricted-file-upload', cwe: 'CWE-434',
+severity: 'high', level: 'error' }`. Closes part of #86.
+
+### Changed — registration & docs
+
+- `src/analyzer.ts` registers the two new passes after `mass-assignment` in
+  the security pipeline. Both honor `disabledPasses`.
+- `docs/PASSES.md` adds rows #103 (`info-disclosure-stacktrace`) and #104
+  (`unrestricted-file-upload`), both `status = shipped`.
+
+### Tests
+
+- New regression file `tests/analysis/repro-sprint29.test.ts` (27 cases):
+  - 13 negative locks for #113 sanitized-input shapes (allow-list /
+    membership, bounds-clamp, regex validator, numeric cast, logger).
+  - 2 recall locks ensuring genuine unguarded escapes still emit
+    `external_taint_escape`.
+  - 3 must-fire + 2 negative locks for CWE-209.
+  - 3 must-fire + 2 negative locks for CWE-434.
+  - 2 earlier-sprint recall locks (weak-hash, hard-coded credential).
+- Full suite: **2634 passed / 1 skipped** (was 2607 in 3.81.0).
+
 ## [3.81.0] - 2026-06-19
 
 Sprint 28 — bundle fixes for **#110** (xss mistyping of non-XSS sinks) and

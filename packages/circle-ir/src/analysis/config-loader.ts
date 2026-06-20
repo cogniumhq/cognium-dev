@@ -2159,9 +2159,28 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'parse', class: 'JSON', removes: ['xss', 'code_injection'] },
 
   // Type coercion (removes string-based injections)
-  { method: 'parseInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'xss'] },
-  { method: 'parseFloat', removes: ['sql_injection', 'nosql_injection', 'command_injection'] },
-  { method: 'Number', removes: ['sql_injection', 'nosql_injection', 'command_injection'] },
+  // Sprint 29 (#113): include external_taint_escape — a numeric cast cannot
+  // carry an unvalidated string payload across a function boundary.
+  { method: 'parseInt', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'xss', 'external_taint_escape', 'path_traversal', 'code_injection'] },
+  { method: 'parseFloat', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection'] },
+  { method: 'Number', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'external_taint_escape', 'path_traversal', 'code_injection'] },
+
+  // Sprint 29 (#113): bounds-clamp Math.min / Math.max — when used to bound
+  // a numeric/size value (e.g. `Math.min(size, MAX_BYTES)`), the result is
+  // safely bounded and cannot resource-exhaust downstream. Only suppress
+  // external_taint_escape — these helpers do NOT sanitize string injection.
+  { method: 'min', class: 'Math', removes: ['external_taint_escape'] },
+  { method: 'max', class: 'Math', removes: ['external_taint_escape'] },
+
+  // Sprint 29 (#113): allow-list / membership guards — when an external value
+  // is tested against an allow-list (`ALLOWED.includes(x)`, `set.has(x)`,
+  // `list.contains(x)`) before being forwarded, it cannot escape unbounded.
+  // Only suppress `external_taint_escape`; real string-injection sinks should
+  // still rely on their own escaping.
+  { method: 'includes', removes: ['external_taint_escape'] },
+  { method: 'has', removes: ['external_taint_escape'] },
+  { method: 'contains', removes: ['external_taint_escape'] },
+  { method: 'indexOf', removes: ['external_taint_escape'] },
 
   // Path sanitization
   { method: 'basename', class: 'path', removes: ['path_traversal'] },

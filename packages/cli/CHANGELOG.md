@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.82.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.82.0 — Sprint 29 bundle closing **#113**
+  (`external_taint_escape` over-fires on sanitized-input shapes — numeric
+  casts, `Math.min`/`Math.max` bounds-clamps, and allow-list/membership
+  guards `Array.includes` / `Set.has` / `.contains` / `indexOf` now declare
+  `external_taint_escape` in their sanitizer `removes:` set) and the
+  remaining 2 of 9 **#86** CWE coverage gaps via two new security passes:
+  - **#103 `info-disclosure-stacktrace`** (CWE-209, warning) — exception
+    detail returned to a client via an HTTP response handle in Java
+    (`e.printStackTrace(response.getWriter())`), JS/TS (`res.send(err.stack)`,
+    `res.json(err)`), Python (`return traceback.format_exc()` in a Flask /
+    Django / FastAPI handler), Go (`http.Error(w, err.Error())`,
+    `fmt.Fprintln(w, err)`). Logger receivers (`console`/`logger`/`log`/
+    `slog`/`pino`/`winston`) are suppressed.
+  - **#104 `unrestricted-file-upload`** (CWE-434, error) — HTTP-uploaded
+    file saved with its untrusted original name (`getOriginalFilename`,
+    `originalname`, `.filename`, `header.Filename`) with no extension
+    allow-list or canonicalization. Per-function FP-guard suppresses
+    findings inside any function whose body contains a `secure_filename`,
+    `FilenameUtils.getExtension`, `ALLOWED_EXT`, `fileFilter`,
+    `path.extname`, or `filepath.Ext` reference.
+
 ## [3.81.0] - 2026-06-19
 
 ### Changed

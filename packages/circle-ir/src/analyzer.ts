@@ -139,6 +139,8 @@ import { WeakCryptoPass } from './analysis/passes/weak-crypto-pass.js';
 import { WeakRandomPass } from './analysis/passes/weak-random-pass.js';
 import { WeakPasswordHashPass } from './analysis/passes/weak-password-hash-pass.js';
 import { WeakPasswordEncodingPass } from './analysis/passes/weak-password-encoding-pass.js';
+import { InfoDisclosureStacktracePass } from './analysis/passes/info-disclosure-stacktrace-pass.js';
+import { UnrestrictedFileUploadPass } from './analysis/passes/unrestricted-file-upload-pass.js';
 import { PlaintextPasswordStoragePass } from './analysis/passes/plaintext-password-storage-pass.js';
 import { CleartextCredentialTransportPass } from './analysis/passes/cleartext-credential-transport-pass.js';
 import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
@@ -521,6 +523,8 @@ export async function analyze(
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
   if (!disabledPasses.has('mass-assignment'))       pipeline.add(new MassAssignmentPass());
+  if (!disabledPasses.has('info-disclosure-stacktrace')) pipeline.add(new InfoDisclosureStacktracePass());
+  if (!disabledPasses.has('unrestricted-file-upload')) pipeline.add(new UnrestrictedFileUploadPass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);
