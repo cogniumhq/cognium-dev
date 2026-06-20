@@ -967,6 +967,56 @@ function detectExpressionScanFlows(
           }
         }
       }
+
+      // cognium-dev #120: inherit sanitizer coverage through pure alias
+      // copies. The block above only credits coverage when the sanitizer
+      // call is on the assignment's RHS itself, so a one-hop indirection
+      //   leaf_r = os.path.basename(request.args.get("f", ""))
+      //   leaf   = leaf_r
+      //   os.open(os.path.join(BASE, leaf), ...)
+      // leaves `leaf` without `path_traversal` coverage and the
+      // suppression check at sink-emission time misses, producing an FP.
+      // Scan for pure `lhs = upstreamIdentifier` lines and propagate
+      // `aliasSanitizedFor[upstream]` into `aliasSanitizedFor[lhs]` to a
+      // fixpoint so chains of arbitrary length are handled.
+      //
+      // Soundness gate: the chain copy at line L only counts when it is
+      // the LATEST origin of `lhs` per `derived`. If `lhs` is reassigned
+      // to a fresh (unsanitized) source on a later line, `derived.get(lhs)`
+      // points past L and we MUST NOT inherit — otherwise re-tainting
+      // would be incorrectly suppressed.
+      const aliasChains: Array<{ lhs: string; upstream: string; line: number }> = [];
+      {
+        const codeLines2 = code.split('\n');
+        for (let i = 0; i < codeLines2.length; i++) {
+          const ln = codeLines2[i];
+          if (ln.trimStart().startsWith('#')) continue;
+          const m = ln.match(/^\s*([\p{L}\p{N}_]+)\s*=\s*([\p{L}\p{N}_]+)\s*$/u);
+          if (!m) continue;
+          const lineNum = i + 1;
+          const lhs = m[1];
+          // Only keep chains where the copy is the LATEST origin of `lhs`.
+          if (derived.get(lhs) !== lineNum) continue;
+          aliasChains.push({ lhs, upstream: m[2], line: lineNum });
+        }
+      }
+      if (aliasChains.length > 0) {
+        let changed = true;
+        let guard = 0;
+        while (changed && guard < aliasChains.length + 2) {
+          changed = false;
+          guard++;
+          for (const { lhs, upstream } of aliasChains) {
+            const upCov = aliasSanitizedFor.get(upstream);
+            if (!upCov || upCov.size === 0) continue;
+            let downCov = aliasSanitizedFor.get(lhs);
+            if (!downCov) { downCov = new Set<string>(); aliasSanitizedFor.set(lhs, downCov); }
+            for (const t of upCov) {
+              if (!downCov.has(t)) { downCov.add(t); changed = true; }
+            }
+          }
+        }
+      }
     }
   }
 

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.76.0] - 2026-06-19
+
+### Fixed — #120 Python sanitizer state dropped across intraprocedural alias hop
+
+False positive: the engine reported a `path_traversal` flow on the
+one-hop alias indirection
+
+```python
+leaf_r = os.path.basename(request.args.get("f", ""))
+leaf   = leaf_r
+os.open(os.path.join(BASE, leaf), os.O_WRONLY | os.O_CREAT, 0o600)
+```
+
+while the inline form (no alias hop)
+
+```python
+leaf = os.path.basename(request.args.get("f", ""))
+os.open(os.path.join(BASE, leaf), ...)
+```
+
+was correctly suppressed. The cognium-dev #65 pt2 alias-sanitizer-coverage
+map (`aliasSanitizedFor`) is keyed by variable name and only credits a
+variable when the sanitizer call appears on its own assignment line. A
+pure-alias copy line (`leaf = leaf_r`) carries no sanitizer call, so
+`leaf` got tainted but not credited, and the sink-emission suppression
+check at `taint-propagation-pass.ts:1070` missed.
+
+Fix in `src/analysis/passes/taint-propagation-pass.ts`
+(`detectExpressionScanFlows`): after the existing #65 pt2
+alias-sanitizer-coverage pass, scan for pure `lhs = upstreamIdentifier`
+copies and run a fixpoint that propagates
+`aliasSanitizedFor[upstream] -> aliasSanitizedFor[lhs]`. Chains of
+arbitrary length are handled (`a -> b -> c -> ...`). Soundness gate:
+the alias copy at line L only counts when it is the LATEST origin of
+`lhs` per `buildPythonTaintedVars`'s `derived` map — a later
+re-assignment to fresh (unsanitized) taint correctly invalidates the
+inherited coverage so genuine re-tainting flows are still emitted.
+
+Regression test: `tests/analysis/repro-issue-120.test.ts` (6 cases) —
+inline baseline lock, one-hop alias FP fix, two-hop chain FP fix,
+cross-sink-type validation (shlex.quote alias hop for command_injection),
+and two recall locks: unsanitized alias hop must still flag, and
+re-tainting after sanitized alias must still flag.
+
 ## [3.75.0] - 2026-06-19
 
 ### Fixed — Sprint 25 fast wins: cross-language FNs (#112, #111)
