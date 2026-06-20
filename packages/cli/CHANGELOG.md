@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.77.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.77.0 — **#121** `jwt-verify-disabled` Java branch
+  was firing on any `<receiver-containing-"parser">.parse(...)` call
+  (20 critical FPs across 12 popular Java OSS repos, zero TPs in the
+  same sample, three repos forced to BLOCKED trust score). Fix anchors
+  the receiver gate to the explicit `Jwts.parser()` JJWT chain. No CLI
+  changes — version bump only.
+
 ## [3.76.0] - 2026-06-19
 
 ### Changed

@@ -158,12 +158,24 @@ export class JwtVerifyDisabledPass
       }
       // jjwt 0.x: Jwts.parser()...parse(token) — unsafe (no signature check)
       // vs parseClaimsJws / parseSignedClaims which do verify.
-      if (method === 'parse' && receiver.includes('parser')) {
-        // Match shapes like `Jwts.parser().setSigningKey(k).parse(t)` where
-        // the receiver chain ends in `parser()` and `.parse()` is invoked.
-        // The exact receiver string emitted by the Java plugin varies; we
-        // match `parser()` substring in the receiver expression as a
-        // best-effort signal.
+      //
+      // cognium-dev #121: the original check `receiver.includes('parser')`
+      // was too loose — it matched any receiver containing the substring
+      // `parser`, including local variables literally named `parser`
+      // (parser-combinator code), classes whose name ends in `Parser`
+      // (ANTLR, FastDateParser, etc.), and any field/getter with the
+      // substring `parser`. Across a 12-repo sample of popular Java OSS
+      // this produced 20 critical-severity FPs with zero true positives.
+      //
+      // Anchor the match to the explicit JJWT chain `Jwts.parser(` so the
+      // rule only fires on receivers that syntactically reference the
+      // JJWT entry point. Handles:
+      //   - Jwts.parser().parse(t)
+      //   - Jwts.parser().setSigningKey(k).parse(t)
+      //   - io.jsonwebtoken.Jwts.parser().parse(t)  (fully-qualified)
+      //   - whitespace variants `Jwts . parser ( )`
+      // and rejects bare `parser.parse(...)`, `FooParser.parse(...)`, etc.
+      if (method === 'parse' && /\bJwts\s*\.\s*parser\s*\(/.test(receiver)) {
         out.push({ pattern: 'parse() instead of parseClaimsJws()', api: 'Jwts.parser().parse' });
       }
       return out;

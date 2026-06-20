@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.77.0] - 2026-06-19
+
+### Fixed — #121 `jwt-verify-disabled` Java branch over-broad parser match
+
+False positive: the Java branch of `jwt-verify-disabled-pass` fired on
+any `<receiver-containing-"parser">.parse(...)` call. Across a 12-repo
+sample of popular Java OSS this produced 20 critical-severity findings
+with **zero true positives**:
+
+- 7 in `palantir/conjure` (parser-combinator code, `parser: Parser<T>`)
+- 4 in `antlr/antlr4` (grammar parsers)
+- 4 in `chinabugotech/hutool` (`FastDateParser.parse`)
+- 2 in `OpenAPITools/openapi-generator` (markdown / completion command)
+- 1 each in `EsotericSoftware/yamlbeans`, `zxing/zxing`, `google/gson`
+
+The rule's `severity: critical` + `confidence: 1` drove three repos to
+BLOCKED trust score solely from this noise.
+
+Root cause: the receiver check `receiver.includes('parser')`
+(`jwt-verify-disabled-pass.ts:161`) matched any receiver containing the
+substring `parser` — local variables named `parser`, classes ending in
+`Parser`, fields/getters with `parser` anywhere in their name. The
+existing comment even called the heuristic "best-effort".
+
+Fix: anchor the gate to the explicit JJWT chain:
+
+```typescript
+if (method === 'parse' && /\bJwts\s*\.\s*parser\s*\(/.test(receiver)) { ... }
+```
+
+Handles all idiomatic JJWT 0.x shapes:
+
+- `Jwts.parser().parse(t)`
+- `Jwts.parser().setSigningKey(k).parse(t)`
+- `io.jsonwebtoken.Jwts.parser().parse(t)` (fully-qualified)
+- whitespace variants `Jwts . parser ( )`
+
+Rejects: bare `parser.parse(...)`, `FooParser.parse(...)`,
+`matcher.parser().parse(...)`, etc.
+
+Safe-form recall unchanged: `parseClaimsJws` / `parseSignedClaims` /
+`parserBuilder().build().parseClaimsJws()` (jjwt 0.11+) are not
+flagged because the `method === 'parse'` check excludes them.
+
+Regression test: `tests/analysis/repro-issue-121.test.ts` (8 cases) —
+3 FP locks (local-var `parser`, `FastDateParser`, ANTLR `.parser()`
+getter), 3 TP recall locks (chained builder, bare chain,
+fully-qualified), and 2 safe-form recall locks (`parseClaimsJws`,
+`parserBuilder().build().parseClaimsJws`).
+
 ## [3.76.0] - 2026-06-19
 
 ### Fixed — #120 Python sanitizer state dropped across intraprocedural alias hop
