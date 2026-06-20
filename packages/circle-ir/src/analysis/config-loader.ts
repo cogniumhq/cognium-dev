@@ -871,7 +871,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Class-less XSS patterns for cases where receiver type is inferred
   { method: 'println', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
   { method: 'print', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
-  { method: 'write', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
+  // NOTE: the unscoped { method: 'write', type: 'xss' } entry was removed in
+  // Sprint 28 (#110). It mistyped every non-XSS .write() across all languages
+  // (fs.writeFile, open().write, bcrypt callbacks, credential file writes,
+  // node ClientRequest.write, etc.) as xss. Real HTML writers are covered
+  // by class-scoped entries: PrintWriter.write (line 843), ServletOutputStream.write
+  // (line 849), JspWriter.write (xss.yaml), Response.write (nodejs.json).
   { method: 'append', class: 'StringBuilder', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
   { method: 'append', class: 'StringBuffer', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
   // Wiki/CMS XSS sinks (JSPWiki, Confluence, etc.)

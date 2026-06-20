@@ -418,13 +418,14 @@
     },
     {
       "method": "write",
+      "class": "ServletOutputStream",
       "type": "xss",
       "cwe": "CWE-79",
       "severity": "high",
       "arg_positions": [
         0
       ],
-      "note": "Auto-mined from CVE analysis"
+      "note": "Servlet response output stream — class-scoped (Sprint 28 #110)"
     },
     {
       "method": "newInstance",

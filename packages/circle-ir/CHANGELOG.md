@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.81.0] - 2026-06-19
+
+Sprint 28 — bundle fixes for **#110** (xss mistyping of non-XSS sinks) and
+**#109 remaining CWEs** (CWE-916 / CWE-256 / CWE-523 / CWE-261). CWE-260
+shipped in 3.80.0 (Sprint 26); CWE-257 already covered by `weak-crypto`
+(`hardcoded-key`).
+
+### Fixed — #110 xss mistyping of every non-XSS `.write()` call
+
+`configs/sinks/xss.yaml` lines 419–428 contained an unscoped
+`{ method: "write", type: "xss" }` entry with **no `class` field**. It
+matched any `.write()` call across all languages — `fs.writeFile(...)`,
+`open("creds.txt").write(...)`, `bcrypt.hash(pw, 12, cb)` (the callback
+shape produced a `r.write` look-alike), `https.request().write(body)`,
+and credential-write APIs — and tagged them all as `xss` (CWE-79). A
+mirror copy lived in `src/analysis/config-loader.ts:874`.
+
+Fix:
+- `configs/sinks/xss.yaml` — replace the unscoped entry with a
+  class-scoped `ServletOutputStream.write` entry. Legitimate HTML
+  writers were already class-scoped: `PrintWriter.write` (line 97),
+  `JspWriter.write` (line 184); Node `Response.write` is class-scoped
+  in `nodejs.json`.
+- `src/analysis/config-loader.ts:874` — delete the mirror unscoped
+  entry (kept `println` / `print` class-less entries — they are
+  legitimately ambiguous, and the receiver-name FP surface for those
+  two specific method names is narrower).
+
+### Added — `weak-password-hash` (CWE-916)
+
+New pattern pass. Detects fast/unsalted hash or low-cost KDF applied to
+a credential-named identifier. Languages: Python, JS/TS, Java, Go.
+
+Cost thresholds: bcrypt rounds < 10, PBKDF2 iterations < 100,000.
+
+### Added — `plaintext-password-storage` (CWE-256)
+
+New pattern pass. Detects writing a credential-named identifier to a
+persistent store (file, KV store, cookie, database) without first
+passing it through a cryptographic hash / KDF. Suppression is
+intraprocedural — walks calls earlier in the same `in_method` scope
+and skips when the identifier was hashed; also skips inline shapes
+like `f.write(bcrypt.hashpw(pw))`. Languages: Python, JS/TS, Java, Go.
+
+### Added — `cleartext-credential-transport` (CWE-523)
+
+New pattern pass. Detects HTTP requests to an `http://` URL whose body
+or params carry a credential-named identifier. URL allowlist for
+`localhost` / `127.0.0.1` / `0.0.0.0` (dev environments). Languages:
+Python (`requests` / `httpx` / `urllib`), JS/TS (`axios` / `fetch` /
+`http.request`), Go (`http.Post` / `http.NewRequest`).
+
+### Added — `weak-password-encoding` (CWE-261)
+
+New pattern pass. Detects base64 / hex encoding applied to a
+credential-named identifier — encoding is **not** encryption.
+FP-guard: skip when the surrounding source includes a `"Basic "`
+literal (HTTP Basic auth header construction). Languages: Python, JS/TS,
+Java, Go.
+
+### Added — shared `_credential-helpers.ts` module
+
+`src/analysis/passes/_credential-helpers.ts` — `CRED_KEYWORD_RE`,
+`isCredentialIdentifier`, `argLooksLikeCredential`, `stripQuotes`,
+`literalAt`, `isHashFunctionCall`, `priorHashOf`. Used by the four new
+passes to avoid duplicating the credential-keyword regex and hash-fn
+tables.
+
+### Tests
+
+- New: `tests/analysis/repro-sprint28.test.ts` (23 tests).
+- Full suite: 2607 pass / 1 skip (was 2584 pre-Sprint 28).
+
 ## [3.80.0] - 2026-06-19
 
 Sprint 26 — bundle fixes for three closing-out OWASP-relevance gaps:

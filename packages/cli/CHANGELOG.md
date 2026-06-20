@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.81.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.81.0 — Sprint 28 bundle closing **#110** (xss
+  mistyping of every non-XSS `.write()` call across all languages — root
+  cause was an unscoped `{ method: "write", type: "xss" }` entry in
+  `configs/sinks/xss.yaml` + its mirror in `config-loader.ts`) and the
+  remaining CWEs of **#109**: CWE-916 `weak-password-hash`, CWE-256
+  `plaintext-password-storage`, CWE-523 `cleartext-credential-transport`,
+  CWE-261 `weak-password-encoding`. Four new pattern passes, one shared
+  `_credential-helpers.ts` module, 23 new regression tests (full suite
+  2607 pass). See `packages/circle-ir/CHANGELOG.md` for the full
+  breakdown.
+
 ## [3.80.0] - 2026-06-19
 
 ### Changed
