@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.84.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.84.0 — Sprint 31 bundle closing **#114** (Python
+  safe-handler FPs) and **#115** (Rust safe-handler FPs). Five new
+  shape/guard recognizers across two languages:
+  - Python: `findPythonNetlocAllowlistGuardSanitizers` (Flask host
+    allow-list `if urlparse(t).netloc not in ALLOWED_HOSTS: return`) and
+    `findPythonRangeCheckGuardSanitizers` (numeric range guard
+    `if x < N or x > MAX: return`).
+  - Rust: `isSafeRustCommandCall` (literal non-shell `Command::new` with
+    chained `.arg`/`.args`/`.spawn`/`.output`),
+    `findRustCanonicalizeGuardSanitizers` (path guard
+    `if !p.canonicalize()?.starts_with(&ROOT) { return Err(...) }`), and
+    `findRustSetAllowlistGuardSanitizers` (HashSet/HashMap allow-list
+    guards).
+  - Closes parent **#102** — Go (3.82.0), Bash (3.82.0), Rust (3.84.0) all
+    have parallel safe-handler shape filters.
+  See `packages/circle-ir/CHANGELOG.md` for the full implementation
+  breakdown.
+
 ## [3.83.0] - 2026-06-19
 
 ### Changed

@@ -5,6 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.84.0] - 2026-06-19
+
+Sprint 31 — bundled FP-reduction for Python (**#114**) and Rust (**#115**)
+safe-handler shapes. Both issues are the same flavor of false positive: a
+guarded / shape-safe sink that the engine over-reported because the
+sanitizer didn't recognize the shape. Five new recognizers + dispatch wiring
+across two languages.
+
+### Fixed — #114 Python safe-handler FPs
+
+`src/analysis/passes/language-sources-pass.ts`:
+
+- **`findPythonNetlocAllowlistGuardSanitizers`** — recognizes
+  `if urlparse(target).netloc not in ALLOWED_HOSTS: return ...` (and the
+  generic `if <ident> not in <ALLOWLIST>:` shape). Allowlist name heuristic
+  matches `UPPER_SNAKE` constants or identifiers containing
+  `allowed|accepted|whitelist|permitted|valid|approved`. Body terminator
+  within 25 lines (`return`, `raise`, `abort(`, `sys.exit(`). Emits per-line
+  sanitizers for `open_redirect`, `ssrf`, `path_traversal`,
+  `external_taint_escape` from the guard's block-end through end of file.
+  Fixes `open_redirect` FP on Flask host allow-list guards.
+
+- **`findPythonRangeCheckGuardSanitizers`** — recognizes numeric range guards
+  `if x < N or x > MAX: return ...` (and `and` / single-bound forms) where
+  N and MAX are integer literals or `UPPER_SNAKE` constants. The bound
+  variable must repeat across both clauses (regex backreference). Emits
+  per-line sanitizers for `xss` and `external_taint_escape`. Phase-A repro
+  confirmed: `int()` strips xss on the cast itself, but downstream
+  `str(qty * N)` re-taints through arithmetic→string concat. This guard
+  closes the residual xss FP for the range-validated-int → concat shape.
+
+### Fixed — #115 Rust safe-handler FPs (carved from #102)
+
+`src/analysis/taint-matcher.ts`:
+
+- **`isSafeRustCommandCall`** — mirrors `isSafeGoExecCommandCall`. Suppresses
+  `command_injection` sinks when the Rust `Command` builder chain has a
+  literal non-shell program at `Command::new("...")`. Handles three shapes:
+  - Constructor: `Command::new(literal)` — arg[0] is the program.
+  - Chained methods: `.arg(x)`, `.args(slice)`, `.spawn()`, `.output()` —
+    receiver text scanned for `Command::new("literal")` anywhere in the
+    chain (Rust builder patterns can interleave any number of `.arg()`
+    calls between the constructor and the eventual sink method).
+  - Variable-bound receivers (`let cmd = Command::new(...); cmd.arg(...)`)
+    remain dangerous by default (binding tracking is out of scope; this
+    matches the engine's current Rust receiver-resolution gap).
+
+  Shell programs (`sh`, `bash`, `zsh`, `dash`, `ash`, `ksh`, `cmd`,
+  `powershell`, `pwsh` and `.exe` variants) keep the sink dangerous. Wired
+  into the dispatch site alongside the existing Go and Python safe-shape
+  filters. Also handles the class-less universal `spawn` rule
+  (`config-loader.ts:662`) so Rust `Command::new("git").arg(x).spawn()`
+  is suppressed at every sink layer.
+
+`src/analysis/passes/language-sources-pass.ts`:
+
+- **`findRustCanonicalizeGuardSanitizers`** — recognizes path guards
+  `if !<expr>.starts_with(<arg>) { return Err(...) }` (where `<expr>` may
+  include a chained `.canonicalize()?`). Body terminator within 25 lines
+  (`return`, `Err(`, `panic!(`, `HttpResponse::Forbidden/BadRequest/
+  Unauthorized/NotFound`). Brace-depth tracking finds the block end. Emits
+  per-line sanitizers for `path_traversal`, `xss`, `ssrf`,
+  `external_taint_escape` from block-end+2 through end of file.
+
+- **`findRustSetAllowlistGuardSanitizers`** — recognizes HashSet/HashMap
+  allow-list guards `if !<setName>.contains(&<ident>) { return ... }` (and
+  `.contains_key(&<ident>)` for HashMap). Same name heuristic as the
+  Python netloc guard. Emits per-line sanitizers for `ssrf`,
+  `open_redirect`, `command_injection`, `external_taint_escape`.
+
+- **Dispatch registration** (`runPass` language block) — added Python and
+  Rust additionalSanitizers blocks parallel to the existing Go and Bash
+  blocks.
+
+### Tests
+
+- `tests/analysis/repro-issue-114.test.ts` — 4 new tests
+  - 2 negative locks: netloc allow-list guard + int range-check guard
+  - 2 recall locks: substring-check redirect (NOT an allow-list) + unguarded
+    Flask string concat (sink-level lock, since Flask return-string flow
+    tracking is partial)
+- `tests/analysis/repro-issue-115.test.ts` — 7 new tests
+  - 4 negative locks: `Command::new("ls").args(&[x])`,
+    `Command::new("git").arg(x).arg(y)` chain, bare `Command::new("ls")`,
+    plus canonicalize + HashSet guard smoke tests
+  - 3 recall locks: tainted program literal, `sh -c` shell program,
+    unguarded `Command::new("sh").arg(x)` chain
+- Full suite: **2652 pass** / 1 skipped (was 2641; +11 new locks).
+- Typecheck + CLI build: clean.
+
+### Closes
+
+- **#114** — Python safe-handler FPs (netloc guard + int range-check).
+- **#115** — Rust safe-handler FPs (Command shape + canonicalize guard +
+  HashSet allow-list).
+- **#102** — parent issue: Go ✓ (3.82.0), Bash ✓ (3.82.0), Rust ✓ (this
+  release). All three languages now have parallel safe-handler shape
+  filters.
+
 ## [3.83.0] - 2026-06-19
 
 Sprint 30 — issue **#124** (Java sink-type mis-categorization). Five entries

@@ -620,6 +620,96 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
 }
 
 /**
+ * Check if a Rust `Command::new(...).arg(...).args(...).spawn().output()`
+ * chain is safe-by-shape: the program (bound at `Command::new("prog")`) is a
+ * string literal AND not a shell program. In that shape Rust invokes
+ * `execvp(program, argv)` directly without spawning a shell, so tainted argv
+ * elements passed via `.arg()` / `.args()` cannot escape into shell
+ * metacharacters.
+ *
+ * Cases:
+ *   Command::new("ls")                                  → safe (constructor, non-shell literal)
+ *   Command::new("ls").args(&[user_input])              → safe (chained, literal program)
+ *   Command::new("ls").arg(user_input).spawn()          → safe (chained, literal program)
+ *   Command::new("sh").arg("-c").arg(taintedCmd)        → unsafe (shell program)
+ *   Command::new(taintedProg)                           → unsafe (program itself tainted)
+ *   let cmd = Command::new("ls"); cmd.args(&[x]);       → unsafe-by-default
+ *                                                         (binding tracking out
+ *                                                         of scope; safe only
+ *                                                         via direct chain)
+ *
+ * Only suppresses when the program literal can be read DIRECTLY from the call
+ * or its receiver chain text — variable-bound receivers stay dangerous.
+ *
+ * cognium-dev #115 FP-21.
+ */
+function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+  if (language !== 'rust') return false;
+  if (pattern.type !== 'command_injection') return false;
+  // Two source rules emit Rust Command sinks (config-loader.ts):
+  //   (a) `{ method: 'arg'|'args'|'new'|'spawn'|'output', class: 'Command', ... }`
+  //       — the per-class rules (rust.json + L1798).
+  //   (b) `{ method: 'spawn', languages: [...'rust'], ... }` (L662) — a
+  //       class-less universal-spawn rule that fires for Rust too.
+  // Allow both shapes through to the per-method shape checks below.
+  if (pattern.class !== undefined && pattern.class !== 'Command') return false;
+
+  const SHELL_PROGRAMS = new Set([
+    'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
+    'cmd', 'cmd.exe', 'powershell', 'pwsh',
+    'powershell.exe', 'pwsh.exe',
+  ]);
+
+  // Extract a program literal from text containing `Command::new("...")`
+  // or `Command::new('...')` (anywhere in the receiver chain — Rust builder
+  // patterns can put any number of `.arg()` calls between the constructor
+  // and the eventual sink method).
+  // Returns the basename, or null if no literal.
+  const PROGRAM_RE = /\bCommand\s*::\s*new\s*\(\s*(?:r?"([^"]*)"|'([^']*)')/;
+  const extractProgram = (text: string): string | null => {
+    const m = PROGRAM_RE.exec(text);
+    if (!m) return null;
+    const lit = m[1] ?? m[2] ?? '';
+    return lit.split('/').pop() ?? lit;
+  };
+
+  if (pattern.method === 'new') {
+    // Constructor: arg[0] is the program. Check the literal directly.
+    const programArg = call.arguments.find(a => a.position === 0);
+    if (!programArg) return false;
+    let program: string;
+    if (programArg.literal !== null && programArg.literal !== undefined) {
+      program = String(programArg.literal).split('/').pop() ?? String(programArg.literal);
+    } else {
+      const expr = (programArg.expression ?? '').trim();
+      if (!(expr.startsWith('"') || expr.startsWith("'"))) {
+        return false;  // non-literal program — keep dangerous
+      }
+      const stripped = expr.slice(1, -1);
+      program = stripped.split('/').pop() ?? stripped;
+    }
+    return !SHELL_PROGRAMS.has(program);
+  }
+
+  if (
+    pattern.method === 'arg' ||
+    pattern.method === 'args' ||
+    pattern.method === 'spawn' ||
+    pattern.method === 'output'
+  ) {
+    // Chained call: receiver text should start with `Command::new("literal")`.
+    // If the receiver is a bare identifier (variable-bound), we cannot prove
+    // safety without binding tracking — keep dangerous.
+    const receiverText = call.receiver ?? '';
+    const program = extractProgram(receiverText);
+    if (program === null) return false;
+    return !SHELL_PROGRAMS.has(program);
+  }
+
+  return false;
+}
+
+/**
  * Match a Java class-literal expression: `Foo.class`, `com.example.Foo.class`,
  * `User<T>.class` (loose), `Foo[].class`. Does NOT match `Class.forName(...)`,
  * `getClass()`, locals, or any non-literal expression — those remain dangerous
@@ -678,6 +768,14 @@ function findSinks(
         // (sh/bash/zsh/etc.) while restoring fixed-argv precision.
         // cognium-dev #102 FP-25.
         if (isSafeGoExecCommandCall(call, pattern, language)) {
+          continue;
+        }
+
+        // Skip Rust Command::new("prog").arg/args/spawn/output calls in
+        // safe shape: program literal is a non-shell binary. Rust invokes
+        // execvp() directly so subsequent argv elements cannot escape into
+        // shell metacharacters. cognium-dev #115 FP-21.
+        if (isSafeRustCommandCall(call, pattern, language)) {
           continue;
         }
 

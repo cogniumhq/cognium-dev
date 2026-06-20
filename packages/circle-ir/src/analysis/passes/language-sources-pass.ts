@@ -240,6 +240,18 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findGoHtmlTemplateImportSanitizers(code));
     }
 
+    // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
+    if (language === 'python') {
+      additionalSanitizers.push(...findPythonNetlocAllowlistGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonRangeCheckGuardSanitizers(code));
+    }
+
+    // -- Rust: safe-handler sanitizer detectors (cognium-dev #115 Sprint 31) --
+    if (language === 'rust') {
+      additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
+      additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
+    }
+
     // Attach trimmed source-line text to each emitted source/sink so consumers
     // (LLM enrichment, SARIF reporters) can render the offending line without
     // re-reading the file.
@@ -1716,6 +1728,285 @@ function findGoHtmlTemplateImportSanitizers(code: string): TaintSanitizer[] {
       line: i + 1,
       sanitizes: ['xss', 'external_taint_escape', 'open_redirect'],
     });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Python netloc / membership allow-list guards (cognium-dev #114).
+ *
+ * Pattern recognized:
+ *
+ *   if host not in ALLOWED_HOSTS:
+ *       return "blocked", 400
+ *   # rest of function is safe for open_redirect / ssrf
+ *
+ * Body must contain a terminator (return/raise/abort/sys.exit) within
+ * 25 lines (mirrors the Go map-allowlist heuristic). Allow-list name
+ * must match UPPER_SNAKE or contain allowed|whitelist|... tokens.
+ *
+ * Emits per-line sanitizers from the next non-guard line through the end
+ * of file. Sink-line lookup is line-keyed so the safe branch is filtered.
+ */
+function findPythonNetlocAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if <ident> not in <ALLOWLIST>:` (handles both bare ident and
+  // `urlparse(x).netloc` LHS — only the RHS allow-list name is captured).
+  const guardOpen = /^(\s*)if\s+.+?\s+not\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*$/;
+  const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const guardIndent = m[1].length;
+    const allowName = m[2];
+    if (!allowlistName.test(allowName)) continue;
+
+    // Walk the indented body of the if-block (Python is whitespace-scoped).
+    // Body lines are those indented deeper than the guard; the block
+    // ends on the first line at <= guardIndent that is non-empty.
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    // Emit per-line sanitizers from the first line after the if-block
+    // through end of file. 1-indexed line numbers.
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'python_netloc_allowlist_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'open_redirect',
+          'ssrf',
+          'path_traversal',
+          'external_taint_escape',
+        ],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Python numeric range-check guards followed by use of the
+ * guarded variable (cognium-dev #114 defect 2).
+ *
+ * Pattern recognized:
+ *
+ *   qty = int(request.args.get("qty", "0"))
+ *   if qty < 1 or qty > MAX_QTY:
+ *       return "out of range", 400
+ *   ...use qty in arithmetic + str()...
+ *
+ * `int(...)` already strips xss in DEFAULT_SANITIZERS, but the
+ * sanitization is lost through arithmetic and str() concat. A numeric
+ * range-check guard on a tainted-but-cast int proves the value is a
+ * bounded integer; the resulting string-concat output cannot carry xss.
+ *
+ * Conservative shape: the comparison operands must be numeric literals
+ * or UPPER_SNAKE constants (e.g. MAX_QTY). The guard body must contain
+ * a terminator.
+ */
+function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if <ident> <op> <num|CONST> [or/and <ident> <op> <num|CONST>]?:`
+  // Matches single- and two-sided range checks. Identifier must repeat.
+  const rangeGuard = /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*(?:(?:or|and)\s+\2\s*[<>]=?\s*(?:\d+|-?\d+\.?\d*|[A-Z][A-Z0-9_]+)\s*)?:\s*$/;
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = rangeGuard.exec(lines[i]);
+    if (!m) continue;
+    const guardIndent = m[1].length;
+
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'python_range_check_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Rust HashSet/HashMap host allow-list guards (cognium-dev #115 FP-23).
+ *
+ * Pattern recognized:
+ *
+ *   if !ALLOWED.contains(&host) {
+ *       return Ok(HttpResponse::Forbidden().finish());
+ *   }
+ *
+ * Or `!allowed.contains_key(&host)` for HashMap. Set/map identifier must
+ * pass the allow-list name heuristic. Body must contain a terminator
+ * (return / Err( / panic!). Emits per-line sanitizers downstream.
+ */
+function findRustSetAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if !<setName>.(contains|contains_key)(<arg>) {`
+  const guardOpen = /^\s*if\s+!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(?:contains|contains_key)\s*\(/;
+  const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const terminator = /\b(return|Err\s*\(|panic!\s*\(|HttpResponse::(?:Forbidden|BadRequest|Unauthorized))/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const setName = m[1];
+    if (!allowlistName.test(setName)) continue;
+
+    // Find matching `}` via brace depth tracking.
+    let depth = 0;
+    // Count braces on guard line first to seed depth.
+    for (const ch of lines[i]) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+    if (depth <= 0) continue; // No opening brace on guard line, skip.
+
+    let closeLine = -1;
+    let bodyHasTerminator = false;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (terminator.test(line)) bodyHasTerminator = true;
+      for (const ch of line) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth === 0) {
+        closeLine = j;
+        break;
+      }
+    }
+    if (closeLine === -1 || !bodyHasTerminator) continue;
+
+    for (let l = closeLine + 2; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'rust_set_allowlist_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'ssrf',
+          'open_redirect',
+          'command_injection',
+          'external_taint_escape',
+        ],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Rust path-prefix guards using `canonicalize()` /
+ * `starts_with()` (cognium-dev #115 FP-22).
+ *
+ * Pattern recognized:
+ *
+ *   let canonical = base.join(name).canonicalize()?;
+ *   if !canonical.starts_with(&ROOT) {
+ *       return Err(...);
+ *   }
+ *   fs::read(canonical)  // safe — bound to ROOT
+ *
+ * Conservative: require an explicit `if !x.starts_with(&Y) { ... }` shape
+ * with a body terminator. The receiver `x` need not be named
+ * `canonical` — `.canonicalize()?.starts_with(...)` chains also match.
+ *
+ * Emits per-line sanitizers downstream of the guard close brace.
+ */
+function findRustCanonicalizeGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if !<expr>.starts_with(<arg>)` — match the negated prefix check.
+  // The expr may be a simple ident or a chain like `x.canonicalize()?`.
+  const guardOpen = /^\s*if\s+!\s*[A-Za-z_][\w?.()&]*\.starts_with\s*\(/;
+  const terminator = /\b(return|Err\s*\(|panic!\s*\(|HttpResponse::(?:Forbidden|BadRequest|Unauthorized|NotFound))/;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!guardOpen.test(lines[i])) continue;
+
+    let depth = 0;
+    for (const ch of lines[i]) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+    if (depth <= 0) continue;
+
+    let closeLine = -1;
+    let bodyHasTerminator = false;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (terminator.test(line)) bodyHasTerminator = true;
+      for (const ch of line) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth === 0) {
+        closeLine = j;
+        break;
+      }
+    }
+    if (closeLine === -1 || !bodyHasTerminator) continue;
+
+    for (let l = closeLine + 2; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'rust_canonicalize_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'path_traversal',
+          'xss',
+          'ssrf',
+          'external_taint_escape',
+        ],
+      });
+    }
   }
 
   return sanitizers;
