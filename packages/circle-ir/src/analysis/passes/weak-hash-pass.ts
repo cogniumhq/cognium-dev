@@ -30,6 +30,7 @@
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
+import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 
 const WEAK_HASH_NAMES = new Set([
   'md2', 'md4', 'md5',
@@ -44,6 +45,25 @@ const COMMONS_DIGEST_METHODS = new Set([
   // Apache Commons also has the misnamed `sha(...)` which is SHA-1
   'sha', 'shaHex',
 ]);
+
+// Apache Commons Codec DigestUtils — getter form returning MessageDigest.
+// Used in OWASP Java benchmark; method name encodes algorithm.
+// Example: `DigestUtils.getMd5Digest().digest(input)` (cognium-dev #119).
+const COMMONS_DIGEST_GETTERS: Record<string, string> = {
+  getMd2Digest: 'md2',
+  getMd5Digest: 'md5',
+  getSha1Digest: 'sha1',
+  getShaDigest: 'sha1',
+};
+
+// Apache Commons Codec — `MessageDigestAlgorithms.MD5` / `.SHA_1` constants.
+// When `MessageDigest.getInstance(arg)` receives one of these field references
+// as its argument, resolve to the corresponding algorithm name.
+const COMMONS_ALGO_CONSTANTS: Record<string, string> = {
+  'MessageDigestAlgorithms.MD2': 'md2',
+  'MessageDigestAlgorithms.MD5': 'md5',
+  'MessageDigestAlgorithms.SHA_1': 'sha1',
+};
 
 // Python hashlib direct constructors
 const PY_HASHLIB_WEAK = new Set(['md5', 'sha1', 'md4', 'md2', 'new']);
@@ -77,17 +97,112 @@ function literalAlgo(call: CallInfo, position: number): string | null {
   return cleaned || null;
 }
 
+/**
+ * Resolve the algorithm-name argument of a Java `getInstance(...)` call,
+ * preferring an inline literal but falling back to:
+ *   - `MessageDigestAlgorithms.MD5` / `.SHA_1` etc. (Apache Commons constants)
+ *   - constant-propagation result (`arg.variable` → bound string value)
+ *   - regex-scanned source bindings (`final String NAME = "MD5"` /
+ *     `static final String NAME = "MD5"` / `private String NAME = "MD5"`)
+ *
+ * Returns the lowercased algorithm name or null when unresolved.
+ * cognium-dev #119: OWASP Java benchmark FNs come from these shapes.
+ */
+function resolveJavaAlgo(
+  call: CallInfo,
+  position: number,
+  constProp: ConstantPropagatorResult | null,
+  javaBindings: Map<string, string>,
+): string | null {
+  const arg = call.arguments.find((a) => a.position === position);
+  if (!arg) return null;
+
+  // 1. Inline literal (existing behaviour)
+  if (arg.literal) {
+    const cleaned = stripQuotes(arg.literal).toLowerCase();
+    if (cleaned) return cleaned;
+  }
+  const expr = (arg.expression ?? '').trim();
+  if (expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'")) {
+    const cleaned = stripQuotes(expr).toLowerCase();
+    if (cleaned) return cleaned;
+  }
+
+  // 2. Apache Commons Codec algorithm constants
+  if (COMMONS_ALGO_CONSTANTS[expr]) return COMMONS_ALGO_CONSTANTS[expr];
+  // Also handle fully-qualified form: org.apache.commons.codec.digest.MessageDigestAlgorithms.MD5
+  const tail = expr.split('.').slice(-2).join('.');
+  if (COMMONS_ALGO_CONSTANTS[tail]) return COMMONS_ALGO_CONSTANTS[tail];
+
+  // 3. Variable resolved via constant propagation
+  if (arg.variable && constProp) {
+    const sym = constProp.symbols?.get(arg.variable);
+    if (sym && sym.type === 'string' && typeof sym.value === 'string') {
+      const cleaned = stripQuotes(sym.value).toLowerCase();
+      if (cleaned) return cleaned;
+    }
+  }
+
+  // 4. Regex-scanned source bindings (handles fields and locals the
+  //    Java constant-propagation pass does not yet track for hash-algo
+  //    strings).
+  if (arg.variable) {
+    const bound = javaBindings.get(arg.variable);
+    if (bound) {
+      const cleaned = stripQuotes(bound).toLowerCase();
+      if (cleaned) return cleaned;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * One-pass regex scan for Java string-literal bindings:
+ *   `[modifiers] String NAME = "literal";`
+ *
+ * Conservative — only inline string literals on the RHS are recognised.
+ * Modifiers (`public`, `private`, `static`, `final`, etc.) are skipped.
+ * Used as a fallback for the weak-hash pass when the algorithm argument
+ * is an identifier reference. (cognium-dev #119)
+ */
+function scanJavaStringBindings(code: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!code) return out;
+  // `[modifiers] String NAME = "MD5";` — modifiers are any combination
+  // of public/private/protected/static/final/volatile.
+  const re = /^[ \t]*(?:(?:public|private|protected|static|final|volatile)\s+){0,5}String\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*")\s*;/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    if (m[1] && m[2]) out.set(m[1], m[2]);
+  }
+  return out;
+}
+
 export class WeakHashPass implements AnalysisPass<WeakHashResult> {
   readonly name = 'weak-hash';
   readonly category = 'security' as const;
 
   run(ctx: PassContext): WeakHashResult {
-    const { graph, language } = ctx;
+    const { graph, language, code } = ctx;
     const file = graph.ir.meta.file;
     const findings: WeakHashResult['findings'] = [];
 
+    // Optional constant-propagation result for resolving variable
+    // algorithm names (e.g. `final String algo = "MD5";
+    // MessageDigest.getInstance(algo)`). cognium-dev #119.
+    const constProp = ctx.hasResult('constant-propagation')
+      ? ctx.getResult<ConstantPropagatorResult>('constant-propagation')
+      : null;
+
+    // Java-only: one-pass regex scan for `String NAME = "literal";` bindings
+    // as fallback when const-prop does not track the symbol.
+    const javaBindings = language === 'java'
+      ? scanJavaStringBindings(code)
+      : new Map<string, string>();
+
     for (const call of graph.ir.calls) {
-      const detection = this.detect(call, language);
+      const detection = this.detect(call, language, constProp, javaBindings);
       if (!detection) continue;
 
       const { algorithm, api } = detection;
@@ -119,7 +234,12 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     return { findings };
   }
 
-  private detect(call: CallInfo, language: string):
+  private detect(
+    call: CallInfo,
+    language: string,
+    constProp: ConstantPropagatorResult | null,
+    javaBindings: Map<string, string>,
+  ):
     | { algorithm: string; api: string }
     | null
   {
@@ -127,9 +247,9 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     const receiver = call.receiver ?? '';
 
     if (language === 'java') {
-      // MessageDigest.getInstance("MD5")
+      // MessageDigest.getInstance("MD5") — literal or resolved variable.
       if (method === 'getInstance' && (receiver === 'MessageDigest' || receiver.endsWith('.MessageDigest'))) {
-        const algo = literalAlgo(call, 0);
+        const algo = resolveJavaAlgo(call, 0, constProp, javaBindings);
         if (algo && WEAK_HASH_NAMES.has(algo)) {
           return { algorithm: algo, api: 'MessageDigest.getInstance' };
         }
@@ -139,6 +259,11 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
         const algoFromMethod = method.toLowerCase().replace(/hex$/, '');
         const normalized = algoFromMethod === 'sha' ? 'sha1' : algoFromMethod;
         return { algorithm: normalized, api: `DigestUtils.${method}` };
+      }
+      // Apache Commons Codec getter form — DigestUtils.getMd5Digest() /
+      // .getSha1Digest() / .getShaDigest(). cognium-dev #119.
+      if (COMMONS_DIGEST_GETTERS[method] && (receiver === 'DigestUtils' || receiver.endsWith('.DigestUtils'))) {
+        return { algorithm: COMMONS_DIGEST_GETTERS[method], api: `DigestUtils.${method}` };
       }
       return null;
     }

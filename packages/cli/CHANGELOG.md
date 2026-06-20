@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.78.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.78.0 — **#119** CWE-328 weak-hash Java recall
+  was 69% (89 TP / 40 FN) on OWASP Java benchmark v3.67.0. Fix adds
+  three resolution paths missing from the existing pass:
+  Apache Commons getter form (`DigestUtils.getMd5Digest()` /
+  `.getSha1Digest()` / `.getShaDigest()`), Apache Commons algorithm
+  constants (`MessageDigest.getInstance(MessageDigestAlgorithms.MD5)`),
+  and variable / field / final-local algorithm names resolved via
+  constant propagation with a regex-bound fallback for
+  `String NAME = "MD5";` declarations the const-prop pass does not
+  yet track. SHA-256 and dynamic-parameter cases remain unflagged.
+  No CLI changes — version bump only.
+
 ## [3.77.0] - 2026-06-19
 
 ### Changed

@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.78.0] - 2026-06-19
+
+### Fixed — #119 `weak-hash` (CWE-328) Java recall gaps
+
+OWASP Java benchmark v3.67.0 snapshot showed CWE-328 Weak Hash at
+**69% recall (89 TP / 40 FN, 100% precision)** — the 40 FNs were
+9% of all Java FNs in the run. The issue hypothesised the chained
+`MessageDigest.getInstance("MD5").digest(input)` shape was the
+miss (mirroring #112), but a fresh probe confirmed that shape
+already works. The actual gap is three other patterns:
+
+1. **Apache Commons getter form** — `DigestUtils.getMd5Digest()`,
+   `DigestUtils.getSha1Digest()`, `DigestUtils.getShaDigest()`. Not
+   covered by the existing `COMMONS_DIGEST_METHODS` set (which only
+   matched `md5Hex`/`sha1`/etc. compute-and-return-hash methods).
+2. **Apache Commons algorithm constants** —
+   `MessageDigest.getInstance(MessageDigestAlgorithms.MD5)`. The
+   existing literal-extraction pulled the identifier text `"MD5"`
+   off the field access (`MessageDigestAlgorithms.MD5`) but didn't
+   resolve it to the algorithm name.
+3. **Variable / field / final-local algorithm names** —
+   `final String algorithm = "MD5";
+   MessageDigest.getInstance(algorithm)` and the static-field
+   variant `private static final String ALGO = "MD5";`. Existing
+   code inspected only the raw literal at the call site.
+
+Fix (`weak-hash-pass.ts`):
+- Add `COMMONS_DIGEST_GETTERS` table mapping `getMd5Digest` →
+  `md5`, `getSha1Digest` → `sha1`, `getShaDigest` → `sha1`,
+  `getMd2Digest` → `md2`. Receiver check identical to the existing
+  `COMMONS_DIGEST_METHODS` branch (`DigestUtils` / `*.DigestUtils`).
+- Add `COMMONS_ALGO_CONSTANTS` table mapping the well-known
+  Apache Commons `MessageDigestAlgorithms.{MD2,MD5,SHA_1}` field
+  references (both short and fully-qualified forms) to the
+  algorithm name.
+- Add `resolveJavaAlgo()` that tries, in order: inline literal →
+  `COMMONS_ALGO_CONSTANTS` → constant-propagation `symbols.get` →
+  regex-scanned `String NAME = "literal";` bindings (the fallback
+  handles `static final String`, `final String`, `private String`,
+  etc. that the const-prop pass does not yet track for hash-algo
+  strings). Replaces the old `literalAlgo()` call inside the Java
+  `MessageDigest.getInstance(...)` branch.
+- Negative locks intact: SHA-256 inline + SHA-256 via local-final
+  + `DigestUtils.sha256Hex` + truly-dynamic algorithm parameter
+  remain unflagged.
+
+Regression suite: `tests/analysis/repro-issue-119.test.ts` —
+6 FN locks (Commons getter ×2, Commons constant, local final,
+static final, chained) + 2 recall locks (typed-local SHA-1,
+DigestUtils.md5Hex) + 4 negative locks (SHA-256 ×3, dynamic
+algorithm). 12/12 pass.
+
+Suite: 2558 pass, 1 skipped.
+
 ## [3.77.0] - 2026-06-19
 
 ### Fixed — #121 `jwt-verify-disabled` Java branch over-broad parser match
