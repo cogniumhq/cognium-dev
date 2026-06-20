@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.80.0] - 2026-06-19
+
+Sprint 26 — bundle fixes for three closing-out OWASP-relevance gaps:
+**#117** (CWE-501 Trust Boundary), **#118** (CWE-614 Insecure Cookie),
+**#109** (CWE-260/798 Hardcoded Credentials).
+
+### Fixed — #117 `trust_boundary` (CWE-501) under-fired on OWASP shape
+
+`HttpSession.setAttribute("k", taintedValue)` is the canonical CWE-501
+violation — untrusted data crosses into shared server-side state where
+downstream code reads it as if trusted. The sink config in
+`config-loader.ts` had `arg_positions: [0]`, which only flagged tainted
+keys (rare). OWASP/CWE-501 Benchmark cases taint the **value** (arg[1]);
+all 83 cases under-fired.
+
+Fix (`config-loader.ts`): change `setAttribute` / `putValue` patterns
+to `arg_positions: [0, 1]` so either arg trips the sink. Added
+`ServletContext.setAttribute` and `HttpServletRequest.setAttribute` so
+the request and application scopes get the same treatment as the
+session scope.
+
+### Fixed — #118 `insecure-cookie` (CWE-614) missed FQ constructor
+
+`insecure-cookie-pass.ts:detectJavaCookieCtor` matched only on
+`method_name === 'Cookie'` (unqualified `new Cookie(...)`). OWASP
+Benchmark uses the FQ form `new javax.servlet.http.Cookie(...)` without
+an import, producing `method_name === 'javax.servlet.http.Cookie'`,
+which the matcher skipped. Result: 0% recall on the OWASP set.
+
+Fix: accept `method.endsWith('.Cookie')` and FQ receiver_type tails
+(`'.Cookie'`).
+
+### Fixed — #109 `hardcoded-credential` (CWE-798) missed config constants
+
+`scan-secrets-pass.ts` had two detection layers: (1) provider-prefix
+regexes (AWS / GitHub / Slack / etc.) and (2) entropy-based base64 /
+hex / UUID shapes. Config-style constants like
+`DB_PASSWORD = "Pr0d-DB-pass!2024"` contain `!` and other characters
+that fail the base64/hex regexes — missed entirely across all four
+languages.
+
+Fix: add **Layer 1b** "named-credential assignment" detection. Flags
+any literal string assigned to an identifier whose name matches
+`/password|passwd|secret|api_key|auth_token|private_key|access_key/i`.
+Guards against three FP shapes:
+
+- function declarations (`function checkPassword(...)`)
+- string comparisons (`if (password === "expected")`)
+- dynamic values (`process.env`, `os.environ`, `os.Getenv`,
+  `System.getenv`, `${...}` template literals)
+- known placeholders (`<your-password-here>`, `REPLACE_ME`, `xxx`, etc.)
+
+Severity: `high`, CWE-798. Covers Java/Python/JavaScript/TypeScript/Go.
+
+### Deferred — #113 `external_taint_escape` over-fire
+
+Probes of the 12 shapes called out in the issue body did not reproduce
+the FP set as described. Mixed picture surfaces instead:
+
+- One *under-fire*: JS `process.env[key] = val` no longer emits an
+  `external_taint_escape` flow (regression somewhere between the
+  baseline and 3.79.0).
+- One *new FP*: Go email-regex early-return guard not recognised as a
+  sanitizer, producing `xss` on the post-guard `w.Write`.
+
+These are distinct concerns from the original #113 issue and have been
+documented for follow-up — issue left open with the probe findings.
+
 ## [3.79.0] - 2026-06-19
 
 ### Fixed — #116 `weak-crypto` (CWE-327) Java FP on `KeyGenerator.getInstance("AES")`

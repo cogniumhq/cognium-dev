@@ -159,13 +159,19 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
     hasSetSecureTrue: boolean,
     hasSetHttpOnlyTrue: boolean,
   ): InsecureCookieResult['insecureCookies'][number] | null {
-    // Java constructor: method_name === 'Cookie', receiver is null,
-    // receiver_type === 'Cookie' (set by the Java plugin). Some plugins
-    // also set call.is_constructor — accept any of the indicators.
-    if (call.method_name !== 'Cookie') return null;
+    // Java constructor: method_name === 'Cookie' for unqualified `new Cookie(...)`,
+    // or a fully-qualified form like `javax.servlet.http.Cookie` /
+    // `jakarta.servlet.http.Cookie` when the user writes
+    // `new javax.servlet.http.Cookie(...)` without the import. OWASP Java
+    // benchmark cases use the FQ shape exclusively (cognium-dev #118).
+    const method = call.method_name ?? '';
+    const isCookieCtor =
+      method === 'Cookie' ||
+      method.endsWith('.Cookie');
+    if (!isCookieCtor) return null;
     const looksLikeCtor =
       call.is_constructor ||
-      (!call.receiver && call.receiver_type === 'Cookie') ||
+      (!call.receiver && (call.receiver_type === 'Cookie' || (call.receiver_type ?? '').endsWith('.Cookie'))) ||
       (call.resolution?.target ?? '').endsWith('.<init>');
     if (!looksLikeCtor) return null;
     // Need at least (name, value).

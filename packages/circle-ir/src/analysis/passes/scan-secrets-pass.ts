@@ -162,6 +162,64 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Named-credential patterns (layer 1b)
+//
+// Catches config-style constant assignments where the LHS identifier carries
+// a credential keyword (PASSWORD / SECRET / TOKEN / API_KEY / PRIVATE_KEY /
+// ACCESS_KEY) and the RHS is a non-trivial string literal. Covers the cases
+// the provider-prefix layer misses (custom passwords like
+// "Pr0d-DB-pass!2024") and the entropy layer misses (low-entropy English /
+// punctuation-heavy values that fail the base64-ish / hex-ish gate).
+//
+// Cross-language: works on Python / JS / TS / Java / Go / Rust because it
+// operates on raw line text and only requires the LHS-keyword → `=`/`:` →
+// quoted-literal shape, which is shared across all six. The Bash detector
+// in language-sources-pass.ts already covers shell-syntax assignments.
+//
+// FP guards:
+//   - Skip placeholder values (changeme / your-key-here / etc).
+//   - Skip empty / single-char values.
+//   - Skip values that are obviously dynamic (env-var refs, function calls,
+//     concatenation, template-literal interpolation).
+//   - Skip lines that look like function / method declarations (parameter
+//     names with credential keywords are common: `func setPassword(pw string)`).
+//   - Skip lines that look like comparisons (`==`, `===`, `!=`).
+//
+// (cognium-dev #109 — CWE-260 hardcoded credential in config files.)
+// ---------------------------------------------------------------------------
+
+const CRED_KEYWORD_RE =
+  /\b([A-Za-z_$][\w$]*?(?:password|passwd|secret|api[_-]?key|auth[_-]?token|private[_-]?key|access[_-]?key)[\w$]*?)\s*[:=]\s*["'`]([^"'`\s$][^"'`\n]{2,})["'`]/i;
+
+const CRED_DYNAMIC_VALUE_RE = /\$\{|process\.env|os\.environ|os\.Getenv|System\.getenv/;
+const CRED_FUNCTION_DECL_RE = /\b(?:function|func|def|fn)\s+\w+\s*\(/;
+const CRED_COMPARISON_RE = /(?:===?|!==?|>=|<=|<>)\s*["'`]/;
+
+/** Variable / parameter / field declarations whose IDENTIFIER carries the credential keyword. */
+function isLikelyCredentialAssignment(line: string): { name: string; value: string } | null {
+  // Skip function declarations: `def login(password): ...`, `func auth(token string) {`
+  if (CRED_FUNCTION_DECL_RE.test(line)) return null;
+  // Skip equality comparisons that happen to involve a string literal.
+  if (CRED_COMPARISON_RE.test(line)) return null;
+
+  const m = line.match(CRED_KEYWORD_RE);
+  if (!m) return null;
+  const name = m[1];
+  const value = m[2];
+
+  // Reject placeholder / dynamic values (the entropy layer's denylist
+  // also catches these; duplicated here so this layer is self-contained).
+  if (PLACEHOLDER_RE.test(value)) return null;
+  if (CRED_DYNAMIC_VALUE_RE.test(value)) return null;
+  // Single-char / obviously-empty values.
+  if (value.length < 3) return null;
+  // Reject all-same-char (e.g. "xxx", "----").
+  if (isAllSameChar(value)) return null;
+
+  return { name, value };
+}
+
+// ---------------------------------------------------------------------------
 // Entropy patterns (layer 2)
 // ---------------------------------------------------------------------------
 
@@ -304,6 +362,39 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         // unrelated providers because patterns are prefix-anchored.
         break;
       }
+    }
+
+    // Layer 1b: named-credential constant assignments (config-style).
+    // Operates line-by-line on raw source text; cross-language by construction
+    // (PASSWORD/SECRET/TOKEN/API_KEY/PRIVATE_KEY/ACCESS_KEY identifier =
+    // quoted literal). FP guards in `isLikelyCredentialAssignment`.
+    for (let i = 0; i < lines.length; i++) {
+      const lineText = lines[i];
+      const lineNum = i + 1;
+
+      const hit = isLikelyCredentialAssignment(lineText);
+      if (!hit) continue;
+
+      const key = `${lineNum}:hardcoded-credential`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      ctx.addFinding({
+        id: `hardcoded-credential-${file}-${lineNum}`,
+        pass: this.name,
+        category: this.category,
+        rule_id: 'hardcoded-credential',
+        cwe: 'CWE-798',
+        severity: 'high',
+        level: 'error',
+        message: `Hardcoded credential: \`${hit.name}\` assigned a literal value`,
+        file,
+        line: lineNum,
+        snippet: lineText.trim().substring(0, 120),
+        fix: 'Move the credential to an environment variable or secrets manager; never commit live secrets to source control.',
+        evidence: { kind: 'named-credential', name: hit.name },
+      });
+      providerFindings += 1;
     }
 
     // Layer 2: Shannon-entropy scan on string literals.

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.80.0] - 2026-06-19
+
+### Changed
+
+- Tracks circle-ir 3.80.0 — Sprint 26 bundle closing **#117**
+  (CWE-501 Trust Boundary under-fire on OWASP shape), **#118**
+  (CWE-614 Insecure Cookie missed FQ `new javax.servlet.http.Cookie(...)`
+  constructor), and **#109** (CWE-260/798 Hardcoded Credentials missed
+  config-style constants like `DB_PASSWORD = "Pr0d-DB-pass!2024"`).
+  See `packages/circle-ir/CHANGELOG.md` for the full breakdown. **#113**
+  deferred — probes did not reproduce the issue body's FP set.
+
 ## [3.79.0] - 2026-06-19
 
 ### Changed

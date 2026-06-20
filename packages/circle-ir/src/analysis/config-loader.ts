@@ -1245,10 +1245,17 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // so they are NOT registered here as sinks (they could never match a "tainted
   // value flowing into a sink" because the bad value is a hard-coded constant).
 
-  // Trust Boundary (CWE-501) - using untrusted data as session attribute NAME
-  // The vulnerability is attacker controlling which key to use, not the value
-  { method: 'setAttribute', class: 'HttpSession', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0] },
-  { method: 'putValue', class: 'HttpSession', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0] },
+  // Trust Boundary (CWE-501) — tainted VALUE crossing into shared session
+  // state. OWASP/CWE-501 treats `session.setAttribute("k", taintedValue)` as
+  // the violation: untrusted data enters server-side state where downstream
+  // code reads it as if trusted. Both arg positions are flagged so either a
+  // tainted key (rare) or tainted value (the OWASP shape, 83 cases) trips
+  // the sink. (cognium-dev #117)
+  { method: 'setAttribute', class: 'HttpSession', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0, 1] },
+  { method: 'putValue', class: 'HttpSession', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0, 1] },
+  // ServletContext + request scopes — same trust-boundary semantics.
+  { method: 'setAttribute', class: 'ServletContext', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0, 1] },
+  { method: 'setAttribute', class: 'HttpServletRequest', type: 'trust_boundary', cwe: 'CWE-501', severity: 'low', arg_positions: [0, 1] },
 
   // Additional XSS patterns (JDOM/XML output)
   { method: 'outputElementContent', class: 'XMLOutputter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
