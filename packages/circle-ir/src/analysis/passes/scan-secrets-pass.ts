@@ -395,7 +395,10 @@ function findStringArrayLineRanges(code: string): Set<number> {
       let depth = 1;
       let li = i;
       let col = m.index + m[0].length;
-      let lineBudget = 500;
+      // #126 perf: tightened 500 → 100 as defense-in-depth. Any legitimate
+      // constant-table array fits well under 100 lines; pathological openers
+      // (unbalanced braces in generated/minified code) now bail faster.
+      let lineBudget = 100;
       const spanLines: number[] = [li + 1];
       let spanText = '';
       while (depth > 0 && li < lines.length && lineBudget > 0) {
@@ -462,6 +465,28 @@ const TEST_CALL_RE = /\b(?:expect|assert|describe|it|test)\s*\(/;
 const COMMENT_EXAMPLE_RE = /(?:\/\/|#)\s*(?:example|sample|test|fixture)/i;
 
 // ---------------------------------------------------------------------------
+// Cheap file-level entropy-candidate probe (#126 perf hotfix)
+//
+// 3.85.0 unconditionally ran the Gate 1 / Gate 3 span pre-scans on every
+// file (after the test/generated-path skip). On string-constant-heavy Java
+// repos (gson, Hystrix, openapi-generator) this caused 2.7×–17× slowdowns
+// and 30-min timeouts because annotation walking compounded with the
+// per-file cost while the entropy layer would never have fired anyway.
+//
+// FAST_CANDIDATE_PROBE_RE is a conservative pre-filter — it matches any
+// quoted run of ≥32 base64-shape chars (a strict superset of every shape
+// the entropy layer's `isCandidate()` accepts after the Gate 4 length
+// floor). If the probe fails, the file cannot contain a single entropy
+// candidate, so we skip the pre-scans AND the Layer 2 loop entirely.
+//
+// No recall loss: any literal that would have triggered the entropy layer
+// is guaranteed to also match this probe. Verified by the gate-set tests
+// in scan-secrets.test.ts.
+// ---------------------------------------------------------------------------
+
+const FAST_CANDIDATE_PROBE_RE = /["'`][A-Za-z0-9+/=_-]{32,}["'`]/;
+
+// ---------------------------------------------------------------------------
 // Pass implementation
 // ---------------------------------------------------------------------------
 
@@ -493,11 +518,25 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       }
     }
 
+    // #126 perf hotfix: cheap probe to decide whether the entropy layer can
+    // fire at all. If the file has zero ≥32-char base64-shape literals, the
+    // entropy layer cannot produce any finding, so we skip the expensive
+    // Gate 1 / Gate 3 span pre-scans AND the Layer 2 loop entirely.
+    //
+    // Provider patterns (Layer 1) and named-credential matcher (Layer 1b)
+    // are unaffected — they run unconditionally below.
+    const hasEntropyCandidate = FAST_CANDIDATE_PROBE_RE.test(ctx.code);
+
     // Pre-scan: line ranges to suppress in the entropy layer (#125 Gates 1 & 3).
     // Provider patterns and named-credential layers are intentionally NOT gated
     // by these — they retain full recall on real credential shapes.
-    const annotationLines = findAnnotationLineRanges(ctx.code);
-    const arrayLines = findStringArrayLineRanges(ctx.code);
+    // Only computed when the entropy layer has work to do.
+    const annotationLines: Set<number> = hasEntropyCandidate
+      ? findAnnotationLineRanges(ctx.code)
+      : new Set<number>();
+    const arrayLines: Set<number> = hasEntropyCandidate
+      ? findStringArrayLineRanges(ctx.code)
+      : new Set<number>();
 
     let providerFindings = 0;
     let entropyFindings = 0;
@@ -570,7 +609,8 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
     }
 
     // Layer 2: Shannon-entropy scan on string literals.
-    for (let i = 0; i < lines.length; i++) {
+    // #126 perf hotfix: short-circuit if the cheap probe found no candidate.
+    if (hasEntropyCandidate) for (let i = 0; i < lines.length; i++) {
       const lineText = lines[i];
       const lineNum = i + 1;
 

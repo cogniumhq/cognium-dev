@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.85.1] - 2026-06-20
+
+### Changed
+
+- Tracks circle-ir 3.85.1 — Sprint 33 P0 perf hotfix closing **#126**
+  (perf regression introduced by 3.85.0's Sprint 32 release). The two new
+  Gate 1 / Gate 3 file-level pre-scans (`findAnnotationLineRanges`,
+  `findStringArrayLineRanges`) ran unconditionally on every file. On
+  string-constant-heavy Java repos (gson 14.5×, Hystrix ≥17.7×,
+  openapi-generator ≥7.1×, hutool 2.66×), paren-/brace-walking dominated
+  runtime even when the entropy layer could not possibly fire.
+- Fast-path **`FAST_CANDIDATE_PROBE_RE`** (cheap regex matching any
+  quoted run of ≥32 base64-shape chars,
+  `[A-Za-z0-9+/=_-]{32,}`) short-circuits both pre-scans and the entire
+  Layer 2 loop when
+  the file contains zero ≥32-char base64-shape literals. Conservative
+  superset of every shape that would clear the Gate 4 length floor —
+  zero recall loss. Provider patterns (Layer 1) and named-credential
+  matcher (Layer 1b) are unaffected. Gate 3 walker `lineBudget` also
+  tightened 500 → 100 as defense-in-depth.
+- +2 regression tests (5000-line annotation-dense Java fixture: fast-path
+  & recall locks). Full circle-ir suite **2664 pass | 1 skipped** (was
+  2662 / 1). See `packages/circle-ir/CHANGELOG.md` for the full
+  implementation breakdown.
+
 ## [3.85.0] - 2026-06-20
 
 ### Changed

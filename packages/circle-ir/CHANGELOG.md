@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.85.1] - 2026-06-20
+
+Sprint 33 — P0 perf hotfix for **#126** (perf regression introduced by
+3.85.0). Single-issue patch release; entire fix confined to
+`scan-secrets-pass.ts`.
+
+### Fixed — #126 scan-secrets perf regression
+
+The 3.85.0 Sprint 32 release added two new file-level pre-scans
+(`findAnnotationLineRanges` for Gate 1, `findStringArrayLineRanges` for
+Gate 3) that ran **unconditionally on every file**. On string-constant-
+heavy Java repos with hundreds of `@Annotation(` / `=\s*[{\[]` openers,
+multi-line paren-/brace-walking dominated runtime even though the entropy
+layer could not possibly fire (file had no ≥32-char base64-shape literal).
+
+Reporter-measured top-25 Java OSS harness regression vs 3.84.0:
+
+| repo                | 3.84.0  | 3.85.0    | slowdown |
+|---------------------|---------|-----------|----------|
+| gson                | 49.6s   | 718.8s    | 14.5×    |
+| Hystrix             | 115.1s  | TIMEOUT   | ≥17.7×   |
+| openapi-generator   | 383.7s  | TIMEOUT   | ≥7.1×    |
+| hutool              | 637.9s  | 1695.2s   | 2.66×    |
+| zxing               | (none)  | (none)    | 1.0×     |
+
+`src/analysis/passes/scan-secrets-pass.ts`:
+
+- **Fast-path candidate probe** (`FAST_CANDIDATE_PROBE_RE`): cheap
+  per-file regex matching any `["'` / backtick] quoted run of ≥32
+  base64-shape chars (`[A-Za-z0-9+/=_-]{32,}`), conservatively detecting
+  whether the file could possibly contain a Layer
+  2 entropy candidate. The probe pattern is a strict superset of every
+  shape that the entropy layer would accept after the Gate 4 length floor
+  — no recall loss. When the probe fails, the pass skips **both**
+  pre-scans (`findAnnotationLineRanges`, `findStringArrayLineRanges`)
+  **and** the entire Layer 2 loop. Provider patterns (Layer 1) and
+  named-credential matcher (Layer 1b) remain unaffected.
+
+- **Gate 3 walker `lineBudget` tightened 500 → 100** as defense-in-depth.
+  Any legitimate constant-table array fits well under 100 lines;
+  pathological openers (unbalanced braces in generated/minified code) now
+  bail faster on the rare files where the fast-path doesn't already
+  short-circuit.
+
+### Tests — +2
+
+`tests/analysis/passes/scan-secrets.test.ts` —
+`describe('ScanSecretsPass — #126 perf hotfix (fast-path probe)')`:
+
+1. `processes a large annotation-dense Java file (5000 lines, no
+   candidates) fast` — fixture is 1000 method definitions, each with
+   `@RequestMapping(value=...)`, `@ResponseStatus(...)`,
+   `@Cacheable(cacheNames=..., key=...)` annotations. Asserts
+   `runPass(...).length === 0` and elapsed time **< 1000ms** (was many
+   seconds pre-hotfix).
+2. `still fires the entropy layer when a candidate is present in a large
+   file` — same fixture + injected `API_KEY = "<64-char-blob>"`. Asserts
+   exactly 1 `hardcoded-credential-entropy` finding emitted, confirming
+   the fast-path does **not** sacrifice recall.
+
+### Suite
+
+`npm test`: **2664 pass | 1 skipped** (was 2662 / 1; +2 perf tests).
+`npm run typecheck`: clean.
+
 ## [3.85.0] - 2026-06-20
 
 Sprint 32 — fix **#125** (`hardcoded-credential-entropy` 96.3% FP rate on

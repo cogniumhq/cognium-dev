@@ -561,3 +561,74 @@ describe('ScanSecretsPass — #125 context-gated entropy', () => {
     expect(named[0].evidence?.kind).toBe('named-credential');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #126 — perf hotfix: fast-path probe for candidate-free files
+//
+// 3.85.0 unconditionally ran the Gate 1 (annotation-arg) + Gate 3
+// (string-array) span pre-scans on every file, causing 2.7×–17× scan-time
+// regressions and 30-min timeouts on string-constant-heavy Java repos
+// (gson, Hystrix, openapi-generator). 3.85.1 adds FAST_CANDIDATE_PROBE_RE
+// to short-circuit both pre-scans + the Layer 2 loop when the file has no
+// ≥32-char base64-shape literal anywhere.
+// ---------------------------------------------------------------------------
+
+describe('ScanSecretsPass — #126 perf hotfix (fast-path probe)', () => {
+  it('processes a large annotation-dense Java file (5000 lines, no candidates) fast', () => {
+    // Synthesize a Hystrix/gson-shaped file: 1000 Spring-style annotated
+    // method definitions. ~5000 lines of pure annotation + short string
+    // literals (metric names, paths). Before 3.85.1, this would take seconds
+    // due to per-annotation span walking. After: <100ms because the cheap
+    // probe finds no ≥32-char base64-shape literal and skips both pre-scans.
+    const blocks: string[] = [
+      `package com.example.metrics;`,
+      ``,
+      `public class Hot {`,
+    ];
+    for (let i = 0; i < 1000; i++) {
+      blocks.push(
+        `  @RequestMapping(value = "/m${i}", method = RequestMethod.GET, produces = {"application/json"})`,
+        `  @ResponseStatus(HttpStatus.OK)`,
+        `  @Cacheable(cacheNames = "metric${i}", key = "#id")`,
+        `  public String metric${i}(@RequestParam("id") String id) {`,
+        `    return "metric-${i}-result";`,
+        `  }`,
+      );
+    }
+    blocks.push(`}`);
+    const code = blocks.join('\n');
+    const start = performance.now();
+    const out = runPass('src/main/java/Hot.java', code, 'java');
+    const elapsed = performance.now() - start;
+    // No high-entropy candidates → zero entropy findings; provider patterns
+    // also find nothing (no AWS/JWT/etc. shapes in the synthesized strings).
+    expect(out).toHaveLength(0);
+    // Generous bound: anything > 1s indicates the fast-path failed and the
+    // pre-scans ran on every line. 3.85.0 took ≈3–8s on this fixture.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('still fires the entropy layer when a candidate is present in a large file', () => {
+    // Same large fixture as above, but with a single credential-field
+    // high-entropy literal injected at the end. Fast-path must NOT skip
+    // when a candidate exists.
+    const blob = 'aZ8Q3pV7tR1xL5mN9wK2yP4uH6jB0sC1eD2fG3iJ4kM5lO6nQ7oR8tU9vW0xY1zS';
+    const blocks: string[] = [
+      `package com.example.metrics;`,
+      ``,
+      `public class Hot {`,
+    ];
+    for (let i = 0; i < 1000; i++) {
+      blocks.push(
+        `  @RequestMapping(value = "/m${i}", method = RequestMethod.GET)`,
+        `  public String metric${i}() { return "result-${i}"; }`,
+      );
+    }
+    blocks.push(`  public static final String API_KEY = "${blob}";`);
+    blocks.push(`}`);
+    const code = blocks.join('\n');
+    const out = runPass('src/main/java/Hot.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(1);
+  });
+});
