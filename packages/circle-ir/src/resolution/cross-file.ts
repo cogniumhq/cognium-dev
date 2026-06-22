@@ -10,6 +10,9 @@ import type {
   MethodInfo,
   CircleIR,
   TaintSource,
+  TaintSink,
+  DFGDef,
+  DFGUse,
 } from '../types/index.js';
 import { SymbolTable, type ExportedSymbol } from './symbol-table.js';
 import { TypeHierarchyResolver } from './type-hierarchy.js';
@@ -98,9 +101,126 @@ export interface FieldTaintInfo {
 }
 
 /**
+ * Per-file lookup index used inside the resolver hot loops.
+ *
+ * The pre-3.89.0 implementation re-ran linear `.filter()` scans on
+ * `ir.calls`, `ir.taint.sinks`, `ir.dfg.defs`, and `ir.dfg.uses` inside
+ * the O(F·T·M) nested walks of `findInterproceduralTaintPaths`,
+ * `findFieldBindingTaintPaths`, and `findCrossFileTaintFlows`. On large
+ * Java corpora (Sa-Token 895 files, langchain4j 1696 files) that pattern
+ * burned 5B+ filter ops and produced the #141 cross-file hang.
+ *
+ * Building this index once per file at first use collapses each O(N) filter
+ * to an O(1) Map lookup. Membership and ordering are byte-equivalent to the
+ * original filters (range buckets preserve sort-by-line order; per-line
+ * buckets preserve insertion order, which matches Array.filter semantics).
+ */
+export interface FileIndex {
+  /** Calls bucketed by `location.line`. Preserves original array order within each line. */
+  callsByLine: Map<number, CallInfo[]>;
+  /** DFG defs bucketed by `line`. Preserves original array order. */
+  defsByLine: Map<number, DFGDef[]>;
+  /** DFG uses bucketed by `line`. Preserves original array order. */
+  usesByLine: Map<number, DFGUse[]>;
+  /**
+   * Calls inside each method's `[start_line, end_line]` range, sorted by line ASC.
+   * Matches the pre-refactor `callerIR.calls.filter(...).sort(...)` output order.
+   */
+  callsByMethod: Map<MethodInfo, CallInfo[]>;
+  /**
+   * Sinks inside each method's `[start_line, end_line]` range, sorted by line ASC.
+   * Set-equivalent to the pre-refactor `callerIR.taint.sinks.filter(...)` output.
+   */
+  sinksByMethod: Map<MethodInfo, TaintSink[]>;
+  /**
+   * Defs inside each method's `[start_line, end_line]` range, sorted by line ASC.
+   * Set-equivalent to the pre-refactor `callerIR.dfg.defs.filter(...)` output.
+   */
+  defsByMethod: Map<MethodInfo, DFGDef[]>;
+}
+
+export function buildFileIndex(ir: CircleIR): FileIndex {
+  const callsByLine = new Map<number, CallInfo[]>();
+  for (const c of ir.calls) {
+    const ln = c.location.line;
+    let arr = callsByLine.get(ln);
+    if (!arr) { arr = []; callsByLine.set(ln, arr); }
+    arr.push(c);
+  }
+
+  const defsByLine = new Map<number, DFGDef[]>();
+  for (const d of ir.dfg.defs) {
+    let arr = defsByLine.get(d.line);
+    if (!arr) { arr = []; defsByLine.set(d.line, arr); }
+    arr.push(d);
+  }
+
+  const usesByLine = new Map<number, DFGUse[]>();
+  for (const u of ir.dfg.uses) {
+    let arr = usesByLine.get(u.line);
+    if (!arr) { arr = []; usesByLine.set(u.line, arr); }
+    arr.push(u);
+  }
+
+  // Sort once for efficient range slicing per method.
+  const callsSorted = [...ir.calls].sort((a, b) => a.location.line - b.location.line);
+  const sinksSorted = [...ir.taint.sinks].sort((a, b) => a.line - b.line);
+  const defsSorted = [...ir.dfg.defs].sort((a, b) => a.line - b.line);
+
+  const callsByMethod = new Map<MethodInfo, CallInfo[]>();
+  const sinksByMethod = new Map<MethodInfo, TaintSink[]>();
+  const defsByMethod = new Map<MethodInfo, DFGDef[]>();
+
+  for (const type of ir.types) {
+    for (const method of type.methods) {
+      const start = method.start_line;
+      const end = method.end_line;
+
+      const inCalls: CallInfo[] = [];
+      for (const c of callsSorted) {
+        const ln = c.location.line;
+        if (ln < start) continue;
+        if (ln > end) break;
+        inCalls.push(c);
+      }
+      callsByMethod.set(method, inCalls);
+
+      const inSinks: TaintSink[] = [];
+      for (const s of sinksSorted) {
+        if (s.line < start) continue;
+        if (s.line > end) break;
+        inSinks.push(s);
+      }
+      sinksByMethod.set(method, inSinks);
+
+      const inDefs: DFGDef[] = [];
+      for (const d of defsSorted) {
+        if (d.line < start) continue;
+        if (d.line > end) break;
+        inDefs.push(d);
+      }
+      defsByMethod.set(method, inDefs);
+    }
+  }
+
+  return { callsByLine, defsByLine, usesByLine, callsByMethod, sinksByMethod, defsByMethod };
+}
+
+/**
  * CrossFileResolver - Resolves calls and tracks taint across files
  */
 export class CrossFileResolver {
+  // -- pre-3.89.0 pre-index cache (see FileIndex above) --
+  private readonly fileIndexes: WeakMap<CircleIR, FileIndex> = new WeakMap();
+
+  private getFileIndex(ir: CircleIR): FileIndex {
+    let idx = this.fileIndexes.get(ir);
+    if (idx) return idx;
+    idx = buildFileIndex(ir);
+    this.fileIndexes.set(ir, idx);
+    return idx;
+  }
+
   private symbolTable: SymbolTable;
   private typeHierarchy: TypeHierarchyResolver;
 
@@ -764,7 +884,7 @@ export class CrossFileResolver {
           // `resolved.targetMethod` is a FQN like "ClassName.methodName"; we match on
           // the suffix after the last dot.
           const shortName = resolved.targetMethod.split('.').pop() ?? resolved.targetMethod;
-          let targetMethod: { start_line: number; end_line: number } | undefined;
+          let targetMethod: MethodInfo | undefined;
           for (const type of targetIR.types) {
             const m = type.methods.find(m => m.name === shortName);
             if (m) { targetMethod = m; break; }
@@ -774,9 +894,8 @@ export class CrossFileResolver {
           // Only emit a flow when at least one known sink falls inside the target method.
           // This means `targetLine` now correctly points to an actual dangerous operation
           // in the target file (not the caller's line in the source file).
-          const sinksInMethod = targetIR.taint.sinks.filter(
-            s => s.line >= targetMethod!.start_line && s.line <= targetMethod!.end_line,
-          );
+          const targetIdx = this.getFileIndex(targetIR);
+          const sinksInMethod = targetIdx.sinksByMethod.get(targetMethod) ?? [];
           if (sinksInMethod.length === 0) continue;
 
           for (const sink of sinksInMethod) {
@@ -836,6 +955,7 @@ export class CrossFileResolver {
     const methodIndex = this.buildMethodIndex();
 
     for (const [callerFile, callerIR] of this.fileIRs) {
+      const callerIdx = this.getFileIndex(callerIR);
       for (const type of callerIR.types) {
         for (const method of type.methods) {
           // 1. Seed tainted vars with real sources inside this method.
@@ -852,10 +972,8 @@ export class CrossFileResolver {
             });
           }
 
-          // 2. Walk calls in M in line order.
-          const callsInMethod = callerIR.calls
-            .filter(c => c.location.line >= method.start_line && c.location.line <= method.end_line)
-            .sort((a, b) => a.location.line - b.location.line);
+          // 2. Walk calls in M in line order (pre-indexed; sorted ASC).
+          const callsInMethod = callerIdx.callsByMethod.get(method) ?? [];
 
           for (const call of callsInMethod) {
             const resolved = this.resolveCall(call, callerFile);
@@ -875,9 +993,8 @@ export class CrossFileResolver {
               const sourceFile = callee.file;
               const sourceType = callee.sourceType;
 
-              const defsAtLine = callerIR.dfg.defs.filter(
-                d => d.line === call.location.line && d.kind === 'local',
-              );
+              const defsAtLine = (callerIdx.defsByLine.get(call.location.line) ?? [])
+                .filter(d => d.kind === 'local');
               for (const def of defsAtLine) {
                 if (!def.variable) continue;
                 const baseChain: InterproceduralTaintPath['hops'] = [
@@ -907,9 +1024,8 @@ export class CrossFileResolver {
               const calleeNode = methodIndex.get(resolved.targetMethod);
               if (!calleeNode) continue;
 
-              const sinksInCallee = calleeNode.ir.taint.sinks.filter(
-                s => s.line >= calleeNode.method.start_line && s.line <= calleeNode.method.end_line,
-              );
+              const calleeIdx = this.getFileIndex(calleeNode.ir);
+              const sinksInCallee = calleeIdx.sinksByMethod.get(calleeNode.method) ?? [];
 
               for (const sink of sinksInCallee) {
                 const key = `${matched.origin.file}:${matched.origin.line}→${callee.file}:${sink.line}`;
@@ -950,11 +1066,9 @@ export class CrossFileResolver {
           //     final sink (e.g. `Paths.get(p)`, `Runtime.exec(cmd)`) lives in the
           //     caller's file rather than in a cross-file callee.
           if (tainted.size > 0) {
-            const sinksInCaller = callerIR.taint.sinks.filter(
-              s => s.line >= method.start_line && s.line <= method.end_line,
-            );
+            const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
             for (const sink of sinksInCaller) {
-              const callsAtSink = callerIR.calls.filter(c => c.location.line === sink.line);
+              const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
               for (const sinkCall of callsAtSink) {
                 for (const arg of sinkCall.arguments ?? []) {
                   const matched = this.matchTaintedArg(arg, tainted);
@@ -1025,6 +1139,7 @@ export class CrossFileResolver {
     const methodIndex = this.buildMethodIndex();
 
     for (const [callerFile, callerIR] of this.fileIRs) {
+      const callerIdx = this.getFileIndex(callerIR);
       for (const type of callerIR.types) {
         const callerTypeFqn = callerIR.meta.package
           ? `${callerIR.meta.package}.${type.name}`
@@ -1058,16 +1173,12 @@ export class CrossFileResolver {
           //   - two uses at line L: a known receiver variable (param or
           //     containing-class field) AND a token matching a field on the
           //     receiver's declared type.
-          const defsInMethod = callerIR.dfg.defs.filter(
-            d =>
-              d.kind === 'local' &&
-              d.line >= method.start_line &&
-              d.line <= method.end_line &&
-              !!d.variable,
+          const defsInMethod = (callerIdx.defsByMethod.get(method) ?? []).filter(
+            d => d.kind === 'local' && !!d.variable,
           );
 
           for (const def of defsInMethod) {
-            const usesAtLine = callerIR.dfg.uses.filter(u => u.line === def.line);
+            const usesAtLine = callerIdx.usesByLine.get(def.line) ?? [];
             if (usesAtLine.length < 2) continue;
 
             // First pass: expression-based (preferred if available).
@@ -1170,11 +1281,9 @@ export class CrossFileResolver {
           if (tainted.size === 0) continue;
 
           // 3a. Caller-body sinks consuming a tainted local.
-          const sinksInCaller = callerIR.taint.sinks.filter(
-            s => s.line >= method.start_line && s.line <= method.end_line,
-          );
+          const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
           for (const sink of sinksInCaller) {
-            const callsAtSink = callerIR.calls.filter(c => c.location.line === sink.line);
+            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
             for (const sinkCall of callsAtSink) {
               for (const arg of sinkCall.arguments ?? []) {
                 const matched = this.matchTaintedArg(arg, tainted);
@@ -1208,9 +1317,7 @@ export class CrossFileResolver {
 
           // 3b. Cross-file callees: forward tainted locals into resolved
           //     callees whose taintedParams mark the arg as sink-propagating.
-          const callsInMethod = callerIR.calls
-            .filter(c => c.location.line >= method.start_line && c.location.line <= method.end_line)
-            .sort((a, b) => a.location.line - b.location.line);
+          const callsInMethod = callerIdx.callsByMethod.get(method) ?? [];
           for (const call of callsInMethod) {
             const resolved = this.resolveCall(call, callerFile);
             if (!resolved) continue;
@@ -1223,9 +1330,8 @@ export class CrossFileResolver {
               if (!matched) continue;
               const calleeNode = methodIndex.get(resolved.targetMethod);
               if (!calleeNode) continue;
-              const sinksInCallee = calleeNode.ir.taint.sinks.filter(
-                s => s.line >= calleeNode.method.start_line && s.line <= calleeNode.method.end_line,
-              );
+              const calleeIdx = this.getFileIndex(calleeNode.ir);
+              const sinksInCallee = calleeIdx.sinksByMethod.get(calleeNode.method) ?? [];
               for (const sink of sinksInCallee) {
                 const key = `fb:${matched.origin.file}:${matched.origin.line}→${callee.file}:${sink.line}`;
                 if (seen.has(key)) continue;

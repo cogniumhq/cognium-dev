@@ -755,6 +755,16 @@ export interface ProjectAnalysis {
   cross_file_calls: CrossFileCall[];
   taint_paths: TaintPath[];
   findings: Finding[];
+  /**
+   * Set to `true` when the cross-file phase exceeded its wall-time budget
+   * (see `AnalyzerOptions.crossFileBudgetMs`). When `true`, `taint_paths`
+   * may be incomplete — remaining inter-procedural / field-binding / aliasing
+   * sub-phases were skipped. Downstream consumers should not treat
+   * `taint_paths` as authoritative when this flag is set.
+   *
+   * Added in circle-ir 3.89.0 (mitigates #141 langchain4j hang).
+   */
+  cross_file_budget_exceeded?: boolean;
 }
 
 export interface FileAnalysis {

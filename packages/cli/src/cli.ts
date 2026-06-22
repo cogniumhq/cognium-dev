@@ -447,6 +447,9 @@ async function scanProject(
     crossFileData: {
       taintPaths: projectResult.taint_paths,
       crossFileCalls: projectResult.cross_file_calls,
+      // 3.89.0 (#141): forward the partial-result marker so formatters can
+      // warn the user and downstream tooling can treat the path list as a floor.
+      budgetExceeded: projectResult.cross_file_budget_exceeded === true,
     },
   };
 }

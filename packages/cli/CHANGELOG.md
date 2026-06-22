@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.89.0] - 2026-06-22
+
+### Changed
+
+- Tracks circle-ir 3.89.0 — Sprint 36 cross-file phase pre-indexing +
+  defensive budget breaker (#141). CLI now relies on the new analyzer
+  default `crossFileBudgetMs: 300_000` (5 min) for cross-file taint
+  resolution. On clean corpora the cross-file phase completes well under
+  the budget; on pathological corpora the breaker returns partial paths
+  rather than hanging the scan.
+
+### Added
+
+- `src/formatters.ts` — `CrossFileData.budgetExceeded?: boolean` field
+  propagated from `ProjectAnalysis.cross_file_budget_exceeded`.
+- Text output: yellow warning lines after the cross-file section when
+  `budgetExceeded === true`, advising the user that some cross-file
+  taint paths may be missing and pointing at the `crossFileBudgetMs`
+  analyzer option.
+- JSON output: top-level `cross_file_budget_exceeded` boolean and
+  `summary.crossFileBudgetExceeded` mirror of the same flag, so CI
+  pipelines and downstream consumers can detect partial results without
+  parsing log text.
+
 ## [3.88.0] - 2026-06-22
 
 ### Changed

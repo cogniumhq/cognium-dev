@@ -207,6 +207,23 @@ export interface AnalyzerOptions {
    * Passes to disable entirely. Use pass names (e.g., 'naming-convention').
    */
   disabledPasses?: string[];
+
+  /**
+   * Wall-time budget (ms) for the entire cross-file phase
+   * (`CrossFilePass.run()` — direct flows, interprocedural, field-binding,
+   * cross-instance aliasing). When exceeded, the remaining sub-phases are
+   * skipped, any taint paths produced so far are kept, and the resulting
+   * `ProjectAnalysis.cross_file_budget_exceeded` flag is set to `true`.
+   *
+   * - `0` disables the breaker (unlimited).
+   * - Omitting the field uses the default of `300_000` (5 minutes), chosen
+   *   to comfortably cover large monorepos (~2K files) at post-3.89.0
+   *   pre-index speeds while still catching pathological hangs.
+   * - Consumers operating in CI on >5K-file projects may want to bump this.
+   *
+   * Added in circle-ir 3.89.0 to mitigate #141 (langchain4j 30-min hang).
+   */
+  crossFileBudgetMs?: number;
 }
 
 /**
@@ -964,7 +981,13 @@ export async function analyzeProject(
   }
 
   // 2. Cross-file analysis
-  const crossFileResult = new CrossFilePass().run(projectGraph, sourceLinesByFile);
+  //    Apply default budget of 300s if not specified by caller. `0` disables.
+  const crossFileBudgetMs = options.crossFileBudgetMs ?? 300_000;
+  const crossFileResult = new CrossFilePass().run(
+    projectGraph,
+    sourceLinesByFile,
+    { budgetMs: crossFileBudgetMs },
+  );
 
   // 2.5 Cross-file security-header inheritance (CORS via virtual methods)
   const disabledPasses = options.disabledPasses ?? [];
@@ -1009,7 +1032,7 @@ export async function analyzeProject(
     analyzed_at:  new Date().toISOString(),
   };
 
-  return {
+  const projectAnalysis: ProjectAnalysis = {
     meta,
     files: fileAnalyses,
     type_hierarchy:  crossFileResult.typeHierarchy,
@@ -1017,6 +1040,10 @@ export async function analyzeProject(
     taint_paths:     crossFileResult.taintPaths,
     findings: [],
   };
+  if (crossFileResult.budgetExceeded) {
+    projectAnalysis.cross_file_budget_exceeded = true;
+  }
+  return projectAnalysis;
 }
 
 /** Derive a project name from the common root directory of the file paths. */

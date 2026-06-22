@@ -29,6 +29,14 @@ export interface ScanResult {
 export interface CrossFileData {
   taintPaths: TaintPath[];
   crossFileCalls: CrossFileCall[];
+  /**
+   * Set when the analyzer's cross-file budget (`crossFileBudgetMs`,
+   * default 300_000ms) was exceeded mid-phase in 3.89.0+ (#141). When
+   * `true`, `taintPaths` may be incomplete — formatters surface a warning
+   * line in text output and a JSON field so downstream tooling can detect
+   * partial results.
+   */
+  budgetExceeded?: boolean;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -442,6 +450,19 @@ export function formatResults(results: ScanResult[], verbose?: boolean, crossFil
     lines.push(formatCrossFilePaths(crossFileData.taintPaths));
   }
 
+  // 3.89.0 (#141): warn when the cross-file budget was hit. Partial taint
+  // paths are still emitted; downstream tooling should treat them as a
+  // floor, not an exhaustive list.
+  if (crossFileData?.budgetExceeded) {
+    lines.push('');
+    lines.push(colors.yellow(
+      '⚠ Cross-file budget exceeded — some cross-file taint paths may be missing.',
+    ));
+    lines.push(colors.yellow(
+      '  Raise the limit via the `crossFileBudgetMs` analyzer option (default 300000ms).',
+    ));
+  }
+
   return lines.join('\n');
 }
 
@@ -456,11 +477,15 @@ export function formatJSON(results: ScanResult[], crossFileData?: CrossFileData)
     })),
     cross_file_taint_paths: crossFileData?.taintPaths ?? [],
     cross_file_calls: crossFileData?.crossFileCalls ?? [],
+    // 3.89.0 (#141): partial-result marker for cross-file phase. `true` →
+    // budget exceeded mid-phase, paths above may be incomplete.
+    cross_file_budget_exceeded: crossFileData?.budgetExceeded ?? false,
     summary: {
       filesScanned: results.length,
       filesWithVulnerabilities: results.filter(r => r.vulnerabilities.length > 0).length,
       totalVulnerabilities: results.reduce((sum, r) => sum + r.vulnerabilities.length, 0),
       crossFileTaintPaths: crossFileData?.taintPaths.length ?? 0,
+      crossFileBudgetExceeded: crossFileData?.budgetExceeded ?? false,
       errors: results.filter(r => r.error).length,
     },
   };

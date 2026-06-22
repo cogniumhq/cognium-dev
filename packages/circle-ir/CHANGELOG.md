@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.89.0] - 2026-06-22
+
+cognium-dev #141 (Sprint 36) — cross-file phase perf + observability +
+defensive budget breaker. Resolves the langchain4j 30-min and Sa-Token
+35+ CPU-min hangs that previously SIGKILL'd the analyzer mid cross-file
+phase.
+
+### Performance
+
+- `src/resolution/cross-file.ts` — **pre-index resolver hot loops.** New
+  `FileIndex` (six per-file lookup maps: `callsByLine`, `defsByLine`,
+  `usesByLine`, `callsByMethod`, `sinksByMethod`, `defsByMethod`) is
+  built once per IR via `buildFileIndex(ir)` and memoized on a private
+  `WeakMap<CircleIR, FileIndex>` on the `CrossFileResolver` instance.
+  11 `Array.filter` scans inside `findCrossFileTaintFlows`,
+  `findInterproceduralTaintPaths`, and `findFieldBindingTaintPaths` are
+  replaced with O(1) Map lookups. Membership and ordering are
+  byte-equivalent to the pre-refactor filters (range buckets preserve
+  sort-by-line; per-line buckets preserve insertion order). On
+  `sa-token-core` (181 Java files) the entire cross-file phase now
+  completes in **27ms** wall (phase1=6ms, phase2=10ms, phase3=7ms,
+  phase4=1ms) vs prior 35+ CPU-min hang.
+
+### Observability
+
+- `src/analysis/passes/cross-file-pass.ts` — emit DI-logger markers
+  around each of the 4 cross-file phases: `cross-file: phase N/4 starting`
+  (debug) and `cross-file: phase N/4 done` (info, with `paths`/`flows` +
+  `elapsedMs`). Final `cross-file: complete` summary includes
+  `totalMs`, `paths`, `crossFileCalls`, and `budgetExceeded`. Browser-
+  safe (uses `Date.now()` and the existing `setLogger()` DI logger).
+
+### Defensive
+
+- `src/analysis/passes/cross-file-pass.ts` — new
+  `CrossFilePassOptions.budgetMs` with inter-phase circuit breaker.
+  Wall-time budget is checked between phases 1→2, 2→3, 3→4. On exceed:
+  remaining sub-phases are skipped, `taintPaths` from earlier phases are
+  preserved, a `warn`-level log is emitted, and
+  `CrossFilePassResult.budgetExceeded === true`. Mid-phase abort is
+  intentionally **not** supported in this release — phases are now
+  fast enough that inter-phase granularity suffices.
+- `src/analyzer.ts` — new `AnalyzerOptions.crossFileBudgetMs` threaded
+  into `CrossFilePass.run({ budgetMs })`. Default **300_000 ms** (5 min);
+  `0` disables the breaker.
+- `src/types/index.ts` — new optional `ProjectAnalysis.cross_file_budget_exceeded`
+  field surfaces the breaker state to downstream consumers.
+
+### Tests
+
+- `tests/analysis/file-index.test.ts` — **NEW** — 11 unit tests
+  covering the `buildFileIndex` semantics: empty IR, per-line bucketing
+  with insertion order, per-method range bounds (inclusive on both
+  ends), sort-by-line ordering inside method buckets, MethodInfo
+  identity-keyed lookup, nested/overlapping methods (shared call in
+  both buckets), and large-input invariant.
+- `tests/analysis/passes/cross-file-budget.test.ts` — **NEW** — 6 tests
+  for the circuit breaker: budget=0 unlimited, default unlimited via
+  empty options, breaker fires after phase 1 (phases 2/3 skipped,
+  partial paths preserved), breaker fires after phase 2 (phase 3
+  skipped), high budget does not trip, result schema invariants when
+  triggered. Uses a sync busy-wait to make timing deterministic.
+
+### Notes
+
+- **Parity:** 2778 pre-refactor resolver tests pass unchanged after the
+  pre-index — the existing suite serves as the parity lock. Total
+  now 2795 passing (1 skipped) across 161 test files.
+- **#141 may not be fully resolved** on the langchain4j harness. Pre-
+  indexing is a constant-factor win; if the corpus hits algorithmic
+  blowup on path *count*, the budget breaker catches it but doesn't fix
+  root cause. Re-run the harness and reopen as "mitigated" if needed.
+- **Backward compatibility:** `crossFileBudgetMs` defaults to 300_000ms,
+  which is a behavior change from the previous unbounded run.
+  Sub-5-minute cross-file phases on clean corpora are unaffected.
+  Users on very large monorepos may want to raise the limit.
+
 ## [3.88.1] - 2026-06-22
 
 cognium-dev #143 (PR A) — cross-file taint dedup now keys on

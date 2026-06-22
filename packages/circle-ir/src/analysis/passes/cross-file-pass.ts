@@ -22,6 +22,7 @@ import type {
 } from '../../types/index.js';
 import type { ProjectGraph } from '../../graph/project-graph.js';
 import type { InterproceduralTaintPath } from '../../resolution/cross-file.js';
+import { logger } from '../../utils/logger.js';
 
 export interface CrossFilePassResult {
   /** Inter-file method calls (source file → target file). */
@@ -30,6 +31,24 @@ export interface CrossFilePassResult {
   taintPaths: TaintPath[];
   /** Type hierarchy across all files. */
   typeHierarchy: TypeHierarchy;
+  /**
+   * Set when the cross-file budget (`options.budgetMs`) was exceeded
+   * mid-phase. When `true`, `taintPaths` may be incomplete — remaining
+   * sub-phases were skipped. Added in 3.89.0 (#141).
+   */
+  budgetExceeded?: boolean;
+}
+
+export interface CrossFilePassOptions {
+  /**
+   * Wall-time budget (ms) for the entire cross-file phase. `0` or `undefined`
+   * disables the breaker (unlimited). On exceed, partial `taintPaths` are
+   * kept, the remaining sub-phases are skipped, and `budgetExceeded` is set.
+   *
+   * Threaded from `AnalyzerOptions.crossFileBudgetMs` (default 300_000ms /
+   * 5 min) in 3.89.0 to mitigate #141 (langchain4j hang).
+   */
+  budgetMs?: number;
 }
 
 export class CrossFilePass {
@@ -37,11 +56,24 @@ export class CrossFilePass {
     projectGraph: ProjectGraph,
     /** Raw source lines per file (used to populate `code` fields in paths). */
     sourceLines: Map<string, string[]>,
+    options: CrossFilePassOptions = {},
   ): CrossFilePassResult {
     const resolver = projectGraph.resolver;
+    const budgetMs = options.budgetMs ?? 0;
+    const startMs = Date.now();
+    const budgetExceeded = (): boolean =>
+      budgetMs > 0 && Date.now() - startMs > budgetMs;
+    const fileCount = projectGraph.filePaths.length;
+    logger.info('cross-file: starting', { files: fileCount, budgetMs });
 
     // --- 1. Cross-file taint flows → TaintPath[] ----------------------------
+    const phase1Start = Date.now();
+    logger.debug('cross-file: phase 1/4 starting (findCrossFileTaintFlows)');
     const flows = resolver.findCrossFileTaintFlows();
+    logger.info('cross-file: phase 1/4 done', {
+      flows: flows.length,
+      elapsedMs: Date.now() - phase1Start,
+    });
     const taintPaths: TaintPath[] = flows.flatMap((flow, idx) => {
       const srcLines = sourceLines.get(flow.sourceFile) ?? [];
       const tgtLines = sourceLines.get(flow.targetFile) ?? [];
@@ -103,11 +135,58 @@ export class CrossFilePass {
     // class writes `this.field = param` in a `@DataBoundConstructor` and
     // another class reads that field on an aliased instance and forwards to
     // a sink.
-    const ipPaths = [
-      ...resolver.findInterproceduralTaintPaths(),
-      ...resolver.findFieldBindingTaintPaths(),
-      ...findCrossInstanceAliasingPaths(projectGraph, sourceLines),
-    ];
+    //
+    // Phases 2-4 are individually budget-gated so a pathological 3rd phase
+    // (e.g. quadratic aliasing on a large Java monorepo) cannot block
+    // delivery of phase-1/2 taint paths. See #141 / 3.89.0 CHANGELOG.
+    let exceeded = false;
+    const ipPaths: InterproceduralTaintPath[] = [];
+
+    if (budgetExceeded()) {
+      exceeded = true;
+      logger.warn('cross-file: budget exceeded after phase 1/4, skipping phases 2-4', {
+        budgetMs, elapsedMs: Date.now() - startMs, partialPaths: taintPaths.length,
+      });
+    } else {
+      const phase2Start = Date.now();
+      logger.debug('cross-file: phase 2/4 starting (findInterproceduralTaintPaths)');
+      const phase2 = resolver.findInterproceduralTaintPaths();
+      ipPaths.push(...phase2);
+      logger.info('cross-file: phase 2/4 done', {
+        paths: phase2.length, elapsedMs: Date.now() - phase2Start,
+      });
+    }
+
+    if (!exceeded && budgetExceeded()) {
+      exceeded = true;
+      logger.warn('cross-file: budget exceeded after phase 2/4, skipping phases 3-4', {
+        budgetMs, elapsedMs: Date.now() - startMs, partialPaths: taintPaths.length + ipPaths.length,
+      });
+    } else if (!exceeded) {
+      const phase3Start = Date.now();
+      logger.debug('cross-file: phase 3/4 starting (findFieldBindingTaintPaths)');
+      const phase3 = resolver.findFieldBindingTaintPaths();
+      ipPaths.push(...phase3);
+      logger.info('cross-file: phase 3/4 done', {
+        paths: phase3.length, elapsedMs: Date.now() - phase3Start,
+      });
+    }
+
+    if (!exceeded && budgetExceeded()) {
+      exceeded = true;
+      logger.warn('cross-file: budget exceeded after phase 3/4, skipping phase 4', {
+        budgetMs, elapsedMs: Date.now() - startMs, partialPaths: taintPaths.length + ipPaths.length,
+      });
+    } else if (!exceeded) {
+      const phase4Start = Date.now();
+      logger.debug('cross-file: phase 4/4 starting (findCrossInstanceAliasingPaths)');
+      const phase4 = findCrossInstanceAliasingPaths(projectGraph, sourceLines);
+      ipPaths.push(...phase4);
+      logger.info('cross-file: phase 4/4 done', {
+        paths: phase4.length, elapsedMs: Date.now() - phase4Start,
+      });
+    }
+
     for (let i = 0; i < ipPaths.length; i++) {
       const p = ipPaths[i];
       const sinkIR = projectGraph.getIR(p.sink.file);
@@ -198,7 +277,16 @@ export class CrossFilePass {
     // --- 3. Type hierarchy --------------------------------------------------
     const typeHierarchy: TypeHierarchy = projectGraph.typeHierarchy.toTypeHierarchyData();
 
-    return { crossFileCalls, taintPaths, typeHierarchy };
+    logger.info('cross-file: complete', {
+      totalMs: Date.now() - startMs,
+      paths: taintPaths.length,
+      crossFileCalls: crossFileCalls.length,
+      budgetExceeded: exceeded,
+    });
+
+    const result: CrossFilePassResult = { crossFileCalls, taintPaths, typeHierarchy };
+    if (exceeded) result.budgetExceeded = true;
+    return result;
   }
 }
 
