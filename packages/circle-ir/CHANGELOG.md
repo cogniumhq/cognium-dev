@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.87.0] - 2026-06-22
+
+Sprint 35 prep — small additive `Finding` schema fix unblocking #128
+triage. Pure additive; no behavior change to the analysis pipeline.
+
+### Added — #134 Finding schema gaps
+
+Two schema gaps surfaced during the cognium-ai-side #128 harness
+re-run on top-25 Java OSS: triage scripts could not directly attribute
+which findings originated from `interprocedural_param` sources because
+`source.type` was dropped at the `Finding` serialization boundary, and
+there was no canonical top-level `Finding.line` coordinate.
+
+`src/types/index.ts` — `Finding` interface:
+
+- New optional `source.type?: SourceType` (engine-internal taint-source
+  classification — `'http_param'`, `'interprocedural_param'`,
+  `'env_input'`, etc.). Optional for back-compat with consumers that
+  construct `Finding` objects outside `generateFindings()`.
+- New optional `sink.type?: SinkType` for `source`/`sink` parity.
+  Always mirrors the existing top-level `Finding.type`.
+- New required `line: number` — canonical "go-to-line" coordinate.
+  Mirrors `sink.line` for taint findings. Standardises the previously
+  inconsistent `source.line` / `sink.line` fallback chain used by
+  renderers.
+
+`src/analysis/findings.ts::generateFindings()` populates all three
+fields from the existing `TaintSource.type` / `TaintSink.type` /
+`sink.line`. No new computation, no API surface change beyond the
+optional `source.type` / `sink.type` additions and the required `line`.
+
+### Tests
+
+- Extended `tests/analysis/findings.test.ts` with 4 new tests under
+  `Finding schema — #134` describe block: source.type populated, sink.type
+  mirrors top-level type, line mirrors sink.line, interprocedural_param
+  sources are now visible to triage filters (the #128 use case).
+
+Suite: 2692 pass / 1 skipped (was 2688 + 4).
+
+### Why this ships before #128
+
+With `source.type` exposed, downstream triage and the cognium-ai-side
+`runMerge` gate can directly attribute drops to
+`source.type === 'interprocedural_param'`, instead of inferring from
+file/line co-occurrence. Lands the dispositive schema field before
+Sprint 35's upstream entry-point gate work begins.
+
 ## [3.86.0] - 2026-06-21
 
 Sprint 34 — Java OSS top-25 FP cluster cleanup. Two independent

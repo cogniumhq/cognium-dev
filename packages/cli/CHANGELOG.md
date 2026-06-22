@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.87.0] - 2026-06-22
+
+### Changed
+
+- Tracks circle-ir 3.87.0 — Sprint 35 prep additive `Finding` schema
+  fix (#134). `Finding.source.type` and `Finding.sink.type` now expose
+  the engine-internal taint classifications (e.g.
+  `'interprocedural_param'`, `'sql_injection'`), and `Finding.line`
+  becomes a canonical top-level "go-to-line" coordinate mirroring
+  `sink.line`. Unblocks #128 triage by letting downstream consumers
+  filter by source kind directly. CLI surface unchanged; bump dep
+  `circle-ir@^3.87.0`.
+
 ## [3.86.0] - 2026-06-21
 
 ### Changed

@@ -58,12 +58,17 @@ export function generateFindings(
           cwe: sink.cwe,
           severity,
           confidence,
+          // #134: canonical "go-to-line" coordinate. For taint findings
+          // this is the sink line (primary actionable location).
+          line: sink.line,
           source: {
+            type: source.type,
             file: fileName,
             line: source.line,
             code: source.location,
           },
           sink: {
+            type: sink.type,
             file: fileName,
             line: sink.line,
             code: sink.location,

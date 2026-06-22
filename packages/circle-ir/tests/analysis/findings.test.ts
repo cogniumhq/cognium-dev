@@ -704,3 +704,117 @@ public class Unconnected {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #134 — schema gap fixes: source.type / sink.type / top-level line
+// ---------------------------------------------------------------------------
+
+describe('Finding schema — #134 source.type + sink.type + finding.line', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('populates source.type from TaintSource on every finding', async () => {
+    const code = `
+public class Q1 {
+    public void search(HttpServletRequest request, Statement stmt) {
+        String q = request.getParameter("q");
+        stmt.executeQuery("SELECT * FROM t WHERE n = '" + q + "'");
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const types = extractTypes(tree);
+    const calls = extractCalls(tree);
+    const dfg = buildDFG(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const findings = generateFindings(taint.sources, taint.sinks, dfg, 'Q1.java');
+    expect(findings.length).toBeGreaterThan(0);
+
+    // request.getParameter is an http_param source; the sink is SQL.
+    const sqlFinding = findings.find((f) => f.type === 'sql_injection');
+    expect(sqlFinding).toBeDefined();
+    expect(sqlFinding!.source.type).toBeDefined();
+    expect(typeof sqlFinding!.source.type).toBe('string');
+  });
+
+  it('populates sink.type matching the top-level finding.type', async () => {
+    const code = `
+public class Q2 {
+    public void run(HttpServletRequest request, Runtime r) {
+        String cmd = request.getParameter("cmd");
+        r.exec(cmd);
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const types = extractTypes(tree);
+    const calls = extractCalls(tree);
+    const dfg = buildDFG(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const findings = generateFindings(taint.sources, taint.sinks, dfg, 'Q2.java');
+    expect(findings.length).toBeGreaterThan(0);
+
+    for (const f of findings) {
+      // sink.type is the canonical sink classification; must always match
+      // the top-level `Finding.type` (kept in sync at emission time).
+      expect(f.sink.type).toBe(f.type);
+    }
+  });
+
+  it('populates top-level line, mirrors sink.line', async () => {
+    const code = `
+public class Q3 {
+    public void handle(HttpServletRequest request, Statement stmt) {
+        String id = request.getParameter("id");
+        stmt.executeQuery("SELECT * FROM t WHERE id = " + id);
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const types = extractTypes(tree);
+    const calls = extractCalls(tree);
+    const dfg = buildDFG(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const findings = generateFindings(taint.sources, taint.sinks, dfg, 'Q3.java');
+    expect(findings.length).toBeGreaterThan(0);
+
+    for (const f of findings) {
+      expect(typeof f.line).toBe('number');
+      expect(f.line).toBeGreaterThan(0);
+      expect(f.line).toBe(f.sink.line);
+    }
+  });
+
+  it('exposes interprocedural_param sources on triage path (the #128 use case)', async () => {
+    // Bare public method with a typed parameter — taint-matcher emits an
+    // `interprocedural_param` source on every such param. This is the
+    // signal #134 needs exposed so downstream triage can filter on it.
+    const code = `
+public class Q4 {
+    public void compute(String key, Statement stmt) {
+        stmt.executeQuery("SELECT * FROM t WHERE k = '" + key + "'");
+    }
+}
+`;
+    const tree = await parse(code, 'java');
+    const types = extractTypes(tree);
+    const calls = extractCalls(tree);
+    const dfg = buildDFG(tree);
+    const taint = analyzeTaint(calls, types);
+
+    const interproc = taint.sources.find((s) => s.type === 'interprocedural_param');
+    expect(interproc).toBeDefined();
+
+    const findings = generateFindings(taint.sources, taint.sinks, dfg, 'Q4.java');
+    const interprocFindings = findings.filter(
+      (f) => f.source.type === 'interprocedural_param',
+    );
+    // The whole point of #134 — without source.type, the consumer cannot
+    // identify which findings originated from interprocedural_param sources.
+    expect(interprocFindings.length).toBeGreaterThan(0);
+  });
+});

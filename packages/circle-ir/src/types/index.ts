@@ -609,12 +609,35 @@ export interface Finding {
   cwe: string;
   severity: Severity;
   confidence: number;
+  /**
+   * Canonical "go-to-line" coordinate for this finding. For taint findings
+   * mirrors `sink.line` (the primary actionable location); for single-point
+   * findings mirrors the sole location. Added in 3.87.0 (#134) to give
+   * downstream renderers a stable top-level line without an inconsistent
+   * `source.line` / `sink.line` fallback chain.
+   */
+  line: number;
   source: {
+    /**
+     * Engine-internal taint-source classification (e.g. `'http_param'`,
+     * `'interprocedural_param'`, `'env_input'`). Added in 3.87.0 (#134)
+     * so triage scripts and downstream classifiers can filter by source
+     * kind without re-deriving from debug logs. Optional for backwards
+     * compatibility with consumers that construct `Finding` objects
+     * outside `generateFindings`.
+     */
+    type?: SourceType;
     file: string;
     line: number;
     code: string;
   };
   sink: {
+    /**
+     * Engine-internal taint-sink classification (e.g. `'sql_injection'`,
+     * `'command_injection'`). Mirrors the top-level `Finding.type` field
+     * (kept for `source`/`sink` parity). Added in 3.87.0 (#134).
+     */
+    type?: SinkType;
     file: string;
     line: number;
     code: string;
