@@ -131,6 +131,47 @@ export function generateFindings(
     return b.confidence - a.confidence;
   });
 
+  // cognium-dev #143 PR B — opt-in diagnostic for coalescing decision.
+  // Browser-safe: gated on globalThis flag, no process/fs. Consumers opt in
+  // via `(globalThis as any).__circleIrDiagCoalesce = true` before scan.
+  // Emits one JSON line per file to `console.error` summarizing the
+  // (source.line, sink.line) → distinct sink.type distribution. This is
+  // the data we need to decide whether #143's `labels[]` schema is
+  // justified by real multi-label clustering or whether the proposal
+  // over-claims the win.
+  const diagFlag = (globalThis as { __circleIrDiagCoalesce?: boolean }).__circleIrDiagCoalesce;
+  if (diagFlag === true) {
+    const locationLabels = new Map<string, Set<string>>();
+    for (const f of findings) {
+      const key = `${f.source.line}:${f.sink.line}`;
+      let set = locationLabels.get(key);
+      if (!set) {
+        set = new Set();
+        locationLabels.set(key, set);
+      }
+      set.add(f.type);
+    }
+    const counts = Array.from(locationLabels.values(), s => s.size);
+    const sum = counts.reduce((a, b) => a + b, 0);
+    const max = counts.length > 0 ? Math.max(...counts) : 0;
+    const avg = counts.length > 0 ? sum / counts.length : 0;
+    const multiLabel = counts.filter(c => c > 1).length;
+    const diagEntry = {
+      diag: 'coalesce',
+      file: fileName,
+      sources: sources.length,
+      sinks: sinks.length,
+      raw_findings: findings.length,
+      post_dedup: deduped.length,
+      unique_locations: locationLabels.size,
+      multi_label_locations: multiLabel,
+      avg_labels_per_location: Number(avg.toFixed(3)),
+      max_labels_per_location: max,
+    };
+    // eslint-disable-next-line no-console
+    console.error(JSON.stringify(diagEntry));
+  }
+
   return deduped;
 }
 
