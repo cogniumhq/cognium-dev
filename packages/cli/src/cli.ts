@@ -9,6 +9,7 @@ import { join, dirname, extname, resolve, relative } from 'path';
 import { createRequire } from 'module';
 import {
   initAnalyzer, analyze, analyzeProject,
+  setLogLevel, type LogLevel,
   type SinkType, type SastFinding, type SupportedLanguage,
   type MetricValue, type FileMetrics,
   type PassOptions,
@@ -1102,8 +1103,31 @@ async function handleInit(): Promise<void> {
 }
 
 // Main entry point
+/**
+ * Resolve the circle-ir log level from CLI flag / env var.
+ * Precedence: --log-level flag > COGNIUM_LOG_LEVEL env var > default (silent).
+ * Invalid values are ignored with a warning on stderr.
+ */
+function applyLogLevel(cliValue: unknown): void {
+  const raw = typeof cliValue === 'string' && cliValue.length > 0
+    ? cliValue
+    : process.env.COGNIUM_LOG_LEVEL;
+  if (!raw) return;
+  const valid: ReadonlyArray<LogLevel> = ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'];
+  const normalized = raw.toLowerCase() as LogLevel;
+  if (!valid.includes(normalized)) {
+    console.error(colors.yellow(`Warning: invalid log level "${raw}" (expected one of: ${valid.join(', ')}); ignoring`));
+    return;
+  }
+  setLogLevel(normalized);
+}
+
 async function main(): Promise<void> {
   const { command, args, options } = parseArgs(process.argv.slice(2));
+
+  // Logger level: --log-level <level> > COGNIUM_LOG_LEVEL env > silent (default).
+  // Applied before any circle-ir call so phase markers / warnings are routed correctly.
+  applyLogLevel(options['log-level']);
 
   // Handle help flag
   if (options.help || options.h) {

@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.89.1] - 2026-06-22
+
+Patch follow-up to 3.89.0: the new cross-file phase markers materialized a
+latent stdout-pollution bug in the logger that broke `--format json` /
+`--format sarif` pipelines for any consumer at `info` level or louder.
+
+### Fixed
+
+- `src/utils/logger.ts` — `logger.info()` now writes to **stderr** via
+  `console.error` instead of `console.log` (which writes to stdout in Node
+  and would corrupt JSON/SARIF output piped to downstream tooling). All log
+  methods (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) are now stderr-only
+  by construction. No-op for consumers that inject a custom logger via
+  `setLogger()` — the DI surface is unchanged.
+
+### Changed (default behaviour)
+
+- `src/utils/logger.ts` — default log level changed from `'info'` to
+  `'silent'`. Library consumers that want phase markers / progress logs must
+  opt in via `setLogLevel('info')` (or any louder level) or by injecting a
+  custom logger via `setLogger()`. This makes the library safe-by-default
+  for CLI/SARIF/JSON pipelines without requiring caller configuration.
+  Consumers already using `setLogger()` are unaffected.
+
+### Migration
+
+- If you were relying on the implicit `info`-level console output from
+  `circle-ir`, call `setLogLevel('info')` (or `setLogger(pino(...))`) at
+  startup. The cognium-dev CLI exposes this via `--log-level <level>` and
+  the `COGNIUM_LOG_LEVEL` env var (see cognium-dev 3.89.1 CHANGELOG).
+
 ## [3.89.0] - 2026-06-22
 
 cognium-dev #141 (Sprint 36) — cross-file phase perf + observability +

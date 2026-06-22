@@ -17,11 +17,18 @@
  * Log Levels (in order of severity):
  *   - trace: Very detailed debugging
  *   - debug: Debugging information
- *   - info: General information (default)
+ *   - info: General information
  *   - warn: Warnings
  *   - error: Errors
  *   - fatal: Fatal errors
- *   - silent: No logging
+ *   - silent: No logging (default in 3.89.1+ — keeps stdout clean for
+ *     consumers piping JSON/SARIF output; opt in via setLogLevel() or,
+ *     in the CLI, the `--log-level` flag / `COGNIUM_LOG_LEVEL` env var)
+ *
+ * IMPORTANT (3.89.1+): All log calls write to **stderr** (via
+ * `console.error` / `console.warn` / `console.debug`). They never touch
+ * stdout. This is required so CLI consumers can pipe `--format json` or
+ * `--format sarif` output to downstream tooling without corruption.
  */
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent';
@@ -54,7 +61,7 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   silent: 6,
 };
 
-let currentLevel: LogLevel = 'info';
+let currentLevel: LogLevel = 'silent';
 let customLogger: LoggerInstance | null = null;
 
 function shouldLog(level: LogLevel): boolean {
@@ -110,7 +117,7 @@ export const logger = {
 
   info: (msg: string, obj?: Record<string, unknown>) => {
     if (customLogger) { customLogger.info(msg, obj); return; }
-    if (shouldLog('info')) console.log(obj ? `[INFO] ${msg} ${JSON.stringify(obj)}` : `[INFO] ${msg}`);
+    if (shouldLog('info')) console.error(obj ? `[INFO] ${msg} ${JSON.stringify(obj)}` : `[INFO] ${msg}`);
   },
 
   warn: (msg: string, obj?: Record<string, unknown>) => {

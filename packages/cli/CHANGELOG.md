@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.89.1] - 2026-06-22
+
+Patch follow-up to 3.89.0. Tracks the circle-ir 3.89.1 stdout-pollution
+fix and adds a first-class CLI hook for controlling library log output.
+
+### Fixed
+
+- Tracks circle-ir 3.89.1 — `--format json` / `--format sarif` output is no
+  longer corrupted by the new cross-file phase markers. circle-ir now routes
+  all log output to stderr and defaults to `silent` level, so JSON/SARIF
+  stdout pipelines are safe by default without any flag.
+
+### Added
+
+- `src/cli.ts` — new `--log-level <level>` flag and `COGNIUM_LOG_LEVEL` env
+  var to control circle-ir logger verbosity (`silent` | `trace` | `debug` |
+  `info` | `warn` | `error` | `fatal`). Precedence: CLI flag > env var >
+  default (`silent`). Applied before the first analyzer call so phase
+  markers and budget warnings are emitted at the requested level. Invalid
+  values are ignored with a stderr warning.
+- `src/utils/args.ts` — help text documents the new flag + env var, with
+  two examples showing stderr-only verbose output.
+
+### Changed
+
+- Bumps `circle-ir` dep to `^3.89.1`.
+
 ## [3.89.0] - 2026-06-22
 
 ### Changed

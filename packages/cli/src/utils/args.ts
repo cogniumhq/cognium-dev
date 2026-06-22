@@ -87,6 +87,8 @@ SCAN OPTIONS:
   -o, --output <file>        Write results to file
   -q, --quiet                Suppress progress output
   -v, --verbose              Show detailed output
+  --log-level <level>        circle-ir logger level (silent|trace|debug|info|warn|error|fatal)
+                               [default: silent — also settable via COGNIUM_LOG_LEVEL env var]
 
 METRICS OPTIONS:
   -l, --language <lang>      Analyze only files for language (bash|go|html|java|javascript|typescript|python|rust)
@@ -109,6 +111,8 @@ EXAMPLES:
   cognium-dev scan . --exclude-cwe CWE-330,CWE-327
   cognium-dev scan . --disable-pass naming-convention,todo-in-prod
   cognium-dev scan . --profile custom-config.json
+  cognium-dev scan . --log-level info        # phase markers to stderr
+  COGNIUM_LOG_LEVEL=debug cognium-dev scan . # verbose via env var
   cognium-dev metrics src/
   cognium-dev metrics src/ --category complexity
   cognium-dev metrics src/ --format json --profile custom-config.json
