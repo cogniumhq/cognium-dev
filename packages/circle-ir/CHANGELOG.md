@@ -9,26 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 cognium-dev #143 (PR A) — cross-file taint dedup now keys on
 `(source.file, source.line, sink.file, sink.line, sink.type)` instead of
-coordinates only. Recovers silently-dropped IP / field-binding findings
-when they land at the same call site as a direct cross-file flow with a
-different vuln class (e.g. `command_injection` vs `code_injection` at
-the same `execute()`).
+coordinates only. **Defensive future-proofing**, not an active bug
+recovery: under current upstream behavior both
+`findCrossFileTaintFlows()` and `findInterproceduralTaintPaths()` /
+`findFieldBindingTaintPaths()` resolve `matchedSink.type` via
+`sinkIR.taint.sinks.find(s => s.line === ...)` on the same IR, so they
+always pick the same first sink at a given line and the pre-fix dedup
+was coincidentally correct. The fix pins the type-axis invariant so a
+future refactor (e.g., upstream switching to `.filter`, or a new
+resolver method that assigns `sink.type` from a non-`matchedSink`
+source) cannot silently drop IP / field-binding findings that legitimately
+differ in vuln class from a direct flow at the same coordinates
+(e.g. `command_injection` vs `code_injection` at the same `execute()`).
 
 ### Fixed
 
 - `src/analysis/passes/cross-file-pass.ts` — interprocedural /
   field-binding path dedup at line 128 adds `tp.sink.type ===
-  matchedSink.type` to the predicate. Previously any IP path landing
-  at the same coordinates as a direct cross-file flow was dropped
-  regardless of vuln class.
+  matchedSink.type` to the predicate.
 
 ### Tests
 
 - `tests/analysis/passes/cross-file.test.ts` — new
   `CrossFilePass — dedup by type (PR A)` block (2 tests). The positive
-  test fails on 3.88.0 (`expected length 2, got 1`) and passes on
-  3.88.1. The negative test pins the regression-guard: same coords
-  with same `sink.type` are still deduped.
+  test uses a flipping-IR mock (returning different sink types on
+  successive `getIR()` calls) to drive the divergent-type scenario
+  that current production upstream cannot naturally produce — failing
+  on 3.88.0 (`expected length 2, got 1`) and passing on 3.88.1. The
+  negative test pins the regression-guard: same coords with same
+  `sink.type` are still deduped.
 
 Full suite: 2778 passed, 1 skipped.
 
