@@ -89,6 +89,11 @@ SCAN OPTIONS:
   -v, --verbose              Show detailed output
   --log-level <level>        circle-ir logger level (silent|trace|debug|info|warn|error|fatal)
                                [default: silent — also settable via COGNIUM_LOG_LEVEL env var]
+  --cross-file-budget-ms <n> Wall-time budget (ms) for the cross-file phase
+                               [default: 300000 (5 min) — 0 = unlimited]
+                               On exceed: partial taint paths kept, remaining
+                               cross-file phases skipped, cross_file_budget_exceeded
+                               surfaced in output (text warning / JSON / SARIF field).
 
 METRICS OPTIONS:
   -l, --language <lang>      Analyze only files for language (bash|go|html|java|javascript|typescript|python|rust)
@@ -113,6 +118,8 @@ EXAMPLES:
   cognium-dev scan . --profile custom-config.json
   cognium-dev scan . --log-level info        # phase markers to stderr
   COGNIUM_LOG_LEVEL=debug cognium-dev scan . # verbose via env var
+  cognium-dev scan . --cross-file-budget-ms 60000   # 60s cross-file cap
+  cognium-dev scan . --cross-file-budget-ms 0       # unlimited (pre-3.89.0 behaviour)
   cognium-dev metrics src/
   cognium-dev metrics src/ --category complexity
   cognium-dev metrics src/ --format json --profile custom-config.json

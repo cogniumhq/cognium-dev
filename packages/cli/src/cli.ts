@@ -239,6 +239,14 @@ interface ScanOptions {
   profile?: string;
   /** Comma-separated list of pass names to disable */
   disablePass?: string;
+  /**
+   * Wall-time budget (ms) for the entire cross-file phase. Forwarded to
+   * circle-ir `AnalyzerOptions.crossFileBudgetMs`. Default: library default
+   * (300_000 / 5 min). 0 = unlimited. On exceed: partial taint paths kept,
+   * `cross_file_budget_exceeded: true` surfaced on the result, remaining
+   * cross-file phases skipped. See circle-ir 3.89.0 CHANGELOG.
+   */
+  crossFileBudgetMs?: number;
 }
 
 interface MetricsOptions {
@@ -408,6 +416,7 @@ async function scanProject(
   files: string[],
   language: string | undefined,
   analyzeOpts?: AnalyzeOptions,
+  crossFileBudgetMs?: number,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
   const filesWithCode = files.map(f => ({
     code: readFileSync(f, 'utf-8'),
@@ -418,6 +427,10 @@ async function scanProject(
   const projectResult = await analyzeProject(filesWithCode, {
     passOptions: analyzeOpts?.passOptions,
     disabledPasses: analyzeOpts?.disabledPasses,
+    // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
+    // env. Omitted → library default (300_000 ms / 5 min) applies. 0 →
+    // unlimited (legacy pre-3.89.0 behaviour).
+    ...(crossFileBudgetMs !== undefined ? { crossFileBudgetMs } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -559,7 +572,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     suppressions = config.suppressions ?? [];
 
     if (!options.quiet) {
-      console.log(colors.dim(`Loaded config: ${options.profile || 'cognium.config.json'}`));
+      // 3.89.2: status to stderr so --format json|sarif stdout stays clean.
+      console.error(colors.dim(`Loaded config: ${options.profile || 'cognium.config.json'}`));
     }
   }
 
@@ -613,7 +627,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if ((await stat(absPath)).isDirectory()) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
-      const projectScan = await scanProject(files, options.language, analyzeOpts);
+      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
     } else {
@@ -659,7 +673,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       results = applySuppressionsToResults(results, suppressions, process.cwd());
       const afterCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0);
       if (!options.quiet && beforeCount !== afterCount) {
-        console.log(colors.dim(`Suppressed ${beforeCount - afterCount} finding(s) via config`));
+        // 3.89.2: status to stderr (stdout reserved for payload).
+        console.error(colors.dim(`Suppressed ${beforeCount - afterCount} finding(s) via config`));
       }
     }
 
@@ -770,7 +785,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       if (options.output) {
         const { writeFileSync } = await import('fs');
         writeFileSync(options.output, output);
-        console.log(colors.green(`Results written to ${options.output}`));
+        // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
+        console.error(colors.green(`Results written to ${options.output}`));
       } else if (output.trim()) {
         console.log(output);
       }
@@ -837,7 +853,8 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
     disabledPasses = converted.disabledPasses;
 
     if (!options.quiet) {
-      console.log(colors.dim(`Loaded config: ${options.profile || 'cognium.config.json'}`));
+      // 3.89.2: status to stderr so --format json stdout stays clean.
+      console.error(colors.dim(`Loaded config: ${options.profile || 'cognium.config.json'}`));
     }
   }
 
@@ -965,7 +982,8 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
     if (options.output) {
       const { writeFileSync } = await import('fs');
       writeFileSync(options.output, output);
-      console.log(colors.green(`Results written to ${options.output}`));
+      // 3.89.2: status to stderr (stdout reserved for payload).
+      console.error(colors.green(`Results written to ${options.output}`));
     } else {
       console.log(output);
     }
@@ -1122,6 +1140,25 @@ function applyLogLevel(cliValue: unknown): void {
   setLogLevel(normalized);
 }
 
+/**
+ * Parse the --cross-file-budget-ms flag value. Accepts a non-negative integer
+ * (0 = unlimited). Returns undefined when the flag is absent → library default
+ * (300_000 ms / 5 min) applies. Invalid input → warning on stderr + undefined
+ * (library default).
+ */
+function parseCrossFileBudgetMs(raw: unknown): number | undefined {
+  if (raw === undefined || raw === true || raw === '') return undefined;
+  const s = String(raw);
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n < 0 || String(n) !== s) {
+    console.error(colors.yellow(
+      `Warning: invalid --cross-file-budget-ms "${s}" (expected non-negative integer in ms, 0 = unlimited); ignoring`,
+    ));
+    return undefined;
+  }
+  return n;
+}
+
 async function main(): Promise<void> {
   const { command, args, options } = parseArgs(process.argv.slice(2));
 
@@ -1157,7 +1194,7 @@ async function main(): Promise<void> {
   if (command === 'metrics') {
     if (args.length === 0) {
       console.error(colors.red('Error: metrics command requires a path argument'));
-      console.log('\nUsage: cognium-dev metrics <path> [options]');
+      console.error('\nUsage: cognium-dev metrics <path> [options]');
       process.exit(1);
     }
 
@@ -1180,7 +1217,7 @@ async function main(): Promise<void> {
   if (command === 'scan') {
     if (args.length === 0) {
       console.error(colors.red('Error: scan command requires a path argument'));
-      console.log('\nUsage: cognium-dev scan <path> [options]');
+      console.error('\nUsage: cognium-dev scan <path> [options]');
       process.exit(1);
     }
 
@@ -1198,6 +1235,7 @@ async function main(): Promise<void> {
       excludeCwe: (options['exclude-cwe']) as string | undefined,
       profile: (options.profile || options.p) as string | undefined,
       disablePass: (options['disable-pass']) as string | undefined,
+      crossFileBudgetMs: parseCrossFileBudgetMs(options['cross-file-budget-ms']),
     };
 
     await runScan(targetPath, scanOptions);
@@ -1209,7 +1247,7 @@ async function main(): Promise<void> {
     showHelp();
   } else {
     console.error(colors.red(`Error: Unknown command '${command}'`));
-    console.log('\nRun \'cognium-dev --help\' for usage information');
+    console.error('\nRun \'cognium-dev --help\' for usage information');
     process.exit(1);
   }
 }

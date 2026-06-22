@@ -17,14 +17,15 @@ export class Spinner {
 
   constructor(text: string) {
     this._text = text;
-    // Only animate when attached to an interactive terminal.
-    // When output is piped (CI, file redirects), spinners produce unreadable
-    // control characters.
-    this.enabled = Boolean(process.stdout.isTTY);
+    // Only animate when stderr is attached to an interactive terminal.
+    // All spinner output is routed to stderr to keep stdout clean for piped
+    // JSON/SARIF payloads. When stderr is piped, animation is disabled but
+    // the final status line still emits (to stderr) so logs remain useful.
+    this.enabled = Boolean(process.stderr.isTTY);
   }
 
   private render(frame: string): void {
-    process.stdout.write(`\r\x1b[K${frame} ${this._text}`);
+    process.stderr.write(`\r\x1b[K${frame} ${this._text}`);
   }
 
   start(): this {
@@ -35,7 +36,7 @@ export class Spinner {
     this.frameIndex = 0;
 
     // Hide cursor
-    process.stdout.write('\x1b[?25l');
+    process.stderr.write('\x1b[?25l');
 
     // Render immediately so users see something even if the event loop is
     // briefly blocked by synchronous work right after start().
@@ -61,9 +62,9 @@ export class Spinner {
 
     this.isSpinning = false;
 
-    // Clear line and show cursor
-    process.stdout.write('\r\x1b[K');
-    process.stdout.write('\x1b[?25h');
+    // Clear line and show cursor (stderr only — keeps stdout clean for pipes)
+    process.stderr.write('\r\x1b[K');
+    process.stderr.write('\x1b[?25h');
 
     return this;
   }
@@ -71,21 +72,21 @@ export class Spinner {
   succeed(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.log(`\x1b[32m${CHECKMARK}\x1b[0m ${message}`);
+    console.error(`\x1b[32m${CHECKMARK}\x1b[0m ${message}`);
     return this;
   }
 
   fail(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.log(`\x1b[31m${CROSS}\x1b[0m ${message}`);
+    console.error(`\x1b[31m${CROSS}\x1b[0m ${message}`);
     return this;
   }
 
   warn(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.log(`\x1b[33m${WARNING}\x1b[0m ${message}`);
+    console.error(`\x1b[33m${WARNING}\x1b[0m ${message}`);
     return this;
   }
 

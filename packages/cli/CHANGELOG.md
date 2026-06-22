@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.89.2] - 2026-06-22
+
+CLI-only patch. Finishes the stdout-cleanliness work started in 3.89.1
+(which fixed the library logger) by routing the CLI's own status messages
+to stderr, and exposes the circle-ir cross-file budget knob on the command
+line. `circle-ir` dep stays at `^3.89.1` (no library changes).
+
+### Fixed
+
+- `src/cli.ts` — pre-existing stdout pollution: `Loaded config: …`,
+  `Suppressed N finding(s) via config`, and `Results written to …` now
+  write to **stderr** via `console.error` instead of `console.log`. This
+  was latent before 3.89.1 (text scans pipe the same payload either way),
+  but became a real corruption risk for `--format json` / `--format sarif`
+  consumers whenever a `cognium.config.json` is loaded or `--profile` is
+  used. The text-format summary block (`Found N security finding(s) …`)
+  is unchanged — it was already gated on `format === 'text'` and is part
+  of the text payload.
+- `src/cli.ts` — error usage hints (`Usage: cognium-dev …`,
+  `Run 'cognium-dev --help' …`) now write to stderr alongside their
+  accompanying error message instead of stdout. Match standard CLI
+  convention (errors + diagnostics on stderr, payload on stdout).
+- `src/utils/spinner.ts` — spinner output (animation frames, cursor
+  hide/show, line clear, and `succeed`/`fail`/`warn` final status lines)
+  now writes to **stderr** instead of stdout. Previously the
+  `✔ Scanned N file(s)` and similar terminal lines used `console.log`
+  unconditionally, corrupting `--format json`/`--format sarif` stdout
+  whenever the spinner ran without `--quiet`. TTY detection now keys off
+  `process.stderr.isTTY` to match the new output stream.
+
+### Added
+
+- `src/cli.ts` — new `--cross-file-budget-ms <n>` flag, forwarded to
+  `analyzeProject({ crossFileBudgetMs: n })` (circle-ir 3.89.0+). `0`
+  means unlimited (legacy pre-3.89.0 behaviour). When the flag is omitted
+  the library default (`300_000` ms / 5 min) applies. Invalid input
+  (non-integer, negative) warns on stderr and the library default is used.
+- `src/utils/args.ts` — help text documents the flag with two examples
+  (60 s cap; unlimited).
+
+### Migration
+
+- Any consumer that was scraping `cognium-dev scan` **stdout** for the
+  status lines `Loaded config: …`, `Suppressed N finding(s) via config`,
+  or `Results written to …` must now read them from **stderr**.
+- Users who relied on the implicit unlimited cross-file budget from
+  pre-3.89.0 can restore it with `--cross-file-budget-ms 0`.
+
 ## [3.89.1] - 2026-06-22
 
 Patch follow-up to 3.89.0. Tracks the circle-ir 3.89.1 stdout-pollution
