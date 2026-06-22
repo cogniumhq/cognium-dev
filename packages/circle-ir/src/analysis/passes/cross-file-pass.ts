@@ -119,11 +119,16 @@ export class CrossFilePass {
       const tgtLines = sourceLines.get(p.sink.file)   ?? [];
 
       // Dedup against any direct cross-file taint already emitted at the same
-      // source/sink coordinates.
+      // source/sink coordinates AND sink type. A field-binding / interprocedural
+      // flow can legitimately land at the same coordinates as a direct flow
+      // with a different vuln class (e.g. command_injection vs code_injection
+      // at the same `execute()` call site). Without the type axis those get
+      // silently dropped.
       const dupId = `${p.source.file}:${p.source.line}→${p.sink.file}:${p.sink.line}`;
       if (taintPaths.some(tp =>
         tp.source.file === p.source.file && tp.source.line === p.source.line &&
-        tp.sink.file   === p.sink.file   && tp.sink.line   === p.sink.line)) {
+        tp.sink.file   === p.sink.file   && tp.sink.line   === p.sink.line &&
+        tp.sink.type   === matchedSink.type)) {
         continue;
       }
 

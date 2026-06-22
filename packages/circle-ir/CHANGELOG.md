@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.88.1] - 2026-06-22
+
+cognium-dev #143 (PR A) — cross-file taint dedup now keys on
+`(source.file, source.line, sink.file, sink.line, sink.type)` instead of
+coordinates only. Recovers silently-dropped IP / field-binding findings
+when they land at the same call site as a direct cross-file flow with a
+different vuln class (e.g. `command_injection` vs `code_injection` at
+the same `execute()`).
+
+### Fixed
+
+- `src/analysis/passes/cross-file-pass.ts` — interprocedural /
+  field-binding path dedup at line 128 adds `tp.sink.type ===
+  matchedSink.type` to the predicate. Previously any IP path landing
+  at the same coordinates as a direct cross-file flow was dropped
+  regardless of vuln class.
+
+### Tests
+
+- `tests/analysis/passes/cross-file.test.ts` — new
+  `CrossFilePass — dedup by type (PR A)` block (2 tests). The positive
+  test fails on 3.88.0 (`expected length 2, got 1`) and passes on
+  3.88.1. The negative test pins the regression-guard: same coords
+  with same `sink.type` are still deduped.
+
+Full suite: 2778 passed, 1 skipped.
+
 ## [3.88.0] - 2026-06-22
 
 Sprint 35 ship — cognium-dev #128 entry-point-anchored taint sources.

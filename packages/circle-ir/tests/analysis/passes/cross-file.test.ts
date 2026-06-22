@@ -349,3 +349,127 @@ describe('CrossFilePass — resolved inter-file calls', () => {
     expect(result.crossFileCalls[0].id).toBe('src/A.java:15:execute');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Type-axis dedup (cognium-dev#143 / PR A)
+// ---------------------------------------------------------------------------
+//
+// Direct cross-file flows and field-binding / interprocedural flows can both
+// land at the same source/sink coordinates but with different vuln classes
+// (e.g. a Jenkins field-binding flow into `execute()` produces a
+// command_injection sink while a direct flow into the same `execute()`
+// produces a code_injection sink because the matched sink at that line came
+// from a different sink-entry).  Prior to the fix the IP-path dedup keyed
+// only on `(source.file, source.line, sink.file, sink.line)` and would
+// silently drop the second finding.  The fix adds `sink.type` to the dedup
+// key.
+describe('CrossFilePass — dedup by type (PR A)', () => {
+  /**
+   * Build a ProjectGraph where the IR returned by `getIR(file)` flips its
+   * sink entry between calls.  The first call (used by the direct-flow
+   * branch at line ~53) returns an IR whose sink at the target line is type
+   * T1; the second call (used by the IP-path branch at line ~113) returns
+   * an IR whose sink at the same line is type T2.  This is the only way
+   * the test can drive `matchedSink.type` to differ between the two
+   * branches given the current code.
+   */
+  function makeFlippingProjectGraph(
+    targetFile: string,
+    targetLine: number,
+    typeFirst: string,
+    cweFirst: string,
+    typeSecond: string,
+    cweSecond: string,
+    flows: MockFlow[],
+    ipPaths: ReturnType<typeof makeIpPath>[],
+  ): ProjectGraph {
+    const irFirst  = makeIRWithSink(targetFile, targetLine, typeFirst,  cweFirst);
+    const irSecond = makeIRWithSink(targetFile, targetLine, typeSecond, cweSecond);
+    let calls = 0;
+    return {
+      get filePaths() { return []; },
+      getIR(_path: string) {
+        const ir = calls === 0 ? irFirst : irSecond;
+        calls += 1;
+        return ir;
+      },
+      get resolver() {
+        return {
+          findCrossFileTaintFlows: () => flows,
+          findInterproceduralTaintPaths: () => [],
+          findFieldBindingTaintPaths: () => ipPaths,
+          getResolvedCallsFromFile: () => [],
+          getMethodTaintInfo: () => undefined,
+        };
+      },
+      get typeHierarchy() {
+        return { toTypeHierarchyData: () => ({ classes: {}, interfaces: {} } as TypeHierarchy) };
+      },
+    } as unknown as ProjectGraph;
+  }
+
+  /** Mirrors the InterproceduralTaintPath shape consumed by cross-file-pass. */
+  function makeIpPath(
+    sourceFile: string,
+    sourceLine: number,
+    sourceType: string,
+    sinkFile: string,
+    sinkLine: number,
+  ) {
+    return {
+      source: { file: sourceFile, line: sourceLine, type: sourceType },
+      sink:   { file: sinkFile,   line: sinkLine,   type: 'placeholder', cwe: 'CWE-0' },
+      hops:   [
+        { file: sourceFile, line: sourceLine, method: '', kind: 'source' as const },
+        { file: sinkFile,   line: sinkLine,   method: '', kind: 'sink'   as const },
+      ],
+      confidence: 0.7,
+    };
+  }
+
+  it('emits both findings when direct + IP land at same coords with different sink.type', () => {
+    const flow: MockFlow = {
+      sourceFile: 'src/A.java',
+      sourceLine: 5,
+      sourceType: 'http_param',
+      targetFile: 'src/B.java',
+      targetLine: 10,
+      targetMethod: 'execute',
+    };
+    const ipPath = makeIpPath('src/A.java', 5, 'http_param', 'src/B.java', 10);
+    const pg = makeFlippingProjectGraph(
+      'src/B.java', 10,
+      'command_injection', 'CWE-77',  // direct-flow branch sees this
+      'code_injection',    'CWE-94',  // IP-path branch sees this
+      [flow], [ipPath],
+    );
+    const result = new CrossFilePass().run(pg, new Map());
+    // Both must be emitted — they describe different vuln classes at the
+    // same call site.
+    expect(result.taintPaths).toHaveLength(2);
+    const types = result.taintPaths.map(p => p.sink.type).sort();
+    expect(types).toEqual(['code_injection', 'command_injection']);
+  });
+
+  it('still dedups when direct + IP land at same coords with same sink.type', () => {
+    const flow: MockFlow = {
+      sourceFile: 'src/A.java',
+      sourceLine: 5,
+      sourceType: 'http_param',
+      targetFile: 'src/B.java',
+      targetLine: 10,
+      targetMethod: 'execute',
+    };
+    const ipPath = makeIpPath('src/A.java', 5, 'http_param', 'src/B.java', 10);
+    // Both branches see the SAME sink type — IP must be deduped.
+    const pg = makeFlippingProjectGraph(
+      'src/B.java', 10,
+      'command_injection', 'CWE-77',
+      'command_injection', 'CWE-77',
+      [flow], [ipPath],
+    );
+    const result = new CrossFilePass().run(pg, new Map());
+    expect(result.taintPaths).toHaveLength(1);
+    expect(result.taintPaths[0].sink.type).toBe('command_injection');
+  });
+});
