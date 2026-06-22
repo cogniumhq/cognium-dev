@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.86.0] - 2026-06-21
+
+### Changed
+
+- Tracks circle-ir 3.86.0 — Sprint 34 Java OSS top-25 FP cluster
+  cleanup shipping two independent precision gates:
+  - **#129** CWE-78 receiver-class allowlist in `findSinks()`.
+    Statically-resolved non-allowlist receivers (e.g.
+    `UnifiedJedis.executeCommand`) are suppressed; unresolved
+    receivers (JS `child_process.exec`, Python `subprocess.run`)
+    fall through to preserve recall. Allowlist covers java.lang,
+    Apache Commons Exec, Gradle, Jenkins, Spring, hutool.
+    Expected -86% high CWE-78 findings on Java OSS top-25.
+  - **#130** hardcoded-credential value-shape gate raising the
+    minimum credential value length from 3 to 12 chars and adding
+    three negative shape predicates (dotted property keys, plain
+    identifier strings, short numeric placeholders). Layer 1
+    provider regexes and Layer 2 entropy gate unaffected. Expected
+    -100% on cluster-2 highs (11 → 0).
+- CLI surface unchanged; bump dep `circle-ir@^3.86.0`.
+
 ## [3.85.1] - 2026-06-20
 
 ### Changed

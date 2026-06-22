@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.86.0] - 2026-06-21
+
+Sprint 34 — Java OSS top-25 FP cluster cleanup. Two independent
+precision gates targeting the same finding cluster from different
+layers: **#129** sink-side receiver-class allowlist and **#130**
+finding-side value-shape gate. Both confined to `circle-ir`.
+
+### Fixed — #129 CWE-78 receiver-class allowlist
+
+`configs/sinks/command.yaml` ships unscoped catch-all sinks for
+`exec`, `executeCommand`, `runCommand`, `system`, `shell`, `Process`,
+etc. that match ANY receiver class exposing the method name, including
+`redis/jedis`'s `UnifiedJedis.executeCommand` (RESP protocol over TCP —
+NOT shell). On Java OSS top-25 at 3.85.1, this produced **1,680 of
+1,968 high `command_injection` findings (85.4% FP rate)**.
+
+`src/analysis/taint-matcher.ts`:
+
+- New `CWE_78_RECEIVER_ALLOWLIST` constant: `Runtime`, `ProcessBuilder`,
+  `Process`, `CommandLine`, `DefaultExecutor`, `Executor`, `Exec`,
+  `Launcher`, `ProcStarter`, `ProcessExecutor`, `RuntimeUtil`
+  (java.lang + Apache Commons Exec + Gradle + Jenkins + Spring + hutool).
+- Gate inserted inside `findSinks()` after sink-pattern match and
+  `safe_if_class_literal_at` check, before emission:
+  - Constructor branch: filters `method_name` against allowlist
+    (covers `new ProcessBuilder(...)`).
+  - Non-constructor branch: only filters when `receiver_type` is
+    statically resolved. Unresolved receivers (typical in JS/Python
+    module-binding calls like `child_process.exec`, `subprocess.run`)
+    fall through to preserve recall.
+
+YAML catch-all sinks left intact — code-level allowlist is sufficient
+for this sprint; deferred deletion would risk recall regressions in
+untyped contexts.
+
+Expected impact: ~86% reduction in high CWE-78 findings on Java OSS
+top-25 (1,968 → ~288), without recall loss on real OS-command APIs.
+
+### Fixed — #130 hardcoded-credential value-shape gate
+
+`scan-secrets-pass.isLikelyCredentialAssignment()` matched on variable
+**name shape** (`*_PASSWORD`/`*_SECRET`/`*_APIKEY`/`*_TOKEN`) without
+checking value shape. Existing FP guards (PLACEHOLDER_RE, env-var refs,
+length < 3, all-same-char) missed three FP shapes seen on the Java OSS
+cluster: dotted property keys (`"sentinel.dashboard.auth.password"`,
+`"jib.from.auth.password"`, `"eurekaServer.proxyPassword"`), plain
+identifier strings (`"client_secret"`, `"remoteApiKey"`, `"aiApiKey"`),
+and trivial numeric placeholders (`"12345"`, `"1234567"`). 11 of 11
+cluster-2 highs fell into these shapes — none were real credentials.
+
+`src/analysis/passes/scan-secrets-pass.ts`:
+
+- New `PROPERTY_KEY_RE` (`/^[a-z][a-zA-Z0-9_-]*\.[a-zA-Z][a-zA-Z0-9_.-]*$/`)
+  and `PLAIN_IDENTIFIER_RE` (`/^[a-z][a-zA-Z_]*$/`) shape predicates.
+- New `charClassDiversity()` helper (lower/upper/digit/symbol class count).
+- `isLikelyCredentialAssignment()` augmented with three positive
+  predicates (length ≥ 12, Shannon entropy ≥ 3.5, char-class diversity
+  ≥ 2) and three negative shape predicates (PROPERTY_KEY_RE,
+  PLAIN_IDENTIFIER_RE, short-numeric `/^[0-9]+$/ && length < 16`).
+
+**Trade-off:** the gate raises the minimum credential-value length
+from 3 to 12 chars. Pre-3.86.0 short-string named-credential matches
+(e.g. `password = "abc"`) no longer fire via the named-credential layer.
+Layer 1 provider regexes (AWS AKIA, GitHub ghp_, Stripe sk_live_, etc.)
+and Layer 2 entropy gate (length floor 25, char-class ≥ 3) are
+unaffected — real secrets continue to fire.
+
+Expected impact: ~100% reduction on the 11 cluster-2 highs on Java OSS
+top-25 (11 → 0) with zero recall loss on production-grade secrets.
+
+### Tests
+
+- New `tests/analysis/repro-issue-129.test.ts` — 10 tests (4 negative
+  receiver-class locks: Jedis, UnifiedJedis, MyService, HttpEntity;
+  6 recall locks: Runtime.exec, `new ProcessBuilder`,
+  ProcessBuilder.command, DefaultExecutor.execute, JS unresolved `exec`,
+  Python `subprocess.run`).
+- Extended `tests/analysis/passes/scan-secrets.test.ts` — 14 new tests
+  under `#130 value-shape gate` describe block (10 negative locks
+  covering Sentinel/Jib/Eureka/OAuth/LanguageTool/numeric/UUID shapes;
+  4 recall locks for high-entropy named credential + Layer 1 AWS AKIA +
+  Layer 1 GitHub PAT + Layer 2 base64 blob).
+
+Suite: 2688 pass / 1 skipped (was 2664 + 14 + 10).
+
 ## [3.85.1] - 2026-06-20
 
 Sprint 33 — P0 perf hotfix for **#126** (perf regression introduced by

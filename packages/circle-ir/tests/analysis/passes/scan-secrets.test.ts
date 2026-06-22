@@ -632,3 +632,160 @@ describe('ScanSecretsPass — #126 perf hotfix (fast-path probe)', () => {
     expect(ent).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #130 — value-shape gate on hardcoded-credential (Layer 1b)
+//
+// Java OSS top-25 (3.85.1) produced 11/11 cluster-2 FPs in three shapes:
+//   - dotted property-key strings ("sentinel.dashboard.auth.password")
+//   - plain identifiers ("client_secret", "remoteApiKey")
+//   - trivial numeric placeholders ("12345", "1234567")
+//
+// 3.86.0 augments isLikelyCredentialAssignment() with a value-shape gate:
+// length ≥ 12, entropy ≥ 3.5, char-class diversity ≥ 2, plus 3 negative-
+// shape predicates rejecting the cluster-2 shapes above. Provider regexes
+// (Layer 1) and the entropy gate (Layer 2) are unaffected.
+// ---------------------------------------------------------------------------
+
+describe('ScanSecretsPass — #130 value-shape gate on hardcoded-credential', () => {
+  // ---------- Negative locks (must NOT fire `hardcoded-credential`) ----------
+
+  it('suppresses Sentinel dotted property-key password value', () => {
+    const code = `public static final String CONFIG_AUTH_PASSWORD = "sentinel.dashboard.auth.password";`;
+    const out = runPass('src/main/java/Cfg.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses Jib dotted property-key from-password value', () => {
+    const code = `String FROM_AUTH_PASSWORD = "jib.from.auth.password";`;
+    const out = runPass('src/main/java/J.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses Jib dotted property-key to-password value', () => {
+    const code = `String TO_AUTH_PASSWORD = "jib.to.auth.password";`;
+    const out = runPass('src/main/java/J.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses Eureka dotted property-key proxy-password value', () => {
+    const code = `String EUREKA_SERVER_PROXY_PASSWORD_KEY = "eurekaServer.proxyPassword";`;
+    const out = runPass('src/main/java/E.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses OAuth-spec plain-identifier client_secret value', () => {
+    const code = `String client_secret = "client_secret";`;
+    const out = runPass('src/main/java/O.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses LanguageTool remoteApiKey identifier value', () => {
+    const code = `String REMOTE_APIKEY_KEY = "remoteApiKey";`;
+    const out = runPass('src/main/java/L.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses LanguageTool aiApiKey identifier value', () => {
+    const code = `String AI_APIKEY_KEY = "aiApiKey";`;
+    const out = runPass('src/main/java/L.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses short numeric placeholder ("12345")', () => {
+    const code = `String yourPassWord = "12345";`;
+    const out = runPass('src/main/java/T.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses short numeric placeholder ("1234567")', () => {
+    const code = `String DEFAULT_AI_APIKEY = "1234567";`;
+    const out = runPass('src/main/java/T.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  it('suppresses low-diversity uuid-style placeholder (lower + dash only)', () => {
+    // "aaaa-bbbb-cccc-dddd-eeee" — 24 chars, all lowercase + dash → char-class
+    // diversity = 2 BUT entropy is very low (~2.32 bits/char from 5 unique
+    // characters: a, b, c, d, e, -) → suppressed by entropy floor.
+    const code = `String clientSecret = "aaaa-bbbb-cccc-dddd-eeee";`;
+    const out = runPass('src/main/java/U.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named).toHaveLength(0);
+  });
+
+  // ---------- Recall locks (must STILL fire) ----------
+
+  it('recall: real high-entropy secret named-credential still fires', () => {
+    // 32 chars, entropy ~4.6, 3 char classes, not property-key shape.
+    // Uses `MY_SECRET_KEY` (not bare `SECRET_KEY`) because CRED_KEYWORD_RE
+    // requires ≥ 1 prefix char before the credential keyword.
+    const code = `String MY_SECRET_KEY = "kjhasdGASDa5asdASD9081jklH4kjhA9";`;
+    const out = runPass('src/main/java/S.java', code, 'java');
+    const named = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'named-credential'
+    );
+    expect(named.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall: AWS AKIA provider regex unaffected by Layer 1b gate', () => {
+    const code = `String key = "AKIAIOSFODNN7EXAMPLE";`;
+    const out = runPass('src/main/java/A.java', code, 'java');
+    const provider = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.provider === 'AWS access key'
+    );
+    expect(provider).toHaveLength(1);
+  });
+
+  it('recall: high-entropy base64 blob assigned to API_KEY still fires (Layer 2)', () => {
+    const blob = 'aZ8Q3pV7tR1xL5mN9wK2yP4uH6jB0sC1eD2fG3iJ4kM5lO6nQ7oR8tU9vW0xY1zS';
+    const code = [
+      `package com.example;`,
+      ``,
+      `public class X {`,
+      `  public static final String API_KEY = "${blob}";`,
+      `}`,
+    ].join('\n');
+    const out = runPass('src/main/java/X.java', code, 'java');
+    const ent = out.filter(f => f.rule_id === 'hardcoded-credential-entropy');
+    expect(ent).toHaveLength(1);
+  });
+
+  it('recall: GitHub PAT provider regex unaffected by Layer 1b gate', () => {
+    const code = `String tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";`;
+    const out = runPass('src/main/java/G.java', code, 'java');
+    const provider = out.filter(
+      f => f.rule_id === 'hardcoded-credential' && f.evidence?.provider === 'GitHub personal access token'
+    );
+    expect(provider).toHaveLength(1);
+  });
+});

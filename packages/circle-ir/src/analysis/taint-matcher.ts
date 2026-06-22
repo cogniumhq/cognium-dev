@@ -732,6 +732,42 @@ function argIsClassLiteral(call: CallInfo, position: number): boolean {
 }
 
 /**
+ * CWE-78 (OS Command Injection) receiver-class allowlist (#129).
+ *
+ * Unscoped catch-all sinks in `configs/sinks/command.yaml` (e.g. `exec`,
+ * `executeCommand`, `runCommand`, `system`, `shell`) match ANY receiver
+ * with the method name. On Java OSS top-25, `redis/jedis`'s
+ * `UnifiedJedis.executeCommand` (RESP protocol over TCP — NOT shell)
+ * produced 1,680 of 1,968 high CWE-78 findings (85.4% FP rate).
+ *
+ * This allowlist gates emission of `command_injection` sinks behind a
+ * known set of OS-command-invoking receiver classes. Calls whose
+ * `receiver_type` is statically resolved to a non-allowlist class are
+ * suppressed. Calls whose receiver_type is unresolved (dynamic
+ * dispatch — typical for JS `child_process.exec`, Python
+ * `subprocess.run`, Go `exec.Command`) fall through to preserve recall.
+ *
+ * Class-scoped sinks for the real OS APIs already exist in command.yaml
+ * (Runtime.exec, ProcessBuilder.command, DefaultExecutor.execute,
+ * Launcher.launch, etc.); this gate adds the inverse — suppressing
+ * non-OS receivers from the unscoped catch-all patterns.
+ */
+const CWE_78_RECEIVER_ALLOWLIST: ReadonlySet<string> = new Set([
+  // java.lang.*
+  'Runtime', 'ProcessBuilder', 'Process',
+  // Apache Commons Exec
+  'CommandLine', 'DefaultExecutor', 'Executor',
+  // Gradle
+  'Exec',
+  // Jenkins
+  'Launcher', 'ProcStarter',
+  // Spring
+  'ProcessExecutor',
+  // hutool
+  'RuntimeUtil',
+]);
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -789,6 +825,27 @@ function findSinks(
           argIsClassLiteral(call, pattern.safe_if_class_literal_at)
         ) {
           continue;
+        }
+
+        // #129 — CWE-78 receiver-class allowlist gate.
+        // Suppress command_injection emissions on receivers known NOT
+        // to invoke OS commands. Constructors check method_name (which
+        // equals the class being constructed). Non-constructor calls
+        // check receiver_type only when statically resolved;
+        // unresolved receivers fall through to preserve recall for
+        // dynamic-language module-binding calls (child_process.exec,
+        // subprocess.run, os/exec.Command).
+        if (pattern.type === 'command_injection') {
+          if (call.is_constructor) {
+            if (!CWE_78_RECEIVER_ALLOWLIST.has(call.method_name)) {
+              continue;
+            }
+          } else {
+            const receiverClass = call.receiver_type;
+            if (receiverClass && !CWE_78_RECEIVER_ALLOWLIST.has(receiverClass)) {
+              continue;
+            }
+          }
         }
 
         const location = formatCallLocation(call);

@@ -211,6 +211,33 @@ const CRED_DYNAMIC_VALUE_RE = /\$\{|process\.env|os\.environ|os\.Getenv|System\.
 const CRED_FUNCTION_DECL_RE = /\b(?:function|func|def|fn)\s+\w+\s*\(/;
 const CRED_COMPARISON_RE = /(?:===?|!==?|>=|<=|<>)\s*["'`]/;
 
+// #130 — value-shape gate negative-shape predicates.
+// Dotted property-key strings (e.g. "sentinel.dashboard.auth.password",
+// "jib.from.auth.password", "eurekaServer.proxyPassword") look like
+// credential values to the named-credential layer but are actually
+// config property keys passed to a property lookup. Allows camelCase
+// in both halves to cover "eurekaServer.proxyPassword".
+const PROPERTY_KEY_RE = /^[a-z][a-zA-Z0-9_-]*\.[a-zA-Z][a-zA-Z0-9_.-]*$/;
+// Plain camelCase / snake_case identifier (e.g. "client_secret",
+// "remoteApiKey", "aiApiKey") — also commonly a config key, not a
+// credential value.
+const PLAIN_IDENTIFIER_RE = /^[a-z][a-zA-Z_]*$/;
+
+/**
+ * Count the number of character classes present in a string.
+ * Returns 1-4 covering: lowercase, uppercase, digit, non-alphanumeric.
+ * Used by the #130 value-shape gate; real credentials almost always
+ * mix at least two classes.
+ */
+function charClassDiversity(s: string): number {
+  let n = 0;
+  if (/[a-z]/.test(s)) n++;
+  if (/[A-Z]/.test(s)) n++;
+  if (/[0-9]/.test(s)) n++;
+  if (/[^a-zA-Z0-9]/.test(s)) n++;
+  return n;
+}
+
 /** Variable / parameter / field declarations whose IDENTIFIER carries the credential keyword. */
 function isLikelyCredentialAssignment(line: string): { name: string; value: string } | null {
   // Skip function declarations: `def login(password): ...`, `func auth(token string) {`
@@ -231,6 +258,24 @@ function isLikelyCredentialAssignment(line: string): { name: string; value: stri
   if (value.length < 3) return null;
   // Reject all-same-char (e.g. "xxx", "----").
   if (isAllSameChar(value)) return null;
+
+  // #130 — value-shape gate (positive predicates).
+  // Real credentials are ≥ 12 chars, have entropy ≥ 3.5 bits/char, and
+  // mix at least 2 character classes. Together these reject low-entropy
+  // English-language phrases, single-class identifiers, and trivial
+  // placeholders that the previous guards missed.
+  if (value.length < 12) return null;
+  if (shannonEntropy(value) < 3.5) return null;
+  if (charClassDiversity(value) < 2) return null;
+
+  // #130 — value-shape gate (negative predicates).
+  // Reject the 3 cluster-2 FP shapes observed on Java OSS top-25:
+  //   - dotted property-key strings ("sentinel.dashboard.auth.password")
+  //   - plain identifiers ("client_secret", "remoteApiKey")
+  //   - short numeric placeholders ("12345", "1234567")
+  if (PROPERTY_KEY_RE.test(value)) return null;
+  if (PLAIN_IDENTIFIER_RE.test(value)) return null;
+  if (/^[0-9]+$/.test(value) && value.length < 16) return null;
 
   return { name, value };
 }
