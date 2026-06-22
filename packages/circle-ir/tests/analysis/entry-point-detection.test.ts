@@ -278,3 +278,130 @@ describe('shouldGateInterproceduralParam — gate predicate', () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TIER_3 strengthening — library-facade shape heuristics (#128 step 2)
+// ---------------------------------------------------------------------------
+
+describe('classifyEntryPointTier — TIER_3 by library-facade shape (#128 step 2)', () => {
+  describe('class-name suffix override', () => {
+    it.each([
+      ['RuntimeUtil', 'exec'],
+      ['StringUtils', 'isEmpty'],
+      ['UrlHelper', 'encode'],
+      ['DateHelpers', 'parse'],
+    ])('returns TIER_3 for %s.%s on suffix match', (cls, mth) => {
+      const m = method(mth, { parameters: [param({ name: 'arg', type: 'String' })] });
+      const t = type(cls);
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('overrides spurious @RestController on a *Util class (the four post-gate misses cluster)', () => {
+      const m = method('exec', { parameters: [param({ name: 'cmd', type: 'String' })] });
+      const t = type('RuntimeUtil', { annotations: ['@RestController'] });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('does NOT downgrade real entry points named without utility suffix', () => {
+      const m = method('createUser');
+      const t = type('UserController', { annotations: ['@RestController'] });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    });
+
+    it('length guard: class named bare "Util" alone is not caught', () => {
+      const m = method('encode');
+      const t = type('Util');
+      // length guard: 'Util' (4) is not > 'Util' suffix (4) → not flagged
+      // Falls through to plain TIER_3 fallback (same observable tier, different path)
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('case-sensitive: lowercase "util" suffix is NOT caught (only canonical PascalCase)', () => {
+      const m = method('parse', { annotations: ['@GetMapping'] });
+      const t = type('myutil');
+      // 'myutil' does not end with 'Util' (case sensitive); Tier-1 method
+      // annotation still applies.
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    });
+  });
+
+  describe('package fragment override', () => {
+    it.each([
+      ['freemarker.template', 'FreemarkerEngine', 'render'],
+      ['org.apache.velocity.template', 'VelocityEngine', 'evaluate'],
+      ['com.acme.engine', 'CustomEngine', 'process'],
+      ['org.app.engines.audio', 'AudioEngine', 'play'],
+    ])('returns TIER_3 for %s.%s.%s on package fragment match', (pkg, cls, mth) => {
+      const m = method(mth, { parameters: [param({ name: 'in', type: 'String' })] });
+      const t = type(cls, { package: pkg });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('overrides spurious @KafkaListener on a template-package class', () => {
+      const m = method('render', {
+        annotations: ['@KafkaListener(topics = "t")'],
+        parameters: [param({ name: 'tpl', type: 'String' })],
+      });
+      const t = type('FreemarkerEngine', { package: 'freemarker.template' });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('does NOT match similar but distinct fragments (templatemap, enginepool)', () => {
+      const m = method('handle', { annotations: ['@GetMapping'] });
+      const t = type('Foo', { package: 'app.templatemap' });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    });
+
+    it('does NOT match fragment as suffix without trailing dot (template at end of package)', () => {
+      const m = method('handle', { annotations: ['@GetMapping'] });
+      const t = type('Foo', { package: 'app.notatemplate' });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    });
+  });
+
+  describe('JDK facade interface-implements override', () => {
+    it.each([
+      ['List', 'CustomList', 'get'],
+      ['Map', 'CustomMap', 'put'],
+      ['Iterator', 'StreamingIterator', 'next'],
+      ['Comparable', 'OrderedThing', 'compareTo'],
+      ['Serializable', 'EventPayload', 'readObject'],
+    ])('returns TIER_3 for a class implementing %s', (iface, cls, mth) => {
+      const m = method(mth, { parameters: [param({ name: 'x', type: 'Object' })] });
+      const t = type(cls, { implements: [iface] });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('overrides spurious @WebServlet on a JDK-collection-implementing class', () => {
+      const m = method('add', { parameters: [param({ name: 'item', type: 'Object' })] });
+      const t = type('TaintedList', {
+        implements: ['List'],
+        annotations: ['@WebServlet("/bad")'],
+      });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+
+    it('tolerates generic parameters on the implements clause (List<String>)', () => {
+      const m = method('add');
+      const t = type('StringList', { implements: ['List<String>'] });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+    });
+  });
+
+  describe('combined / boundary', () => {
+    it('does NOT trigger on a plain @Service business class (negative control)', () => {
+      const m = method('createOrder', { parameters: [param({ name: 'req', type: 'OrderReq' })] });
+      const t = type('OrderService', { annotations: ['@Service'] });
+      expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+      // Same tier as fallback — but via the fallback path, not the heuristic.
+    });
+
+    it('shouldGateInterproceduralParam drops sources on heuristic-flagged TIER_3 classes', () => {
+      const m = method('exec', { parameters: [param({ name: 'cmd', type: 'String' })] });
+      const t = type('RuntimeUtil');
+      expect(
+        shouldGateInterproceduralParam('interprocedural_param', m, t, javaCtx),
+      ).toBe(true);
+    });
+  });
+});

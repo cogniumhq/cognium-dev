@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.88.0] - 2026-06-22
+
+### Changed
+
+- Tracks circle-ir 3.88.0 — Sprint 35 ship of cognium-dev #128
+  entry-point-anchored taint sources. The new tier classifier in
+  `src/analysis/entry-point-detection.ts` (verbatim port from
+  cognium-ai@2.14.0, PR #135) is now wired into
+  `interprocedural-pass.ts` Scenario A, dropping speculative
+  `interprocedural_param` flows on Java library-facade methods
+  (`*Util` / `*Utils` / `*Helper(s)` classes, `*.template.*` /
+  `*.engine.*` packages, direct JDK-facade implementers, and all
+  non-entry-point Java methods). Suppresses the residual portion of
+  the Java OSS top-25 CWE-78 FP cluster that #129's receiver-class
+  allowlist did not catch. CLI surface unchanged; bump dep
+  `circle-ir@^3.88.0`.
+
 ## [3.87.0] - 2026-06-22
 
 ### Changed

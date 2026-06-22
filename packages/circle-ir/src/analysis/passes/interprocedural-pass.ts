@@ -13,13 +13,14 @@
  * Depends on: sink-filter, constant-propagation, taint-propagation
  */
 
-import type { TaintSink, TaintFlowInfo, InterproceduralInfo } from '../../types/index.js';
+import type { TaintSink, TaintFlowInfo, InterproceduralInfo, TypeInfo, MethodInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
 import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
+import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 
 export interface InterproceduralPassResult {
   /** Additional sinks surfaced by inter-procedural analysis. */
@@ -53,6 +54,22 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     const additionalSinks: TaintSink[] = [];
     const additionalFlows: TaintFlowInfo[] = [...taintProp.flows];
     let interprocedural: InterproceduralInfo | undefined;
+
+    // cognium-dev #128 — build a method-name → {method, type} lookup for the
+    // entry-point classifier gate. Used in Scenario A below to drop speculative
+    // `interprocedural_param` sources whose enclosing method classifies as
+    // TIER_3_LIBRARY_API (e.g. `RuntimeUtil.exec`, `FreemarkerEngine.render`).
+    // Built once per pass; O(types * methods) but only consulted for
+    // interprocedural_param sources, which are the FP cluster being suppressed.
+    const methodNameIndex = new Map<string, { method: MethodInfo; type: TypeInfo }>();
+    for (const type of graph.ir.types ?? []) {
+      for (const method of type.methods ?? []) {
+        if (method.name && !methodNameIndex.has(method.name)) {
+          methodNameIndex.set(method.name, { method, type });
+        }
+      }
+    }
+    const language = graph.ir.meta.language;
 
     // --- Scenario A: sources AND sinks present --------------------------------
     if (sinks.length > 0) {
@@ -92,6 +109,24 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
             for (const source of sources) {
               if (source.line > edge.callLine) continue;
               if (source.type === 'interprocedural_param' && source.confidence < 0.6) continue;
+              // cognium-dev #128 — drop `interprocedural_param` sources whose
+              // enclosing method is a TIER_3_LIBRARY_API surface (utility/helper
+              // classes, template/engine packages, JDK facade implementers, or
+              // any non-entry-point Java method). Preserves recall for
+              // entry-point-anchored sources (Spring @RequestMapping, JAX-RS,
+              // Servlet doGet, `main`, etc.) and for non-Java languages
+              // (UNKNOWN tier → pass-through).
+              if (source.type === 'interprocedural_param' && source.in_method) {
+                const enclosing = methodNameIndex.get(source.in_method);
+                if (shouldGateInterproceduralParam(
+                  source.type,
+                  enclosing?.method,
+                  enclosing?.type,
+                  { language, types: graph.ir.types },
+                )) {
+                  continue;
+                }
+              }
               if (additionalFlows.some(f => f.source_line === source.line && f.sink_line === sink.line)) continue;
 
               additionalFlows.push({

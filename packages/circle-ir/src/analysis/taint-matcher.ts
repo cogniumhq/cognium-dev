@@ -205,7 +205,16 @@ function findSources(
   }
 
   // Inter-procedural: treat certain method parameters as potential taint sources
-  // This handles cases where tainted data flows from another class/method
+  // This handles cases where tainted data flows from another class/method.
+  //
+  // NB (#128): the `interprocedural_param` emission is intentionally
+  // *not* gated here — downstream passes (constant propagation,
+  // constructor-field tracking in `language-sources-pass.ts`) need the
+  // raw seed sources to correctly track taint through DTO chains
+  // (`new User(input)` → `user.getName()` → SQL sink). The
+  // entry-point classification gate lives at the flow-construction
+  // boundary in `interprocedural-pass.ts` instead, where it can drop
+  // speculative flows without breaking the propagator's seed set.
   for (const type of types) {
     for (const method of type.methods) {
       // Skip private methods (can only be called from within the class)

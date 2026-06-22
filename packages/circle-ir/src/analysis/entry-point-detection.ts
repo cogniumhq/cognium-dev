@@ -176,6 +176,114 @@ const TIER_1_BY_SUPERTYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 ]);
 
 // ---------------------------------------------------------------------------
+// Tier 3 strengthening — library-facade shape heuristics
+// (cognium-dev#128 step 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Class-name suffixes that mark a type as a static-utility / helper
+ * facade. Hutool's `RuntimeUtil`, Apache Commons' `StringUtils`,
+ * custom `*Helper` wrappers — all called BY user code, never invoked
+ * AT a network trust boundary. Their parameters are not
+ * entry-point-anchored taint sources.
+ *
+ * Matched case-sensitively against the suffix of `TypeInfo.name` with
+ * a length guard (suffix length must be strictly less than class
+ * name length) so a bare-suffix class like `Util` itself is not
+ * caught.
+ */
+const TIER_3_CLASS_SUFFIXES: ReadonlyArray<string> = [
+  'Util', 'Utils', 'Helper', 'Helpers',
+];
+
+/**
+ * Package fragments that mark a type as part of a templating / engine
+ * library surface. FreeMarker's `freemarker.template.*`, Apache
+ * Velocity's `org.apache.velocity.template`, custom `*.engine.*`
+ * wrappers — facades over user-supplied template content, not
+ * network entry points.
+ *
+ * Matched against the dotted package name with sentinel dots on both
+ * sides so `.template.` matches `freemarker.template.Configuration`
+ * but not a hypothetical `freemarker.templatemap.Foo`.
+ */
+const TIER_3_PACKAGE_FRAGMENTS: ReadonlyArray<string> = [
+  '.template.', '.templates.', '.engine.', '.engines.',
+];
+
+/**
+ * JDK collection / iterator / serialization interfaces. A type that
+ * directly implements one of these is a library data-structure facade
+ * — its methods are invoked BY user code, not AT a trust boundary.
+ *
+ * Direct-`implements` only — no transitive `TypeHierarchyResolver`
+ * traversal in ship 1; that variant is deferred. The current
+ * predicate is sufficient for the #128 cluster and avoids dragging
+ * the resolver into a leaf classifier.
+ */
+const TIER_3_JDK_FACADE_INTERFACES: ReadonlySet<string> = new Set([
+  // Collection root + common containers
+  'Collection', 'List', 'Set', 'Map', 'Queue', 'Deque',
+  'SortedSet', 'SortedMap', 'NavigableSet', 'NavigableMap',
+  // Iteration / ordering / equality contracts
+  'Iterator', 'Iterable', 'ListIterator',
+  'Comparator', 'Comparable',
+  // Serialization / cloning contracts
+  'Serializable', 'Externalizable', 'Cloneable',
+]);
+
+function classNameLooksLikeUtility(name: string | undefined): boolean {
+  if (!name) return false;
+  for (const suffix of TIER_3_CLASS_SUFFIXES) {
+    if (name.length > suffix.length && name.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
+function packageLooksLikeTemplateOrEngine(pkg: string | null | undefined): boolean {
+  if (!pkg) return false;
+  const padded = `.${pkg}.`;
+  for (const frag of TIER_3_PACKAGE_FRAGMENTS) {
+    if (padded.includes(frag)) return true;
+  }
+  return false;
+}
+
+function implementsJdkFacade(t: TypeInfo | undefined): boolean {
+  if (!t) return false;
+  for (const impl of t.implements ?? []) {
+    if (TIER_3_JDK_FACADE_INTERFACES.has(simpleTypeName(impl))) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true if the enclosing type's shape (class name suffix,
+ * package fragment, direct JDK-facade `implements`) is unmistakably
+ * a library / utility / engine facade.
+ *
+ * Used as a TIER_3 short-circuit that runs BEFORE Tier-1 annotation
+ * detection — conservative FP-reducing choice for the #128 cluster
+ * (`RuntimeUtil.exec` ×3 + `FreemarkerEngine` slipping through the
+ * downstream gate). Any one of the three predicates flips the
+ * classification.
+ *
+ * Trade-off: a real entry point class accidentally named with a
+ * `*Util` suffix AND carrying a Tier-1 annotation would be
+ * incorrectly downgraded. This pattern is vanishingly rare in
+ * practice (utility classes don't carry `@RestController`); the
+ * false-positive reduction on the real cluster outweighs the
+ * theoretical recall loss.
+ */
+function classShapeIsLibraryFacade(enclosingType: TypeInfo | undefined): boolean {
+  if (!enclosingType) return false;
+  if (classNameLooksLikeUtility(enclosingType.name)) return true;
+  if (packageLooksLikeTemplateOrEngine(enclosingType.package)) return true;
+  if (implementsJdkFacade(enclosingType)) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -248,12 +356,16 @@ function methodIsSupertypeLifecycleEntryPoint(
  *
  * Order:
  *   1. UNKNOWN short-circuit for non-Java languages (ship 1 scope).
- *   2. Method-level annotation match → TIER_1.
- *   3. Class-level annotation match → TIER_1.
- *   4. Supertype lifecycle method match → TIER_1.
- *   5. `main(String[])` signature → TIER_1.
- *   6. Tier 2 reachability (not implemented in ship 1).
- *   7. Fallback → TIER_3_LIBRARY_API.
+ *   2. Library-facade short-circuit (#128 step 2) — `*Util` / `*Utils`
+ *      / `*Helper(s)` class name, `*.template|engine.*` package, or
+ *      direct JDK-facade `implements` → TIER_3, overriding any
+ *      spurious framework-shaped annotations on the type.
+ *   3. Method-level annotation match → TIER_1.
+ *   4. Class-level annotation match → TIER_1.
+ *   5. Supertype lifecycle method match → TIER_1.
+ *   6. `main(String[])` signature → TIER_1.
+ *   7. Tier 2 reachability (not implemented in ship 1).
+ *   8. Fallback → TIER_3_LIBRARY_API.
  */
 export function classifyEntryPointTier(
   method: MethodInfo | undefined,
@@ -266,30 +378,36 @@ export function classifyEntryPointTier(
 
   if (!method) return 'TIER_UNKNOWN';
 
-  // 2. Method-level annotation
+  // 2. Library-facade short-circuit. Runs BEFORE Tier-1 annotation
+  // detection — see `classShapeIsLibraryFacade` for the trade-off.
+  if (classShapeIsLibraryFacade(enclosingType)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 3. Method-level annotation
   if (annotationsInclude(method.annotations, TIER_1_METHOD_ANNOTATIONS)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 3. Class-level annotation (every public method of a controller is TIER_1)
+  // 4. Class-level annotation (every public method of a controller is TIER_1)
   if (enclosingType && annotationsInclude(enclosingType.annotations, TIER_1_CLASS_ANNOTATIONS)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 4. Supertype lifecycle method
+  // 5. Supertype lifecycle method
   if (methodIsSupertypeLifecycleEntryPoint(method, enclosingType)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 5. `public static void main(String[])`
+  // 6. `public static void main(String[])`
   if (looksLikeMainMethod(method)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 6. Tier 2 reachability — deferred. See header doc.
+  // 7. Tier 2 reachability — deferred. See header doc.
   // (Intentionally no fall-through here; ctx.callGraph is reserved.)
 
-  // 7. Fallback
+  // 8. Fallback
   return 'TIER_3_LIBRARY_API';
 }
 

@@ -5,6 +5,117 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.88.0] - 2026-06-22
+
+Sprint 35 ship — cognium-dev #128 entry-point-anchored taint sources.
+Suppresses speculative `interprocedural_param` flows on library-facade
+methods (utility / template / engine / JDK-collection-facade classes
+and all non-entry-point Java methods). Targets the FP cluster that
+accounted for ~1,768 of 1,968 high CWE-78 findings on the top-25 Java
+OSS harness before #129 + #130 landed; this gate is the upstream
+relocation of cognium-ai's downstream classifier and the structural
+fix for the residual cluster.
+
+### Added — #128 entry-point tier classifier
+
+`src/analysis/entry-point-detection.ts` (verbatim port from
+`cognium-ai/circle-ir-ai@2.14.0`, PR #135, plus step-2 heuristic gaps):
+
+- `classifyEntryPointTier(method, type, ctx)` — returns one of
+  `'TIER_1_ENTRY_POINT'` / `'TIER_2_REACHABLE'` (reserved) /
+  `'TIER_3_LIBRARY_API'` / `'TIER_UNKNOWN'`. Ship 1 is Java-only;
+  every non-Java language returns `TIER_UNKNOWN` so the gate is
+  pass-through.
+- `shouldGateInterproceduralParam(sourceType, method, type, ctx)` —
+  source-suppression predicate; returns true iff the source type is
+  `interprocedural_param` AND the enclosing method classifies as
+  `TIER_3_LIBRARY_API`.
+
+Tier 1 detection covers:
+
+- Method annotations: Spring MVC (`@RequestMapping`, `@*Mapping`),
+  Spring messaging (`@KafkaListener`, `@RabbitListener`, `@JmsListener`,
+  `@SqsListener`, `@StreamListener`, `@MessageMapping`), Spring
+  application events (`@EventListener`, `@Scheduled`), JAX-RS (`@Path`,
+  `@GET`/`@POST`/`@PUT`/`@DELETE`/`@PATCH`/`@HEAD`/`@OPTIONS`).
+- Class annotations: `@RestController`, `@Controller`, JAX-RS `@Path`,
+  Servlet 3 `@WebServlet`, JSR-356 `@ServerEndpoint`, `@FeignClient`.
+- Supertype lifecycle methods: `HttpServlet.do*`, `Filter.doFilter`,
+  `HandlerInterceptor.preHandle` / `postHandle` / `afterCompletion`,
+  `CommandLineRunner.run`, `ApplicationRunner.run`.
+- `public static void main(String[])` signature.
+
+Tier 3 library-facade short-circuit (step 2 — runs BEFORE Tier-1
+detection):
+
+- Class-name suffix: `*Util` / `*Utils` / `*Helper` / `*Helpers`
+  (length-guarded so the bare `Util` class itself is not caught).
+- Package fragment: `*.template.*` / `*.templates.*` / `*.engine.*`
+  / `*.engines.*` (padded with sentinel dots).
+- Direct JDK-facade `implements`: `Collection`, `List`, `Set`, `Map`,
+  `Queue`, `Deque`, `SortedSet`, `SortedMap`, `NavigableSet`,
+  `NavigableMap`, `Iterator`, `Iterable`, `ListIterator`,
+  `Comparator`, `Comparable`, `Serializable`, `Externalizable`,
+  `Cloneable`.
+
+### Changed — interprocedural pass gate (step 3)
+
+`src/analysis/passes/interprocedural-pass.ts` Scenario A now consults
+`shouldGateInterproceduralParam()` when constructing inter-procedural
+flows. The check is layered AFTER the existing confidence-based filter
+(`source.confidence < 0.6`) and uses a per-pass method-name → `{method,
+type}` index over `graph.ir.types` so the lookup is O(1) per source.
+
+The gate is intentionally NOT applied at the source-emission layer
+(`taint-matcher.ts:218-237`). An explanatory comment is added there:
+the speculative `interprocedural_param` emission is load-bearing for
+the constant propagator's downstream constructor-field tracking
+(`language-sources-pass.ts::findGetterSources`) — gating at the
+source layer breaks DTO taint chains like `new User(input)` →
+`user.getName()` → SQL sink. The gate lives at the flow-construction
+boundary where it can drop speculative flows without breaking the
+propagator's seed set.
+
+### Recall trade-offs
+
+- Any homegrown OS-command wrapper class whose name doesn't carry
+  `Util` / `Utils` / `Helper(s)` suffix AND isn't in a `template` /
+  `engine` package AND doesn't implement a JDK facade AND has no
+  entry-point annotation will still gate (its parameters are no
+  longer speculative taint sources at the inter-procedural layer).
+  Real intraprocedural flows from `http_param` / `env_var` / Spring
+  `@RequestParam` etc. are unaffected — they are not gated.
+- Tier 2 (call-graph reachability — Tier 1 callers reaching Tier 3
+  helpers) is reserved (`ctx.callGraph`) and not implemented; a
+  follow-up sprint will add it once the call graph is available
+  in `PassContext`.
+
+### Tests
+
+`tests/analysis/entry-point-detection.test.ts` — 67 unit tests for
+the classifier (43 from PR #135 + 24 step-2 heuristic-gap tests).
+
+`tests/analysis/repro-issue-128.test.ts` — NEW. 17 tests:
+
+- 6 critical-miss locks (RuntimeUtil ×3, FreemarkerEngine, plain
+  non-entry-point method, JDK Map implementer) — all gate.
+- 11 recall locks (`@RestController` + `@GetMapping`, `@RequestMapping`,
+  `HttpServlet.doGet`, JAX-RS `@GET`, `main(String[])`,
+  `@KafkaListener`, `CommandLineRunner.run`, non-Java pass-through
+  ×2, non-`interprocedural_param` source type, unresolved enclosing
+  method) — none gate.
+
+Full suite: **2776 pass / 1 skipped** (was 2692 + 67 entry-point
++ 17 repro-128).
+
+### References
+
+- cognium-dev#128 — entry-point-anchored taint sources.
+- PR #135 — verbatim port from cognium-ai@2.14.0.
+- `taint-matcher.ts:218-237` — speculative source emission site
+  (intentionally not gated; see in-code comment).
+- `interprocedural-pass.ts` Scenario A — gate boundary.
+
 ## [3.87.0] - 2026-06-22
 
 Sprint 35 prep — small additive `Finding` schema fix unblocking #128
