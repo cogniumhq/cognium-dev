@@ -84,6 +84,10 @@ describe('classifyEntryPointTier — TIER_1 by method annotation', () => {
     '@SqsListener("queue")',
     '@StreamListener("input")',
     '@MessageMapping("/m")',
+    '@SubscribeMapping("/topic/x")',
+    '@KafkaHandler',
+    '@RabbitHandler',
+    '@SqsHandler',
     '@Scheduled(cron = "0 * * * * *")',
     '@EventListener',
     '@Path("/r")',
@@ -114,9 +118,40 @@ describe('classifyEntryPointTier — TIER_1 by class annotation', () => {
     expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
   });
 
-  it('returns TIER_3 for plain @Service class methods', () => {
+  // ---- cognium-dev#136: Spring stereotype beans are Tier 1 ----
+  // Library-jar audit: stereotypes are the visible trust boundary when
+  // the @RestController seam is not in the scanned scope.
+
+  it('returns TIER_1 for @Service class methods (#136)', () => {
     const m = method('process');
     const t = type('UserService', { annotations: ['@Service'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('returns TIER_1 for @Repository class methods (#136)', () => {
+    const m = method('findById');
+    const t = type('UserRepository', { annotations: ['@Repository'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('returns TIER_1 for @Component class methods (#136)', () => {
+    const m = method('execute');
+    const t = type('AuditComponent', { annotations: ['@Component'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('returns TIER_1 for stereotype annotation with arguments (#136)', () => {
+    const m = method('process');
+    const t = type('UserService', { annotations: ['@Service("userBean")'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('library-facade short-circuit still trumps stereotype (#136 precision lock)', () => {
+    // A `*Util` class accidentally carrying @Service must stay TIER_3
+    // because the library-facade override runs before annotation
+    // detection — see classShapeIsLibraryFacade rationale.
+    const m = method('exec', { parameters: [param({ name: 'cmd', type: 'String' })] });
+    const t = type('RuntimeUtil', { annotations: ['@Service'] });
     expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
   });
 });
@@ -389,11 +424,13 @@ describe('classifyEntryPointTier — TIER_3 by library-facade shape (#128 step 2
   });
 
   describe('combined / boundary', () => {
-    it('does NOT trigger on a plain @Service business class (negative control)', () => {
+    it('does NOT trigger on a plain unannotated class (negative control)', () => {
+      // Plain business class with no stereotype, no controller annotation,
+      // and no library-facade shape — falls through to the TIER_3 fallback
+      // via step 8, not via the library-facade short-circuit.
       const m = method('createOrder', { parameters: [param({ name: 'req', type: 'OrderReq' })] });
-      const t = type('OrderService', { annotations: ['@Service'] });
+      const t = type('OrderProcessor');
       expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
-      // Same tier as fallback — but via the fallback path, not the heuristic.
     });
 
     it('shouldGateInterproceduralParam drops sources on heuristic-flagged TIER_3 classes', () => {

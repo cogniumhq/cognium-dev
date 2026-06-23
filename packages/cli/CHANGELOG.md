@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.91.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.91.0 entry-point classifier update
+(cognium-dev#136 — Tier 1 heuristic gaps for `@Service` / `@Repository` /
+`@Component` stereotype beans). No CLI surface changes; bumps the
+`circle-ir` dependency.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.91.0` for the
+  Tier 1 stereotype-bean classification fix. End-user effect: Java
+  library-jar scans where the calling `@RestController` is not in scope
+  will now retain `interprocedural_param` taint sources on `@Service` /
+  `@Repository` / `@Component` methods (previously dropped at the
+  TIER_3 gate). Expect modest recall increase on stereotype-only
+  codebases; no precision regression on the jedis / library-facade
+  cluster locked by the precision tests.
+
+### Issues closed
+
+- cognium-dev#136 — Sprint 35 step 3: Tier 1 entry-point gate — Java
+  heuristic gaps.
+
 ## [3.90.2] - 2026-06-23
 
 Documentation-only patch. Formalises the `--format json` / `--format sarif`

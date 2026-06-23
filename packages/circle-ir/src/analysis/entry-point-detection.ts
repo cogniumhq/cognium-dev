@@ -63,9 +63,34 @@
  *   filtering), so ship 1's Java-only scope does not affect Python /
  *   Node / Go / Rust / Bash analysis.
  *
+ * # Deferred heuristic gaps (cognium-dev#136 audit)
+ *
+ * The 22-repo audit also surfaced three patterns that do NOT fit the
+ * classifier surface (which sees only `MethodInfo` + `TypeInfo`
+ * shape, no body AST, no call graph, no lambda-scope tracking) and
+ * are routed to other components:
+ *
+ * - **Builder / fluent-setter chains** (`this.x = x; return this;`
+ *   identity-return hop) — body-shape concern. Noise reduction is
+ *   the job of cross-file finding-coalescing (cognium-dev#143), not
+ *   tier classification. The setter itself is correctly TIER_3.
+ *
+ * - **Lambda-captured params** (`Stream.map(s -> someSink(s))`) — in
+ *   the current IR, lambdas live inside the enclosing method's body
+ *   and are not separately represented as `MethodInfo` records, so
+ *   they already inherit the enclosing method's tier without any
+ *   classifier change. If the IR ever lifts lambdas into standalone
+ *   method records, a follow-up should propagate the parent tier.
+ *
+ * - **`Callable` / `Runnable` posted to `ExecutorService`** — pure
+ *   Tier 2 call-graph reachability concern (the TIER_1 method posts
+ *   the `Runnable`, which becomes reachable in a worker thread).
+ *   Reserved for the deferred Tier 2 ship; see `ctx.callGraph`.
+ *
  * # Reference
  *
  * - cognium-dev#128 — entry-point-anchored taint sources.
+ * - cognium-dev#136 — Tier 1 heuristic gaps audit (this update).
  * - `taint-matcher.ts:218-237` — speculative source emission site.
  * - `interprocedural-pass.ts:137-146` — engine's awareness comment.
  */
@@ -140,12 +165,34 @@ const TIER_1_METHOD_ANNOTATIONS = new Set([
 
 /**
  * Class-level annotations that make every public method of the class
- * a Tier 1 entry point. Spring MVC / JAX-RS / Servlet 3 conventions.
+ * a Tier 1 entry point. Spring MVC / JAX-RS / Servlet 3 conventions,
+ * plus Spring stereotype beans (`@Service` / `@Repository` /
+ * `@Component`) per cognium-dev#136.
+ *
+ * # Why @Service/@Repository/@Component are Tier 1 (#136)
+ *
+ * The 22-repo harness audit (2026-06-22) found that scanning a
+ * library jar containing `@Service` / `@Repository` / `@Component`
+ * stereotypes WITHOUT the `@RestController` that invokes them caused
+ * the classifier to fall through to TIER_3 and drop every speculative
+ * `interprocedural_param` source — including legitimate ones at the
+ * business-layer trust boundary that callers actually rely on. For a
+ * SAST tool scanning library jars, the stereotype IS the visible
+ * trust boundary: callers across the (unseen) controller seam must
+ * validate at the stereotype's parameter list. Recall-positive,
+ * precision-acceptable: the library-facade short-circuit (step 2,
+ * `*Util` / template-package / JDK-facade-implements) still trumps,
+ * so a stereotype accidentally placed on a `*Util` class stays
+ * TIER_3.
  */
 const TIER_1_CLASS_ANNOTATIONS = new Set([
   // Spring MVC
   'RestController',
   'Controller',
+  // Spring stereotype beans (#136 — see header)
+  'Service',
+  'Repository',
+  'Component',
   // JAX-RS resource class
   'Path',
   // Servlet 3.0 annotation-based servlet

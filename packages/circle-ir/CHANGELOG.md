@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.91.0] - 2026-06-23
+
+Sprint 36 — close cognium-dev#136 Tier 1 entry-point heuristic gaps. The
+22-repo cognium-ai harness audit (2026-06-22) identified six heuristic
+patterns where the Tier 1 classifier under-fires on real Java codebases.
+This release ships the in-classifier portion (Spring stereotype beans);
+the three patterns that require body-shape, lambda-scope, or call-graph
+infrastructure are explicitly documented as out-of-classifier-scope and
+routed to other components.
+
+### Added
+
+- `src/analysis/entry-point-detection.ts` — `@Service`, `@Repository`,
+  `@Component` added to `TIER_1_CLASS_ANNOTATIONS`. Spring stereotype
+  beans now classify as TIER_1, preserving their parameter-level
+  `interprocedural_param` taint sources through the
+  `shouldGateInterproceduralParam` gate in
+  `interprocedural-pass.ts:121`. Rationale: when scanning library jars
+  WITHOUT the calling `@RestController` in scope, the stereotype IS
+  the visible trust boundary and callers across the (unseen) controller
+  seam must validate at the stereotype's parameter list.
+
+### Changed
+
+- Existing test `classifyEntryPointTier — TIER_1 by class annotation
+  > returns TIER_3 for plain @Service class methods` updated to assert
+  TIER_1 (was the explicit lock for the old behavior, now the gap
+  identified by the audit). The library-facade short-circuit (`*Util`
+  suffix, template/engine package, JDK-facade implements) still trumps
+  the stereotype — verified by new precision-lock test
+  `library-facade short-circuit still trumps stereotype`.
+- Existing test `combined / boundary > does NOT trigger on a plain
+  @Service business class (negative control)` retargeted to a plain
+  unannotated `OrderProcessor` class, which now correctly represents the
+  "fallback step 8" path the negative control was meant to lock.
+
+### Documented (out of scope for the classifier)
+
+The audit also surfaced three patterns that do NOT fit the classifier
+surface (no method-body AST, no lambda-scope tracking, no call graph)
+and are routed elsewhere:
+
+- **Builder / fluent-setter chains** (`this.x = x; return this;`
+  identity-return hop) — taint-propagation noise reduction concern;
+  routed to cross-file finding-coalescing (cognium-dev#143). The setter
+  itself is correctly classified TIER_3.
+- **Lambda-captured params** (`Stream.map(s -> someSink(s))`) — in the
+  current IR, lambdas live inside the enclosing method's body and are
+  not separately represented as `MethodInfo` records, so they already
+  inherit the enclosing method's tier without any classifier change. No
+  fix needed unless the IR ever lifts lambdas into standalone records.
+- **`Callable` / `Runnable` posted to `ExecutorService`** — pure Tier 2
+  call-graph reachability. Reserved for the deferred Tier 2 ship via
+  `ctx.callGraph`.
+
+The classifier file header (`entry-point-detection.ts:66-95`) records
+this disposition so future readers find the routing notes alongside
+the existing tier definitions.
+
+### Verified
+
+- Items 4 and 5 from the audit (`@KafkaListener` / `@RabbitListener` /
+  `@JmsListener` and `@MessageMapping` / `@SubscribeMapping`) were
+  already shipped in #128. Test coverage extended to include
+  `@SubscribeMapping`, `@KafkaHandler`, `@RabbitHandler`, `@SqsHandler`
+  so the parametric `it.each` table now matches the classifier set.
+
+### Tests
+
+162 files / 2812 tests pass / 1 skipped. Added 5 new tests covering the
+three new stereotypes, annotation-arguments tolerance
+(`@Service("userBean")`), and the library-facade precision lock.
+
+### Issues closed
+
+- cognium-dev#136 — Sprint 35 step 3: Tier 1 entry-point gate — Java
+  heuristic gaps.
+
 ## [3.90.1] - 2026-06-23
 
 Per-file perf fix for the langchain4j #141 hang. Reproduction work disproved
