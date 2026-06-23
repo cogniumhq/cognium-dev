@@ -82,6 +82,20 @@ export class ConstantPropagator {
   // Populated lazily on first access via `getSafePatternFields()`.
   private safePatternFieldsCache: Set<string> | null = null;
 
+  // Sprint 36 #141 — per-top-level memoization for isTaintedExpression.
+  // Allocated on entry to top-level isTaintedExpression calls and cleared on
+  // exit. Prevents exponential blowup on deeply nested method-invocation
+  // chains (e.g. `Stream.builder().add(...).add(...)...`), where the step's
+  // explicit recursion on `objectNode` and the wrapper's iterative descent
+  // would otherwise re-walk the same chain spine repeatedly.
+  // Kept per-call (not per-analyze) so mutations to `this.tainted` between
+  // top-level calls cannot return stale `false` for newly-tainted subtrees.
+  // Keyed by `Node.id` (tree-sitter's unique pointer-cast id) — Node objects
+  // are fresh JS wrappers per traversal, so identity-keyed Map<Node, ...>
+  // would never hit between the explicit recursion at line 2245 and the
+  // wrapper's iterative child descent.
+  private isTaintedExpressionCache: Map<number, boolean> | null = null;
+
   /**
    * Analyze source code and build constant propagation state.
    */
@@ -116,6 +130,7 @@ export class ConstantPropagator {
     this.inConstructor = false;
     this.constructorParamPositions.clear();
     this.safePatternFieldsCache = null;
+    this.isTaintedExpressionCache = null;
 
     // Pre-pass: identify class fields
     this.collectClassFields(tree.rootNode);
@@ -1986,17 +2001,60 @@ export class ConstantPropagator {
     // pathological ASTs (cognium-ai#88). Internal recursive calls inside the
     // step method route back through this wrapper, so each one starts a fresh
     // explicit stack rather than blowing the JS call stack.
+    //
+    // Sprint 36 #141: top-level calls allocate a per-call memoization cache
+    // shared with nested recursive calls (via `isTaintedExpressionImpl`). On
+    // deeply nested method-invocation chains the step's explicit recursion on
+    // `objectNode` and the wrapper's iterative descent would otherwise revisit
+    // the same chain spine repeatedly, producing O(N²)+ blowup.
+    const isTopLevel = this.isTaintedExpressionCache === null;
+    if (isTopLevel) {
+      this.isTaintedExpressionCache = new Map();
+    }
+    try {
+      return this.isTaintedExpressionImpl(node);
+    } finally {
+      if (isTopLevel) {
+        this.isTaintedExpressionCache = null;
+      }
+    }
+  }
+
+  private isTaintedExpressionImpl(node: Node): boolean {
+    const cache = this.isTaintedExpressionCache!;
+    const rootId = node.id;
+    const cachedRoot = cache.get(rootId);
+    if (cachedRoot !== undefined) {
+      return cachedRoot;
+    }
     const stack: Node[] = [node];
     while (stack.length > 0) {
       const current = stack.pop()!;
+      const currentId = current.id;
+      const cached = cache.get(currentId);
+      if (cached !== undefined) {
+        if (cached) {
+          cache.set(rootId, true);
+          return true;
+        }
+        continue;
+      }
       const result = this.isTaintedExpressionStep(current);
-      if (result === true) return true;
-      if (result === false) continue;
+      if (result === true) {
+        cache.set(currentId, true);
+        cache.set(rootId, true);
+        return true;
+      }
+      if (result === false) {
+        cache.set(currentId, false);
+        continue;
+      }
       // undefined → descend pre-order (children pushed right-to-left)
       for (let i = current.children.length - 1; i >= 0; i--) {
         stack.push(current.children[i]);
       }
     }
+    cache.set(rootId, false);
     return false;
   }
 

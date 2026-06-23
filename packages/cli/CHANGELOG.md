@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.90.1] - 2026-06-23
+
+Tracking release alongside circle-ir 3.90.1. Picks up the per-file perf fix
+for the langchain4j #141 hang — single-file scans on deep
+`Stream.builder().add(...).add(...)…build()` chains no longer hang in
+constant-propagation.
+
+### Changed
+
+- `circle-ir` dep bumped to `^3.90.1`.
+
+### Measured
+
+A previously-hanging single-file scan
+(`EmbeddingStoreWithFilteringIT.java`, 1517 LOC) now completes in ~321 ms
+end-to-end. See circle-ir 3.90.1 for the underlying root-cause analysis
+and the synthetic chain benchmark table.
+
 ## [3.90.0] - 2026-06-23
 
 Tracking release alongside circle-ir 3.90.0. Wires the new opt-in findings

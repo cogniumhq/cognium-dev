@@ -121,8 +121,24 @@ export class AnalysisPipeline {
       },
     };
 
+    // Diagnostic: per-pass timing. Enabled when
+    // (globalThis as any).__circleIrPassTiming === true. Emits to console.error
+    // — browser-safe (no `process` access). Used by #141 investigation.
+    const timingEnabled =
+      (globalThis as { __circleIrPassTiming?: boolean }).__circleIrPassTiming === true;
+
     for (const pass of this.passes) {
+      if (timingEnabled) {
+        // eslint-disable-next-line no-console
+        console.error(`[pass-start] ${pass.name} file=${graph.ir.meta.file}`);
+      }
+      const t0 = timingEnabled ? Date.now() : 0;
       const result = pass.run(context);
+      if (timingEnabled) {
+        const dt = Date.now() - t0;
+        // eslint-disable-next-line no-console
+        console.error(`[pass-timing] ${pass.name} ${dt}ms file=${graph.ir.meta.file}`);
+      }
       results.set(pass.name, result);
     }
 

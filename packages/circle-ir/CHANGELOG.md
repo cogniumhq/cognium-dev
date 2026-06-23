@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.90.1] - 2026-06-23
+
+Per-file perf fix for the langchain4j #141 hang. Reproduction work disproved
+the upstream cross-module fan-out hypothesis: the analyzer hangs on a single
+1517-LOC file (`EmbeddingStoreWithFilteringIT.java`) before cross-file phase
+ever starts. Root cause is in `ConstantPropagator.isTaintedExpression`.
+
+### Fixed
+
+- `src/analysis/constant-propagation/propagator.ts` — `isTaintedExpression`
+  now allocates a per-top-level memoization cache keyed by `Node.id`. The
+  wrapper's iterative DFS and the explicit recursive call inside
+  `isTaintedExpressionStep` at the generic-object-taint branch shared the
+  same subtree (the chain spine `objectNode`). Without memoization, the
+  wrapper's child descent re-walked every node the recursive call had just
+  visited, producing super-quadratic blowup on N-deep
+  `Stream.builder().add(...).add(...)…build()` style chains. Cache keyed
+  by tree-sitter's pointer-cast `Node.id` because each `childForFieldName`
+  / `children[i]` access returns a fresh JS wrapper, so an identity-keyed
+  `Map<Node, …>` would never hit.
+- Cache lifetime is **per top-level call** (allocated on entry when
+  `isTaintedExpressionCache === null`, cleared in `finally`). This keeps
+  the optimisation correct in the face of `this.tainted` mutations that
+  happen between top-level calls inside `refineTaintFromConstants` and the
+  visit pass — a longer-lived cache could return stale `false` for
+  newly-tainted subtrees.
+
+### Measured
+
+Single-file profile via `node profile-file.mjs <file>` with
+`globalThis.__circleIrPassTiming = true`:
+
+| Fixture                                       | constprop pass before | constprop pass after |
+|-----------------------------------------------|-----------------------|----------------------|
+| Synthetic `Chain10.java` (10-link .add chain) | 326 ms                | **5 ms**             |
+| Synthetic `Chain30.java`                      | >120 s timeout        | **10 ms**            |
+| Synthetic `Chain100.java`                     | OOM (8 GB heap)       | **28 ms**            |
+| langchain4j `EmbeddingStoreWithFilteringIT.java` (1517 LOC) | >60 s timeout | **45 ms** (file total 321 ms) |
+
+Scaling is now linear in chain depth. Full test suite (2804 tests) green.
+
+### Added (diagnostic)
+
+- `src/graph/analysis-pass.ts` — opt-in per-pass timing markers gated on
+  `globalThis.__circleIrPassTiming === true`. Emits `[pass-start] <name>
+  file=…` and `[pass-timing] <name> <ms>ms file=…` on `console.error`.
+  No-op when the flag is unset (single boolean check per pass). Browser-
+  safe (no `process`/`perf_hooks`). Used to bisect the per-file hang
+  to `constant-propagation` for this release; left in for future
+  perf-regression investigations.
+
+### Not addressed
+
+- The Sprint 36 / #141 cross-file budget breaker (`crossFileBudgetMs`)
+  and resolver pre-indexing in `cross-file.ts` are orthogonal hardening
+  for the project-scope phase and remain queued. The per-file fix in
+  this release was the dominant blocker on langchain4j; re-run the
+  full-repo harness to determine whether cross-file work is still
+  required for #141 closure.
+
 ## [3.90.0] - 2026-06-23
 
 PR B of the cognium-dev #143 split — opt-in instrumentation hook for the
