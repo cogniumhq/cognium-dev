@@ -83,6 +83,7 @@ import {
   applyPerFileFindingCap,
   DEFAULT_PER_FILE_FINDING_CAP,
 } from './analysis/per-file-finding-cap.js';
+import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
@@ -256,6 +257,27 @@ export interface AnalyzerOptions {
    * empirical capture data, leaving this as the standalone safeguard.
    */
   perFileFindingCap?: number;
+
+  /**
+   * Opt into emission of speculative (`confidence: 'medium' | 'low'`) findings.
+   *
+   * Default `false`: only `confidence: 'high'` (or unset, which is the
+   * pre-3.94.0 default for every existing pass) findings reach the consumer.
+   * Speculative findings emitted by dominator/heuristic passes such as the
+   * forthcoming `missing-sanitizer-gate` (#153) are dropped silently.
+   *
+   * Set `true` when a downstream verifier is going to adjudicate the
+   * speculative findings before user presentation; the engine then preserves
+   * the full unfiltered finding stream and the caller is responsible for
+   * filtering the `'medium'`/`'low'` entries.
+   *
+   * Filtering happens in `analyze()` after `emitFindingsInstrumentation` and
+   * before `applyPerFileFindingCap`, so per-pass diagnostics still observe
+   * the full uncapped, unfiltered stream.
+   *
+   * Added in circle-ir 3.94.0 as the pre-req infrastructure for #153.
+   */
+  includeSpeculative?: boolean;
 }
 
 /**
@@ -609,8 +631,16 @@ export async function analyze(
 
   // #145 PR B — opt-in per-file findings instrumentation. No-op unless
   // toggled via setFindingsInstrumentation(true). Strictly read-only.
-  // Runs before the per-file cap so diagnostics observe the uncapped stream.
+  // Runs before the confidence filter + per-file cap so diagnostics observe
+  // the uncapped, unfiltered stream.
   emitFindingsInstrumentation(filePath, findings, taint);
+
+  // #153 pre-req (3.94.0) — confidence-based suppression. By default, drop
+  // speculative (`confidence: 'medium' | 'low'`) findings; with
+  // `options.includeSpeculative === true`, preserve the full stream for
+  // downstream adjudication. Existing passes (which do not set `confidence`)
+  // are treated as `'high'` and pass through unchanged.
+  const verifiedFindings = applyConfidenceFilter(findings, options.includeSpeculative === true);
 
   // #142 defensive per-file finding cap. If a file produces more than
   // `cap` findings, drop the individual results and emit a single
@@ -618,7 +648,7 @@ export async function analyze(
   // `perFileFindingCap: 0` disables.
   const cappedFindings = applyPerFileFindingCap(
     filePath,
-    findings,
+    verifiedFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
 

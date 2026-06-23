@@ -6,6 +6,10 @@ This file provides guidance to Claude Code when working with this repository.
 
 `cognium` is the user-facing CLI for the Cognium static analysis platform. It provides a simple command-line interface for scanning code for security vulnerabilities.
 
+## Development Guardrails
+
+- **Pillar I boundary — zero LLM (CRITICAL)** — the cognium-dev CLI is the deterministic SAST entry point. **No `--llm-*` flags, no `llm*` option names, no "LLM" language anywhere in CLI source, help text, formatters, or CHANGELOGs.** Library knobs that exist for downstream LLM consumers (e.g. circle-ir's `includeSpeculative`) must not be re-exposed on this CLI. If a future feature needs an explicit "show speculative findings" toggle, name it generically (`--include-speculative`) — never `--llm-*`. **Stop and rename before introducing any LLM-themed identifier.**
+
 ## Architecture
 
 ```

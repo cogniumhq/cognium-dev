@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.94.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.94.0 speculative-finding suppression
+infrastructure (cognium-dev#153 pre-req). No CLI surface changes; bumps
+the `circle-ir` dependency.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.94.0`. End-user
+  effect: **none**. The new `SastFinding.confidence` field and
+  `AnalyzerOptions.includeSpeculative` knob are library-only API surface;
+  no pass currently emits speculative findings and the CLI does not expose
+  any flag for the toggle. Default deterministic behaviour is byte-
+  identical to 3.93.0.
+
+### Pillar I boundary note
+
+The CLI deliberately does **not** expose a `--include-speculative` (or
+any `--llm-*`) flag in 3.94.0. cognium-dev is the deterministic SAST entry
+point; speculative-finding adjudication is the responsibility of the
+downstream consumers that will set the library option directly. Guardrail
+codified in `CLAUDE.md`.
+
 ## [3.93.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.93.0 Netty entry-point classifier

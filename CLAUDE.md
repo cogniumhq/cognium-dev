@@ -30,6 +30,7 @@ cognium-dev/
 
 ## Development Guardrails
 
+- **Pillar I boundary — zero LLM in cognium-dev (CRITICAL)** — cognium-dev (this monorepo, both `packages/circle-ir` and `packages/cli`) is the deterministic SAST layer. **No LLM concepts may surface anywhere in this repo** — no LLM dependencies, no `--llm-*` flags, no `llm*` option names, no "LLM verify / verifier / adjudicator" language in code, comments, help text, CHANGELOGs, or docs. LLM-aware functionality lives in the separate `circle-ir-ai` / `cognium-ai` repos which consume circle-ir as a library. When circle-ir needs an API surface that downstream LLM consumers will use (e.g. opt-in to speculative findings), name it generically (`includeSpeculative`, `confidence`, `speculative`) so the deterministic narrative is preserved. **Before adding any flag, option, or doc string mentioning "LLM" anywhere in this repo: stop and rename.**
 - **Browser + Node.js compatible (CRITICAL)** — circle-ir MUST run in both environments. No Node.js-specific APIs (`process`, `fs`, `path`, `child_process`, `os`) in library code.
 - **TypeScript strict mode** — All code must use strict TypeScript. No `any` types without justification.
 - **Unit test coverage ≥75%** — Run `npm run test:coverage` in packages/circle-ir to verify.

@@ -503,6 +503,25 @@ export interface SastFinding {
   fix?: string;
   /** Pass-specific structured details for downstream consumers. */
   evidence?: Record<string, unknown>;
+  /**
+   * Confidence that this finding represents a real, actionable defect.
+   *
+   * Semantics (added in 3.94.0 — speculative-finding suppression infra):
+   *  - `'high'` (or omitted): pass is structurally confident. Always emitted.
+   *  - `'medium'`: dominator/heuristic pattern with known FP modes; emitted
+   *    only when the consumer opts into `AnalyzerOptions.includeSpeculative`.
+   *    Intended for findings that should be adjudicated by a downstream
+   *    verifier (e.g., the forthcoming `missing-sanitizer-gate` pass tracked
+   *    by #153) before user presentation.
+   *  - `'low'`: experimental; same suppression behaviour as `'medium'`.
+   *
+   * Existing passes (pre-3.94.0) do not set this field and therefore retain
+   * their default `'high'` treatment — no behavioural change for the 40-pass
+   * pipeline. Filtering happens in `analyze()` between the instrumentation
+   * hook and the per-file finding cap, so the diagnostic stream still
+   * observes the uncapped, unfiltered findings.
+   */
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 // =============================================================================

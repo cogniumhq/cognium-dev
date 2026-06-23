@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.94.0] - 2026-06-23
+
+cognium-dev#153 (pre-req) — speculative-finding suppression infrastructure.
+Lands the API surface that #153's `missing-sanitizer-gate` pass will use to
+emit dominator-based heuristic findings without flooding deterministic
+consumers. The pass itself ships in 3.95.0; this release is the no-behaviour-
+change scaffolding.
+
+### Added
+
+- `SastFinding.confidence?: 'high' | 'medium' | 'low'` (`src/types/index.ts`)
+  — optional finding-confidence tier. Pre-3.94.0 passes do not set this
+  field and are therefore treated as `'high'` (always emitted). Speculative
+  passes can mark dominator/heuristic findings as `'medium'` (or `'low'`
+  for experimental) so the engine can filter them out by default. Filtering
+  happens between the per-file findings instrumentation hook and the per-
+  file finding cap, so diagnostic streams still observe the uncapped,
+  unfiltered findings.
+- `AnalyzerOptions.includeSpeculative?: boolean` (`src/analyzer.ts`) —
+  opt-in to keep `'medium'` / `'low'` findings in the returned stream.
+  Default `false`. Intended for callers that run a downstream verifier
+  (any consumer that adjudicates heuristic patterns before user
+  presentation) and want the full, un-suppressed signal.
+- `src/analysis/confidence-filter.ts` — single-purpose helper exposing
+  `applyConfidenceFilter(findings, includeSpeculative)` and
+  `isHighConfidence(finding)`. ~40 LOC, zero new dependencies, no
+  language-specific code. Browser- and Node-safe (no `process`, `fs`,
+  etc.).
+
+### Changed
+
+- `analyze()` (`src/analyzer.ts`) — wires `applyConfidenceFilter` into the
+  per-file pipeline between `emitFindingsInstrumentation` and
+  `applyPerFileFindingCap`. Existing callers see zero behaviour change
+  because no shipped pass currently sets `confidence`.
+
+### Tests
+
+- `tests/analysis/confidence-filter.test.ts` — 11 unit tests covering:
+  undefined-confidence passthrough, `'high'` passthrough, `'medium'` and
+  `'low'` drop when `includeSpeculative=false`, full preservation when
+  `includeSpeculative=true`, empty-input handling, no-mutation guarantee,
+  and the `isHighConfidence` predicate across all four states. All pass in
+  ~95 ms.
+
+### Architectural boundary (Pillar I)
+
+cognium-dev is deterministic SAST with **zero LLM dependencies** anywhere
+in this repo. The opt-in knob is therefore named generically
+(`includeSpeculative` / `confidence`) — no `--llm-*` flag, no `llm*` option
+name, no "LLM verify / verifier / adjudicator" language in code, comments,
+help text, CHANGELOGs, or docs. Downstream LLM-aware consumers live in the
+separate `circle-ir-ai` / `cognium-ai` repos and consume circle-ir as a
+library; they are the only callers that will set `includeSpeculative: true`
+in practice. Guardrail codified in root + package `CLAUDE.md` to prevent
+future drift.
+
+### End-user effect
+
+- **None for deterministic consumers** — no pass currently emits
+  `confidence: 'medium' | 'low'`, so default-filtered output is byte-
+  identical to 3.93.0 for all 40 shipped passes.
+- **For downstream verifiers** — once #153 ships in 3.95.0, those callers
+  can set `includeSpeculative: true` to receive the speculative
+  `missing-sanitizer-gate` findings for adjudication.
+
 ## [3.93.0] - 2026-06-23
 
 cognium-dev#154 — extend Tier 1 entry-point recognition to cover Netty

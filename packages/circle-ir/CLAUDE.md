@@ -4,6 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Guardrails
 
+- **Pillar I boundary — zero LLM (CRITICAL)** - circle-ir is the deterministic SAST layer. **Never** name a flag, option, comment, doc string, or CHANGELOG entry with "LLM" / "llm-verify" / "llm-verifier" / "AI" wording. When the library needs to expose a knob that downstream LLM consumers (`circle-ir-ai`, `cognium-ai`) will use — e.g. opt-in to speculative findings — name it generically (`includeSpeculative`, `confidence`, `speculative`). The LLM consumer makes the LLM call; circle-ir only ships the API surface. **Stop and rename before introducing any LLM-themed identifier.**
 - **Browser + Node.js compatible (CRITICAL)** - circle-ir MUST run in both browser and Node.js environments without any issues. No Node.js-specific APIs (`process`, `fs`, `path`, `child_process`, `os`, etc.) anywhere in library code. No npm dependencies that require Node.js. Only allowed dependencies: `web-tree-sitter`, `yaml`. The logger uses a zero-dependency console-based implementation with dependency injection (`setLogger()`) so consumers can inject pino or other loggers from their own packages.
 - **TypeScript throughout** - All code must be written in TypeScript with strict mode enabled. No `any` types without explicit justification.
 - **Unit test coverage ≥75%** - All new code must have unit tests. Run coverage reports to verify threshold before merging.
