@@ -27,6 +27,12 @@ export {
 } from './findings.js';
 
 export {
+  setFindingsInstrumentation,
+  isFindingsInstrumentationEnabled,
+  emitFindingsInstrumentation,
+} from './findings-instrumentation.js';
+
+export {
   propagateTaint,
   type TaintPropagationResult,
   type TaintedVariable,

@@ -10,6 +10,7 @@ import { createRequire } from 'module';
 import {
   initAnalyzer, analyze, analyzeProject,
   setLogLevel, type LogLevel,
+  setFindingsInstrumentation,
   type SinkType, type SastFinding, type SupportedLanguage,
   type MetricValue, type FileMetrics,
   type PassOptions,
@@ -1141,6 +1142,18 @@ function applyLogLevel(cliValue: unknown): void {
 }
 
 /**
+ * Resolve the #145 PR B instrumentation flag from env. Enabled when
+ * `CIRCLE_IR_INSTRUMENT_FINDINGS=1`. Any other value (including empty,
+ * `0`, `false`, missing) keeps it off. Browser-incompatible env access
+ * is intentionally CLI-side only — circle-ir itself ships the setter.
+ */
+function applyFindingsInstrumentation(): void {
+  if (process.env.CIRCLE_IR_INSTRUMENT_FINDINGS === '1') {
+    setFindingsInstrumentation(true);
+  }
+}
+
+/**
  * Parse the --cross-file-budget-ms flag value. Accepts a non-negative integer
  * (0 = unlimited). Returns undefined when the flag is absent → library default
  * (300_000 ms / 5 min) applies. Invalid input → warning on stderr + undefined
@@ -1165,6 +1178,10 @@ async function main(): Promise<void> {
   // Logger level: --log-level <level> > COGNIUM_LOG_LEVEL env > silent (default).
   // Applied before any circle-ir call so phase markers / warnings are routed correctly.
   applyLogLevel(options['log-level']);
+
+  // #145 PR B — opt-in findings instrumentation via CIRCLE_IR_INSTRUMENT_FINDINGS=1.
+  // Off by default; applied before any analyze() so per-file emissions are captured.
+  applyFindingsInstrumentation();
 
   // Handle help flag
   if (options.help || options.h) {

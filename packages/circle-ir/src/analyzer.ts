@@ -78,6 +78,7 @@ import {
   analyzeConstantPropagation,
   isFalsePositive,
 } from './analysis/index.js';
+import { emitFindingsInstrumentation } from './analysis/findings-instrumentation.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
@@ -574,6 +575,10 @@ export async function analyze(
     flows:        taint.flows?.length ?? 0,
     unresolvedItems: unresolved.length,
   });
+
+  // #145 PR B — opt-in per-file findings instrumentation. No-op unless
+  // toggled via setFindingsInstrumentation(true). Strictly read-only.
+  emitFindingsInstrumentation(filePath, findings, taint);
 
   return {
     meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,

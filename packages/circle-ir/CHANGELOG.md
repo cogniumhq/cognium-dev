@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.90.0] - 2026-06-23
+
+PR B of the cognium-dev #143 split — opt-in instrumentation hook for the
+per-file findings stream, used to scope the upcoming coalesce schema change
+(PR C) with empirical data from real-world fixtures before any breaking
+schema work ships.
+
+### Added
+
+- `src/analysis/findings-instrumentation.ts` — new module exporting
+  `setFindingsInstrumentation(enabled)`, `isFindingsInstrumentationEnabled()`,
+  and `emitFindingsInstrumentation(filePath, findings, taint)`. Browser-safe
+  (no Node-only APIs). Bypasses the logger DI by design so emission stays
+  grep-friendly and independent of log level. Off by default.
+- `src/analyzer.ts` — call to `emitFindingsInstrumentation()` at the per-file
+  finalization point in `analyze()`, right after `pipeline.run()` returns the
+  accumulated `SastFinding[]`. Strictly read-only: no mutation of findings or
+  any other pipeline output.
+- Public API re-exports of `setFindingsInstrumentation` and
+  `isFindingsInstrumentationEnabled` from `src/index.ts` (preserved across
+  the relocation from `findings.ts` to `findings-instrumentation.ts`).
+
+### Emission format
+
+When enabled, the analyzer writes two JSON-tagged stderr lines per analyzed
+file:
+
+```
+[finding] {"file":"...","line":N,"rule_id":"...","pass":"...","category":"...",
+           "severity":"...","cwe":"...","sink_type":"...","source_type":"...",
+           "confidence":0.87,"dedup_group_id":"file:line:rule_id"}
+[findings-summary] {"file":"...","total":N,"unique_groups":N,
+                    "max_findings_per_group":N,"sources_count":N,
+                    "sinks_count":N,"by_rule":{...},"by_severity":{...}}
+```
+
+`dedup_group_id` uses the `${file}:${line}:${rule_id}` key matching the
+`ScanSecretsPass` dedup convention so downstream analysis (#143) can
+prototype multiple coalesce rules against a single capture.
+
+### Stability contract
+
+The `emitFindingsInstrumentation` function signature is **stable**. The
+JSONL payload schema is **stable-additive** — the engine reserves the right
+to add new fields (driven by #143's analysis needs) without a major bump.
+Consumers should ignore unknown keys.
+
+### Removed
+
+- The exploratory hook inside `generateFindings()` introduced in an
+  earlier in-flight commit has been removed. `generateFindings()` is a
+  public API not called by the analysis pipeline; instrumenting it produced
+  no data from CLI/`analyze()` runs. The hook now lives at the live
+  finalization point. No published version exposed the dead hook.
+
+### Tests
+
+- `tests/analysis/findings-instrumentation.test.ts` — 9 unit tests covering
+  default-off, toggle round-trip, off-no-emit, per-finding payload field
+  contract, source/sink type fallback when only one matches the finding
+  line, summary aggregation (by_rule, by_severity, group cardinality),
+  zero-findings edge case, no-mutation invariant.
+
 ## [3.89.1] - 2026-06-22
 
 Patch follow-up to 3.89.0: the new cross-file phase markers materialized a

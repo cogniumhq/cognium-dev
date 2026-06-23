@@ -126,6 +126,8 @@ export {
   detectUnresolved,
   propagateTaint,
   generateFindings,
+  setFindingsInstrumentation,
+  isFindingsInstrumentationEnabled,
   analyzeConstantPropagation,
   ConstantPropagator,
   isKnown,

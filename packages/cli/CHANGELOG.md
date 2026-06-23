@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.90.0] - 2026-06-23
+
+Tracking release alongside circle-ir 3.90.0. Wires the new opt-in findings
+instrumentation hook (PR B of #143 split, scoped per cognium-dev #145) to a
+CLI environment variable so scans can produce the per-finding data #143
+needs to prototype coalesce rules.
+
+### Added
+
+- `src/cli.ts` — reads `CIRCLE_IR_INSTRUMENT_FINDINGS=1` and calls
+  `setFindingsInstrumentation(true)` before any `analyze()` invocation.
+  Off by default. When enabled, each scanned file emits two JSON-tagged
+  lines on **stderr** (`[finding] …`, `[findings-summary] …`); stdout
+  output (text / JSON / SARIF) is unchanged. See circle-ir 3.90.0 for the
+  payload contract.
+
+### Changed
+
+- `circle-ir` dep bumped to `^3.90.0`.
+
+### Stability
+
+The JSONL payload schema is stable-additive: future circle-ir releases may
+add new fields without a major bump. Consumers consuming the stderr stream
+should ignore unknown keys.
+
+### Usage
+
+```bash
+CIRCLE_IR_INSTRUMENT_FINDINGS=1 cognium-dev scan ./repo --format json --quiet \
+  > findings.json 2> findings-instr.jsonl
+```
+
 ## [3.89.2] - 2026-06-22
 
 CLI-only patch. Finishes the stdout-cleanliness work started in 3.89.1
