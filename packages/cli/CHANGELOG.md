@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.90.2] - 2026-06-23
+
+Documentation-only patch. Formalises the `--format json` / `--format sarif`
+stdout contract that 3.89.1 + 3.89.2 implemented but never documented as a
+stability promise. Filed as #149 after a downstream consumer (the
+`sast-validation` regression harness) discovered the 3.89.2 stdout cleanup
+silently broke a `tail -n +2` parser idiom — the fix direction is correct,
+but the contract change deserved an explicit migration note.
+
+### Documentation
+
+- `README.md` — new **Output streams (stdout vs stderr)** subsection under
+  Output Format. Tabulates every output channel by stream, calls out the
+  stable stdout contract for `--format json` and `--format sarif` (pure
+  parseable payload starting at character 1, version inside the JSON
+  object), and tells pre-3.89.2 consumers to drop any `tail -n +2` /
+  `split("\n",1)[1]` skip-the-first-line idioms.
+
+### Contract (retroactive, descriptive — no behavior change)
+
+- **stdout** for `--format json` / `--format sarif`: pure machine-readable
+  payload. No banner, no preamble, no log lines. The `.version` field
+  carries the engine version; consumers do not need to parse a stdout
+  preamble for it.
+- **stderr** for everything else: status lines, spinner, errors, library
+  log output (silent by default), findings instrumentation
+  (`CIRCLE_IR_INSTRUMENT_FINDINGS=1`).
+- This contract was implemented across **3.89.1** (library logger to
+  stderr, default level silent) and **3.89.2** (CLI status lines, spinner,
+  usage hints to stderr). 3.90.2 ships only the documentation.
+
+### Issues closed
+
+- #149 — `scan -f json: stdout contract changed in 3.89.2 (banner
+  removed) — broke downstream JSON parsers`. Behavior was already
+  correct; this release adds the documentation the issue requested.
+
 ## [3.90.1] - 2026-06-23
 
 Tracking release alongside circle-ir 3.90.1. Picks up the per-file perf fix

@@ -213,6 +213,33 @@ Found 2 vulnerability(ies) in 1 file(s)
 
 Use `-v` flag to see all scanned files including clean ones.
 
+### Output streams (stdout vs stderr)
+
+`cognium-dev` follows the standard CLI convention: machine-readable payload on **stdout**, diagnostics on **stderr**.
+
+| Output | Stream | Notes |
+|--------|--------|-------|
+| `--format json` document | **stdout** | Pure JSON starting at character 1. No banner, no preamble. Safe to pipe directly to `jq`, `json_pp`, etc. |
+| `--format sarif` document | **stdout** | Pure SARIF 2.1.0 JSON. Same contract as `--format json`. |
+| `--format text` report | **stdout** | The human-readable report (default). |
+| Status lines (`Loaded config: …`, `Suppressed N finding(s) …`, `Results written to …`) | **stderr** | |
+| Spinner animation and final status (`✔ Scanned N file(s)`) | **stderr** | |
+| Error messages and usage hints | **stderr** | |
+| Library log output (cross-file phase markers, budget warnings, etc.) | **stderr** | Silent by default; enable with `--log-level <level>` or `COGNIUM_LOG_LEVEL`. |
+| Findings instrumentation (`CIRCLE_IR_INSTRUMENT_FINDINGS=1`) | **stderr** | JSONL `[finding] …` / `[findings-summary] …` lines. |
+
+The stdout contract for `--format json` and `--format sarif` is **stable**: pure parseable payload, version included inside the JSON object (not as a stdout preamble). Consumers can safely pipe stdout to a parser without skip-the-first-line idioms.
+
+```bash
+# Safe — stdout is pure JSON
+cognium-dev scan ./src --format json | jq '.summary'
+
+# Status lines and warnings on stderr, JSON on stdout
+cognium-dev scan ./src --format json > results.json 2> scan.log
+```
+
+If you previously relied on a `tail -n +2` or `split("\n",1)[1]` idiom against pre-3.89.2 builds, drop it — there is no longer a stdout banner to skip.
+
 ## Detected Vulnerabilities
 
 | Type | CWE | Severity | Description |
