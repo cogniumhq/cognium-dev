@@ -278,6 +278,32 @@ export interface AnalyzerOptions {
    * Added in circle-ir 3.94.0 as the pre-req infrastructure for #153.
    */
   includeSpeculative?: boolean;
+
+  /**
+   * Enable the Tier 1/2/3 entry-point classifier gate that suppresses
+   * `interprocedural_param` taint sources on library-API methods that are
+   * not reachable from a recognised HTTP / RPC / lifecycle entry point.
+   *
+   * Default `true`. The gate has been the unconditional behaviour for
+   * Java since 3.88.0 (#128) and was extended to cover Netty wire-message
+   * handlers in 3.93.0 (#154). 3.95.0 surfaces it as an option so callers
+   * can disable it for debugging, recall-vs-precision tuning, or third-
+   * party harness comparisons that need the un-gated source set.
+   *
+   * Language behaviour:
+   *  - `language === 'java'`: gate fires; library-API methods drop their
+   *    `interprocedural_param` sources.
+   *  - All other languages: gate is a no-op (the classifier returns
+   *    `TIER_UNKNOWN` for non-Java, which does not match the drop predicate).
+   *
+   * Set `false` to receive the pre-#128 source set on Java. Useful for:
+   *  - Diagnosing why an expected interprocedural flow is missing.
+   *  - Comparing against IRIS / CodeQL baselines that don't gate.
+   *  - Recall-targeted runs in `circle-ir-ai`.
+   *
+   * Added in 3.95.0 (cognium-dev#137).
+   */
+  enableEntryPointGate?: boolean;
 }
 
 /**
@@ -536,7 +562,9 @@ export async function analyze(
   pipeline.add(new LanguageSourcesPass());
   pipeline.add(new SinkFilterPass());
   pipeline.add(new TaintPropagationPass());
-  pipeline.add(new InterproceduralPass());
+  pipeline.add(new InterproceduralPass({
+    enableEntryPointGate: options.enableEntryPointGate ?? true,
+  }));
 
   // Secret scanner runs after LanguageSourcesPass so the legacy Bash
   // `hardcoded-credential` findings are already in the dedup buffer.

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.95.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.95.0 entry-point gate opt-out toggle
+(cognium-dev#137) and Pillar I documentation propagation. No CLI surface
+changes; bumps the `circle-ir` dependency.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.95.0`. End-user
+  effect: **none**. The new `AnalyzerOptions.enableEntryPointGate` knob is
+  library-only API surface and defaults to `true`, preserving the
+  unconditional Java entry-point gate behaviour that has shipped since
+  3.88.0 (#128) and was extended to Netty handlers in 3.93.0 (#154).
+- Repository docs — Pillar I (zero LLM in cognium-dev) is now documented
+  in `packages/circle-ir/docs/ARCHITECTURE.md` (ADR-007),
+  `packages/circle-ir/docs/SPEC.md`, and `packages/circle-ir/docs/PASSES.md`
+  in addition to the existing `CLAUDE.md` guardrails.
+
+### Pillar I boundary note
+
+The CLI deliberately does **not** expose any flag for the entry-point gate
+toggle. Disabling the gate is a debugging or recall-tuning operation
+intended for library consumers; the deterministic CLI keeps the gate on
+unconditionally. Guardrail codified in `packages/cli/CLAUDE.md`.
+
 ## [3.94.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.94.0 speculative-finding suppression

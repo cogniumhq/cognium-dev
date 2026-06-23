@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.95.0] - 2026-06-23
+
+cognium-dev#137 — entry-point gate opt-out toggle + Pillar I documentation
+propagation. Additive option for callers who need the un-gated source set
+for debugging, recall-vs-precision tuning, or third-party harness
+comparisons. Default behaviour is unchanged: the entry-point classifier
+gate stays on for Java.
+
+### Added
+
+- `AnalyzerOptions.enableEntryPointGate?: boolean` (`src/analyzer.ts`) —
+  controls the Tier 1/2/3 entry-point classifier gate that suppresses
+  `interprocedural_param` taint sources on library-API methods that are
+  not reachable from a recognised HTTP / RPC / lifecycle entry point.
+  Default `true` (matches the unconditional behaviour shipped in 3.88.0
+  for #128 and extended in 3.93.0 for Netty wire-message handlers, #154).
+  Java-only: the classifier returns `TIER_UNKNOWN` for non-Java languages,
+  so the gate is a no-op outside Java regardless of toggle state.
+- `InterproceduralOptions` interface
+  (`src/analysis/passes/interprocedural-pass.ts`) — pass-level options
+  struct exposing the `enableEntryPointGate` mirror. `InterproceduralPass`
+  now accepts an optional constructor parameter; existing callers that
+  invoke `new InterproceduralPass()` are unaffected.
+
+### Changed
+
+- `InterproceduralPass.run()` — the `shouldGateInterproceduralParam`
+  predicate is now guarded by `this.enableEntryPointGate`. When the
+  toggle is `false`, the gate is bypassed and all `interprocedural_param`
+  sources flow into Scenario A flow construction.
+- Docs: new ADR-007 in `docs/ARCHITECTURE.md` (Pillar I — zero LLM in
+  cognium-dev), naming-convention callout near the top of `docs/SPEC.md`,
+  and a "Naming convention" subsection in `docs/PASSES.md`. These codify
+  the Pillar I boundary that was added to `CLAUDE.md` (root, circle-ir,
+  cli) in 3.94.0. Two legacy identifiers are explicitly preserved for
+  back-compat and tagged as deprecation candidates for a future major:
+  the `discoveryMethod: 'static' | 'llm'` provenance value (3.45.0) and
+  the `LLMVerificationResult` exported type.
+
+### Tests
+
+- `tests/analysis/passes/interprocedural-entry-point-toggle.test.ts` — 9
+  new tests across three describe blocks: (1) constructor option handling
+  defaults and explicit values, (2) toggle inertness on the empty-sources
+  early-exit and on non-`interprocedural_param` sources, (3) `analyze()`
+  option wiring on Java library code and non-Java languages. All pass;
+  full suite stays green at 2849 passed / 1 skipped (was 2840 / 1) with
+  no regressions to the 73-case classifier suite or the #128 FP-cluster
+  lock.
+
+### End-user effect
+
+None by default. Existing callers see identical scan output because
+`enableEntryPointGate` defaults to `true`, matching the pre-3.95.0
+always-on behaviour. The new opt-out path is exercised only by callers
+that explicitly set `enableEntryPointGate: false`.
+
 ## [3.94.0] - 2026-06-23
 
 cognium-dev#153 (pre-req) — speculative-finding suppression infrastructure.

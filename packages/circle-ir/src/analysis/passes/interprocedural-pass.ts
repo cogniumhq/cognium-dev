@@ -31,9 +31,36 @@ export interface InterproceduralPassResult {
   interprocedural?: InterproceduralInfo;
 }
 
+/**
+ * Constructor options for InterproceduralPass.
+ *
+ * Wired from `AnalyzerOptions.enableEntryPointGate` in `analyze()`.
+ * See the JSDoc on that field for full semantics.
+ */
+export interface InterproceduralOptions {
+  /**
+   * Mirror of `AnalyzerOptions.enableEntryPointGate`. Default `true`.
+   *
+   * When `true` (the default and pre-3.95.0 always-on behaviour), the
+   * Tier 1/2/3 entry-point classifier suppresses `interprocedural_param`
+   * sources whose enclosing Java method is a library-API surface not
+   * reachable from a recognised entry point.
+   *
+   * Set `false` to disable the gate and surface the un-gated source set
+   * (cognium-dev#137, 3.95.0).
+   */
+  enableEntryPointGate?: boolean;
+}
+
 export class InterproceduralPass implements AnalysisPass<InterproceduralPassResult> {
   readonly name = 'interprocedural';
   readonly category = 'security' as const;
+
+  private readonly enableEntryPointGate: boolean;
+
+  constructor(options?: InterproceduralOptions) {
+    this.enableEntryPointGate = options?.enableEntryPointGate ?? true;
+  }
 
   run(ctx: PassContext): InterproceduralPassResult {
     const { graph } = ctx;
@@ -116,7 +143,14 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
               // entry-point-anchored sources (Spring @RequestMapping, JAX-RS,
               // Servlet doGet, `main`, etc.) and for non-Java languages
               // (UNKNOWN tier → pass-through).
-              if (source.type === 'interprocedural_param' && source.in_method) {
+              // cognium-dev #137 (3.95.0) — gate guarded by
+              // `this.enableEntryPointGate` (default `true`); callers can
+              // disable to receive the un-gated pre-#128 source set.
+              if (
+                this.enableEntryPointGate &&
+                source.type === 'interprocedural_param' &&
+                source.in_method
+              ) {
                 const enclosing = methodNameIndex.get(source.in_method);
                 if (shouldGateInterproceduralParam(
                   source.type,

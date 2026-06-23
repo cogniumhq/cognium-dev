@@ -32,6 +32,24 @@ Passes marked `mode: sast+llm` belong to **circle-ir-ai** — never add them her
 
 ---
 
+### Naming convention (Pillar I — no LLM in cognium-dev)
+
+Pass `rule_id`, `name`, finding `evidence` keys, `AnalyzerOptions` fields, and
+per-pass option-struct fields MUST NOT contain the tokens `llm`, `ai`,
+`verify`, or `adjudicate`. cognium-dev is the deterministic SAST layer;
+LLM-aware functionality lives in `circle-ir-ai`. Use generic names:
+`confidence`, `speculative`, `includeSpeculative`, `discoveryMethod`. See
+ADR-007 (`docs/ARCHITECTURE.md`) and the Pillar I guardrail in `CLAUDE.md`
+(root, `packages/circle-ir`, `packages/cli`).
+
+Two legacy identifiers predate this rule and remain for back-compat:
+`discoveryMethod: 'static' | 'llm'` provenance value on `generateFindings`
+(shipped 3.45.0) and the `LLMVerificationResult` exported type. Both are
+deprecation candidates for a future major; no new code should reference
+them.
+
+---
+
 ## A. Security Passes (all shipped, category = `security`)
 
 All 19 passes operate on the `taint` graph. SARIF level: `error`.

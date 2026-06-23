@@ -13,6 +13,7 @@ This document outlines the key architectural decisions that make Circle-IR a hig
    - [ADR-004: Configuration-Driven Taint Patterns](#adr-004-configuration-driven-taint-patterns)
    - [ADR-005: Multi-Target Build System](#adr-005-multi-target-build-system)
    - [ADR-006: Runtime Pass Configuration](#adr-006-runtime-pass-configuration)
+   - [ADR-007: Pillar I — zero LLM in cognium-dev](#adr-007-pillar-i--zero-llm-in-cognium-dev)
 4. [Analysis Pipeline](#analysis-pipeline)
 5. [Benchmark Performance](#benchmark-performance)
 
@@ -420,6 +421,45 @@ class DependencyFanOutPass implements AnalysisPass {
 ```
 
 CLI tools (e.g., cognium) load `cognium.config.json` and pass options to `analyze()`.
+
+### ADR-007: Pillar I — zero LLM in cognium-dev
+
+**Status:** Accepted (2026-06-23, locked in 3.94.0).
+
+**Context.** cognium-dev is the deterministic SAST layer of the Cognium
+platform. LLM-aware functionality lives in the separate `circle-ir-ai` /
+`cognium-ai` repos which consume `circle-ir` as a library. Prior agent-
+generated work drifted toward LLM-themed identifiers (`--llm-verify`,
+`llmVerify` option, "LLM verifier" docstrings) inside this repo despite
+the architectural boundary, triggering a course correction in 3.94.0.
+
+**Decision.** No LLM concepts may surface anywhere in cognium-dev:
+
+- No `--llm-*` CLI flags.
+- No `llm*` option names on `AnalyzerOptions` or any pass option struct.
+- No "LLM verify / verifier / adjudicator / AI" wording in source,
+  comments, help text, CHANGELOGs, docs, or test fixtures.
+- API surfaces that downstream LLM consumers need (e.g. opt-in to
+  speculative findings) are named generically: `includeSpeculative`,
+  `confidence`, `speculative`.
+
+**Consequences.**
+
+- Future agents adding any flag/option/doc mentioning "LLM" must stop and
+  rename before committing. The guardrail is restated in `CLAUDE.md`
+  (root, `packages/circle-ir`, `packages/cli`) and surfaced in
+  `docs/SPEC.md` and `docs/PASSES.md`.
+- Two legacy LLM-themed identifiers predate this ADR and remain in the
+  public API for back-compat: `discoveryMethod: 'static' | 'llm'`
+  (`generateFindings`, added 3.45.0) and the `LLMVerificationResult`
+  exported type. Both are deprecation candidates for the next major
+  bump.
+- The downstream consumer pattern is: cognium-dev emits a richer signal
+  stream (e.g. `confidence: 'medium'` findings); `circle-ir-ai` opts in
+  via the generically-named library option and applies LLM adjudication
+  before user presentation.
+
+**Reference.** Sprint 36 retro / 3.94.0 release notes; `CLAUDE.md`.
 
 ---
 

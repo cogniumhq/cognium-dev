@@ -1,8 +1,22 @@
 # Circle-IR 3.0 Specification
 
 **Status**: Living Document
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-06-23
 **Implementation**: Python (reference) → TypeScript (target)
+
+---
+
+> **Naming convention (Pillar I — no LLM in cognium-dev).** New schema fields
+> exposed to downstream LLM consumers (`circle-ir-ai`, `cognium-ai`) must be
+> named generically (`confidence`, `speculative`, `includeSpeculative`,
+> `discoveryMethod`). The tokens `llm`, `ai`, `verify`, and `adjudicate` MUST
+> NOT appear in any new field, option, or rule_id. cognium-dev is the
+> deterministic SAST layer; LLM adjudication lives in `circle-ir-ai`. See
+> ADR-007 (`ARCHITECTURE.md`) and the Pillar I guardrail in `CLAUDE.md`.
+> Two legacy identifiers predate this rule and remain for back-compat:
+> `discoveryMethod: 'static' | 'llm'` provenance value (3.45.0) and the
+> `LLMVerificationResult` exported type. Both are deprecation candidates for
+> a future major.
 
 ---
 
