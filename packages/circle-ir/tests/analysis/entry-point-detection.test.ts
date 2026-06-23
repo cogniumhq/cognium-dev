@@ -190,6 +190,61 @@ describe('classifyEntryPointTier — TIER_1 by supertype lifecycle', () => {
     const t = type('Bootstrap', { implements: ['CommandLineRunner'] });
     expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
   });
+
+  // #154 — Netty handler classes. Pre-fix dolphinscheduler shape
+  // (LoggerRequestProcessor implements NettyRequestProcessor) +
+  // standard Netty handler shapes.
+  it.each([
+    { supertype: 'NettyRequestProcessor', kind: 'implements', method: 'process' },
+    { supertype: 'SimpleChannelInboundHandler', kind: 'extends',   method: 'channelRead0' },
+    { supertype: 'SimpleChannelInboundHandler', kind: 'extends',   method: 'messageReceived' },
+    { supertype: 'ChannelInboundHandler',       kind: 'implements', method: 'channelRead' },
+    { supertype: 'ChannelInboundHandlerAdapter', kind: 'extends',  method: 'channelRead' },
+    { supertype: 'ChannelDuplexHandler',         kind: 'extends',  method: 'channelRead' },
+  ] as const)('returns TIER_1 for $method on a $supertype $kind', ({ supertype, kind, method: mname }) => {
+    const m = method(mname);
+    const t = kind === 'extends'
+      ? type('MyHandler', { extends: supertype })
+      : type('MyHandler', { implements: [supertype] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('returns TIER_1 for SimpleChannelInboundHandler<MyCommand>.channelRead0 (generic erasure)', () => {
+    // Verifies `simpleTypeName` strips `<MyCommand>` before supertype lookup.
+    const m = method('channelRead0', {
+      parameters: [
+        param({ name: 'ctx', type: 'ChannelHandlerContext' }),
+        param({ name: 'msg', type: 'MyCommand' }),
+      ],
+    });
+    const t = type('CommandHandler', { extends: 'SimpleChannelInboundHandler<MyCommand>' });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('returns TIER_3 for a non-lifecycle helper on a Netty handler', () => {
+    // Negative control: only the named lifecycle methods are TIER_1.
+    const m = method('parseHeader');
+    const t = type('CommandHandler', { extends: 'SimpleChannelInboundHandler' });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+  });
+
+  it('CVE-2022-26884 dolphinscheduler shape: LoggerRequestProcessor.process gates correctly', () => {
+    // End-to-end shape from the #154 issue: command parameter on a
+    // NettyRequestProcessor.process() handler must NOT be dropped by
+    // the interprocedural_param gate (would otherwise lose the
+    // command.getBody() → path-traversal flow).
+    const m = method('process', {
+      parameters: [
+        param({ name: 'channel', type: 'Channel' }),
+        param({ name: 'command', type: 'Command' }),
+      ],
+    });
+    const t = type('LoggerRequestProcessor', { implements: ['NettyRequestProcessor'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    // The gate should NOT drop a speculative source on this method's
+    // params — TIER_1 means the source is preserved through verification.
+    expect(shouldGateInterproceduralParam('interprocedural_param', m, t, javaCtx)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

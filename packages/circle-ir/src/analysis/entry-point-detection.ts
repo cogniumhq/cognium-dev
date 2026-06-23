@@ -90,7 +90,9 @@
  * # Reference
  *
  * - cognium-dev#128 — entry-point-anchored taint sources.
- * - cognium-dev#136 — Tier 1 heuristic gaps audit (this update).
+ * - cognium-dev#136 — Tier 1 heuristic gaps audit (Spring stereotypes).
+ * - cognium-dev#154 — Netty handler classes (CVE-2022-26884
+ *   dolphinscheduler `NettyRequestProcessor.process`).
  * - `taint-matcher.ts:218-237` — speculative source emission site.
  * - `interprocedural-pass.ts:137-146` — engine's awareness comment.
  */
@@ -220,6 +222,19 @@ const TIER_1_BY_SUPERTYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   // Spring boot CLI entry points
   ['CommandLineRunner', new Set(['run'])],
   ['ApplicationRunner', new Set(['run'])],
+  // Netty channel handlers (#154 — CVE-2022-26884 dolphinscheduler).
+  // `SimpleChannelInboundHandler<T>.channelRead0(ctx, msg)` is the
+  // standard typed read entry; `ChannelInboundHandler.channelRead(ctx,
+  // Object)` is the untyped base. `ChannelInboundHandlerAdapter` and
+  // `ChannelDuplexHandler` are the most-common adapter classes user
+  // handlers extend. `NettyRequestProcessor` is the dolphinscheduler-
+  // specific (and other Netty-RPC projects') wire-message processor
+  // surface — `process(channel, command)` is the network entry point.
+  ['SimpleChannelInboundHandler', new Set(['channelRead0', 'messageReceived'])],
+  ['ChannelInboundHandler', new Set(['channelRead', 'channelReadComplete'])],
+  ['ChannelInboundHandlerAdapter', new Set(['channelRead', 'channelReadComplete'])],
+  ['ChannelDuplexHandler', new Set(['channelRead', 'channelReadComplete'])],
+  ['NettyRequestProcessor', new Set(['process'])],
 ]);
 
 // ---------------------------------------------------------------------------

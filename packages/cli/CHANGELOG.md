@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.93.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.93.0 Netty entry-point classifier
+extension (cognium-dev#154 — closes the recognition gap behind
+CVE-2022-26884 dolphinscheduler). No CLI surface changes; bumps the
+`circle-ir` dependency.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.93.0`. End-user
+  effect: Java scans now recognise `SimpleChannelInboundHandler<T>`,
+  `ChannelInboundHandler`, `ChannelInboundHandlerAdapter`,
+  `ChannelDuplexHandler`, and `NettyRequestProcessor` lifecycle methods
+  as TIER_1 entry points, preserving their wire-message parameter taint
+  sources through verification. Generalises to Cassandra wire protocol,
+  Apache Flink workers, gRPC-over-Netty servers, Twitter Finagle, and
+  dolphinscheduler logger / master / worker RPC handlers when their
+  handler types weren't previously in the recognised set.
+
 ## [3.92.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.92.0 Java-bundle (close cognium-dev#143

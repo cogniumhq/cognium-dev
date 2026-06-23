@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.93.0] - 2026-06-23
+
+cognium-dev#154 — extend Tier 1 entry-point recognition to cover Netty
+channel handlers. Closes the entry-point recognition gap that caused
+CVE-2022-26884 (apache dolphinscheduler `LoggerRequestProcessor`) to be
+missed even by top LLM models on CWE-Bench-Java.
+
+### Added
+
+- `src/analysis/entry-point-detection.ts` — five new entries in
+  `TIER_1_BY_SUPERTYPE`:
+
+  | Supertype (`extends` / `implements`) | Lifecycle method(s) |
+  |---|---|
+  | `SimpleChannelInboundHandler<T>` | `channelRead0`, `messageReceived` |
+  | `ChannelInboundHandler`           | `channelRead`, `channelReadComplete` |
+  | `ChannelInboundHandlerAdapter`    | `channelRead`, `channelReadComplete` |
+  | `ChannelDuplexHandler`            | `channelRead`, `channelReadComplete` |
+  | `NettyRequestProcessor`           | `process` |
+
+  These cover the standard Netty handler shapes plus the dolphinscheduler-
+  family `NettyRequestProcessor` wire-message processor surface. Match
+  uses simple-name comparison via the existing `simpleTypeName` helper
+  so generic parameterisation (`SimpleChannelInboundHandler<MyCommand>`)
+  erases to the bare supertype name before lookup.
+
+### End-user effect
+
+- Java code where a handler extends `SimpleChannelInboundHandler<T>`
+  (or any other entry above) now keeps its `interprocedural_param`
+  taint sources on the wire-message parameter through the
+  `shouldGateInterproceduralParam` gate at
+  `interprocedural-pass.ts:121`, instead of being dropped at the
+  TIER_3 fallback. Recall positive on Netty-based services
+  (Cassandra wire protocol, gRPC-over-Netty servers, Apache Flink
+  workers, Twitter Finagle, dolphinscheduler logger / master / worker
+  RPC); no precision regression — the library-facade short-circuit
+  (`*Util` / template-package / JDK-facade-implements) still trumps
+  the supertype lookup, and the lifecycle method allowlist is named-
+  method-only (a non-lifecycle helper on a Netty handler class stays
+  TIER_3).
+
+### Tests
+
+- `tests/analysis/entry-point-detection.test.ts` — eight new tests:
+  - Six-row `it.each` covering each (supertype × kind × method) tuple.
+  - Generic-erasure case (`SimpleChannelInboundHandler<MyCommand>`).
+  - Negative control (non-lifecycle helper on a Netty handler stays TIER_3).
+  - End-to-end CVE-2022-26884 shape lock
+    (`LoggerRequestProcessor.process(channel, command)` →
+    `TIER_1_ENTRY_POINT` AND `shouldGateInterproceduralParam` returns
+    `false`).
+- Full suite: 2829 pass, 1 skipped on circle-ir.
+
 ## [3.92.0] - 2026-06-23
 
 Java-bundle release — close out three #141-class triage items as a single
