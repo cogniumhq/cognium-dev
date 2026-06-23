@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.92.0] - 2026-06-23
+
+Java-bundle release — close out three #141-class triage items as a single
+shipment. Disposition close on cognium-dev#143 (the proposed `(source, sink)`
+coalescing schema, declined as unjustified by empirical capture data),
+followed by the standalone defensive cap that was originally bundled with
+#143 reverting to its pre-reframe shape.
+
+### Added
+
+- **#142 — Defensive per-file finding cap** (`src/analysis/per-file-finding-cap.ts`).
+  New `AnalyzerOptions.perFileFindingCap` field (default `1000`,
+  `0` disables). When a single file produces more than the cap, the
+  individual findings are dropped and replaced by a single
+  `saturated-file` advisory (`category: 'maintainability'`,
+  `severity: 'low'`, `level: 'note'`) carrying `evidence.suppressed_count`,
+  `evidence.cap`, and `evidence.by_rule` / `evidence.by_severity`
+  roll-ups. The cap fires after the pipeline so the #145 PR B
+  instrumentation hook still observes the uncapped findings stream; it
+  fires before `analyzeProject()` collects per-file results so the cross-
+  file phase input is bounded by file count, not finding count.
+  Rationale: a file producing >1000 findings is structurally wrong (cross-
+  product noise from sink-class mismatch, mis-labelled sink type, or
+  pathological generated code), not a legitimate detection burst. The
+  default of 1000 sits comfortably above the realistic ceiling
+  (~200 findings on jedis-shape library facades) and below the
+  structural-failure floor observed during the #141 langchain4j investigation
+  (~10K findings on a single file before the cross-file hang). Combined
+  with the 3.89.0 `crossFileBudgetMs` breaker, this closes the residual
+  worst-case path on this class of hang.
+
+### Closed (disposition)
+
+- **#143 — Coalesce findings by `(source, sink)` location with vuln-class
+  labels[]** — closed as unjustified. Two empirical captures via the
+  `CIRCLE_IR_INSTRUMENT_FINDINGS=1` hook shipped in 3.90.0: (a) jedis /
+  jib / eureka cross-file scans yielded 0 multi-label coordinates; (b)
+  OWASP Benchmark per-file scans yielded 31 % multi-rule overlap but
+  0 HIGH-severity multi-rule locations. The original premise — that a
+  single source-sink pair routinely emits N findings under different
+  vuln-class labels — is not supported by the Java OSS data. PR A
+  (3.88.1 defensive type-axis dedup) and PR B (3.90.0 instrumentation
+  hook) ship; the schema change (PR C) does not.
+
+### Verified
+
+- All 2820 tests pass (1 skipped). Eight new unit tests in
+  `tests/analysis/per-file-finding-cap.test.ts` cover under-cap pass-
+  through, boundary equality, over-cap collapse, by-rule / by-severity
+  roll-ups, cap-0 disable, negative-value defensive disable, default cap
+  constant, and empty-array handling.
+
 ## [3.91.0] - 2026-06-23
 
 Sprint 36 — close cognium-dev#136 Tier 1 entry-point heuristic gaps. The

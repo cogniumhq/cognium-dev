@@ -79,6 +79,10 @@ import {
   isFalsePositive,
 } from './analysis/index.js';
 import { emitFindingsInstrumentation } from './analysis/findings-instrumentation.js';
+import {
+  applyPerFileFindingCap,
+  DEFAULT_PER_FILE_FINDING_CAP,
+} from './analysis/per-file-finding-cap.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
@@ -225,6 +229,33 @@ export interface AnalyzerOptions {
    * Added in circle-ir 3.89.0 to mitigate #141 (langchain4j 30-min hang).
    */
   crossFileBudgetMs?: number;
+
+  /**
+   * Defensive per-file finding cap (#142).
+   *
+   * A single file producing more than this many findings is treated as a
+   * structural failure of the analysis pipeline (cross-product blow-up,
+   * mislabelled sink class, or pathological generated code) rather than a
+   * legitimate detection burst. When the cap is exceeded, all individual
+   * findings for that file are dropped and replaced by a single
+   * `saturated-file` advisory carrying the suppressed count, so the signal
+   * stays visible without flooding downstream consumers.
+   *
+   * - `0` disables the cap (unlimited; pre-3.92.0 behaviour).
+   * - Omitting the field uses the default of `1000`, chosen well above the
+   *   realistic per-file ceiling (~200 for jedis-shape library facades) and
+   *   below the empirical structural-failure floor observed on langchain4j
+   *   (~10K findings on a single file before the cross-file phase hang).
+   *
+   * The cap is applied after the pipeline runs but before the result is
+   * returned, so per-pass instrumentation (#145 PR B) still observes the
+   * uncapped findings stream for diagnostic purposes.
+   *
+   * Added in circle-ir 3.92.0 as a defensive tripwire; #143 (the proposed
+   * (source, sink) coalescing schema) was closed as unjustified by
+   * empirical capture data, leaving this as the standalone safeguard.
+   */
+  perFileFindingCap?: number;
 }
 
 /**
@@ -578,11 +609,22 @@ export async function analyze(
 
   // #145 PR B — opt-in per-file findings instrumentation. No-op unless
   // toggled via setFindingsInstrumentation(true). Strictly read-only.
+  // Runs before the per-file cap so diagnostics observe the uncapped stream.
   emitFindingsInstrumentation(filePath, findings, taint);
+
+  // #142 defensive per-file finding cap. If a file produces more than
+  // `cap` findings, drop the individual results and emit a single
+  // `saturated-file` advisory in their place. Default cap = 1000;
+  // `perFileFindingCap: 0` disables.
+  const cappedFindings = applyPerFileFindingCap(
+    filePath,
+    findings,
+    options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
+  );
 
   return {
     meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
-    findings: findings.length > 0 ? findings : undefined,
+    findings: cappedFindings.length > 0 ? cappedFindings : undefined,
     metrics: { file: filePath, metrics: metricValues },
     runtime_registrations: runtimeRegistrations.length > 0 ? runtimeRegistrations : undefined,
     parse_status: parseStatus,

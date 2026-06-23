@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.92.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.92.0 Java-bundle (close cognium-dev#143
+as unjustified, ship cognium-dev#142 defensive per-file finding cap, status
+update on cognium-dev#141). No CLI surface changes; bumps the `circle-ir`
+dependency.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.92.0`. End-user
+  effect: any single file producing more than 1000 findings is now
+  collapsed to a single `saturated-file` advisory in the report
+  (`rule_id: 'saturated-file'`, `severity: 'low'`,
+  `category: 'maintainability'`, `level: 'note'`). The advisory carries
+  the suppressed count and per-rule / per-severity roll-ups in its
+  `evidence` field so triagers can recognise the saturation pattern
+  without re-running with the cap disabled. Combined with the 3.89.0
+  `crossFileBudgetMs` breaker, this closes the residual worst-case
+  hang path on langchain4j-shape inputs. Consumers that need the
+  uncapped stream can pass `perFileFindingCap: 0` to `analyze()` /
+  `analyzeProject()` programmatically (no CLI flag yet — defer until
+  empirical need surfaces).
+
 ## [3.91.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.91.0 entry-point classifier update
