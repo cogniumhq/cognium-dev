@@ -87,6 +87,37 @@ const JAVA_DECL_RE_TEMPLATE =
   '(?:\\b(?:final|public|private|protected|static)\\s+)*' +
   '([A-Z]\\w*(?:\\.[A-Z]\\w*)?(?:<[^>]*>)?)\\s+RECV\\b\\s*[=;,)]';
 
+// ---------------------------------------------------------------------------
+// Stage 10 — Java command_injection (CWE-78) FP reduction.
+// (cognium-dev #167, #170 — Sprint 43)
+// ---------------------------------------------------------------------------
+
+// #170 — protocol-client wire-method names (overlap with the
+// genuine OS-exec method names; this set is consulted only when
+// the file also imports a protocol-client package).
+const PROTOCOL_WIRE_METHODS = new Set<string>([
+  'executeCommand', 'execute', 'dispatch',
+  'send', 'publish', 'command', 'run',
+]);
+
+// #170 — packages whose presence indicates a protocol-client file.
+// Conservative list: well-known JVM Redis / MQ / DB drivers.
+const PROTOCOL_CLIENT_PACKAGES: readonly string[] = [
+  'redis.clients.jedis',
+  'io.lettuce',
+  'org.springframework.data.redis',
+  'org.springframework.data.mongodb',
+  'org.springframework.amqp',
+  'com.rabbitmq',
+  'org.apache.kafka',
+  'org.eclipse.paho',
+];
+
+// Defense-in-depth: even inside a protocol-client file, do not
+// suppress a sink whose receiver is explicitly an OS-exec class.
+const OS_EXEC_RECEIVER_RE =
+  /\b(?:Runtime|ProcessBuilder|DefaultExecutor|Executor|Exec|Launcher|ProcStarter|ProcessExecutor|RuntimeUtil)\s*[.(]/;
+
 function resolveJavaReceiverType(
   receiver: string,
   sinkLine: number,
@@ -127,6 +158,26 @@ function extractJavaCallArgs(method: string, line: string): string[] | null {
   const argsText = m[1].trim();
   if (argsText === '') return [];
   return argsText.split(',').map(s => s.trim());
+}
+
+/**
+ * Returns true if the file imports any class from `packagePrefix`.
+ * Bounded scan — Java imports live in the first ~80 lines. Conservative:
+ * matches both regular and static imports.
+ */
+function hasJavaImportFromPackage(
+  packagePrefix: string,
+  sourceLines: string[],
+): boolean {
+  if (!/^[A-Za-z_][\w.]*$/.test(packagePrefix)) return false;
+  const limit = Math.min(sourceLines.length, 80);
+  const re = new RegExp(
+    `^\\s*import\\s+(?:static\\s+)?${packagePrefix.replace(/\./g, '\\.')}\\b`,
+  );
+  for (let i = 0; i < limit; i++) {
+    if (re.test(sourceLines[i] ?? '')) return true;
+  }
+  return false;
 }
 
 export interface SinkFilterResult {
@@ -420,6 +471,49 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (method === 'newInstance' &&
             /\.\s*newInstance\s*\(\s*\)/.test(sinkLineText)) {
           return false;
+        }
+
+        return true;
+      });
+    }
+
+    // Stage 10 — Java command_injection (CWE-78) FP reduction.
+    // (cognium-dev #167, #170 — Sprint 43)
+    //
+    // Conservative-bias default: any command_injection sink whose file
+    // imports don't match a known non-OS-exec package continues to fire.
+    // Recall on real Runtime / ProcessBuilder / commons-exec sinks
+    // unchanged.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'command_injection') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+
+        // 10a — #167: picocli `new CommandLine(...)` collides with
+        // Apache Commons Exec `CommandLine` in the existing
+        // CWE_78_RECEIVER_ALLOWLIST at taint-matcher.ts. picocli's
+        // annotation-driven dispatch never invokes a shell.
+        if (sink.method === 'CommandLine' &&
+            /\bnew\s+CommandLine\s*\(/.test(sinkLineText) &&
+            hasJavaImportFromPackage('picocli', sourceLines)) {
+          return false;
+        }
+
+        // 10b — #170: protocol-client wire-command methods called
+        // inside Jedis / Lettuce / Kafka / Rabbit / Mongo / Paho /
+        // Spring-Data classes. Receiver is implicit `this` so the
+        // existing CWE_78_RECEIVER_ALLOWLIST gate falls through.
+        if (sink.method && PROTOCOL_WIRE_METHODS.has(sink.method)) {
+          for (const pkg of PROTOCOL_CLIENT_PACKAGES) {
+            if (hasJavaImportFromPackage(pkg, sourceLines)) {
+              // Defense-in-depth: a protocol-client file that ALSO
+              // calls Runtime.exec etc. must keep firing.
+              if (!OS_EXEC_RECEIVER_RE.test(sinkLineText)) {
+                return false;
+              }
+            }
+          }
         }
 
         return true;

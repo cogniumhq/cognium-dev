@@ -5,6 +5,121 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.101.0] - 2026-06-24
+
+Tier-1 zero-FP queue cluster release covering three Java FPs that
+share a common root cause — lexical sink matching with no file-level
+package-context check — spanning two distinct vuln classes. The
+cluster targets the single biggest CRITICAL-severity noise source in
+the top-100 Java sweep (#170), the largest XXE FP bucket (#173), and
+a small lingering picocli FP (#167). A new Stage 10 in
+`SinkFilterPass` (`sink-filter-pass.ts`), scoped to
+`language === 'java'` AND `sink.type === 'command_injection'`,
+plus an output-direction gate in `XmlEntityExpansionPass`
+(`xml-entity-expansion-pass.ts`), suppress three known-safe shapes.
+
+- **cognium-dev#167 — picocli `new CommandLine(...)` constructor
+  (~5-10 FPs)** — Stage 10a suppresses `new CommandLine(...)`
+  command_injection sinks when the file imports `picocli.*`. picocli's
+  annotation-driven CLI parser shares the simple class name with
+  Apache Commons Exec's `CommandLine` (both already in
+  `CWE_78_RECEIVER_ALLOWLIST` at `taint-matcher.ts`), causing a
+  last-segment name collision. Apache Commons Exec `CommandLine`
+  continues to fire normally (different file, different imports).
+
+- **cognium-dev#170 — Redis / MQ protocol-client wire-command methods
+  (5 CRIT + 7 HIGH from jedis alone, 30-60% CRIT-count reduction)** —
+  Stage 10b suppresses `executeCommand` / `execute` / `dispatch` /
+  `send` / `publish` / `command` / `run` calls inside files importing
+  a protocol-client package (jedis, lettuce, spring-data-redis,
+  spring-data-mongodb, spring-amqp, rabbitmq, kafka-clients,
+  paho-mqtt). These methods dispatch protocol-level wire commands
+  (RESP / AMQP / Kafka / MQTT / MongoDB) — no shell, no OS process.
+  Receiver is implicit `this` in OO context, so `receiver_type` is
+  unresolved at sink-emission time and the existing
+  `CWE_78_RECEIVER_ALLOWLIST` gate falls through. Defense-in-depth:
+  a protocol-client file that ALSO calls `Runtime.exec(...)` /
+  `ProcessBuilder` keeps those sinks (the OS-exec receiver regex
+  guards against over-suppression).
+
+- **cognium-dev#173 — output-only `TransformerFactory` + empty
+  `DocumentBuilder` (~9 FPs / batch, ~25-40 across the corpus)** —
+  Two file-level output-direction gates in
+  `xml-entity-expansion-pass.ts`:
+    - `TransformerFactory.newInstance()` is suppressed when the file
+      uses ONLY `DOMSource` / `StreamResult` (in-process Document
+      serialization) and NO `StreamSource` / `SAXSource` /
+      `InputSource` (no XML bytes ever read). No entity-resolution
+      attack surface.
+    - `DocumentBuilderFactory.newInstance()` is suppressed when the
+      file calls `.newDocument()` (empty in-memory tree) and NO
+      `.parse(...)` (never reads bytes). Empty document construction
+      cannot be exploited.
+
+All three fixes are pass / filter-layer only — no IR, no YAML config,
+no CLI surface change. Pillar I zero-LLM boundary safe.
+
+### Added
+
+- **#167 / #170** — New Stage 10 block in
+  `src/analysis/passes/sink-filter-pass.ts`, gated on
+  `language === 'java'` AND `sink.type === 'command_injection'`.
+  Sub-stages 10a / 10b correspond to #167 and #170 respectively.
+- Module-level constants `PROTOCOL_WIRE_METHODS` (7 entries),
+  `PROTOCOL_CLIENT_PACKAGES` (8 entries), and `OS_EXEC_RECEIVER_RE`.
+  Adding a new safe protocol-client package is a one-line set entry.
+- Helper `hasJavaImportFromPackage(packagePrefix, sourceLines)` —
+  bounded 80-line forward scan over the file's Java imports. Package
+  prefix is pre-validated by `/^[A-Za-z_][\w.]*$/` before being
+  interpolated into the regex template (no regex-injection risk).
+- **#173** — Output-direction gate in
+  `src/analysis/passes/xml-entity-expansion-pass.ts`, gated on
+  `language === 'java'`. Four module-level regex constants
+  (`JAVA_XML_OUTPUT_ONLY_RE`, `JAVA_XML_PARSE_INPUT_RE`,
+  `JAVA_DOC_BUILDER_NEW_DOCUMENT_RE`, `JAVA_DOC_BUILDER_PARSE_RE`)
+  encode the safe-shape and unsafe-shape file-level checks.
+- New test file `tests/analysis/passes/java-command-injection-fp.test.ts`
+  with 8 cases: 5 FP-suppression (1 for #167, 4 for #170) + 2 recall
+  locks (`Runtime.exec`, `new ProcessBuilder`) + 1 defense-in-depth
+  regression (jedis import alongside real `Runtime.exec`).
+- New test file `tests/analysis/passes/java-xxe-output-only-fp.test.ts`
+  with 6 cases: 2 FP-suppression (DOM→StreamResult; empty
+  DocumentBuilder) + 3 recall locks (`StreamSource` input,
+  `DocumentBuilder.parse`, `SAXParserFactory`) + 1 mixed-shape
+  regression lock.
+
+### Changed
+
+- Conservative-bias default preserved across all three issues. The
+  existing `CWE_78_RECEIVER_ALLOWLIST` at `taint-matcher.ts:764-777`
+  and its gate logic at `taint-matcher.ts:1184-1203` are unchanged;
+  Stage 10 is pure post-emission filtering. The Java XXE
+  `JAVA_SAFE_EVIDENCE_RE` short-circuit is unchanged; the new
+  output-direction gate runs after it. Recall on real
+  `Runtime.exec(tainted)`, `new ProcessBuilder(tainted)`, Apache
+  Commons Exec `CommandLine`, `StreamSource` / `SAXSource` /
+  `InputSource` parsing, `DocumentBuilder.parse(...)`, and
+  `SAXParserFactory` remains unchanged.
+
+### End-user effect
+
+- Java SAST scans of projects using jedis / lettuce /
+  spring-data-redis / spring-data-mongodb / spring-amqp / rabbitmq /
+  kafka-clients / paho-mqtt no longer surface CWE-78 FPs for
+  protocol-client wire-command methods. Expected 30-60% reduction in
+  CRITICAL-severity finding count on Java corpora dominated by
+  Redis / MQ client code.
+- Java SAST scans of projects using picocli no longer surface CWE-78
+  FPs for `new CommandLine(...)` constructors.
+- Java SAST scans of projects that only serialize XML
+  (CoreNLP `Ssurgeon`, OpenFeign `SOAPEncoder`, AndroidAsync
+  `DocumentBody`) or only construct empty `Document` trees no longer
+  surface CWE-776 / CWE-611 FPs for `TransformerFactory.newInstance()`
+  or `DocumentBuilderFactory.newInstance()`.
+
+- Test suite: **2907 → 2921 passed** (+ 14 new cases), 1 skipped,
+  173 test files (+2 new files).
+
 ## [3.100.0] - 2026-06-23
 
 Tier-1 zero-FP queue cluster release covering four Java

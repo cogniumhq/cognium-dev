@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.101.0] - 2026-06-24
+
+Tracking release for the circle-ir@3.101.0 Tier-1 zero-FP queue
+cluster release. No CLI surface changes; bumps the `circle-ir`
+dependency from `^3.100.0` to `^3.101.0`. End-user effect (three
+Java rule fixes — biggest single sprint CRITICAL-severity reduction
+to date):
+
+- **cognium-dev#167 — picocli `new CommandLine(...)` constructor** —
+  Java scans of projects using picocli no longer surface CWE-78
+  command_injection FPs for the annotation-driven CLI parser
+  constructor. Apache Commons Exec `CommandLine` continues to fire.
+- **cognium-dev#170 — Redis / MQ protocol-client wire-command
+  methods** — Java scans of projects using jedis / lettuce /
+  spring-data-redis / spring-data-mongodb / spring-amqp / rabbitmq /
+  kafka-clients / paho-mqtt no longer surface CWE-78 FPs for
+  `executeCommand` / `execute` / `dispatch` / `send` / `publish` /
+  `command` / `run`. Real `Runtime.exec` / `ProcessBuilder` calls
+  inside the same files continue to fire. Expected 30-60% reduction
+  in CRITICAL-severity finding count on Java corpora dominated by
+  Redis / MQ client code.
+- **cognium-dev#173 — output-only `TransformerFactory` + empty
+  `DocumentBuilder`** — Java scans of projects that only serialize
+  XML (`DOMSource → StreamResult`) or only construct empty
+  `Document` trees (`builder.newDocument()` with no `.parse(...)`)
+  no longer surface CWE-776 / CWE-611 xml-entity-expansion FPs.
+  `StreamSource` / `SAXSource` / `InputSource` parsing,
+  `DocumentBuilder.parse(...)`, and `SAXParserFactory` continue to
+  fire.
+
 ## [3.100.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.100.0 Tier-1 zero-FP queue cluster

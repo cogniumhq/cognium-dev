@@ -55,6 +55,22 @@ const JAVA_FACTORIES = new Set<string>([
 const JAVA_SAFE_EVIDENCE_RE =
   /(disallow-doctype-decl|external-general-entities|external-parameter-entities|SUPPORT_DTD|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_SCHEMA|setXIncludeAware\s*\(\s*false\s*\)|setExpandEntityReferences\s*\(\s*false\s*\))/;
 
+// #173 — output-only TransformerFactory shape:
+//   - file contains DOMSource / StreamResult construction
+//   - file contains NO StreamSource / SAXSource / InputSource
+//     (i.e., factory never reads attacker-controllable bytes)
+const JAVA_XML_OUTPUT_ONLY_RE =
+  /\bnew\s+(?:DOMSource|StreamResult)\s*\(/;
+const JAVA_XML_PARSE_INPUT_RE =
+  /\bnew\s+(?:StreamSource|SAXSource|InputSource)\s*\(/;
+
+// #173 — empty-DocumentBuilder shape:
+//   - file calls builder.newDocument() (creates empty in-memory tree)
+//   - file calls NO builder.parse(...) (never reads bytes)
+const JAVA_DOC_BUILDER_NEW_DOCUMENT_RE = /\.\s*newDocument\s*\(\s*\)/;
+const JAVA_DOC_BUILDER_PARSE_RE =
+  /(?:DocumentBuilder|builder)\s*\.\s*parse\s*\(/;
+
 const PY_LXML_PARSER_INSECURE_DEFAULT_RE = /\bresolve_entities\s*=\s*False\b/;
 
 interface Detection {
@@ -88,9 +104,23 @@ export class XmlEntityExpansionPass
       const safeInFile = JAVA_SAFE_EVIDENCE_RE.test(code);
       if (safeInFile) return { findings };
 
+      // #173 — output-only TransformerFactory + empty DocumentBuilder.
+      // File-level heuristics; conservative-bias (only suppress when the
+      // file shows ONLY the safe shape and NO unsafe shape).
+      const isXmlOutputOnly =
+        JAVA_XML_OUTPUT_ONLY_RE.test(code) &&
+        !JAVA_XML_PARSE_INPUT_RE.test(code);
+      const isDocumentBuilderEmptyOnly =
+        JAVA_DOC_BUILDER_NEW_DOCUMENT_RE.test(code) &&
+        !JAVA_DOC_BUILDER_PARSE_RE.test(code);
+
       for (const call of graph.ir.calls) {
         const det = this.detectJavaCall(call);
         if (!det) continue;
+        // #173 — suppress when factory is only used for output / empty doc.
+        if (det.api === 'TransformerFactory' && isXmlOutputOnly) continue;
+        if (det.api === 'DocumentBuilderFactory' && isDocumentBuilderEmptyOnly)
+          continue;
         const line = call.location.line;
         findings.push({ line, language, ...det });
         ctx.addFinding({
