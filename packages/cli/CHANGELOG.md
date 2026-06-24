@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.96.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.96.0 `setInterval` / `setTimeout`
+CWE-94 sink-shape gate (cognium-dev#152). No CLI surface changes; bumps
+the `circle-ir` dependency. End-user effect: JS/TS scans no longer report
+a `code_injection` finding on `setInterval` / `setTimeout` calls whose
+first argument is a function literal (the common, benign callback shape).
+All other CWE-94 sinks (`eval`, `Function`, `new Function(...)`, and
+tainted-identifier flows into `setInterval` / `setTimeout`) emit
+unchanged.
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.96.0`.
+
 ## [3.95.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.95.0 entry-point gate opt-out toggle

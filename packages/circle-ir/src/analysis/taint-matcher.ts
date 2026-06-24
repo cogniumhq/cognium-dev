@@ -4,7 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
-import type { CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
+import type { ArgumentInfo, CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
@@ -777,6 +777,66 @@ const CWE_78_RECEIVER_ALLOWLIST: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Detect a JS/TS argument that is *definitively* a function/arrow-function
+ * literal (i.e. a callback). Used to suppress CWE-94 emissions on
+ * `setInterval`/`setTimeout` calls whose first argument is a callback —
+ * those have no implicit-eval semantics and are the common benign shape.
+ *
+ * The eval-style semantics of `setInterval`/`setTimeout` only fires when
+ * arg[0] is a string (e.g. `setInterval("alert(1)", 100)`). The far more
+ * common form is a callback:
+ *
+ *   setInterval(() => tick(), 80)         → callback (suppress sink)
+ *   setInterval(function () { ... }, 80)  → callback (suppress sink)
+ *   setInterval(async () => save(), 80)   → callback (suppress sink)
+ *   setInterval(handler, 80)              → identifier — keep sink so
+ *                                            taint flow can decide
+ *   setInterval("alert(1)", 100)          → string literal — keep sink
+ *
+ * Conservative bias: only return `true` when the argument is unambiguously
+ * a function literal. Bare identifiers, member expressions, and any other
+ * non-literal expression return `false` so the sink stays and taint
+ * propagation decides whether to emit a flow.
+ *
+ * Detection signal (no AST node access at this layer): the IR extractor's
+ * `analyzeJSArgument()` preserves the raw `expression` text verbatim for
+ * function and arrow-function arguments; that text starts with `(` for
+ * arrow forms (after an optional `async ` prefix) or `function` for
+ * function-expression forms. `arg.literal` is reliably null for these
+ * forms; `arg.variable` is NOT a reliable signal because the extractor
+ * surfaces the first identifier referenced inside the body (e.g.
+ * `console` for `() => console.log(...)`), so detection drives off the
+ * expression shape.
+ *
+ * cognium-dev #152.
+ */
+function isFunctionCallbackArgument(arg: ArgumentInfo): boolean {
+  // A string literal sets `literal` to the unquoted value — definitively
+  // NOT a function literal.
+  if (arg.literal !== null && arg.literal !== undefined) return false;
+
+  // Note: `arg.variable` is unreliable for inline function/arrow
+  // expressions — `analyzeJSArgument()` extracts the first identifier
+  // referenced inside the body (e.g. `console` for
+  // `() => console.log()`). We therefore drive detection from the raw
+  // `expression` text, which is preserved verbatim for function/arrow
+  // forms and starts with `(` (after optional `async `) or `function`.
+  const expr = (arg.expression ?? '').trim();
+  if (expr.length === 0) return false;
+
+  // Arrow function: `() => ...`, `(a, b) => ...`, optionally prefixed
+  // with `async `. The leading `async` keyword is the only non-`(` token
+  // we need to strip before checking the arrow shape.
+  const body = expr.startsWith('async ') ? expr.slice(6).trimStart() : expr;
+  if (body.startsWith('(')) return true;
+
+  // Function expression: `function () { ... }` or `function named() ...`.
+  if (/^function\b/.test(body)) return true;
+
+  return false;
+}
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -854,6 +914,21 @@ function findSinks(
             if (receiverClass && !CWE_78_RECEIVER_ALLOWLIST.has(receiverClass)) {
               continue;
             }
+          }
+        }
+
+        // #152 — setInterval/setTimeout CWE-94 only applies when arg[0]
+        // is a string (the implicit-eval shape). A function/arrow-function
+        // callback at arg[0] is the common, benign form. Drop the sink
+        // emission in that case so taint flow doesn't fabricate a
+        // code_injection finding on `setInterval(() => tick(), 80)`.
+        if (
+          pattern.type === 'code_injection' &&
+          (call.method_name === 'setInterval' || call.method_name === 'setTimeout')
+        ) {
+          const firstArg = call.arguments.find(a => a.position === 0);
+          if (firstArg && isFunctionCallbackArgument(firstArg)) {
+            continue;
           }
         }
 

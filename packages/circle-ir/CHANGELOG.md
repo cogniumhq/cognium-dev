@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.96.0] - 2026-06-23
+
+cognium-dev#152 — `setInterval` / `setTimeout` CWE-94 (code_injection) sink
+emission is now gated by arg[0] kind. Callback shapes
+(`setInterval(() => tick(), 80)`, `setTimeout(function () {...}, 500)`,
+async / named / parameterised variants) are the common benign form and
+have no implicit-eval semantics; they no longer emit a `code_injection`
+sink. Identifier and string forms remain handled by the existing
+`SinkFilterPass` cleanness/taint pipeline. End-user effect: eliminates
+the false-positive cluster that fired on benign timer callbacks
+(e.g. `cognium-ai/src/utils/spinner.ts:28`).
+
+### Added
+
+- `isFunctionCallbackArgument(arg)` helper
+  (`src/analysis/taint-matcher.ts`) — conservative detector for JS/TS
+  function-literal arguments. Drives detection off the raw `expression`
+  text (`(...) => ...`, `async (...) => ...`, `function ...`) because
+  the IR extractor's `analyzeJSArgument()` surfaces the first identifier
+  referenced inside the body into `arg.variable`, making that field an
+  unreliable signal for inline function expressions.
+
+### Changed
+
+- `findSinks()` (`src/analysis/taint-matcher.ts`) — new guard placed
+  after the CWE-78 receiver allowlist and before `formatCallLocation`:
+  when `pattern.type === 'code_injection'` and `call.method_name` is
+  `setInterval` or `setTimeout`, skip emission if arg[0] is a function
+  literal. The gate is scoped strictly to those two method names;
+  `eval`, `Function`, and all other code_injection sinks are unaffected.
+
+### Tests
+
+- New `tests/analysis/passes/set-interval-timeout-callback-fp.test.ts`
+  (11 cases): 8 FP-suppression locks (arrow / async arrow /
+  parameterised arrow / anonymous & named function-expression / setTimeout
+  arrow / setTimeout function-expression / spinner.ts:28 issue repro);
+  2 recall locks (identifier arg[0] keeps the sink for setInterval and
+  setTimeout so taint propagation can decide); 1 gate-scoping lock
+  (`eval(...)` still emits).
+
+### End-user effect
+
+- JS / TS scans: no `code_injection` finding on `setInterval` /
+  `setTimeout` calls whose first argument is a function literal.
+- All other CWE-94 sinks (`eval`, `Function`, `new Function(...)`) are
+  emitted unchanged.
+- All other taint shapes (tainted identifier flowing into
+  `setInterval(handler, ...)`) continue to emit a sink, and taint flow
+  produces a finding when a source reaches the identifier.
+
 ## [3.95.0] - 2026-06-23
 
 cognium-dev#137 — entry-point gate opt-out toggle + Pillar I documentation
