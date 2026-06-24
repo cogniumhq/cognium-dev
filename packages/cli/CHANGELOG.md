@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.103.0] - 2026-06-24
+
+Tracking release for the circle-ir@3.103.0 Sprint 45 fixes closing two
+small standalone Tier-1 zero-FP queue items. No CLI surface changes;
+bumps the `circle-ir` dependency from `^3.102.0` to `^3.103.0`.
+End-user effect (two Java rule fixes — `sql_injection` line-resolution
+and `resource-leak` ownership-transfer suppressions):
+
+- **cognium-dev#157 — `sql_injection` sink on `throw new SQLException(...)`** —
+  Java scans no longer surface HIGH CWE-89 `sql_injection` findings
+  whose sink line is a `throw new SQLException(...)` statement. A
+  `throw new <Anything>(...)` statement is structurally never a
+  runtime sink: it constructs the exception object and unwinds the
+  stack — no SQL execution, no command exec, no XSS, no path I/O
+  happens. The new Stage 12 post-emission filter in `sink-filter-pass`
+  is sink-type-agnostic and also suppresses sinks on
+  `throw new IOException(...)`, `throw new RuntimeException(...)`,
+  etc. Confirmed FP repro: `chinabugotech__hutool`
+  `DialectRunner.java:208`. Real sinks elsewhere in the same method
+  (e.g. a downstream `stmt.executeQuery(sql)` line) continue to fire.
+- **cognium-dev#158 — `resource-leak` factory-return / field-store FPs** —
+  Java scans no longer surface HIGH CWE-772 `resource-leak` findings
+  for three ownership-transfer patterns that the engine previously
+  could not see:
+    1. **Return-flow** — `URLConnection conn = openConnection(); return (HttpURLConnection) conn;`
+       and similar shapes where the opened handle is returned to the
+       caller (typically consumed via try-with-resources).
+    2. **Field-store with paired close method** —
+       `this.camera = OpenCameraInterface.open(id)` paired with a
+       `closeDriver()` method that calls `camera.release()` on the
+       same field.
+    3. **Factory-method-name heuristic** — methods named with the
+       prefix family `open` / `create` / `new` / `get` / `make` /
+       `build` followed by a capital letter (e.g. `createSocket(...)`)
+       AND a non-`void` return type, which by convention transfer
+       resource ownership to the caller.
+  Approximately 5/49 of the surveyed HIGH `resource-leak` findings
+  (~10%) were of this shape. Each suppression requires two
+  independent conditions to fire (conservative-bias preserved): a
+  real `FileInputStream` / `Socket` open with no close, no return,
+  and no field-store continues to fire as a definite leak; a
+  field-store with no paired close method in the class continues to
+  fire; a method named `process()` / `run()` / `void foo()` continues
+  to fire.
+
 ## [3.102.0] - 2026-06-24
 
 Tracking release for the circle-ir@3.102.0 Sprint 44 fixes closing the

@@ -21,6 +21,20 @@
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
+import type { CodeGraph } from '../../graph/code-graph.js';
+import type { MethodInfo, TypeInfo } from '../../types/index.js';
+
+/** Escape a string so it can be safely embedded in a `new RegExp(...)` literal. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Factory-shape method-name prefixes that conventionally transfer
+ * resource ownership to the caller (e.g. `openInputStream`,
+ * `createReader`, `newSession`, `getInputStream`, `makeConnection`,
+ * `buildClient`). Combined with a non-void return type. (#158) */
+const FACTORY_METHOD_NAME_RE =
+  /^(?:open|create|new|get|make|build)[A-Z]/;
 
 /** Constructors that produce closeable resources. */
 const RESOURCE_CTORS: ReadonlySet<string> = new Set([
@@ -91,7 +105,32 @@ export class ResourceLeakPass implements AnalysisPass<ResourceLeakResult> {
       // Limit search to the enclosing method
       const methodInfo = graph.methodAtLine(openLine);
       if (!methodInfo) continue;
+      const methodStart = methodInfo.method.start_line;
       const methodEnd = methodInfo.method.end_line;
+
+      // #158 — suppression 1: resource is returned to the caller.
+      // Caller owns the resource (typically via try-with-resources).
+      // Text-scan method lines for `return ...<resourceVar>...` —
+      // cheap, conservative, false-positive-bias preserved.
+      if (this.isReturnedToCaller(codeLines, resourceVar, methodStart, methodEnd)) {
+        continue;
+      }
+
+      // #158 — suppression 2: resource is stored to an instance field
+      // AND the enclosing class declares a method that closes the
+      // field (`<field>.close()` / `release()` / etc.). Both conditions
+      // required (conservative-bias).
+      const fieldName = this.fieldStoredName(codeLines, resourceVar, openLine, methodEnd);
+      if (fieldName && this.classHasCloseMethodFor(graph, fieldName, methodInfo.type)) {
+        continue;
+      }
+
+      // #158 — suppression 3: enclosing method has a factory-shape
+      // name + non-void return type. Empirical: openFoo/createBar/
+      // getBaz returning a resource transfers ownership to caller.
+      if (this.isFactoryMethod(methodInfo.method)) {
+        continue;
+      }
 
       // Look for a close() call on this resource within the method
       const closeCall = graph.ir.calls.find(
@@ -182,5 +221,76 @@ export class ResourceLeakPass implements AnalysisPass<ResourceLeakResult> {
       if (/\btry\s*\(/.test(text) || /\bwith\b.*\bopen\b/.test(text)) return true;
     }
     return false;
+  }
+
+  /**
+   * #158 — true if `variable` appears in a `return ...` expression within
+   * the enclosing method's line range. Returning the handle transfers
+   * ownership to the caller (caller is responsible for close).
+   */
+  private isReturnedToCaller(
+    lines: string[],
+    variable: string,
+    fromLine: number,
+    toLine: number,
+  ): boolean {
+    const varRe = new RegExp(`\\breturn\\b[^;]*\\b${escapeRegex(variable)}\\b`);
+    for (let l = fromLine; l <= toLine && l <= lines.length; l++) {
+      if (varRe.test(lines[l - 1] ?? '')) return true;
+    }
+    return false;
+  }
+
+  /**
+   * #158 — if `variable` is assigned to `this.<field>` within the
+   * enclosing method (scanning from the open line to method end),
+   * returns the field name; otherwise null.
+   */
+  private fieldStoredName(
+    lines: string[],
+    variable: string,
+    openLine: number,
+    toLine: number,
+  ): string | null {
+    const thisAssignRe = new RegExp(
+      `\\bthis\\s*\\.\\s*(\\w+)\\s*=\\s*${escapeRegex(variable)}\\b`,
+    );
+    for (let l = openLine; l <= toLine && l <= lines.length; l++) {
+      const m = thisAssignRe.exec(lines[l - 1] ?? '');
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  /**
+   * #158 — true if the enclosing class declares any call of the form
+   * `<fieldName>.<closeMethod>(...)` where closeMethod is in
+   * CLOSE_METHODS. Indicates a paired close method (e.g. `closeDriver`)
+   * exists on the same class, so the field-stored resource is
+   * eventually released.
+   */
+  private classHasCloseMethodFor(
+    graph: CodeGraph,
+    fieldName: string,
+    type: TypeInfo,
+  ): boolean {
+    for (const c of graph.ir.calls) {
+      if (c.location.line < type.start_line || c.location.line > type.end_line) continue;
+      if (c.receiver !== fieldName) continue;
+      if (CLOSE_METHODS.has(c.method_name)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * #158 — true if the enclosing method's name matches a factory-shape
+   * prefix (`open` / `create` / `new` / `get` / `make` / `build` followed
+   * by a capital letter) AND its return type is non-void / non-null.
+   * Both conditions required: methods named `process()` or
+   * `void openFoo()` continue to fire.
+   */
+  private isFactoryMethod(method: MethodInfo): boolean {
+    if (!method.return_type || method.return_type === 'void') return false;
+    return FACTORY_METHOD_NAME_RE.test(method.name);
   }
 }

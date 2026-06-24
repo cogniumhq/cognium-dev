@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.103.0] - 2026-06-24
+
+Sprint 45 closes two small standalone Tier-1 FP queue items previewed
+after the Sprint 44 release. Both items are pass-layer only — no IR,
+no YAML config, no CLI surface change. Pillar I zero-LLM boundary safe.
+
+- **cognium-dev#157 — Java `sql_injection` (CWE-89) sink reported on a
+  `throw new SQLException(...)` line.** A new Stage 12 in
+  `SinkFilterPass` (`sink-filter-pass.ts`), scoped to
+  `language === 'java'`, drops any sink whose own line text matches
+  `^\s*throw\s+new\s+\w+(?:Exception|Error)\b`. A `throw` statement
+  is structurally never a runtime sink: the expression constructs the
+  exception object then the next bytecode unwinds the stack. No SQL
+  execution, no command exec, no XSS, no path I/O happens.
+  Sink-type-agnostic by design — also suppresses spurious
+  `path_traversal` / `command_injection` / etc. sinks if they land on
+  a throw line. Recall lock: a real sink on any other line of the
+  same method continues to fire.
+
+- **cognium-dev#158 — Java `resource-leak` (CWE-772) FP on factory
+  return / field-store with paired close.** Three additive
+  suppressions in `ResourceLeakPass` (`resource-leak-pass.ts`),
+  evaluated after the resource-variable extraction and before the
+  close-call search. Each requires its conditions in full
+  (conservative-bias preserved):
+    - **Return-flow suppression** — the resource variable appears in
+      a `return ...` expression within the enclosing method
+      (`isReturnedToCaller`). Caller owns the handle, typically via
+      try-with-resources.
+    - **Field-store with paired close-method suppression** — the
+      resource is assigned to `this.<field>` (`fieldStoredName`) AND
+      the enclosing class declares any method whose call shape is
+      `<field>.<closeMethod>(...)` with `closeMethod` in
+      `CLOSE_METHODS` (`classHasCloseMethodFor`). Both conditions
+      required.
+    - **Factory-method-name heuristic** — the enclosing method's name
+      matches `^(?:open|create|new|get|make|build)[A-Z]` AND its
+      `return_type` is non-`void` / non-`null` (`isFactoryMethod`).
+      Both conditions required: `void openFoo()` and `process()`
+      continue to fire.
+  Recall locks: unreturned, unstored, non-factory resources continue
+  to fire as definite HIGH leaks; field-store without any close
+  method in the class continues to fire.
+
+### Added
+
+- Stage 12 in `SinkFilterPass` for the Java throw-statement gate
+  (`JAVA_THROW_STATEMENT_RE` regex + filter block, ~15 LOC in
+  `sink-filter-pass.ts`).
+- Three FP suppressions + four helper methods in `ResourceLeakPass`
+  (`isReturnedToCaller`, `fieldStoredName`, `classHasCloseMethodFor`,
+  `isFactoryMethod`) plus a module-level `FACTORY_METHOD_NAME_RE`
+  constant and an `escapeRegex` utility (~80 LOC in
+  `resource-leak-pass.ts`).
+- 13 new tests across two new test files
+  (`tests/analysis/passes/java-sql-throw-statement-fp.test.ts` — 5
+  cases; `tests/analysis/passes/java-resource-leak-factory-fp.test.ts`
+  — 8 cases).
+
+### Changed
+
+- Total test count: **2941 → 2954 passed / 1 skipped**.
+
+### End-user effect
+
+- Java scans of projects that throw `SQLException` / `IOException` /
+  any other `*Exception` or `*Error` no longer surface spurious sink
+  findings on those throw lines. Real sinks on any other line of the
+  same method continue to fire.
+- Java scans of factory-method-style resource openers
+  (`openConnection`, `openStream`, `OpenCameraInterface.open`, …)
+  whose handle is returned to the caller, stored to an instance field
+  with a paired close method on the class, or whose enclosing method
+  has a factory-shape name + non-void return type, no longer surface
+  HIGH definite-leak findings. The ~10% benchmark FP rate on this
+  rule for the affected shapes is eliminated.
+
 ## [3.102.0] - 2026-06-24
 
 Sprint 44 closes the remaining new-work items on the **#179 sink-shape

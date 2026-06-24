@@ -138,6 +138,18 @@ const OS_EXEC_RECEIVER_RE =
 const PROCESS_BUILDER_ARGV_FORM_RE =
   /\bnew\s+ProcessBuilder\s*\(\s*(?:Arrays\.asList\b|List\.of\b|Collections\.singletonList\b|new\s+ArrayList\b|new\s+String\s*\[\s*\]\s*\{|"[^"]*"\s*,)/;
 
+// ---------------------------------------------------------------------------
+// Stage 12 — Java throw-statement FP suppression.
+// (cognium-dev #157 — Sprint 45)
+// ---------------------------------------------------------------------------
+//
+// `throw new <SomeException|Error>(...)` is structurally never a runtime
+// sink: it constructs the exception object then unwinds the stack. No
+// SQL execution, no command exec, no XSS, no path I/O happens. Drops any
+// sink whose own line begins with `throw new <Word>(Exception|Error)`.
+// Sink-type-agnostic: a throw is never a runtime sink regardless of CWE.
+const JAVA_THROW_STATEMENT_RE = /^\s*throw\s+new\s+\w+(?:Exception|Error)\b/;
+
 function resolveJavaReceiverType(
   receiver: string,
   sinkLine: number,
@@ -560,6 +572,25 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
         if (PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;
+        return true;
+      });
+    }
+
+    // Stage 12 — Java throw-statement FP suppression.
+    // (cognium-dev #157 — Sprint 45)
+    //
+    // A `throw new <SomeException|Error>(...)` line is structurally
+    // never a runtime sink: the expression constructs the exception
+    // object, then the next bytecode unwinds the stack. No SQL, no
+    // exec, no XSS, no path I/O happens. Suppression is sink-type-
+    // agnostic — a real sink anywhere else in the same method
+    // continues to fire. Only sinks whose OWN line is the throw
+    // statement are dropped.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        if (JAVA_THROW_STATEMENT_RE.test(sinkLineText)) return false;
         return true;
       });
     }
