@@ -837,6 +837,227 @@ function isFunctionCallbackArgument(arg: ArgumentInfo): boolean {
 }
 
 /**
+ * Result of resolving the declared type of a Go local variable used as the
+ * destination of `json.Unmarshal(data, &dst)` or `json.Decoder.Decode(&dst)`.
+ *
+ *  - `typed-decl`  → `var <name> <Type>` (e.g. `var d dto`, `var d *dto`,
+ *                    `var d []User`, `var d map[string]string`). `text` is
+ *                    the captured Type tokens verbatim.
+ *  - `typed-init`  → composite-literal init: `var <name> = <Type>{...}` or
+ *                    `<name> := <Type>{...}`. `text` is the type tag.
+ *  - `untyped`     → declaration found, but type is one of the deliberately
+ *                    untyped forms (`interface{}`, `any`,
+ *                    `map[string]interface{}`) or an unknown shape we cannot
+ *                    classify safely (e.g. `:= someFn()`, `:= make(...)`).
+ *  - `null`        → no declaration found within the backward scan window.
+ */
+type GoLocalDeclResult =
+  | { kind: 'typed-decl'; text: string }
+  | { kind: 'typed-init'; text: string }
+  | { kind: 'untyped' }
+  | null;
+
+/**
+ * Scan `sourceLines` backward from `callLine` (1-based) to locate the
+ * nearest declaration of `varName`. Returns a `GoLocalDeclResult` capturing
+ * the kind of declaration and the type text where applicable.
+ *
+ * Conservative: only matches a handful of well-defined Go declaration
+ * shapes. Anything ambiguous returns `{kind: 'untyped'}` (which the
+ * classifier maps to `'unknown'` → keep the sink) or `null` (no match → keep
+ * the sink). Stops at the first match per identifier, walking from the call
+ * site upward. Window capped at ~50 lines to avoid pathological scans on
+ * large files.
+ *
+ * cognium-dev #148.
+ */
+function findGoLocalDeclaredType(
+  varName: string,
+  callLine: number,
+  sourceLines: string[],
+): GoLocalDeclResult {
+  if (!varName) return null;
+  const WINDOW = 50;
+  // callLine is 1-based; convert to 0-based and start one line above the call
+  const startIdx = Math.max(0, callLine - 2);
+  const endIdx = Math.max(0, startIdx - WINDOW);
+  // Token-safe identifier embed
+  const name = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // `var <name> <Type>`  — type without `=` follow. Type is the rest of the
+  // line after the name (trimmed of trailing comment/semicolon).
+  const VAR_DECL_RE = new RegExp(`^\\s*var\\s+${name}\\s+([^=\\n][^\\n]*)$`);
+  // `var <name> = <Expr>` and `var <name> <Type> = <Expr>` — capture RHS
+  const VAR_INIT_RE = new RegExp(`^\\s*var\\s+${name}(?:\\s+[^=\\n]*?)?\\s*=\\s*(.+)$`);
+  // `<name> := <Expr>` — short declaration
+  const SHORT_INIT_RE = new RegExp(`^\\s*${name}\\s*:=\\s*(.+)$`);
+
+  for (let i = startIdx; i >= endIdx; i--) {
+    const raw = sourceLines[i];
+    if (raw === undefined) continue;
+    // Strip trailing line comments (// ...) for cleaner matching, preserving
+    // anything inside string literals would require a real lexer — but Go
+    // source rarely puts `//` inside strings on declaration lines.
+    const line = raw.replace(/\/\/.*$/, '').trimEnd();
+
+    let m = VAR_DECL_RE.exec(line);
+    if (m) {
+      return { kind: 'typed-decl', text: m[1].trim() };
+    }
+    m = VAR_INIT_RE.exec(line);
+    if (m) {
+      return classifyGoRhs(m[1].trim());
+    }
+    m = SHORT_INIT_RE.exec(line);
+    if (m) {
+      return classifyGoRhs(m[1].trim());
+    }
+  }
+  return null;
+}
+
+/**
+ * Map the RHS of a `var <n> = <Expr>` / `<n> := <Expr>` form to a
+ * `GoLocalDeclResult`. Only composite literals of a named type are
+ * promoted to `typed-init`; anything else (function call, `make(...)`,
+ * conversion, untyped composite) is `untyped`.
+ */
+function classifyGoRhs(rhs: string): GoLocalDeclResult {
+  // Strip leading `&` for pointer-to-composite (`&dto{...}`).
+  const body = rhs.startsWith('&') ? rhs.slice(1).trimStart() : rhs;
+  // `make(...)` allocates an untyped-container value. Even when the
+  // type arg is `map[string]interface{}`, the destination is the
+  // dangerous untyped shape — treat as ambiguous.
+  if (/^make\s*\(/.test(body)) {
+    return { kind: 'untyped' };
+  }
+  // A function/conversion call before any composite literal `(...)`
+  // before `{` — e.g. `newDto()`, `*(&d)`, type assertion `x.(T)`.
+  // We can't safely infer the type from a call site; bail.
+  const parenIdx = body.indexOf('(');
+  const braceIdx = body.indexOf('{');
+  if (parenIdx >= 0 && (braceIdx < 0 || parenIdx < braceIdx)) {
+    return { kind: 'untyped' };
+  }
+  // Composite literal `TypeTag{...}` — TypeTag is the captured prefix
+  // up to the first `{`. Accept named types: `dto`, `pkg.Type`,
+  // `[]User`, `map[string]string`, etc.
+  if (braceIdx > 0) {
+    const tag = body.slice(0, braceIdx).trim();
+    if (tag.length > 0) {
+      // Reject untyped composite literal forms like
+      // `map[string]interface{}{...}` or `[]any{...}`.
+      if (/\binterface\s*\{\s*\}/.test(tag)) return { kind: 'untyped' };
+      if (/\bany\b/.test(tag)) return { kind: 'untyped' };
+      return { kind: 'typed-init', text: tag };
+    }
+  }
+  // Unknown shape (conversion, literal, identifier-only RHS) —
+  // ambiguous from a safety standpoint. Return `untyped` so the
+  // classifier yields `unknown` and the gate keeps the sink.
+  return { kind: 'untyped' };
+}
+
+/**
+ * Classify a `GoLocalDeclResult` into the gate's three-way verdict.
+ *
+ *   `'safe'`    → destination is a confidently-typed struct/slice/map/pointer.
+ *                 Suppress the deserialization sink.
+ *   `'unsafe'`  → destination is explicitly untyped (`interface{}`, `any`,
+ *                 `map[string]interface{}`). Keep the sink.
+ *   `'unknown'` → ambiguous shape. Keep the sink (conservative bias).
+ *
+ * cognium-dev #148.
+ */
+function classifyGoDestinationType(decl: GoLocalDeclResult): 'safe' | 'unsafe' | 'unknown' {
+  if (decl === null) return 'unknown';
+  if (decl.kind === 'untyped') return 'unknown';
+  const text = decl.text;
+  // Untyped containers: `interface{}`, `any` (standalone token),
+  // `map[*]interface{}`. Whole-token match for `any` so `MyAny` /
+  // `anything` are not flagged.
+  if (/\binterface\s*\{\s*\}/.test(text)) return 'unsafe';
+  if (/\bany\b/.test(text)) return 'unsafe';
+  // Typed shape: named identifier, possibly prefixed/suffixed with
+  // `*`, `[]`, `map[K]`, `pkg.`, generic args. As long as it doesn't
+  // include the untyped tokens above, treat it as safe.
+  return 'safe';
+}
+
+/**
+ * Gate for Go `json.Unmarshal(data, &dst)` / `json.NewDecoder(r).Decode(&dst)`
+ * deserialization (CWE-502) sinks. Returns `true` when the destination is a
+ * provably typed value (concrete struct, typed slice/map, pointer to named
+ * type) — Go's encoding/json package can only populate the declared fields
+ * of the destination type and cannot instantiate attacker-chosen gadgets
+ * the way Python pickle / Java native serialization can. Returns `false`
+ * for untyped (`interface{}`, `any`, `map[string]interface{}`) and any
+ * unresolvable shape (conservative bias).
+ *
+ * IR shape notes:
+ *  - For `json.Unmarshal(data, &d)` the destination is arg[1].
+ *  - For `dec.Decode(&d)` the destination is arg[0].
+ *  - `arg.variable` is null for `&d` (unary-expression form) on the Go
+ *    plugin, so destination-name extraction reads the raw `expression`
+ *    text (`&d`, `&dto{...}`, etc.) via regex.
+ *  - Per-local declared types are not present in `DFGDef`; this helper
+ *    therefore walks `sourceLines` backward to locate the variable's
+ *    declaration.
+ *
+ * cognium-dev #148.
+ */
+function isSafeGoJsonUnmarshalCall(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (language !== 'go') return false;
+  if (pattern.type !== 'deserialization') return false;
+  if (!sourceLines) return false;
+  const method = call.method_name;
+  let destPos: number;
+  if (method === 'Unmarshal' && pattern.class === 'json') {
+    destPos = 1;
+  } else if (method === 'Decode' && pattern.class === 'Decoder') {
+    destPos = 0;
+  } else {
+    return false;
+  }
+  const destArg = call.arguments.find(a => a.position === destPos);
+  if (!destArg) return false;
+  const expr = (destArg.expression ?? '').trim();
+  if (expr.length === 0) return false;
+
+  // Pointer-to-composite-literal: `&dto{...}` — type is captured directly
+  // from the expression text without needing a backward scan.
+  if (expr.startsWith('&')) {
+    const inner = expr.slice(1).trimStart();
+    const compIdx = inner.indexOf('{');
+    if (compIdx > 0) {
+      const decl: GoLocalDeclResult = { kind: 'typed-init', text: inner.slice(0, compIdx).trim() };
+      return classifyGoDestinationType(decl) === 'safe';
+    }
+    // Bare `&<ident>` — fall through to varname lookup.
+    const m = /^&([A-Za-z_]\w*)$/.exec(expr);
+    if (!m) return false;
+    const varName = m[1];
+    const decl = findGoLocalDeclaredType(varName, call.location.line, sourceLines);
+    return classifyGoDestinationType(decl) === 'safe';
+  }
+
+  // Bare identifier `d` — Decoder/Decode pointer-typed param, or pointer
+  // already bound. Look up its declaration.
+  const idMatch = /^([A-Za-z_]\w*)$/.exec(expr);
+  if (idMatch) {
+    const decl = findGoLocalDeclaredType(idMatch[1], call.location.line, sourceLines);
+    return classifyGoDestinationType(decl) === 'safe';
+  }
+
+  return false;
+}
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -930,6 +1151,20 @@ function findSinks(
           if (firstArg && isFunctionCallbackArgument(firstArg)) {
             continue;
           }
+        }
+
+        // #148 — Go json.Unmarshal(data, &typedStruct) and
+        // json.NewDecoder(...).Decode(&typedStruct) are safe when the
+        // destination is a concrete typed value (typed struct, typed map,
+        // pointer to named type). The Go encoding/json package can only
+        // populate the declared fields of the destination type; it cannot
+        // instantiate attacker-chosen gadgets the way Python pickle or
+        // Java native deserialization can. Drop the sink emission for
+        // confidently-typed destinations; keep it for untyped
+        // (interface{}, any, map[string]interface{}) and unresolvable
+        // shapes.
+        if (isSafeGoJsonUnmarshalCall(call, pattern, language, sourceLines)) {
+          continue;
         }
 
         const location = formatCallLocation(call);

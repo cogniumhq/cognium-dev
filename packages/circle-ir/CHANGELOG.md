@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.97.0] - 2026-06-23
+
+cognium-dev#148 — Go `json.Unmarshal(data, &dst)` and
+`json.NewDecoder(r).Decode(&dst)` CWE-502 (deserialization) sink emission is
+now gated by the **destination shape**. Go's `encoding/json` populates the
+declared fields of the destination via reflection; it cannot instantiate
+attacker-chosen gadgets the way Python pickle or Java native serialization
+can. When the destination is a concrete typed value (typed struct, typed
+slice, typed map, pointer to a named type) the call is no longer reported
+as a deserialization sink. Untyped destinations (`interface{}`, `any`,
+`map[string]interface{}`, `make(map[string]interface{})`) and any shape the
+heuristic cannot confidently resolve continue to emit (conservative bias).
+
+Side benefit: downstream `sql_injection` sinks that were previously masked
+by the upstream Unmarshal FP are now visible — closes FN-IL-19 as noted in
+the issue body.
+
+### Added
+
+- `isSafeGoJsonUnmarshalCall(call, pattern, language, sourceLines)` helper
+  (`src/analysis/taint-matcher.ts`) — top-level gate scoped strictly to
+  `language === 'go'`, `pattern.type === 'deserialization'`, and the
+  `json.Unmarshal` / `Decoder.Decode` method/class pair. Extracts the
+  destination variable name from the raw `arg.expression` text (`&d`,
+  `&dto{...}`) — the Go plugin sets `arg.variable === null` for the
+  unary-expression form so the regex on `expression` is the only viable
+  signal at this layer.
+- `findGoLocalDeclaredType(varName, callLine, sourceLines)` helper — walks
+  `sourceLines` backward up to 50 lines from the call site to locate the
+  nearest `var <name> <Type>`, `var <name> = <Expr>`, or `<name> := <Expr>`
+  declaration. Returns a `GoLocalDeclResult` discriminated union
+  (`typed-decl` / `typed-init` / `untyped` / `null`) capturing the kind of
+  declaration and the type text where applicable.
+- `classifyGoDestinationType(decl)` helper — maps the declaration result
+  into a three-way verdict (`'safe'` / `'unsafe'` / `'unknown'`). `'safe'`
+  triggers sink suppression; `'unsafe'` (explicit `interface{}` / `any` /
+  `map[string]interface{}`) and `'unknown'` (ambiguous shape, no
+  declaration found, `make(...)`, function-call RHS, type assertion, etc.)
+  keep the sink emitted.
+
+### Changed
+
+- `findSinks()` (`src/analysis/taint-matcher.ts`) — new guard placed after
+  the cognium-dev#152 `setInterval` / `setTimeout` callback gate and
+  before `formatCallLocation`: when `isSafeGoJsonUnmarshalCall()` returns
+  `true`, skip emission. The gate is matcher-layer only — no plugin /
+  extractor / DFG modifications, no sink-config field changes, no IR shape
+  changes. The existing Java `safe_if_class_literal_at` gate (Jackson /
+  Gson / FastJson / SnakeYAML) is unaffected.
+
+### Tests
+
+- `tests/analysis/passes/go-json-unmarshal-typed-fp.test.ts` — 12 cases:
+  6 FP-suppression (`var d dto`, `var d *dto`, `var d []User`,
+  `var d map[string]string`, `d := dto{}`, `dec.Decode(&typedStruct)`),
+  5 recall (`var d interface{}`, `var d any`, `var d map[string]interface{}`,
+  `d := make(...)`, no-decl-in-window), plus the
+  `safe_interop_json_deserialize_sink.go` issue-body repro that also locks
+  the parameterised-query `sql_injection` no-fire behaviour (FN-IL-19 side
+  benefit).
+
+### Verification
+
+- `npm test` (circle-ir) — 167 files, 2872 passed, 1 skipped (was 2860).
+- `npm run typecheck` — clean.
+- `npm run build` — clean.
+- `bun run typecheck` + `bun run build` (cli) — clean.
+- Pillar I grep guard — no new LLM-themed identifiers introduced.
+
 ## [3.96.0] - 2026-06-23
 
 cognium-dev#152 — `setInterval` / `setTimeout` CWE-94 (code_injection) sink

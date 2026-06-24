@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.97.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.97.0 Go `json.Unmarshal` /
+`json.Decoder.Decode` typed-destination safe-gate (cognium-dev#148). No
+CLI surface changes; bumps the `circle-ir` dependency. End-user effect: Go
+scans no longer report a `deserialization` (CWE-502) finding on
+`json.Unmarshal(body, &typedStruct)` /
+`json.NewDecoder(r).Decode(&typedStruct)` calls. Untyped destinations
+(`interface{}`, `any`, `map[string]interface{}`,
+`make(map[string]interface{})`) and unresolvable shapes continue to emit.
+Side benefit: downstream `sql_injection` sinks that were previously masked
+by the upstream Unmarshal FP are now visible (closes FN-IL-19 as noted in
+the issue body).
+
+### Changed
+
+- `package.json` — `circle-ir` dependency bumped to `^3.97.0`.
+
 ## [3.96.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.96.0 `setInterval` / `setTimeout`
