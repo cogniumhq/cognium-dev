@@ -40,6 +40,7 @@
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { SastFinding, Severity, SarifLevel } from '../../types/index.js';
+import { pemHasInlineBody, isCliOptionKeyValue } from './_fp-allowlists.js';
 
 // ---------------------------------------------------------------------------
 // Test-file skip heuristic
@@ -276,6 +277,13 @@ function isLikelyCredentialAssignment(line: string): { name: string; value: stri
   if (PROPERTY_KEY_RE.test(value)) return null;
   if (PLAIN_IDENTIFIER_RE.test(value)) return null;
   if (/^[0-9]+$/.test(value) && value.length < 16) return null;
+
+  // #174 — CLI option-key constants (joptsimple / picocli / argparse4j /
+  // commons-cli). Kebab-case value with at least one hyphen is the flag
+  // name the user types on the command line, not a credential value.
+  // JVM identifiers cannot contain hyphens, so a hyphen-bearing string
+  // value is by construction not a JVM string secret.
+  if (isCliOptionKeyValue(value)) return null;
 
   return { name, value };
 }
@@ -593,6 +601,14 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       for (const pattern of PROVIDER_PATTERNS) {
         const m = pattern.regex.exec(lineText);
         if (!m) continue;
+
+        // #176 — PEM delimiter without adjacent base64 body is a parser
+        // constant / error message / contains() argument, not embedded
+        // key material. Real embedded keys always have base64-shape body
+        // within 5 lines of the BEGIN delimiter.
+        if (pattern.name === 'PEM private key' && !pemHasInlineBody(lines, i)) {
+          continue;
+        }
 
         const key = `${lineNum}:hardcoded-credential`;
         if (seen.has(key)) continue;

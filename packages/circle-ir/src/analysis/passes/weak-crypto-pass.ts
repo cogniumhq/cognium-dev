@@ -51,6 +51,7 @@
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
+import { isProtocolMandatedCryptoFile } from './_fp-allowlists.js';
 
 // Weak symmetric ciphers (algorithm name set, lowercased).
 const WEAK_CIPHER_BASES = new Set([
@@ -397,6 +398,15 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
   run(ctx: PassContext): WeakCryptoResult {
     const { graph, language, code } = ctx;
     const file = graph.ir.meta.file;
+
+    // #175 — suppress entirely when the file is a protocol-mandated
+    // legacy-auth implementation (NTLM / Kerberos / SMB1 / SASL CRAM-MD5 /
+    // HTTP Digest). DES/RC4/MD4/MD5 are hardcoded by the protocol spec;
+    // switching algorithms would break interop with conformant peers.
+    if (isProtocolMandatedCryptoFile(file, code)) {
+      return { findings: [] };
+    }
+
     const findings: WeakCryptoResult['findings'] = [];
 
     // Optional constant-propagation result — used to resolve a variable whose

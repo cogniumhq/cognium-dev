@@ -180,8 +180,11 @@ describe('ScanSecretsPass — provider patterns', () => {
   });
 
   it('detects PEM private key block inline in JS template literal', () => {
+    // Body stub: ≥30 base64-shape chars on a line within 5 of the BEGIN
+    // delimiter. #176 body-adjacency check requires this to distinguish
+    // real embedded keys from delimiter-only constants / error messages.
     const code =
-      'const key = `-----BEGIN RSA PRIVATE KEY-----\nMIIE...`;\n';
+      'const key = `-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ`;\n';
     const out = runPass('app.js', code, 'javascript');
     expect(out.length).toBeGreaterThanOrEqual(1);
     expect(out.some(f => f.evidence?.provider === 'PEM private key')).toBe(true);

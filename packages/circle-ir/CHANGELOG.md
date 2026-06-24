@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.104.0] - 2026-06-24
+
+Sprint 46 closes the three remaining standalone Tier-1 zero-FP queue
+items under a single shared-helper module (`_fp-allowlists.ts`). All
+edits are pass-layer only — no IR, no YAML config, no CLI surface
+change. Pillar I zero-LLM boundary safe.
+
+- **cognium-dev#176 — `hardcoded-credential` (CWE-798) CRIT on PEM
+  delimiter string constants.** The `PEM private key` provider pattern
+  in `scan-secrets-pass` (Layer 1) matched any line containing
+  `-----BEGIN [...] PRIVATE KEY-----` regardless of whether key body
+  followed. This fired on parser constants
+  (`String BEGIN_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----"`),
+  `String.contains()` arguments
+  (`if (pem.contains("-----BEGIN RSA PRIVATE KEY-----"))`), and error
+  messages
+  (`throw new IllegalArgumentException("... '-----BEGIN PRIVATE KEY-----' ...")`).
+  Sprint 46 adds a body-adjacency check: a PEM delimiter hit requires
+  >=30 base64-shape characters (`[A-Za-z0-9+/]{30,}`) within 5 lines
+  of the BEGIN delimiter. Real embedded PEM keys always have this body
+  (multi-line concatenation or inline single-line); parser
+  constants / error messages / contains() arguments don't. 7 CRITs in
+  mock-server alone suppressed; real embedded keys continue to fire.
+
+- **cognium-dev#174 — `hardcoded-credential` (CWE-798) HIGH on CLI
+  option-key constants.** The Layer 1b named-credential matcher fired
+  on JOptSimple / PicoCLI / argparse4j / commons-cli kebab-case
+  option-name constants like
+  `HTTPS_KEYSTORE_PASSWORD = "keystore-password"`. The LHS identifier
+  carries `PASSWORD`, but the RHS value is the flag name the user
+  types on the command line, not a credential. Sprint 46 adds a new
+  negative predicate (`CLI_OPTION_KEY_RE`) after the existing #130
+  value-shape gates: kebab-case values (all-lowercase + alphanumeric
+  + at least one hyphen, <=48 chars) are CLI option names by
+  construction. JVM identifiers cannot contain hyphens, so a
+  hyphen-bearing string value is structurally not a JVM string
+  secret. Recall lock: values with uppercase
+  (`Pr0d-DB-pass!2024`), underscores (`sk_live_...`), or dots
+  (`ya29.A0AfH6SMABcdef...`) don't match the all-lowercase regex and
+  continue to fire. 2 FPs in wiremock; ~15-40 projected across the
+  corpus.
+
+- **cognium-dev#175 — `weak-crypto` (CWE-327) / `weak-password-hash`
+  (CWE-916) on protocol-mandated DES/RC4/MD4/MD5.** NTLM, Kerberos
+  pre-auth (RFC 3961 etype 1/3), SMB1 signing, SASL CRAM-MD5 (RFC
+  2195), and HTTP Digest (RFC 2617) hardcode legacy algorithms in
+  their protocol specs; switching algorithms breaks interop with
+  conformant peers. Sprint 46 adds a file-context predicate
+  (`isProtocolMandatedCryptoFile`) checking three signals: path
+  segment (`/ntlm/`, `/kerberos/`, `/krb5/`, `/smb1?/`,
+  `/sasl/cram-md5/`, `/digest/`), class name
+  (`NtlmEngine`, `Krb5Helper`, `KerberosClient`, `Smb*Signing`,
+  `CramMd5*`, `DigestScheme`), or inline citation (`MS-NLMP`,
+  `RFC 4757`, `RFC 3961`, `RFC 2617`, `RFC 2195`, `CRAM-MD5`). Any
+  match suppresses the pass entirely for that file. 6 FPs in
+  AsyncHttpClient alone; ~10-20 projected. Recall locks: a
+  `Cipher.getInstance("DES")` in a non-protocol path with no class
+  match and no RFC citation continues to fire; a JWT-MD5-signature
+  bug in any non-protocol file continues to fire.
+
+### Added
+
+- New shared helper module
+  `src/analysis/passes/_fp-allowlists.ts` (~50 LOC) exporting three
+  pure-function predicates:
+    - `pemHasInlineBody(lines, hitLineIdx)` — #176 body-adjacency
+      check (PEM body >=30 base64 chars within 5 lines of BEGIN).
+    - `isCliOptionKeyValue(value)` — #174 kebab-case CLI option-key
+      predicate (`^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$`, length <=48).
+    - `isProtocolMandatedCryptoFile(file, code)` — #175 path / class /
+      citation file-context predicate.
+- 17 new tests across three files:
+  `tests/analysis/passes/java-pem-delimiter-fp.test.ts` (5 cases),
+  `tests/analysis/passes/java-cli-option-key-fp.test.ts` (5 cases),
+  `tests/analysis/passes/java-protocol-mandated-crypto-fp.test.ts`
+  (7 cases). Each file covers FP repro shapes and recall locks.
+
+### Changed
+
+- `scan-secrets-pass.ts`: imports `pemHasInlineBody` and
+  `isCliOptionKeyValue`; Layer 1 emission loop skips PEM hits
+  without adjacent body; `isLikelyCredentialAssignment` negative-
+  predicate block adds the CLI option-key rejection after the
+  existing `PLAIN_IDENTIFIER_RE` check.
+- `weak-crypto-pass.ts`: imports `isProtocolMandatedCryptoFile`;
+  `run()` returns empty findings array early when the file is in a
+  protocol-mandated context.
+- `weak-password-hash-pass.ts`: imports
+  `isProtocolMandatedCryptoFile`; `run()` expands its context
+  destructuring to include `code` and returns empty findings array
+  early in the same condition.
+- Existing scan-secrets PEM JS template-literal test updated to use
+  a realistic >=30-char base64 body stub (was a 4-char `MIIE...`
+  stub before #176). The stub change is test-data only; the test
+  still verifies the PEM provider regex emits the finding.
+
+### End-user effect (three Java rule fixes)
+
+- Java `hardcoded-credential` CRIT findings on PEM delimiter-only
+  constants / error messages / parser arguments are suppressed.
+  Real embedded PEM keys (multi-line concatenation or single-line
+  with body inline) continue to fire.
+- Java `hardcoded-credential` HIGH findings on CLI option-key
+  kebab-case constants (joptsimple / picocli / argparse4j /
+  commons-cli) are suppressed. Real password values with uppercase /
+  underscores / dots / special characters continue to fire.
+- Java `weak-crypto` (CWE-327) and `weak-password-hash` (CWE-916)
+  findings in protocol-mandated legacy-auth files (NTLM / Kerberos /
+  SMB1 / SASL CRAM-MD5 / HTTP Digest) are suppressed. Suppression
+  triggers on path segment, class name, or inline RFC / MS-NLMP
+  citation. Non-protocol weak-crypto / weak-password-hash bugs
+  continue to fire.
+
 ## [3.103.0] - 2026-06-24
 
 Sprint 45 closes two small standalone Tier-1 FP queue items previewed

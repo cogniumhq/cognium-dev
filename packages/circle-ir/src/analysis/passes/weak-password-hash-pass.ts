@@ -38,6 +38,7 @@ import {
   argLooksLikeCredential,
   literalAt,
 } from './_credential-helpers.js';
+import { isProtocolMandatedCryptoFile } from './_fp-allowlists.js';
 
 const FAST_HASH_NAMES = new Set([
   'sha224', 'sha-224',
@@ -85,8 +86,17 @@ export class WeakPasswordHashPass implements AnalysisPass<WeakPasswordHashResult
   readonly category = 'security' as const;
 
   run(ctx: PassContext): WeakPasswordHashResult {
-    const { graph, language } = ctx;
+    const { graph, language, code } = ctx;
     const file = graph.ir.meta.file;
+
+    // #175 — suppress entirely for protocol-mandated legacy-auth files
+    // (NTLM / Kerberos / SMB1 / SASL CRAM-MD5 / HTTP Digest). The hash
+    // algorithm is hardcoded by the protocol spec; switching breaks
+    // interop with conformant peers.
+    if (isProtocolMandatedCryptoFile(file, code)) {
+      return { findings: [] };
+    }
+
     const findings: WeakPasswordHashResult['findings'] = [];
 
     for (const call of graph.ir.calls) {

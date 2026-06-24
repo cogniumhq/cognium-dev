@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.104.0] - 2026-06-24
+
+Tracking release for the circle-ir@3.104.0 Sprint 46 fixes closing the
+three remaining standalone Tier-1 zero-FP queue items. No CLI surface
+changes; bumps the `circle-ir` dependency from `^3.103.0` to `^3.104.0`.
+End-user effect (three Java rule fixes packaged under one shared
+helper module `_fp-allowlists.ts`):
+
+- **cognium-dev#176 — `hardcoded-credential` CRIT on PEM delimiter
+  constants** — Java scans no longer surface CRIT CWE-798
+  `hardcoded-credential` findings on PEM-format delimiter string
+  literals (`"-----BEGIN PRIVATE KEY-----"`,
+  `"-----BEGIN RSA PRIVATE KEY-----"`, etc.) that lack adjacent
+  base64-shape body. The new body-adjacency check requires >=30
+  base64-shape characters within 5 lines of the BEGIN delimiter; real
+  embedded PEM keys always have this body, while parser constants /
+  `String.contains()` arguments / error messages don't. Confirmed FP
+  repro: `mock-server` `PEMToFile.java:39-43`, `WebhookServer.java:230,239`,
+  `CertificateConfigurationValidator.java:59,178` — 7 CRITs suppressed.
+  Real embedded keys continue to fire.
+- **cognium-dev#174 — `hardcoded-credential` HIGH on CLI option-key
+  constants** — Java scans no longer surface HIGH CWE-798
+  `hardcoded-credential` findings on JOptSimple / PicoCLI / argparse4j /
+  commons-cli kebab-case option-name constants like
+  `HTTPS_KEYSTORE_PASSWORD = "keystore-password"`. The new
+  `CLI_OPTION_KEY_RE` negative predicate matches all-lowercase
+  alphanumeric values with at least one hyphen (length <=48); JVM
+  identifiers cannot contain hyphens, so a hyphen-bearing string value
+  is structurally not a JVM string secret. Confirmed FP repro:
+  `wiremock` `HttpsSettings`-style constants. Real password values
+  with uppercase, underscores, dots, or special characters continue
+  to fire.
+- **cognium-dev#175 — `weak-crypto` / `weak-password-hash` in
+  protocol-mandated legacy auth** — Java scans no longer surface
+  CWE-327 / CWE-916 findings in protocol-mandated legacy-auth files
+  (NTLM / Kerberos pre-auth / SMB1 signing / SASL CRAM-MD5 / HTTP
+  Digest). DES/RC4/MD4/MD5 are hardcoded by the protocol specs
+  (MS-NLMP, RFC 3961, RFC 2617, RFC 2195); switching algorithms breaks
+  interop with conformant peers. The new
+  `isProtocolMandatedCryptoFile` predicate suppresses on three
+  signals: path segment (`/ntlm/`, `/kerberos/`, `/krb5/`, `/smb1?/`,
+  `/sasl/cram-md5/`, `/digest/`), class name (`NtlmEngine`,
+  `Krb5Helper`, `KerberosClient`, `Smb*Signing`, `CramMd5*`,
+  `DigestScheme`), or inline RFC / MS-NLMP citation. Confirmed FP
+  repro: `AsyncHttpClient` `NtlmEngine.java:499/502/530/603` — 6 FPs
+  suppressed. Weak crypto in non-protocol files continues to fire.
+
 ## [3.103.0] - 2026-06-24
 
 Tracking release for the circle-ir@3.103.0 Sprint 45 fixes closing two
