@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.100.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.100.0 Tier-1 zero-FP queue cluster
+release. No CLI surface changes; bumps the `circle-ir` dependency from
+`^3.99.0` to `^3.100.0`. End-user effect (four Java `code_injection`
+CWE-094 rule fixes, ~18 fewer HIGH FPs across the Java HIGH FP corpus):
+
+- **cognium-dev#155 — `parser.parse(...)` over-match** — Java scans
+  of projects using commonmark `Parser`, hutool `DateParser`, zxing
+  `ResultParser`, `SimpleDateFormat`, `DecimalFormat`, picocli /
+  airline / jcommander CLI arg parsers no longer surface CWE-094 FPs
+  for `.parse(...)` calls on these non-script data-parser types.
+- **cognium-dev#156 — compiled-template render/process** — Java
+  scans of projects using Freemarker / Jetbrick / Rythm / Velocity /
+  Beetl no longer surface CWE-094 FPs for `.render(...)`,
+  `.process(...)`, `.merge(...)`, or `.renderTo(...)` on compiled
+  `Template` / `JetTemplate` / `ITemplate` receivers. The compile
+  step (`engine.getTemplate(tainted)`) continues to fire.
+- **cognium-dev#159 — reflection / SpEL with literal / annotation
+  arg** — Java scans no longer surface CWE-094 FPs for
+  `Class.forName("literal")`, `Class.forName(ann.value())`,
+  `spel.parseExpression("literal")`, `method.invoke(target)`
+  (one arg), or `clazz.getMethod("literal")`. Tainted variants
+  continue to fire.
+- **cognium-dev#160 — no-arg `Constructor#newInstance()`** — Java
+  scans no longer surface CWE-094 FPs for `ctor.newInstance()` with
+  zero args. `ctor.newInstance(arg)` continues to fire.
+
 ## [3.99.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.99.0 combined Tier-1 zero-FP queue

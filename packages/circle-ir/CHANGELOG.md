@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.100.0] - 2026-06-23
+
+Tier-1 zero-FP queue cluster release covering four Java
+`code_injection` (CWE-094) FP issues that share a single root cause:
+lexical sink matching with no receiver-type or arg-shape gate. The
+cluster represents 18 / 49 (~37%) of the Java HIGH FP corpus. A new
+Stage 9 in `SinkFilterPass` (`sink-filter-pass.ts`), scoped to
+`language === 'java'` AND `sink.type === 'code_injection'`, suppresses
+four known-safe shapes via four sub-stages 9a / 9b / 9c / 9d.
+
+- **cognium-dev#155 — `parser.parse(...)` over-match (7 FPs)** —
+  Stage 9a suppresses `.parse(...)` calls when the receiver
+  variable's declared type resolves to a non-script data parser
+  (commonmark `Parser`, hutool `DateParser`, zxing `ResultParser`,
+  `SimpleDateFormat`, `DecimalFormat`, CLI arg parsers, …) via a
+  bounded 30-line backward scan over the source. The `DATA_PARSER_TYPES`
+  allowlist is intentionally curated; unknown receiver types continue
+  to fire.
+
+- **cognium-dev#156 — compiled-template render/process (5 FPs)** —
+  Stage 9b suppresses `.render(...)`, `.process(...)`, `.merge(...)`,
+  and `.renderTo(...)` calls when the receiver resolves to a
+  compiled-template class (`Template`, `JetTemplate`, `ITemplate`,
+  `VelocityTemplate`, `BeetlTemplate`). The CWE-094 risk lives at
+  the compile step (`engine.getTemplate(tainted)`), not at the render
+  step — and the compile-step call continues to fire normally.
+
+- **cognium-dev#159 — reflection / SpEL with literal / annotation
+  arg (4 FPs)** — Stage 9c suppresses `Class.forName(...)`,
+  `loadClass`, `getMethod`, `getDeclaredMethod`, `getConstructor`,
+  `getDeclaredConstructor`, `parseExpression`, and `invoke` calls
+  when the first argument is a string literal, an annotation accessor
+  (`ann.value()` / `ann.name()` / `ann.key()`), or empty. Special
+  case: `method.invoke(target)` (one arg, the receiver only) has no
+  payload and is suppressed regardless of arg shape.
+
+- **cognium-dev#160 — no-arg `Constructor#newInstance()` (2 FPs)** —
+  Stage 9d suppresses `.newInstance()` calls with an empty argument
+  list. An empty arg list means the constructor was statically
+  resolved earlier (canonical Record constructors are the prototypical
+  example).
+
+All four fixes are pass/filter-layer only — no IR, no YAML config,
+no CLI surface change. Pillar I zero-LLM boundary safe.
+
+### Added
+
+- **#155 / #156 / #159 / #160** — New Stage 9 block in
+  `src/analysis/passes/sink-filter-pass.ts`, gated on
+  `language === 'java'` AND `sink.type === 'code_injection'`.
+  Sub-stages 9a / 9b / 9c / 9d each correspond to a single issue.
+- Module-level constants `DATA_PARSER_TYPES` (12 entries),
+  `COMPILED_TEMPLATE_TYPES` (5 entries), and
+  `REFLECTION_LITERAL_METHODS` (8 entries). Adding a new safe type
+  is a one-line set entry as new FPs land.
+- Helper `resolveJavaReceiverType(receiver, sinkLine, sourceLines)` —
+  bounded 30-line backward scan for `<TypeName> <recv>` declarations.
+  Returns the last segment of dotted type names. Receiver name is
+  pre-validated by `/^[A-Za-z_]\w*$/` before being interpolated into
+  the regex template (no regex-injection risk).
+- Helper `isJavaLiteralOrAnnotationAccessor(expr)` — accepts empty
+  arg, string literals (with backslash-escape handling), and
+  annotation-accessor shapes (`ann.value()` / `ann.name()` /
+  `ann.key()`).
+- Helper `extractJavaCallArgs(method, line)` — extracts top-level
+  call arguments allowing one level of nested parens so `ann.value()`
+  is captured whole. Returns `[]` for empty arg lists.
+- New test file `tests/analysis/passes/java-code-injection-fp.test.ts`
+  with 12 cases: 8 FP-suppression (2-3 per sub-stage) + 4 recall /
+  regression locks.
+
+### Changed
+
+- Conservative-bias default preserved across all four sub-stages: any
+  code_injection sink whose receiver type or arg shape doesn't match
+  one of the four known-safe shapes continues to fire. Recall on
+  tainted `Class.forName`, SpEL, compile-step template loading, and
+  GroovyShell parse-then-run remains unchanged.
+
+### End-user effect
+
+- Java SAST scans of projects using commonmark / Freemarker /
+  Jetbrick / Rythm / Velocity / Beetl / hutool / zxing / picocli /
+  airline / jcommander / standard `SimpleDateFormat` /
+  `DecimalFormat`, or static reflection (`Class.forName("Foo")`,
+  `ann.value()` lookups, no-arg `newInstance()`) no longer surface
+  CWE-094 FPs for these shapes. Expected ~18 fewer HIGH FPs across
+  the Java HIGH FP corpus.
+
+- Test suite: **2895 → 2907 passed** (+ 12 new cases), 1 skipped,
+  171 test files (+1 new file).
+
 ## [3.99.0] - 2026-06-23
 
 Combined Tier-1 zero-FP queue release covering two unrelated pass /

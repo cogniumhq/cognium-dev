@@ -45,6 +45,90 @@ const JS_XSS_SANITIZERS = [
   /\bbypassSecurityTrust/,   // Angular
 ];
 
+// ---------------------------------------------------------------------------
+// Stage 9 — Java code_injection (CWE-094) FP reduction allowlists.
+// (cognium-dev #155, #156, #159, #160 — Sprint 42)
+// ---------------------------------------------------------------------------
+
+// #155 — non-script data parsers misclassified as code-injection sinks.
+const DATA_PARSER_TYPES = new Set<string>([
+  'Parser',                 // commonmark, airline, picocli, jcommander
+  'CommandLine', 'JCommander',
+  'DateParser', 'FastDateFormat', 'FastDatePrinter',
+  'ResultParser',
+  'DateFormat', 'SimpleDateFormat',
+  'NumberFormat', 'DecimalFormat',
+  'OptionParser', 'CmdLineParser',
+]);
+
+// #156 — compiled-template classes; risk lives at the compile step,
+// not the render step.
+const COMPILED_TEMPLATE_TYPES = new Set<string>([
+  'Template',               // Freemarker, Velocity
+  'JetTemplate',            // Jetbrick
+  'ITemplate',              // Rythm
+  'VelocityTemplate', 'BeetlTemplate',
+]);
+
+// #159 — reflection methods whose first arg, when literal /
+// annotation-accessor / empty, makes the call statically resolvable.
+const REFLECTION_LITERAL_METHODS = new Set<string>([
+  'forName', 'loadClass',
+  'getMethod', 'getDeclaredMethod',
+  'getConstructor', 'getDeclaredConstructor',
+  'parseExpression',
+  'invoke',                 // no further args = no payload injection
+]);
+
+// Java declaration regex template; receiver name is interpolated.
+// Receiver is pre-validated by /^[A-Za-z_]\w*$/ so regex metacharacter
+// injection is impossible.
+const JAVA_DECL_RE_TEMPLATE =
+  '(?:\\b(?:final|public|private|protected|static)\\s+)*' +
+  '([A-Z]\\w*(?:\\.[A-Z]\\w*)?(?:<[^>]*>)?)\\s+RECV\\b\\s*[=;,)]';
+
+function resolveJavaReceiverType(
+  receiver: string,
+  sinkLine: number,
+  sourceLines: string[],
+): string | null {
+  if (!receiver || !/^[A-Za-z_]\w*$/.test(receiver)) return null;
+  const start = Math.max(0, sinkLine - 31);
+  const declRe = new RegExp(JAVA_DECL_RE_TEMPLATE.replace('RECV', receiver));
+  for (let i = sinkLine - 2; i >= start; i--) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(declRe);
+    if (m) {
+      const raw = m[1].replace(/<[^>]*>/g, '').trim();
+      const parts = raw.split('.');
+      return parts[parts.length - 1] ?? null;
+    }
+  }
+  return null;
+}
+
+function isJavaLiteralOrAnnotationAccessor(expr: string): boolean {
+  const e = expr.trim();
+  if (e === '') return true;                                       // no args
+  if (/^"(?:[^"\\]|\\.)*"$/.test(e)) return true;                  // string literal
+  if (/^[A-Za-z_]\w*\s*\.\s*(?:value|name|key)\s*\(\s*\)$/.test(e)) return true; // ann.value()
+  return false;
+}
+
+/**
+ * Extract the top-level argument list from a Java method call. Allows one
+ * level of nested parens so `ann.value()` is captured whole. Returns null
+ * when the call can't be located. Returns `[]` for empty arg lists.
+ */
+function extractJavaCallArgs(method: string, line: string): string[] | null {
+  const re = new RegExp(`\\b${method}\\s*\\(([^()]*(?:\\([^()]*\\)[^()]*)*)\\)`);
+  const m = line.match(re);
+  if (!m) return null;
+  const argsText = m[1].trim();
+  if (argsText === '') return [];
+  return argsText.split(',').map(s => s.trim());
+}
+
 export interface SinkFilterResult {
   /** Merged sources: taint-matcher + language-sources. */
   sources: TaintSource[];
@@ -278,6 +362,66 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.method === 'cookie' && sink.type === 'crlf') {
           return false;
         }
+        return true;
+      });
+    }
+
+    // Stage 9 — Java code_injection (CWE-094) FP reduction.
+    // (cognium-dev #155, #156, #159, #160 — Sprint 42)
+    //
+    // Conservative-bias default: any code_injection sink whose receiver
+    // type or arg shape doesn't match one of the four known-safe shapes
+    // below continues to fire. Recall on tainted Class.forName /
+    // SpEL / template-compile is unchanged.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'code_injection') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        const receiverMatch = sinkLineText.match(/\b(\w+)\s*\.\s*(\w+)\s*\(/);
+        const receiver = receiverMatch?.[1];
+        const method = sink.method ?? receiverMatch?.[2];
+
+        // 9a — #155: non-script data parsers (commonmark, hutool, zxing,
+        // CLI arg parsers, SimpleDateFormat, DecimalFormat, …).
+        if (method === 'parse' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && DATA_PARSER_TYPES.has(recvType)) return false;
+        }
+
+        // 9b — #156: compiled-template render/process. Risk lives at the
+        // compile step, not the render step.
+        if (
+          (method === 'render' || method === 'process' ||
+           method === 'merge' || method === 'renderTo') && receiver
+        ) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && COMPILED_TEMPLATE_TYPES.has(recvType)) return false;
+        }
+
+        // 9c — #159: reflection / SpEL with literal / annotation-accessor
+        // first arg. Static-resolvable target is not code injection.
+        // Special case for `invoke`: `method.invoke(target)` with no
+        // further args has no payload (target is just the receiver).
+        if (method && REFLECTION_LITERAL_METHODS.has(method)) {
+          const args = extractJavaCallArgs(method, sinkLineText);
+          if (args !== null) {
+            if (method === 'invoke') {
+              if (args.length <= 1) return false;
+            } else {
+              const firstArg = args[0] ?? '';
+              if (isJavaLiteralOrAnnotationAccessor(firstArg)) return false;
+            }
+          }
+        }
+
+        // 9d — #160: no-arg Constructor#newInstance(). Empty arg list
+        // means the constructor was statically resolved.
+        if (method === 'newInstance' &&
+            /\.\s*newInstance\s*\(\s*\)/.test(sinkLineText)) {
+          return false;
+        }
+
         return true;
       });
     }
