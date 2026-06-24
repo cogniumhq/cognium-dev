@@ -1,6 +1,6 @@
 {
   "name": "cognium-dev",
-  "version": "3.106.0",
+  "version": "3.106.1",
   "description": "Static Application Security Testing CLI for detecting security vulnerabilities via taint tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -65,6 +65,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@cognium/project-profile-detect": "^1.0.0",
     "circle-ir": "^3.106.0"
   },
   "devDependencies": {

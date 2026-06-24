@@ -14,7 +14,7 @@ import {
   discoverBuildModules,
   enumerateScanFiles,
   ownerOf,
-} from '../src/project-profile-detect/walk.js';
+} from '../src/walk.js';
 
 let tmpRoot: string;
 

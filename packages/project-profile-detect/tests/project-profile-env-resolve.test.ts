@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { resolveEnv } from '../src/project-profile-detect/env-resolve.js';
+import { resolveEnv } from '../src/env-resolve.js';
 
 describe('resolveEnv', () => {
   test('src/main/... → production', () => {

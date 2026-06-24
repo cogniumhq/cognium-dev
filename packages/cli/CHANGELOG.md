@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.106.1] - 2026-06-24
+
+Internal refactor — detector logic extracted to
+[`@cognium/project-profile-detect@1.0.0`](https://www.npmjs.com/package/@cognium/project-profile-detect).
+No user-visible behavior change. The CLI now consumes the detector as a
+workspace dependency so the same code can be shared with downstream consumers
+(e.g. cognium-ai) that need caller-side project-profile detection without
+re-implementing the Maven/Gradle walker.
+
+### Changed
+- `src/project-profile-detect/` directory removed from this package. The
+  9 source files (`index.ts`, `types.ts`, `walk.ts`, `maven-parse.ts`,
+  `gradle-parse.ts`, `shape-resolve.ts`, `env-resolve.ts`,
+  `publication-detect.ts`, `overrides.ts`) and 8 test files moved to the new
+  `@cognium/project-profile-detect` package (git history preserved via
+  `git mv`).
+- `cli.ts` now imports `detectProjectProfiles` from
+  `@cognium/project-profile-detect` instead of the local relative path.
+- Adds `@cognium/project-profile-detect@^1.0.0` as a dependency alongside
+  `circle-ir@^3.106.0`.
+
+### Unchanged
+- Detection contract, three-tier resolution (forcedProfile → overrides → walker),
+  Hybrid Approach C library gate, public-registry allowlist, and CLI flags
+  (`--profile`, `--profile-override`) are byte-identical to 3.106.0.
+- Engine dependency (`circle-ir`) version unchanged at `^3.106.0`.
+- Bundle size unchanged (~1.38 MB) — the detector was already bundled in.
+
+Pillar I: no LLM identifiers (verified by grep guard).
+
 ## [3.106.0] - 2026-06-24
 
 Tracking release for circle-ir@3.106.0 Sprint 48: the new

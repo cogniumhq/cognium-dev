@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { parseMavenPom } from '../src/project-profile-detect/maven-parse.js';
-import type { ModuleSignals } from '../src/project-profile-detect/types.js';
+import { parseMavenPom } from '../src/maven-parse.js';
+import type { ModuleSignals } from '../src/types.js';
 
 const emptyDirSignals: ModuleSignals = {
   plugins: [],

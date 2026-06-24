@@ -1,11 +1,11 @@
 /**
- * Project-profile detection types (cognium-dev CLI side).
+ * Project-profile detection types.
  *
  * Mirrors `ProjectProfile` from circle-ir but adds detector-internal types
  * needed to walk the filesystem and reason about per-module shape/env.
  *
- * See `packages/circle-ir/docs/ARCHITECTURE.md` ADR-008 for the design
- * contract. Pillar I: no LLM-themed identifiers.
+ * See `circle-ir/docs/ARCHITECTURE.md` ADR-008 for the design contract.
+ * Pillar I: no LLM-themed identifiers.
  */
 
 import type { ProjectProfile, ProjectShape, ProjectEnv } from 'circle-ir';

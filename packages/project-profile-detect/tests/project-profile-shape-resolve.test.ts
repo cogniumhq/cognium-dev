@@ -10,8 +10,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { resolveShape } from '../src/project-profile-detect/shape-resolve.js';
-import type { BuildModule, ModuleSignals } from '../src/project-profile-detect/types.js';
+import { resolveShape } from '../src/shape-resolve.js';
+import type { BuildModule, ModuleSignals } from '../src/types.js';
 
 const emptySignals: ModuleSignals = {
   plugins: [],

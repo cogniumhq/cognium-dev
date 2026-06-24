@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { parseGradleBuild } from '../src/project-profile-detect/gradle-parse.js';
-import type { ModuleSignals } from '../src/project-profile-detect/types.js';
+import { parseGradleBuild } from '../src/gradle-parse.js';
+import type { ModuleSignals } from '../src/types.js';
 
 const emptyDirSignals: ModuleSignals = {
   plugins: [],

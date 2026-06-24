@@ -9,7 +9,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdir, writeFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { detectProjectProfiles } from '../src/project-profile-detect/index.js';
+import { detectProjectProfiles } from '../src/index.js';
 
 let tmpRoot: string;
 

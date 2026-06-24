@@ -20,7 +20,7 @@ import {
   detectProjectProfiles,
   type ProfileOverrides,
   type ResolvedModule,
-} from './project-profile-detect/index.js';
+} from '@cognium/project-profile-detect';
 import {
   formatResults, formatJSON, formatSARIF,
   SINK_SEVERITY, SINK_CWE,

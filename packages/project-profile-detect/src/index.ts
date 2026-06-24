@@ -7,13 +7,13 @@
  * module's profile (optionally overridden by glob entries from
  * `cognium.config.json`).
  *
- * Output is consumed by `cli.ts` and passed to circle-ir's
+ * Output is consumed by the caller and passed to circle-ir's
  * `analyzeOptions.projectProfile` as a `Map<file, ProjectProfile>`.
  *
- * Pillar I: Node-only module. Detection lives entirely on the CLI side;
- * circle-ir itself never reads the filesystem.
+ * Pillar I: Node-only module. Detection lives entirely on the caller
+ * side; circle-ir itself never reads the filesystem.
  *
- * See `packages/circle-ir/docs/ARCHITECTURE.md` ADR-008.
+ * See `circle-ir/docs/ARCHITECTURE.md` ADR-008.
  */
 
 import { relative } from 'path';

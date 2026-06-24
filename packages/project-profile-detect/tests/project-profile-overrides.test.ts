@@ -7,7 +7,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   compileOverrides,
   applyOverrides,
-} from '../src/project-profile-detect/overrides.js';
+} from '../src/overrides.js';
 
 describe('compileOverrides + applyOverrides', () => {
   test('empty / undefined input → no matches', () => {

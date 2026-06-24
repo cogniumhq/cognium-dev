@@ -8,7 +8,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   isPubliclyPublished,
   PUBLIC_REGISTRY_HOSTS_LIST,
-} from '../src/project-profile-detect/publication-detect.js';
+} from '../src/publication-detect.js';
 
 describe('isPubliclyPublished', () => {
   test('empty input → false', () => {

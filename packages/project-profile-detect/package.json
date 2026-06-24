@@ -1,0 +1,66 @@
+{
+  "name": "@cognium/project-profile-detect",
+  "version": "1.0.0",
+  "description": "Detect project shape (library/application/cli/server/plugin) × environment (production/dev/sample/benchmark/test) from Maven/Gradle build files. Companion to circle-ir.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "keywords": [
+    "sast",
+    "project-profile",
+    "maven",
+    "gradle",
+    "monorepo",
+    "circle-ir",
+    "cognium"
+  ],
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://cognium.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/project-profile-detect"
+  },
+  "homepage": "https://github.com/cogniumhq/cognium-dev/tree/main/packages/project-profile-detect#readme",
+  "bugs": {
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "peerDependencies": {
+    "circle-ir": ">=3.106.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "bun-types": "^1.3.11",
+    "circle-ir": "^3.106.0",
+    "typescript": "^6.0.2"
+  }
+}

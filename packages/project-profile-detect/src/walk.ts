@@ -6,8 +6,8 @@
  * directory-level signals the parsers need (presence of `module-info.java`,
  * `META-INF/services/`, source files containing `main(String[])`).
  *
- * Pillar I: Node-only module. CLI side — circle-ir never reads the
- * filesystem.
+ * Pillar I: Node-only module. Caller-side detector — circle-ir itself
+ * never reads the filesystem.
  */
 
 import { readdir, readFile, stat } from 'fs/promises';

@@ -7,8 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/circle-ir && npm run build -w packages/cli",
-    "build:all": "npm run build:all -w packages/circle-ir && npm run build -w packages/cli",
+    "build": "npm run build -w packages/circle-ir && npm run build -w packages/project-profile-detect && npm run build -w packages/cli",
+    "build:all": "npm run build:all -w packages/circle-ir && npm run build -w packages/project-profile-detect && npm run build -w packages/cli",
     "test": "npm run test --workspaces",
     "test:coverage": "npm run test:coverage -w packages/circle-ir",
     "typecheck": "npm run typecheck --workspaces",
