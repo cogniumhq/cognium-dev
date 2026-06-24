@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.102.0] - 2026-06-24
+
+Tracking release for the circle-ir@3.102.0 Sprint 44 fixes closing the
+remaining new-work items on the #179 sink-shape umbrella and #166. No
+CLI surface changes; bumps the `circle-ir` dependency from `^3.101.0`
+to `^3.102.0`. End-user effect (two Java rule fixes plus regression
+locks for two existing gates):
+
+- **cognium-dev#179 Sink 1 — argv-form `ProcessBuilder` constructor** —
+  Java scans of projects calling `new ProcessBuilder(Arrays.asList(...))`,
+  `new ProcessBuilder(List.of(...))`,
+  `new ProcessBuilder(Collections.singletonList(...))`,
+  `new ProcessBuilder(new String[]{...})`, or
+  `new ProcessBuilder("git", "log", ref)` (varargs ≥2) no longer
+  surface CRITICAL CWE-78 `command_injection` FPs. Argv-form
+  constructors pass arguments directly to `fork(2)` — the kernel
+  treats each slot as a literal, no shell, no metacharacter
+  expansion. Single bare-variable `new ProcessBuilder(userCmd)` and
+  `Runtime.getRuntime().exec(userCmd)` continue to fire.
+- **cognium-dev#166 — XXE JDK 8u121+ hardening recognition** — Java
+  scans of projects that use any of the following hardening patterns
+  no longer surface CWE-776 / CWE-611 `xml-entity-expansion` FPs:
+    - Apache `load-external-dtd` feature URL with `setFeature(..., false)`
+    - JDK 8u121+ entity-limit system properties
+      (`jdk.xml.totalEntitySizeLimit`, `entityExpansionLimit`,
+      `maxGeneralEntitySizeLimit`, `maxParameterEntitySizeLimit`,
+      `elementAttributeLimit`) set to 0
+    - `XMLConstants.FEATURE_SECURE_PROCESSING` constant or
+      `feature/secure-processing` URL string
+  Confirmed FP repros: `languagetool` `PatternRuleLoader.java:70`,
+  `FalseFriendRuleLoader.java:78`, `DisambiguationRuleLoader.java:45`,
+  `BitextPatternRuleLoader.java:41`. SAX parsers / `DocumentBuilder`s
+  without any hardening pattern continue to fire.
+- **cognium-dev#179 Sinks 2/3 regression locks** — new regression
+  tests verify the existing gates for typed Jackson
+  `mapper.readValue(json, ConcreteType.class)` (Sink 2, via
+  `safe_if_class_literal_at: 1`) and parameterized JdbcTemplate
+  `update("...?", args)` / `queryForObject("...?", mapper, id)`
+  (Sink 3, via placeholder-aware SQL filter). No behavior change —
+  pure regression locks against future drift.
+
 ## [3.101.0] - 2026-06-24
 
 Tracking release for the circle-ir@3.101.0 Tier-1 zero-FP queue

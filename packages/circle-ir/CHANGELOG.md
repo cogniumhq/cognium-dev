@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.102.0] - 2026-06-24
+
+Sprint 44 closes the remaining new-work items on the **#179 sink-shape
+umbrella** and **#166 XXE JDK hardening recognition**. Recon (after
+Sprint 43 shipped #179 Sink 4 via 3.101.0) confirmed that #179 Sinks 2
+(typed Jackson) and 3 (parameterized JdbcTemplate) are already
+addressed by existing gates (`safe_if_class_literal_at: 1` on the
+`ObjectMapper.readValue` SinkPattern; placeholder-aware SQL filter for
+`?` / `$1` / `:name` / `%s`). The revised sprint scope:
+
+- **cognium-dev#179 Sink 1 — Java `command_injection` (CWE-78) FP on
+  argv-form `ProcessBuilder` constructor.** A new Stage 11 in
+  `SinkFilterPass` (`sink-filter-pass.ts`), scoped to
+  `language === 'java'` AND `sink.type === 'command_injection'` AND
+  `sink.method === 'ProcessBuilder'`, suppresses argv-form
+  constructor shapes that pass argv directly to `fork(2)` — no shell,
+  no metacharacter expansion. Suppressed shapes:
+    - `new ProcessBuilder(Arrays.asList(...))`
+    - `new ProcessBuilder(List.of(...))`
+    - `new ProcessBuilder(Collections.singletonList(...))`
+    - `new ProcessBuilder(new ArrayList<...>(...))`
+    - `new ProcessBuilder(new String[]{ ... })`
+    - `new ProcessBuilder("...", ...)` (varargs ≥2 args, first is a
+      string literal)
+  Defense-in-depth: single bare-variable `new ProcessBuilder(userCmd)`
+  continues to fire (real OS-exec attack surface — argv[0] is the
+  command path). `Runtime.getRuntime().exec(...)` continues to fire
+  unchanged.
+
+- **cognium-dev#166 — Java `xml-entity-expansion` (CWE-776) FP on
+  JDK 8u121+ entity-limit hardening.** Extended `JAVA_SAFE_EVIDENCE_RE`
+  in `XmlEntityExpansionPass` (`xml-entity-expansion-pass.ts`) with
+  additional alternations recognized as file-level hardening evidence
+  (any one match short-circuits the Java path for that file):
+    - `load-external-dtd` (Apache feature URL)
+    - `jdk.xml.totalEntitySizeLimit` / `entityExpansionLimit` /
+      `maxGeneralEntitySizeLimit` / `maxParameterEntitySizeLimit` /
+      `elementAttributeLimit` (JDK 8u121+ system properties; any one
+      set to 0 fully disables the corresponding limit class)
+    - `feature/secure-processing` URL string and
+      `FEATURE_SECURE_PROCESSING` constant identifier
+  Confirmed FP repros from #166 body: `languagetool`
+  `PatternRuleLoader.java:70`, `FalseFriendRuleLoader.java:78`,
+  `DisambiguationRuleLoader.java:45`,
+  `BitextPatternRuleLoader.java:41`. Recall lock: SAX parsers /
+  `DocumentBuilder`s without any hardening pattern continue to fire.
+
+- **cognium-dev#179 Sinks 2/3 regression locks.** Two new test files
+  replicate the exact #179 ticket-body shapes verbatim and lock the
+  existing gates against future drift:
+    - `tests/analysis/passes/java-sink-shape-regression.test.ts` — 5
+      cases: Sink 2 (`mapper.readValue(json, User.class)` and FQN),
+      Sink 3 (`jdbcTemplate.update("...?", name, id)` and
+      `queryForObject`), Sink 4
+      (`Transformer.transform(DOMSource → StreamResult)`).
+    - No source change required — pure regression locks.
+
+All three items are pass / filter-layer only — no IR, no YAML config,
+no CLI surface change. Pillar I zero-LLM boundary safe.
+
+### Added
+
+- Stage 11 in `SinkFilterPass` for argv-form `ProcessBuilder`
+  constructor suppression (`PROCESS_BUILDER_ARGV_FORM_RE` regex +
+  filter block, ~25 LOC in `sink-filter-pass.ts`).
+- Extended `JAVA_SAFE_EVIDENCE_RE` alternation in
+  `XmlEntityExpansionPass` with JDK 8u121+ entity-limit properties,
+  Apache `load-external-dtd` feature URL, and `FEATURE_SECURE_PROCESSING`
+  / `feature/secure-processing` (~6 LOC change in
+  `xml-entity-expansion-pass.ts`).
+- 20 new tests across three new test files (8 + 5 + 7).
+
+### Changed
+
+- Total test count: **2921 → 2941 passed / 1 skipped**.
+
+### End-user effect
+
+- Java scans of projects using argv-form `ProcessBuilder` constructors
+  (any of `Arrays.asList`, `List.of`, `Collections.singletonList`,
+  `new ArrayList<>`, `new String[]{}`, or varargs ≥2 with a string
+  literal first arg) no longer surface CRITICAL CWE-78 FPs. Single
+  bare-variable `new ProcessBuilder(userCmd)` and
+  `Runtime.exec(userCmd)` continue to fire.
+- Java scans of projects using JDK 8u121+ entity-limit hardening
+  (`jdk.xml.*Limit` system properties), the Apache `load-external-dtd`
+  feature disable, or the XMLConstants secure-processing feature no
+  longer surface CWE-776 / CWE-611 `xml-entity-expansion` FPs. SAX
+  parsers / `DocumentBuilder`s without any hardening pattern continue
+  to fire.
+
 ## [3.101.0] - 2026-06-24
 
 Tier-1 zero-FP queue cluster release covering three Java FPs that

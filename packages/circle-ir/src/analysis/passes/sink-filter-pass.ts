@@ -118,6 +118,26 @@ const PROTOCOL_CLIENT_PACKAGES: readonly string[] = [
 const OS_EXEC_RECEIVER_RE =
   /\b(?:Runtime|ProcessBuilder|DefaultExecutor|Executor|Exec|Launcher|ProcStarter|ProcessExecutor|RuntimeUtil)\s*[.(]/;
 
+// ---------------------------------------------------------------------------
+// Stage 11 — Java command_injection (CWE-78) FP reduction.
+// (cognium-dev #179 Sink 1 — Sprint 44)
+// ---------------------------------------------------------------------------
+
+// #179 Sink 1 — argv-form ProcessBuilder constructor shapes.
+// Java's ProcessBuilder(List<String>) and ProcessBuilder(String...)
+// overloads pass argv directly to fork(2): no shell, no metacharacter
+// expansion. Only single-string-variable construction remains exploitable.
+//
+// Matches any of:
+//   new ProcessBuilder(Arrays.asList(...))
+//   new ProcessBuilder(List.of(...))
+//   new ProcessBuilder(Collections.singletonList(...))
+//   new ProcessBuilder(new ArrayList<...>(...))
+//   new ProcessBuilder(new String[]{ ... })
+//   new ProcessBuilder("...", ...)        (varargs ≥2 args; first is string literal)
+const PROCESS_BUILDER_ARGV_FORM_RE =
+  /\bnew\s+ProcessBuilder\s*\(\s*(?:Arrays\.asList\b|List\.of\b|Collections\.singletonList\b|new\s+ArrayList\b|new\s+String\s*\[\s*\]\s*\{|"[^"]*"\s*,)/;
+
 function resolveJavaReceiverType(
   receiver: string,
   sinkLine: number,
@@ -516,6 +536,30 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           }
         }
 
+        return true;
+      });
+    }
+
+    // Stage 11 — Java command_injection (CWE-78) FP reduction.
+    // (cognium-dev #179 Sink 1 — Sprint 44)
+    //
+    // new ProcessBuilder(List<String>) / new ProcessBuilder(String...)
+    // pass argv directly to fork(2). The kernel treats each element as
+    // a literal argv slot — no shell, no metacharacter expansion. Only
+    // the single-bare-variable form remains a sink (case 6/8 in B.1).
+    //
+    // sink.method === 'ProcessBuilder' uniquely identifies the
+    // ProcessBuilder constructor sink (the other PB sinks use
+    // method='start' / method='command'). The line-text regex then
+    // verifies the constructor-call shape carries argv-form arguments.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'command_injection') return true;
+        if (sink.method !== 'ProcessBuilder') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
+        if (PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;
         return true;
       });
     }

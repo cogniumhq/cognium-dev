@@ -52,8 +52,12 @@ const JAVA_FACTORIES = new Set<string>([
 // "Disallow DTD" / safe-feature evidence — any one of these in the file
 // suppresses the warning. Conservative on purpose: a missed feature still
 // fires; FPs only on cross-file configuration.
+//
+// Extended in 3.102.0 (#166) to recognize JDK 8u121+ entity-limit
+// hardening (jdk.xml.*Limit properties), the Apache load-external-dtd
+// feature disable, and the XMLConstants secure-processing feature.
 const JAVA_SAFE_EVIDENCE_RE =
-  /(disallow-doctype-decl|external-general-entities|external-parameter-entities|SUPPORT_DTD|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_SCHEMA|setXIncludeAware\s*\(\s*false\s*\)|setExpandEntityReferences\s*\(\s*false\s*\))/;
+  /(disallow-doctype-decl|external-general-entities|external-parameter-entities|SUPPORT_DTD|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_SCHEMA|load-external-dtd|feature\/secure-processing|FEATURE_SECURE_PROCESSING|jdk\.xml\.(?:totalEntitySizeLimit|entityExpansionLimit|maxGeneralEntitySizeLimit|maxParameterEntitySizeLimit|elementAttributeLimit)|setXIncludeAware\s*\(\s*false\s*\)|setExpandEntityReferences\s*\(\s*false\s*\))/;
 
 // #173 — output-only TransformerFactory shape:
 //   - file contains DOMSource / StreamResult construction
