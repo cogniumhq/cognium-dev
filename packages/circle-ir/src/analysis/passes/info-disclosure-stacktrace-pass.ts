@@ -52,14 +52,22 @@ const RESPONSE_SEND_METHODS = new Set([
   'Fprintln', 'Fprintf', 'Fprint',
 ]);
 
-/** Expression heuristics for "this is an exception value". */
+/** Expression heuristics for "this is an exception value".
+ *
+ * #133 — `.message` / `.getMessage()` are intentionally NOT matched. They
+ * return a single-line developer-controlled human description (e.g.
+ * `new Error('Validation failed')`), not a stack trace. The rule's
+ * canonical CWE-209 scope is stack-trace disclosure; `.stack`,
+ * `.toString()`, `.getStackTrace()`, full error object, and
+ * `traceback.format_exc()` remain in scope.
+ */
 function isExceptionExpression(expr: string | undefined | null): boolean {
   if (!expr) return false;
   const e = expr.trim();
-  // err.stack | err.message | e.toString() | e.getMessage() | e.getStackTrace()
-  // exc.format_exc() | traceback.format_exc() | str(e)
+  // err.stack | e.toString() | e.getStackTrace() | e.getLocalizedMessage() | e.getCause()
+  // traceback.format_exc() | debug.Stack() | str(e) | String(e)
   return (
-    /\b(err|error|exc|exception|e|t|throwable)\.(stack|message|toString\(|getMessage\(|getStackTrace\(|getLocalizedMessage\(|getCause\()/i.test(e) ||
+    /\b(err|error|exc|exception|e|t|throwable)\.(stack|toString\(|getStackTrace\(|getLocalizedMessage\(|getCause\()/i.test(e) ||
     /\btraceback\.(format_exc|format_exception|print_exc)\b/i.test(e) ||
     /\bdebug\.Stack\(\)/.test(e) ||
     /\bstr\(\s*(err|error|exc|exception|e)\s*\)/i.test(e) ||
@@ -67,13 +75,56 @@ function isExceptionExpression(expr: string | undefined | null): boolean {
   );
 }
 
-/** True if an argument carries an exception-like value. */
+/** #133 — Python file-handle open patterns:
+ *   with open(...) as f:
+ *   f = open(...)
+ */
+const PY_FILE_HANDLE_OPEN_RE =
+  /^\s*(?:with\s+open\s*\([^)]*\)\s+as\s+(\w+)\s*:|(\w+)\s*=\s*open\s*\()/;
+
+/**
+ * #133 — True if `receiver` was produced by `open(...)` within the prior
+ * 10 source lines. Used to suppress Python file-handle writes
+ * (`f.write(API_KEY)`) which are not response leaks. Bounded backward
+ * scan; conservative-bias when not resolvable.
+ */
+function isPythonFileHandle(
+  receiver: string,
+  callLine: number,
+  sourceLines: string[],
+): boolean {
+  if (!receiver || !/^[A-Za-z_]\w*$/.test(receiver)) return false;
+  const start = Math.max(0, callLine - 11);
+  for (let i = callLine - 2; i >= start; i--) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(PY_FILE_HANDLE_OPEN_RE);
+    if (!m) continue;
+    const name = m[1] ?? m[2];
+    if (name === receiver) return true;
+  }
+  return false;
+}
+
+/** True if an argument carries an exception-like value.
+ *
+ * #133 — When `arg.variable` matches an exception name (`err`, `error`,
+ * …) the parser may have extracted it from a containing object literal
+ * (e.g. `res.json({ ok: false, error: err.message })` → `variable="err"`).
+ * In that case we must defer to `isExceptionExpression` on the full
+ * expression text, NOT short-circuit to true on the bare variable
+ * match. Only treat as a leak when the expression IS the bare variable
+ * (e.g. `res.json(err)`) or is a stack-trace property access on it.
+ */
 function argIsException(arg: ArgumentInfo | undefined): boolean {
   if (!arg) return false;
+  const expr = (arg.expression ?? '').trim();
   if (arg.variable && /^(err|error|exc|exception|e|t|throwable)$/i.test(arg.variable)) {
-    return true;
+    // Bare exception variable: `res.json(err)`.
+    if (!expr || expr === arg.variable) return true;
+    // Containing expression — defer to isExceptionExpression for shape check.
+    return isExceptionExpression(expr);
   }
-  return isExceptionExpression(arg.expression);
+  return isExceptionExpression(expr);
 }
 
 /** Detect Java: e.printStackTrace(out) where out is a response writer. */
@@ -98,12 +149,30 @@ function detectJavaPrintStackTrace(call: CallInfo): string | null {
 }
 
 /** Detect calls of the shape `response.send(err.stack)` / `.json(err)`. */
-function detectResponseLeakCall(call: CallInfo): string | null {
+function detectResponseLeakCall(
+  call: CallInfo,
+  language?: string,
+  sourceLines?: string[],
+): string | null {
   const method = call.method_name ?? '';
   const receiver = call.receiver ?? '';
 
   if (!RESPONSE_SEND_METHODS.has(method)) return null;
   if (LOGGER_RECEIVER_RE.test(receiver)) return null;
+
+  // #133 — Python file-handle write is not a response leak. When the
+  // receiver was produced by `open(...)` within the prior 10 lines,
+  // skip. Independent of receiver-name overlap; cannot regress real
+  // response leaks (response writers are never produced by `open(...)`).
+  if (
+    language === 'python' &&
+    (method === 'write' || method === 'writelines') &&
+    sourceLines &&
+    isPythonFileHandle(receiver, call.location.line, sourceLines)
+  ) {
+    return null;
+  }
+
   // Accept either a bare known receiver name, or one whose tail is a known name
   // (e.g. `ctx.response`, `event.res`, `response.status(500)` chained returns).
   const recTail = receiver.split('.').pop() ?? receiver;
@@ -162,6 +231,9 @@ export class InfoDisclosureStacktracePass implements AnalysisPass<InfoDisclosure
     const file = graph.ir.meta.file;
     const findings: InfoDisclosureStacktraceResult['findings'] = [];
 
+    // #133 — split lines once for downstream file-handle backward scan.
+    const sourceLines = ctx.code.split('\n');
+
     if (language === 'python') {
       for (const f of detectPythonTracebackReturn(ctx)) {
         findings.push({ line: f.line, api: f.api, language });
@@ -174,9 +246,9 @@ export class InfoDisclosureStacktracePass implements AnalysisPass<InfoDisclosure
 
       if (language === 'java') {
         api = detectJavaPrintStackTrace(call);
-        if (!api) api = detectResponseLeakCall(call);
+        if (!api) api = detectResponseLeakCall(call, language, sourceLines);
       } else if (language === 'javascript' || language === 'typescript') {
-        api = detectResponseLeakCall(call);
+        api = detectResponseLeakCall(call, language, sourceLines);
       } else if (language === 'go') {
         // http.Error(w, err.Error()+debug.Stack(), 500)
         // fmt.Fprintln(w, err)
@@ -194,11 +266,11 @@ export class InfoDisclosureStacktracePass implements AnalysisPass<InfoDisclosure
             }
           }
         } else {
-          api = detectResponseLeakCall(call);
+          api = detectResponseLeakCall(call, language, sourceLines);
         }
       } else if (language === 'python') {
         // Handle response leak shape too: e.g. `return jsonify(stack=...)`
-        api = detectResponseLeakCall(call);
+        api = detectResponseLeakCall(call, language, sourceLines);
       }
 
       if (!api) continue;

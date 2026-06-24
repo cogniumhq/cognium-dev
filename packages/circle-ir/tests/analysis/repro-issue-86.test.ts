@@ -211,7 +211,14 @@ function h(req, res) {
     expect(flows.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('flags JS res.cookie of req.query as crlf', async () => {
+  // cognium-dev #132 — Express/Koa `res.cookie(name, value, [opts])` is
+  // CRLF-safe by construction: the cookie helper serialises via
+  // `cookie.serialize()` which URL-encodes CR (%0D) / LF (%0A). The
+  // historic Sprint 6 assertion that this shape flags as CRLF is
+  // inverted by Stage 8d in SinkFilterPass. The raw-header path
+  // `res.setHeader('Set-Cookie', tainted)` continues to fire (see #132
+  // recall test in tests/analysis/passes/crlf-stage8-fp.test.ts).
+  it('does NOT flag JS res.cookie of req.query as crlf (cookie helper is CRLF-safe, #132)', async () => {
     const code = `
 function h(req, res) {
   res.cookie('session', req.query.s);
@@ -219,7 +226,7 @@ function h(req, res) {
 `;
     const r = await analyze(code, 't.js', 'javascript');
     const flows = (r.taint?.flows ?? []).filter((f) => f.sink_type === 'crlf');
-    expect(flows.length).toBeGreaterThanOrEqual(1);
+    expect(flows.length).toBe(0);
   });
 
   // ---------------------------------------------------------------------

@@ -5,6 +5,127 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.99.0] - 2026-06-23
+
+Combined Tier-1 zero-FP queue release covering two unrelated pass /
+filter-layer FP suppressions:
+
+- **cognium-dev#132 — JS/TS CRLF / open_redirect Stage 8** — The
+  Stage 8 filter in `SinkFilterPass` (`sink-filter-pass.ts:241-283`)
+  now suppresses two additional safe shapes that were leaking through
+  the `.includes/.startsWith/.endsWith/.indexOf/.test/.match`
+  conditional-allowlist guard:
+    - **Set/Map `.has(...)` allowlist** — extending the
+      `guardPatterns` regex to recognise the `has` method covers
+      `if (ALLOWED_REDIRECTS.has(url)) res.redirect(url)` shapes used
+      throughout modern JS/TS code.
+    - **Express/Koa `res.cookie(name, value, [opts])`** — the cookie
+      helper serialises via the `cookie` npm package's `serialize()`,
+      which URL-encodes CR (%0D) and LF (%0A). The helper path is
+      CRLF-safe by construction; only the raw-header path
+      `setHeader('Set-Cookie', tainted)` is still flagged (existing
+      8c-or-default).
+
+- **cognium-dev#133 — info-disclosure-stacktrace** — The
+  `info-disclosure-stacktrace` pass (`info-disclosure-stacktrace-pass.ts`,
+  rule #103, CWE-209) no longer emits findings for two safe shapes:
+    - **`.message` is not a stack trace** — `.message` and
+      `.getMessage()` are removed from the
+      `isExceptionExpression` dangerous-attribute alternation.
+      `.message` returns a single-line developer-controlled human
+      description (e.g. `new Error('Validation failed')`), not a
+      stack trace. The rule's canonical CWE-209 scope is stack-trace
+      disclosure; `.stack`, `.toString()`, `.getStackTrace()`, full
+      error object, and `traceback.format_exc()` remain in scope and
+      continue to fire.
+    - **Python file-handle writes** — a backward-scan guard in
+      `detectResponseLeakCall()` traces `f.write(...)` /
+      `f.writelines(...)` receivers back ≤10 lines to a
+      `with open(...) as f:` or `f = open(...)` declaration. When
+      resolvable, the call is treated as a file-handle write (not a
+      response leak). Cannot regress real response leaks because
+      response writers are never produced by `open(...)`.
+
+Both fixes are pass/filter-layer only — no IR, no YAML config, no CLI
+surface change. Pillar I zero-LLM boundary safe.
+
+### Added
+
+- **#132** — Stage 8d cookie-helper suppressor in
+  `src/analysis/passes/sink-filter-pass.ts`:
+  `if (sink.method === 'cookie' && sink.type === 'crlf') return false;`.
+  Scoped strictly to `crlf` sinks emitted via the `cookie` method;
+  raw-header `setHeader('Set-Cookie', tainted)` is unaffected.
+- **#133** — `PY_FILE_HANDLE_OPEN_RE` constant + `isPythonFileHandle(
+  receiver, callLine, sourceLines)` helper in
+  `src/analysis/passes/info-disclosure-stacktrace-pass.ts`. Backward
+  10-line bounded scan for `with open(...) as <recv>:` and
+  `<recv> = open(...)` declarations.
+
+### Changed
+
+- **#132** — `guardPatterns` regex in
+  `src/analysis/passes/sink-filter-pass.ts:249` extended to include
+  the `has` method:
+  `\b(?:includes|startsWith|endsWith|indexOf|test|match|has)\s*\(`.
+  Reuses the existing `if (…)` within-6-lines window — same
+  conservativeness as the existing `.includes` / `.startsWith` set.
+- **#133** — `isExceptionExpression()` regex in
+  `src/analysis/passes/info-disclosure-stacktrace-pass.ts:70` narrowed
+  to:
+  `\b(err|error|exc|exception|e|t|throwable)\.(stack|toString\(|getStackTrace\(|getLocalizedMessage\(|getCause\()`.
+  Drops `message` and `getMessage(` arms.
+- **#133** — `argIsException()` no longer short-circuits on a bare
+  `arg.variable === 'err'` match when the expression text is a
+  containing object literal. It now defers to
+  `isExceptionExpression` on the full expression text whenever
+  `expression !== variable`, fixing the asymmetric path where
+  parser-extracted `variable="err"` (from
+  `{ ok: false, error: err.message }`) was triggering the rule even
+  after the regex narrowing.
+- **#133** — `detectResponseLeakCall()` signature extended to accept
+  optional `language` + `sourceLines` parameters, threaded through the
+  four call sites in `run()` (`java`, `js/ts`, `go` fallback, `python`).
+
+### Tests
+
+- `tests/analysis/passes/crlf-stage8-fp.test.ts` — 7 cases:
+    - 4 FP-suppression: JS `.has` Set guard + redirect, TS `Set<string>`
+      `.has` guard + redirect, JS `res.cookie` with security options,
+      JS `res.cookie` 2-arg form.
+    - 2 recall: bare `res.redirect(req.query.url)`, raw
+      `setHeader('Location', req.query.dest)`.
+    - 1 regression: existing `.includes` allowlist guard (cognium-dev #99).
+- `tests/analysis/passes/info-disclosure-stacktrace-fp.test.ts` — 6 cases:
+    - 2 FP-suppression `.message`: JS `res.json({error: err.message})`,
+      JS `res.send('failed: ' + err.message)`.
+    - 2 FP-suppression Python file-handle: `with open(p, 'w', opener=…0o600…) as f: f.write(API_KEY)`,
+      `f = open(p, 'w'); f.write(SECRET); f.close()`.
+    - 2 recall: JS `res.json({error: err.stack})`, Python
+      `return traceback.format_exc()` in handler.
+- `tests/analysis/repro-issue-86.test.ts:214-230` updated — the historic
+  Sprint 6 #86 assertion that `res.cookie('session', req.query.s)`
+  flags as CRLF is inverted to assert zero flows (cookie helper is
+  CRLF-safe by construction, see #132 rationale above).
+- Full suite: 2895 passed / 1 skipped (was 2882 / 1 in 3.98.0).
+
+### End-user effect
+
+- **#132** — JS/TS code using `Set/Map.has(...)` allowlist guards for
+  `res.redirect(...)` (idiomatic in modern Express/Koa apps) no longer
+  produces false `crlf` / `open_redirect` findings. Express/Koa
+  `res.cookie(name, value, [opts])` calls (with or without security
+  flags) no longer produce false `crlf` findings. Raw-header
+  `setHeader('Set-Cookie', tainted)` and bare unguarded
+  `res.redirect(req.query.url)` continue to fire.
+- **#133** — Returning `err.message` to the client no longer triggers
+  `info-disclosure-stacktrace` (CWE-209). The rule now correctly
+  reflects its canonical CWE-209 stack-trace scope. Returning
+  `err.stack`, `err.toString()`, the full error object, or
+  `traceback.format_exc()` continues to fire. Python file-handle
+  writes (`f.write(SECRET)` where `f = open(...)`) no longer trigger
+  the rule.
+
 ## [3.98.0] - 2026-06-23
 
 cognium-dev#147 — Python Jinja2 `render_template_string("lit", **ctx)`,

@@ -242,10 +242,11 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // Suppresses res.redirect(url) and res.setHeader(...) sinks when an
     // allowlist/validation guard appears within 6 lines above the sink, OR
     // when the sink call's tainted argument is a literal (CORS '*' etc).
-    // (cognium-dev #99)
+    // (cognium-dev #99, #132)
     if (['javascript', 'typescript'].includes(language)) {
       const sourceLines = ctx.code.split('\n');
-      const guardPatterns = /\b(?:includes|startsWith|endsWith|indexOf|test|match)\s*\(/;
+      // #132 — `has` covers Set/Map allowlist primitive: ALLOWED.has(url).
+      const guardPatterns = /\b(?:includes|startsWith|endsWith|indexOf|test|match|has)\s*\(/;
       filtered = filtered.filter(sink => {
         if (sink.type !== 'open_redirect' && sink.type !== 'crlf') {
           return true;
@@ -267,6 +268,14 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Match e.g. `res.setHeader('X-Foo', '*')` where 2nd arg is a literal.
         const setHeaderMatch = sinkLineText.match(/setHeader\s*\(\s*[^,]+,\s*(['"`])([^'"`]*)\1\s*\)/);
         if (setHeaderMatch) {
+          return false;
+        }
+        // 8d. Express/Koa `res.cookie(name, value, [opts])` is CRLF-safe by
+        // construction: the cookie helper serializes via `cookie.serialize()`
+        // which URL-encodes CR (%0D) / LF (%0A). The raw-header path
+        // `setHeader('Set-Cookie', tainted)` is still flagged via 8c-or-default.
+        // (cognium-dev #132)
+        if (sink.method === 'cookie' && sink.type === 'crlf') {
           return false;
         }
         return true;

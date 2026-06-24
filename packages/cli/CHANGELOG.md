@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.99.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.99.0 combined Tier-1 zero-FP queue
+release. No CLI surface changes; bumps the `circle-ir` dependency from
+`^3.98.0` to `^3.99.0`. End-user effect (two unrelated rule fixes):
+
+- **cognium-dev#132 — JS/TS CRLF / open_redirect** — JS/TS code using
+  `Set/Map.has(...)` allowlist guards for `res.redirect(...)`
+  (idiomatic in modern Express/Koa apps) no longer produces false
+  `crlf` / `open_redirect` findings. Express/Koa
+  `res.cookie(name, value, [opts])` calls (with or without security
+  flags) no longer produce false `crlf` findings — the cookie helper
+  serialises via `cookie.serialize()` which URL-encodes CR (%0D) /
+  LF (%0A). Raw-header `setHeader('Set-Cookie', tainted)` and bare
+  unguarded `res.redirect(req.query.url)` continue to fire.
+- **cognium-dev#133 — info-disclosure-stacktrace (CWE-209)** —
+  Returning `err.message` to the client no longer triggers the
+  `info-disclosure-stacktrace` rule. The rule now correctly reflects
+  its canonical CWE-209 stack-trace-disclosure scope. Returning
+  `err.stack`, `err.toString()`, the full error object, or
+  `traceback.format_exc()` continues to fire. Python file-handle writes
+  (`f.write(SECRET)` where `f = open(...)`) no longer trigger the rule.
+
 ## [3.98.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.98.0 Python Jinja2 safe
