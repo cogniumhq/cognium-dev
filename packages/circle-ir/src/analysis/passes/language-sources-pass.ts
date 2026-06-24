@@ -1002,6 +1002,27 @@ export function findPythonTrustBoundaryViolations(
   return violations;
 }
 
+// #147 — Jinja2 safe render-context. Mirror of the matcher-layer gate in
+// taint-matcher.ts (isSafeJinjaRenderCall). When the template SOURCE is
+// a string literal, Jinja2 auto-escapes context values by default so the
+// `return render_template_string("lit", **ctx)` /
+// `return Template("lit").render(**ctx)` / bare `return Template("lit")`
+// shapes are XSS-safe even if `ctx` references tainted vars. Tainted
+// template-source variants (concat / identifier / call result / f-string)
+// keep the sink — conservative-bias by literal-only match.
+const JINJA_LITERAL_ARG_RE_FRAG = `(?:"[^"\\\\]*"|'[^'\\\\]*')`;
+const JINJA_SAFE_RTS_RE = new RegExp(
+  `^(?:flask\\.|jinja2\\.)?render_template_string\\s*\\(\\s*${JINJA_LITERAL_ARG_RE_FRAG}\\s*[,)]`
+);
+const JINJA_SAFE_TEMPLATE_RE = new RegExp(
+  `^(?:jinja2\\.)?Template\\s*\\(\\s*${JINJA_LITERAL_ARG_RE_FRAG}\\s*\\)(?:\\s*\\.render\\s*\\(|\\s*$)`
+);
+
+function isSafeJinjaReturnExpr(expr: string): boolean {
+  const trimmed = expr.trim();
+  return JINJA_SAFE_RTS_RE.test(trimmed) || JINJA_SAFE_TEMPLATE_RE.test(trimmed);
+}
+
 function findPythonReturnXSSSinks(
   sourceCode: string,
   taintedVars: Map<string, number>
@@ -1021,6 +1042,8 @@ function findPythonReturnXSSSinks(
     if (!hasTaintedVar) continue;
     const looksLikeHTML = expr.includes('<') || /['"]\s*\+/.test(expr) || /\+\s*['"]/.test(expr) || /f['"][^'"]*\{/.test(expr);
     if (!looksLikeHTML) continue;
+    // #147 — Jinja2 safe render-context: skip safe literal-template shapes.
+    if (isSafeJinjaReturnExpr(expr)) continue;
     sinks.push({ sinkLine: i + 1 });
   }
 

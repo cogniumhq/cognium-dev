@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.98.0] - 2026-06-23
+
+Tracking release for the circle-ir@3.98.0 Python Jinja2 safe
+render-context FP suppression (cognium-dev#147). No CLI surface
+changes; bumps the `circle-ir` dependency from `^3.97.0` to `^3.98.0`.
+End-user effect: Python scans no longer report XSS (CWE-79) or
+SSTI/code-injection (CWE-94) findings for the three safe Jinja2 render
+shapes — `render_template_string("lit", **ctx)`, `Template("lit")`,
+and `Template("lit").render(**ctx)` — when the template body is a
+single quoted string literal. Tainted-template-source variants (string
+concat, identifier reference, function-call result, f-string
+interpolation) continue to fire. Cross-file `cf-ip-0-*` taint paths
+that previously surfaced the FP at the project level are also
+suppressed because the upstream sink no longer exists.
+
 ## [3.97.0] - 2026-06-23
 
 Tracking release for the circle-ir@3.97.0 Go `json.Unmarshal` /

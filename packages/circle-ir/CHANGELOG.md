@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.98.0] - 2026-06-23
+
+cognium-dev#147 — Python Jinja2 `render_template_string("lit", **ctx)`,
+`Template("lit")`, and `Template("lit").render(**ctx)` no longer emit
+`xss` (CWE-79) or `code_injection` (CWE-94) sinks when the template
+SOURCE is a single quoted string literal. Jinja2 auto-escapes context
+values passed via `render(**ctx)` / `render_template_string("...", **ctx)`
+by default, so tainted context kwargs are not an XSS/SSTI vector when
+the template body itself is static. Tainted-template-source variants
+(string concat, identifier reference, function-call result, f-string
+interpolation) continue to fire — conservative bias is enforced by
+matching only literal arg[0] / literal-receiver shapes.
+
+The fix sits at two emitter layers, both gated by the same conservative
+literal-only signal:
+
+- **`taint-matcher.ts: findSinks()`** — the config-driven sink emitter
+  consults the new `isSafeJinjaRenderCall()` helper and `continue`s past
+  the safe shapes.
+- **`language-sources-pass.ts: findPythonReturnXSSSinks()`** — the
+  regex-fallback emitter that fires on `return <html-ish expr containing
+  tainted var>` consults the mirror `isSafeJinjaReturnExpr()` helper.
+  This second gate is required because the tainted kwarg in
+  `render_template_string("lit", **ctx)` keeps the regex-emitted sink
+  alive past Stage 3 (clean-variable) filtering in `SinkFilterPass`.
+
+### Added
+
+- `isSafeJinjaRenderCall(call, pattern, language)` helper and
+  `TEMPLATE_LITERAL_RECEIVER_RE` constant in
+  `src/analysis/taint-matcher.ts`. Scoped to `language === 'python'`,
+  `pattern.type ∈ {xss, code_injection}`, and method names
+  `render_template_string` / `Template` / `from_string` / `render`.
+  Returns `true` for three exact shapes:
+    - `render_template_string` / `Template` / `from_string` — when
+      `call.arguments[0].literal` is a non-null string.
+    - `render` — when `call.receiver` (verbatim source text for the
+      chained `Template(...)`) matches
+      `/^Template\(\s*(?:"[^"\\]*"|'[^'\\]*')\s*\)$/`.
+- `isSafeJinjaReturnExpr(expr)` helper plus `JINJA_LITERAL_ARG_RE_FRAG`,
+  `JINJA_SAFE_RTS_RE`, `JINJA_SAFE_TEMPLATE_RE` constants in
+  `src/analysis/passes/language-sources-pass.ts`. Detects three safe
+  shapes at line level by string-literal arg[0] match:
+    - `(?:flask\.|jinja2\.)?render_template_string("lit"[,)]`
+    - `(?:jinja2\.)?Template("lit").render(`
+    - `(?:jinja2\.)?Template("lit")` (bare, end of expression).
+
+### Changed
+
+- `findSinks()` (`src/analysis/taint-matcher.ts`) — new gate inserted
+  immediately after the cognium-dev #148 Go json safe-gate. When
+  `isSafeJinjaRenderCall(...)` returns `true`, the per-call sink emission
+  is skipped (`continue`).
+- `findPythonReturnXSSSinks()`
+  (`src/analysis/passes/language-sources-pass.ts`) — new gate inserted
+  immediately after the existing `looksLikeHTML` check. When
+  `isSafeJinjaReturnExpr(expr)` returns `true`, the per-line regex sink
+  emission is skipped (`continue`).
+
+### Tests
+
+- `tests/analysis/passes/jinja-safe-render-fp.test.ts` — 10 cases:
+    - 5 FP-suppression: `Template("lit").render(name=tainted)` with both
+      quote styles, `render_template_string("lit", name=tainted)`, bare
+      `Template("lit")`, no-context `Template("lit").render()`.
+    - 4 recall locks: `Template("..." + name + "...").render()`,
+      `render_template_string("..." + name + "...")`,
+      `Template(tainted).render()`, `render_template_string(call_result(),
+      name=tainted)`.
+    - 1 issue body repro pairing the safe shape (0 sinks) against the
+      concat-source TP (≥1 sink) in the same suite.
+- Full suite: 2882 passed / 1 skipped (was 2872 / 1 in 3.97.0).
+
+### End-user effect
+
+Python scans no longer report XSS (CWE-79) or SSTI/code-injection
+(CWE-94) findings for the three safe Jinja2 render shapes when the
+template body is a string literal — the dominant FP shape in Flask /
+Jinja2 services. Tainted-template-source variants (concat, identifier,
+call) continue to fire as before. Cross-file `cf-ip-0-*` taint paths
+that previously surfaced the FP at the project level are also
+suppressed because the upstream sink no longer exists.
+
 ## [3.97.0] - 2026-06-23
 
 cognium-dev#148 — Go `json.Unmarshal(data, &dst)` and

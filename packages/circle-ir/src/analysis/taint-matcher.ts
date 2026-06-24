@@ -1058,6 +1058,70 @@ function isSafeGoJsonUnmarshalCall(
 }
 
 /**
+ * #147 — Jinja2 safe render-context.
+ *
+ * The cross-file taint walker (resolution/cross-file.ts) paints a path
+ * whenever a tainted variable name appears anywhere in
+ * `call.arguments[].expression` on a sink line — the sink config's
+ * `arg_positions: [0]` is not honoured at that layer. Jinja2's
+ * `render(...)` / `render_template_string(...)` accept the dangerous
+ * template string at position 0 and a benign auto-escaped context at
+ * positions 1+ / kwargs; when the tainted variable enters only via the
+ * context the engine still emits an XSS / SSTI path.
+ *
+ * This gate suppresses the sink emission for three exact shapes whose
+ * template SOURCE is a single quoted string literal:
+ *
+ *   render_template_string("<literal>", **context)
+ *   Template("<literal>")               (jinja2 constructor)
+ *   Template("<literal>").render(**ctx) (chained render)
+ *
+ * Tainted-template-source variants (concat, identifier, function call,
+ * f-string) keep the sink — those are real SSTI/XSS.
+ *
+ * Out of scope: `Markup(...)` / `mark_safe(...)` / `format_html(...)`
+ * are explicit "trust this as safe HTML" markers; tainted args there
+ * ARE real XSS and the method-name allowlist below excludes them.
+ */
+const TEMPLATE_LITERAL_RECEIVER_RE =
+  /^Template\(\s*(?:"[^"\\]*"|'[^'\\]*')\s*\)$/;
+
+function isSafeJinjaRenderCall(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+): boolean {
+  if (language !== 'python') return false;
+  if (pattern.type !== 'xss' && pattern.type !== 'code_injection') return false;
+
+  const method = call.method_name;
+
+  // Case A: render_template_string(literal, **context).
+  if (method === 'render_template_string') {
+    const arg0 = call.arguments.find(a => a.position === 0);
+    return typeof arg0?.literal === 'string';
+  }
+
+  // Case B: Template(literal) / from_string(literal) — direct constructor
+  // sinks for jinja2 templates.
+  if (method === 'Template' || method === 'from_string') {
+    const arg0 = call.arguments.find(a => a.position === 0);
+    return typeof arg0?.literal === 'string';
+  }
+
+  // Case C: Template(literal).render(**context) — chained.
+  // The render() call carries the Template(...) source in its receiver
+  // string verbatim; accept only the strict literal shape (no operators,
+  // no identifiers, no nested calls inside the parens).
+  if (method === 'render') {
+    const receiver = (call.receiver ?? '').trim();
+    return TEMPLATE_LITERAL_RECEIVER_RE.test(receiver);
+  }
+
+  return false;
+}
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -1164,6 +1228,15 @@ function findSinks(
         // (interface{}, any, map[string]interface{}) and unresolvable
         // shapes.
         if (isSafeGoJsonUnmarshalCall(call, pattern, language, sourceLines)) {
+          continue;
+        }
+
+        // #147 — Jinja2 safe render-context. Template("literal").render(**ctx)
+        // and render_template_string("literal", **ctx) and Template("literal")
+        // alone are safe: the template SOURCE is a constant string and Jinja2
+        // auto-escapes context values by default. Tainted-template-source
+        // variants (concat, identifier, function call) keep the sink.
+        if (isSafeJinjaRenderCall(call, pattern, language)) {
           continue;
         }
 
