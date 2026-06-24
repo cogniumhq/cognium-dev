@@ -60,6 +60,11 @@ export type {
   SinkType,
   Severity,
 
+  // Project profile types (3.106.0, #169)
+  ProjectShape,
+  ProjectEnv,
+  ProjectProfile,
+
   // SAST taxonomy types (Phase 1+)
   PassCategory,
   SarifLevel,

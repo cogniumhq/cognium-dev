@@ -26,6 +26,37 @@ export interface Vulnerability {
    * tags reach the CLI; tags here are presentational only.
    */
   tags?: string[];
+  /**
+   * Resolved `ProjectProfile` (e.g. `"library/production"`) for the file
+   * the finding came from. Populated by the CLI when project-profile
+   * detection is enabled (3.106.0, #169). Surfaced in JSON output and as
+   * SARIF `properties.profile` for downstream tooling.
+   */
+  profile?: string;
+}
+
+/**
+ * Per-module summary surfaced on the CLI text header, in JSON
+ * (`project_profile.modules`), and in SARIF (`run.properties.projectProfile`).
+ * Mirrors the detector's `ResolvedModule` minus the parser-internal fields.
+ * Added in 3.106.0 (#169).
+ */
+export interface ProjectProfileSummary {
+  /** Absolute scan root used by the detector. */
+  scanRoot: string;
+  /** One entry per detected build module. */
+  modules: Array<{
+    /** Module root path, relative to `scanRoot`. */
+    root: string;
+    /** Resolved `ProjectProfile` string (`"library/production"`, `"unknown"`, …). */
+    profile: string;
+    /** Short reason chain for `--project-profile-explain`. */
+    reasons: string[];
+    /** Build system that produced this module. */
+    buildSystem: 'maven' | 'gradle' | 'gradle-kts';
+  }>;
+  /** Number of files that resolved to `'unknown'` (no enclosing module). */
+  unknownFileCount: number;
 }
 
 /**
@@ -427,8 +458,31 @@ function formatCrossFilePaths(taintPaths: TaintPath[]): string {
   return lines.join('\n');
 }
 
-export function formatResults(results: ScanResult[], verbose?: boolean, crossFileData?: CrossFileData): string {
+export function formatResults(
+  results: ScanResult[],
+  verbose?: boolean,
+  crossFileData?: CrossFileData,
+  profileSummary?: ProjectProfileSummary,
+): string {
   const lines: string[] = [];
+
+  // 3.106.0 (#169) — project-profile header. Compact one-block summary at
+  // the top of text output so users can immediately see which shape/env
+  // was assigned to each module. Verbose mode includes the reason chain.
+  if (profileSummary && profileSummary.modules.length > 0) {
+    lines.push(colors.bold('Project profile'));
+    for (const m of profileSummary.modules) {
+      const tag = m.root === '' || m.root === '.' ? '.' : m.root;
+      lines.push(`  ${colors.cyan(tag)}  →  ${colors.bold(m.profile)}`);
+      if (verbose) {
+        lines.push(`     reasons: ${m.reasons.join(' → ')}`);
+      }
+    }
+    if (profileSummary.unknownFileCount > 0) {
+      lines.push(colors.dim(`  ${profileSummary.unknownFileCount} file(s) outside any module → unknown`));
+    }
+    lines.push('');
+  }
 
   for (const result of results) {
     if (result.error) {
@@ -502,7 +556,11 @@ export function formatResults(results: ScanResult[], verbose?: boolean, crossFil
   return lines.join('\n');
 }
 
-export function formatJSON(results: ScanResult[], crossFileData?: CrossFileData): string {
+export function formatJSON(
+  results: ScanResult[],
+  crossFileData?: CrossFileData,
+  profileSummary?: ProjectProfileSummary,
+): string {
   const output = {
     version,
     timestamp: new Date().toISOString(),
@@ -516,6 +574,10 @@ export function formatJSON(results: ScanResult[], crossFileData?: CrossFileData)
     // 3.89.0 (#141): partial-result marker for cross-file phase. `true` →
     // budget exceeded mid-phase, paths above may be incomplete.
     cross_file_budget_exceeded: crossFileData?.budgetExceeded ?? false,
+    // 3.106.0 (#169): project-profile detection summary. Omitted when
+    // detection was disabled (`--no-project-profile`) or the scan target
+    // was a single file (no module concept).
+    ...(profileSummary ? { project_profile: profileSummary } : {}),
     summary: {
       filesScanned: results.length,
       filesWithVulnerabilities: results.filter(r => r.vulnerabilities.length > 0).length,
@@ -529,7 +591,11 @@ export function formatJSON(results: ScanResult[], crossFileData?: CrossFileData)
   return JSON.stringify(output, null, 2);
 }
 
-export function formatSARIF(results: ScanResult[], crossFileData?: CrossFileData): string {
+export function formatSARIF(
+  results: ScanResult[],
+  crossFileData?: CrossFileData,
+  profileSummary?: ProjectProfileSummary,
+): string {
   const sarif = {
     $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
     version: '2.1.0',
@@ -544,6 +610,11 @@ export function formatSARIF(results: ScanResult[], crossFileData?: CrossFileData
           },
         },
         results: generateSarifResults(results, crossFileData),
+        // 3.106.0 (#169): per-run project-profile summary. Surfaced under
+        // `run.properties.projectProfile` so SARIF consumers (Code
+        // Scanning, Defect Dojo, custom dashboards) can attribute results
+        // to a shape/env without re-deriving from finding-level fields.
+        ...(profileSummary ? { properties: { projectProfile: profileSummary } } : {}),
       },
     ],
   };
@@ -619,6 +690,10 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
           severity: vuln.severity,
           ...(vuln.fix ? { fix: vuln.fix } : {}),
           ...(vuln.tags && vuln.tags.length > 0 ? { tags: vuln.tags } : {}),
+          // 3.106.0 (#169): per-finding project-profile attribution. Lets
+          // SARIF consumers slice findings by shape/env without joining
+          // back to the per-run `projectProfile.modules` table.
+          ...(vuln.profile ? { profile: vuln.profile } : {}),
         },
       });
     }

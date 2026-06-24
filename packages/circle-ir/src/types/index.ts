@@ -279,6 +279,35 @@ export type SinkType =
 
 export type Severity = "critical" | "high" | "medium" | "low";
 
+/**
+ * Project shape axis of the project-profile model (added in 3.106.0).
+ * See `docs/ARCHITECTURE.md` ADR-008.
+ */
+export type ProjectShape = 'library' | 'application' | 'cli' | 'server' | 'plugin';
+
+/**
+ * Project environment axis of the project-profile model (added in 3.106.0).
+ * See `docs/ARCHITECTURE.md` ADR-008.
+ */
+export type ProjectEnv = 'production' | 'dev' | 'sample' | 'benchmark' | 'test';
+
+/**
+ * Project profile for a file or scan (added in 3.106.0).
+ *
+ * Format: `<shape>/<env>` (e.g. 'library/production') or 'unknown'.
+ * The 'unknown' value preserves pre-3.106.0 behavior — no
+ * profile-conditional severity transform is applied.
+ *
+ * The profile is **caller-supplied**: circle-ir never reads the
+ * filesystem (Pillar I + browser/Node compatibility). cognium-dev CLI
+ * and circle-ir-ai detect the profile and pass it through
+ * `analyzeOptions.projectProfile`.
+ *
+ * See `docs/ARCHITECTURE.md` ADR-008 for the full decision tree and
+ * detection contract.
+ */
+export type ProjectProfile = `${ProjectShape}/${ProjectEnv}` | 'unknown';
+
 export interface TaintSource {
   type: SourceType;
   location: string;  // Human-readable description
@@ -549,6 +578,18 @@ export interface SastFinding {
    * optional. The field is additive and non-breaking.
    */
   tags?: string[];
+  /**
+   * Severity of the finding before any post-pipeline transform (added in
+   * 3.106.0). Set automatically by `applyLibraryApiSurfaceDowngrade` so
+   * downstream `applyProjectProfileTransform` can restore the pre-downgrade
+   * severity under `application` profile.
+   *
+   * Consumers should always read `severity` for display; this field is
+   * metadata for the transform pipeline and downstream auditors who want
+   * to recover the engine's original signal. See `docs/ARCHITECTURE.md`
+   * ADR-008 for the composition rules.
+   */
+  original_severity?: Severity;
 }
 
 // =============================================================================

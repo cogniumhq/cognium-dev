@@ -84,6 +84,13 @@ SCAN OPTIONS:
   --disable-pass <passes>    Disable specific passes (comma-separated, e.g., "naming-convention,todo-in-prod")
   --exclude-tests            Exclude test files and directories
   --profile <file>           Load config from file [default: cognium.config.json]
+  --project-profile <p>      Force project profile (shape/env). Disables auto-detection.
+                               - shape: library|application|cli|server|plugin
+                               - env:   production|dev|sample|benchmark|test
+                               - Example: --project-profile library/production
+                               - Default: auto-detect from build files (pom.xml, build.gradle)
+  --no-project-profile       Disable project-profile auto-detection (every file → unknown).
+  --project-profile-explain  Print detected per-module profiles + reason chain, then exit.
   -o, --output <file>        Write results to file
   -q, --quiet                Suppress progress output
   -v, --verbose              Show detailed output

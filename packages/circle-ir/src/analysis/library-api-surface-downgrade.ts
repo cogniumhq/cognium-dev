@@ -32,11 +32,21 @@ export const LIBRARY_API_SURFACE_TAG = 'library-api-surface:caller-responsibilit
  * medium / warning. Non-mutating — returns a new array; untagged findings
  * pass through identical (same object reference). LOW findings are left
  * alone (no upgrade); existing MEDIUM findings are returned unchanged.
+ *
+ * As of 3.106.0 the pre-downgrade severity is preserved on the returned
+ * finding as `original_severity` so the downstream
+ * `applyProjectProfileTransform` hook can restore it under `application`
+ * profile. See `docs/ARCHITECTURE.md` ADR-008.
  */
 export function applyLibraryApiSurfaceDowngrade(findings: SastFinding[]): SastFinding[] {
   return findings.map(f => {
     if (!f.tags?.includes(LIBRARY_API_SURFACE_TAG)) return f;
     if (f.severity === 'medium' || f.severity === 'low') return f;
-    return { ...f, severity: 'medium', level: 'warning' };
+    return {
+      ...f,
+      original_severity: f.severity,
+      severity: 'medium',
+      level: 'warning',
+    };
   });
 }

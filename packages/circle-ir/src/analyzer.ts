@@ -53,7 +53,7 @@
  *  – FeatureEnvyPass      — fires on legitimate delegation patterns (see pass file)
  */
 
-import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta } from './types/index.js';
+import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, SastFinding } from './types/index.js';
 import type { TaintConfig } from './types/config.js';
 import {
   initParser,
@@ -85,6 +85,7 @@ import {
 } from './analysis/per-file-finding-cap.js';
 import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
+import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
@@ -305,6 +306,28 @@ export interface AnalyzerOptions {
    * Added in 3.95.0 (cognium-dev#137).
    */
   enableEntryPointGate?: boolean;
+
+  /**
+   * Project profile for the analysis, used by the post-pipeline profile
+   * transform to gate severity changes on findings tagged
+   * `library-api-surface:caller-responsibility` (Sprint 47). See
+   * `docs/ARCHITECTURE.md` ADR-008 for the full decision tree.
+   *
+   * Three forms supported:
+   *  - omitted (or `'unknown'`) → 3.105.0 behavior preserved (no
+   *    profile-conditional transform applied).
+   *  - single `ProjectProfile` string → applies to every file in the scan.
+   *  - `Map<file, ProjectProfile>` → per-file profile (for monorepos with
+   *    mixed library/application modules).
+   *
+   * Pillar I: circle-ir never reads the filesystem to detect the profile.
+   * Detection is the caller's responsibility (cognium-dev CLI does it;
+   * circle-ir-ai may provide a richer detector). When the caller cannot
+   * resolve a file, supplying `'unknown'` is the safe default.
+   *
+   * Added in circle-ir 3.106.0 (#169).
+   */
+  projectProfile?: ProjectProfile | Map<string, ProjectProfile>;
 }
 
 /**
@@ -465,6 +488,30 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'import_declaration', 'interface_declaration', 'enum_declaration',
       ]);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Project-profile resolver helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `ProfileResolver` from the caller-supplied `projectProfile`
+ * option. Three forms are supported (see `AnalyzerOptions.projectProfile`):
+ *
+ *  - `undefined` → every file resolves to `'unknown'` (no profile-conditional
+ *    transform applied; preserves 3.105.0 behavior).
+ *  - single `ProjectProfile` string → every file resolves to that profile.
+ *  - `Map<file, ProjectProfile>` → per-file lookup; files missing from the
+ *    map fall back to `'unknown'`.
+ *
+ * Added in circle-ir 3.106.0 (#169). See `docs/ARCHITECTURE.md` ADR-008.
+ */
+function makeProfileResolver(
+  p: ProjectProfile | Map<string, ProjectProfile> | undefined,
+): ProfileResolver {
+  if (p === undefined) return () => 'unknown';
+  if (typeof p === 'string') return () => p;
+  return (file: string) => p.get(file) ?? 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -692,8 +739,19 @@ export async function analyze(
   // #161/#165/#168 (3.105.0) — central library-API-surface downgrade. Findings
   // carrying the `library-api-surface:caller-responsibility` tag (emitted by
   // SinkFilterPass Stages 9e/9f/9g) are downgraded to medium/warning. Non-tagged
-  // findings pass through unchanged.
+  // findings pass through unchanged. The pre-downgrade severity is preserved
+  // on each downgraded finding as `original_severity` so the profile transform
+  // below can restore it under `application` profile.
   const downgradedFindings = applyLibraryApiSurfaceDowngrade(verifiedFindings);
+
+  // #169 (3.106.0) — project-profile-conditional transform. Under `library`
+  // profile, eligible tagged findings get CRIT-protected bucketing; under
+  // `application` profile, tagged findings are restored to `original_severity`.
+  // `unknown` (default) is a no-op. See `docs/ARCHITECTURE.md` ADR-008.
+  const profiledFindings = applyProjectProfileTransform(
+    downgradedFindings,
+    makeProfileResolver(options.projectProfile),
+  );
 
   // #142 defensive per-file finding cap. If a file produces more than
   // `cap` findings, drop the individual results and emit a single
@@ -701,7 +759,7 @@ export async function analyze(
   // `perFileFindingCap: 0` disables.
   const cappedFindings = applyPerFileFindingCap(
     filePath,
-    downgradedFindings,
+    profiledFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
 

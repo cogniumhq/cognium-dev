@@ -14,6 +14,7 @@ This document outlines the key architectural decisions that make Circle-IR a hig
    - [ADR-005: Multi-Target Build System](#adr-005-multi-target-build-system)
    - [ADR-006: Runtime Pass Configuration](#adr-006-runtime-pass-configuration)
    - [ADR-007: Pillar I — zero LLM in cognium-dev](#adr-007-pillar-i--zero-llm-in-cognium-dev)
+   - [ADR-008: Project Profile + Library-API Tag Interaction](#adr-008-project-profile--library-api-tag-interaction)
 4. [Analysis Pipeline](#analysis-pipeline)
 5. [Benchmark Performance](#benchmark-performance)
 
@@ -460,6 +461,213 @@ the architectural boundary, triggering a course correction in 3.94.0.
   before user presentation.
 
 **Reference.** Sprint 36 retro / 3.94.0 release notes; `CLAUDE.md`.
+
+---
+
+### ADR-008: Project Profile + Library-API Tag Interaction
+
+**Status:** Accepted (2026-06-24, design locked for Sprint 48 / 3.106.0). Implementation pending.
+
+**Context.** Sprint 47 (3.105.0) introduced the
+`library-api-surface:caller-responsibility` tag on `SastFinding` /
+`TaintSink` / `TaintFlowInfo` and a uniform downgrade hook
+(`applyLibraryApiSurfaceDowngrade`) that drops tagged CRIT/HIGH findings
+to MEDIUM/warning regardless of project shape. This addressed three
+specific code-injection false-positive classes (#161 JEXL/Handlebars,
+#165 SPI `Class.forName`, #168 JDK ClassLoader override) but is a
+flat per-callsite gate with no project-context awareness.
+
+Sprint 48 generalises this via the `analyzeOptions.projectProfile` API
+proposed in `#169` (project profile architecture). Profile values follow
+a 5×5 matrix `{library, application, cli, server, plugin} × {production,
+dev, sample, benchmark, test}` with the default `unknown` preserving
+3.105.0 behavior. The profile is **caller-supplied** — circle-ir never
+reads the filesystem (Pillar I + browser/Node compatibility); cognium-dev
+CLI and circle-ir-ai each own their own detector and pass the result in.
+
+**Detection contract (caller side, hybrid shape + publication).** Real
+codebases mix library and application shapes within a single repository
+(e.g. LanguageTool: `languagetool-core` is published library, `-server`
+is application, `-dev/*` is dev tooling; or a Spring Boot monorepo with
+internal `core-utils` modules that *look* library-shaped but ship only
+inside one app). Shape alone is insufficient — an internal helper has
+the threat model of the application that consumes it, not of a library
+with unknown external callers.
+
+The detection algorithm therefore composes two signals per module:
+
+1. **Shape** ∈ `{library, application, cli, server, plugin}` derived from
+   plugins (`java-library`, `application`, `spring-boot`, etc.),
+   `module-info.java` exports, and `main()` count in non-test source.
+2. **Published-externally** ∈ `{true, false, unknown}` derived from
+   `<distributionManagement>` URLs (Maven) or `publishing { repositories
+   { maven { url } } }` blocks (Gradle). **Strict** matching only —
+   the URL must point to a known public registry
+   (`repo.maven.apache.org`, `oss.sonatype.org`,
+   `central.sonatype.com`, `repo1.maven.org`, etc.). Corporate Nexus /
+   Artifactory URLs are deliberately *not* treated as published; the
+   threat model for a corporate-internal-only artifact is closer to an
+   application than to an open-source library.
+
+Composition rule:
+```
+if shape == 'library' AND published == true:    profile = library/<env>
+if shape == 'library' AND published == false:   profile = application/<env>  // scenario 4
+if shape == 'library' AND published == unknown: profile = unknown            // fail safe
+otherwise:                                      profile = <shape>/<env>
+```
+
+**Granularity** is per-module (any directory containing a `pom.xml`,
+`build.gradle`, or `build.gradle.kts` defines a module boundary; files
+belong to the nearest enclosing module). Sub-path overrides within a
+module (e.g. `samples/**` inside a library module) are **not supported
+in v1** — users who need that granularity supply explicit
+`profileOverrides` in `cognium.config.json`.
+
+**Failure mode.** When detection is ambiguous (shape unclear, publication
+unknown, conflicting signals), the resolved profile is `unknown`, which
+yields zero behavior change vs 3.105.0. The system never silently
+"upgrades" relaxation; misdetection costs alert priority only on the
+*relaxed* side, never recall on the strict side.
+
+The two mechanisms must compose cleanly. Three orthogonal axes govern
+the composition:
+
+**Decision.** Tagged-finding behavior under each project profile follows
+the **C-Yes-Yes** policy:
+
+1. **Severity transform under `library` profile (D1 = C, "CRIT-protected
+   bucketing"):**
+   ```
+   CRITICAL → MEDIUM    (preserves RCE-shape alarm; never drops further)
+   HIGH     → LOW
+   MEDIUM   → LOW
+   LOW      → LOW       (no-op)
+   ```
+   Rationale: a tagged CRITICAL is still a literal RCE shape and warrants
+   human review even when the callsite lives at a library API boundary.
+   Dropping it to LOW (or suppressing entirely) creates an unacceptable
+   silent-FN risk if the profile detector misfires.
+
+2. **Sink-type gate (D2 = Yes):** the profile downgrade applies **only**
+   to a fixed sink-type allowlist. The allowlist captures sinks where
+   "library API boundary" is a semantically defensible reason to relax
+   severity:
+   ```
+   DOWNGRADE_ELIGIBLE = {
+     code_injection,            // Class.forName, eval, compile, dispatch
+     template_injection,        // Handlebars/Velocity/Freemarker compile
+     xpath_injection,           // XPath.compile from caller-supplied expr
+     sql_injection-when-builder // Stage 13 *Dialect/*SqlBuilder class gate
+   }
+   ```
+   Sinks **outside** the allowlist (`command_injection`,
+   `path_traversal`, `deserialization`, `ssrf`, `xxe`, `ldap_injection`,
+   `header_injection`, `log_injection`, etc.) ignore the profile signal
+   entirely — a library that calls `Runtime.exec(userInput)` or
+   `ObjectInputStream.readObject(userInput)` is a bug regardless of
+   project shape.
+
+3. **Application-profile restoration (D3 = Yes):** under
+   `application` profile, tagged findings are **restored** to their
+   pre-Sprint-47 severity. This requires preserving the original
+   severity on the finding (new field `original_severity?: string` or
+   equivalent) before the Sprint 47 downgrade runs. Rationale:
+   `application` profile means the analysed project IS the caller, so
+   the "caller bears the trust" argument inverts — these findings
+   become the user's responsibility to investigate, not someone else's.
+   Without restoration, `application` profile would behave identically
+   to `unknown`, defeating its purpose for the tagged subset.
+
+**Composition order** (post-pipeline, pre-output):
+
+```
+findings
+  → applyConfidenceFilter           (existing)
+  → applyLibraryApiSurfaceDowngrade (Sprint 47 — uniform CRIT/HIGH → MED)
+  → applyProjectProfileTransform    (Sprint 48 — NEW; see policy above)
+  → applyPerFileFindingCap          (existing)
+```
+
+The profile transform runs **after** Sprint 47's uniform downgrade so it
+can either (a) downgrade further (library), (b) restore (application),
+or (c) no-op (unknown). The `original_severity` field is set by the
+uniform downgrade hook so the profile transform has a value to restore.
+
+**Consequences.**
+
+- **No silent finding loss.** Tagged findings are never dropped — they
+  are only moved between severity tiers. Detection misfire (profile
+  detector says `library` when it's actually `application`) costs alert
+  priority, not visibility.
+- **New finding field.** `SastFinding.original_severity?: string` is
+  added to support restoration. Browser/SARIF/JSON consumers see it as
+  optional metadata; CLI text formatter does not surface it directly.
+- **Allowlist is curated.** The `DOWNGRADE_ELIGIBLE` set lives in a
+  single constant alongside the downgrade hook. New sink types default
+  to "not eligible" — adding a sink type requires an explicit decision.
+- **Profile is opaque to passes.** Passes do not consult `projectProfile`
+  directly in v1; only the post-processing transform reads it. This
+  keeps the per-pass code stable and concentrates profile-conditional
+  logic in one place. Pass-level profile awareness can be added
+  incrementally if specific passes need it.
+- **Reversible.** Both the downgrade and the restoration are pure
+  functions over the findings array. A consumer that doesn't want
+  profile-conditional behavior passes `projectProfile: 'unknown'` (or
+  omits it) and gets identical 3.105.0 output.
+
+**v1 implementation choices (Sprint 48 / 3.106.0).**
+
+- **Signal precedence within a module** (resolves multi-signal ambiguity):
+  1. `spring-boot` plugin → `server`
+  2. `application` plugin OR exactly one `main()` in non-test src → `application`
+  3. `java-library` plugin OR `module-info.java` with `exports` → `library` (then publication check)
+  4. `<packaging>maven-plugin</packaging>` OR Gradle `java-gradle-plugin` plugin → `plugin`
+  5. multiple `main()` methods AND no application/server plugin → `cli`
+  6. otherwise → `unknown`
+  Higher-precedence rules short-circuit lower ones.
+
+- **Env axis precedence** (path-based, applied per file within a module):
+  1. file path matches `**/test/**` or `**/*Test.java` → `test`
+  2. file path matches `**/benchmark/**` or `**/jmh/**` → `benchmark`
+  3. file path matches `**/samples/**`, `**/examples/**`, `**/demo/**` → `sample`
+  4. module directory or ancestor path matches `**/dev/**`, `**/dev-tools/**` → `dev`
+  5. otherwise → `production`
+
+- **User visibility**: cognium-dev CLI prints a per-module detected-profile
+  header above the findings section (`Profiles: core=library/production,
+  server=server/production, dev=cli/dev`). SARIF emits `properties.profile`
+  on each result; JSON emits `vulnerabilities[].profile`. No per-finding
+  text badge — the header carries the context once.
+
+- **Test profile**: `env=test` is **no-op** in v1 — the existing
+  test-file heuristic in individual passes already handles test-source
+  exclusion. The env value is set and surfaced in output but no
+  pass-level behavior depends on it. Reserved for future refinement.
+
+- **Detection cache**: per-scan in-memory only. Detection runs once
+  during cognium-dev's pre-scan project walk and the resolved
+  `Map<file, profile>` lives for the duration of the scan. No
+  persistence to disk in v1 — pom/gradle parse cost on a 30-module
+  repo is sub-second on real hardware. Revisit if telemetry shows
+  otherwise.
+
+- **Override grammar**: `cognium.config.json` accepts a
+  `profileOverrides` map keyed by **glob patterns** (relative to repo
+  root), values are `<shape>/<env>` strings. Globs match using the
+  same `**`/`*` semantics as the existing `exclude` field. Override
+  wins over auto-detection. CLI flag `--profile=<shape>/<env>` applies
+  to the entire scan and wins over both auto-detection and config
+  overrides.
+
+- **Pass-level profile awareness**: v1 ships **only** the tag-hook
+  interaction described above. Individual analysis passes do not
+  consult `projectProfile` directly. Adding per-pass profile awareness
+  (e.g. a future `resource-leak` that ignores library API boundaries)
+  is a pure additive change that doesn't reopen the ADR.
+
+**Reference.** `#169` (project profile architecture), Sprint 47 release
+notes (3.105.0), Sprint 48 design discussion (this ADR).
 
 ---
 

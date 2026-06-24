@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.106.0] - 2026-06-24
+
+Tracking release for circle-ir@3.106.0 Sprint 48: the new
+**project-profile architecture** (#169). Bumps the `circle-ir`
+dependency from `^3.105.0` to `^3.106.0`.
+
+End-user-visible CLI surface changes:
+
+- **Per-project profile auto-detection** — `cognium-dev scan` now walks
+  the scan root for build files (`pom.xml`, `build.gradle`,
+  `build.gradle.kts`), resolves each module to a `ProjectProfile`
+  (`shape/env` — e.g. `library/production`, `server/production`,
+  `application/dev`), and forwards the per-file profile map to the
+  engine. The engine applies shape-conditional severity bucketing
+  (ADR-008 C-Yes-Yes policy): `library/...` modules downgrade
+  Tier-D-tagged findings (CRIT→MED, HIGH/MED/LOW→LOW), while
+  `application/...` modules restore the original severity for findings
+  that Sprint 47 had pre-emptively downgraded.
+
+- **Shape resolver — hybrid Approach C** — a module is `library` only
+  when it carries a library-signal (`java-library` plugin / JPMS
+  `module-info.java` / SPI `META-INF/services/`) **and** its
+  `distributionManagement` URL resolves to a strict public-registry
+  allowlist (Maven Central, Sonatype OSSRH, Gradle Plugins Portal,
+  legacy jcenter). Internal helper modules with library signals but
+  no public publication resolve to `application`, preventing the
+  library downgrade from masking real bugs in first-party code.
+  Corporate Nexus / Artifactory URLs explicitly do **not** promote a
+  module to `library/...`.
+
+- **Signal precedence** — `spring-boot` plugin (→ `server`) >
+  `war`/`ear` packaging (→ `server`) > `maven-plugin`/`gradle-plugin`
+  (→ `plugin`) > Gradle `application` plugin (→ `cli`) >
+  `main(String[])` discovery (→ `application`) > library hybrid gate >
+  `unknown`.
+
+- **New flags**:
+  - `--project-profile <shape/env>` — force a single profile (skips
+    auto-detection). Example: `--project-profile library/production`.
+  - `--no-project-profile` — disable auto-detection entirely; every
+    file resolves to `unknown` (pre-3.106.0 behaviour).
+  - `--project-profile-explain` — print the detected per-module
+    profiles and reason chain, then exit. Useful for tuning a
+    `cognium.config.json`.
+
+- **`cognium.config.json` extensions**:
+  - `"profile": "library/production"` — repo-wide forced profile.
+  - `"profileOverrides": { "src/main/java/internal/**": "application/production", "third_party/**": "unknown" }` —
+    glob-keyed per-path overrides. First matching glob wins.
+
+- **Per-finding `profile` in JSON/SARIF output** — each emitted
+  vulnerability now carries a `profile` field showing which profile
+  the engine applied. SARIF places it under `properties.profile`. Text
+  output adds a top-of-report project-profile summary block.
+
+- **Pillar I — no LLM-themed identifiers** introduced anywhere.
+  Flag names, config keys, and tag strings are fully generic.
+
+Backward-compatibility:
+- Running without any profile flag and without a `profile` /
+  `profileOverrides` config field invokes auto-detection. On scan
+  trees with no build files (e.g. a loose `.java` file), every file
+  resolves to `unknown` and the engine emits identical findings to
+  3.105.0.
+- The new `--no-project-profile` flag is the explicit opt-out for
+  callers that depend on pre-3.106.0 behaviour.
+
 ## [3.105.0] - 2026-06-24
 
 Tracking release for the circle-ir@3.105.0 Sprint 47 Tier-D six-pack:

@@ -14,12 +14,18 @@ import {
   type SinkType, type SastFinding, type SupportedLanguage,
   type MetricValue, type FileMetrics,
   type PassOptions,
+  type ProjectProfile,
 } from 'circle-ir';
+import {
+  detectProjectProfiles,
+  type ProfileOverrides,
+  type ResolvedModule,
+} from './project-profile-detect/index.js';
 import {
   formatResults, formatJSON, formatSARIF,
   SINK_SEVERITY, SINK_CWE,
   applyTagSeverityDowngrade,
-  type ScanResult, type CrossFileData,
+  type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { version } from './version.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
@@ -69,6 +75,18 @@ export interface CogniumConfig {
   severity?: string;
   /** Category filter */
   categories?: string[];
+  /**
+   * Force project profile (`shape/env`) for the entire scan. Disables
+   * auto-detection. Glob entries under `profileOverrides` still take
+   * precedence per-file. Added in 3.106.0 (#169).
+   */
+  profile?: ProjectProfile;
+  /**
+   * Glob → profile overrides. Evaluated in declaration order; the first
+   * matching glob wins. Use `'unknown'` to explicitly opt a directory out
+   * of any profile-conditional severity transform.
+   */
+  profileOverrides?: ProfileOverrides;
 }
 
 /**
@@ -249,6 +267,22 @@ interface ScanOptions {
    * cross-file phases skipped. See circle-ir 3.89.0 CHANGELOG.
    */
   crossFileBudgetMs?: number;
+  /**
+   * Force project profile (shape/env) for the entire scan. Disables
+   * auto-detection. Sourced from `--project-profile=<shape>/<env>` CLI
+   * flag (overrides any value in `cognium.config.json`). Added in 3.106.0.
+   */
+  projectProfile?: ProjectProfile;
+  /**
+   * `--no-project-profile`: disable auto-detection entirely. Every file
+   * resolves to `'unknown'` (preserves 3.105.0 behavior). Added in 3.106.0.
+   */
+  noProjectProfile?: boolean;
+  /**
+   * `--project-profile-explain`: print per-module resolution table to
+   * stderr and exit before running analysis. Added in 3.106.0.
+   */
+  projectProfileExplain?: boolean;
 }
 
 interface MetricsOptions {
@@ -371,6 +405,13 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
 interface AnalyzeOptions {
   passOptions?: PassOptions;
   disabledPasses?: string[];
+  /**
+   * Per-file project profile resolved by the CLI's
+   * `detectProjectProfiles()` (or a forced single profile from
+   * `--project-profile`). Forwarded verbatim to circle-ir
+   * `AnalyzerOptions.projectProfile`. Added in 3.106.0 (#169).
+   */
+  projectProfile?: ProjectProfile | Map<string, ProjectProfile>;
 }
 
 async function scanFile(filePath: string, language: string, analyzeOpts?: AnalyzeOptions): Promise<ScanResult> {
@@ -379,6 +420,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
     const result = await analyze(code, filePath, language as SupportedLanguage, {
       passOptions: analyzeOpts?.passOptions,
       disabledPasses: analyzeOpts?.disabledPasses,
+      ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
     });
 
     // Security findings from taint flows
@@ -435,6 +477,8 @@ async function scanProject(
     // env. Omitted → library default (300_000 ms / 5 min) applies. 0 →
     // unlimited (legacy pre-3.89.0 behaviour).
     ...(crossFileBudgetMs !== undefined ? { crossFileBudgetMs } : {}),
+    // 3.106.0 (#169): per-file project-profile map (from detector or forced).
+    ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -560,6 +604,88 @@ async function initWasm(spin: Spinner | null): Promise<void> {
   }
 }
 
+// ─── Project profile helpers (3.106.0, #169) ────────────────────────────────
+
+/**
+ * Build the output-side `ProjectProfileSummary` from the detector's
+ * `ResolvedModule[]` and the per-file profile map. Returns `undefined`
+ * when detection was disabled or yielded zero modules (so formatters can
+ * omit the field cleanly).
+ */
+function buildProfileSummary(
+  scanRoot: string,
+  modules: ResolvedModule[],
+  resolvedProfiles: Map<string, ProjectProfile> | undefined,
+): ProjectProfileSummary | undefined {
+  if (!resolvedProfiles) return undefined;
+  if (modules.length === 0 && resolvedProfiles.size === 0) return undefined;
+
+  let unknownFileCount = 0;
+  for (const p of resolvedProfiles.values()) {
+    if (p === 'unknown') unknownFileCount++;
+  }
+
+  return {
+    scanRoot,
+    modules: modules.map(m => ({
+      root: relative(scanRoot, m.module.root) || '.',
+      profile: m.profile,
+      reasons: m.reasons,
+      buildSystem: m.module.buildSystem,
+    })),
+    unknownFileCount,
+  };
+}
+
+/**
+ * One-line summary of detected modules for the spinner status line.
+ * Lists distinct profile strings + module count.
+ */
+function summarizeModules(modules: ResolvedModule[]): string {
+  if (modules.length === 0) return 'no build files detected';
+  const counts = new Map<string, number>();
+  for (const m of modules) {
+    counts.set(m.profile, (counts.get(m.profile) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()]
+    .map(([profile, count]) => `${profile}×${count}`)
+    .sort();
+  return `${modules.length} module(s): ${parts.join(', ')}`;
+}
+
+/**
+ * Print per-module resolution table to stderr for `--project-profile-explain`.
+ * Format: one line per module showing relative path, resolved profile, and
+ * the reason chain that produced it.
+ */
+function printProfileExplain(
+  scanRoot: string,
+  detection: { modules: ResolvedModule[]; unknownFiles: string[] },
+): void {
+  const out: string[] = [];
+  out.push(colors.bold('Project profile detection'));
+  out.push(`  Scan root: ${scanRoot}`);
+  out.push(`  Modules:   ${detection.modules.length}`);
+  out.push(`  Unknown files (no enclosing module): ${detection.unknownFiles.length}`);
+  out.push('');
+
+  if (detection.modules.length === 0) {
+    out.push('  (no pom.xml, build.gradle, or build.gradle.kts found)');
+  } else {
+    for (const r of detection.modules) {
+      const rel = relative(scanRoot, r.module.root) || '.';
+      out.push(`  ${colors.cyan(rel || '.')}  →  ${colors.bold(r.profile)}`);
+      out.push(`     build: ${r.module.buildSystem}  (${relative(scanRoot, r.module.buildFile)})`);
+      if (r.module.artifactId) {
+        out.push(`     coords: ${r.module.groupId ?? '?'}:${r.module.artifactId}:${r.module.version ?? '?'}`);
+      }
+      out.push(`     reasons: ${r.reasons.join(' → ')}`);
+      out.push('');
+    }
+  }
+  process.stderr.write(out.join('\n') + '\n');
+}
+
 // ─── Scan command ────────────────────────────────────────────────────────────
 
 async function runScan(targetPath: string, options: ScanOptions): Promise<void> {
@@ -628,8 +754,51 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     let results: ScanResult[];
     let crossFileData: CrossFileData | undefined;
 
+    // 3.106.0 (#169): resolve per-file project profile. CLI flag wins over
+    // config; `--no-project-profile` disables auto-detection entirely.
+    // Detection is skipped when scanning a single file (no module concept).
+    const forcedProfile = options.projectProfile ?? config?.profile;
+    const profileOverrides = config?.profileOverrides;
+    const detectionEnabled =
+      !options.noProjectProfile &&
+      (await stat(absPath)).isDirectory();
+
+    let resolvedProfiles: Map<string, ProjectProfile> | undefined;
+    let detectedModules: ResolvedModule[] = [];
+    if (detectionEnabled) {
+      if (spin) spin.text = 'Detecting project profile...';
+      const detection = await detectProjectProfiles(absPath, {
+        forcedProfile,
+        overrides: profileOverrides,
+      });
+      resolvedProfiles = detection.profileByFile;
+      detectedModules = detection.modules;
+
+      if (options.projectProfileExplain) {
+        if (spin) spin.stop();
+        printProfileExplain(absPath, detection);
+        return;
+      }
+
+      if (!options.quiet && detectedModules.length > 0) {
+        const summary = summarizeModules(detectedModules);
+        console.error(colors.dim(`Project profile: ${summary}`));
+      }
+    } else if (forcedProfile && !options.noProjectProfile) {
+      // Single-file scan + forced profile → wrap as a single-string profile.
+      resolvedProfiles = undefined;
+    }
+
     // Prepare analyze options from config
-    const analyzeOpts: AnalyzeOptions = { passOptions, disabledPasses };
+    const analyzeOpts: AnalyzeOptions = {
+      passOptions,
+      disabledPasses,
+      ...(resolvedProfiles
+        ? { projectProfile: resolvedProfiles }
+        : forcedProfile && !options.noProjectProfile
+          ? { projectProfile: forcedProfile }
+          : {}),
+    };
 
     if ((await stat(absPath)).isDirectory()) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
@@ -774,18 +943,29 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // Always output for JSON/SARIF formats (structured output expected)
     const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text';
 
+    // 3.106.0 (#169) — assemble the project-profile summary for output and
+    // tag each vulnerability with its file's resolved profile.
+    const profileSummary = buildProfileSummary(absPath, detectedModules, resolvedProfiles);
+    if (resolvedProfiles) {
+      for (const r of results) {
+        const p = resolvedProfiles.get(r.file);
+        if (!p || p === 'unknown') continue;
+        for (const v of r.vulnerabilities) v.profile = p;
+      }
+    }
+
     if (shouldOutput) {
       // Output results
       let output: string;
       switch (options.format) {
         case 'json':
-          output = formatJSON(results, crossFileData);
+          output = formatJSON(results, crossFileData, profileSummary);
           break;
         case 'sarif':
-          output = formatSARIF(results, crossFileData);
+          output = formatSARIF(results, crossFileData, profileSummary);
           break;
         default:
-          output = formatResults(results, options.verbose, crossFileData);
+          output = formatResults(results, options.verbose, crossFileData, profileSummary);
       }
 
       if (options.output) {
@@ -1159,6 +1339,28 @@ function applyFindingsInstrumentation(): void {
 }
 
 /**
+ * Validate the `--project-profile=<shape>/<env>` flag and return a typed
+ * `ProjectProfile`. Returns `undefined` for missing flag, `'unknown'` for
+ * the literal string `"unknown"`. Bad shape/env values emit a warning and
+ * return `undefined` so detection falls back to auto.
+ */
+function parseProjectProfileArg(raw: unknown): ProjectProfile | undefined {
+  if (raw === undefined || raw === true || raw === '') return undefined;
+  const s = String(raw).toLowerCase();
+  if (s === 'unknown') return 'unknown';
+  const m = /^(library|application|cli|server|plugin)\/(production|dev|sample|benchmark|test)$/.exec(s);
+  if (!m) {
+    console.error(colors.yellow(
+      `Warning: invalid --project-profile "${s}" — expected one of:\n` +
+      `  {library,application,cli,server,plugin}/{production,dev,sample,benchmark,test}\n` +
+      `  or "unknown". Falling back to auto-detection.`,
+    ));
+    return undefined;
+  }
+  return s as ProjectProfile;
+}
+
+/**
  * Parse the --cross-file-budget-ms flag value. Accepts a non-negative integer
  * (0 = unlimited). Returns undefined when the flag is absent → library default
  * (300_000 ms / 5 min) applies. Invalid input → warning on stderr + undefined
@@ -1258,6 +1460,9 @@ async function main(): Promise<void> {
       profile: (options.profile || options.p) as string | undefined,
       disablePass: (options['disable-pass']) as string | undefined,
       crossFileBudgetMs: parseCrossFileBudgetMs(options['cross-file-budget-ms']),
+      projectProfile: parseProjectProfileArg(options['project-profile']),
+      noProjectProfile: options['no-project-profile'] === true,
+      projectProfileExplain: options['project-profile-explain'] === true,
     };
 
     await runScan(targetPath, scanOptions);

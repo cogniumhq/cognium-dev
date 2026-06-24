@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.106.0] - 2026-06-24
+
+Sprint 48 closes umbrella ticket **#169 (project-profile architecture)**
+— the first deterministic mechanism for shape-conditional severity
+bucketing. circle-ir gains a new public-API surface
+(`analyzeOptions.projectProfile`) accepting either a single
+`ProjectProfile` (`shape/env`, e.g. `library/production`) or a
+`Map<file, ProjectProfile>` for per-file resolution, plus the central
+transform `applyProjectProfileTransform` wired between
+`applyLibraryApiSurfaceDowngrade` (Sprint 47) and
+`applyPerFileFindingCap`. Detection itself lives caller-side in the
+cognium-dev CLI to preserve the browser+Node-compatible boundary —
+circle-ir consumes profiles but never reads the filesystem.
+
+Policy (ADR-008, locked):
+
+- **D1=C CRIT-protected bucketing** under `library/...`: CRIT→MED,
+  HIGH→LOW, MED→LOW, LOW→LOW. CRIT never drops below MEDIUM so
+  catastrophic findings remain visible even when the artifact's trust
+  boundary is `caller`.
+- **D2=Yes sink-type allowlist**: bucketing only applies to the
+  Tier-D-eligible rule_ids (`code_injection`, `template_injection`,
+  `xpath_injection`, `sql_injection`) carrying the Sprint 47
+  `library-api-surface:caller-responsibility` tag. All other findings
+  pass through unchanged regardless of profile.
+- **D3=Yes restoration** under `application/...`: when an upstream
+  pass already downgraded a finding (Sprint 47), the original severity
+  is restored from `SastFinding.original_severity`. Internal helpers
+  that were mis-classified as library by Sprint 47 still report at full
+  severity once the project profile is known.
+
+Profiles in v1 are the 5×5 matrix `{library, application, cli, server,
+plugin} × {production, dev, sample, benchmark, test}` plus `unknown`
+(the v1 no-op fallback for `cli/...`, `server/...`, `plugin/...`, and
+`test/...`). The `original_severity` field on `SastFinding` is the
+restoration anchor for D3.
+
+Added:
+- `ProjectShape`, `ProjectEnv`, `ProjectProfile` types in
+  `src/types/index.ts` plus matching exports from `index.ts`.
+- `src/analysis/project-profile-transform.ts` — pure transform
+  `applyProjectProfileTransform(findings, resolver)` with
+  `ProfileResolver = (file: string) => ProjectProfile` callback.
+- `AnalyzerOptions.projectProfile?: ProjectProfile |
+  Map<string, ProjectProfile>` accepted by `analyze` /
+  `analyzeProject` / `analyzeForAPI`.
+- `original_severity?: Severity` on `SastFinding` (already populated
+  by Sprint 47 `applyLibraryApiSurfaceDowngrade`).
+- 17 new unit tests in
+  `tests/analysis/project-profile-transform.test.ts` covering
+  passthrough rules, library bucketing across all severity levels,
+  application restoration, other-shape no-ops, composition with the
+  Sprint 47 downgrade hook, per-file routing, and the Pillar I guard.
+
+Changed:
+- `analyzer.ts` post-processing chain now runs
+  `findings → applyConfidenceFilter → applyLibraryApiSurfaceDowngrade
+  → applyProjectProfileTransform → applyPerFileFindingCap`. The new
+  transform is a no-op when `projectProfile` is absent, preserving
+  pre-3.106.0 output exactly.
+
+End-user effect (when callers supply a profile):
+- A `library/production` module no longer fires HIGH/CRIT on
+  `library-api-surface`-tagged sinks — they bucket down to
+  MEDIUM/warning or LOW/note per the policy table above. CRIT-protected
+  findings stay at MEDIUM (never lower).
+- An `application/production` module's library-API-tagged findings are
+  restored to their pre-Sprint-47 severity, so internal helpers that
+  *look* library-shaped but are actually first-party application code
+  report at full severity again.
+- Profiles `cli/...`, `server/...`, `plugin/...`, and `test/...` are
+  no-ops in v1 (placeholder for future shape-specific policies).
+- All existing benchmark scores (OWASP Benchmark Java 100%/0%, Juliet
+  100%, SecuriBench 97.7%, OWASP BenchmarkPython 81.2%/12.6%) are
+  preserved when no profile is supplied. With `library/production`
+  the FP rate drops further on real-world library corpora — see
+  cognium-dev CHANGELOG 3.106.0 for end-user numbers.
+
+Pillar I: zero LLM-themed identifiers introduced. The transform name,
+field names, and all rationale strings are generic and deterministic.
+
 ## [3.105.0] - 2026-06-24
 
 Sprint 47 closes the entire Tier-D policy queue: six cognium-dev FP
