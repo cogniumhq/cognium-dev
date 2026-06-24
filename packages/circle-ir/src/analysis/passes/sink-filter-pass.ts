@@ -16,12 +16,13 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
+import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 
 /**
  * Common XSS sanitizer patterns for JavaScript/TypeScript.
@@ -150,6 +151,90 @@ const PROCESS_BUILDER_ARGV_FORM_RE =
 // Sink-type-agnostic: a throw is never a runtime sink regardless of CWE.
 const JAVA_THROW_STATEMENT_RE = /^\s*throw\s+new\s+\w+(?:Exception|Error)\b/;
 
+// ---------------------------------------------------------------------------
+// Stage 9e — Java code_injection (CWE-094) library-API surface tag.
+// (cognium-dev #161 — Sprint 47)
+// ---------------------------------------------------------------------------
+//
+// JEXL engine entry points (`JexlEngine.createExpression`,
+// `Expression.evaluate`) and template-engine compile methods
+// (`Handlebars.compile`, `Pebble.compile`, `Velocity` configure,
+// …) are the *library API surface*. The library cannot know whether
+// the supplied script string came from a trusted source — that
+// trust call belongs to the caller. Tagging downgrades from HIGH/
+// CRITICAL → MEDIUM rather than suppressing.
+const JEXL_ENGINE_TYPES = new Set<string>(['JexlEngine', 'Jexl', 'JxltEngine']);
+const JEXL_EXPRESSION_TYPE_RE = /(?:Jexl)?(?:Expression|Script|Template)(?:Script)?$/;
+const TEMPLATE_COMPILE_RECEIVER_TYPES = new Set<string>([
+  'Handlebars', 'Mustache', 'MustacheFactory', 'DefaultMustacheFactory',
+  'Pebble', 'PebbleEngine', 'PebbleEngineBuilder',
+  'VelocityEngine', 'Velocity',
+  'Configuration',
+  'Freemarker', 'FreeMarker',
+  'TemplateEngine', 'SpringTemplateEngine',
+  'Thymeleaf',
+]);
+
+// ---------------------------------------------------------------------------
+// Stage 9f — Java code_injection (CWE-094) SPI loader tag.
+// (cognium-dev #165 — Sprint 47)
+// ---------------------------------------------------------------------------
+//
+// `Class.forName(<var>)` whose enclosing method also calls
+// `getResources("META-INF/services/...")` is an SPI loader. The
+// service class names come from a resource file packaged with the
+// JAR, not from request data. Library-API surface — tag + downgrade.
+const SPI_GET_RESOURCES_RE =
+  /\.getResources\s*\(\s*["'][^"']*META-INF\/services\/[^"']*["']\s*\)/;
+
+// ---------------------------------------------------------------------------
+// Stage 9g — Java code_injection (CWE-094) ClassLoader override tag.
+// (cognium-dev #168 — Sprint 47)
+// ---------------------------------------------------------------------------
+//
+// `ClassLoader.loadClass(String)` / `findClass(String)` inside a
+// subclass of ClassLoader/URLClassLoader/SecureClassLoader (or
+// inside a `CachingProvider` SPI) is implementing the JDK / JSR
+// API contract. Trust call belongs to the framework caller, not
+// the implementation. Tag + downgrade.
+const CLASSLOADER_PARENT_TYPES = new Set<string>([
+  'ClassLoader', 'URLClassLoader', 'SecureClassLoader',
+]);
+const CLASSLOADER_NAME_RE = /(?:CachingProvider|ClassLoader|SpiLoader)$/;
+const LOADCLASS_OVERRIDE_METHOD_RE =
+  /\b(?:public|protected)\s+(?:[\w<>?,\s]+\s+)?(?:loadClass|findClass)\s*\(\s*String\b/;
+const JAVA_CLASS_DECL_RE =
+  /\bclass\s+([A-Z]\w*)\b(?:\s+extends\s+([A-Z][\w.]*))?(?:\s+implements\s+([A-Z][\w.,<>\s?]*))?/;
+
+// ---------------------------------------------------------------------------
+// Stage 13 — Java sql_injection SQL builder wrapper suppression.
+// (cognium-dev #163 — Sprint 47)
+// ---------------------------------------------------------------------------
+//
+// Inside `*Dialect` / `*SqlBuilder` / `*Quoter` / `*QueryBuilder`
+// classes, a `.wrap(...)` / `.quote(...)` / `.escape(...)` /
+// `.identifier(...)` call returns an already-quoted SQL fragment.
+// Concat into a larger SQL string is the standard codegen idiom;
+// the wrapper is the sanitizer.
+const SQL_BUILDER_CLASS_RE =
+  /(?:Dialect|SqlBuilder|Quoter|Wrapper|SqlGenerator|QueryBuilder)$/;
+const SQL_BUILDER_WRAPPER_CALL_RE = /\.(?:wrap|quote|escape|identifier)\s*\(/;
+
+// ---------------------------------------------------------------------------
+// Stage 14 — Java sql_injection SQL-extraction-method suppression.
+// (cognium-dev #177 — Sprint 47)
+// ---------------------------------------------------------------------------
+//
+// Methods that *return* a SQL string (`String getInsertSql(Insert)`,
+// `String toSql(Expression)`, `String extractQueryString(Statement)`)
+// from a typed AST/builder input are SQL *codegen*, not SQL *execution*.
+// The taint engine sees the returned string flowing into a downstream
+// concat, but at this site there is no statement execution.
+const SQL_EXTRACTION_RETURN_RE = /^(?:String|CharSequence|Optional\s*<\s*String\s*>)$/;
+const SQL_EXTRACTION_NAME_RE =
+  /^(?:get|extract|build).*(?:[Ss]ql|[Qq]uery)|^toSql|.*Statement.*ToString$|.*Query.*String$/;
+const SQL_EXTRACTION_PRIMITIVE_INPUT_RE = /^(?:String|CharSequence)$/;
+
 function resolveJavaReceiverType(
   receiver: string,
   sinkLine: number,
@@ -165,6 +250,69 @@ function resolveJavaReceiverType(
       const raw = m[1].replace(/<[^>]*>/g, '').trim();
       const parts = raw.split('.');
       return parts[parts.length - 1] ?? null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Backward-scan for the enclosing `class X extends Y implements Z`
+ * declaration. Returns null when no class declaration is found within
+ * the file up to `sinkLine`. Used by Stage 9g (#168) and Stage 13 (#163).
+ */
+function findEnclosingClassDecl(
+  sinkLine: number,
+  sourceLines: string[],
+): { name: string; extendsType: string | null; implementsTypes: string[] } | null {
+  const end = Math.min(sourceLines.length, sinkLine);
+  for (let i = end - 1; i >= 0; i--) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(JAVA_CLASS_DECL_RE);
+    if (!m) continue;
+    const implementsTypes = m[3]
+      ? m[3].split(',').map(s => s.replace(/<[^>]*>/g, '').trim()).filter(Boolean)
+          .map(s => { const parts = s.split('.'); return parts[parts.length - 1] ?? s; })
+      : [];
+    const extendsRaw = m[2] ?? null;
+    const extendsType = extendsRaw
+      ? (() => { const p = extendsRaw.split('.'); return p[p.length - 1] ?? extendsRaw; })()
+      : null;
+    return { name: m[1], extendsType, implementsTypes };
+  }
+  return null;
+}
+
+/**
+ * Backward-scan for the enclosing method signature that overrides
+ * `loadClass(String)` or `findClass(String)`. Heuristic textual match.
+ * Stops at a class-body open brace at column 0 (no enclosing method).
+ */
+function isInsideLoadClassOverride(
+  sinkLine: number,
+  sourceLines: string[],
+): boolean {
+  const limit = Math.max(0, sinkLine - 200);
+  for (let i = sinkLine - 2; i >= limit; i--) {
+    const ln = sourceLines[i] ?? '';
+    if (LOADCLASS_OVERRIDE_METHOD_RE.test(ln)) return true;
+    // Stop scanning if we hit a class declaration without finding the method.
+    if (/\bclass\s+[A-Z]\w*\b/.test(ln)) return false;
+  }
+  return false;
+}
+
+/**
+ * Find the IR `MethodInfo` whose line range contains `sinkLine`. Returns
+ * null when no method declaration covers the line. Used by Stage 14 (#177).
+ */
+function findEnclosingMethodFromIr(
+  types: TypeInfo[],
+  sinkLine: number,
+): MethodInfo | null {
+  for (const t of types) {
+    if (sinkLine < t.start_line || sinkLine > t.end_line) continue;
+    for (const m of t.methods) {
+      if (sinkLine >= m.start_line && sinkLine <= m.end_line) return m;
     }
   }
   return null;
@@ -593,6 +741,198 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (JAVA_THROW_STATEMENT_RE.test(sinkLineText)) return false;
         return true;
       });
+    }
+
+    // Stage 9e/9f/9g — Java code_injection library-API surface tagging.
+    // (cognium-dev #161 / #165 / #168 — Sprint 47)
+    //
+    // Adds the `library-api-surface:caller-responsibility` tag to
+    // sinks that sit at the library API boundary. The central
+    // `applyLibraryApiSurfaceDowngrade` hook downgrades tagged
+    // findings to MEDIUM/warning. Sinks are NOT suppressed — they
+    // still surface so callers can audit the call chain.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      for (const sink of filtered) {
+        if (sink.type !== 'code_injection') continue;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        const receiverMatch = sinkLineText.match(/\b(\w+)\s*\.\s*(\w+)\s*\(/);
+        const receiver = receiverMatch?.[1];
+        const method = sink.method ?? receiverMatch?.[2];
+
+        let shouldTag = false;
+
+        // 9e — #161: JEXL / template-engine library entry points.
+        if (method === 'createExpression' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && JEXL_ENGINE_TYPES.has(recvType)) shouldTag = true;
+        }
+        if (!shouldTag && method === 'evaluate' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && JEXL_EXPRESSION_TYPE_RE.test(recvType)) shouldTag = true;
+        }
+        if (!shouldTag && method === 'compile' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && TEMPLATE_COMPILE_RECEIVER_TYPES.has(recvType)) shouldTag = true;
+        }
+
+        // 9f — #165: Class.forName(<var>) inside an SPI loader.
+        if (!shouldTag && method === 'forName') {
+          const start = Math.max(0, sink.line - 31);
+          const end = Math.min(sourceLines.length, sink.line + 30);
+          for (let i = start; i < end; i++) {
+            if (SPI_GET_RESOURCES_RE.test(sourceLines[i] ?? '')) {
+              shouldTag = true;
+              break;
+            }
+          }
+        }
+
+        // 9g — #168: ClassLoader/findClass/loadClass override.
+        if (!shouldTag && method && (method === 'loadClass' || method === 'findClass' || method === 'forName')) {
+          const enclosing = findEnclosingClassDecl(sink.line, sourceLines);
+          if (enclosing) {
+            const extendsClassLoader =
+              enclosing.extendsType !== null && CLASSLOADER_PARENT_TYPES.has(enclosing.extendsType);
+            const implementsSpi = enclosing.implementsTypes.some(t => /CachingProvider$/.test(t));
+            const nameLooksLikeLoader = CLASSLOADER_NAME_RE.test(enclosing.name);
+            if (extendsClassLoader || implementsSpi || nameLooksLikeLoader) shouldTag = true;
+          }
+          if (!shouldTag && isInsideLoadClassOverride(sink.line, sourceLines)) {
+            shouldTag = true;
+          }
+        }
+
+        if (shouldTag) {
+          const existing = sink.tags ?? [];
+          if (!existing.includes(LIBRARY_API_SURFACE_TAG)) {
+            sink.tags = [...existing, LIBRARY_API_SURFACE_TAG];
+          }
+        }
+      }
+    }
+
+    // Stage 9h — Java code_injection polymorphic-dispatch suppression.
+    // (cognium-dev #164 — Sprint 47)
+    //
+    // Dispatch over a `private static final X[] PARSERS = { new A(),
+    // new B(), … };` array literal is closed-set dispatch. Each
+    // element is a literal `new` of a code-known type; attacker
+    // input cannot insert a new element at runtime.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'code_injection') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        const receiverMatch = sinkLineText.match(/\b(\w+)\s*\.\s*(\w+)\s*\(/);
+        const receiver = receiverMatch?.[1];
+        if (!receiver) return true;
+
+        // Backward-scan for an array-literal declaration whose elements
+        // are all `new X()` constructions. Also accept the iteration
+        // variable shape: `for (X p : PARSERS) p.parse(...)`.
+        // We accept the suppression when either:
+        //  (a) receiver itself is declared as `X` in a for-each over
+        //      a `private static final X[] NAME = { new ..., new ... };`
+        //  (b) receiver appears as `NAME[<idx>]` and NAME is the array.
+        const start = Math.max(0, sink.line - 200);
+        let arrayName: string | null = null;
+        const foreachRe = new RegExp(`\\bfor\\s*\\(\\s*\\w[\\w<>?]*\\s+${receiver}\\s*:\\s*(\\w+)\\b`);
+        for (let i = sink.line - 1; i >= start; i--) {
+          const ln = sourceLines[i] ?? '';
+          const fm = ln.match(foreachRe);
+          if (fm) { arrayName = fm[1]; break; }
+        }
+        if (!arrayName) {
+          const methodNameMatch = sinkLineText.match(/\.(\w+)\s*\(/);
+          const methodNameRe = methodNameMatch ? methodNameMatch[1] : '\\w+';
+          const idxRe = new RegExp(`\\b(\\w+)\\s*\\[[^\\]]+\\]\\s*\\.\\s*${methodNameRe}\\s*\\(`);
+          const im = sinkLineText.match(idxRe);
+          if (im) arrayName = im[1];
+        }
+        if (!arrayName) return true;
+
+        // Look for `private static final X[] arrayName = { ... };` OR
+        // `private static final X[] arrayName = new X[] { ... };`.
+        // Detection of the `{` is deferred to the body-collection step
+        // so both forms collapse to the same downstream init-parse.
+        const declRe = new RegExp(
+          `\\bprivate\\s+static\\s+final\\s+(?:[\\w<>?,\\s]+)\\[\\s*\\]\\s+${arrayName}\\s*=`,
+        );
+        let declStart = -1;
+        for (let i = 0; i < sink.line; i++) {
+          if (declRe.test(sourceLines[i] ?? '')) { declStart = i; break; }
+        }
+        if (declStart < 0) return true;
+
+        // Collect text until matching `};` (bounded).
+        let body = '';
+        for (let i = declStart; i < Math.min(sourceLines.length, declStart + 40); i++) {
+          body += (sourceLines[i] ?? '') + '\n';
+          if (/\}\s*;/.test(sourceLines[i] ?? '')) break;
+        }
+        // Accept both `= { ... }` and `= new X[] { ... }`.
+        const initMatch = body.match(/=\s*(?:new\s+[\w<>?,\s]+\[\s*\]\s*)?\{([\s\S]*?)\}\s*;/);
+        if (!initMatch) return true;
+        const elements = initMatch[1].split(',').map(s => s.trim()).filter(Boolean);
+        if (elements.length === 0) return true;
+        const allNewLiterals = elements.every(e => /^new\s+[A-Z]\w*\s*\([^)]*\)$/.test(e));
+        if (allNewLiterals) return false;
+        return true;
+      });
+    }
+
+    // Stage 13 — Java sql_injection SQL-builder-wrapper suppression.
+    // (cognium-dev #163 — Sprint 47)
+    //
+    // Inside a `*Dialect` / `*SqlBuilder` / `*Quoter` / `*QueryBuilder`
+    // class, a wrapper/quoter call (`.wrap(`, `.quote(`, `.escape(`,
+    // `.identifier(`) appearing within ±10 lines of the sink means the
+    // SQL fragment was assembled via the dialect's quoting helper —
+    // the wrapper IS the sanitizer. Narrow gate: requires BOTH the
+    // class-name suffix AND a wrapper call nearby.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection') return true;
+        const enclosing = findEnclosingClassDecl(sink.line, sourceLines);
+        if (!enclosing) return true;
+        if (!SQL_BUILDER_CLASS_RE.test(enclosing.name)) return true;
+        const lo = Math.max(0, sink.line - 11);
+        const hi = Math.min(sourceLines.length, sink.line + 10);
+        for (let i = lo; i < hi; i++) {
+          if (SQL_BUILDER_WRAPPER_CALL_RE.test(sourceLines[i] ?? '')) return false;
+        }
+        return true;
+      });
+    }
+
+    // Stage 14 — Java sql_injection SQL-extraction-method suppression.
+    // (cognium-dev #177 — Sprint 47)
+    //
+    // Three-clause gate on the enclosing method:
+    //   (1) return type is String / CharSequence / Optional<String>
+    //   (2) method name matches a get/extract/toSql SQL-getter shape
+    //   (3) primary parameter type is NOT a String primitive (i.e.
+    //       input is an AST / builder / Statement object)
+    // All three → this is SQL codegen, not SQL execution. Suppress.
+    if (language === 'java') {
+      const types = graph.ir.types ?? [];
+      if (types.length > 0) {
+        filtered = filtered.filter(sink => {
+          if (sink.type !== 'sql_injection') return true;
+          const enclosing = findEnclosingMethodFromIr(types, sink.line);
+          if (!enclosing) return true;
+          const ret = (enclosing.return_type ?? '').replace(/\s+/g, ' ').trim();
+          if (!SQL_EXTRACTION_RETURN_RE.test(ret)) return true;
+          if (!SQL_EXTRACTION_NAME_RE.test(enclosing.name)) return true;
+          const firstParamType = enclosing.parameters[0]?.type ?? null;
+          if (firstParamType === null) return true;
+          const simpleType = firstParamType.replace(/<[^>]*>/g, '').trim();
+          if (SQL_EXTRACTION_PRIMITIVE_INPUT_RE.test(simpleType)) return true;
+          return false;
+        });
+      }
     }
 
     return { sources, sinks: filtered, sanitizers };

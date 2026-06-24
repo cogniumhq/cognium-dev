@@ -5,6 +5,133 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.105.0] - 2026-06-24
+
+Sprint 47 closes the entire Tier-D policy queue: six cognium-dev FP
+tickets (#161, #163, #164, #165, #168, #177) under two orthogonal
+mechanisms. Mechanism A is a new tag + central downgrade infrastructure
+(`SastFinding.tags?: string[]`, `TaintSink.tags?: string[]`,
+`TaintFlowInfo.tags?: string[]`, and `applyLibraryApiSurfaceDowngrade`)
+that drops severity to MEDIUM for findings carrying the
+`library-api-surface:caller-responsibility` tag. Mechanism B is three
+narrow suppression gates in `SinkFilterPass`. Pillar I zero-LLM
+boundary safe — the tag string is fully generic.
+
+- **cognium-dev#161 — `code_injection` (CWE-94) HIGH on JEXL /
+  Handlebars / template-engine compile-evaluate.** Apache Commons
+  `JexlEngine.createExpression(...)`, `JexlExpression.evaluate(...)`,
+  and template-engine `.compile(...)` callsites (Handlebars, Mustache,
+  Pebble, Velocity, Freemarker, Thymeleaf) are *library-API surface*:
+  the engines exist to evaluate caller-supplied
+  expressions/templates. Stage 9e in `sink-filter-pass.ts` tags such
+  sinks with `library-api-surface:caller-responsibility`; the central
+  downgrade hook in `analyzer.ts` then drops severity to MEDIUM. The
+  sink + flow still fire so auditors can see the callsite.
+
+- **cognium-dev#165 — `code_injection` (CWE-94) HIGH on
+  `Class.forName(<var>)` SPI loaders.** The Java SPI pattern
+  (`META-INF/services/...`) is *designed* to instantiate caller-declared
+  implementation classes. Stage 9f tags `Class.forName` sinks
+  `library-api-surface` when the enclosing source file contains a
+  `getResources("META-INF/services/...")` call within ±30 lines of the
+  callsite. Arbitrary `Class.forName(<user-input>)` outside the SPI
+  pattern remains untagged HIGH.
+
+- **cognium-dev#168 — `code_injection` (CWE-94) HIGH inside
+  `ClassLoader` subclass overrides.** `loadClass(String)` /
+  `findClass(String)` overrides are *required by the JDK contract* to
+  look up the named class — the trust decision belongs to whoever
+  invokes the loader. Stage 9g tags sinks when the enclosing class
+  extends `ClassLoader` / `URLClassLoader` / `SecureClassLoader`, OR
+  the class name matches `*ClassLoader` / `*CachingProvider`, OR the
+  sink lives inside a `public/protected Class<?> loadClass/findClass
+  (String)` method body (textual backward-scan).
+
+- **cognium-dev#164 — `code_injection` (CWE-94) on polymorphic dispatch
+  over a typed array of literal parser constructions.** The shape
+  `private static final SpelExpressionParser[] PARSERS = new X[] {
+  new X(), new X() };` fully enumerates the dispatch target set —
+  no arbitrary class is reachable. Stage 9h *suppresses* the sink
+  when the receiver appears in `for (X r : ARR)` foreach or
+  `ARR[i].m(...)` index access AND the array literal contains only
+  `new <TypeName>(...)` literal expressions. Dispatch over runtime-
+  populated `List<Parser>` or arrays with reflective lookups remain
+  unsuppressed.
+
+- **cognium-dev#163 — `sql_injection` (CWE-89) inside SQL builder /
+  dialect / quoter classes.** When the enclosing class name matches
+  `*Dialect` / `*SqlBuilder` / `*Quoter` / `*Wrapper` / `*SqlGenerator`
+  / `*QueryBuilder` AND a `.wrap(` / `.quote(` / `.escape(` /
+  `.identifier(` wrapper call appears within ±10 lines of the sink,
+  Stage 13 suppresses the sink. The quoting/wrapping is the
+  sanitization step. Business classes with raw concat (e.g.
+  `UserService.findByName`) and `*Dialect` classes without wrapper
+  calls remain unsuppressed.
+
+- **cognium-dev#177 — `sql_injection` (CWE-89) inside SQL-codegen
+  utility methods.** Three-clause signature-shape gate in Stage 14
+  suppresses sinks when the enclosing method has return type ∈
+  `{String, CharSequence, Optional<String>}`, name matches
+  `get*Sql*` / `extract*Sql*` / `to*Sql*` / `*Statement*ToString$` /
+  `*Query*String$`, AND the primary parameter type is NOT
+  `String`/`CharSequence` (i.e. input is a builder/AST/Statement
+  type). Codegen methods *generate* SQL from a parsed builder —
+  they don't execute user-supplied SQL. Helpers with String input
+  remain unsuppressed.
+
+### Added
+
+- `SastFinding.tags?: string[]` — optional metadata tags carried by
+  the finding, e.g. `'library-api-surface:caller-responsibility'`.
+  Tags are pass-emitted and consumed by post-processing (severity
+  downgrade) and downstream consumers (SARIF properties, CLI
+  badges).
+- `TaintSink.tags?: string[]` — same field on the sink so the tag
+  survives sink→finding propagation through the pipeline.
+- `TaintFlowInfo.tags?: string[]` — same field on emitted flows; the
+  analyzer chokepoint propagates from `TaintSink.tags` to
+  `TaintFlowInfo.tags` by matching `(sink_line, sink_type)` keys.
+- New module `src/analysis/library-api-surface-downgrade.ts`:
+    - `LIBRARY_API_SURFACE_TAG` constant
+      (`'library-api-surface:caller-responsibility'`).
+    - `applyLibraryApiSurfaceDowngrade(findings)` pure-function that
+      drops `severity` to `medium` / `level` to `warning` for findings
+      carrying the tag at `critical` or `high` severity. Non-mutating:
+      returns a new array; non-tagged findings pass through identical;
+      low-severity findings are not upgraded.
+- 6 new test files (31 cases total) covering all six FP tickets:
+  `tests/analysis/passes/java-library-api-surface-jexl-handlebars-fp
+  .test.ts`,
+  `tests/analysis/passes/java-library-api-surface-spi-classforname-fp
+  .test.ts`,
+  `tests/analysis/passes/java-library-api-surface-classloader-
+  override-fp.test.ts`,
+  `tests/analysis/passes/java-code-injection-polymorphic-dispatch-fp
+  .test.ts`,
+  `tests/analysis/passes/java-sql-builder-wrapper-fp.test.ts`,
+  `tests/analysis/passes/java-sql-extraction-method-fp.test.ts`.
+- 1 new infra test file (6 cases) for the downgrade hook:
+  `tests/analysis/library-api-surface-downgrade.test.ts`.
+
+### Changed
+
+- `sink-filter-pass.ts`: imports `LIBRARY_API_SURFACE_TAG`; adds
+  Stages 9e/9f/9g (tag emission) and 9h/13/14 (suppression) with
+  supporting constants and helpers (`findEnclosingClassDecl`,
+  `isInsideLoadClassOverride`, `findEnclosingMethodFromIr`).
+- `analyzer.ts`: inserts `applyLibraryApiSurfaceDowngrade(...)`
+  between `applyConfidenceFilter(...)` and `applyPerFileFindingCap
+  (...)`; adds the sink→flow tag-propagation chokepoint after the
+  pipeline run.
+
+### End-user effect
+
+Six previously-HIGH false-positive shapes from the FP corpus
+either downgrade to MEDIUM (`#161` / `#165` / `#168` — auditors still
+see the callsite, but it no longer blocks CI) or stop firing
+entirely (`#163` / `#164` / `#177`). Recall on real
+`code_injection` / `sql_injection` sinks is preserved.
+
 ## [3.104.0] - 2026-06-24
 
 Sprint 46 closes the three remaining standalone Tier-1 zero-FP queue

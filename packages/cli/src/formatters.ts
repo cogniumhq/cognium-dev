@@ -18,6 +18,35 @@ export interface Vulnerability {
   fix?: string;
   /** ISO 25010 category: security | reliability | performance | maintainability | architecture */
   category: string;
+  /**
+   * Optional metadata tags forwarded from `TaintFlowInfo.tags` /
+   * `SastFinding.tags` (added in 3.105.0). Used to render a CLI badge
+   * (e.g. `[library-api-surface]`) and to include `properties.tags` in
+   * SARIF output. The library applies any severity downgrades before
+   * tags reach the CLI; tags here are presentational only.
+   */
+  tags?: string[];
+}
+
+/**
+ * Tag string indicating a finding sits at a library API surface where
+ * trust responsibility belongs to the caller (e.g. JEXL.evaluate,
+ * Handlebars.compile, SPI Class.forName, JSR ClassLoader overrides).
+ * Mirrors `LIBRARY_API_SURFACE_TAG` in `circle-ir`.
+ */
+export const LIBRARY_API_SURFACE_TAG = 'library-api-surface:caller-responsibility';
+
+/**
+ * Apply policy-driven severity downgrade for taint flows tagged at a
+ * library API surface. Returns a new severity string; non-tagged inputs
+ * pass through unchanged. The circle-ir post-processing pipeline also
+ * downgrades SastFinding-based emissions; this helper covers the parallel
+ * TaintFlow → Vulnerability path that bypasses that pipeline.
+ */
+export function applyTagSeverityDowngrade(severity: string, tags: string[] | undefined): string {
+  if (!tags || !tags.includes(LIBRARY_API_SURFACE_TAG)) return severity;
+  if (severity === 'critical' || severity === 'high') return 'medium';
+  return severity;
 }
 
 export interface ScanResult {
@@ -424,8 +453,15 @@ export function formatResults(results: ScanResult[], verbose?: boolean, crossFil
 
       // Main finding line with severity, type, CWE, and category for non-security findings
       const categoryTag = vuln.category && vuln.category !== 'security' ? ` [${vuln.category}]` : '';
+      // 3.105.0 — render the `library-api-surface:caller-responsibility` tag as
+      // a cyan `[library-api-surface]` badge so users can see *why* a finding
+      // was downgraded from CRITICAL/HIGH to MEDIUM (e.g. JEXL.evaluate sits at
+      // a caller-trust boundary). Tag string is generic and Pillar I safe.
+      const libraryApiTag = vuln.tags?.includes(LIBRARY_API_SURFACE_TAG)
+        ? ` ${colors.cyan('[library-api-surface]')}`
+        : '';
       lines.push(
-        `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}`
+        `  ${colorFn(`[${icon}]`)} ${colorFn(vuln.type)} (${severityUpper})${cweTag}${categoryTag}${libraryApiTag}`
       );
 
       // Line number and taint flow message
@@ -582,6 +618,7 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
           cwe: vuln.cwe,
           severity: vuln.severity,
           ...(vuln.fix ? { fix: vuln.fix } : {}),
+          ...(vuln.tags && vuln.tags.length > 0 ? { tags: vuln.tags } : {}),
         },
       });
     }

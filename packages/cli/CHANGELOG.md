@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.105.0] - 2026-06-24
+
+Tracking release for the circle-ir@3.105.0 Sprint 47 Tier-D six-pack:
+six Java FP tickets closed under two orthogonal mechanisms
+(library-API-surface tag + downgrade, and three narrow suppression
+gates). Bumps the `circle-ir` dependency from `^3.104.0` to `^3.105.0`.
+
+End-user-visible CLI surface changes:
+
+- **`[library-api-surface]` badge in text output** — when a
+  vulnerability carries the `library-api-surface:caller-responsibility`
+  tag (emitted by circle-ir Stages 9e/9f/9g for JEXL/Handlebars,
+  SPI Class.forName, and ClassLoader override sinks), the text
+  formatter renders a cyan `[library-api-surface]` badge before the
+  severity chip. The badge signals to auditors that the finding lives
+  at a library-API boundary where the caller (not the library) bears
+  trust responsibility.
+- **`properties.tags` in SARIF output** — vulnerability tags pass
+  through to SARIF `result.properties.tags`, enabling downstream SARIF
+  consumers to apply policy-aware rendering.
+- **`tags?: string[]` in JSON output** — same field passes through
+  verbatim on each `vulnerabilities[]` entry.
+- **Severity downgrade** — findings carrying the
+  `library-api-surface:caller-responsibility` tag are downgraded to
+  MEDIUM (from HIGH/CRITICAL) by circle-ir's central
+  `applyLibraryApiSurfaceDowngrade` hook; the CLI's per-flow
+  `SINK_SEVERITY` mapping also respects the tag.
+
+End-user effect (six Java rule fixes):
+
+- **cognium-dev#161 — JEXL/Handlebars/template HIGH downgrade** —
+  `JexlEngine.createExpression`, `JexlExpression.evaluate`, and
+  template-engine `.compile()` callsites (Handlebars, Mustache,
+  Pebble, Velocity, Freemarker, Thymeleaf) now surface at MEDIUM with
+  the `[library-api-surface]` badge instead of HIGH.
+- **cognium-dev#165 — SPI Class.forName HIGH downgrade** —
+  `Class.forName(<var>)` callsites near
+  `getResources("META-INF/services/...")` patterns now surface at
+  MEDIUM. Arbitrary `Class.forName(<user-input>)` outside the SPI
+  pattern continues at HIGH.
+- **cognium-dev#168 — ClassLoader override HIGH downgrade** — sinks
+  inside `ClassLoader` / `URLClassLoader` / `SecureClassLoader`
+  subclass `loadClass(String)` / `findClass(String)` overrides now
+  surface at MEDIUM.
+- **cognium-dev#164 — polymorphic dispatch over typed parser array
+  suppressed** — `parser.parseExpression(tainted)` no longer fires
+  when `parser` iterates a `private static final X[] PARSERS = {
+  new X(), new X() }`-style fully-enumerated typed array of literal
+  constructions.
+- **cognium-dev#163 — SQL builder/dialect wrapper suppressed** —
+  `sql_injection` no longer fires inside `*Dialect` / `*SqlBuilder` /
+  `*Quoter` / `*Wrapper` / `*SqlGenerator` / `*QueryBuilder` classes
+  when a `.wrap(` / `.quote(` / `.escape(` / `.identifier(` wrapper
+  call appears within ±10 lines of the sink. Business classes with
+  raw concat continue to fire.
+- **cognium-dev#177 — SQL extraction codegen suppressed** —
+  `sql_injection` no longer fires inside methods whose signature
+  shape is "builder/AST in, String out" (return type ∈ `{String,
+  CharSequence, Optional<String>}`, name matches
+  `get*Sql*`/`extract*Sql*`/`to*Sql*`/`*Statement*ToString$`/
+  `*Query*String$`, first param NOT `String`/`CharSequence`).
+  String-in/string-out helpers continue to fire.
+
+### Changed
+
+- `Vulnerability` interface in `src/formatters.ts` gains optional
+  `tags?: string[]`. Passes through verbatim from circle-ir
+  `TaintFlowInfo.tags`.
+- `formatResults()` (text formatter) renders a cyan
+  `[library-api-surface]` badge before the severity chip when the
+  tag is present.
+- `generateSarifResults()` adds `tags: vuln.tags` to SARIF
+  `result.properties` when the field is present.
+- `cli.ts`: `SastFinding`→`Vulnerability` conversion passes `tags`
+  through; sink-severity computation applies the
+  `library-api-surface:caller-responsibility` downgrade to MEDIUM
+  before formatting.
+
 ## [3.104.0] - 2026-06-24
 
 Tracking release for the circle-ir@3.104.0 Sprint 46 fixes closing the

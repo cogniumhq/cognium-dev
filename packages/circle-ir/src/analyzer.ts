@@ -84,6 +84,7 @@ import {
   DEFAULT_PER_FILE_FINDING_CAP,
 } from './analysis/per-file-finding-cap.js';
 import { applyConfidenceFilter } from './analysis/confidence-filter.js';
+import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
 import { CodeGraph, AnalysisPipeline, ProjectGraph } from './graph/index.js';
@@ -639,6 +640,24 @@ export async function analyze(
     interprocedural: interProc.interprocedural,
   };
 
+  // 3.105.0 — propagate tags from `TaintSink.tags` onto every emitted
+  // `TaintFlowInfo.tags` so downstream consumers (CLI, SARIF) can apply
+  // policy-aware rendering. Matched by (sink_line, sink_type). Sinks
+  // without tags are no-ops; existing flow.tags are preserved.
+  if (taint.flows && taint.flows.length > 0 && taint.sinks.length > 0) {
+    const sinkTagsByKey = new Map<string, string[]>();
+    for (const s of taint.sinks) {
+      if (!s.tags || s.tags.length === 0) continue;
+      sinkTagsByKey.set(`${s.line}:${s.type}`, s.tags);
+    }
+    if (sinkTagsByKey.size > 0) {
+      for (const f of taint.flows) {
+        const tags = sinkTagsByKey.get(`${f.sink_line}:${f.sink_type}`);
+        if (tags && !f.tags) f.tags = [...tags];
+      }
+    }
+  }
+
   const unresolved = detectUnresolved(calls, types, dfg);
   const enriched   = buildEnriched(types, calls, taint.sources, taint.sinks);
 
@@ -670,13 +689,19 @@ export async function analyze(
   // are treated as `'high'` and pass through unchanged.
   const verifiedFindings = applyConfidenceFilter(findings, options.includeSpeculative === true);
 
+  // #161/#165/#168 (3.105.0) — central library-API-surface downgrade. Findings
+  // carrying the `library-api-surface:caller-responsibility` tag (emitted by
+  // SinkFilterPass Stages 9e/9f/9g) are downgraded to medium/warning. Non-tagged
+  // findings pass through unchanged.
+  const downgradedFindings = applyLibraryApiSurfaceDowngrade(verifiedFindings);
+
   // #142 defensive per-file finding cap. If a file produces more than
   // `cap` findings, drop the individual results and emit a single
   // `saturated-file` advisory in their place. Default cap = 1000;
   // `perFileFindingCap: 0` disables.
   const cappedFindings = applyPerFileFindingCap(
     filePath,
-    verifiedFindings,
+    downgradedFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
 

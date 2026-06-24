@@ -18,6 +18,7 @@ import {
 import {
   formatResults, formatJSON, formatSARIF,
   SINK_SEVERITY, SINK_CWE,
+  applyTagSeverityDowngrade,
   type ScanResult, type CrossFileData,
 } from './formatters.js';
 import { version } from './version.js';
@@ -383,11 +384,12 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
     // Security findings from taint flows
     const vulnerabilities: ScanResult['vulnerabilities'] = (result.taint.flows || []).map(flow => ({
       type: flow.sink_type,
-      severity: SINK_SEVERITY[flow.sink_type] ?? 'high',
+      severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
       message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',
+      ...(flow.tags && flow.tags.length > 0 ? { tags: [...flow.tags] } : {}),
     }));
 
     // Quality findings from analysis passes (dead-code, missing-await, n-plus-one, etc.)
@@ -400,6 +402,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
         cwe: finding.cwe,
         fix: finding.fix,
         category: finding.category ?? 'reliability',
+        ...(finding.tags && finding.tags.length > 0 ? { tags: [...finding.tags] } : {}),
       });
     }
 
@@ -437,11 +440,12 @@ async function scanProject(
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
     const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
       type: flow.sink_type,
-      severity: SINK_SEVERITY[flow.sink_type] ?? 'high',
+      severity: applyTagSeverityDowngrade(SINK_SEVERITY[flow.sink_type] ?? 'high', flow.tags),
       message: `${flow.sink_type} vulnerability: tainted data flows from line ${flow.source_line} to line ${flow.sink_line}`,
       line: flow.sink_line,
       cwe: SINK_CWE[flow.sink_type],
       category: 'security',
+      ...(flow.tags && flow.tags.length > 0 ? { tags: [...flow.tags] } : {}),
     }));
     for (const finding of (analysis.findings ?? []) as SastFinding[]) {
       vulnerabilities.push({
@@ -452,6 +456,7 @@ async function scanProject(
         cwe: finding.cwe,
         fix: finding.fix,
         category: finding.category ?? 'reliability',
+        ...(finding.tags && finding.tags.length > 0 ? { tags: [...finding.tags] } : {}),
       });
     }
     return { file, vulnerabilities };

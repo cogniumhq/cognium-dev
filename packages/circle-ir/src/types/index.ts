@@ -196,6 +196,13 @@ export interface TaintFlowInfo {
   path: TaintFlowStep[];
   confidence: number;
   sanitized: boolean;
+  /**
+   * Optional metadata tags carried from the originating `TaintSink` (added
+   * in 3.105.0). Used by CLI/SARIF consumers for policy-aware presentation
+   * (e.g. `'library-api-surface:caller-responsibility'` causes a severity
+   * downgrade to MEDIUM and a `[library-api-surface]` text badge).
+   */
+  tags?: string[];
 }
 
 export interface TaintFlowStep {
@@ -326,6 +333,15 @@ export interface TaintSink {
    * differently. Has no effect on the DFG-reachability gate.
    */
   discoveryMethod?: 'static' | 'llm';
+
+  /**
+   * Optional metadata tags carried by the sink, propagated onto any
+   * `SastFinding` emitted from it. Used by post-processing hooks (e.g.
+   * `applyLibraryApiSurfaceDowngrade`) to adjust severity and by downstream
+   * consumers (SARIF properties, CLI badges) to surface policy context.
+   * Example: `'library-api-surface:caller-responsibility'`.
+   */
+  tags?: string[];
 }
 
 export interface TaintSanitizer {
@@ -522,6 +538,17 @@ export interface SastFinding {
    * observes the uncapped, unfiltered findings.
    */
   confidence?: 'high' | 'medium' | 'low';
+  /**
+   * Optional metadata tags carried by the finding (added in 3.105.0). Tags
+   * are pass-emitted strings (e.g. `'library-api-surface:caller-responsibility'`)
+   * consumed by post-processing hooks for centralized severity adjustment
+   * (`applyLibraryApiSurfaceDowngrade`) and by downstream consumers (SARIF
+   * `properties.tags`, CLI text badges) for policy-aware presentation.
+   *
+   * Pre-3.105.0 passes do not set this field; consumers MUST treat it as
+   * optional. The field is additive and non-breaking.
+   */
+  tags?: string[];
 }
 
 // =============================================================================
