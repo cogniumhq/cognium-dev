@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.107.0] - 2026-06-25
+
+Engine bump only — adopts [`circle-ir@3.107.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 50 FP triage batch:
+
+- **#152** — JS `setInterval`/`setTimeout` `code_injection` over-fires
+  on function-typed parameter references (`function schedule(cb) {
+  setTimeout(cb, 1000); }`). Flow-level filter in
+  `taint-propagation-pass.ts` drops the `interprocedural_param ×
+  code_injection` cross-product when the sink line is a timer method.
+- **#181** — Java `xxe` over-matches CommonMark `Parser.parse()`
+  (follow-up to closed #155 — same fixture, different sink-rule). New
+  Stage 9f in `sink-filter-pass.ts` reuses the `DATA_PARSER_TYPES`
+  set to drop `xxe` sinks when the resolvable receiver type is a
+  non-XML parser.
+- **#191 / FP-77** — Java `sql_injection` over-fires on
+  regex-allowlist-quoter wrappers. New Stage 15 in `sink-filter-pass.ts`
+  generalises Stage 13 (#163) — drops the `*Dialect|*SqlBuilder` class
+  suffix gate and instead recognises the shape directly: SQL concat
+  of literals + in-file method calls, with `?` placeholder for value
+  binding and at least one helper whose body contains an inline
+  `.matches("strict-anchored")` + `throw` guard.
+
+### Changed
+- Bumps `circle-ir` dependency `^3.106.0` → `^3.107.0`.
+
+### Unchanged
+- No CLI flag, output-format, or behaviour change.
+- `@cognium/project-profile-detect` pinned at `^1.1.0`.
+- Pillar I: no LLM identifiers.
+
 ## [3.106.2] - 2026-06-24
 
 Detector bump only — adopts

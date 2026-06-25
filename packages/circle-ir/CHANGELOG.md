@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.107.0] - 2026-06-25
+
+Sprint 50 FP triage batch — three independently-reported false positives
+fixed under one release. All three are sink-/flow-level gates with
+recall locks; no source-detection or pass-pipeline changes.
+
+### Fixed
+
+- **#152 — JS `setInterval`/`setTimeout` `code_injection` over-fires on
+  function-typed parameter references.** The 3.96.0 gate in
+  `taint-matcher.ts` only covered inline function literals at the call
+  site. When the callback is an identifier reference whose runtime type
+  cannot be proven without type info (`function schedule(cb) {
+  setTimeout(cb, 1000); }`), the matcher still emits the sink and the
+  `interprocedural_param × code_injection` cross-product produces a
+  flow. New filter in `taint-propagation-pass.ts` drops the flow when
+  the sole contributing source is an `interprocedural_param` whose
+  sink line matches a `setInterval`/`setTimeout` `code_injection`
+  sink. Real string sources (`http_query`, `http_body`, `file_input`)
+  still flow because they carry a different `source_type`; an
+  `eval(param)` flow on the same parameter still fires because the
+  sink line does not match a timer method.
+
+- **#181 — Java `xxe` over-matches CommonMark `Parser.parse()`.**
+  Follow-up to #155 (which closed the `code_injection` over-match on
+  the same pattern). On v3.104.0 the same minimal fixture began firing
+  `xxe` instead — the receiver-fuzzy lookup in `taint-matcher.ts` maps
+  any name ending in `parser` to `SAXParser`/`XMLReader`/
+  `DocumentBuilder`, and the xxe sink rule accepts the call. New
+  Stage 9f in `sink-filter-pass.ts` mirrors Stage 9a (the #155 gate)
+  but for `xxe`: drops the sink when the resolvable receiver type is
+  in the shared `DATA_PARSER_TYPES` set (commonmark `Parser`, CLI
+  arg parsers, date / number parsers, …). Recall on real XML parsers
+  (`DocumentBuilder`, `SAXParser`, `XMLReader`) is unchanged because
+  those classes are NOT in `DATA_PARSER_TYPES`.
+
+- **#191 / FP-77 — Java `sql_injection` over-fires on
+  regex-allowlist-quoter wrappers.** Generalises Stage 13 (#163), which
+  required the enclosing class name to match
+  `*Dialect|*SqlBuilder|*Quoter|*QueryBuilder`. Utility classes such as
+  the reported `SafeSqlIdentifierQuote` don't carry that suffix. New
+  Stage 15 in `sink-filter-pass.ts` drops the class-name gate and
+  instead inspects the SQL assembly shape: it drops the sink when (a)
+  the sink is a JDBC exec method (`prepareStatement`, `execute*`,
+  `addBatch`), (b) the SQL string is built from a concat whose tokens
+  are ONLY string literals and method calls (no bare-variable concat),
+  (c) at least one literal contains a `?` placeholder (parameterized
+  value binding), and (d) at least one method call invokes a same-file
+  helper whose body contains an inline `.matches("strict-anchored")`
+  call plus a `throw` (regex-allowlist guard). Recall locks: bare-var
+  concat, no-placeholder, wrapper with no regex guard, and wrapper
+  with a wildcard `.+` regex all continue to fire `sql_injection`.
+
+### Unchanged
+
+- Browser+Node compatibility — all three fixes are pure source-text
+  inspection in passes that already run cross-environment.
+- Pillar I: no LLM identifiers (verified by grep guard).
+- Recall on OWASP Benchmark Java + Juliet remains 100% (3042 tests
+  pass; 1 skipped — same baseline as 3.106.0).
+
+#191 FP-78 (Python equivalent) was investigated and resolved as a
+benchmark-harness artifact: the engine emits the `sql_injection` sink
+in `r.taint.sinks` but `r.taint.flows` is empty and `generateFindings`
+emits no finding. The FP arises only when the benchmark harness flags
+on file-level `hasSink && hasSource` co-occurrence without consulting
+flows (see CLAUDE.md note on `BenchmarkPython`); no engine-side change
+is required.
+
 ## [3.106.0] - 2026-06-24
 
 Sprint 48 closes umbrella ticket **#169 (project-profile architecture)**

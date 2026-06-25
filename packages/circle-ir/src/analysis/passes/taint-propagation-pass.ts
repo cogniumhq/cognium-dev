@@ -274,6 +274,35 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
     }
 
+    // cognium-dev #152 (reopen) — JS setInterval/setTimeout code_injection
+    // sink fires only when arg[0] is a string. An `interprocedural_param`
+    // source is an untyped JS function parameter whose runtime kind cannot
+    // be proven at the call site; callers commonly pass function refs
+    // (`function schedule(cb) { setTimeout(cb, 1000); }`), which is the
+    // benign-callback shape, not eval-style code injection. Drop the flow
+    // when the parameter is the only contributing source. Real string
+    // sources (http_query/http_body/file_input/...) still flow because
+    // they carry a different `source_type`. The earlier 3.96.0 gate in
+    // `taint-matcher.ts` covers inline function literals at the sink site;
+    // this gate covers the identifier-reference case that the matcher
+    // cannot prove function-typed without type info (the unfixed scenario
+    // in the #152 reopen comment).
+    const setIntervalLines = new Set<number>();
+    for (const s of sinks) {
+      if (s.type === 'code_injection' &&
+          (s.method === 'setInterval' || s.method === 'setTimeout')) {
+        setIntervalLines.add(s.line);
+      }
+    }
+    if (setIntervalLines.size > 0) {
+      finalFlows = finalFlows.filter(f => {
+        if (f.sink_type !== 'code_injection') return true;
+        if (f.source_type !== 'interprocedural_param') return true;
+        if (!setIntervalLines.has(f.sink_line)) return true;
+        return false;
+      });
+    }
+
     // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
     // The DFG propagator and the four supplementary detectors each emit
     // independently; merge-time dedup at the supplement seams is partial

@@ -235,6 +235,33 @@ const SQL_EXTRACTION_NAME_RE =
   /^(?:get|extract|build).*(?:[Ss]ql|[Qq]uery)|^toSql|.*Statement.*ToString$|.*Query.*String$/;
 const SQL_EXTRACTION_PRIMITIVE_INPUT_RE = /^(?:String|CharSequence)$/;
 
+// ---------------------------------------------------------------------------
+// Stage 15 — Java sql_injection regex-allowlist-quoter wrapper suppression.
+// (cognium-dev #191 / FP-77 — Sprint 49)
+// ---------------------------------------------------------------------------
+//
+// Generalises Stage 13: a SQL string assembled from string literals +
+// in-file helper-method calls (where the helper validates its argument
+// with an inline regex allowlist + throw) AND containing a `?`
+// placeholder for value binding is a parameterized query with an
+// identifier-interpolation wrapper. The wrapper is the sanitizer; the
+// `?` placeholder proves user values flow through bind args, not concat.
+//
+// Stage 13 required a `*Dialect|*SqlBuilder|*Quoter|*QueryBuilder`
+// class-name suffix; FP-77 cases (utility classes like
+// `SafeSqlIdentifierQuote`) don't carry that suffix. Stage 15 drops the
+// class-name gate and instead inspects the helper's body for the
+// regex-allowlist+throw shape that proves the parameter is validated.
+const SQL_EXEC_METHODS = new Set<string>([
+  'prepareStatement', 'prepareCall',
+  'execute', 'executeQuery', 'executeUpdate', 'executeLargeUpdate',
+  'addBatch',
+]);
+const JAVA_SQL_ASSIGN_RE_TEMPLATE =
+  '\\b(?:String|CharSequence|final\\s+String|var)\\s+SQLVAR\\b\\s*=\\s*(.+?);';
+// Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
+const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
+
 function resolveJavaReceiverType(
   receiver: string,
   sinkLine: number,
@@ -316,6 +343,125 @@ function findEnclosingMethodFromIr(
     }
   }
   return null;
+}
+
+/**
+ * Stage 15 (#191) — split a Java string-concat RHS into top-level
+ * `+`-separated tokens. Respects double-quoted strings and parenthesis
+ * depth so commas / `+` characters inside string literals or nested
+ * call argument lists do not split.
+ */
+function splitJavaConcatTokens(rhs: string): string[] {
+  const tokens: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let inString = false;
+  let i = 0;
+  while (i < rhs.length) {
+    const ch = rhs[i] ?? '';
+    if (inString) {
+      cur += ch;
+      if (ch === '\\' && i + 1 < rhs.length) {
+        cur += rhs[i + 1] ?? '';
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inString = true; cur += ch; i++; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; cur += ch; i++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; cur += ch; i++; continue; }
+    if (ch === '+' && depth === 0) {
+      tokens.push(cur.trim());
+      cur = '';
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  if (cur.trim()) tokens.push(cur.trim());
+  return tokens;
+}
+
+/**
+ * Stage 15 (#191) — true when the regex literal would compile to a
+ * strict-anchored allowlist: under `String.matches()` the regex is
+ * implicitly anchored `^…$`, so any pattern that — after stripping
+ * `[…]` character classes and escape sequences — contains no bare
+ * `.` (any-char) and no `|` (alternation) admits only the listed
+ * characters. Mirrors `propagator.ts:isStrictAnchoredRegex` minus the
+ * `^…$` requirement (which is implicit for `String.matches`).
+ */
+function isImplicitlyAnchoredAllowlistRegex(re: string): boolean {
+  if (re === '') return false;
+  const stripped = re.replace(/\[(?:[^\]\\]|\\.)*\]/g, '');
+  const cleaned = stripped.replace(/\\./g, '');
+  if (cleaned.includes('.')) return false;
+  if (cleaned.includes('|')) return false;
+  return true;
+}
+
+/**
+ * Stage 15 (#191) — locate a Java method body in source text by name.
+ * Returns the body lines (between the opening `{` and the matching
+ * `}` at the same brace depth) or null when not found / not bracketed.
+ *
+ * Heuristic textual scan — does not parse generics; sufficient for the
+ * regex-allowlist guard recognition we need.
+ */
+function findJavaMethodBody(
+  methodName: string,
+  sourceLines: string[],
+): string[] | null {
+  if (!/^[A-Za-z_]\w*$/.test(methodName)) return null;
+  const sigRe = new RegExp(
+    `\\b(?:public|private|protected|static|final|synchronized|\\s)+[\\w<>?,\\s\\[\\]]+?\\b${methodName}\\s*\\(`,
+  );
+  for (let i = 0; i < sourceLines.length; i++) {
+    const ln = sourceLines[i] ?? '';
+    if (!sigRe.test(ln)) continue;
+    // Scan forward for the opening `{` (may be on same or following line).
+    let braceLine = -1;
+    for (let j = i; j < Math.min(sourceLines.length, i + 4); j++) {
+      if ((sourceLines[j] ?? '').includes('{')) { braceLine = j; break; }
+    }
+    if (braceLine < 0) continue;
+    // Collect body lines until brace depth returns to 0.
+    let depth = 0;
+    const body: string[] = [];
+    for (let j = braceLine; j < sourceLines.length; j++) {
+      const ln2 = sourceLines[j] ?? '';
+      body.push(ln2);
+      for (const ch of ln2) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth <= 0 && j > braceLine) return body;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Stage 15 (#191) — true if the Java method body contains an inline
+ * `var.matches("strict-anchored-regex")` call AND a `throw` statement
+ * appears later in the body. The two need not be in the same `if`; the
+ * combination proves the parameter is validated and any non-allowlisted
+ * input terminates execution before reaching the return.
+ */
+function javaBodyHasInlineRegexAllowlistThrow(bodyLines: string[]): boolean {
+  const text = bodyLines.join('\n');
+  if (!/\bthrow\s+/.test(text)) return false;
+  JAVA_INLINE_MATCHES_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = JAVA_INLINE_MATCHES_RE.exec(text)) !== null) {
+    if (isImplicitlyAnchoredAllowlistRegex(m[1] ?? '')) return true;
+  }
+  return false;
 }
 
 function isJavaLiteralOrAnnotationAccessor(expr: string): boolean {
@@ -657,6 +803,36 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 9f — Java xxe (CWE-611) FP reduction on non-XML parsers.
+    // (cognium-dev #181 — follow-up to #155.)
+    //
+    // The taint matcher's receiver-fuzzy lookup maps any receiver name
+    // ending in `parser` (e.g. CommonMark's `PARSER`) to the XML parser
+    // classes `SAXParser` / `XMLReader` / `DocumentBuilder`, then the
+    // xxe sink rule (`{ method: 'parse', class: 'DocumentBuilder' }`)
+    // accepts the call as a sink. Markdown / CLI-arg / date / number
+    // parsers do not perform XML parsing and have no external-entity
+    // surface. Mirrors stage 9a but for xxe: when the resolvable receiver
+    // type is a known non-XML data-parser class, drop the xxe sink.
+    // Recall on real `DocumentBuilder.parse(...)` / `SAXParser.parse(...)`
+    // / `XMLReader.parse(...)` is unchanged — those classes are NOT in
+    // DATA_PARSER_TYPES so the gate never trips on them.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xxe') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        const receiverMatch = sinkLineText.match(/\b(\w+)\s*\.\s*(\w+)\s*\(/);
+        const receiver = receiverMatch?.[1];
+        const method = sink.method ?? receiverMatch?.[2];
+        if (method === 'parse' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && DATA_PARSER_TYPES.has(recvType)) return false;
+        }
+        return true;
+      });
+    }
+
     // Stage 10 — Java command_injection (CWE-78) FP reduction.
     // (cognium-dev #167, #170 — Sprint 43)
     //
@@ -933,6 +1109,74 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           return false;
         });
       }
+    }
+
+    // Stage 15 — Java sql_injection regex-allowlist-quoter suppression.
+    // (cognium-dev #191 / FP-77 — Sprint 49)
+    //
+    // Gate (all must hold to drop the sink):
+    //   (a) sink is a JDBC exec method (prepareStatement / execute*)
+    //   (b) sink argument is a single variable (the SQL string)
+    //   (c) variable is assigned within 30 lines above from a
+    //       string-concat RHS whose tokens are ONLY string literals and
+    //       method calls (no bare-variable concat)
+    //   (d) at least one literal token contains a `?` placeholder
+    //       (parameterized value binding signal)
+    //   (e) at least one method-call token names an in-file Java method
+    //       whose body contains an inline `.matches("strict-anchored")`
+    //       call plus a `throw` (regex-allowlist guard)
+    //
+    // Together (a)–(e) prove the SQL is parameterized for values with
+    // identifier interpolation routed through a validated quoter.
+    // Stage 13 (#163) handles the same shape inside `*Dialect` /
+    // `*SqlBuilder` classes — this stage drops the class-name gate.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection') return true;
+        const method = sink.method ?? '';
+        if (!SQL_EXEC_METHODS.has(method)) return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // Sink-call arg: take the first parenthesised arg of the method.
+        const callArgs = extractJavaCallArgs(method, sinkLineText);
+        if (!callArgs || callArgs.length === 0) return true;
+        const sqlVar = callArgs[0]?.trim() ?? '';
+        if (!/^[A-Za-z_]\w*$/.test(sqlVar)) return true;
+        // Scan backward for the SQL variable's assignment.
+        const lo = Math.max(0, sink.line - 31);
+        const assignRe = new RegExp(
+          JAVA_SQL_ASSIGN_RE_TEMPLATE.replace('SQLVAR', sqlVar),
+        );
+        let rhs: string | null = null;
+        for (let i = sink.line - 2; i >= lo; i--) {
+          const ln = sourceLines[i] ?? '';
+          const m = ln.match(assignRe);
+          if (m) { rhs = m[1] ?? null; break; }
+        }
+        if (!rhs) return true;
+        const tokens = splitJavaConcatTokens(rhs);
+        if (tokens.length < 2) return true; // single token = not a concat shape
+        let hasPlaceholder = false;
+        const methodCallNames: string[] = [];
+        for (const tk of tokens) {
+          if (/^"(?:[^"\\]|\\.)*"$/.test(tk)) {
+            if (tk.includes('?')) hasPlaceholder = true;
+            continue;
+          }
+          const callMatch = tk.match(/^([A-Za-z_]\w*)\s*\(/);
+          if (callMatch) { methodCallNames.push(callMatch[1] ?? ''); continue; }
+          // Any token that is neither a string literal nor a method call
+          // (e.g. a bare identifier) disqualifies this gate.
+          return true;
+        }
+        if (!hasPlaceholder) return true;
+        if (methodCallNames.length === 0) return true;
+        for (const mname of methodCallNames) {
+          const body = findJavaMethodBody(mname, sourceLines);
+          if (body && javaBodyHasInlineRegexAllowlistThrow(body)) return false;
+        }
+        return true;
+      });
     }
 
     return { sources, sinks: filtered, sanitizers };

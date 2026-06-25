@@ -179,4 +179,65 @@ function run(code) {
     const r = await analyze(code, 'eval.js', 'javascript');
     expect(countCodeInjectionSinksAt(r.taint.sinks, 'eval')).toBeGreaterThanOrEqual(1);
   });
+
+  // -------------------------------------------------------------------------
+  // #152 reopen — interprocedural_param → code_injection flow on
+  // setInterval/setTimeout must be suppressed. Untyped JS function
+  // parameters cannot be proven to carry strings; callers commonly pass
+  // function references, which is the benign callback shape. The earlier
+  // 3.96.0 matcher gate only handled inline function literals; a bare
+  // identifier resolving to a function-typed param slipped through and
+  // produced a critical code_injection flow.
+  // -------------------------------------------------------------------------
+
+  it('reopen repro — setTimeout(cb, 1000) on function param emits no flow', async () => {
+    const code = `
+function schedule(cb) {
+  setTimeout(cb, 1000);
+}
+`;
+    const r = await analyze(code, 'schedule-timeout.js', 'javascript');
+    const codeInjFlows = (r.taint.flows ?? []).filter(f => f.sink_type === 'code_injection');
+    expect(codeInjFlows).toEqual([]);
+  });
+
+  it('reopen repro — setInterval(cb, 5000) on function param emits no flow', async () => {
+    const code = `
+function schedule(cb) {
+  setInterval(cb, 5000);
+}
+`;
+    const r = await analyze(code, 'schedule-interval.js', 'javascript');
+    const codeInjFlows = (r.taint.flows ?? []).filter(f => f.sink_type === 'code_injection');
+    expect(codeInjFlows).toEqual([]);
+  });
+
+  it('recall — tainted HTTP string reaching setTimeout still flows', async () => {
+    // The gate must be source-type-specific: only `interprocedural_param`
+    // (untyped function parameter) is suppressed. A genuine HTTP-sourced
+    // string flowing to setTimeout is a real CWE-94 and must still emit.
+    const code = `
+function handle(req) {
+  const payload = req.query.code;
+  setTimeout(payload, 100);
+}
+`;
+    const r = await analyze(code, 'real-rce-timeout.js', 'javascript');
+    const codeInjFlows = (r.taint.flows ?? []).filter(f => f.sink_type === 'code_injection');
+    expect(codeInjFlows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recall — eval(param) on a function parameter still flows', async () => {
+    // The gate is scoped to setInterval/setTimeout only. eval has true
+    // code-injection semantics on any argument kind, so the gate must
+    // not suppress its interprocedural_param flow.
+    const code = `
+function run(code) {
+  eval(code);
+}
+`;
+    const r = await analyze(code, 'eval-param.js', 'javascript');
+    const codeInjFlows = (r.taint.flows ?? []).filter(f => f.sink_type === 'code_injection');
+    expect(codeInjFlows.length).toBeGreaterThanOrEqual(1);
+  });
 });
