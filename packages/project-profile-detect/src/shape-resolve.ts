@@ -78,6 +78,17 @@ export function resolveShape(mod: BuildModule): ShapeResolution {
     return { shape: 'application', reasons };
   }
 
+  // 5b. Implicit library: publicly published with no application/server/plugin
+  //     signals. Covers Maven libraries that don't carry an explicit
+  //     `java-library` plugin / JPMS / SPI signal but inherit a public
+  //     `<distributionManagement>` URL from a parent pom (e.g. langchain4j).
+  //     The Hybrid Approach C public-registry allowlist still gates here.
+  if (isPubliclyPublished(sig.distributionUrls)) {
+    reasons.push('public-registry distribution',
+                 'no application/server/plugin signals → implicit library');
+    return { shape: 'library', reasons };
+  }
+
   // 6. No usable signal → unknown (fail-safe).
   reasons.push('no shape signals');
   return { shape: 'unknown', reasons };

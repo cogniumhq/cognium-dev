@@ -156,6 +156,51 @@ describe('resolveShape — precedence ordering', () => {
   });
 });
 
+describe('resolveShape — implicit library (#192, 1.1.0)', () => {
+  test('public-registry dist URL + no other signals → implicit library', () => {
+    const r = resolveShape(mod({
+      distributionUrls: ['https://central.sonatype.com/repository/maven-snapshots/'],
+    }));
+    expect(r.shape).toBe('library');
+    expect(r.reasons.join(',')).toContain('implicit library');
+  });
+
+  test('implicit library NOT triggered when main() present', () => {
+    const r = resolveShape(mod({
+      distributionUrls: ['https://central.sonatype.com/'],
+      hasMainMethod: true,
+    }));
+    expect(r.shape).toBe('application');
+  });
+
+  test('implicit library NOT triggered for internal-only dist URL', () => {
+    const r = resolveShape(mod({
+      distributionUrls: ['https://nexus.corp.local/repo/'],
+    }));
+    expect(r.shape).toBe('unknown');
+  });
+
+  test('implicit library yields library/published reasons', () => {
+    const r = resolveShape(mod({
+      distributionUrls: ['https://repo1.maven.org/maven2/'],
+    }));
+    expect(r.reasons).toContain('public-registry distribution');
+  });
+
+  test('implicit library NOT triggered when war/ear/spring-boot present (those win earlier)', () => {
+    // war wins at branch 2.
+    expect(resolveShape(mod({
+      plugins: ['war'],
+      distributionUrls: ['https://repo1.maven.org/maven2/'],
+    })).shape).toBe('server');
+    // maven-plugin wins at branch 3.
+    expect(resolveShape(mod({
+      plugins: ['maven-plugin'],
+      distributionUrls: ['https://repo1.maven.org/maven2/'],
+    })).shape).toBe('plugin');
+  });
+});
+
 describe('resolveShape — Pillar I guard', () => {
   test('reasons never contain LLM-themed words', () => {
     const r = resolveShape(mod({

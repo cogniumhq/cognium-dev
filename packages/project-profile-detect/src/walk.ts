@@ -15,6 +15,7 @@ import { join, relative } from 'path';
 import type { BuildModule, ModuleSignals } from './types.js';
 import { parseMavenPom } from './maven-parse.js';
 import { parseGradleBuild } from './gradle-parse.js';
+import { mergeMavenInheritance } from './maven-inherit.js';
 
 const BUILD_FILES = ['pom.xml', 'build.gradle', 'build.gradle.kts'] as const;
 
@@ -34,6 +35,9 @@ const SKIP_DIRS = new Set([
 export async function discoverBuildModules(scanRoot: string): Promise<BuildModule[]> {
   const modules: BuildModule[] = [];
   await walk(scanRoot, modules);
+  // Merge inherited signals from Maven parent-pom chains in a second pass.
+  // Mutates `modules[*].signals` in place; bounded by chain depth.
+  mergeMavenInheritance(modules, scanRoot);
   return modules;
 }
 

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.106.2] - 2026-06-24
+
+Detector bump only — adopts
+[`@cognium/project-profile-detect@1.1.0`](https://www.npmjs.com/package/@cognium/project-profile-detect)
+which adds Maven parent-pom inheritance and an implicit Maven library shape
+branch (#192). Targets parent-pom-driven Maven repos (e.g. langchain4j) that
+previously fell through to `unknown` because their child poms inherited
+`<distributionManagement>` from a parent and carried no Gradle-only
+`java-library` plugin, JPMS `module-info.java`, or `META-INF/services` SPI
+signal. Those modules now resolve to `library/production`, which lets
+ADR-008 fire its severity downgrades.
+
+### Changed
+- Bumps `@cognium/project-profile-detect` dependency `^1.0.0` → `^1.1.0`.
+
+### Unchanged
+- No CLI flag or output-format change. `circle-ir` pinned at `^3.106.0`.
+- Pillar I: no LLM identifiers (verified by grep guard).
+
 ## [3.106.1] - 2026-06-24
 
 Internal refactor — detector logic extracted to

@@ -31,6 +31,29 @@ export interface BuildModule {
   version?: string;
   /** Raw plugin / dependency / packaging signals collected by parsers. */
   signals: ModuleSignals;
+  /**
+   * Maven `<parent>` declaration, when present. Used by the inheritance
+   * pass (`maven-inherit.ts`) to walk parent-pom chains and merge inherited
+   * signals (distributionManagement URLs, build plugins) into this module.
+   * Gradle modules never set this.
+   */
+  parentRef?: MavenParentRef;
+}
+
+/**
+ * Maven `<parent>` element. The `relativePath` semantics matter:
+ *  - tag absent → caller defaults to `../pom.xml`
+ *  - `<relativePath>../foo/pom.xml</relativePath>` → walk to that path
+ *  - `<relativePath/>` (self-closing or empty) → Maven convention "do not
+ *    walk the workspace, resolve from the local repo". The detector treats
+ *    this as a stop signal (we never read the local repo).
+ */
+export interface MavenParentRef {
+  groupId?: string;
+  artifactId?: string;
+  version?: string;
+  relativePath?: string;
+  emptyRelativePath: boolean;
 }
 
 /**
