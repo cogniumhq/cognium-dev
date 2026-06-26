@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.108.0] - 2026-06-26
+
+Sprint 51 Java FN/FP batch — empirical Phase 0 reproduction reduced
+scope to a single engine code change (#214 Stage 15 inline form). The
+other three tickets in the batch (#197, #196, #117) already fire under
+v3.107.0 on their canonical fixture shapes; the residual gaps are
+narrower-than-reported inline-fluent-receiver edge cases queued as
+follow-ups.
+
+### Fixed
+
+- **#214 — Java `sql_injection` Stage 15 still over-fires when SQL
+  concat is passed inline to `prepareStatement(...)`.** Sprint 50
+  Stage 15 only handled the indirect form (`String sql = "…" +
+  quoteIdent(col) + " = ?"; ps = conn.prepareStatement(sql)`). The
+  inline form (`ps = c.prepareStatement("…" + quoteIdent(col) + " =
+  ?")`) failed gate (b) because `callArgs[0]` is a concat expression,
+  not a bare identifier — Stage 15 returned early and the sink
+  survived. New inline branch at `sink-filter-pass.ts:1141-1163`
+  treats the arg expression itself as the concat RHS when it contains
+  at least one string literal and a `+` operator, then applies the
+  unchanged gates (c)–(e) (literal-and-method-call-only RHS, `?`
+  placeholder, in-file `String.matches("strict-anchored")`+`throw`
+  guard). Recall locks unchanged: bare-variable concat, missing `?`
+  placeholder, missing/wildcard regex guard all continue to fire.
+
+### Verified (no code change)
+
+- **#197 — Java `HttpServletRequest.getInputStream` →
+  `ObjectInputStream.readObject` deserialization FN.** Confirmed
+  firing under v3.107.0 against the canonical fixture
+  (`getInputStream().readAllBytes()` → `new
+  ObjectInputStream(...).readObject()`). The taint-preserving chain
+  on `InputStream.readAllBytes` was already wired by a prior sprint.
+
+- **#196 — Java `java.util.logging.Logger` `log_injection` FN.**
+  Confirmed firing under v3.107.0 on the intermediate-variable shape
+  (`Logger LOG = Logger.getLogger(...); LOG.warning(taint);`). The
+  inline-fluent-receiver shape
+  (`Logger.getLogger("app").warning(taint)`) does not fire because
+  the receiver type does not resolve before the sink-class gate
+  evaluates. Queued as a follow-up under the receiver-resolution
+  family.
+
+- **#117 — CWE-501 Trust Boundary Violation FN.** Confirmed firing
+  under v3.107.0 on the intermediate-variable shape
+  (`HttpSession s = req.getSession(); s.setAttribute(k, taint);`).
+  The inline shape
+  (`req.getSession().setAttribute(k, req.getParameter(...))`) is
+  suppressed by the source+sink-same-line dedup (xss fires; the
+  trust_boundary finding is dropped to avoid co-located double
+  reporting). Queued as a follow-up under the same-line-dedup policy
+  review.
+
+### Tests
+
+- 3 new cases in `tests/analysis/passes/java-sql-identifier-quoter-fp.test.ts`:
+  inline FP suppression, inline bare-variable recall, inline
+  no-`?`-placeholder recall. Total suite: 3045 pass / 1 skipped.
+
 ## [3.107.0] - 2026-06-25
 
 Sprint 50 FP triage batch — three independently-reported false positives

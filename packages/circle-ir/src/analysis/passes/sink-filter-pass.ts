@@ -1141,17 +1141,24 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const callArgs = extractJavaCallArgs(method, sinkLineText);
         if (!callArgs || callArgs.length === 0) return true;
         const sqlVar = callArgs[0]?.trim() ?? '';
-        if (!/^[A-Za-z_]\w*$/.test(sqlVar)) return true;
-        // Scan backward for the SQL variable's assignment.
-        const lo = Math.max(0, sink.line - 31);
-        const assignRe = new RegExp(
-          JAVA_SQL_ASSIGN_RE_TEMPLATE.replace('SQLVAR', sqlVar),
-        );
         let rhs: string | null = null;
-        for (let i = sink.line - 2; i >= lo; i--) {
-          const ln = sourceLines[i] ?? '';
-          const m = ln.match(assignRe);
-          if (m) { rhs = m[1] ?? null; break; }
+        if (/^[A-Za-z_]\w*$/.test(sqlVar)) {
+          // Indirect form: SQL assigned to a named variable above the sink.
+          // Scan backward for the SQL variable's assignment.
+          const lo = Math.max(0, sink.line - 31);
+          const assignRe = new RegExp(
+            JAVA_SQL_ASSIGN_RE_TEMPLATE.replace('SQLVAR', sqlVar),
+          );
+          for (let i = sink.line - 2; i >= lo; i--) {
+            const ln = sourceLines[i] ?? '';
+            const m = ln.match(assignRe);
+            if (m) { rhs = m[1] ?? null; break; }
+          }
+        } else if (/"[^"]*"/.test(sqlVar) && sqlVar.includes('+')) {
+          // Inline form (cognium-dev #214): SQL concat passed directly to the
+          // exec method. Treat the arg expression itself as the RHS and run
+          // gates (c)–(e) against it.
+          rhs = sqlVar;
         }
         if (!rhs) return true;
         const tokens = splitJavaConcatTokens(rhs);

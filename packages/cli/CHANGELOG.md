@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.108.0] - 2026-06-26
+
+Engine bump only — adopts [`circle-ir@3.108.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 51 Java FN/FP batch:
+
+- **#214** — Java `sql_injection` Stage 15 inline form FP. New inline
+  branch in `sink-filter-pass.ts` extends Sprint 50's regex-allowlist
+  quoter suppression to cover `c.prepareStatement("…" + quoteIdent(col)
+  + " = ?")` (concat passed inline to the exec method).
+- **#197, #196, #117** — confirmed firing under v3.107.0 on canonical
+  fixture shapes; residual gaps are narrower inline-fluent-receiver /
+  same-line-dedup edge cases queued as follow-ups.
+
 ## [3.107.0] - 2026-06-25
 
 Engine bump only — adopts [`circle-ir@3.107.0`](https://www.npmjs.com/package/circle-ir)

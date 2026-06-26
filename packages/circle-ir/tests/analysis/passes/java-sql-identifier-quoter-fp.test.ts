@@ -179,4 +179,69 @@ public class WildcardGuard {
     const r = await analyze(code, 'WildcardGuard.java', 'java');
     expect(countSqlSinks(r.taint?.sinks)).toBeGreaterThanOrEqual(1);
   });
+
+  // -------------------------------------------------------------------------
+  // #214 — inline `prepareStatement(concat)` form (Sprint 51 extension)
+  // -------------------------------------------------------------------------
+
+  it('issue #214 — inline prepareStatement(concat) with regex-allowlist quoter is suppressed', async () => {
+    const code = `import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+public class SafeSqlIdentifierQuoteInline {
+    private static String quoteIdent(String id) {
+        if (!id.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalArgumentException("bad identifier: " + id);
+        }
+        return "\`" + id + "\`";
+    }
+    public ResultSet run(Connection c, String column, String value) throws Exception {
+        PreparedStatement ps = c.prepareStatement("SELECT * FROM items WHERE " + quoteIdent(column) + " = ?");
+        ps.setString(1, value);
+        return ps.executeQuery();
+    }
+}
+`;
+    const r = await analyze(code, 'SafeSqlIdentifierQuoteInline.java', 'java');
+    expect(countSqlSinks(r.taint?.sinks)).toBe(0);
+    expect(countSqlFlows(r.taint?.flows)).toBe(0);
+  });
+
+  it('Recall — inline prepareStatement(concat) with bare-variable concat (no quoter): fires', async () => {
+    const code = `import java.sql.Connection;
+import java.sql.PreparedStatement;
+
+public class InlineBareVar {
+    public PreparedStatement run(Connection c, String column, String value) throws Exception {
+        PreparedStatement ps = c.prepareStatement("SELECT * FROM items WHERE " + column + " = ?");
+        ps.setString(1, value);
+        return ps;
+    }
+}
+`;
+    const r = await analyze(code, 'InlineBareVar.java', 'java');
+    expect(countSqlSinks(r.taint?.sinks)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Recall — inline prepareStatement(concat) with quoter but NO ? placeholder: fires', async () => {
+    const code = `import java.sql.Connection;
+import java.sql.PreparedStatement;
+
+public class InlineNoPlaceholder {
+    private static String quoteIdent(String id) {
+        if (!id.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalArgumentException("bad identifier: " + id);
+        }
+        return "\`" + id + "\`";
+    }
+    public PreparedStatement run(Connection c, String column, String value) throws Exception {
+        PreparedStatement ps = c.prepareStatement("SELECT * FROM items WHERE " + quoteIdent(column) + " = " + value);
+        return ps;
+    }
+}
+`;
+    const r = await analyze(code, 'InlineNoPlaceholder.java', 'java');
+    expect(countSqlSinks(r.taint?.sinks)).toBeGreaterThanOrEqual(1);
+  });
 });
