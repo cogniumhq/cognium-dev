@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.109.0] - 2026-06-27
+
+Engine bump only — adopts [`circle-ir@3.109.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 52 sanitizer-wrapped FP cluster (#216 subset):
+
+- **#216 — Python `ldap_injection` FP on `re.sub`-based LDAP metachar
+  wrappers** (e.g. `def ldap_safe(s): return re.sub(r"[()=*\\]", "", s)`).
+  New Stage 17 in `sink-filter-pass.ts` recognises wrapper functions
+  whose body strips at least three of the RFC 4515 LDAP-filter metachars
+  `( ) = * \`, plus the built-ins `escape_filter_chars`/`filter_format`.
+- **#216 — Python `xxe` FP inside hardened-parser scopes** (e.g.
+  `safe_parse(xml_bytes)` whose body constructs `XMLParser(resolve_entities=False)`).
+  New Stage 18 adds a scope-aware backward scan halted at the enclosing
+  `def` boundary — preserves recall on sibling-function unsafe parsers.
+- **#216 — JavaScript `log_injection` FP on CRLF-stripping sanitizers**
+  (e.g. `stripCrlf`, `.replace(/[\r\n]/g, '')`). New Stage 16 adds a
+  `JS_LOG_INJECTION_SANITIZERS` pattern array with the same inline +
+  variable-assignment suppression shape as the existing XSS Stage 7.
+
+Phase 0 empirical reproduction confirmed three additional `/wrapped`
+routes (JS XSS, JS deserialization, Python SSTI) were already clean on
+v3.108.0; those phases were dropped from the sprint.
+
 ## [3.108.0] - 2026-06-26
 
 Engine bump only — adopts [`circle-ir@3.108.0`](https://www.npmjs.com/package/circle-ir)

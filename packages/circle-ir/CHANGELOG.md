@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.109.0] - 2026-06-27
+
+Sprint 52 sanitizer-wrapped FP cluster (#216 subset) — Phase 0 empirical
+reproduction against the v3.108.0 CLI on the `sanitizer_combos_*` and
+`safe_oop_*` fixtures reduced the planned 7-phase scope to 3 shipped
+phases (Phases 3, 4, 7 verified clean on v3.108.0 and dropped). The
+shipped fixes target three new `SinkFilterPass` stages backed by a
+shared scope-aware backward-assignment helper.
+
+### Fixed
+
+- **#216 — Python `ldap_injection` over-fires on `re.sub`-based LDAP
+  metachar-stripping wrappers.** New Stage 17 in `sink-filter-pass.ts`
+  recognises Python module-level wrapper functions of the canonical shape
+  `def NAME(PARAM): return re.sub(r"[CLASS]", "", PARAM)` when the
+  character class contains at least three of the LDAP-filter metachars
+  `( ) = * \` (per RFC 4515). Such wrappers (plus the built-ins
+  `escape_filter_chars` and `filter_format`) are treated as
+  `ldap_injection` sanitizers and suppress sinks where either the sink
+  line invokes the wrapper inline OR a sink-line identifier was assigned
+  from a wrapper call within 30 lines above (scope-aware, halted at the
+  enclosing `def`/`class` boundary). Recall locks: wildcard `re.sub`
+  patterns (no LDAP metachars) keep firing; direct concat without any
+  wrapper keeps firing; wrappers applied to a different variable than
+  the sink continue to fire.
+
+- **#216 — Python `xxe` over-fires inside hardened-parser scopes.** New
+  Stage 18 in `sink-filter-pass.ts` adds a scope-aware backward scan
+  (≤30 lines, halted at the enclosing `def` boundary) for the regex
+  `XMLParser(...resolve_entities=False...)`. When such a hardened-parser
+  construction is found in the same function body as an `xxe` sink (e.g.
+  `safe_parse` wrapper, OOP class method), the sink is dropped. The
+  function-boundary halt preserves recall on sibling-function unsafe
+  parsers: an `unsafe()` function that constructs its own
+  `resolve_entities=True` parser is not suppressed even when a sibling
+  `safe_parse` exists in the same module.
+
+- **#216 — JavaScript `log_injection` over-fires on CRLF-stripping
+  sanitizers.** New Stage 16 in `sink-filter-pass.ts` adds a
+  `JS_LOG_INJECTION_SANITIZERS` pattern array recognising common helper
+  names (`stripCrlf`, `stripCRLF`, `removeNewlines`, `sanitizeLogValue`)
+  and the inline regex literals `.replace(/[\r\n]/g, '')` and
+  `.replace(/\r\n/g, '')`. Suppresses `log_injection` sinks when either
+  the sink line calls one of these sanitizers inline OR a sink-line
+  identifier was assigned from a sanitizer call within 30 lines above.
+  Recall locks: non-CRLF `.replace(/x/g, '')` does NOT suppress; missing
+  sanitizer continues to fire.
+
+### Verified (no code change)
+
+- **#216 — JavaScript `xss` `/wrapped` route**
+  (`sanitizer_combos_xss.js`): confirmed clean on v3.108.0 (Stage 7
+  `JS_XSS_SANITIZERS` already covers `escapeHtml` inline + assignment
+  shapes via existing variable-backward-scan).
+- **#216 — JavaScript `deserialization` `/wrapped` route**
+  (`sanitizer_combos_deserialize.js`): confirmed clean on v3.108.0
+  (`JSON.parse(Buffer.from(req.query.s, 'base64').toString())` produces
+  zero `deserialization` and zero `external_taint_escape` sinks).
+- **#216 — Python `code_injection` SSTI `/wrapped` route**
+  (`sanitizer_combos_ssti.py`): confirmed clean on v3.108.0
+  (`render_template_string("<p>{{ name }}</p>", name=name)` literal-arg
+  + kwarg shape already suppressed by the existing derived-sanitizer
+  detector at `language-sources-pass.ts`).
+
+### Internal
+
+- Shared helper `isAssignedFromSanitizerPattern(sourceLines, sinkLine,
+  varName, sanitizerPatterns, lookback=30)` extracted in
+  `sink-filter-pass.ts` for use by Stages 16 + 17. Scope-aware: stops
+  scan at `def`/`function`/arrow-function declaration to preserve recall
+  across function boundaries.
+- Helper `findPythonLdapStripWrappers(sourceLines)` discovers wrapper
+  function names module-wide so callers in any function body share the
+  same sanitizer registry.
+
 ## [3.108.0] - 2026-06-26
 
 Sprint 51 Java FN/FP batch — empirical Phase 0 reproduction reduced

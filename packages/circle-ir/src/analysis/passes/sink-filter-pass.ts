@@ -47,6 +47,53 @@ const JS_XSS_SANITIZERS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Stage 16 — JS log_injection (CWE-117) sanitizer patterns.
+// (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+// ---------------------------------------------------------------------------
+//
+// Common CRLF-stripping / log-sanitization helpers. Used by Stage 16 both as
+// an inline check on the sink line AND as a backward-scan check via the
+// `isAssignedFromSanitizerPattern` helper.
+const JS_LOG_INJECTION_SANITIZERS = [
+  /\bstripCrlf\s*\(/,
+  /\bstripCRLF\s*\(/,
+  /\bremoveNewlines\s*\(/,
+  /\bsanitizeLogValue\s*\(/,
+  // Inline CRLF-stripping regex literal: .replace(/[\r\n]/g, '')
+  /\.replace\(\s*\/\[\s*\\r\s*\\n\s*\]\/[gimsu]*\s*,\s*['"`]['"`]\s*\)/,
+  // Inline CRLF sequence: .replace(/\r\n/g, '')
+  /\.replace\(\s*\/\\r\\n\/[gimsu]*\s*,\s*['"`]['"`]\s*\)/,
+];
+
+// ---------------------------------------------------------------------------
+// Stage 17 — Python ldap_injection (CWE-90) regex-strip wrapper recognition.
+// (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+// ---------------------------------------------------------------------------
+//
+// Built-in Python LDAP sanitizer call-site names. Augmented at scan time with
+// derived wrapper functions detected via `findPythonLdapStripWrappers`.
+const PY_BUILTIN_LDAP_SANITIZERS = ['escape_filter_chars', 'filter_format'];
+
+// Python `def name(param):` followed (within a few lines) by
+// `return re.sub(r"[<class>]", "", param)` where the character class contains
+// at least three of the LDAP filter metacharacters from RFC 4515.
+const PY_LDAP_METACHARS = ['(', ')', '=', '*', '\\'];
+const PY_DEF_RE = /^\s*def\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*:\s*$/;
+const PY_LDAP_STRIP_RETURN_RE =
+  /^\s*return\s+re\.sub\(\s*r?["']\[([^"'\]]+)\]["']\s*,\s*r?["']["']\s*,\s*([A-Za-z_]\w*)\s*\)\s*$/;
+
+// ---------------------------------------------------------------------------
+// Stage 18 — Python xxe (CWE-611) parser-variable / wrapper recognition.
+// (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+// ---------------------------------------------------------------------------
+//
+// `XMLParser(...resolve_entities=False...)` constructor — when present in the
+// 30 lines above an xxe sink (same enclosing scope), the parser is hardened
+// and the sink is safe.
+const PY_XML_PARSER_HARDENED_RE =
+  /\bXMLParser\s*\([^)]*\bresolve_entities\s*=\s*False\b[^)]*\)/;
+
+// ---------------------------------------------------------------------------
 // Stage 9 — Java code_injection (CWE-094) FP reduction allowlists.
 // (cognium-dev #155, #156, #159, #160 — Sprint 42)
 // ---------------------------------------------------------------------------
@@ -1186,8 +1233,220 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
+    // (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+    //
+    // Gate (any suppresses the sink):
+    //   (a) sink line contains an inline call to a known CRLF-stripping
+    //       helper (stripCrlf, sanitizeLogValue, .replace(/[\r\n]/g, ''))
+    //   (b) sink line references a variable assigned within 30 lines
+    //       above from a sanitizer-pattern RHS
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'log_injection') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        if (JS_LOG_INJECTION_SANITIZERS.some(p => p.test(sinkLineText))) return false;
+        const varNames = extractSourceIdentifiers(sinkLineText);
+        for (const v of varNames) {
+          if (isAssignedFromSanitizerPattern(sourceLines, sink.line, v, JS_LOG_INJECTION_SANITIZERS)) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
+    // Stage 17 — Python ldap_injection (CWE-90) regex-strip wrapper
+    // recognition. (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+    //
+    // Scan file for module-level wrapper functions whose body is
+    //   return re.sub(r"[<class>]", "", <param>)
+    // where the character class contains at least three of the LDAP filter
+    // metacharacters ( ) = * \. Treat such wrappers (plus the built-in
+    // `escape_filter_chars` / `filter_format`) as LDAP sanitizers.
+    //
+    // Gate (any suppresses the sink):
+    //   (a) sink line contains a direct call to a known LDAP sanitizer
+    //   (b) sink line references a variable assigned within 30 lines above
+    //       from a known LDAP sanitizer call
+    if (language === 'python') {
+      const sourceLines = ctx.code.split('\n');
+      const wrappers = findPythonLdapStripWrappers(sourceLines);
+      const allLdapSanitizers = [...PY_BUILTIN_LDAP_SANITIZERS, ...wrappers];
+      if (allLdapSanitizers.length > 0) {
+        const ldapPatterns = allLdapSanitizers.map(
+          name => new RegExp(`\\b${escapeRegex(name)}\\s*\\(`),
+        );
+        filtered = filtered.filter(sink => {
+          if (sink.type !== 'ldap_injection') return true;
+          const sinkLineText = sourceLines[sink.line - 1] ?? '';
+          if (ldapPatterns.some(p => p.test(sinkLineText))) return false;
+          const varNames = extractSourceIdentifiers(sinkLineText);
+          for (const v of varNames) {
+            if (isAssignedFromSanitizerPattern(sourceLines, sink.line, v, ldapPatterns)) {
+              return false;
+            }
+          }
+          return true;
+        });
+      }
+    }
+
+    // Stage 18 — Python xxe (CWE-611) parser-variable / wrapper recognition.
+    // (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
+    //
+    // When an xxe sink (fromstring/parse/etc.) appears within the same
+    // enclosing function as an `XMLParser(...resolve_entities=False...)`
+    // constructor, the parser is hardened and the sink is safe. Covers:
+    //   - wrapper functions (`def safe_parse(...): parser = XMLParser(...);
+    //     return ET.fromstring(b, parser)`) — sink inside wrapper body
+    //   - class methods (`def parse_direct(self): parser = XMLParser(...);
+    //     return ET.fromstring(self.xml, parser)`)
+    //
+    // Scope safety: the backward scan stops at the first `def` line so the
+    // safe parser in a sibling/preceding function never suppresses an unsafe
+    // sink in a different function. Recall lock: `XMLParser(resolve_entities
+    // =True)` does NOT match the hardened regex, so /wrong /fake routes
+    // (which build their own unsafe parsers) still fire.
+    if (language === 'python') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xxe') return true;
+        const lookback = 30;
+        const lo = Math.max(0, sink.line - 1 - lookback);
+        for (let i = sink.line - 2; i >= lo; i--) {
+          const ln = sourceLines[i] ?? '';
+          if (PY_XML_PARSER_HARDENED_RE.test(ln)) return false;
+          // Function boundary: stop scanning when we leave the sink's
+          // enclosing def, so a hardened parser in a sibling function never
+          // suppresses an unsafe sink in this function.
+          if (/^\s*def\s+\w+\s*\(/.test(ln)) break;
+        }
+        return true;
+      });
+    }
+
     return { sources, sinks: filtered, sanitizers };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 52 helpers — shared sanitizer-assignment backward scan utilities.
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape regex metacharacters in an identifier or literal for use inside a
+ * RegExp template. Identifiers from `def NAME(...)` matches are already
+ * `[A-Za-z_]\w*`-restricted, but kept defensively.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Reserved keywords across JS/TS/Python that should not be treated as
+ * source-identifier candidates by `extractSourceIdentifiers`.
+ */
+const RESERVED_KEYWORDS = new Set<string>([
+  // JS/TS
+  'if', 'else', 'return', 'const', 'let', 'var', 'function', 'class', 'new',
+  'this', 'for', 'while', 'do', 'break', 'continue', 'switch', 'case',
+  'default', 'try', 'catch', 'finally', 'throw', 'typeof', 'instanceof',
+  'in', 'of', 'await', 'async', 'import', 'export', 'from', 'as', 'void',
+  'null', 'undefined', 'true', 'false', 'super', 'extends', 'static',
+  // Python
+  'def', 'lambda', 'yield', 'pass', 'with', 'global', 'nonlocal', 'and',
+  'or', 'not', 'is', 'None', 'True', 'False', 'raise', 'except', 'elif',
+  'self', 'cls', 'print',
+  // Common stdlib roots that show up everywhere and would balloon scans.
+  'console', 'req', 'res', 'request', 'response',
+]);
+
+/**
+ * Extract identifier-shaped tokens from a source line. Skips keywords and
+ * single-character names. Used by Stages 16-17 to find candidate variables
+ * whose assignment lines should be scanned backward.
+ */
+function extractSourceIdentifiers(text: string): string[] {
+  const out: string[] = [];
+  const re = /\b([A-Za-z_]\w+)\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const name = m[1];
+    if (!RESERVED_KEYWORDS.has(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Scan upward from `sinkLine` (1-based) for an assignment to `varName`. If
+ * the RHS of that assignment matches any of the supplied sanitizer regexes,
+ * return true. Stops at the first assignment found (no `varName` reassignment
+ * tracking — a benign reassignment after a tainted one is the common shape,
+ * so first-assignment-found-above-the-sink is the precision-correct choice).
+ *
+ * Shared by Stages 16 (JS log_injection) and 17 (Python ldap_injection).
+ */
+function isAssignedFromSanitizerPattern(
+  sourceLines: string[],
+  sinkLine: number,
+  varName: string,
+  sanitizerPatterns: RegExp[],
+  lookback: number = 30,
+): boolean {
+  const escapedVar = escapeRegex(varName);
+  // Match `[<keyword>?] varName = <rhs>` for both JS (`const|let|var`) and
+  // Python (bare assignment) shapes.
+  const assignRe = new RegExp(
+    `(?:\\b(?:const|let|var|final|String)\\s+)?\\b${escapedVar}\\s*=\\s*(.+)`,
+  );
+  // Scope boundary: stop at a function declaration so a sibling function's
+  // assignment to the same variable name never crosses scope.
+  const fnBoundaryRe = /^\s*(?:def\s+\w+\s*\(|function\s+\w+\s*\(|\w+\s*[:=]\s*(?:async\s+)?\(?[^)]*\)?\s*=>)/;
+  const lo = Math.max(0, sinkLine - 1 - lookback);
+  for (let i = sinkLine - 2; i >= lo; i--) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(assignRe);
+    if (m) {
+      const rhs = (m[1] ?? '').trim();
+      return sanitizerPatterns.some(p => p.test(rhs));
+    }
+    if (fnBoundaryRe.test(ln)) break;
+  }
+  return false;
+}
+
+/**
+ * Find module-level Python functions whose body is a single
+ * `return re.sub(r"[<class>]", "", param)` line where the character class
+ * contains at least three of the LDAP filter metacharacters `( ) = * \`.
+ *
+ * Returns the function names. Conservative scan window: looks at the first
+ * three non-blank lines after the `def` to find the `return re.sub(...)`.
+ */
+function findPythonLdapStripWrappers(sourceLines: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < sourceLines.length; i++) {
+    const defMatch = sourceLines[i].match(PY_DEF_RE);
+    if (!defMatch) continue;
+    const fnName = defMatch[1];
+    const param = defMatch[2];
+    // Scan next non-blank/comment line for the return re.sub(...) pattern.
+    for (let j = i + 1; j < Math.min(i + 4, sourceLines.length); j++) {
+      const body = sourceLines[j];
+      if (/^\s*$/.test(body) || /^\s*#/.test(body)) continue;
+      const ret = body.match(PY_LDAP_STRIP_RETURN_RE);
+      if (!ret) break;
+      const charClass = ret[1];
+      const argName = ret[2];
+      if (argName !== param) break;
+      const metaCount = PY_LDAP_METACHARS.filter(c => charClass.includes(c)).length;
+      if (metaCount >= 3) out.push(fnName);
+      break;
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
