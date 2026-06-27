@@ -1740,21 +1740,32 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Template', class: 'jinja2', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'Template', class: 'mako', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
 
-  // Python Log Injection
-  { method: 'info', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'warning', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'error', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'debug', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'critical', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  // Python Log Injection — cognium-dev #193: positions [0, 1, 2, 3, 4]
+  // cover both the format string (arg 0) and Python `logging`'s positional
+  // *args (1..N), which get rendered into the log line via `%` substitution
+  // (e.g. `log.warning("user=%s", user)` taints via arg 1). Five-arg cap
+  // matches the established explicit-enumeration pattern used elsewhere in
+  // this file.
+  { method: 'info', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'warning', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'warn', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'error', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'debug', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'critical', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'fatal', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'exception', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'log', class: 'logger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1, 2, 3, 4] },
   // Python `logging` module top-level functions (e.g. logging.info(...))
   // — cognium-dev#104 Sprint 22: OOP fixtures use `import logging; logging.info(self.msg)`.
-  { method: 'info', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'warning', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'error', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'debug', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'critical', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
-  { method: 'log', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1] },
-  { method: 'exception', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0] },
+  { method: 'info', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'warning', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'warn', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'error', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'debug', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'critical', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'fatal', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
+  { method: 'log', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1, 2, 3, 4] },
+  { method: 'exception', class: 'logging', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2, 3, 4] },
 
   // =========================================================================
   // Java CWE-Bench Enhancement Patterns (Collection/Builder)

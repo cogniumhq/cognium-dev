@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.110.0] - 2026-06-27
+
+Engine bump only — adopts [`circle-ir@3.110.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 53 S-bucket batch:
+
+- **#196 — Java JDK `Logger.getLogger("…").warning(msg)`** now flags
+  `log_injection` (CWE-117). Adds a conservative receiver heuristic for
+  the `Logger.getLogger(...)` / `LoggerFactory.getLogger(...)` factory
+  shape in `taint-matcher.ts`.
+- **#193 — Python `logging.Logger.<level>(fmt, *args)`** now flags
+  `log_injection` (CWE-117) for tainted positional args. Extends
+  `arg_positions` from `[0]` to `[0, 1, 2, 3, 4]` on every level
+  method and adds missing `warn`/`fatal`/`exception` aliases.
+- **#215 — Python `cursor.execute(f"…{safe_col(name)}… = ?", (value,))`**
+  no longer false-positives. New Stage 19 in `sink-filter-pass.ts`
+  recognises the regex-allowlist+raise quoter helper shape (Python port
+  of Java Stage 15) when combined with bind-placeholder values.
+- **#217 — Java fluent-builder fixpoint hang (Keycloak)** verified
+  already incidentally fixed by Sprint 36 #141 memoization; a new
+  regression guard test ships in the engine package.
+
+No CLI source changes — pure dependency bump.
+
 ## [3.109.0] - 2026-06-27
 
 Engine bump only — adopts [`circle-ir@3.109.0`](https://www.npmjs.com/package/circle-ir)

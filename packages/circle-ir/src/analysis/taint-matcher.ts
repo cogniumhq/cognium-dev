@@ -1760,6 +1760,18 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
         return true;
       }
     }
+
+    // Logger factory return-type heuristic (cognium-dev #196): the static
+    // factories `Logger.getLogger("…")` (java.util.logging) and
+    // `LoggerFactory.getLogger(Foo.class)` (SLF4J) return a `Logger`
+    // instance. Allows `Logger.getLogger("app").warning(msg)` and
+    // `LoggerFactory.getLogger(C.class).warn(msg)` to match the
+    // `class: 'Logger'` sink pattern even when no local variable binds
+    // the result. Conservative: only triggers when className is exactly
+    // `Logger` and the receiver tail is `.getLogger(...)`.
+    if (className === 'Logger' && /\.getLogger\(.*\)$/.test(receiver)) {
+      return true;
+    }
   }
 
   // Handle Rust scoped calls like "Response::builder()" — extract type before ::

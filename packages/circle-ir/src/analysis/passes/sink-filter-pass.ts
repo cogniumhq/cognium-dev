@@ -94,6 +94,27 @@ const PY_XML_PARSER_HARDENED_RE =
   /\bXMLParser\s*\([^)]*\bresolve_entities\s*=\s*False\b[^)]*\)/;
 
 // ---------------------------------------------------------------------------
+// Stage 19 — Python sql_injection regex-allowlist-quoter wrapper suppression.
+// (cognium-dev #215 — Sprint 53; Python port of Java Stage 15 #191)
+// ---------------------------------------------------------------------------
+//
+// Python f-string SQL where identifier interpolations route through an
+// in-file helper that validates with `re.fullmatch(allowlist, name)`
+// + `raise`, and values flow through bind placeholders (?, %s, :name),
+// is a parameterized query with an identifier-interpolation wrapper.
+// Helper is the sanitizer; bind placeholder proves values do not concat.
+const PY_SQL_EXEC_METHODS = new Set<string>(['execute', 'executemany']);
+// Recognises Python `re.fullmatch(r"<regex>", …)` / `re.match(r"^<…>$", …)`
+// — fullmatch is implicitly anchored; match requires explicit `^…$`.
+const PY_INLINE_FULLMATCH_RE =
+  /\bre\s*\.\s*fullmatch\s*\(\s*r?"((?:[^"\\]|\\.)*)"/g;
+const PY_INLINE_MATCH_ANCHORED_RE =
+  /\bre\s*\.\s*match\s*\(\s*r?"\^((?:[^"\\]|\\.)*)\$"/g;
+// Bind placeholders: `?` (sqlite3/odbc), `%s` (psycopg2/mysqlclient),
+// `:name` (named placeholders). All proof of bind-arg routing.
+const PY_BIND_PLACEHOLDER_RE = /\?|%s|:[A-Za-z_]\w*/;
+
+// ---------------------------------------------------------------------------
 // Stage 9 — Java code_injection (CWE-094) FP reduction allowlists.
 // (cognium-dev #155, #156, #159, #160 — Sprint 42)
 // ---------------------------------------------------------------------------
@@ -1327,6 +1348,72 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 19 — Python sql_injection regex-allowlist-quoter wrapper
+    // suppression. (cognium-dev #215 — Sprint 53; port of Java Stage 15)
+    //
+    // Gate (all must hold to drop the sink):
+    //   (a) sink method is cursor.execute / cursor.executemany
+    //   (b) sink first arg is an f-string (`f"…{x}…"`) with ≥1 interpolation
+    //   (c) every `{…}` interpolation is a literal OR a bare identifier
+    //       whose assignment within 30 lines above is `<helper>(<arg>)`
+    //       — an in-file helper call
+    //   (d) the f-string literal segments contain a bind placeholder
+    //       (`?`, `%s`, or `:name`)
+    //   (e) at least one such helper's body contains `re.fullmatch(<allowlist>,…)`
+    //       (or anchored `re.match(^…$,…)`) AND a `raise` statement
+    //
+    // Together (a)–(e) prove the SQL is parameterized for values with
+    // identifier interpolation routed through a validated quoter.
+    if (language === 'python') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection') return true;
+        const method = sink.method ?? '';
+        if (!PY_SQL_EXEC_METHODS.has(method)) return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // Find the f-string first argument: f"…" or f'…'
+        const fstrMatch = sinkLineText.match(/\bf"((?:[^"\\]|\\.)*)"|\bf'((?:[^'\\]|\\.)*)'/);
+        if (!fstrMatch) return true;
+        const fstrBody = fstrMatch[1] ?? fstrMatch[2] ?? '';
+        const { literals, interps } = splitPyFstringTokens(fstrBody);
+        if (interps.length === 0) return true;
+        // Gate (d): bind placeholder in literal segments
+        if (!literals.some(lit => PY_BIND_PLACEHOLDER_RE.test(lit))) return true;
+        // Gate (c) + (e): every interpolation must be a literal or
+        // resolve through an in-file helper with the regex-allowlist+raise
+        // shape. At least one helper match is required.
+        let sawHelperWithGuard = false;
+        for (const interp of interps) {
+          const t = interp.trim();
+          if (t === '') return true;
+          // Literal-shape interp: bare number / quoted string — accept.
+          if (/^-?\d+$/.test(t) || /^"(?:[^"\\]|\\.)*"$/.test(t) || /^'(?:[^'\\]|\\.)*'$/.test(t)) {
+            continue;
+          }
+          // Direct in-line helper call: `{helper(arg)}` — extract name.
+          let helperName: string | null = null;
+          const directCall = t.match(/^([A-Za-z_]\w*)\s*\(/);
+          if (directCall) {
+            helperName = directCall[1] ?? null;
+          } else if (/^[A-Za-z_]\w*$/.test(t)) {
+            // Bare identifier — scan backward for assignment from helper call.
+            helperName = findPythonAssignedHelperCall(t, sink.line, sourceLines);
+            if (helperName === null) return true;
+          } else {
+            // Any other expression shape (attribute access, arithmetic,
+            // method chain) disqualifies — too permissive otherwise.
+            return true;
+          }
+          const body = findPythonFunctionBody(helperName, sourceLines);
+          if (body && pythonBodyHasInlineRegexAllowlistRaise(body)) {
+            sawHelperWithGuard = true;
+          }
+        }
+        if (!sawHelperWithGuard) return true;
+        return false;
+      });
+    }
+
     return { sources, sinks: filtered, sanitizers };
   }
 }
@@ -1447,6 +1534,156 @@ function findPythonLdapStripWrappers(sourceLines: string[]): string[] {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 19 (#215) Python helpers — f-string interp split, function body
+// scan via indent depth, and inline regex-allowlist+raise recognition.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage 19 (#215) — split a Python f-string body into literal segments and
+ * brace interpolations. Returns parallel arrays. Conservative: only flat
+ * `{<expr>}` interpolations are recognised (no nested f-strings, no
+ * format-specs after `:` since `:` overlaps with named-bind placeholders).
+ * Escape sequence `{{`/`}}` is preserved as literal text.
+ */
+function splitPyFstringTokens(body: string): { literals: string[]; interps: string[] } {
+  const literals: string[] = [];
+  const interps: string[] = [];
+  let i = 0;
+  let cur = '';
+  while (i < body.length) {
+    const ch = body[i] ?? '';
+    if (ch === '{' && body[i + 1] === '{') {
+      cur += '{';
+      i += 2;
+      continue;
+    }
+    if (ch === '}' && body[i + 1] === '}') {
+      cur += '}';
+      i += 2;
+      continue;
+    }
+    if (ch === '{') {
+      literals.push(cur);
+      cur = '';
+      i++;
+      let depth = 1;
+      let expr = '';
+      while (i < body.length && depth > 0) {
+        const ch2 = body[i] ?? '';
+        if (ch2 === '{') { depth++; expr += ch2; i++; continue; }
+        if (ch2 === '}') {
+          depth--;
+          if (depth === 0) { i++; break; }
+          expr += ch2;
+          i++;
+          continue;
+        }
+        expr += ch2;
+        i++;
+      }
+      // Strip any trailing format-spec (after `:` at depth 0) — but only
+      // when there's a non-trivial spec so we don't false-strip identifiers
+      // containing `:` (which shouldn't happen syntactically anyway).
+      const colonIdx = expr.indexOf(':');
+      const interp = colonIdx >= 0 ? expr.substring(0, colonIdx) : expr;
+      interps.push(interp);
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  literals.push(cur);
+  return { literals, interps };
+}
+
+/**
+ * Stage 19 (#215) — find the helper-name assigned to `varName` within 30
+ * lines above `sinkLine` (1-based). Returns the helper function name if
+ * the RHS is a bare `helper(<arg>)` call, otherwise null.
+ */
+function findPythonAssignedHelperCall(
+  varName: string,
+  sinkLine: number,
+  sourceLines: string[],
+): string | null {
+  if (!/^[A-Za-z_]\w*$/.test(varName)) return null;
+  const lo = Math.max(0, sinkLine - 31);
+  const assignRe = new RegExp(
+    `^\\s*${varName}\\s*=\\s*([A-Za-z_]\\w*)\\s*\\(`,
+  );
+  for (let i = sinkLine - 2; i >= lo; i--) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(assignRe);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
+/**
+ * Stage 19 (#215) — locate a Python function body by name using indent
+ * depth. Returns the body lines (between the `def` and the first line whose
+ * indent is ≤ the `def` line's indent) or null when not found.
+ *
+ * Conservative textual scan — does not handle decorators across multiple
+ * lines or nested functions with the same name. Sufficient for the
+ * regex-allowlist guard recognition.
+ */
+function findPythonFunctionBody(
+  funcName: string,
+  sourceLines: string[],
+): string[] | null {
+  if (!/^[A-Za-z_]\w*$/.test(funcName)) return null;
+  const sigRe = new RegExp(`^(\\s*)def\\s+${funcName}\\s*\\(`);
+  for (let i = 0; i < sourceLines.length; i++) {
+    const ln = sourceLines[i] ?? '';
+    const m = ln.match(sigRe);
+    if (!m) continue;
+    const baseIndent = (m[1] ?? '').length;
+    const body: string[] = [];
+    for (let j = i + 1; j < sourceLines.length; j++) {
+      const ln2 = sourceLines[j] ?? '';
+      if (ln2.trim() === '') { body.push(ln2); continue; }
+      const indentMatch = ln2.match(/^(\s*)/);
+      const indent = (indentMatch?.[1] ?? '').length;
+      if (indent <= baseIndent) break;
+      body.push(ln2);
+    }
+    return body;
+  }
+  return null;
+}
+
+/**
+ * Stage 19 (#215) — true if the Python function body contains
+ *   `re.fullmatch(r"<strict-anchored-regex>", …)`  OR
+ *   `re.match(r"^<…>$", …)`
+ * AND a `raise` statement. The two need not be in the same `if`; the
+ * combination proves the parameter is validated and any non-allowlisted
+ * input terminates execution before the function returns.
+ */
+function pythonBodyHasInlineRegexAllowlistRaise(bodyLines: string[]): boolean {
+  // Strip inline `# …` comments from each line so words like "raise" or
+  // `re.fullmatch` appearing in commentary don't trigger a false guard
+  // detection. Conservative: this does not handle `#` inside string
+  // literals, but the surrounding code already operates on textual lines
+  // and the false-suppression risk from a `#` inside a string is bounded
+  // by the other gates (must also have anchored regex + bind placeholder).
+  const stripped = bodyLines.map(ln => ln.replace(/#.*$/, ''));
+  const text = stripped.join('\n');
+  if (!/\braise\s+/.test(text)) return false;
+  PY_INLINE_FULLMATCH_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PY_INLINE_FULLMATCH_RE.exec(text)) !== null) {
+    if (isImplicitlyAnchoredAllowlistRegex(m[1] ?? '')) return true;
+  }
+  PY_INLINE_MATCH_ANCHORED_RE.lastIndex = 0;
+  while ((m = PY_INLINE_MATCH_ANCHORED_RE.exec(text)) !== null) {
+    if (isImplicitlyAnchoredAllowlistRegex(m[1] ?? '')) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

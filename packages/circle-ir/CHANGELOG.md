@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.110.0] - 2026-06-27
+
+Sprint 53 S-bucket batch — four small-complexity tickets shipped together.
+Phase 0 inline-synthesized reproductions verified each failure on the
+v3.109.0 baseline before any source change.
+
+### Fixed
+
+- **#196 — Java JDK `Logger.getLogger("…").warning(msg)` does not flag
+  `log_injection` (CWE-117).** The Java JDK `java.util.logging.Logger`
+  sinks were already registered in `config-loader.ts`, but the
+  `receiverMightBeClass` heuristic in `taint-matcher.ts` only resolved
+  factory-method receivers via `returnTypeMappings` whose regex
+  `/\.(\w+)\(\)$/` requires an empty-parens tail (e.g. `getLogger()`),
+  so `Logger.getLogger("app").warning(...)` and
+  `LoggerFactory.getLogger(Foo.class).warn(...)` were not recognised as
+  `Logger`-typed receivers. Added a conservative class-equality
+  heuristic: when `className === 'Logger'` and the receiver tail matches
+  `/\.getLogger\(.*\)$/`, the receiver is treated as a `Logger`
+  instance. Recall lock: `logger.warning("startup complete")` (no
+  tainted args) continues to produce zero findings.
+
+- **#193 — Python `logging.Logger.<level>(fmt, *args)` does not flag
+  `log_injection` (CWE-117) for tainted positional args.** The Python
+  `logging.Logger` sinks in `config-loader.ts` registered each level
+  method with `arg_positions: [0]`, covering the format-string but
+  invisible to taint in `*args` (positions 1-N), which are interpolated
+  into the rendered message via `%` substitution. Extended
+  `arg_positions` to `[0, 1, 2, 3, 4]` on `debug`/`info`/`warning`/
+  `warn`/`error`/`exception`/`critical`/`fatal` (both
+  `class: 'logger'` and `class: 'logging'` variants); `log` uses
+  `[1, 2, 3, 4]` since position 0 is the level integer. Added
+  previously-missing `warn`/`fatal`/`exception` method aliases. Recall
+  locks: constant-only `log.warning("startup complete")` and
+  literal-arg `log.warning("user=%s", "anonymous")` produce zero
+  findings.
+
+- **#215 — Python `safe_sql_identifier_quote` FP on parameterized
+  queries with validated identifier interpolation.** New **Stage 19** in
+  `sink-filter-pass.ts` (Python port of the Java Stage 15 SQL
+  identifier-quoter wrapper recognition) suppresses
+  `cursor.execute(f"…{col}… = ?", (value,))` when:
+  (a) the sink method is `cursor.execute`/`executemany`;
+  (b) the first arg is an f-string with ≥1 interpolation;
+  (c) every interpolation is a literal, an inline helper call, or a
+  bare identifier whose assignment within the prior 30 lines is
+  `var = helper(arg)`;
+  (d) the f-string literal segments contain a bind placeholder
+  (`?`, `%s`, or `:name`);
+  (e) at least one such helper body contains
+  `re.fullmatch(<allowlist>, …)` (or anchored `re.match(^…$, …)`) AND
+  a `raise` statement.
+  Comment stripping is applied to helper bodies before guard recognition
+  so commentary mentioning the word "raise" cannot trip the check.
+  Reuses Stage 15's `isImplicitlyAnchoredAllowlistRegex` for the
+  Python-side regex shape (`re.fullmatch` is implicitly anchored like
+  Java's `String.matches`). Recall locks: helper missing `raise` still
+  fires; no `?` placeholder + concatenated value still fires; wildcard
+  regex `.*` in helper still fires; direct value interpolation without
+  any helper still fires.
+
+### Verified (no code change required)
+
+- **#217 — Java fluent-builder constant-propagation fixpoint hang
+  (Keycloak `RoleStorageProviderSpi.java`).** A faithful reproduction
+  test using the Keycloak builder shape with cyclic return types
+  (`ProviderConfigurationBuilder` ↔ `ProviderConfigProperty`) and the
+  static-initializer block from the original repro completes in <500ms
+  on HEAD. The Sprint 36 #141 iterative `isTaintedExpressionImpl` +
+  per-call memoization (commit `f1b8ab6`) in `propagator.ts` already
+  prevents the cubic-recursion blow-up. The new
+  `tests/core/fluent-builder-fixpoint-hang.test.ts` is shipped as a
+  permanent regression guard against this and similar fluent-builder
+  shapes; the recall lock confirms tainted concat sinks at the end of
+  a cyclic builder chain continue to fire `sql_injection`.
+
+### Tests
+
+- `tests/core/fluent-builder-fixpoint-hang.test.ts` (2 cases)
+- `tests/analysis/passes/java-jdk-logger-log-injection-fn.test.ts` (3 cases)
+- `tests/analysis/passes/python-logging-log-injection-fn.test.ts` (4 cases)
+- `tests/analysis/passes/python-sql-identifier-quoter-fp.test.ts` (5 cases)
+
+Suite total: 3072 passing, 1 skipped (up from 3060/1 on v3.109.0).
+
 ## [3.109.0] - 2026-06-27
 
 Sprint 52 sanitizer-wrapped FP cluster (#216 subset) — Phase 0 empirical
