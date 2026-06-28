@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.114.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.114.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 57 bash detector batch:
+
+- **#200 — bash `curl -s "$1"` / `wget "$1"` / `curl -fsSL "${1}/path"`**
+  now flag `ssrf` (CWE-918). Two-part fix: added `ssrf` to the
+  `io_input` source→sink matrix and widened bash `curl`/`wget` SSRF
+  sink `argPositions` to `[]` (scan-all-args) so flag-prefixed URLs
+  are no longer missed.
+- **#198 (partial) — bash `eval "$RPC_EXPR"` / `eval "$CMD_DATA"` /
+  `eval "$XMLRPC_PAYLOAD"` / `eval "$JSONRPC_BODY"`** now flag
+  `code_injection` (CWE-94). Expanded `BASH_UNTRUSTED_ENV_PATTERNS`
+  with seven RPC/CMD/EXEC/EVAL/SHELL-class name patterns seen in
+  recent CVE intake (CVE-2025-67038 HTTP RPC pattern and similar).
+  Generic env-var taint inference deferred — still tracked on #198.
+
+No CLI source change.
+
 ## [3.113.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.113.0`](https://www.npmjs.com/package/circle-ir)

@@ -1177,6 +1177,17 @@ const BASH_UNTRUSTED_ENV_PATTERNS = [
   /^PATH_INFO$/i,
   /^SCRIPT_NAME$/i,
   /^SERVER_NAME$/i,
+  // Sprint 57 #198: RPC/CMD/EXEC/EVAL/SHELL-class env vars seen in recent
+  // CVE intake (CVE-2025-67038 HTTP RPC pattern and similar). These names
+  // are conventionally used to pass attacker-controlled payloads into
+  // shell handlers via HTTP-to-CGI bridges.
+  /^RPC_/i,
+  /^XMLRPC/i,
+  /^JSONRPC/i,
+  /^CMD_/i,
+  /^EXEC_/i,
+  /^EVAL_/i,
+  /^SHELL_/i,
 ];
 
 /** Commands whose output should be treated as tainted network data. */

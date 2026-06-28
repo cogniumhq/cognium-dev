@@ -215,20 +215,24 @@ export class BashPlugin extends BaseLanguagePlugin {
         argPositions: [1],
       },
 
-      // SSRF — curl/wget with externally-controlled URL
+      // SSRF — curl/wget with externally-controlled URL.
+      // argPositions: [] (scan all args) — curl/wget invocations commonly
+      // interleave flags (`-s`, `-fsSL`, `-o file`) before the URL, so the
+      // URL position is unpredictable. Sprint 57 #200; mirrors Sprint 23
+      // exec.Command widening pattern.
       {
         method: 'curl',
         type: 'ssrf',
         cwe: 'CWE-918',
         severity: 'high',
-        argPositions: [0],
+        argPositions: [],
       },
       {
         method: 'wget',
         type: 'ssrf',
         cwe: 'CWE-918',
         severity: 'high',
-        argPositions: [0],
+        argPositions: [],
       },
 
       // File inclusion — `source` and POSIX `.` execute arbitrary shell code

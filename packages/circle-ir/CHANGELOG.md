@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.114.0] - 2026-06-28
+
+Sprint 57 batch — bash detector gap closure for `#200` (curl/wget SSRF)
+and partial `#198` (CVE-class env vars into `eval`). Phase 0 inline-
+synthesized reproductions baselined against v3.113.0 (2 test files,
+13 cases) verified each FN before any source change.
+
+### Fixed
+
+- **#200 — bash `curl -s "$1"` / `wget "$1"` / `curl -fsSL "${1}/path"`
+  does not flag `ssrf` (CWE-918), only `cleartext-transmission`.** Two
+  independent gaps:
+  1. `canSourceReachSink('io_input', 'ssrf')` returned `false` in
+     `src/analysis/findings.ts:175`. Bash positional `$1`/`$@` register
+     as `io_input` sources but the source→sink matrix gated them out
+     before they could reach the bash `curl`/`wget` SSRF sink. Added
+     `'ssrf'` to the `io_input` allowed sinks alongside the existing
+     command/path/deserialization/xxe/code/xss entries. Cross-language
+     parity benefit: Python `socket.urlopen(input())` and JS
+     `axios.get(readline())` also flow correctly now. Real-world
+     precedent — CVE-2022-41040 ProxyShell-class scripts, CGI/webhook
+     handlers that take a URL on stdin or as a CLI arg and curl it
+     server-side, are textbook SSRF.
+  2. Bash `curl`/`wget` SSRF sinks declared `argPositions: [0]` in
+     `src/languages/plugins/bash.ts`, so flag-prefixed invocations
+     (`curl -s "$1"`, `wget --quiet "$1"`, `curl -fsSL "$1/path"`)
+     missed the URL because it landed at position 1+. Widened to
+     `argPositions: []` (scan all positions) — mirrors the Sprint 23
+     `exec.Command` widening pattern. The scan-all-args matcher is
+     already supported in `taint-propagation-pass.ts` (length-gated at
+     lines 523/663/746/1129).
+
+- **#198 (partial) — bash `eval "$RPC_EXPR"` / `eval "$CMD_DATA"` /
+  `eval "$XMLRPC_PAYLOAD"` / `eval "$JSONRPC_BODY"` does not flag
+  `code_injection` (CWE-94).** `BASH_UNTRUSTED_ENV_PATTERNS` in
+  `src/analysis/passes/language-sources-pass.ts:1169-1180` only covered
+  CGI-class env names (`USER_INPUT`, `QUERY_STRING`, `REQUEST_*`,
+  `HTTP_*`, `REMOTE_*`, `CONTENT_TYPE`, `CONTENT_LENGTH`, `PATH_INFO`,
+  `SCRIPT_NAME`, `SERVER_NAME`). Added seven RPC/CMD/EXEC/EVAL/SHELL-
+  class patterns (`^RPC_`, `^XMLRPC`, `^JSONRPC`, `^CMD_`, `^EXEC_`,
+  `^EVAL_`, `^SHELL_`) seen in recent CVE intake (CVE-2025-67038 HTTP
+  RPC pattern and similar). Variable propagation through assignment
+  (`expr="${RPC_EXPR}"; eval "$expr"`) already worked once the env var
+  was recognized — verified empirically before the fix. Recall lock:
+  `eval "$HTTP_USER_AGENT"` and `eval "$1"` continue to fire; benign
+  `eval "$HOME/.config"` continues to produce zero flows.
+
+### Deferred (still open on #198)
+
+- Generic env-var taint when the variable name doesn't match any
+  recognized pattern. Requires either a much broader default (FPR
+  risk) or per-script "unknown env vars are tainted at dangerous
+  sinks" backward-flow inference. Out of scope for Sprint 57.
+
 ## [3.113.0] - 2026-06-28
 
 Sprint 56 batch — #182 (4 slices) + #183 detector gaps shipped together.

@@ -188,7 +188,12 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf'],
     http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call'],
     http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment'],
-    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss'],
+    // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
+    // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
+    // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF
+    // (CVE-2022-41040 ProxyShell-class). Cross-language: `socket.urlopen(input())`
+    // (Python), `axios.get(readline())` (JS) etc. also benefit.
+    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss', 'ssrf'],
     env_input: ['command_injection', 'path_traversal'],
     db_input: ['xss', 'sql_injection'], // Second-order injection
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
