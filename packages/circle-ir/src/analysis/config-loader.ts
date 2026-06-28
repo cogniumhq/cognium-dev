@@ -1467,8 +1467,29 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Note: `raw` is shared with Python (Django ORM) — scoped to JS+TS to avoid leaking.
   { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
+  // sqlite3 (npm) — Database/Statement methods. The JS plugin resolves
+  // `const db = new sqlite3.Database(...); db.all(sql)` to the resolution
+  // target `Connection.all`, so class-scoped patterns matching `Connection`
+  // hit (see #186 Sprint 55 matcher extension consulting call.resolution.target).
+  // `exec`/`run`/`all`/`get`/`each` follow the same shape.
+  { method: 'all',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'run',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'each', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'get',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+  { method: 'exec', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+
   // Browser DOM XSS sinks
   { method: 'setAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
+
+  // Angular DomSanitizer.bypassSecurityTrust* — CWE-79 (#184 Sprint 55).
+  // These methods explicitly bypass Angular's built-in sanitizer; passing
+  // tainted strings re-introduces DOM-injection risk. Distinctive method
+  // names — classless + language-scoped is safe.
+  { method: 'bypassSecurityTrustHtml',        type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'bypassSecurityTrustScript',      type: 'xss', cwe: 'CWE-79', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'bypassSecurityTrustStyle',       type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'bypassSecurityTrustUrl',         type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'bypassSecurityTrustResourceUrl', type: 'xss', cwe: 'CWE-79', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // Express.js XSS (response methods)
   { method: 'send', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
@@ -1483,6 +1504,19 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'runInContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInNewContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'runInThisContext', class: 'vm', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
+  // `new vm.Script(taint)` — Node core `vm` module compiles strings. The
+  // JS plugin emits method_name = 'vm.Script' for the constructor call;
+  // the matcher's dotted-simple-name fallback (taint-matcher.ts:1664) lets
+  // pattern.method = 'Script' hit on method_name = 'vm.Script'. The
+  // `class: 'constructor'` short-circuit accepts the no-receiver shape.
+  // (#188 Sprint 55)
+  { method: 'Script', class: 'constructor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // `setImmediate(taintedString)` — like setTimeout/setInterval, Node will
+  // evaluate the first argument when it is a string. The callback-shape
+  // suppression in taint-matcher.ts:1342 already covers setTimeout/
+  // setInterval; the Sprint 55 fix extends that gate to setImmediate too.
+  // (#188 Sprint 55)
+  { method: 'setImmediate', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // protobufjs Root.parse(schemaText) compiles a textual schema into JS at runtime;
   // tainted schema → code execution (CVE-2026-41242). Issue #94.
   { method: 'parse', class: 'protobuf',   type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
@@ -1547,6 +1581,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // got library
   { method: 'get', class: 'got', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'post', class: 'got', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  // got/request npm packages default-export a callable function:
+  //   const got = require('got'); got(req.query.url)
+  //   const request = require('request'); request(req.query.url, cb)
+  // The classless method names are distinctive enough (`got`, `request`) that
+  // the FP risk is acceptable; both are scoped to JS/TS so they don't leak
+  // into other plugins. (#185 Sprint 55)
+  { method: 'got',     type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'request', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // superagent
   { method: 'get', class: 'superagent', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'post', class: 'superagent', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },

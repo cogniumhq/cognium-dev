@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.112.0] - 2026-06-28
+
+Sprint 55 batch — JS/TS framework FN quartet shipped together. Phase 0
+inline-synthesized reproductions baselined against v3.111.0 (4 test files,
+20 cases) verified each failure before any source change.
+
+### Fixed
+
+- **#185 — JavaScript `got(url)` / `request(url, cb)` bare-function shapes
+  do not flag `ssrf` (CWE-918).** The existing `got` and `request` sink
+  entries in `config-loader.ts` were registered as class-scoped methods
+  (e.g. method-on-instance shapes), but both npm packages default-export
+  callable functions invoked at the top level: `const got = require('got');
+  got(req.query.url)`. Added classless variants for `got` and `request` so
+  bare-function call sites match. Recall lock: `axios.get(taint)` and
+  `http.get(taint)` continue to fire.
+
+- **#184 — Angular `DomSanitizer.bypassSecurityTrust*` family does not
+  flag `xss` (CWE-79).** Angular's `bypassSecurityTrustHtml` /
+  `bypassSecurityTrustScript` / `bypassSecurityTrustStyle` /
+  `bypassSecurityTrustUrl` / `bypassSecurityTrustResourceUrl` explicitly
+  bypass Angular's built-in template sanitization and re-introduce
+  DOM-injection risk when tainted input flows in. Added all five as
+  classless XSS sinks in `DEFAULT_SINKS`
+  (severity: `critical` for `Script` / `ResourceUrl`, `high` for the
+  rest). Recall lock: `React.createElement('div', {
+  dangerouslySetInnerHTML: { __html: taint } })` continues to fire.
+
+- **#186 — JavaScript sqlite3 `db.{all,run,each,get,exec}(tainted)` does
+  not flag `sql_injection` (CWE-89).** The JS plugin authoritatively
+  resolves `const db = new sqlite3.Database(...); db.all(sql)` to the
+  resolution target `Connection.all`, but the `matchSink` receiver-class
+  heuristic in `taint-matcher.ts` only consulted
+  `receiverMightBeClass(call.receiver, pattern.class)` — the simple
+  receiver identifier `db` does not look like the class name `Connection`,
+  so class-scoped sqlite3 patterns were silently rejected. Extended the
+  matcher to additionally consult `call.resolution?.target` and accept the
+  match when the resolved target ends with `<pattern.class>.<pattern.method>`.
+  Added `Connection.{all,run,each,get,exec}` SQLi sink patterns (with
+  `allow_unresolved_receiver: true` as a defence-in-depth fallback).
+  Recall lock: parameterized `db.all('… WHERE x = ?', [req.query.q], cb)`
+  continues to produce zero flows.
+
+- **#188 — JavaScript `new vm.Script(taint)` and `setImmediate(taint)`
+  do not flag `code_injection` (CWE-94).** Added two new entries to
+  `DEFAULT_SINKS`:
+  - `{ method: 'Script', class: 'constructor' }` for `new vm.Script(...)`
+    — the `class: 'constructor'` short-circuit accepts the no-receiver
+    `new`-call shape, and the matcher's dotted-simple-name fallback
+    (`taint-matcher.ts:1664`) lets `pattern.method = 'Script'` hit
+    `method_name = 'vm.Script'`.
+  - Classless `setImmediate` — Node evaluates a tainted string passed as
+    arg[0], identical to the already-shipped `setTimeout` / `setInterval`
+    behaviour.
+  Extended the callback-shape gate in `taint-matcher.ts` (which prevents
+  CWE-94 false positives on `setTimeout(() => cb(), 100)`) to also
+  recognise `setImmediate`. Recall locks: direct `eval(taint)` and
+  `setTimeout(taintedString)` continue to fire; `setImmediate(() =>
+  cb())` continues to suppress.
+
+### Deferred
+
+- **#188 indirect-eval** (`const f = eval; f(taint)`) requires
+  variable-alias tracking in the sink matcher and is deferred to a future
+  sprint. Test case is shipped as `it.skip` with a design-sketch comment.
+
+### Tests
+
+- `tests/analysis/passes/js-bare-fn-ssrf-fn.test.ts` (4 cases)
+- `tests/analysis/passes/angular-domsanitizer-xss-fn.test.ts` (4 cases)
+- `tests/analysis/passes/js-sqlite3-sqli-fn.test.ts` (6 cases)
+- `tests/analysis/passes/js-vm-setimmediate-indirect-eval-fn.test.ts`
+  (6 cases, 1 skipped)
+
+Suite total: 3103 passing, 2 skipped (up from 3084/1 on v3.111.0; net-new
+20 cases minus 1 already-passing recall lock — no regressions).
+
 ## [3.111.0] - 2026-06-28
 
 Sprint 54 batch — three FN tickets shipped together. Phase 0 inline-synthesized

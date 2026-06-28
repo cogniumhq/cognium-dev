@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.112.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.112.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 55 JS/TS framework FN quartet:
+
+- **#185 — JavaScript `got(taint)` / `request(taint, cb)` bare-function
+  shapes** now flag `ssrf` (CWE-918). Adds classless `got`/`request`
+  variants to complement the existing class-scoped entries.
+- **#184 — Angular `DomSanitizer.bypassSecurityTrust*` family** now flags
+  `xss` (CWE-79) — all five methods (`Html`/`Script`/`Style`/`Url`/
+  `ResourceUrl`) registered as classless sinks.
+- **#186 — JavaScript sqlite3 `db.{all,run,each,get,exec}(tainted)`** now
+  flag `sql_injection` (CWE-89). Adds `Connection.*` SQLi patterns and
+  teaches `matchSink` to consult `call.resolution.target` so the
+  JS-plugin-resolved `db → Connection` chain matches.
+- **#188 — JavaScript `new vm.Script(taint)` and `setImmediate(taint)`**
+  now flag `code_injection` (CWE-94). Indirect-eval (`const f = eval;
+  f(taint)`) is deferred to a future sprint pending alias tracking.
+
+No CLI source change.
+
 ## [3.111.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.111.0`](https://www.npmjs.com/package/circle-ir)

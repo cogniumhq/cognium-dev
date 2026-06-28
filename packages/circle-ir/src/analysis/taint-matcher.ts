@@ -1332,14 +1332,17 @@ function findSinks(
           }
         }
 
-        // #152 — setInterval/setTimeout CWE-94 only applies when arg[0]
-        // is a string (the implicit-eval shape). A function/arrow-function
-        // callback at arg[0] is the common, benign form. Drop the sink
-        // emission in that case so taint flow doesn't fabricate a
-        // code_injection finding on `setInterval(() => tick(), 80)`.
+        // #152 / #188 — setInterval/setTimeout/setImmediate CWE-94 only
+        // applies when arg[0] is a string (the implicit-eval shape). A
+        // function/arrow-function callback at arg[0] is the common, benign
+        // form. Drop the sink emission in that case so taint flow doesn't
+        // fabricate a code_injection finding on `setInterval(() => tick(), 80)`
+        // or `setImmediate(cb)`. (Sprint 55 adds setImmediate to the gate.)
         if (
           pattern.type === 'code_injection' &&
-          (call.method_name === 'setInterval' || call.method_name === 'setTimeout')
+          (call.method_name === 'setInterval' ||
+            call.method_name === 'setTimeout' ||
+            call.method_name === 'setImmediate')
         ) {
           const firstArg = call.arguments.find(a => a.position === 0);
           if (firstArg && isFunctionCallbackArgument(firstArg)) {
@@ -1703,6 +1706,20 @@ function matchesSinkPattern(
     } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {
+        return true;
+      }
+      // cognium-dev #186 Sprint 55: when the language plugin has authoritatively
+      // resolved the call target to `<class>.<method>` (e.g. the JS plugin
+      // resolves `db.all(...)` to `Connection.all` via the sqlite3
+      // `new sqlite3.Database()` init chain), accept the match even though
+      // the receiver name `db` does not look like the simple class `Connection`.
+      const resolvedTarget = call.resolution?.target;
+      const expectedClassMethodTail = `${pattern.class}.${pattern.method}`;
+      if (
+        resolvedTarget &&
+        (resolvedTarget === expectedClassMethodTail ||
+          resolvedTarget.endsWith('.' + expectedClassMethodTail))
+      ) {
         return true;
       }
       // Last-resort opt-in: when the sink declares allow_unresolved_receiver
