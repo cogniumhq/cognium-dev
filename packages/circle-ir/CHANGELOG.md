@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.115.0] - 2026-06-28
+
+Sprint 58 — closes the final remaining gap on #188 (indirect eval
+alias detection). Sprint 55 shipped `new vm.Script(taint)`,
+`setImmediate(taintedString)`, and `vm.runInThisContext(taint)` and
+explicitly deferred `const f = eval; f(taint)` to a future sprint
+pending alias tracking; this release closes that loop.
+
+### Fixed
+
+- **#188 (final) — JS/TS `const f = eval; f(taint)` /
+  `let F = Function; F(taint)` does not flag `code_injection`
+  (CWE-94).** The matcher saw `method_name: "f"` at the call site
+  and the eval sink template required exact `method: "eval"`. Added
+  `expandIndirectEvalAliases()` in `src/analysis/taint-matcher.ts`
+  parallel to the existing `expandPromisifyAliases()` (Sprint 54
+  #187) — a source-line regex picks up
+  `(?:const|let|var) <name>(?:: type)? = (eval|Function)` (with a
+  negative lookahead for `(` so direct calls like
+  `const x = eval(arg)` are not double-matched) and synthesizes a
+  classless `code_injection` sink pattern with `method: <name>`
+  mirroring the eval / Function template. Standard `findSinks`
+  matching handles the alias call site unchanged. Coverage: `const`
+  / `let` / `var` alias keywords, TypeScript `const f: any = eval`
+  type-annotation form, and `Function`-constructor aliasing. Recall
+  locks: direct `eval(taint)` and `util.promisify(exec)` aliases
+  continue to fire. Word-boundary discipline verified — `const x =
+  evaluator` does not match.
+
+### Deferred
+
+- Transitive aliases (`const g = eval; const f = g; f(taint)`)
+  require DFG-based propagation rather than per-line regex matching.
+  Documented as `it.skip` in
+  `tests/analysis/passes/js-indirect-eval-fn.test.ts`. Will follow
+  up in a future sprint if real-world reports surface.
+
 ## [3.114.0] - 2026-06-28
 
 Sprint 57 batch — bash detector gap closure for `#200` (curl/wget SSRF)

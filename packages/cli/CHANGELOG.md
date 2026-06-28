@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.115.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.115.0`](https://www.npmjs.com/package/circle-ir)
+which closes the final gap on #188:
+
+- **#188 (final) — JS/TS `const f = eval; f(taint)` /
+  `let F = Function; F(taint)`** now flag `code_injection`
+  (CWE-94). New `expandIndirectEvalAliases()` follows the same
+  config-level alias-expansion pattern as the existing
+  `util.promisify` alias handling. Transitive aliases (`const g
+  = eval; const f = g`) remain deferred pending DFG-based
+  propagation.
+
+No CLI source change.
+
 ## [3.114.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.114.0`](https://www.npmjs.com/package/circle-ir)

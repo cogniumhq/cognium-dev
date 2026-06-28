@@ -47,7 +47,8 @@ export function analyzeTaint(
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
   const sources = findSources(calls, types, config.sources, sourceLines, language);
-  const sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
+  let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
+  sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines);
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
 
@@ -112,6 +113,74 @@ function expandPromisifyAliases(
       arg_positions: template.arg_positions,
       languages: [language],
       note: `util.promisify alias of ${innerName} — cognium-dev #187`,
+    });
+  }
+  return aliasPatterns.length === 0 ? patterns : patterns.concat(aliasPatterns);
+}
+
+/**
+ * Sprint 58 — #188 (final): detect `const f = eval` / `let F = Function`
+ * direct-reference aliases of JS dynamic-execution globals and synthesize
+ * code_injection sink patterns for the alias name.
+ *
+ * The mechanism mirrors `expandPromisifyAliases` (Sprint 54 #187): a per-
+ * source-line regex picks up `(?:const|let|var) <name> = (eval|Function)`
+ * without a following `(` — distinguishing an alias assignment from a
+ * direct call — and copies the canonical eval / Function sink template
+ * to a new pattern with `method: <name>`. Standard `findSinks` matching
+ * then handles the alias call site (`f(taint)`) unchanged.
+ *
+ * Limitations (documented in `js-indirect-eval-fn.test.ts`):
+ * - Transitive aliases (`const g = eval; const f = g`) require DFG-based
+ *   alias propagation, not the single-line regex used here. Deferred.
+ * - Property aliases (`const m = obj.method`) covered by other matchers.
+ */
+function expandIndirectEvalAliases(
+  patterns: SinkPattern[],
+  sourceLines: string[] | undefined,
+  language: SupportedLanguage | undefined,
+): SinkPattern[] {
+  if (!sourceLines || sourceLines.length === 0) return patterns;
+  if (language !== 'javascript' && language !== 'typescript') return patterns;
+
+  // `(?!\s*\()` ensures we don't match `const x = eval(arg)` (a direct call,
+  // already covered by the eval sink itself). TypeScript type-annotation
+  // form `const f: any = eval` is handled by the optional `(?::[^=]+)?`
+  // group between the name and `=`.
+  const INDIRECT_EVAL_RE =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(eval|Function)\b(?!\s*\()/;
+
+  // Build inner-name → canonical sink template lookup (prefer classless;
+  // both `eval` and `Function` are registered classless in nodejs.json).
+  const innerToPattern = new Map<string, SinkPattern>();
+  for (const p of patterns) {
+    if (p.languages && !p.languages.includes(language)) continue;
+    if (p.class !== undefined) continue;
+    if (p.method !== 'eval' && p.method !== 'Function') continue;
+    if (!innerToPattern.has(p.method)) innerToPattern.set(p.method, p);
+  }
+  if (innerToPattern.size === 0) return patterns;
+
+  const aliasPatterns: SinkPattern[] = [];
+  const seenAliases = new Set<string>();
+  for (const line of sourceLines) {
+    const m = INDIRECT_EVAL_RE.exec(line);
+    if (!m) continue;
+    const aliasName = m[1];
+    const innerName = m[2];
+    if (!aliasName || !innerName) continue;
+    if (seenAliases.has(aliasName)) continue;
+    const template = innerToPattern.get(innerName);
+    if (!template) continue;
+    seenAliases.add(aliasName);
+    aliasPatterns.push({
+      method: aliasName,
+      type: template.type,
+      cwe: template.cwe,
+      severity: template.severity,
+      arg_positions: template.arg_positions,
+      languages: [language],
+      note: `indirect ${innerName} alias — cognium-dev #188`,
     });
   }
   return aliasPatterns.length === 0 ? patterns : patterns.concat(aliasPatterns);

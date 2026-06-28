@@ -55,10 +55,10 @@ app.get('/p', (req, res) => {
     expect(countFlows(r, 'code_injection')).toBeGreaterThanOrEqual(1);
   });
 
-  // Indirect-eval (const f = eval; f(taint)) requires variable-alias
-  // tracking in the matcher; deferred to a future sprint. See ticket #188
-  // follow-up note for the design sketch.
-  it.skip('FN — indirect eval `const f = eval; f(taint)` (deferred)', async () => {
+  // Indirect-eval (const f = eval; f(taint)) now matches via
+  // `expandIndirectEvalAliases` (Sprint 58 #188 final). See
+  // `js-indirect-eval-fn.test.ts` for the expanded coverage.
+  it('FN — indirect eval `const f = eval; f(taint)` (Sprint 58 fix)', async () => {
     const code = `const express = require('express');
 const app = express();
 app.get('/p', (req, res) => {
