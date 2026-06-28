@@ -659,10 +659,21 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'bash', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'shell', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'sh', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'spawn', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // cognium-dev #187 Sprint 54: arg_positions [0, 1] so the JS shell-mode shape
+  // `spawn('sh', ['-c', tainted])` / `execFile('/bin/sh', ['-c', tainted])`
+  // surfaces taint at the argv-array position (arg[1]).
+  { method: 'spawn', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
+  { method: 'spawnSync', languages: ['javascript', 'typescript'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
+  { method: 'execFile', languages: ['javascript', 'typescript'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
+  { method: 'execFileSync', languages: ['javascript', 'typescript'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
   { method: 'fork', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'popen', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'system', languages: ['java', 'javascript', 'typescript', 'python', 'go', 'rust'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+
+  // execa (npm) — parses tainted shell-style strings into program+argv;
+  // arg[0] is shell-injectable. cognium-dev #187 Sprint 54.
+  { method: 'command', class: 'execa', languages: ['javascript', 'typescript'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  { method: 'commandSync', class: 'execa', languages: ['javascript', 'typescript'], type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Apache Commons Exec
   // Note: bare class 'Executor' removed (see comment above) — DefaultExecutor matched explicitly.
@@ -1726,7 +1737,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'aggregate', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0] },
   // pymongo dynamic attribute-access pattern: `db.users.find({...})` — receiver
   // class isn't statically known. Method-only entries restricted to Python.
-  // cognium-dev#104 Sprint 22.
+  // cognium-dev#104 Sprint 22, #194 Sprint 54 added `find`/`aggregate`.
+  { method: 'find',        type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
+  { method: 'aggregate',   type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
   { method: 'find_one',    type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0],    languages: ['python'] },
   { method: 'update_one',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1], languages: ['python'] },
   { method: 'update_many', type: 'nosql_injection', cwe: 'CWE-943', severity: 'critical', arg_positions: [0, 1] , languages: ['python'] },

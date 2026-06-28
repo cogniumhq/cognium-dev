@@ -47,10 +47,74 @@ export function analyzeTaint(
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
   const sources = findSources(calls, types, config.sources, sourceLines, language);
-  const sinks = findSinks(calls, config.sinks, typeHierarchy, language, sourceLines);
+  const sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
+  const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines);
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
 
   return { sources, sinks, sanitizers };
+}
+
+/**
+ * cognium-dev #187 Sprint 54 — JS/TS only: detect `util.promisify(<sink>)`
+ * aliases and synthesize sink patterns for the resulting alias name.
+ *
+ * `const execAsync = util.promisify(exec)` wraps a callback-style sink into
+ * a Promise-returning function with the same dangerous-argument shape. The
+ * wrapped name is a pure alias for sink-matching purposes — tainted args
+ * still reach the underlying exec/execFile/spawn binding at runtime.
+ *
+ * Strategy: for each `(?:const|let|var)\s+<name>\s*=\s*(?:util\.)?promisify\(<inner>)`
+ * line, synthesize a classless sink pattern with `method: <name>` mirroring
+ * the inner sink's type/cwe/severity/arg_positions. Matching is regex-fast
+ * and downstream filters (sanitizer recognition, FP gates) work unchanged.
+ */
+function expandPromisifyAliases(
+  patterns: SinkPattern[],
+  sourceLines: string[] | undefined,
+  language: SupportedLanguage | undefined,
+): SinkPattern[] {
+  if (!sourceLines || sourceLines.length === 0) return patterns;
+  if (language !== 'javascript' && language !== 'typescript') return patterns;
+
+  const PROMISIFY_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:util\s*\.\s*)?promisify\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/;
+
+  // Build inner-method → representative pattern (prefer classless variants
+  // since the promisified alias loses any class context).
+  const innerToPattern = new Map<string, SinkPattern>();
+  for (const p of patterns) {
+    if (p.languages && !p.languages.includes(language)) continue;
+    if (p.class !== undefined) continue;
+    if (!innerToPattern.has(p.method)) innerToPattern.set(p.method, p);
+  }
+  for (const p of patterns) {
+    if (p.languages && !p.languages.includes(language)) continue;
+    if (innerToPattern.has(p.method)) continue;
+    innerToPattern.set(p.method, p);
+  }
+
+  const aliasPatterns: SinkPattern[] = [];
+  const seenAliases = new Set<string>();
+  for (const line of sourceLines) {
+    const m = PROMISIFY_RE.exec(line);
+    if (!m) continue;
+    const aliasName = m[1];
+    const innerName = m[2];
+    if (!aliasName || !innerName) continue;
+    if (seenAliases.has(aliasName)) continue;
+    const template = innerToPattern.get(innerName);
+    if (!template) continue;
+    seenAliases.add(aliasName);
+    aliasPatterns.push({
+      method: aliasName,
+      type: template.type,
+      cwe: template.cwe,
+      severity: template.severity,
+      arg_positions: template.arg_positions,
+      languages: [language],
+      note: `util.promisify alias of ${innerName} — cognium-dev #187`,
+    });
+  }
+  return aliasPatterns.length === 0 ? patterns : patterns.concat(aliasPatterns);
 }
 
 /**
@@ -629,6 +693,64 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
 }
 
 /**
+ * cognium-dev #187 Sprint 54 — JS shell-shape safe gate.
+ *
+ * Check if a JS/TS `spawn()` / `spawnSync()` / `execFile()` / `execFileSync()`
+ * call is safe-by-shape: arg[0] (program) is a string literal AND that
+ * literal is NOT a shell program. Node.js child_process invokes
+ * `execve(program, argv)` directly with no shell interpolation, so tainted
+ * argv elements (`arg[1]` array) cannot escape into shell metacharacters.
+ *
+ * Cases:
+ *   spawn('git', ['clone', tainted])              → safe (non-shell program)
+ *   spawn('ls', ['-la', tainted])                 → safe (non-shell program)
+ *   spawn('/bin/sh', ['-c', tainted])             → unsafe (shell program)
+ *   spawn('sh', ['-c', tainted])                  → unsafe (shell program)
+ *   spawn('bash', ['-c', tainted])                → unsafe (shell program)
+ *   spawn(taintedProg, ['arg', ...])              → unsafe (program tainted)
+ *   execFile('/bin/sh', ['-c', tainted])          → unsafe (shell program)
+ *   execFile('git', ['clone', tainted])           → safe (non-shell program)
+ *
+ * Only suppresses when the program literal is statically resolvable AND
+ * non-shell. Variable / unknown programs stay dangerous.
+ *
+ * Mirror of `isSafeGoExecCommandCall` (cognium-dev #102 FP-25).
+ */
+function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  if (pattern.type !== 'command_injection') return false;
+  // Only applies to spawn/spawnSync/execFile/execFileSync — these take a
+  // program + argv-array shape. `exec`/`execSync` are single-string shell
+  // calls and are always dangerous when tainted.
+  const m = call.method_name;
+  if (m !== 'spawn' && m !== 'spawnSync' && m !== 'execFile' && m !== 'execFileSync') return false;
+
+  const programArg = call.arguments.find(a => a.position === 0);
+  if (!programArg) return false;
+
+  let program: string;
+  if (programArg.literal !== null && programArg.literal !== undefined) {
+    program = String(programArg.literal).split('/').pop() ?? String(programArg.literal);
+  } else {
+    const expr = (programArg.expression ?? '').trim();
+    if (!(expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'"))) {
+      return false;  // unknown / variable program — assume dangerous
+    }
+    const stripped = expr.slice(1, -1);
+    program = stripped.split('/').pop() ?? stripped;
+  }
+
+  const SHELL_PROGRAMS = new Set([
+    'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
+    'cmd', 'cmd.exe', 'powershell', 'pwsh',
+    'powershell.exe', 'pwsh.exe',
+  ]);
+  if (SHELL_PROGRAMS.has(program)) return false;
+
+  return true;
+}
+
+/**
  * Check if a Rust `Command::new(...).arg(...).args(...).spawn().output()`
  * chain is safe-by-shape: the program (bound at `Command::new("prog")`) is a
  * string literal AND not a shell program. In that shape Rust invokes
@@ -1166,6 +1288,14 @@ function findSinks(
         // execvp() directly so subsequent argv elements cannot escape into
         // shell metacharacters. cognium-dev #115 FP-21.
         if (isSafeRustCommandCall(call, pattern, language)) {
+          continue;
+        }
+
+        // Skip JS/TS spawn/spawnSync/execFile/execFileSync calls in safe
+        // shape: program literal is a non-shell binary. Node child_process
+        // invokes execve() directly so subsequent argv elements cannot
+        // escape into shell metacharacters. cognium-dev #187 Sprint 54.
+        if (isSafeJSChildProcessCall(call, pattern, language)) {
           continue;
         }
 

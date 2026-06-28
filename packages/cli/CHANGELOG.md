@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.111.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.111.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 54 FN batch:
+
+- **#194 — Python `col.find({"name": tainted})`** now flags `nosql_injection`
+  (CWE-943). Adds `find`/`aggregate` to the classless pymongo sink set.
+- **#195 — JavaScript `col.find({name: q})` inline object literal** now
+  flags `nosql_injection` when the value position carries an HTTP-derived
+  source variable. Refines the Sprint 21 cognium-dev #105 FP-32 filter to
+  only suppress non-HTTP value-bound filters.
+- **#187 — JavaScript `command_injection` (CWE-78)** now flags four
+  previously-missed shapes: `spawn('sh', ['-c', taint])` /
+  `execFile('/bin/sh', ['-c', taint])` (with a non-shell program-literal
+  guard to preserve recall on `spawn('git', [...])`), `execa.command(taint)`
+  / `execa.commandSync(taint)`, and `util.promisify(exec)` alias bindings.
+
+No CLI source change.
+
 ## [3.110.0] - 2026-06-27
 
 Engine bump only — adopts [`circle-ir@3.110.0`](https://www.npmjs.com/package/circle-ir)

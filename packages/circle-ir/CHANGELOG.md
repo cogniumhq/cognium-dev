@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.111.0] - 2026-06-28
+
+Sprint 54 batch — three FN tickets shipped together. Phase 0 inline-synthesized
+reproductions baselined against v3.110.0 (3 test files, 12 cases) verified each
+failure before any source change.
+
+### Fixed
+
+- **#194 — Python `col.find({"name": tainted})` does not flag `nosql_injection`
+  (CWE-943).** The classless pymongo sink entries in `config-loader.ts` covered
+  `find_one`/`update`/`delete`/`insert`/`replace`/`bulk_write` but were missing
+  the most common method: `find` (and `aggregate`). Added both to the
+  classless Python variants. Recall lock: dict-literal value-bound `find` calls
+  carrying tainted HTTP-sourced values now fire one flow.
+
+- **#195 — JavaScript `col.find({name: q})` inline object-literal does not
+  flag `nosql_injection`.** The Sprint 21 cognium-dev #105 FP-32 filter
+  (`isMongoValueBoundFilter` in `taint-propagation-pass.ts`) unconditionally
+  suppressed every literal-object Mongo filter whose keys lacked a `$` prefix.
+  Refined to skip the suppression when the source variable is HTTP-derived
+  (`http_query`/`http_body`/`http_param`/`http_header`/`http_cookie`) and
+  appears in a value position of the filter literal, because Express
+  body-parser and equivalent framework parsers normalize bracket-style query
+  strings (`?u[$ne]=null`) into nested operator objects at runtime. Non-HTTP
+  sources (interprocedural_param, etc.) preserve the original Sprint 21
+  FP-32 suppression — see `tests/analysis/repro-sprint21.test.ts`.
+
+- **#187 — JavaScript `command_injection` (CWE-78) false negatives across
+  4 shapes.**
+  - **v04/v05 shell-mode shape** (`spawn('sh', ['-c', taint])`,
+    `execFile('/bin/sh', ['-c', taint])`): widened universal classless
+    `spawn`/`spawnSync`/`execFile`/`execFileSync` entries in
+    `config-loader.ts` from `arg_positions: [0]` to `[0, 1]` so the argv-array
+    position surfaces taint. Added a JS shell-shape gate
+    (`isSafeJSChildProcessCall` in `taint-matcher.ts`, mirror of the
+    existing Go `isSafeGoExecCommandCall`) that suppresses the finding when
+    arg[0] is a non-shell program literal (e.g. `spawn('git', ['clone',
+    taint])`), so the wider arg positions do not regress legitimate
+    `argv[]`-style usage with hard-coded programs.
+  - **v06 execa.command shape** (`execa.command(taint)`): registered
+    `execa.command` and `execa.commandSync` as `command_injection` sinks in
+    `DEFAULT_SINKS`. The `nodejs.json` JSON config was already augmented but
+    is not loaded at runtime by the engine, which uses the hardcoded TS
+    defaults.
+  - **v08 util.promisify alias shape** (`const x = promisify(exec); x(taint)`):
+    added `expandPromisifyAliases` in `taint-matcher.ts` to scan source for
+    `const <alias> = (require('util').)?promisify(exec|execFile)` bindings
+    and synthesize classless sink patterns for each alias so the
+    promisified call site matches as a sink.
+
+### Internal
+
+- New regression tests:
+  `tests/analysis/passes/js-mongodb-nosql-injection-fn.test.ts`,
+  `tests/analysis/passes/js-spawn-execfile-execa-cmdi-fn.test.ts`,
+  `tests/analysis/passes/python-pymongo-nosql-injection-fn.test.ts`
+  (12 cases total — 6 FN repros + 6 recall locks).
+- Full suite: 3084 tests passing, 1 skipped (was 3083+1; 12 net-new tests
+  minus 11 already-present passes — no regressions on Sprint 21 #105 FP-32
+  or any prior coverage).
+
 ## [3.110.0] - 2026-06-27
 
 Sprint 53 S-bucket batch — four small-complexity tickets shipped together.

@@ -269,7 +269,18 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           if (f.sink_type !== 'nosql_injection') return true;
           const sink = sinkByLine.get(f.sink_line);
           if (!sink || !sink.code || !sink.method) return true;
-          return !isMongoValueBoundFilter(sink.code, sink.method);
+          // cognium-dev #194 / #195 Sprint 54: value-bound suppression must
+          // NOT fire when an HTTP-derived source variable lands in a value
+          // position. Express body-parser and equivalent framework parsers
+          // can normalize bracket-style query strings (`?u[$ne]=null`) into
+          // objects, so even a `name: q` pair with tainted `q` from
+          // req.query / req.body reaching the find filter is exploitable.
+          // Non-HTTP sources (interprocedural_param, etc.) preserve the
+          // Sprint 21 #105 FP-32 suppression — see repro-sprint21.test.ts.
+          const sourceVar = f.path && f.path.length > 0 ? f.path[0].variable : null;
+          const isHttpSource = typeof f.source_type === 'string' && f.source_type.startsWith('http_');
+          const sourceVarForFilter = isHttpSource ? sourceVar : null;
+          return !isMongoValueBoundFilter(sink.code, sink.method, sourceVarForFilter);
         });
       }
     }
@@ -354,7 +365,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
  * Scope: same-line literal at arg[0]. Multi-line dicts are conservatively
  * left alone — we prefer FP over FN on the operator-injection class.
  */
-function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string): boolean {
+function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string, sourceVar: string | null): boolean {
   if (!sinkCode || !sinkMethod) return false;
   // Locate the call site for the specific sink method to avoid matching
   // an inner call that happens to share a name.
@@ -406,6 +417,18 @@ function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string): boolean 
   if (/(^|[,{\s])\$[A-Za-z_]\w*\s*:/.test(stripped)) return false;
   // Quoted-string key starting with `$`.
   if (/(['"])\$[A-Za-z_]\w*\1\s*:/.test(body)) return false;
+  // cognium-dev #194 / #195 Sprint 54: when the tainted source variable
+  // appears in a value position of the literal, the filter is NOT inert —
+  // framework body-parsers (Express bracket-notation, Flask request.args
+  // returning array-form) can deliver an object/array payload that injects
+  // operators via the value position. Conservatively check if the source
+  // variable name appears as a token in any value position (after a `:`).
+  if (sourceVar && /^[A-Za-z_]\w*$/.test(sourceVar)) {
+    const escaped = sourceVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Word-boundary match anywhere in the (string-stripped) body.
+    const tokenRe = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u');
+    if (tokenRe.test(stripped)) return false;
+  }
   return true;
 }
 

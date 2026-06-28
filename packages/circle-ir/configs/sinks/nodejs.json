@@ -95,6 +95,24 @@
       "note": "Fork new Node.js process"
     },
     {
+      "method": "command",
+      "class": "execa",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "execa.command(taintedString) — parses string into program+argv; tainted arg is shell-injectable. cognium-dev #187 Sprint 54."
+    },
+    {
+      "method": "commandSync",
+      "class": "execa",
+      "type": "command_injection",
+      "cwe": "CWE-78",
+      "severity": "critical",
+      "arg_positions": [0],
+      "note": "execa.commandSync(taintedString) — synchronous variant of execa.command."
+    },
+    {
       "method": "query",
       "class": "mysql",
       "type": "sql_injection",
