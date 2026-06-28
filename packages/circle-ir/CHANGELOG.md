@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.113.0] - 2026-06-28
+
+Sprint 56 batch — #182 (4 slices) + #183 detector gaps shipped together.
+Phase 0 inline-synthesized reproductions baselined against v3.112.0
+(5 test files, 20 cases) verified each FN before any source change.
+
+### Fixed
+
+- **#182 Slice A — Rust `log::info!` / `log::warn!` / `log::error!` /
+  `log::debug!` / `log::trace!` / `log::log!` are not detected as
+  `log_injection` (CWE-117) sinks.** The Rust macro extractor preserves
+  the full path prefix in `method_name` (e.g. `log::info!`), but
+  `DEFAULT_SINKS` only registered the bare classless forms (`info!`,
+  `warn!`, etc.) introduced in earlier sprints. Added six namespaced
+  `log::*` sink entries scoped to `languages: ['rust']`. Recall locks:
+  bare `info!` and `println!` continue to be detected.
+
+- **#182 Slice B — Go `http.SetCookie(w, &http.Cookie{...})` with missing
+  `Secure: true` or `HttpOnly: true` does not flag `insecure-cookie`
+  (CWE-614).** Extended `insecure-cookie-pass.ts` with a `go` language
+  branch that triggers on `method_name === 'SetCookie'` /
+  `receiver === 'http'` and scans the second argument's expression text
+  for `Secure: true` / `HttpOnly: true` tokens. Emits a medium-severity
+  finding for either missing flag. Known limitation: variable-form
+  cookies (`http.SetCookie(w, cookie)` where `cookie` is a previously
+  built `*http.Cookie`) cannot be inspected — mirrors existing JS
+  spread-options behavior.
+
+- **#182 Slice C — Rust `format!("Set-Cookie: …")` / `write!(buf,
+  "Set-Cookie: …")` / `writeln!(buf, "Set-Cookie: …")` without `Secure`
+  or `HttpOnly` tokens does not flag `insecure-cookie` (CWE-614).**
+  Extended `insecure-cookie-pass.ts` with a `rust` language branch that
+  performs a text-based file-source scan (regex matches `format!` /
+  `write!` / `writeln!` invocations whose body contains `Set-Cookie:`
+  and checks for the presence of `Secure` / `HttpOnly` tokens). Emits a
+  medium-severity finding for either missing flag. Text-based scan
+  mirrors the existing Java branch in the same pass.
+
+- **#182 Slice D — TypeScript `console.log/warn/error/info(taint)`
+  regression lock.** The ticket claim that TS `console.*` calls don't
+  surface as `log_injection` sinks was stale on v3.112.0 — the
+  `console.*` entries in `DEFAULT_SINKS` are already scoped to
+  `languages: ['javascript', 'typescript']`. Shipped a regression test
+  file as a guard against future scope narrowing.
+
+- **#183 — Python `importlib.import_module(taint)` does not flag
+  `code_injection` (CWE-94).** Added a namespaced `importlib`
+  `import_module` sink at severity `high`, parallel to the existing
+  classless `__import__` entry and Java's `Class.forName`. Note:
+  `importlib.__import__` already matched via the existing classless
+  `__import__` sink (class-agnostic matcher behavior when a classless
+  entry exists). Deferred: `getattr(obj, taint)()` two-call shape
+  requires alias tracking from `getattr`'s return value through the
+  next-call receiver — tracked as `it.skip` and left open on #183.
+
 ## [3.112.0] - 2026-06-28
 
 Sprint 55 batch — JS/TS framework FN quartet shipped together. Phase 0

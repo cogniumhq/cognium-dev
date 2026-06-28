@@ -53,6 +53,23 @@ const PY_HTTPONLY_TRUE_RE = /\bhttponly\s*=\s*True\b/i;
 const JAVA_SET_SECURE_TRUE_RE   = /\.setSecure\s*\(\s*true\s*\)/;
 const JAVA_SET_HTTPONLY_TRUE_RE = /\.setHttpOnly\s*\(\s*true\s*\)/;
 
+// ---------- Go ----------
+// `http.SetCookie(w, &http.Cookie{..., Secure: true, HttpOnly: true})` —
+// the struct literal text is in the second argument's expression. Sprint 56 #182 Slice B.
+const GO_SECURE_TRUE_RE   = /\bSecure\s*:\s*true\b/;
+const GO_HTTPONLY_TRUE_RE = /\bHttpOnly\s*:\s*true\b/;
+
+// ---------- Rust ----------
+// `format!("Set-Cookie: sid={}; Path=/; Secure; HttpOnly", ...)` /
+// `write!(buf, "Set-Cookie: ...", ...)` / `writeln!(...)`. The Rust macro
+// extractor surfaces method_name='format!'/'write!'/'writeln!' but does not
+// populate `arguments`, so we text-scan the file source for the macro
+// invocation containing a `Set-Cookie:` header literal and verify that the
+// same invocation also contains `Secure` and `HttpOnly` tokens. Sprint 56 #182 Slice C.
+// Multi-line matches are supported via the `s` flag (dotall).
+const RUST_SET_COOKIE_MACRO_RE =
+  /(format!|write!|writeln!)\s*\(([^()]*Set-Cookie[^()]*)\)/gis;
+
 export interface InsecureCookieResult {
   insecureCookies: Array<{
     line: number;
@@ -97,6 +114,19 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
         if (!det) continue;
         insecureCookies.push(det);
         this.emit(ctx, file, det, 'java');
+      }
+    } else if (language === 'go') {
+      for (const call of graph.ir.calls) {
+        const det = this.detectGo(call);
+        if (!det) continue;
+        insecureCookies.push(det);
+        this.emit(ctx, file, det, 'go');
+      }
+    } else if (language === 'rust') {
+      const dets = this.detectRustSetCookieFormat(code);
+      for (const det of dets) {
+        insecureCookies.push(det);
+        this.emit(ctx, file, det, 'rust');
       }
     }
 
@@ -190,22 +220,99 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
     };
   }
 
+  // ---------------- Go ----------------
+  private detectGo(call: CallInfo): InsecureCookieResult['insecureCookies'][number] | null {
+    // `http.SetCookie(w, &http.Cookie{...})` — Go extractor surfaces
+    // method_name='SetCookie', receiver='http'. The struct-literal text
+    // for the cookie is in the second argument's expression.
+    if (call.method_name !== 'SetCookie') return null;
+    if ((call.receiver ?? '') !== 'http') return null;
+    if (call.arguments.length < 2) return null;
+
+    const cookieArg = call.arguments.find((a) => a.position === 1);
+    const cookieExpr = (cookieArg?.expression ?? '').trim();
+    // Variable-form `http.SetCookie(w, cookie)` (where `cookie` is a previously
+    // built variable) cannot be inspected at the call site. Skip unless the
+    // expression looks like a struct literal (contains `{` and `}`). Mirrors
+    // the existing JS spread-options known limitation.
+    if (!cookieExpr.includes('{') || !cookieExpr.includes('}')) return null;
+
+    const missingSecure   = !GO_SECURE_TRUE_RE.test(cookieExpr);
+    const missingHttpOnly = !GO_HTTPONLY_TRUE_RE.test(cookieExpr);
+    if (!missingSecure && !missingHttpOnly) return null;
+
+    return {
+      line: call.location.line,
+      receiver: 'http.SetCookie',
+      missingSecure,
+      missingHttpOnly,
+      optionsPresent: true,
+    };
+  }
+
+  // ---------------- Rust ----------------
+  private detectRustSetCookieFormat(code: string): InsecureCookieResult['insecureCookies'] {
+    // Text-based: find `format!(...)` / `write!(...)` / `writeln!(...)` whose
+    // body contains a `Set-Cookie:` header literal, then check the same body
+    // for `Secure` and `HttpOnly` tokens.
+    const out: InsecureCookieResult['insecureCookies'] = [];
+    const re = new RegExp(RUST_SET_COOKIE_MACRO_RE.source, RUST_SET_COOKIE_MACRO_RE.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      const macro = m[1] ?? '';
+      const body  = m[2] ?? '';
+      const missingSecure   = !/\bSecure\b/.test(body);
+      const missingHttpOnly = !/\bHttpOnly\b/.test(body);
+      if (!missingSecure && !missingHttpOnly) continue;
+      // 1-based line number of the macro invocation start.
+      const line = code.slice(0, m.index).split('\n').length;
+      out.push({
+        line,
+        receiver: macro,
+        missingSecure,
+        missingHttpOnly,
+        optionsPresent: true,
+      });
+    }
+    return out;
+  }
+
   private emit(
     ctx: PassContext,
     file: string,
     det: InsecureCookieResult['insecureCookies'][number],
-    flavor: 'js' | 'python' | 'java',
+    flavor: 'js' | 'python' | 'java' | 'go' | 'rust',
   ): void {
     const missing: string[] = [];
-    if (det.missingSecure)   missing.push(flavor === 'js' ? '`secure: true`' : flavor === 'python' ? '`secure=True`' : '`setSecure(true)`');
-    if (det.missingHttpOnly) missing.push(flavor === 'js' ? '`httpOnly: true`' : flavor === 'python' ? '`httponly=True`' : '`setHttpOnly(true)`');
+    if (det.missingSecure) {
+      missing.push(
+        flavor === 'js' ? '`secure: true`'
+        : flavor === 'python' ? '`secure=True`'
+        : flavor === 'java' ? '`setSecure(true)`'
+        : flavor === 'go' ? '`Secure: true`'
+        : '`Secure` attribute',
+      );
+    }
+    if (det.missingHttpOnly) {
+      missing.push(
+        flavor === 'js' ? '`httpOnly: true`'
+        : flavor === 'python' ? '`httponly=True`'
+        : flavor === 'java' ? '`setHttpOnly(true)`'
+        : flavor === 'go' ? '`HttpOnly: true`'
+        : '`HttpOnly` attribute',
+      );
+    }
 
     const fix =
       flavor === 'js'
         ? 'Pass `{ secure: true, httpOnly: true, sameSite: "lax" }` as the third argument to `res.cookie()`.'
         : flavor === 'python'
           ? 'Pass `secure=True, httponly=True, samesite="Lax"` to `response.set_cookie(...)`.'
-          : 'After constructing the cookie, call `cookie.setSecure(true)` and `cookie.setHttpOnly(true)` before adding it to the response.';
+          : flavor === 'java'
+            ? 'After constructing the cookie, call `cookie.setSecure(true)` and `cookie.setHttpOnly(true)` before adding it to the response.'
+            : flavor === 'go'
+              ? 'Set `Secure: true` and `HttpOnly: true` on the `http.Cookie` struct literal passed to `http.SetCookie`.'
+              : 'Append `; Secure; HttpOnly` to the `Set-Cookie` header string.';
 
     ctx.addFinding({
       id: `${this.name}-${file}-${det.line}`,

@@ -1674,6 +1674,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'exec', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['python'] },
   { method: 'compile', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
   { method: '__import__', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // Python dynamic import — `importlib.import_module(taint)` parallels Java's
+  // `Class.forName`. The bare `__import__` entry above also matches the
+  // `importlib.__import__` form because the sink-matcher is class-agnostic
+  // when a classless entry exists. Sprint 56 #183.
+  { method: 'import_module', class: 'importlib', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python Deserialization — language-scoped so the lowercase `yaml` / `pickle`
   // module names don't collide with Java locals named `yaml` (SnakeYAML usage).
@@ -1962,6 +1967,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Standard library logging
   { method: 'println!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2] },
   { method: 'eprintln!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2] },
+  // log:: namespaced forms — the Rust macro extractor preserves the full
+  // path prefix in `method_name` (`log::info!`), so the bare entries above
+  // only match the imported form `use log::info; info!(...)`. Sprint 56 #182 Slice A.
+  { method: 'log::info!',  type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
+  { method: 'log::warn!',  type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
+  { method: 'log::error!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
+  { method: 'log::debug!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
+  { method: 'log::trace!', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
+  { method: 'log::log!',   type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0, 1, 2], languages: ['rust'] },
 
   // Rust sqlx SQL Injection
   { method: 'query', class: 'sqlx', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },

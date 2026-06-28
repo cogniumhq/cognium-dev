@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.113.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.113.0`](https://www.npmjs.com/package/circle-ir)
+which ships the Sprint 56 #182 + #183 detector batch:
+
+- **#182 Slice A — Rust `log::info!` / `log::warn!` / `log::error!` /
+  `log::debug!` / `log::trace!` / `log::log!`** now detected as
+  `log_injection` (CWE-117) sinks. Six namespaced variants added to
+  complement the existing bare-form entries.
+- **#182 Slice B — Go `http.SetCookie(w, &http.Cookie{...})`** now
+  flags `insecure-cookie` (CWE-614) when `Secure: true` or `HttpOnly:
+  true` is missing from the struct literal.
+- **#182 Slice C — Rust `format!("Set-Cookie: …")` / `write!` /
+  `writeln!`** now flag `insecure-cookie` (CWE-614) when the format
+  string is missing `Secure` or `HttpOnly` tokens.
+- **#182 Slice D — TypeScript `console.log/warn/error/info(taint)`**
+  regression lock — already shipped, now guarded by a regression test.
+- **#183 — Python `importlib.import_module(taint)`** now flags
+  `code_injection` (CWE-94) at severity `high`, parallel to Java's
+  `Class.forName`. `importlib.__import__` already matched via the
+  existing classless `__import__` entry. `getattr(obj, taint)()`
+  two-call shape deferred pending alias tracking.
+
+No CLI source change.
+
 ## [3.112.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.112.0`](https://www.npmjs.com/package/circle-ir)
