@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.117.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.117.0`](https://www.npmjs.com/package/circle-ir)
+which closes the Sprint 60 FP regression cluster (#102 + #113 + #114
++ #115):
+
+- **#113 FP-46 — JS `path.basename(...)` followed by atomic
+  `fs.openSync(dest, 'wx')`** no longer triggers three spurious
+  `external_taint_escape` flows. The `path.basename` sanitizer now
+  also removes `external_taint_escape` (mirroring Go `filepath.Base`).
+- **#113 FP-52 — Java `DIGITS.matcher(req.getParameter("text"))`** no
+  longer triggers `external_taint_escape`. A class-agnostic `matcher`
+  entry was added: regex consumption is in-process and does not
+  constitute a sphere escape.
+
+The remaining 15/17 ticket scenarios across #102/#113/#114/#115 were
+verified-already-shipped (Sprints 23/24/29/31) and are now locked
+against regression in `tests/analysis/passes/fp-cluster-sprint60-recall-lock.test.ts`.
+
+No CLI source change.
+
 ## [3.116.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.116.0`](https://www.npmjs.com/package/circle-ir)

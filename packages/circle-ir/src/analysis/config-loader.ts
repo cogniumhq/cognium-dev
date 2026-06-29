@@ -2229,6 +2229,15 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // Deserialization
   { method: 'setObjectInputFilter', class: 'ObjectInputStream', removes: ['deserialization'] },
 
+  // Regex consumption — passing tainted text to a compiled `Pattern.matcher()`
+  // does not constitute a wrong-sphere escape: the matcher walks the string
+  // in-process and produces match-state (booleans, captured groups, counts),
+  // not a network/file/process exit. Class-agnostic so it covers receivers
+  // that are Pattern-typed variables (e.g. `DIGITS.matcher(text)`). Sprint 60
+  // (#113 FP-52). Note: this only suppresses the synthetic CWE-668 fallback;
+  // real injection sinks downstream of the matched text still apply.
+  { method: 'matcher', removes: ['external_taint_escape'] },
+
   // =========================================================================
   // Node.js / JavaScript Sanitizers
   // =========================================================================
@@ -2271,7 +2280,12 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'indexOf', removes: ['external_taint_escape'] },
 
   // Path sanitization
-  { method: 'basename', class: 'path', removes: ['path_traversal'] },
+  // Sprint 60 (#113 FP-46): include external_taint_escape — `path.basename()`
+  // strips directory components and returns only the leaf filename, so a
+  // tainted-but-basenamed value can no longer carry a traversal payload into
+  // a downstream `fs.open*` / `fs.write*` call. Mirrors Go `filepath.Base`
+  // (line 2187) which already includes external_taint_escape.
+  { method: 'basename', class: 'path', removes: ['path_traversal', 'external_taint_escape'] },
   { method: 'normalize', class: 'path', removes: ['path_traversal'] },
   { method: 'resolve', class: 'path', removes: ['path_traversal'] },
 

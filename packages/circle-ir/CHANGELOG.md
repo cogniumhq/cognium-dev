@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.117.0] - 2026-06-28
+
+Sprint 60 — FP regression cluster (#102 + #113 + #114 + #115). Phase 0
+baseline confirmed 15/17 ticket scenarios are already-shipped (closed
+progressively across Sprints 23/24/29/31); the remaining two false
+positives are fixed by additive entries in the sanitizer config table.
+
+### Fixed
+
+- **#113 FP-46 — JS `path.basename(req.body.name)` followed by atomic
+  `fs.openSync(dest, 'wx')` emits three `external_taint_escape` flows
+  (at openSync, writeSync, closeSync).** `path.basename()` strips
+  directory components and returns only the leaf filename, so the value
+  can no longer carry a traversal payload across the file-system
+  boundary; the synthetic CWE-668 fallback should not fire. Extended
+  the JS `path.basename` sanitizer entry in `config-loader.ts` to
+  remove `external_taint_escape` in addition to the pre-existing
+  `path_traversal`. Mirrors the Go `filepath.Base` entry which already
+  carried both. Real injection sinks downstream of a non-basename'd
+  path remain unaffected.
+
+- **#113 FP-52 — Java `DIGITS.matcher(req.getParameter("text"))` emits
+  one `external_taint_escape` flow at the matcher call.** Passing
+  tainted text to a compiled `Pattern.matcher(...)` does not constitute
+  a wrong-sphere escape: the matcher walks the string in-process and
+  produces match-state (booleans, groups, counts), not a network/file/
+  process exit. Added `{ method: 'matcher', removes:
+  ['external_taint_escape'] }` (class-agnostic) to the Java sanitizer
+  section. Class-agnostic because the receiver is typically a
+  Pattern-typed variable (e.g. `DIGITS`) rather than the literal class
+  name; the dominant semantic is regex matching. Real injection sinks
+  downstream of the matched text still apply.
+
+### Verified-already-shipped (recall locks)
+
+- #102 / #115 Rust safe_handler (3 cases): `Command::new` with fixed
+  program + args slice, `HashSet::contains` host allowlist before
+  `reqwest::get`, `canonicalize().starts_with(root)` path guard before
+  `fs::read_to_string` — all confirmed clean against v3.116.0; shipped
+  Sprint 31 (3.84.0).
+- #114 Python safe-handler (2 cases): `urlparse(target).netloc in
+  ALLOWED_HOSTS` allow-list before `redirect(target)`, and
+  `int(request.args.get("qty", "0"))` with range-check before numeric
+  output — both confirmed clean; shipped Sprint 31 (3.84.0).
+- #113 (10 of 12 cases): JS `Set.has` / range / index-bounds / regex
+  guards; Java `Set.contains` / `Pattern.matches`; Go `filepath.Base` /
+  `maxAllocBytes` clamp / `regexp.MatchString` / `log.Printf` — all
+  confirmed clean; shipped progressively Sprints 24/29 (3.74.0 /
+  3.79.0).
+
+All locked in `tests/analysis/passes/fp-cluster-sprint60-recall-lock.test.ts`
+(17 cases). Test suite: 3168 pass + 3 skipped (was 3151+3).
+
 ## [3.116.0] - 2026-06-28
 
 Sprint 59 — closes #201 (Java Servlet 3.0 `Part.write(...)` unrestricted
