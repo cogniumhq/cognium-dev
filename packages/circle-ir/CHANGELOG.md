@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.116.0] - 2026-06-28
+
+Sprint 59 — closes #201 (Java Servlet 3.0 `Part.write(...)` unrestricted
+upload). Slice A of the originally planned batch (#199 bash `dpkg -i
+/tmp/file`) was descoped after Phase 0: the residual ticket scenario
+requires file-path taint propagation (curl writes to a temp file → dpkg
+reads that file), which is a structural rather than configuration
+change. Direct positional cases (`dpkg -i "$1"`) are already covered by
+the generic shell-utility command-injection mechanism in
+`src/analysis/interprocedural.ts`.
+
+### Fixed
+
+- **#201 — Java Servlet `Part.write("<dir>" + part.getSubmittedFileName())`
+  does not fire `unrestricted-file-upload` (CWE-434).** The existing
+  `unrestricted-file-upload-pass` checked only `MultipartFile.transferTo`
+  and `Files.copy` for Java; the Servlet 3.0 `Part.write(String)`
+  direct-write form (CVE-2021-26828 class — attacker uploads `shell.jsp`
+  through user-controlled filename → web-served path → RCE) was
+  overlooked. Added a third Java call-shape branch: method `write`
+  with at least one arg expression matching `UPLOAD_NAME_RE`
+  (`getOriginalFilename`/`getSubmittedFileName`/`.filename`/etc.),
+  excluding the pre-existing `Files.write` / `FilePath.write`
+  path_traversal sink receivers. Recall locks: Spring
+  `MultipartFile.transferTo`, Python `f.save("/uploads/" + f.filename)`,
+  and JS `multer({ dest })` continue to fire unchanged. TN locks:
+  `Files.write(Path.of("/tmp/x"), bytes)` does not collide,
+  `part.write("/var/www/static.html")` (literal path) does not fire,
+  and functions containing `FilenameUtils.getExtension(...)` /
+  `secure_filename` markers are suppressed via the existing
+  `inSafeRange` heuristic.
+
+### Descoped
+
+- **#199 — bash `curl -fsSLo /tmp/pkg.deb "${1}"; dpkg -i /tmp/pkg.deb`
+  supply-chain RCE.** The direct case `dpkg -i "$1"` is already
+  detected as `command_injection` via the generic shell-utility
+  unquoted-tainted-arg detector in
+  `src/analysis/interprocedural.ts:295-303`. The ticket's actual
+  scenario requires propagating taint from a positional-parameter URL
+  through a curl-written file path into a downstream dpkg invocation
+  — i.e. file-path taint flow across commands — which is structural
+  work outside the scope of a config-only release. Issue kept open
+  for a future sprint that addresses bash file-path taint propagation.
+
 ## [3.115.0] - 2026-06-28
 
 Sprint 58 — closes the final remaining gap on #188 (indirect eval

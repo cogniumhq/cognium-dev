@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.116.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.116.0`](https://www.npmjs.com/package/circle-ir)
+which closes #201:
+
+- **#201 — Java Servlet `Part.write("<dir>" + part.getSubmittedFileName())`**
+  now fires `unrestricted-file-upload` (CWE-434). Extends the
+  existing `unrestricted-file-upload-pass` (previously Java-side only
+  covered `MultipartFile.transferTo` and `Files.copy`) with a third
+  call-shape for the Servlet 3.0 direct-write form. Recall: Spring
+  `transferTo`, Python `f.save`, JS `multer({ dest })`, Go
+  `os.Create` continue unchanged.
+
+#199 (bash `dpkg -i /tmp/<tainted-file>` supply-chain RCE) was
+descoped — it requires bash file-path taint propagation, structural
+work outside a config-only release. Direct positional case
+(`dpkg -i "$1"`) is already detected via the generic shell-utility
+command-injection mechanism.
+
+No CLI source change.
+
 ## [3.115.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.115.0`](https://www.npmjs.com/package/circle-ir)

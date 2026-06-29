@@ -9,6 +9,7 @@
  *   Java (Spring MultipartFile / Servlet Part):
  *     - `file.transferTo(new File(dir, file.getOriginalFilename()))`
  *     - `Files.copy(part.getInputStream(), Path.of(dir, part.getSubmittedFileName()))`
+ *     - `part.write(dir + part.getSubmittedFileName())` (Servlet 3.0 Part.write)
  *     - Without preceding `ALLOWED_*.contains(ext)` or
  *       `FilenameUtils.getExtension(name)` + check.
  *
@@ -112,6 +113,22 @@ export class UnrestrictedFileUploadPass implements AnalysisPass<UnrestrictedFile
             this.emit(ctx, findings, file, call.location.line, language,
                       'Files.copy(input, Path.of(dir, <original filename>))');
           }
+        }
+        // Servlet 3.0 Part.write(filename) — Sprint 59 #201.
+        // Receiver is usually a Part variable; we cannot rely on receiver-type
+        // resolution here, so we use the call-shape heuristic: method is
+        // `write` AND at least one arg expression references an upload-name
+        // accessor. Distinct from Java's Files.write (Files receiver) and
+        // FilePath.write (Jenkins) which use different sink wiring.
+        if (m === 'write' && callHasUploadName(call)) {
+          const rec = call.receiver ?? '';
+          // Exclude Files.write / FilePath.write which are pre-existing
+          // path_traversal sinks; only fire on plain-variable receivers
+          // (typical for `part.write(...)`).
+          if (rec === 'Files' || rec === 'FilePath' || rec.endsWith('.Files')) continue;
+          if (inSafeRange(call.location.line)) continue;
+          this.emit(ctx, findings, file, call.location.line, language,
+                    'Part.write(<dir> + <original filename>)');
         }
       }
     }
