@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.119.0] - 2026-06-29
+
+Sprint 63 — cognium-dev #184 Vue SFC scaffold (sprint 1 of 2). Adds
+JS-pipeline routing for `.vue` Single-File Components so tainted code
+inside `<script>` / `<script setup>` / `<script lang="ts">` blocks is
+detected end-to-end. **Template-attribute sinks (`v-html`, `v-text`,
+`:innerHTML`) are explicitly out of scope and land in Sprint 64** as a
+dedicated template-walking pass.
+
+### Why a scaffold-only sprint
+
+Probing `analyze(vueSrc, 'Foo.vue', 'html')` against HEAD showed
+tree-sitter-html already extracts `<script>` / `<script setup>` /
+`<script lang="ts">` blocks correctly — the existing
+`analyzeHtmlFile()` script-extraction path registers taint sinks and
+delegates each block to the JS/TS pipeline. The only gap was that
+`.vue` files were rejected at the routing layer because `'vue'` was not
+in the `SupportedLanguage` union. Sprint 63 closes exactly that gap;
+no new grammar, no new pass, no new sink config.
+
+Template-attribute detection (`v-html` etc.) is a separate problem
+requiring a new walker over the `<template>` subtree and synthetic
+sink emission at the binding line — that's Sprint 64 scope.
+
+### Added
+
+- **`SupportedLanguage` union** — `'vue'` added in all three
+  declaration sites (`src/core/parser.ts`, `src/types/index.ts`,
+  `src/languages/types.ts`).
+- **`VuePlugin`** (`src/languages/plugins/vue.ts`) — minimal plugin
+  that mirrors `HtmlPlugin`: `id='vue'`, `extensions=['.vue']`,
+  `wasmPath='tree-sitter-html.wasm'` (reuses the HTML grammar — Vue
+  SFCs are HTML-syntax-wrapped and parse identically). All extraction
+  methods return empty arrays; the plugin acts as a thin preprocessor
+  and `<script>` blocks are routed to the JS/TS pipeline by the
+  existing html-extractor machinery.
+- **VuePlugin registration** in `registerBuiltinPlugins()`
+  (`src/languages/plugins/index.ts`).
+- **5 new tests** (`tests/analysis/passes/vue-sfc-scaffold-tp.test.ts`):
+  - TP-1 `<script>` block with `req.body → eval` fires
+    `command_injection`.
+  - TP-2 `<script setup>` (Vue 3 composition API) variant fires.
+  - TP-3 `<script lang="ts">` (typed) variant fires via TS pipeline.
+  - TP-4 Template-only `.vue` (no script) does not crash and emits
+    zero findings.
+  - FN-1 (Sprint 64 lock) `<template v-html="taint">` is documented as
+    a current false-negative and locked at zero findings; flips to
+    TP-5 in Sprint 64.
+
+### Changed
+
+- **`analyzer.ts`** — html routing branch extended to include `'vue'`;
+  internal helper renamed `analyzeHtmlFile` → `analyzeMarkupFile` and
+  threads a `language` parameter for meta / log only. Still calls
+  `parse(code, 'html')` internally because Vue reuses the html
+  grammar. The rename touches a single private function (not exported
+  from the package) — no public-API change.
+- **`getNodeTypesForLanguage`** — `'vue'` case added with the same
+  (empty) node-type set as `'html'`.
+
+### Test count
+
+3173 + 3 → 3178 + 3 (+5 Vue scaffold cases).
+
+### Sprint 64 preview (NOT in this release)
+
+Sprint 64 will add a `vue-template-extractor` + `vue-template-xss-pass`
+plus YAML sink config entries for `v-html` / `v-text`. The FN-1 test
+above flips to TP-5 once Sprint 64 ships. If any other change fixes
+v-html as a side effect before Sprint 64, FN-1 fails immediately and
+the recall lock surfaces it.
+
 ## [3.118.0] - 2026-06-28
 
 Sprint 62 — cognium-dev #171 recall lock (Java XXE no-hardening / plantuml

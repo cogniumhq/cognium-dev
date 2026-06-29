@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.119.0] - 2026-06-29
+
+Engine bump only — adopts [`circle-ir@3.119.0`](https://www.npmjs.com/package/circle-ir)
+which adds Sprint 63 Vue SFC scaffolding for cognium-dev #184 (sprint
+1 of 2). `.vue` files are now routed through the JS/TS pipeline:
+`<script>`, `<script setup>` and `<script lang="ts">` blocks have
+their taint flows analyzed end-to-end. Directory scans
+(`cognium-dev scan <dir>`) auto-pick up `.vue` files via the
+extension registry — no new CLI flag needed.
+
+Template-attribute sinks (`v-html`, `v-text`, `:innerHTML`) remain a
+known false-negative; detection lands in Sprint 64.
+
+No CLI source change.
+
 ## [3.118.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.118.0`](https://www.npmjs.com/package/circle-ir)

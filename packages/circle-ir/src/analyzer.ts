@@ -468,6 +468,7 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'if_statement', 'for_statement', 'c_style_for_statement', 'while_statement',
       ]);
     case 'html':
+    case 'vue':
       return new Set([
         'element', 'script_element', 'style_element', 'attribute',
         'start_tag', 'self_closing_tag', 'text',
@@ -531,9 +532,14 @@ export async function analyze(
     await initAnalyzer(options);
   }
 
-  // HTML preprocessor path — extract scripts and delegate to JS analyzer
-  if (language === 'html') {
-    return analyzeHtmlFile(code, filePath, options);
+  // Markup preprocessor path (HTML + Vue SFC) — extract scripts and
+  // delegate to the JS/TS analyzer. Vue SFCs are HTML-syntax-wrapped, so
+  // the tree-sitter-html grammar parses `<template>` / `<script>` /
+  // `<style>` blocks identically. (cognium-dev #184 sprint 1 of 2 —
+  // adds .vue routing; template-attribute sinks like v-html land in
+  // the follow-up sprint.)
+  if (language === 'html' || language === 'vue') {
+    return analyzeMarkupFile(code, filePath, options, language);
   }
 
   // JSX/TSX routing: tree-sitter-typescript does NOT parse JSX. Route
@@ -780,27 +786,31 @@ export async function analyze(
 // ---------------------------------------------------------------------------
 
 /**
- * Analyze an HTML file by extracting script blocks and event handlers,
- * delegating JS analysis to the standard pipeline, and running
- * attribute-level security checks.
+ * Analyze an HTML-grammar markup file (`.html`, `.htm`, `.xhtml`, `.vue`)
+ * by extracting script blocks and event handlers, delegating JS analysis
+ * to the standard pipeline, and running attribute-level security checks.
+ *
+ * Vue SFCs reuse this path because `<template>` / `<script>` / `<style>`
+ * blocks parse identically under tree-sitter-html (cognium-dev #184).
  */
-async function analyzeHtmlFile(
+async function analyzeMarkupFile(
   code: string,
   filePath: string,
   options: AnalyzerOptions,
+  language: SupportedLanguage,
 ): Promise<CircleIR> {
-  logger.debug('Analyzing HTML file', { filePath, codeLength: code.length });
+  logger.debug('Analyzing markup file', { filePath, language, codeLength: code.length });
 
-  // Parse HTML
+  // Parse with the HTML grammar (Vue SFCs are HTML-syntax-wrapped).
   const tree = await parse(code, 'html');
   try {
-  const meta = extractMeta(code, tree, filePath, 'html');
+  const meta = extractMeta(code, tree, filePath, language);
 
   const htmlParseStatus = extractParseStatus(tree);
   if (htmlParseStatus.has_errors) {
     logger.warn('Partial parse — IR may be incomplete', {
       filePath,
-      language: 'html',
+      language,
       errorCount: htmlParseStatus.error_count,
       firstErrorLine: htmlParseStatus.error_locations[0]?.line,
     });

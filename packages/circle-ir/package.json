@@ -1,6 +1,6 @@
 {
   "name": "circle-ir",
-  "version": "3.118.0",
+  "version": "3.119.0",
   "description": "High-performance Static Application Security Testing (SAST) library for detecting security vulnerabilities through taint analysis",
   "main": "dist/index.js",
   "module": "dist/index.js",

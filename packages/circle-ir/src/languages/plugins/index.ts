@@ -10,6 +10,7 @@ export { PythonPlugin } from './python.js';
 export { RustPlugin } from './rust.js';
 export { BashPlugin } from './bash.js';
 export { HtmlPlugin } from './html.js';
+export { VuePlugin } from './vue.js';
 export { GoPlugin } from './go.js';
 
 import { registerLanguage } from '../registry.js';
@@ -19,6 +20,7 @@ import { PythonPlugin } from './python.js';
 import { RustPlugin } from './rust.js';
 import { BashPlugin } from './bash.js';
 import { HtmlPlugin } from './html.js';
+import { VuePlugin } from './vue.js';
 import { GoPlugin } from './go.js';
 
 /**
@@ -32,5 +34,6 @@ export function registerBuiltinPlugins(): void {
   registerLanguage(new RustPlugin());
   registerLanguage(new BashPlugin());
   registerLanguage(new HtmlPlugin());
+  registerLanguage(new VuePlugin());
   registerLanguage(new GoPlugin());
 }
