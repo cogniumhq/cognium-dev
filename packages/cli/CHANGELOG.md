@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.121.0] - 2026-06-29
+
+Engine bump only — adopts [`circle-ir@3.121.0`](https://www.npmjs.com/package/circle-ir)
+which closes 2 of 5 bash false positives from cognium-dev #216
+(v3.107.0 FPR scorecard): `predictable-temp-file` (CWE-377) no longer
+warns when the same `/tmp/X` literal is checksum-verified later in the
+script (`sha256sum -c` family), and no longer warns when the literal
+is a recognized archive WRITE target (`tar c*f /tmp/X.tgz`, `zip`,
+`gzip -c`, `7z a`, etc.). No CLI surface change. #216 remains open
+for the remaining 22 FPs across other languages.
+
 ## [3.120.0] - 2026-06-29
 
 Engine bump only — adopts [`circle-ir@3.120.0`](https://www.npmjs.com/package/circle-ir)

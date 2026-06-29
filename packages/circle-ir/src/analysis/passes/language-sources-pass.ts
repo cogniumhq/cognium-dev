@@ -1330,9 +1330,43 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
 
 const BASH_CREDENTIAL_PATTERN = /^(.*?)(password|passwd|secret|api_?key|token|auth_token|private_key|access_key)\s*=\s*["']?([^"'\s$][^"'\s]*)["']?\s*$/i;
 
+// Sprint 65 (#216): suppress predictable-temp-file when the same /tmp/X path
+// is verified by a checksum tool later in the script. This breaks the TOCTOU
+// substitution risk that justifies the warning.
+const BASH_CHECKSUM_VERIFY_PATTERN = /\b(?:sha(?:1|224|256|384|512)sum|md5sum|cksum|b2sum)\s+(?:-c\b|--check\b)/;
+
+function collectChecksumVerifiedTmpPaths(lines: string[]): Set<string> {
+  const verified = new Set<string>();
+  for (const line of lines) {
+    if (!BASH_CHECKSUM_VERIFY_PATTERN.test(line)) continue;
+    const matches = line.match(/\/tmp\/[^\s"'$|`]+/g);
+    if (!matches) continue;
+    for (const p of matches) verified.add(p);
+  }
+  return verified;
+}
+
+// Sprint 65 (#216): suppress predictable-temp-file when the /tmp file is the
+// WRITE TARGET of an archive command (tar/zip/gzip/7z/bzip2/xz). The file is
+// being produced, not consumed, so there is no TOCTOU read race.
+const BASH_ARCHIVE_EXT_PATTERN = /\.(?:tgz|tar\.gz|tar\.bz2|tar\.xz|tar|tbz2|txz|zip|gz|bz2|xz|7z)$/i;
+
+function isArchiveOutputContext(line: string, tmpRel: string): boolean {
+  if (!BASH_ARCHIVE_EXT_PATTERN.test(tmpRel)) return false;
+  // tar with a create flag (c) anywhere in the flag cluster: tar czf, tar -cf, tar cvjf, etc.
+  if (/\btar\b/.test(line) && /(?:^|\s)-?[A-Za-z]*c[A-Za-z]*\b/.test(line)) return true;
+  if (/\bzip\b/.test(line) && !/\bunzip\b/.test(line)) return true;
+  if (/\bgzip\b/.test(line) && /(?:-c\b|--stdout\b|>)/.test(line)) return true;
+  if (/\bbzip2\b/.test(line) && /(?:-c\b|--stdout\b|>)/.test(line)) return true;
+  if (/\bxz\b/.test(line) && /(?:-c\b|--stdout\b|>)/.test(line)) return true;
+  if (/\b7z\s+a\b/.test(line)) return true;
+  return false;
+}
+
 export function findBashPatternFindings(sourceCode: string, file: string): SastFinding[] {
   const findings: SastFinding[] = [];
   const lines = sourceCode.split('\n');
+  const checksumVerifiedTmpPaths = collectChecksumVerifiedTmpPaths(lines);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -1384,19 +1418,27 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
     // 3. Predictable /tmp file (no variable in path)
     const tmpMatch = trimmed.match(/\/tmp\/([^\s"'$]+)/);
     if (tmpMatch && !/mktemp/.test(trimmed)) {
-      findings.push({
-        id: `predictable-temp-file-${file}-${lineNumber}`,
-        pass: 'language-sources',
-        category: 'security',
-        rule_id: 'predictable-temp-file',
-        cwe: 'CWE-377',
-        severity: 'medium',
-        level: 'warning',
-        message: `Predictable temp file: /tmp/${tmpMatch[1]}. Use mktemp instead`,
-        file,
-        line: lineNumber,
-        snippet: trimmed.substring(0, 80),
-      });
+      const tmpRel = tmpMatch[1];
+      const tmpPath = `/tmp/${tmpRel}`;
+      // Sprint 65 (#216): suppress when path is checksum-verified or is an
+      // archive WRITE target. Both shapes are benign-by-construction.
+      const isChecksumVerified = checksumVerifiedTmpPaths.has(tmpPath);
+      const isArchiveOutput = isArchiveOutputContext(trimmed, tmpRel);
+      if (!isChecksumVerified && !isArchiveOutput) {
+        findings.push({
+          id: `predictable-temp-file-${file}-${lineNumber}`,
+          pass: 'language-sources',
+          category: 'security',
+          rule_id: 'predictable-temp-file',
+          cwe: 'CWE-377',
+          severity: 'medium',
+          level: 'warning',
+          message: `Predictable temp file: /tmp/${tmpRel}. Use mktemp instead`,
+          file,
+          line: lineNumber,
+          snippet: trimmed.substring(0, 80),
+        });
+      }
     }
 
     // 4. Insecure file permissions: chmod 777 or chmod 666

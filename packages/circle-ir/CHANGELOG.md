@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.121.0] - 2026-06-29
+
+Sprint 65 — cognium-dev #216 v3.107.0 FPR scorecard, bash slice (2 of 5
+bash FPs closed; #216 stays open for the remaining 22 FPs across
+Java/JS/Python/TS/Rust/htmljs + 2 deferred bash FPs). Refines the
+heuristic `predictable-temp-file` (CWE-377) detection inside
+`findBashPatternFindings` so two benign shapes no longer trip the
+warning.
+
+### Fixed
+
+- **`predictable-temp-file` (CWE-377) bash FP — checksum-verified
+  downloads** (`benign_checksum_verify.sh` shape). When the same
+  `/tmp/X` literal is later verified by a checksum tool
+  (`sha1sum`/`sha224sum`/`sha256sum`/`sha384sum`/`sha512sum`/`md5sum`/`cksum`/`b2sum`
+  with `-c`/`--check`), the curl/wget write site no longer emits a
+  warning — the verification gate breaks the TOCTOU substitution risk
+  that justifies the rule. Implemented as a first-pass scan
+  (`collectChecksumVerifiedTmpPaths`) over the whole script feeding the
+  per-line emission decision in
+  `src/analysis/passes/language-sources-pass.ts`.
+- **`predictable-temp-file` (CWE-377) bash FP — archive output
+  targets** (`benign_fixed_path.sh` shape). When the `/tmp/X` literal
+  is the WRITE target of a recognized archive command (`tar` with a
+  create flag cluster, `zip` (not `unzip`), `gzip -c`/`--stdout`/`>`,
+  `bzip2`/`xz` (same shape), or `7z a`) AND has a recognized archive
+  extension (`.tgz`/`.tar.gz`/`.tar.bz2`/`.tar.xz`/`.tar`/`.tbz2`/`.txz`/`.zip`/`.gz`/`.bz2`/`.xz`/`.7z`),
+  the line no longer emits a warning — an output target has no TOCTOU
+  read race. Implemented as `isArchiveOutputContext` in the same
+  module. Requires BOTH command shape AND extension to keep
+  false-suppression surface near zero.
+
+### Tests
+
+- New file `tests/analysis/passes/bash-fp-216.test.ts` (3 cases): 2 TN
+  cases mirroring the corpus files, 1 TP-control case proving the
+  suppressions do not over-suppress predictable-temp-file with no
+  checksum verification or archive output context.
+- Suite delta: 3182 → 3185 (+3).
+
+### Notes
+
+- Bash FPs #3 (`benign_path_join.sh` — `path_traversal` on a
+  `case "$x" in ${PREFIX}/*) ... ;; *) exit 1 ;; esac` allowlist) is
+  already resolved at this head — bash `path_traversal` no longer
+  fires on the `cat "/data/$var"` shape; probably cleared by Sprint
+  52 / 3.109.0 (`#216 subset`). No additional sanitizer wiring
+  needed.
+- Bash FPs #4 (`grep -- "$pattern"` argv-terminator gate) and #5
+  (`sqlite3 :memory: "SELECT …"` first-arg SQL re-classification)
+  need sink-side changes and are deferred. #216 stays open.
+
 ## [3.120.0] - 2026-06-29
 
 Sprint 64 — cognium-dev #184 Vue SFC template-XSS detection (sprint 2
