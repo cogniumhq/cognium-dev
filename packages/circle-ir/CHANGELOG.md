@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.122.0] - 2026-06-29
+
+Sprint 66 — cognium-dev #216 bash slice continuation (1 more FP closed,
+cumulative 3 of 5 bash FPs across Sprints 65+66; #216 stays open for
+the remaining 21 FPs across Java/JS/Python/TS/Rust/htmljs + 1 deferred
+bash FP). Adds an argv-terminator gate to the bash external-utility
+specialization in `interprocedural.ts`.
+
+### Fixed
+
+- **`command_injection` (CWE-78) bash FP — `--` argv terminator with
+  quoted positional** (`benign_quoted_vars.sh` shape:
+  `grep -- "$pattern" /var/log/app.log`). The bash specialization in
+  `src/analysis/interprocedural.ts` re-classifies every external-utility
+  call carrying a tainted positional as `command_injection`, but
+  previously did so unconditionally — bypassing the obvious safe pattern
+  where `--` separates options from positionals AND the positional is
+  double-quoted. New gate: when `--` appears as an argument before every
+  tainted position AND every tainted positional is double-quoted, the
+  `command_injection` sink is suppressed (continue past the per-call
+  block). Both conditions are conjunctive — quoting alone permits flag
+  injection (`-e payload`), `--` alone permits word-splitting on
+  unquoted expansion. Affects argv-data shell utilities (`grep`, `awk`,
+  `sed`, `cut`, `sort`, etc.) when called with the canonical safe shape.
+  Dangerous utilities called without `--` (`ssh "$1"`, `nc "$1"`, etc.)
+  continue to fire as before.
+
+### Tests
+
+- `tests/analysis/passes/bash-fp-216.test.ts` (+6) — 3 TN cases
+  (`grep -- "$1"`, `grep -- "$pattern"` with var indirection,
+  `awk -- "$1"`) plus 3 TP-control cases (`grep "$1"` without `--`,
+  `grep -- $1` unquoted, `ssh "$1"` dangerous utility without `--`)
+  proving the gate is correctly conjunctive.
+
+### Stats
+
+- Tests: 3191 passed | 3 skipped (was 3188 passed | 3 skipped pre-sprint).
+- No public API change.
+
+### Out of scope (this sprint)
+
+- Bash FP #5 (`sqlite3 :memory: "SELECT ..."` first-arg-is-SQL
+  re-classification) — sink-type change rather than suppression; needs
+  builtin-sink edit in `src/languages/plugins/bash.ts` and arguably
+  belongs under `sql_injection` not `command_injection`.
+- Cross-language FPs from #216 (Java/JS/Python/TS/Rust/htmljs).
+
 ## [3.121.0] - 2026-06-29
 
 Sprint 65 — cognium-dev #216 v3.107.0 FPR scorecard, bash slice (2 of 5

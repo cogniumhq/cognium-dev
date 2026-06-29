@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.122.0] - 2026-06-29
+
+Engine bump only — adopts [`circle-ir@3.122.0`](https://www.npmjs.com/package/circle-ir)
+which closes 1 more bash false positive from cognium-dev #216
+(cumulative 3 of 5 bash FPs across Sprints 65+66): the bash
+interprocedural specialization no longer emits a `command_injection`
+(CWE-78) sink when a `--` argv terminator precedes every tainted
+positional AND every tainted positional is double-quoted (canonical
+shape: `grep -- "$pattern" file`). Dangerous shapes (e.g. `ssh "$1"`,
+`grep "$1"` without `--`, `grep -- $1` unquoted) continue to fire. No
+CLI surface change. #216 remains open for the remaining 21 FPs across
+other languages + 1 deferred bash FP (sqlite3 first-arg-is-SQL).
+
 ## [3.121.0] - 2026-06-29
 
 Engine bump only — adopts [`circle-ir@3.121.0`](https://www.npmjs.com/package/circle-ir)

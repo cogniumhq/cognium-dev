@@ -291,6 +291,32 @@ export function analyzeInterprocedural(
           continue;
         }
 
+        // Bash argv-terminator gate (#216 FP #4): when `--` appears as an
+        // argument before every tainted position AND every tainted positional
+        // is double-quoted, both flag-injection and word-splitting are
+        // impossible. Common pattern: `grep -- "$pattern" file`. The two
+        // conditions are conjunctive — quoting alone permits `-e payload`
+        // flag injection, `--` alone permits word-splitting on unquoted
+        // expansion.
+        if (isBash && taintedArgPositions.length > 0) {
+          const terminatorPos = call.arguments
+            .filter(a => a.expression === '--')
+            .map(a => a.position)
+            .reduce<number | null>((min, p) => (min === null || p < min ? p : min), null);
+          const earliestTainted = Math.min(...taintedArgPositions);
+          if (terminatorPos !== null && terminatorPos < earliestTainted) {
+            const allTaintedQuoted = taintedArgPositions.every(p => {
+              const a = call.arguments[p];
+              if (!a) return false;
+              const expr = a.expression.trim();
+              return expr.startsWith('"') && expr.endsWith('"');
+            });
+            if (allTaintedQuoted) {
+              continue;
+            }
+          }
+        }
+
         const sink: TaintSink = isBash
           ? {
               type: 'command_injection',
