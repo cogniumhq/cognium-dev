@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.120.0] - 2026-06-29
+
+Sprint 64 — cognium-dev #184 Vue SFC template-XSS detection (sprint 2
+of 2, **closes the multi-sprint Vue track**). Adds the synthetic
+`vue-template-xss` pass that walks the `<template>` subtree of a
+`.vue` file looking for dangerous attribute bindings (`v-html`,
+`v-bind:innerHTML`, `:innerHTML`, `v-bind:outerHTML`, `:outerHTML`)
+whose RHS expression references an identifier tainted in the file's
+`<script>` blocks. Emits a CWE-79 finding at the binding line.
+
+### Added
+
+- **`vue-template-xss` pass** (new file
+  `src/analysis/html/vue-template-xss-pass.ts`, registered as H9 in
+  `docs/PASSES.md`). Synthetic-emission pattern mirroring the existing
+  HTML attribute-security checks (H1–H8) — walks the parse tree
+  iteratively (stack-overflow guard), inspects each `start_tag` /
+  `self_closing_tag` for the dangerous bindings listed above, then
+  resolves the RHS expression's identifiers against a tainted-name set
+  built from `ir.taint.sources` ∪ `ir.dfg.defs` (def at source line) ∪
+  flow-path variables of each script block. Vue-only (`v-text` and
+  plain HTML files skip the pass).
+- **5 new tests** in `tests/analysis/passes/vue-sfc-scaffold-tp.test.ts`:
+  - TP-5 — `v-html="userInput"` with tainted `<script setup>` def fires
+    (flipped from Sprint 63's FN-1 lock).
+  - TP-6 — `:innerHTML="userInput"` shorthand fires.
+  - TP-7 — `v-bind:innerHTML="userInput"` full form fires.
+  - TN-1 — `v-text="userInput"` does NOT fire even with tainted RHS
+    (locks v-text-is-safe contract — Vue's v-text uses textContent
+    which the browser escapes).
+  - TN-2 — `v-html="'<b>literal</b>'"` (string literal RHS) does NOT
+    fire — no identifier match.
+
+### Changed
+
+- **`analyzer.ts:870-880`** — `analyzeMarkupFile()` invokes
+  `runVueTemplateXssChecks` after the existing
+  `runHtmlAttributeSecurityChecks` call, gated on `language === 'vue'`.
+  Findings are appended into the same `attributeFindings` array so
+  the merge step picks them up.
+- **`src/analysis/html/index.ts`** — re-exports
+  `runVueTemplateXssChecks`.
+- **`docs/PASSES.md`** — H9 row added under A2 (HTML Security Passes).
+
+### Why not YAML sink config
+
+Vue template bindings are HTML attribute syntax, not JS method/property
+calls — they never appear in the IR's call graph and so cannot be
+expressed in `configs/sinks/*.yaml` (which only matches method, class,
+property, or annotation patterns). The existing
+`html-attribute-security-pass.ts` precedent (H1–H8) handles
+synthetic-emission for attribute-level vulnerabilities; this pass
+follows the same shape with the added twist that it consults the
+already-built script-block taint set to gate emission.
+
+### Known minor over-flag (deferred)
+
+`v-html="DOMPurify.sanitize(userInput)"` currently emits a finding
+because the pass does not track sanitizers across the template
+boundary — it sees `userInput` on the RHS, matches it, and fires.
+Documented here for clarity; a sanitizer-aware refinement is a
+future-sprint improvement if corpus shows the pattern in production
+code.
+
+### Test count
+
+3178 + 3 → 3182 + 3 (+4 new cases; FN-1 flipped in place to TP-5).
+
+### Cross-references
+
+- Sprint 63 (v3.119.0) — added the `.vue` routing scaffold this
+  sprint builds on top of.
+- cognium-dev #184 — closed by this release.
+
 ## [3.119.0] - 2026-06-29
 
 Sprint 63 — cognium-dev #184 Vue SFC scaffold (sprint 1 of 2). Adds

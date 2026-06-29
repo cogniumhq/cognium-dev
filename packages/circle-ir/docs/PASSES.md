@@ -94,6 +94,7 @@ Attribute-level checks on HTML AST. No IR/taint graph required.
 | H6 | `html-autocomplete-sensitive` | CWE-525 | note | shipped | Sensitive input without `autocomplete="off"` |
 | H7 | `html-inline-event-handler` | CWE-79 | note | shipped | Inline `on*` handler (CSP incompatible) |
 | H8 | `html-form-action-javascript` | CWE-79 | error | shipped | `<form action="javascript:...">` |
+| H9 | `vue-template-xss` | CWE-79 | error | shipped | Vue SFC `<template>` `v-html` / `v-bind:innerHTML` / `:innerHTML` / `v-bind:outerHTML` / `:outerHTML` binding whose RHS expression references an identifier tainted in the file's `<script>` blocks (sprint 64, cognium-dev #184) |
 
 ### A3. Security Headers Pass (category = `security`)
 

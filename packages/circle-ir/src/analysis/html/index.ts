@@ -16,6 +16,8 @@ export {
 
 export { runHtmlAttributeSecurityChecks } from './html-attribute-security-pass.js';
 
+export { runVueTemplateXssChecks } from './vue-template-xss-pass.js';
+
 export {
   mergeHtmlResults,
   type ScriptBlockResult,

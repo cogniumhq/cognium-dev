@@ -1,18 +1,16 @@
 /**
- * Sprint 63 — cognium-dev #184 Vue SFC scaffold (sprint 1 of 2).
+ * cognium-dev #184 — Vue SFC detection (sprints 63 + 64).
  *
- * Adds routing infrastructure for `.vue` Single-File Components so the
- * existing JS pipeline analyzes `<script>` and `<script setup>` blocks.
- * Reuses tree-sitter-html under the hood: probe with
- * `analyze(vueSrc, 'Foo.vue', 'html')` against HEAD confirms the html
- * grammar parses `<template>` / `<script>` / `<style>` blocks identically
- * to a plain HTML document, so script extraction "just works" once the
- * `'vue'` language tag is added to the SupportedLanguage union.
+ * Sprint 63 added `.vue` routing through tree-sitter-html so the
+ * existing JS pipeline picks up `<script>` / `<script setup>` /
+ * `<script lang="ts">` blocks (TP-1..TP-4 below).
  *
- * Sprint 63 scope = JS-side detection only. Vue template attribute
- * sinks (`v-html`, `v-text`, `:innerHTML`) are explicitly out of scope
- * and land in Sprint 64 as a new vue-template-xss pass. FN-1 below
- * documents and locks that gap until then.
+ * Sprint 64 added the `vue-template-xss` synthetic-emission pass that
+ * walks the template subtree for dangerous attribute bindings
+ * (`v-html`, `v-bind:innerHTML`, `:innerHTML`, `v-bind:outerHTML`,
+ * `:outerHTML`) and emits a CWE-79 finding when the RHS expression
+ * references an identifier tainted in the same file's script blocks
+ * (TP-5..TP-7 + TN-1..TN-2 below).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -85,14 +83,14 @@ eval(userInput);
   });
 
   // -------------------------------------------------------------------------
-  // FN-1 — Sprint 64 contract lock (template-side v-html NOT detected today)
+  // Sprint 64 — vue-template-xss pass (template attribute bindings)
   // -------------------------------------------------------------------------
 
-  it('#184 FN-1 — Vue SFC <template v-html="taint">: documented FN (Sprint 64)', async () => {
-    // Tainted value bound to v-html. Sprint 63 does NOT walk the
-    // <template> subtree, so this currently produces zero XSS findings.
-    // When Sprint 64 lands the vue-template-xss pass, this expectation
-    // flips to .toBeGreaterThanOrEqual(1) and becomes TP-5.
+  const vueXssFindings = (r: { findings?: Array<{ rule_id: string }> }) =>
+    (r.findings ?? []).filter((f) => f.rule_id === 'vue-template-xss');
+
+  it('#184 TP-5 — Vue SFC <template v-html="taint">: fires vue-template-xss', async () => {
+    // Sprint 63 locked this at zero; Sprint 64 flips it to a real TP.
     const code = `<template>
   <div v-html="userInput"></div>
 </template>
@@ -102,9 +100,63 @@ const userInput = req.body.payload;
 </script>
 `;
     const r = await analyze(code, 'Foo.vue', 'vue');
-    const xssFindings = (r.findings ?? []).filter(
-      (f) => f.rule_id === 'xss' || f.cwe === 'CWE-79',
-    );
-    expect(xssFindings.length).toBe(0);
+    expect(vueXssFindings(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#184 TP-6 — Vue SFC :innerHTML shorthand binding fires', async () => {
+    const code = `<template>
+  <div :innerHTML="userInput"></div>
+</template>
+
+<script setup>
+const userInput = req.body.payload;
+</script>
+`;
+    const r = await analyze(code, 'Foo.vue', 'vue');
+    expect(vueXssFindings(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#184 TP-7 — Vue SFC v-bind:innerHTML full form fires', async () => {
+    const code = `<template>
+  <span v-bind:innerHTML="userInput"></span>
+</template>
+
+<script setup>
+const userInput = req.body.payload;
+</script>
+`;
+    const r = await analyze(code, 'Foo.vue', 'vue');
+    expect(vueXssFindings(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#184 TN-1 — Vue SFC v-text with taint does NOT fire (textContent is safe)', async () => {
+    // v-text writes via textContent which the browser escapes.
+    // Even with a tainted RHS this must produce zero vue-template-xss
+    // findings — locks the v-text-is-safe contract.
+    const code = `<template>
+  <div v-text="userInput"></div>
+</template>
+
+<script setup>
+const userInput = req.body.payload;
+</script>
+`;
+    const r = await analyze(code, 'Foo.vue', 'vue');
+    expect(vueXssFindings(r).length).toBe(0);
+  });
+
+  it('#184 TN-2 — Vue SFC v-html with literal string does NOT fire (no tainted ident)', async () => {
+    // No identifier on the RHS matches a tainted def — the binding is
+    // a static string literal. Must produce zero findings.
+    const code = `<template>
+  <div v-html="'<b>literal</b>'"></div>
+</template>
+
+<script setup>
+const userInput = req.body.payload;
+</script>
+`;
+    const r = await analyze(code, 'Foo.vue', 'vue');
+    expect(vueXssFindings(r).length).toBe(0);
   });
 });

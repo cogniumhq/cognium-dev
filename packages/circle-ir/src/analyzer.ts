@@ -94,6 +94,7 @@ import { CrossFilePass } from './analysis/passes/cross-file-pass.js';
 // HTML preprocessor
 import { extractHtmlContent } from './analysis/html/html-extractor.js';
 import { runHtmlAttributeSecurityChecks } from './analysis/html/html-attribute-security-pass.js';
+import { runVueTemplateXssChecks } from './analysis/html/vue-template-xss-pass.js';
 import { mergeHtmlResults } from './analysis/html/html-merge.js';
 import type { ScriptBlockResult } from './analysis/html/html-merge.js';
 
@@ -869,6 +870,14 @@ async function analyzeMarkupFile(
 
   // Run attribute-level security checks
   const attributeFindings = runHtmlAttributeSecurityChecks(tree.rootNode, filePath);
+
+  // Vue-only: walk the <template> subtree for dangerous attribute
+  // bindings (v-html / :innerHTML / etc.) that reference identifiers
+  // tainted in the file's script blocks. Sprint 64 / cognium-dev #184.
+  if (language === 'vue') {
+    const vueXss = runVueTemplateXssChecks(tree.rootNode, filePath, scriptResults);
+    if (vueXss.length > 0) attributeFindings.push(...vueXss);
+  }
 
   // Merge everything
   const result = mergeHtmlResults(meta, scriptResults, attributeFindings);

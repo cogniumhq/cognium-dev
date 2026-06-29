@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.120.0] - 2026-06-29
+
+Engine bump only — adopts [`circle-ir@3.120.0`](https://www.npmjs.com/package/circle-ir)
+which closes the Sprint 63/64 Vue SFC track (cognium-dev #184). The
+new `vue-template-xss` pass detects Vue `<template>` attribute
+bindings (`v-html`, `v-bind:innerHTML`, `:innerHTML`,
+`v-bind:outerHTML`, `:outerHTML`) whose RHS references an identifier
+tainted in the file's `<script>` blocks, emitting a CWE-79 finding at
+the binding line. `v-text` is correctly treated as safe.
+
+Findings appear under the standard XSS surface — no new CLI flag,
+output formats unchanged.
+
+No CLI source change.
+
 ## [3.119.0] - 2026-06-29
 
 Engine bump only — adopts [`circle-ir@3.119.0`](https://www.npmjs.com/package/circle-ir)
