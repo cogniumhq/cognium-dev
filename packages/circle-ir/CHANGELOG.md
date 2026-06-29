@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.118.0] - 2026-06-28
+
+Sprint 62 — cognium-dev #171 recall lock (Java XXE no-hardening / plantuml
+`XmlFactories` shape). **Recall-lock-only sprint — no source change.**
+
+### Verified-already-shipped (recall lock)
+
+- **#171 plantuml `XmlFactories` (DocumentBuilderFactory.newInstance() +
+  TransformerFactory.newInstance() with zero hardening)** — high-severity
+  `xml-entity-expansion` finding fires as expected. The Sprint 44 #166 fix
+  (file-level suppression keyed on `JAVA_SAFE_EVIDENCE_RE`) does **not**
+  suppress this shape because no hardening tokens
+  (`FEATURE_SECURE_PROCESSING`, `ACCESS_EXTERNAL_DTD`, `disallow-doctype-decl`,
+  etc.) are present anywhere in the file. The Sprint 43 #173 suppressors
+  (`isXmlOutputOnly` / `isDocumentBuilderEmptyOnly`) also do not match
+  because the factory-holder class contains no `new DOMSource(` /
+  `new StreamResult(` and no `.newDocument()` calls.
+- Companion / inverse of #166: the hardened counterpart (any of
+  `FEATURE_SECURE_PROCESSING`, `ACCESS_EXTERNAL_DTD`,
+  `disallow-doctype-decl`, ...) remains fully suppressed per the Sprint 44
+  binary-suppression contract.
+
+The ticket's "low-confidence emit for unhardened factories" enhancement
+request is intentionally **out of scope** — it would reverse the explicit
+Sprint 44 design decision to fully suppress rather than downgrade in the
+inverse-FP scenario. The current binary contract satisfies both reporter
+goals (plantuml fires high-confidence; languagetool-style false positives
+stay suppressed) without API surface change.
+
+Locked in `tests/analysis/passes/java-xxe-no-hardening-tp.test.ts`
+(5 cases: 3 TPs + 2 TNs). Test suite: 3173 pass + 3 skipped
+(was 3168+3).
+
 ## [3.117.0] - 2026-06-28
 
 Sprint 60 — FP regression cluster (#102 + #113 + #114 + #115). Phase 0

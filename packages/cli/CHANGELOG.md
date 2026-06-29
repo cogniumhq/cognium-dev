@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.118.0] - 2026-06-28
+
+Engine bump only — adopts [`circle-ir@3.118.0`](https://www.npmjs.com/package/circle-ir)
+which adds a Sprint 62 recall lock for cognium-dev #171 (Java XXE
+no-hardening / plantuml `XmlFactories` shape). No source change in the
+analyzer or CLI — the behavior was already correct; the new test file
+documents and locks the binary-suppression contract from Sprint 44
+(#166) against regression.
+
+No CLI source change.
+
 ## [3.117.0] - 2026-06-28
 
 Engine bump only — adopts [`circle-ir@3.117.0`](https://www.npmjs.com/package/circle-ir)
