@@ -5,6 +5,117 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.123.0] - 2026-06-29
+
+Sprints 67 + 69 + 70 + 71 (wave 1) + 72. Closes the last bash FP in
+cognium-dev #216 (bash slice 5/5 complete), three S-tier FN tickets
+(#199, #151, #183 residual), and 5 of 14 cells in #190. cognium-dev
+#216 stays open for cross-language FPs; cognium-dev #190 stays open
+for 9 remaining cells (Rust hardcoded-credential bootstrap, Java JWT
+`JWT.decode` cross-call reasoning, Rust/Go ECB cipher-mode reasoning).
+
+### Added
+
+- **`unverified-package-install` (CWE-494, bash, #105 in PASSES.md)** —
+  cognium-dev #199. Detects `dpkg -i`, `rpm -i/-U`, `apt(-get|itude)
+  install <.deb>`, and `yum|dnf|zypper install <.rpm>` invocations of a
+  file PATH when the script contains no integrity verifier earlier
+  (`gpg --verify`, `rpm --checksig`, `dpkg --verify`, `sha{1,256,512}sum
+  -c`, `md5sum -c`, `b2sum -c`, `cksum -c`). Whole-script verifier
+  presence gates the finding — matches the canonical "verify-then-
+  install" idiom where the gpg/sha verify references a separate file or
+  inline data. Closes FN-CVE-B03 (compromised-package-install class).
+  CWE-494 Download of Code Without Integrity Check. Severity: high.
+- **`external-secret-exfiltration` (CWE-200, Python/JS/TS/Go, #106 in
+  PASSES.md)** — cognium-dev #151 (FN-TQ-01). Fires when an environment-
+  read secret variable is sent in the body of a request to an external
+  host. Per-language detection: Python `requests.{post,put,patch,delete,
+  request}` / `httpx.*` with secret-bearing var in `json=`/`data=`/
+  `files=`/`content=` (NOT just in `headers=`); JS `https.request(URL,
+  …)` / `http.request(…)` / `fetch(…)` / `axios.{post,put,patch,request}
+  (…)` with secret-bearing var or carrier var (`body = JSON.stringify
+  ({secret})`) in inline body OR forward `req.write(body)`; Go
+  `http.PostForm(URL, body)` / `http.Post(URL, ct, body)` /
+  `http.NewRequest(method, URL, body)` with secret var in args. Body-vs-
+  headers gate suppresses the legitimate `Authorization: Bearer …`
+  pattern. Internal-host allowlist (`.internal.`/`.local`/`.lan`/
+  `.corp`/loopback/RFC1918/single-label) prevents first-party FPs.
+  Severity: high.
+
+### Fixed
+
+- **bash `weak-hash` (CWE-328)** — cognium-dev #190 wave 1. Extended
+  rule #17 to recognise `md5`/`sha1`/`md5sum`/`sha1sum` invoked as a
+  command (pipeline or standalone). Token must appear at line start or
+  after `|`/`;`/`&&`/`||`. `sha256sum`/`sha512sum`/`b2sum` remain
+  benign.
+- **Python `cors-wildcard-origin` (CWE-942)** — cognium-dev #190 wave
+  1. Extended rule #89d to fire on `resp.headers['Access-Control-
+  Allow-Origin'] = '*'` subscript-assignment shape (Flask/Django/
+  Starlette `Response` objects). Existing `setHeader`/`addHeader`
+  method-call coverage stays untouched.
+- **Python `xfo-csp-mismatch` (CWE-1021)** — cognium-dev #190 wave 1.
+  Extended rule #89h to detect correlated `resp.headers['X-Frame-
+  Options'] = 'DENY'|'SAMEORIGIN'` + `resp.headers['Content-Security-
+  Policy'] = '… frame-ancestors *|http* …'` subscript assignments
+  within the same file.
+- **Python `tls-verify-disabled` (CWE-295)** — cognium-dev #190 wave 1.
+  Extended rule #92 with the post-create `ssl.SSLContext` mutation
+  shape: `ctx.verify_mode = ssl.CERT_NONE` and `ctx.check_hostname =
+  False`. Existing `requests/httpx(verify=False)` and
+  `ssl._create_unverified_context()` coverage stays untouched.
+- **Rust `tls-verify-disabled` (CWE-295)** — cognium-dev #190 wave 1.
+  Extended rule #92 for `reqwest::Client::builder()
+  .danger_accept_invalid_certs(true)` and `.danger_accept_invalid_
+  hostnames(true)`. `false` argument (re-enable) is benign and not
+  flagged.
+- **Python `input()` as forward-taint source** — cognium-dev #183
+  residual. Added `\binput\s*\(` to both `PYTHON_TAINTED_PATTERNS`
+  registries (`language-sources-pass.ts` and `taint-matcher.ts`,
+  classified as `io_input`). `input()` was already registered in
+  `configs/sources/python.json` but the regex registries didn't track
+  it, so `name = input()` was not added to `pyTaintedVars`. Closes
+  the deferred `getattr(obj, input())()` reflection-invocation shape
+  and unblocks the long-standing skipped test in
+  `python-reflection-code-injection-fn.test.ts`.
+- **bash SQL-CLI tools sink-type classification** — cognium-dev #216
+  (last bash FP). The bash interprocedural fallback in
+  `src/analysis/interprocedural.ts` re-classifies every external-
+  utility call carrying a tainted positional as `command_injection`
+  (CWE-78). For `sqlite3`/`mysql`/`psql`/`mariadb` this is wrong: those
+  CLIs take SQL strings as positional args, not shell commands. New
+  per-utility set re-classifies the fallback finding as
+  `sql_injection` (CWE-89). The finding remains (the flow IS a SQL
+  injection); only the type label is corrected. Non-SQL CLIs (`ssh`,
+  `nc`, etc.) continue to fire `command_injection` unchanged.
+
+### Tests
+
+- `tests/analysis/passes/bash-unverified-package-install.test.ts` — 7
+  cases (5 TP across dpkg/rpm/apt-deb/yum-rpm/zypper-rpm + 2 TN with
+  gpg/sha verifier present).
+- `tests/analysis/passes/external-secret-exfiltration.test.ts` — 8
+  cases: 3 TP corpus (Python/JS/Go env-secret → external collector) +
+  3 TN safe-mirrors (Authorization-header to internal host, HMAC-only
+  local use) + 2 TN external-URL with secret only in Authorization
+  header.
+- `tests/analysis/passes/config-pattern-190-wave1.test.ts` — 11 cases:
+  py cors-wildcard-origin TP/TN, py xfo-csp-mismatch TP/TN, py
+  tls-verify-disabled TP/TN, bash weak-hash md5/sha1sum TP +
+  sha256sum TN, rust tls-verify-disabled TP/TN.
+- `tests/analysis/passes/python-input-source-183.test.ts` — 4 cases:
+  aliased + direct `getattr(obj, input())()` TPs, `os.system(input())`
+  TP, `shlex.quote` sanitizer TN.
+- `tests/analysis/passes/python-reflection-code-injection-fn.test.ts`
+  — un-skipped the Sprint 56 deferred test (now passes via Sprint 72
+  fix).
+- `tests/analysis/passes/bash-fp-216.test.ts` — 5 cases for the bash
+  SQL-CLI re-classification (sqlite3/mysql/psql var-indirect TNs +
+  sqlite3 direct TP-control + ssh non-SQL TP-control).
+
+Net: **+31 tests** (3199 → 3231 passed; 1 previously-skipped test
+un-skipped, 2 skipped remain). All 222 test files pass.
+
 ## [3.122.0] - 2026-06-29
 
 Sprint 66 — cognium-dev #216 bash slice continuation (1 more FP closed,

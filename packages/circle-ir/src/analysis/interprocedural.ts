@@ -317,7 +317,27 @@ export function analyzeInterprocedural(
           }
         }
 
-        const sink: TaintSink = isBash
+        // Bash SQL CLI re-classification (#216 FP #5): SQL client utilities
+        // (sqlite3, mysql, psql, mariadb) take SQL strings as positional
+        // args, not shell commands. When taint reaches the fallback (e.g.
+        // via variable indirection that bypasses the per-utility builtin
+        // sink in `bash.ts`), classify as CWE-89 sql_injection instead of
+        // CWE-78 command_injection. The flow IS a vulnerability; only the
+        // type label is corrected.
+        const bashSqlCliTools = new Set(['sqlite3', 'mysql', 'psql', 'mariadb']);
+        const isBashSqlCli = isBash && bashSqlCliTools.has(call.method_name);
+
+        const sink: TaintSink = isBashSqlCli
+          ? {
+              type: 'sql_injection',
+              cwe: 'CWE-89',
+              location: `Tainted data (${taintedArgVars.join(', ')}) interpolated into SQL query passed to ${call.method_name}`,
+              line: call.location.line,
+              confidence: 0.7,
+              method: call.method_name,
+              argPositions: taintedArgPositions,
+            }
+          : isBash
           ? {
               type: 'command_injection',
               cwe: 'CWE-78',

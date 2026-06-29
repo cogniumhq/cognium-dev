@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.123.0] - 2026-06-29
+
+Engine bump only — adopts [`circle-ir@3.123.0`](https://www.npmjs.com/package/circle-ir)
+which closes the last bash FP from cognium-dev #216 (bash slice 5/5
+complete), three S-tier FN tickets, and 5 of 14 cells from #190:
+
+**New rules:**
+- `unverified-package-install` (CWE-494, bash) — `dpkg`/`rpm`/`apt`/
+  `yum`/`dnf`/`zypper install` of a .deb/.rpm file path without a
+  signature or checksum verifier present in the script (#199, FN-CVE-
+  B03 supply-chain class).
+- `external-secret-exfiltration` (CWE-200, Python/JS/TS/Go) — env-
+  read secret variable sent in the BODY of an external HTTPS request
+  (#151, FN-TQ-01 composed-flow). Internal-host allowlist + body-vs-
+  headers split prevent first-party / `Authorization: Bearer …` FPs.
+
+**Rule extensions:**
+- bash `weak-hash` — recognises `md5`/`sha1`/`md5sum`/`sha1sum` as a
+  pipeline/standalone command (#190 wave 1).
+- Python `cors-wildcard-origin` — subscript-assignment shape
+  (`resp.headers['Access-Control-Allow-Origin'] = '*'`).
+- Python `xfo-csp-mismatch` — correlated XFO + CSP `frame-ancestors`
+  subscript assignments.
+- Python `tls-verify-disabled` — post-create `ctx.verify_mode = ssl.
+  CERT_NONE` / `ctx.check_hostname = False` mutations.
+- Rust `tls-verify-disabled` — reqwest `.danger_accept_invalid_certs
+  (true)` / `.danger_accept_invalid_hostnames(true)`.
+- Python `input()` is now a forward-taint source — closes
+  `getattr(obj, input())()` reflection-invocation (#183 residual).
+
+**FP fix:**
+- bash `command_injection` (CWE-78) for `sqlite3`/`mysql`/`psql`/
+  `mariadb` interprocedural fallback now correctly classifies as
+  `sql_injection` (CWE-89) — same flow, correct type (#216 bash 5/5).
+
+No CLI surface change. #190 stays open for 9 remaining cells; #216
+stays open for cross-language FPs.
+
 ## [3.122.0] - 2026-06-29
 
 Engine bump only — adopts [`circle-ir@3.122.0`](https://www.npmjs.com/package/circle-ir)

@@ -100,6 +100,11 @@ const PYTHON_TAINTED_PATTERNS = [
   { pattern: /\bget_query_parameter\s*\(/,     type: 'http_param'  as SourceType },
   { pattern: /\bget_header_value\s*\(/,        type: 'http_header' as SourceType },
   { pattern: /\bget_cookie_value\s*\(/,        type: 'http_cookie' as SourceType },
+  // Sprint 72 (#183 residual): `input()` is registered in
+  // configs/sources/python.json but was not in the forward-taint regex
+  // registry, so `name = input()` was not added to pyTaintedVars. Closes
+  // the deferred `getattr(obj, input())()` reflection-invocation shape.
+  { pattern: /\binput\s*\(/,                   type: 'io_input'    as SourceType },
 ];
 
 // ---------------------------------------------------------------------------
@@ -219,6 +224,28 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
           });
         }
       }
+
+      // Sprint 68 — #183: reflection-invocation sinks for
+      //   (a) direct  `getattr(obj, taint)()`  (single-line two-call)
+      //   (b) aliased `fn = getattr(obj, taint); ...; fn()` (two-stmt)
+      // Conservative: requires the 2nd `getattr` arg to be in pyTaintedVars
+      // AND the result to be invoked (gates against the benign data-access
+      // shape `value = getattr(obj, name)` or 3-arg `getattr(o, n, default)`).
+      for (const r of findPythonReflectionInvocationSinks(code, pyTaintedVars)) {
+        const alreadyExists = additionalSinks.some(
+          s => s.line === r.sinkLine && s.type === 'code_injection' && s.method === r.method
+        );
+        if (!alreadyExists) {
+          additionalSinks.push({
+            type: 'code_injection',
+            cwe: 'CWE-94',
+            line: r.sinkLine,
+            location: `reflection invocation (getattr result called) with tainted attribute name at line ${r.sinkLine}`,
+            method: r.method,
+            confidence: 0.85,
+          });
+        }
+      }
     }
 
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
@@ -244,12 +271,46 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'python') {
       additionalSanitizers.push(...findPythonNetlocAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findPythonRangeCheckGuardSanitizers(code));
+      // Sprint 71 (#190): pattern-based misconfig findings for subscript/context
+      // assignment shapes (cors-wildcard-origin, xfo-csp-mismatch, tls-verify-
+      // disabled) that the language-agnostic detectors miss in Python.
+      const pyMisconfigFindings = findPythonPatternFindings(code, graph.ir.meta.file);
+      for (const finding of pyMisconfigFindings) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Rust: safe-handler sanitizer detectors (cognium-dev #115 Sprint 31) --
     if (language === 'rust') {
       additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
+      // Sprint 71 (#190): Rust reqwest builder `danger_accept_invalid_*(true)`
+      // is `tls-verify-disabled` — same rule as the Python/JS shapes.
+      const rustMisconfigFindings = findRustPatternFindings(code, graph.ir.meta.file);
+      for (const finding of rustMisconfigFindings) {
+        ctx.addFinding(finding);
+      }
+    }
+
+    // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
+    // Pattern findings only — no taint flow required (composed-flow shape that
+    // the engine misses because the env source and the egress sink are
+    // co-located in one file but the taint propagator doesn't classify
+    // env-reads as taint sources for this exfil sink).
+    if (
+      language === 'python' ||
+      language === 'javascript' ||
+      language === 'typescript' ||
+      language === 'go'
+    ) {
+      const exfilFindings = findExternalSecretExfiltrationFindings(
+        code,
+        graph.ir.meta.file,
+        language
+      );
+      for (const finding of exfilFindings) {
+        ctx.addFinding(finding);
+      }
     }
 
     // Attach trimmed source-line text to each emitted source/sink so consumers
@@ -1050,6 +1111,91 @@ function findPythonReturnXSSSinks(
   return sinks;
 }
 
+/**
+ * Sprint 68 — #183: Python `getattr(obj, taint)()` reflection invocation.
+ *
+ * Detects two shapes that arrive at an attribute look-up by tainted name
+ * and then invoke the result as a callable:
+ *
+ *   1. DIRECT:  `... getattr(obj, name)(...) ...`        (single-line two-call)
+ *   2. ALIASED: `fn = getattr(obj, name)` then later `fn(...)` (two-stmt)
+ *
+ * `name` must be in `taintedVars` (i.e. flowed from a known Python source).
+ * 3-arg `getattr(obj, name, default)` is excluded — the default-value form
+ * is the idiomatic Python "safe attribute read" pattern and almost always
+ * indicates the caller treats the result as a value, not a callable.
+ *
+ * Sink placement:
+ *   - DIRECT:  sink at the line containing both the `getattr` call and the
+ *     trailing `(...)`. The engine's flow logic connects via the `name`
+ *     argument on that call site.
+ *   - ALIASED: sink at the BIND line (where `getattr(obj, name)` actually
+ *     references `name` as a call argument). Required because the
+ *     downstream invocation line (`fn()`) has zero args, and the engine's
+ *     `flows.push` path keys off tainted call arguments, not callees. The
+ *     aliased branch is still gated on detecting the subsequent invocation,
+ *     so a bare `value = getattr(obj, name)` with no later call does NOT
+ *     fire.
+ */
+function findPythonReflectionInvocationSinks(
+  sourceCode: string,
+  taintedVars: Map<string, number>
+): Array<{ sinkLine: number; method: string }> {
+  if (taintedVars.size === 0) return [];
+  const sinks: Array<{ sinkLine: number; method: string }> = [];
+  const lines = sourceCode.split('\n');
+
+  // 2-arg only: reject `getattr(obj, name, default)`. The 2nd group MUST
+  // be a bare identifier (so we can check membership in taintedVars).
+  const directRe =
+    /\bgetattr\s*\(\s*[^,()]+\s*,\s*([A-Za-z_][\w]*)\s*\)\s*\(/;
+  // Aliased binding: `alias = getattr(obj, name)` with strictly 2 args.
+  const bindRe =
+    /^\s*([A-Za-z_][\w]*)\s*=\s*getattr\s*\(\s*[^,()]+\s*,\s*([A-Za-z_][\w]*)\s*\)\s*$/;
+
+  type Alias = { name: string; bindLine: number };
+  const aliases: Alias[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trimStart().startsWith('#')) continue;
+
+    const dm = line.match(directRe);
+    if (dm && taintedVars.has(dm[1])) {
+      sinks.push({ sinkLine: i + 1, method: 'getattr' });
+      continue;
+    }
+
+    const bm = line.match(bindRe);
+    if (bm && taintedVars.has(bm[2])) {
+      aliases.push({ name: bm[1], bindLine: i + 1 });
+    }
+  }
+
+  if (aliases.length === 0) return sinks;
+
+  // Second pass: for each alias, look for an invocation `<alias>(...)` on a
+  // later line. If found, emit the sink at the BIND line (see header note).
+  const firedBindLines = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trimStart().startsWith('#')) continue;
+    const lineNum = i + 1;
+    for (const a of aliases) {
+      if (lineNum <= a.bindLine) continue;
+      if (firedBindLines.has(a.bindLine)) continue;
+      // Plain invocation: `<alias>(...)`. Reject method-style `o.alias(...)`.
+      const invokeRe = new RegExp(`(?<![\\w.])${a.name}\\s*\\(`);
+      if (invokeRe.test(line)) {
+        sinks.push({ sinkLine: a.bindLine, method: 'getattr' });
+        firedBindLines.add(a.bindLine);
+      }
+    }
+  }
+
+  return sinks;
+}
+
 function findJavaScriptDOMSinks(sourceCode: string, language: string): Array<{
   type: string; cwe: string; severity: string; line: number; location: string; method?: string;
 }> {
@@ -1368,6 +1514,15 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
   const lines = sourceCode.split('\n');
   const checksumVerifiedTmpPaths = collectChecksumVerifiedTmpPaths(lines);
 
+  // Sprint 69 (#199): unverified-package-install — `dpkg -i`, `rpm -i/-U`,
+  // `apt(-get|itude) install <.deb>`, `yum|dnf|zypper install <.rpm>` of a
+  // file path that was not verified by a signature (gpg --verify / rpm
+  // --checksig / dpkg --verify) or checksum (sha{1,256,512}sum -c / b2sum
+  // -c) earlier in the script. The shape covers the daemon-pkg-install
+  // CVE class (FN-CVE-B03) where a tainted URL is downloaded then
+  // installed without integrity check.
+  const scriptHasVerifier = hasIntegrityVerifierAnywhere(lines);
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
@@ -1475,9 +1630,128 @@ export function findBashPatternFindings(sourceCode: string, file: string): SastF
         snippet: trimmed.substring(0, 80),
       });
     }
+
+    // 6. Unverified package install (Sprint 69, #199)
+    if (!scriptHasVerifier) {
+      const installer = matchUnverifiedPackageInstall(trimmed);
+      if (installer) {
+        findings.push({
+          id: `unverified-package-install-${file}-${lineNumber}`,
+          pass: 'language-sources',
+          category: 'security',
+          rule_id: 'unverified-package-install',
+          cwe: 'CWE-494',
+          severity: 'high',
+          level: 'error',
+          message: `Unverified package install via ${installer}: package contents are not integrity-checked (no gpg/sha256sum verify in script)`,
+          file,
+          line: lineNumber,
+          snippet: trimmed.substring(0, 80),
+        });
+      }
+    }
+
+    // 7. Weak hash command (Sprint 71, #190): `md5`, `sha1`, `md5sum`,
+    // `sha1sum` invoked as a command (pipeline or standalone). Modern
+    // best-practice is `sha256sum`/`sha512sum`/`b2sum`. The verify form
+    // (`-c`/`--check`) is informational, not a fresh hash emission, but
+    // the algorithm is still broken — we still fire.
+    const weakHashAlg = matchBashWeakHashCommand(trimmed);
+    if (weakHashAlg) {
+      findings.push({
+        id: `weak-hash-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'weak-hash',
+        cwe: 'CWE-328',
+        severity: 'medium',
+        level: 'warning',
+        message: `Weak hash algorithm: ${weakHashAlg} is cryptographically broken. Use sha256sum or sha512sum`,
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 80),
+      });
+    }
   }
 
   return findings;
+}
+
+/**
+ * Sprint 71 (#190): match a bare bash `md5` / `sha1` / `md5sum` / `sha1sum`
+ * invocation. Returns the algorithm name when found, else null.
+ *
+ * Recognition rules:
+ *   - Word-boundary match on `md5`, `sha1`, `md5sum`, `sha1sum`.
+ *   - The token must appear at the start of the line OR immediately after
+ *     a pipeline operator (`|`) or shell separator (`;`, `&&`, `||`).
+ *   - Reject when the token appears inside an obvious algorithm-name
+ *     string literal (e.g. `"md5sum"` as an argv).
+ */
+function matchBashWeakHashCommand(line: string): string | null {
+  // Algorithm name + boundary: either followed by whitespace, end-of-line,
+  // a redirect, or another pipe.
+  const re = /(?:^|[|;]|&&|\|\|)\s*(md5sum|sha1sum|md5|sha1)\b(?!\s*=)/;
+  const m = line.match(re);
+  if (!m) return null;
+  // Reject `-c` / `--check` verify form? No — broken algorithm regardless.
+  return m[1];
+}
+
+/**
+ * Sprint 69 (#199): return the installer name when `line` is a package-install
+ * command of a file PATH (not a registry package name).
+ *
+ *   dpkg -i / -I / -U / --install            → 'dpkg'
+ *   rpm  -i / -U / --install / --upgrade     → 'rpm'
+ *   apt-get|apt|aptitude install …/*.deb     → 'apt-get'|'apt'|'aptitude'
+ *   yum|dnf|zypper install …/*.rpm           → 'yum'|'dnf'|'zypper'
+ *
+ * For apt/yum/dnf/zypper the install target must be an explicit .deb/.rpm
+ * file path (otherwise the call is a normal repository-managed install and
+ * not the FN shape we model).
+ */
+function matchUnverifiedPackageInstall(line: string): string | null {
+  // dpkg -i / -I / -U / --install
+  if (/\bdpkg\b/.test(line) && /(?:^|\s)(?:-[a-zA-Z]*[iIU][a-zA-Z]*|--install)\b/.test(line)) {
+    return 'dpkg';
+  }
+  // rpm -i / -U / --install / --upgrade (reject -e/--erase, -q/--query, -V/--verify)
+  if (/\brpm\b/.test(line) && /(?:^|\s)(?:-[a-zA-Z]*[iU][a-zA-Z]*|--install|--upgrade)\b/.test(line)
+      && !/--(?:verify|checksig|erase|query)\b/.test(line)) {
+    return 'rpm';
+  }
+  // apt-get|apt|aptitude install <.deb path>
+  const aptMatch = line.match(/\b(apt-get|apt|aptitude)\s+install\b/);
+  if (aptMatch && /\.deb\b/.test(line)) {
+    return aptMatch[1];
+  }
+  // yum|dnf|zypper install <.rpm path>
+  const yumMatch = line.match(/\b(yum|dnf|zypper)\s+install\b/);
+  if (yumMatch && /\.rpm\b/.test(line)) {
+    return yumMatch[1];
+  }
+  return null;
+}
+
+/**
+ * Sprint 69 (#199): True iff the script contains any integrity-verifier
+ * invocation that would gate a subsequent install (signature or checksum).
+ * Whole-script check, not per-path — matches the corpus's "verify-then-
+ * install" idiom where the gpg/sha verify references a separate path or
+ * inline data.
+ */
+function hasIntegrityVerifierAnywhere(lines: string[]): boolean {
+  const sigRe = /\b(?:gpg(?:v|2)?|gpg)\s+(?:[^|]*\s)?--verify\b/;
+  const rpmSigRe = /\brpm\s+(?:[^|]*\s)?--checksig\b/;
+  const dpkgSigRe = /\bdpkg\s+(?:[^|]*\s)?--verify\b/;
+  const sumRe = /\b(?:sha(?:1|224|256|384|512)sum|md5sum|cksum|b2sum)\s+(?:[^|]*\s)?(?:-c|--check)\b/;
+  for (const line of lines) {
+    if (sigRe.test(line) || rpmSigRe.test(line) || dpkgSigRe.test(line) || sumRe.test(line)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2086,4 +2360,535 @@ function findRustCanonicalizeGuardSanitizers(code: string): TaintSanitizer[] {
   }
 
   return sanitizers;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 70 (#151) — external-secret-exfiltration composed-flow detection.
+//
+// Models the trust-corpus FN-TQ-01 shape: an env-read secret variable that
+// is transmitted in the BODY of an outbound HTTPS request to a non-internal
+// host. The detector is intentionally narrow:
+//
+//   - SOURCE: env read assigned to a local var (Python `os.environ` /
+//     `os.getenv`, JS/TS `process.env.X`, Go `os.Getenv`).
+//   - SINK: HTTP POST/PUT/PATCH/DELETE/request to a literal URL whose host
+//     is NOT internal (loopback, RFC1918, `.internal.`, `.local`, `.lan`,
+//     `.corp`, or single-label intranet).
+//   - GATE: secret var (or a JS carrier var defined from a secret) appears
+//     in the request body / form args, NOT exclusively in headers /
+//     Authorization context.
+//
+// CWE-200 (Exposure of Sensitive Information to an Unauthorized Actor).
+// ---------------------------------------------------------------------------
+
+function collectEnvSecretVars(lines: string[], language: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (language === 'python') {
+      // var = os.environ["..."] | os.environ.get(...) | os.getenv(...)
+      const m = line.match(/^\s*(\w+)\s*=\s*os\.(?:environ\s*[\[.]|getenv\b)/);
+      if (m) out.set(m[1], i + 1);
+    } else if (language === 'javascript' || language === 'typescript') {
+      // const/let/var X = process.env.NAME | process.env["NAME"]
+      const m = line.match(/(?:^|\s|;)(?:const|let|var)\s+(\w+)\s*=\s*process\.env\b/);
+      if (m) out.set(m[1], i + 1);
+    } else if (language === 'go') {
+      // X := os.Getenv("...")  or  X = os.Getenv(...)
+      const m = line.match(/^\s*(\w+)\s*:?=\s*os\.Getenv\s*\(/);
+      if (m) out.set(m[1], i + 1);
+    }
+  }
+  return out;
+}
+
+function isExternalHostUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  if (!/^https?:\/\//.test(lower)) return false;
+  const host = lower.replace(/^https?:\/\//, '').split(/[/?#:]/)[0];
+  if (!host) return false;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return false;
+  if (/^10\./.test(host)) return false;
+  if (/^192\.168\./.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  // Common internal markers
+  if (host.includes('.internal.') || host.endsWith('.internal') || host.startsWith('internal.')) return false;
+  if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.corp')) return false;
+  // Single-label hostnames (no dot) are intranet
+  if (!host.includes('.')) return false;
+  return true;
+}
+
+// Walk forward from `start` (first char inside open paren) until the matching
+// close paren is found. Honors string literals to avoid false matches.
+function findBalancedCallEnd(code: string, start: number): number {
+  let depth = 1;
+  let i = start;
+  let inStr: '"' | "'" | '`' | null = null;
+  while (i < code.length) {
+    const ch = code[i];
+    if (inStr) {
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+    } else {
+      if (ch === '"' || ch === "'" || ch === '`') inStr = ch;
+      else if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    i++;
+  }
+  return -1;
+}
+
+// Walk forward from `start` until a top-level comma or end-of-args is found.
+// Used to extract a kwarg's value substring (Python `headers=…` etc.).
+function findKwargValueEnd(s: string, start: number): number {
+  let depth = 0;
+  let inStr: '"' | "'" | '`' | null = null;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inStr = ch as '"' | "'" | '`';
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return i;
+      depth--;
+    } else if (ch === ',' && depth === 0) {
+      return i;
+    }
+  }
+  return s.length;
+}
+
+function lineOfCharIndex(code: string, charIdx: number): number {
+  let line = 1;
+  for (let i = 0; i < charIdx && i < code.length; i++) {
+    if (code[i] === '\n') line++;
+  }
+  return line;
+}
+
+function makeExfilFinding(
+  file: string,
+  line: number,
+  snippet: string,
+  fired: string[],
+  receiver: string
+): SastFinding {
+  return {
+    id: `external-secret-exfiltration-${file}-${line}`,
+    pass: 'language-sources',
+    category: 'security',
+    rule_id: 'external-secret-exfiltration',
+    cwe: 'CWE-200',
+    severity: 'high',
+    level: 'error',
+    message: `Environment secret(s) ${fired.join(', ')} transmitted in request body to external host via ${receiver}`,
+    file,
+    line,
+    snippet: snippet.substring(0, 120),
+  };
+}
+
+export function findExternalSecretExfiltrationFindings(
+  code: string,
+  file: string,
+  language: string
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const secretVars = collectEnvSecretVars(lines, language);
+  if (secretVars.size === 0) return out;
+
+  if (language === 'python') {
+    out.push(...findPythonExfilCalls(code, file, secretVars));
+  } else if (language === 'javascript' || language === 'typescript') {
+    out.push(...findJavaScriptExfilCalls(code, file, secretVars));
+  } else if (language === 'go') {
+    out.push(...findGoExfilCalls(code, file, secretVars));
+  }
+  return out;
+}
+
+function findPythonExfilCalls(
+  code: string,
+  file: string,
+  secretVars: Map<string, number>
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const callRe = /\b(requests|httpx)\.(post|put|patch|delete|request)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(code))) {
+    const argStart = m.index + m[0].length;
+    const argEnd = findBalancedCallEnd(code, argStart);
+    if (argEnd < 0) continue;
+    const args = code.slice(argStart, argEnd);
+    // First arg is URL literal (skip leading whitespace/newlines)
+    const urlMatch = args.match(/^\s*["']([^"']+)["']/);
+    if (!urlMatch) continue;
+    if (!isExternalHostUrl(urlMatch[1])) continue;
+
+    // Split into body-context vs headers-context
+    const headersIdx = args.search(/\bheaders\s*=/);
+    let headersStr = '';
+    let bodyStr = args;
+    if (headersIdx >= 0) {
+      const eqIdx = args.indexOf('=', headersIdx);
+      const valueStart = eqIdx + 1;
+      const headersEnd = findKwargValueEnd(args, valueStart);
+      headersStr = args.slice(valueStart, headersEnd);
+      bodyStr = args.slice(0, headersIdx) + ' ' + args.slice(headersEnd);
+    }
+
+    const fired: string[] = [];
+    for (const v of secretVars.keys()) {
+      const re = new RegExp(`\\b${v}\\b`);
+      if (re.test(bodyStr) && !re.test(headersStr)) fired.push(v);
+    }
+    if (fired.length > 0) {
+      const line = lineOfCharIndex(code, m.index);
+      out.push(
+        makeExfilFinding(file, line, code.slice(m.index, Math.min(argEnd + 1, m.index + 120)), fired, `${m[1]}.${m[2]}`)
+      );
+    }
+  }
+  return out;
+}
+
+function findJavaScriptExfilCalls(
+  code: string,
+  file: string,
+  secretVars: Map<string, number>
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const allLines = code.split('\n');
+
+  // Build carrier vars: any `const|let|var NAME = …<secret-ref>…`
+  const carriers = new Set<string>();
+  const carrierRe = /(?:^|[\s;{])(?:const|let|var)\s+(\w+)\s*=\s*([^;\n]+)/g;
+  let cm: RegExpExecArray | null;
+  while ((cm = carrierRe.exec(code))) {
+    const name = cm[1];
+    const rhs = cm[2];
+    for (const v of secretVars.keys()) {
+      if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+        carriers.add(name);
+        break;
+      }
+    }
+  }
+  const taintedRefs = new Set<string>([...secretVars.keys(), ...carriers]);
+
+  // Match common outbound network call shapes
+  const networkRe =
+    /\b(https?\.(?:request|get)|fetch|axios\.(?:post|put|patch|request|delete))\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = networkRe.exec(code))) {
+    const argStart = m.index + m[0].length;
+    const argEnd = findBalancedCallEnd(code, argStart);
+    if (argEnd < 0) continue;
+    const args = code.slice(argStart, argEnd);
+    // URL literal (string or template)
+    const urlMatch = args.match(/^\s*(?:["']([^"']+)["']|`([^`$]+)`)/);
+    if (!urlMatch) continue;
+    const url = urlMatch[1] || urlMatch[2];
+    if (!isExternalHostUrl(url)) continue;
+
+    // Split body vs headers within the call args. JS uses object literal
+    // fields `headers: {…}` and (optionally) `body: …`.
+    const headersIdx = args.search(/\bheaders\s*:/);
+    let headersStr = '';
+    let restStr = args;
+    if (headersIdx >= 0) {
+      const valueStart = args.indexOf(':', headersIdx) + 1;
+      const headersEnd = findKwargValueEnd(args, valueStart);
+      headersStr = args.slice(valueStart, headersEnd);
+      restStr = args.slice(0, headersIdx) + ' ' + args.slice(headersEnd);
+    }
+
+    const fired = new Set<string>();
+    for (const v of taintedRefs) {
+      const re = new RegExp(`\\b${v}\\b`);
+      if (re.test(restStr) && !re.test(headersStr)) fired.add(v);
+    }
+
+    // Forward scan: req.write(VAR) / req.end(VAR) within next 20 lines
+    const callLine = lineOfCharIndex(code, m.index);
+    const windowEnd = Math.min(allLines.length, callLine + 20);
+    const writeWindow = allLines.slice(callLine, windowEnd).join('\n');
+    const writeRe = /\b\w+\.(?:write|end)\s*\(\s*(\w+)/g;
+    let wm: RegExpExecArray | null;
+    while ((wm = writeRe.exec(writeWindow))) {
+      if (taintedRefs.has(wm[1])) fired.add(wm[1]);
+    }
+
+    if (fired.size > 0) {
+      out.push(
+        makeExfilFinding(
+          file,
+          callLine,
+          code.slice(m.index, Math.min(argEnd + 1, m.index + 120)),
+          [...fired],
+          m[1]
+        )
+      );
+    }
+  }
+  return out;
+}
+
+function findGoExfilCalls(
+  code: string,
+  file: string,
+  secretVars: Map<string, number>
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const patterns: Array<{ re: RegExp; urlArgIndex: 0 | 1; receiver: string }> = [
+    { re: /\bhttp\.PostForm\s*\(/g, urlArgIndex: 0, receiver: 'http.PostForm' },
+    { re: /\bhttp\.Post\s*\(/g, urlArgIndex: 0, receiver: 'http.Post' },
+    { re: /\bhttp\.NewRequest\s*\(/g, urlArgIndex: 1, receiver: 'http.NewRequest' },
+  ];
+
+  for (const { re, urlArgIndex, receiver } of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code))) {
+      const argStart = m.index + m[0].length;
+      const argEnd = findBalancedCallEnd(code, argStart);
+      if (argEnd < 0) continue;
+      const args = code.slice(argStart, argEnd);
+
+      // Skip the leading non-URL arg(s) when needed
+      let urlSearchSlice = args;
+      if (urlArgIndex === 1) {
+        const firstComma = findKwargValueEnd(args, 0);
+        if (firstComma >= args.length) continue;
+        urlSearchSlice = args.slice(firstComma + 1);
+      }
+      const urlMatch = urlSearchSlice.match(/^\s*["`]([^"`]+)["`]/);
+      if (!urlMatch) continue;
+      if (!isExternalHostUrl(urlMatch[1])) continue;
+
+      const fired: string[] = [];
+      for (const v of secretVars.keys()) {
+        if (new RegExp(`\\b${v}\\b`).test(args)) fired.push(v);
+      }
+      if (fired.length > 0) {
+        const line = lineOfCharIndex(code, m.index);
+        out.push(
+          makeExfilFinding(file, line, code.slice(m.index, Math.min(argEnd + 1, m.index + 120)), fired, receiver)
+        );
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 71 (#190) — Python pattern-finding extensions for cells where the
+// existing detectors only cover non-Python shapes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit Python `cors-wildcard-origin`, `xfo-csp-mismatch`, and
+ * `tls-verify-disabled` findings for the subscript-assignment / context-
+ * assignment shapes that the language-agnostic detectors miss.
+ *
+ *   cors-wildcard-origin:
+ *     `resp.headers['Access-Control-Allow-Origin'] = '*'`
+ *
+ *   xfo-csp-mismatch:
+ *     `resp.headers['X-Frame-Options'] = 'DENY' | 'SAMEORIGIN'`
+ *     correlated with
+ *     `resp.headers['Content-Security-Policy'] = '... frame-ancestors *|http* ...'`
+ *
+ *   tls-verify-disabled:
+ *     `ctx.verify_mode = ssl.CERT_NONE`  OR
+ *     `ctx.check_hostname = False`
+ */
+export function findPythonPatternFindings(code: string, file: string): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  // Subscript-style header assignment: `<recv>.headers['NAME'] = 'VAL'`
+  // `NAME` is any quoted key (single or double). `VAL` is anything to EOL.
+  const subscriptHeaderRe = /\.headers\s*\[\s*['"]([^'"]+)['"]\s*\]\s*=\s*(.+)$/;
+
+  // For xfo-csp-mismatch correlation we collect XFO and CSP values per file.
+  type HeaderHit = { line: number; value: string };
+  const xfoHits: HeaderHit[] = [];
+  const cspHits: HeaderHit[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const lineNumber = i + 1;
+
+    const sm = trimmed.match(subscriptHeaderRe);
+    if (sm) {
+      const headerName = sm[1];
+      const rhs = sm[2].trim();
+      const headerLower = headerName.toLowerCase();
+
+      // 1. cors-wildcard-origin
+      if (headerLower === 'access-control-allow-origin') {
+        // Wildcard literal — single, double, or echoed back any-origin var.
+        // Conservative: only fire on a bare '*' literal.
+        const valMatch = rhs.match(/^['"]\*['"]/);
+        if (valMatch) {
+          out.push({
+            id: `cors-wildcard-origin-${file}-${lineNumber}`,
+            pass: 'language-sources',
+            category: 'security',
+            rule_id: 'cors-wildcard-origin',
+            cwe: 'CWE-942',
+            severity: 'medium',
+            level: 'warning',
+            message:
+              "CORS Access-Control-Allow-Origin set to wildcard '*': any origin may read responses",
+            file,
+            line: lineNumber,
+            snippet: trimmed.substring(0, 100),
+          });
+        }
+      }
+
+      // Collect for xfo-csp correlation
+      if (headerLower === 'x-frame-options') {
+        xfoHits.push({ line: lineNumber, value: rhs });
+      } else if (headerLower === 'content-security-policy') {
+        cspHits.push({ line: lineNumber, value: rhs });
+      }
+    }
+
+    // 3. tls-verify-disabled (ssl context post-create mutation)
+    //    `<x>.verify_mode = ssl.CERT_NONE`   OR
+    //    `<x>.check_hostname = False`
+    if (/\bverify_mode\s*=\s*ssl\.CERT_NONE\b/.test(trimmed)) {
+      out.push({
+        id: `tls-verify-disabled-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'tls-verify-disabled',
+        cwe: 'CWE-295',
+        severity: 'high',
+        level: 'error',
+        message: 'TLS certificate verification disabled: ssl context verify_mode set to CERT_NONE',
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 100),
+      });
+    } else if (/\bcheck_hostname\s*=\s*False\b/.test(trimmed)) {
+      out.push({
+        id: `tls-verify-disabled-${file}-${lineNumber}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'tls-verify-disabled',
+        cwe: 'CWE-295',
+        severity: 'high',
+        level: 'error',
+        message: 'TLS hostname verification disabled: ssl context check_hostname set to False',
+        file,
+        line: lineNumber,
+        snippet: trimmed.substring(0, 100),
+      });
+    }
+  }
+
+  // 2. xfo-csp-mismatch — fire iff at least one XFO=DENY|SAMEORIGIN and at
+  //    least one CSP with permissive `frame-ancestors` (wildcard or http*).
+  //    The mismatch indicates the dev set XFO to deny framing but a
+  //    permissive CSP `frame-ancestors` directive overrides XFO on modern
+  //    browsers (CSP wins).
+  const restrictiveXfo = xfoHits.find(h =>
+    /['"](?:DENY|SAMEORIGIN)['"]/i.test(h.value)
+  );
+  const permissiveCsp = cspHits.find(h => {
+    // Extract the policy string body.
+    const pm = h.value.match(/['"]([^'"]+)['"]/);
+    if (!pm) return false;
+    const policy = pm[1];
+    const faMatch = policy.match(/frame-ancestors\s+([^;]+)/i);
+    if (!faMatch) return false;
+    const directive = faMatch[1].trim();
+    // Permissive iff bare *, contains http://, or contains https://* wildcard host
+    return /(^|\s)\*(\s|$)/.test(directive) || /\bhttps?:\/\//i.test(directive);
+  });
+  if (restrictiveXfo && permissiveCsp) {
+    out.push({
+      id: `xfo-csp-mismatch-${file}-${restrictiveXfo.line}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xfo-csp-mismatch',
+      cwe: 'CWE-1021',
+      severity: 'medium',
+      level: 'warning',
+      message:
+        'X-Frame-Options/CSP frame-ancestors mismatch: XFO restricts framing but CSP frame-ancestors is permissive (CSP overrides on modern browsers)',
+      file,
+      line: restrictiveXfo.line,
+      snippet: lines[restrictiveXfo.line - 1].trim().substring(0, 100),
+    });
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 71 (#190) — Rust pattern-finding extensions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit Rust `tls-verify-disabled` for `reqwest`-style builders that opt out
+ * of certificate / hostname validation:
+ *
+ *   `.danger_accept_invalid_certs(true)`
+ *   `.danger_accept_invalid_hostnames(true)`
+ *
+ * Conservative: requires the literal `true` argument; `false` (re-enable) is
+ * benign and is ignored.
+ */
+export function findRustPatternFindings(code: string, file: string): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const re = /\.\s*(danger_accept_invalid_certs|danger_accept_invalid_hostnames)\s*\(\s*true\s*\)/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const m = trimmed.match(re);
+    if (!m) continue;
+    const method = m[1];
+    const what = method === 'danger_accept_invalid_certs' ? 'certificate' : 'hostname';
+    out.push({
+      id: `tls-verify-disabled-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'tls-verify-disabled',
+      cwe: 'CWE-295',
+      severity: 'high',
+      level: 'error',
+      message: `TLS ${what} verification disabled: reqwest builder ${method}(true)`,
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
 }

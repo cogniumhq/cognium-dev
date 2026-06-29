@@ -161,3 +161,102 @@ describe('#216 Sprint 66 — bash argv-terminator gate', () => {
     expect(ci.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+/**
+ * #216 Sprint 67 — bash FP #5 (SQL CLI tools sink-type classification)
+ *
+ * Closes the LAST bash FP in cognium-dev #216 (bash slice 5/5 across
+ * Sprints 65+66+67). After this sprint #216 only has cross-language FPs
+ * (Java/JS/Python/TS/Rust/htmljs) remaining.
+ *
+ * Root cause: `benign_sqlite_param.sh` shape — `id="$1"; sqlite3 :memory:
+ * "SELECT ... '$id'"` — gets mis-classified as `command_injection`
+ * (CWE-78). The sqlite3 builtin sink in `bash.ts` only catches direct
+ * `$1` positional taint (no var indirection); when taint arrives via the
+ * intermediate `id=` assignment, the interprocedural bash fallback in
+ * `interprocedural.ts` fires and re-classifies as `command_injection`.
+ *
+ * The taint flow IS real (shell expansion `$id` into a SQL string =
+ * SQL injection), but the type is wrong — it should be `sql_injection`/
+ * CWE-89, not `command_injection`/CWE-78. SQL CLI utilities take SQL
+ * strings as args, not shell commands.
+ *
+ * Fix: in the bash fallback, when the method name is in a bashSqlCliTools
+ * set (sqlite3, mysql, psql, mariadb), emit `sql_injection` instead of
+ * `command_injection`. Same finding, correct type. Affects only the
+ * interprocedural fallback path (the builtin sinks already emit
+ * sql_injection on direct taint).
+ */
+describe('#216 Sprint 67 — bash SQL CLI sink-type classification', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('TN — sqlite3 :memory: with var-indirect taint emits sql_injection, NOT command_injection', async () => {
+    const code = [
+      '#!/bin/bash',
+      'id="$1"',
+      `sqlite3 :memory: "SELECT * FROM users WHERE id = '$id'"`,
+    ].join('\n');
+    const r = await analyze(code, 'sqlite.sh', 'bash');
+    const ci = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'sqlite3' && s.type === 'command_injection'
+    );
+    const sqli = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'sqlite3' && s.type === 'sql_injection'
+    );
+    expect(ci.length).toBe(0);
+    expect(sqli.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('TN — mysql var-indirect taint emits sql_injection, NOT command_injection', async () => {
+    const code = [
+      '#!/bin/bash',
+      'q="$1"',
+      `mysql -u root -e "SELECT * FROM t WHERE name = '$q'"`,
+    ].join('\n');
+    const r = await analyze(code, 'mysql.sh', 'bash');
+    const ci = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'mysql' && s.type === 'command_injection'
+    );
+    expect(ci.length).toBe(0);
+  });
+
+  it('TN — psql var-indirect taint emits sql_injection, NOT command_injection', async () => {
+    const code = [
+      '#!/bin/bash',
+      'name="$1"',
+      `psql -d mydb -c "SELECT * FROM accounts WHERE name = '$name'"`,
+    ].join('\n');
+    const r = await analyze(code, 'psql.sh', 'bash');
+    const ci = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'psql' && s.type === 'command_injection'
+    );
+    expect(ci.length).toBe(0);
+  });
+
+  it('TP-control — sqlite3 direct $1 still fires sql_injection (builtin sink path unaffected)', async () => {
+    const code = [
+      '#!/bin/bash',
+      `sqlite3 /db.sqlite "SELECT name FROM accounts WHERE pk = '$1'"`,
+    ].join('\n');
+    const r = await analyze(code, 'direct.sh', 'bash');
+    const sqli = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'sqlite3' && s.type === 'sql_injection'
+    );
+    expect(sqli.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('TP-control — ssh var-indirect "$h" still fires command_injection (non-SQL CLI unaffected)', async () => {
+    const code = [
+      '#!/bin/bash',
+      'h="$1"',
+      `ssh "$h"`,
+    ].join('\n');
+    const r = await analyze(code, 'ssh-ind.sh', 'bash');
+    const ci = (r.taint?.sinks ?? []).filter(
+      (s) => s.method === 'ssh' && s.type === 'command_injection'
+    );
+    expect(ci.length).toBeGreaterThanOrEqual(1);
+  });
+});

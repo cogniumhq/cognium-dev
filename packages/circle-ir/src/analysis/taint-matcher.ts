@@ -27,6 +27,10 @@ const PYTHON_TAINTED_PATTERNS: Array<{ pattern: RegExp; sourceType: SourceType }
   { pattern: /\brequest\.FILES\b/,        sourceType: 'file_input'  },
   { pattern: /\brequest\.query_params\b/, sourceType: 'http_param'  },
   { pattern: /\brequest\.path_params\b/,  sourceType: 'http_param'  },
+  // Sprint 72 (#183 residual): builtin `input()` is a stdin user-input
+  // source. Already registered in configs/sources/python.json; add to the
+  // regex registry so it's recognized in subscript/var contexts.
+  { pattern: /\binput\s*\(/,              sourceType: 'io_input'    },
 ];
 
 /**
