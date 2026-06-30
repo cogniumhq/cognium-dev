@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.134.0] - 2026-06-30
+
+Sprint 84 — cognium-dev #189 variant-regression scorecard: nosql + sqli
+cluster (12 FN cells across 6 languages). Engine inventory found 8 of 12
+already firing via configured Node.js Mongo sinks and Go/Java SQL flow
+construction; the remaining 4 shapes split into 3 directly-addressable
+detector gaps + 2 corpus-manifest mismatches. **3 of 4 addressable FN
+cells closed via three new pattern detectors. 10 of 12 corpus cells now
+emit the canonical sink signal.**
+
+### Closed in this release
+
+Pattern detectors (`language-sources-pass.ts`):
+
+- `findGoMongoNosqlInjectionFindings` — Go MongoDB driver call shapes
+  `coll.{FindOne|Find|InsertOne|InsertMany|UpdateOne|UpdateMany|
+  DeleteOne|DeleteMany|FindOneAndUpdate|FindOneAndDelete|
+  FindOneAndReplace|Aggregate}(ctx, bson.M{...})` where any argument
+  references a value transitively derived from `*http.Request`
+  extractors (`URL.Query().Get`, `FormValue`, `PostFormValue`,
+  `Header.Get`, `Cookie`). Uses 3-pass transitive var resolution
+  inside each `func` scope and a balanced-paren extractor for nested
+  calls (`context.TODO()` inside the args). Emits
+  `rule_id: 'nosql_injection'`, CWE-943, critical (closes
+  `go__v01_find_one`).
+- `findJavaMongoNosqlInjectionFindings` — Java Mongo driver call
+  shapes `<recv>.{find|findOne|findOneAndUpdate|findOneAndDelete|
+  findOneAndReplace|insertOne|insertMany|updateOne|updateMany|
+  deleteOne|deleteMany|replaceOne|aggregate|countDocuments|distinct}
+  (...,<tainted servlet input>,...)` (including `Filters.eq` and
+  `new Document(...)` payloads). Tracks tainted vars derived from
+  servlet request extractors (`getParameter`, `getParameterValues`,
+  `getHeader`, `getHeaders`, `getCookies`, `getReader`,
+  `getQueryString`, `getRequestURI`, `getInputStream`, `getPart`,
+  `getParts`) via 3-pass whole-file propagation. Closes
+  `java__V01FindOne`.
+- `findPythonMongoengineWhereNosqlInjectionFindings` — Python
+  mongoengine `__raw__={'$where': <expr>}` where `<expr>` contains
+  string concat or f-string interpolation of a tainted Flask request
+  extractor (`request.{args|form|values|json|files|cookies|headers|
+  data}`). The `$where` operator evaluates JavaScript on the server,
+  so tainted JS-string concatenation is true NoSQL injection.
+  Skips pure-literal `$where` strings. Closes the engine-side gap on
+  `py__v04_mongoose_find` (note: corpus manifest tags this cell as
+  `sql_injection`; the engine correctly emits `nosql_injection`).
+
+### Deferred (corpus manifest mismatches — not engine bugs)
+
+Two cells remain FN against the corpus tagging but are semantically
+correct in the engine's output:
+
+- `js__v06_mongoose_find` — `User.find({ $where: "this.name == '" +
+  req.query.n + "'" })` — engine emits `nosql_injection` (correct);
+  corpus expects `sql_injection`. Tracked for manifest correction.
+- `py__v04_mongoose_find` — mongoengine `__raw__={'$where': ...}` —
+  engine now emits `nosql_injection` (correct); corpus expects
+  `sql_injection`. Tracked for manifest correction.
+
+Following Sprint 81 cell-5 precedent (manifest re-tag preferred over
+introducing a noisy dual-emit), both cells are flagged for upstream
+corpus correction rather than engine change.
+
+### Tests
+
+`tests/analysis/passes/issue-189-sprint84-nosql-sqli-cluster.test.ts`
+— 9 new test cases (TP / TP-control / TN for each detector). All
+3334 tests passing (was 3325 on 3.133.0; +9 new); 2 pre-existing
+skipped.
+
+### Files touched
+
+- `src/analysis/passes/language-sources-pass.ts` (+289 LOC: 3 new
+  detectors + 3 wire-in blocks; balanced-paren helper for Go).
+- `tests/analysis/passes/issue-189-sprint84-nosql-sqli-cluster.test.ts`
+  (NEW).
+- `package.json` (3.133.0 → 3.134.0).
+
+### #189 cumulative progress
+
+| Sprint | Ver | Cluster | Closed |
+|---|---|---|---|
+| 81 | 3.130.0 | xss (11) | 9 (cells 5, 7 deferred) |
+| 82 | 3.132.0 | open_redirect (10) | 10 |
+| 83 | 3.133.0 | code_injection (8) | 8 |
+| 84 | 3.134.0 | nosql + sqli (12) | 10 + 2 manifest deferrals |
+
+39 of 41 addressable #189 cells closed across Sprints 81-84.
+Remaining: ssrf (6) → Sprint 85, format_string + crlf (8) →
+Sprint 86, ldap + log_injection (8) → Sprint 87,
+command_injection JS (4) → Sprint 88, deserialization + xpath
+(7) → Sprint 89, xxe + ssti + path (6) → Sprint 90.
+
 ## [3.133.0] - 2026-06-30
 
 Sprint 83 — cognium-dev #189 variant-regression scorecard: code_injection

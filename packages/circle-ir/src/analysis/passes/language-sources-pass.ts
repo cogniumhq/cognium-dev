@@ -288,6 +288,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 84 (#189): Go nosql_injection — *mongo.Collection FindOne / Find
+      // / Insert / Update / Delete / Aggregate with bson.M{...tainted}.
+      for (const finding of findGoMongoNosqlInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -328,6 +336,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 83 (#189): Python code_injection — code.InteractiveInterpreter
       // / InteractiveConsole / compile_command on Flask request input.
       for (const finding of findPythonInteractiveInterpreterCodeInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 84 (#189): Python nosql_injection — mongoengine `__raw__={"$where":
+      // <tainted-string-concat>}` JS-string injection through MongoDB $where.
+      for (const finding of findPythonMongoengineWhereNosqlInjectionFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -447,6 +463,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // println,write} receiver-chain that the configured PrintWriter sink
       // doesn't resolve.
       for (const finding of findJavaResponseWriterXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 84 (#189): Java nosql_injection — MongoCollection find / insert /
+      // update / delete / aggregate with Filters.eq("k", <tainted servlet input>).
+      for (const finding of findJavaMongoNosqlInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
         ctx.addFinding(finding);
       }
     }
@@ -6045,6 +6069,311 @@ export function findRustEvalCrateCodeInjectionFindings(
         snippet: trimmed,
       });
     }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 84 detector A (#189) — Go MongoDB driver nosql_injection.
+ * The Go MongoDB driver call shape `coll.FindOne(ctx, bson.M{"k": <taint>})`
+ * (and siblings: Find / InsertOne / InsertMany / UpdateOne / UpdateMany /
+ * DeleteOne / DeleteMany / FindOneAndUpdate / FindOneAndDelete /
+ * FindOneAndReplace / Aggregate) is not modeled by configured sinks (those
+ * cover Node.js Mongo only). Fires when the filter argument (after `ctx`)
+ * references a value transitively derived from `*http.Request` extractors
+ * (URL.Query().Get / FormValue / PostFormValue / Header.Get / Cookie).
+ */
+export function findGoMongoNosqlInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: require some hint of the mongo-driver / bson namespace usage.
+  if (!/(\bbson\s*\.\s*[MDAE]\b|mongo-driver|\*\s*mongo\.Collection)/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b\w+\s*\.\s*(?:FormValue|PostFormValue|URL\s*\.\s*Query\s*\(\s*\)\s*\.\s*Get|Header\s*\.\s*Get|Cookie)\s*\(/;
+  const httpReqParamRe = /\*\s*http\.Request\b/;
+  const opsAlt =
+    '(?:FindOne|Find|InsertOne|InsertMany|UpdateOne|UpdateMany|DeleteOne|DeleteMany|FindOneAndUpdate|FindOneAndDelete|FindOneAndReplace|Aggregate)';
+  // Match call-site head only; balanced parens for args are extracted below.
+  const callHeadRe = new RegExp(`\\.\\s*(${opsAlt})\\s*\\(`);
+  function extractBalanced(line: string, openIdx: number): string | null {
+    let depth = 0;
+    for (let k = openIdx; k < line.length; k++) {
+      const ch = line[k];
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return line.substring(openIdx + 1, k);
+      }
+    }
+    return null;
+  }
+
+  type Func = { start: number; end: number };
+  const funcs: Func[] = [];
+  let cur: Func | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^func\b/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        funcs.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1 };
+    }
+  }
+  if (cur) funcs.push(cur);
+
+  for (const fn of funcs) {
+    const header = lines[fn.start];
+    if (!httpReqParamRe.test(header)) continue;
+    const taintedVars = new Set<string>();
+    for (let pass = 0; pass < 3; pass++) {
+      const before = taintedVars.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const trimmed = lines[i].trim();
+        const assignMatch = trimmed.match(
+          /^(\w+)\s*(?::=|=)\s*(.+?)(?:\s*\/\/.*)?$/,
+        );
+        if (!assignMatch) continue;
+        const lhs = assignMatch[1];
+        const rhs = assignMatch[2];
+        if (taintedVars.has(lhs)) continue;
+        if (reqExtractRe.test(rhs)) {
+          taintedVars.add(lhs);
+          continue;
+        }
+        for (const v of taintedVars) {
+          if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+            taintedVars.add(lhs);
+            break;
+          }
+        }
+      }
+      if (taintedVars.size === before) break;
+    }
+    if (taintedVars.size === 0) continue;
+
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const m = callHeadRe.exec(line);
+      if (!m) continue;
+      const op = m[1];
+      const openIdx = m.index + m[0].length - 1;
+      const args = extractBalanced(line, openIdx);
+      if (args === null || args.length === 0) continue;
+      let tainted = reqExtractRe.test(args);
+      if (!tainted) {
+        for (const v of taintedVars) {
+          if (new RegExp(`\\b${v}\\b`).test(args)) {
+            tainted = true;
+            break;
+          }
+        }
+      }
+      if (!tainted) continue;
+      findings.push({
+        id: `nosql_injection-${file}-${i + 1}-go-mongo-${op.toLowerCase()}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'nosql_injection',
+        cwe: 'CWE-943',
+        severity: 'critical',
+        level: 'error',
+        message:
+          `NoSQL injection: Go MongoDB driver \`${op}(...)\` called with a ` +
+          'filter derived from *http.Request input. Untrusted values inside ' +
+          'a `bson.M` / `bson.D` filter can be operator objects (e.g. ' +
+          '`{"$ne": null}`) and bypass authentication/intent. Validate or ' +
+          'coerce the value to a primitive before building the filter.',
+        file,
+        line: i + 1,
+        snippet: line.trim(),
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 84 detector B (#189) — Java Mongo driver nosql_injection.
+ * Mongo Java driver shape `users.find(eq("k", <taint>))` (and siblings)
+ * is not modeled by configured sinks (those cover Node.js Mongo only).
+ * Fires when the receiver call payload references a value transitively
+ * derived from servlet request extractors (request.getParameter /
+ * getHeader / getCookies / getReader / getQueryString / getPart).
+ */
+export function findJavaMongoNosqlInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: require some hint of MongoCollection / Filters / Document use.
+  if (!/(MongoCollection\b|com\.mongodb\b|\bFilters\b|\bnew\s+Document\s*\()/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b\w+\s*\.\s*(?:getParameter|getParameterValues|getHeader|getHeaders|getCookies|getReader|getQueryString|getRequestURI|getInputStream|getPart|getParts)\s*\(/;
+  const opsAlt =
+    '(?:find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|aggregate|countDocuments|distinct)';
+  const callRe = new RegExp(`\\.\\s*(${opsAlt})\\s*\\(([\\s\\S]*?)\\)`);
+
+  // Whole-file 3-pass taint propagation across simple `Type name = expr;`
+  // and `name = expr;` assignments. Lightweight; suitable for the fixture
+  // set without paying for full Java scope tracking.
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      const a = t.match(/^(?:final\s+)?(?:[\w<>?,\[\]]+\s+)?(\w+)\s*=\s*(.+?);?$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(callRe);
+    if (!m) continue;
+    const op = m[1];
+    const args = m[2];
+    if (args.trim().length === 0) continue;
+    let tainted = reqExtractRe.test(args);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(args)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    findings.push({
+      id: `nosql_injection-${file}-${i + 1}-java-mongo-${op.toLowerCase()}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'nosql_injection',
+      cwe: 'CWE-943',
+      severity: 'critical',
+      level: 'error',
+      message:
+        `NoSQL injection: Java Mongo driver \`${op}(...)\` called with a ` +
+        'filter derived from servlet request input. Untrusted values can ' +
+        'reach BSON operator positions and bypass intent. Validate the ' +
+        'input type before constructing the filter (e.g. require String).',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 84 detector C (#189) — Python mongoengine `$where` JS-string injection.
+ * The shape `User.objects(__raw__={'$where': "this.x == '" + n + "'"})`
+ * (and aliases via `$where` key with string concat / f-string) bypasses
+ * the configured nosql sinks. Fires when the `$where` value references
+ * a value transitively derived from Flask/Django/FastAPI request input.
+ */
+export function findPythonMongoengineWhereNosqlInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: require literal '$where' to appear in the file.
+  if (!/['"]\$where['"]/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b(?:request\.(?:args|form|values|json|files|cookies|headers|data)\b|flask\.request\b)/;
+
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('#')) continue;
+      const a = t.match(/^(\w+)\s*=\s*(.+?)$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  const whereRe = /['"]\$where['"]\s*:\s*([^,}\n]+)/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(whereRe);
+    if (!m) continue;
+    const valueExpr = m[1].trim();
+    // Pure string literal (no concat, no f-string interp): safe.
+    if (/^"[^"]*"$/.test(valueExpr) || /^'[^']*'$/.test(valueExpr)) continue;
+    let tainted = reqExtractRe.test(valueExpr);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(valueExpr)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    findings.push({
+      id: `nosql_injection-${file}-${i + 1}-py-mongoengine-where`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'nosql_injection',
+      cwe: 'CWE-943',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'NoSQL injection: mongoengine `__raw__={"$where": ...}` payload ' +
+        'derived from HTTP request input. The `$where` operator evaluates ' +
+        'JavaScript on the server; tainted string concatenation lets an ' +
+        'attacker inject arbitrary JS. Replace `$where` with field-based ' +
+        'operators or validate the input.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
   }
   return findings;
 }

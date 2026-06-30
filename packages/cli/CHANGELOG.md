@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.134.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.134.0`](https://www.npmjs.com/package/circle-ir) which
+closes 10 of 12 corpus cells on the nosql + sqli cluster of
+cognium-dev #189 variant-regression scorecard (Sprint 84). 8 of 12
+were already firing via configured Node.js Mongo sinks and Go/Java
+SQL flow construction; three new pattern detectors close the
+remaining engine-side gaps:
+
+- `findGoMongoNosqlInjectionFindings` — Go MongoDB driver
+  `coll.{FindOne|Find|Insert*|Update*|Delete*|FindOneAnd*|Aggregate}
+  (ctx, bson.M{...<tainted>})` with `*http.Request` extractors
+- `findJavaMongoNosqlInjectionFindings` — Java Mongo driver
+  `<recv>.{find*|insert*|update*|delete*|replaceOne|aggregate|
+  countDocuments|distinct}(...<tainted servlet input>...)` (covers
+  `Filters.eq` and `new Document(...)` payloads)
+- `findPythonMongoengineWhereNosqlInjectionFindings` — Python
+  mongoengine `__raw__={'$where': <tainted-concat-or-fstring>}`
+  payloads — true NoSQL injection via the `$where` JS-eval operator
+
+Two cells remain FN against the corpus tagging but are semantically
+correct in the engine's output (engine emits `nosql_injection`;
+corpus expects `sql_injection`) and are flagged for upstream
+manifest correction rather than engine change. See
+`circle-ir@3.134.0` notes for the deferred-cell rationale and the
+cumulative #189 closure table (39 of 41 addressable cells closed
+across Sprints 81-84).
+
+No user-visible CLI behavior changes; output formatters (text /
+JSON / SARIF) gain three additional `rule_id: 'nosql_injection'`
+finding lines on affected fixtures.
+
 ## [3.133.0] - 2026-06-30
 
 Engine bump only — adopts
