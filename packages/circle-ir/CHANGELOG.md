@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.133.0] - 2026-06-30
+
+Sprint 83 — cognium-dev #189 variant-regression scorecard: code_injection
+cluster (8 FN cells across 4 languages). Engine inventory found 4 of 8
+already firing via configured sinks (Go template SSTI, JS `vm.Script`,
+JS `setImmediate(string)`, Python `importlib.import_module`); the
+remaining 4 shapes are closed by four new pattern detectors. **8 of 8
+code_injection FN cells closed.**
+
+### Closed in this release
+
+Pattern detectors (`language-sources-pass.ts`):
+
+- `findGoPluginOpenCodeInjectionFindings` — Go `plugin.Open(<taint>)`
+  and `plugin.Lookup(<taint>)` where the argument traces back to an
+  `*http.Request` extractor (`FormValue`, `PostFormValue`,
+  `URL.Query().Get`, `Header.Get`, `Cookie`) within the same
+  function. Loading a Go plugin runs its `init()` and exposes its
+  exported symbols, equivalent to dynamic library load (closes
+  `go__v04_dynamic_import`).
+- `findJsIndirectEvalCodeInjectionFindings` — JS indirect eval forms
+  that escape the configured `eval` sink matcher:
+  `(0, eval)(taint)`, `globalThis.eval(taint)`, `global.eval(taint)`,
+  `window.eval(taint)`, `self.eval(taint)`, and aliased eval
+  (`const f = eval; f(taint)` — discovered alias set). All three
+  forms execute in the global scope. Triggers when the argument
+  traces back to `req.body`, `req.query`, `req.params`, `req.headers`,
+  or `req.cookies` via the 3-pass transitive let/const/var resolver
+  (closes `js__v07_indirect_eval`). Comment-only lines are skipped to
+  avoid matching docstring examples.
+- `findPythonInteractiveInterpreterCodeInjectionFindings` — Python
+  stdlib `code` module: `code.InteractiveInterpreter().runsource(s)`,
+  `code.InteractiveConsole().{runsource,runcode,push,interact}(s)`,
+  and `code.compile_command(s)`. Each compiles and executes arbitrary
+  Python source. Gated on a file-level `import code` namespace check
+  to avoid clashing with user-defined `code` identifiers (Sprint 74
+  alias-tracking lesson). Triggers on `request.*` extractor flow
+  (closes `py__v03_vm_context`).
+- `findRustEvalCrateCodeInjectionFindings` — Rust dynamic-eval crate
+  sinks: `evalexpr::eval(...)` (and `_with_context|_boolean|_int|`
+  `_float|_string|_tuple|_empty` variants), `libloading::Library::new`
+  (dynamic library load), and `mlua/rlua` `<lua>.load(arg)`
+  `.{exec|eval|call}(...)`. Per-function tainted-param discovery
+  scans `fn` headers for Actix extractor types (`String`, `Bytes`,
+  `web::Query|Path|Form|Json`, `HttpRequest`, `axum::body::Bytes`)
+  and propagates through `let`/`let mut` bindings with the 3-pass
+  resolver. `&` borrow prefix is unwrapped before matching (closes
+  `rust__v01_eval_direct`).
+
+### Verified
+
+- 11 of 11 new test cases pass
+  (`tests/analysis/passes/issue-189-sprint83-code-injection-cluster.test.ts`)
+- Full suite: 3325 passed, 2 skipped across 232 test files
+- All TP-control / TN tests prove the new detectors do not over-fire
+  on literal-only args (`plugin.Open("/usr/lib/...")`, `(0, eval)("1+1")`,
+  `evalexpr::eval("1 + 1")`) or on user-defined `code` vars without an
+  `import code` (Python namespace gate)
+- Pillar I guard clean (no LLM/AI identifiers)
+
+### #189 progress
+
+After Sprint 83: open_redirect (10) + code_injection (8) = **18 of 80
+FN cells closed across Sprints 82-83**. Sprint 84 targets the
+nosql (6) + sqli (6) cluster.
+
 ## [3.132.0] - 2026-06-30
 
 Sprint 82 — cognium-dev #189 variant-regression scorecard: open_redirect

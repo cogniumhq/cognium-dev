@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.133.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.133.0`](https://www.npmjs.com/package/circle-ir) which
+closes 8 of 8 code_injection FN cells on cognium-dev #189 variant-
+regression scorecard (Sprint 83). Four new pattern detectors:
+
+- `findGoPluginOpenCodeInjectionFindings` — Go `plugin.Open` /
+  `plugin.Lookup` with `*http.Request`-derived path
+- `findJsIndirectEvalCodeInjectionFindings` — JS indirect eval forms
+  (`(0, eval)(x)`, `globalThis.eval(x)`, aliased `const f = eval; f(x)`)
+- `findPythonInteractiveInterpreterCodeInjectionFindings` — Python
+  `code.InteractiveInterpreter().runsource(s)` /
+  `code.InteractiveConsole()` / `code.compile_command(s)` (gated on
+  `import code`)
+- `findRustEvalCrateCodeInjectionFindings` — Rust `evalexpr::eval`,
+  `libloading::Library::new`, `mlua/rlua` `Lua::load().{exec|eval|call}`
+
+#189 progress: 18 of 80 FN cells closed across Sprints 82-83.
+
 ## [3.132.0] - 2026-06-30
 
 Engine bump only — adopts

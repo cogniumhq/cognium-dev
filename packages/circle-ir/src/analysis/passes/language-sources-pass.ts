@@ -281,6 +281,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 83 (#189): Go code_injection — plugin.Open / plugin.Lookup.
+      for (const finding of findGoPluginOpenCodeInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -313,6 +320,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
       // Sprint 82 (#189): Python open_redirect — resp.headers["Location"] = taint.
       for (const finding of findPythonHeadersSubscriptOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 83 (#189): Python code_injection — code.InteractiveInterpreter
+      // / InteractiveConsole / compile_command on Flask request input.
+      for (const finding of findPythonInteractiveInterpreterCodeInjectionFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -355,6 +370,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 83 (#189): Rust code_injection — evalexpr crate, libloading,
+      // mlua/rlua dynamic-load shapes on Actix/Axum request bodies.
+      for (const finding of findRustEvalCrateCodeInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -387,6 +410,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // window.location / location.assign|replace() / <meta>.content shapes
       // sourced from URLSearchParams / location.search|hash.
       for (const finding of findJsDomOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 83 (#189): JS code_injection — indirect eval forms
+      // ((0, eval)(x), globalThis.eval(x), aliased eval).
+      for (const finding of findJsIndirectEvalCodeInjectionFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -5461,4 +5492,559 @@ export function findJsDomOpenRedirectFindings(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 83 (issue #189 — code_injection cluster, 8 FN cells)
+// ---------------------------------------------------------------------------
+// Per-language pattern detectors that close 4 remaining code_injection FN
+// shapes that the configured-sink path does not cover:
+//   - Go plugin.Open / plugin.Lookup with *http.Request-derived path
+//   - JS indirect eval forms: (0, eval)(x), globalThis.eval(x), aliased eval
+//   - Python code.InteractiveInterpreter / InteractiveConsole / compile_command
+//   - Rust evalexpr crate, libloading dynamic load, mlua/rlua .load().exec
+// ---------------------------------------------------------------------------
+
+/**
+ * Sprint 83 detector A — Go `plugin.Open(<tainted>)` / `plugin.Lookup(...)`.
+ * Loading a Go plugin executes the loaded module's init() functions and
+ * makes its exported symbols callable, which is a code-injection sink
+ * equivalent to dynamic library loading. Fires when the path argument
+ * traces back to an `*http.Request` extractor (FormValue / URL.Query /
+ * PostFormValue / Header.Get / Cookie) within the same function.
+ */
+export function findGoPluginOpenCodeInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bplugin\s*\.\s*(?:Open|Lookup)\s*\(/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b\w+\s*\.\s*(?:FormValue|PostFormValue|URL\.Query\(\)\.Get|Header\.Get|Cookie)\s*\(/;
+  const httpReqParamRe = /\*\s*http\.Request\b/;
+  const callRe = /\bplugin\s*\.\s*(?:Open|Lookup)\s*\(\s*([^)]*)\s*\)/;
+  const sinkLabel = (op: string) =>
+    op === 'Lookup'
+      ? 'Go plugin.Lookup'
+      : 'Go plugin.Open';
+
+  // Discover taint vars per func: lines with *http.Request param scope are
+  // the candidate funcs. Track assignments downstream until next `func` token.
+  type Func = { start: number; end: number };
+  const funcs: Func[] = [];
+  let cur: Func | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^func\b/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        funcs.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1 };
+    }
+  }
+  if (cur) funcs.push(cur);
+
+  for (const fn of funcs) {
+    const header = lines[fn.start];
+    if (!httpReqParamRe.test(header)) continue;
+    const taintedVars = new Set<string>();
+    // Up to 3 passes: discover transitively-tainted vars from request extractors.
+    for (let pass = 0; pass < 3; pass++) {
+      const before = taintedVars.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        const assignMatch = trimmed.match(
+          /^(\w+)\s*(?::=|=)\s*(.+?)(?:\s*\/\/.*)?$/,
+        );
+        if (!assignMatch) continue;
+        const lhs = assignMatch[1];
+        const rhs = assignMatch[2];
+        if (taintedVars.has(lhs)) continue;
+        if (reqExtractRe.test(rhs)) {
+          taintedVars.add(lhs);
+          continue;
+        }
+        // Aliasing existing taint
+        for (const v of taintedVars) {
+          const re = new RegExp(`\\b${v}\\b`);
+          if (re.test(rhs)) {
+            taintedVars.add(lhs);
+            break;
+          }
+        }
+      }
+      if (taintedVars.size === before) break;
+    }
+    if (taintedVars.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const m = line.match(callRe);
+      if (!m) continue;
+      const arg = m[1].trim();
+      if (arg.length === 0) continue;
+      // skip clear literal-only constants
+      if (/^"[^"]*"$/.test(arg)) continue;
+      let tainted = false;
+      // direct extractor call as argument
+      if (reqExtractRe.test(arg)) tainted = true;
+      else {
+        for (const v of taintedVars) {
+          const re = new RegExp(`\\b${v}\\b`);
+          if (re.test(arg)) {
+            tainted = true;
+            break;
+          }
+        }
+      }
+      if (!tainted) continue;
+      const op = /\bplugin\s*\.\s*Lookup\b/.test(line) ? 'Lookup' : 'Open';
+      findings.push({
+        id: `code_injection-${file}-${i + 1}-go-plugin-${op.toLowerCase()}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'critical',
+        level: 'error',
+        message:
+          `Code injection: ${sinkLabel(op)} called with a path/symbol derived ` +
+          'from an *http.Request without an allow-list. Loading a plugin ' +
+          'runs its init() and exposes arbitrary exported symbols. Restrict ' +
+          'the path to a trusted directory or use a fixed allow-list.',
+        file,
+        line: i + 1,
+        snippet: line.trim(),
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 83 detector B — JS indirect eval forms.
+ * Configured `eval` sink matches direct `eval(x)` but misses:
+ *   - `(0, eval)(x)` comma-operator indirect call
+ *   - `globalThis.eval(x)` / `global.eval(x)` / `window.eval(x)` / `self.eval(x)`
+ *   - aliased eval: `const f = eval; f(x)` then `f(taint)`
+ * Fires when the argument traces back to req.body / req.query / req.params /
+ * req.headers / req.cookies (Express/Koa-style request extractor).
+ */
+export function findJsIndirectEvalCodeInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\beval\b/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  // request extractor (assignment rhs)
+  const reqExtractRe =
+    /\breq(?:uest)?\s*\.\s*(?:body|query|params|headers|cookies)\b/;
+  // First: discover indirect-eval aliases: `const f = eval;`, `let f = eval`
+  const aliasRe =
+    /^\s*(?:const|let|var)\s+(\w+)\s*=\s*(?:globalThis\s*\.\s*eval|global\s*\.\s*eval|window\s*\.\s*eval|self\s*\.\s*eval|eval)\s*;?\s*$/;
+  const aliases = new Set<string>();
+  for (const line of lines) {
+    const m = line.match(aliasRe);
+    if (m) aliases.add(m[1]);
+  }
+
+  // Discover transitively-tainted vars
+  const taintedVars = new Set<string>();
+  const assignRe =
+    /^\s*(?:const|let|var)\s+(\w+)\s*=\s*(.+?);?\s*$/;
+  const reassignRe = /^\s*(\w+)\s*=\s*(.+?);?\s*$/;
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (const line of lines) {
+      const m = line.match(assignRe) || line.match(reassignRe);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (lhs === 'const' || lhs === 'let' || lhs === 'var') continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        const re = new RegExp(`\\b${v}\\b`);
+        if (re.test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  // Patterns: (0, eval)(x); globalThis.eval(x); aliased f(x)
+  const indirectCommaRe = /\(\s*0\s*,\s*eval\s*\)\s*\(\s*([^)]*)\s*\)/;
+  const indirectMemberRe =
+    /\b(?:globalThis|global|window|self)\s*\.\s*eval\s*\(\s*([^)]*)\s*\)/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    // skip comment lines and alias-declaration lines themselves
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (aliasRe.test(line)) continue;
+    let arg: string | null = null;
+    let formLabel = '';
+    let m = trimmed.match(indirectCommaRe);
+    if (m) {
+      arg = m[1].trim();
+      formLabel = '(0, eval)(...) indirect eval';
+    }
+    if (!arg) {
+      m = trimmed.match(indirectMemberRe);
+      if (m) {
+        arg = m[1].trim();
+        formLabel = 'globalThis.eval / window.eval / self.eval indirect eval';
+      }
+    }
+    if (!arg && aliases.size > 0) {
+      for (const a of aliases) {
+        const aliasCallRe = new RegExp(`\\b${a}\\s*\\(\\s*([^)]*)\\s*\\)`);
+        const mm = trimmed.match(aliasCallRe);
+        if (mm) {
+          arg = mm[1].trim();
+          formLabel = `aliased eval reference \`${a}(...)\``;
+          break;
+        }
+      }
+    }
+    if (arg === null) continue;
+    if (arg.length === 0) continue;
+    // skip literal-only string args
+    if (/^['"`][^'"`]*['"`]$/.test(arg)) continue;
+    let tainted = false;
+    if (reqExtractRe.test(arg)) tainted = true;
+    else {
+      for (const v of taintedVars) {
+        const re = new RegExp(`\\b${v}\\b`);
+        if (re.test(arg)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    findings.push({
+      id: `code_injection-${file}-${i + 1}-js-indirect-eval`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'code_injection',
+      cwe: 'CWE-94',
+      severity: 'critical',
+      level: 'error',
+      message:
+        `Code injection: ${formLabel} called with a value derived from ` +
+        'an HTTP request body/query/headers. Indirect eval forms still ' +
+        'execute arbitrary code in the global scope. Remove the eval and ' +
+        'parse the input with a safe data parser instead.',
+      file,
+      line: i + 1,
+      snippet: trimmed,
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 83 detector C — Python `code` stdlib REPL / compile_command.
+ * `code.InteractiveInterpreter().runsource(s)`, `runcode(c)`, `push(line)` and
+ * `code.InteractiveConsole().push(line)`, plus `code.compile_command(s)` —
+ * all execute or compile arbitrary Python source. Fires when the argument
+ * traces back to a Flask `request.*` extractor; gated on `import code`
+ * to avoid colliding with user-defined `code` variables.
+ */
+export function findPythonInteractiveInterpreterCodeInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Require `import code` namespace gate to avoid clashing with user-defined
+  // identifiers named `code`.
+  if (!/^\s*import\s+code\b/m.test(code)) return findings;
+  if (
+    !/\bcode\s*\.\s*(?:InteractiveInterpreter|InteractiveConsole|compile_command)\b/.test(
+      code,
+    )
+  ) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\brequest\s*\.\s*(?:args|form|values|files|json|cookies|headers|get_data|get_json)\b/;
+
+  // Discover transitively-tainted vars
+  const taintedVars = new Set<string>();
+  const assignRe = /^\s*(\w+)\s*=\s*(.+?)\s*(?:#.*)?$/;
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (const line of lines) {
+      const m = line.match(assignRe);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        const re = new RegExp(`\\b${v}\\b`);
+        if (re.test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  // Sink call patterns
+  // a) code.InteractiveInterpreter(...).{runsource,runcode,push}(arg)
+  // b) code.InteractiveConsole(...).{runsource,runcode,push,interact}(arg)
+  // c) code.compile_command(arg, ...)
+  const callRe =
+    /\bcode\s*\.\s*(?:InteractiveInterpreter|InteractiveConsole)\s*\([^)]*\)\s*\.\s*(runsource|runcode|push|interact)\s*\(\s*([^),]+)/;
+  const compileRe = /\bcode\s*\.\s*compile_command\s*\(\s*([^),]+)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    let arg: string | null = null;
+    let formLabel = '';
+    const m1 = trimmed.match(callRe);
+    if (m1) {
+      arg = m1[2].trim();
+      formLabel = `code.${/Interpreter/.test(trimmed) ? 'InteractiveInterpreter' : 'InteractiveConsole'}().${m1[1]}`;
+    }
+    if (!arg) {
+      const m2 = trimmed.match(compileRe);
+      if (m2) {
+        arg = m2[1].trim();
+        formLabel = 'code.compile_command';
+      }
+    }
+    if (arg === null) continue;
+    if (arg.length === 0) continue;
+    if (/^['"][^'"]*['"]$/.test(arg)) continue;
+    let tainted = false;
+    if (reqExtractRe.test(arg)) tainted = true;
+    else {
+      for (const v of taintedVars) {
+        const re = new RegExp(`\\b${v}\\b`);
+        if (re.test(arg)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    findings.push({
+      id: `code_injection-${file}-${i + 1}-py-interactive-interpreter`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'code_injection',
+      cwe: 'CWE-94',
+      severity: 'critical',
+      level: 'error',
+      message:
+        `Code injection: ${formLabel}(...) called with a value derived from ` +
+        'a Flask request extractor. The Python `code` module compiles and ' +
+        'executes arbitrary source. Remove the call and validate input ' +
+        'against a fixed allow-list instead.',
+      file,
+      line: i + 1,
+      snippet: trimmed,
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 83 detector D — Rust eval-crate / dynamic-load sinks.
+ * Rust has no language-level eval; the canonical sinks are:
+ *   - `evalexpr::eval(...)` (and `_with_context|_boolean|_int|_float|_string|_tuple|_empty`)
+ *   - `libloading::Library::new(...)` (dynamic library load)
+ *   - `mlua::Lua::new().load(<src>).{exec,eval,call}(...)` / rlua equivalent
+ * Fires when the argument traces back to an Actix-web extractor: a plain
+ * `body: String|Bytes`, a `web::Query<T>` / `web::Path<T>` / `web::Form<T>` /
+ * `web::Json<T>` / `HttpRequest` param, or `axum::body::Bytes`/`String` etc.
+ */
+export function findRustEvalCrateCodeInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (
+    !/\b(?:evalexpr\s*::\s*eval|libloading\s*::\s*Library\s*::\s*new|\.\s*load\s*\([^)]*\)\s*\.\s*(?:exec|eval|call))/.test(
+      code,
+    )
+  ) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+
+  // Discover per-function tainted params: scan `fn ...(params)` headers and
+  // mark params with extractor types as tainted.
+  const extractorTypeRe =
+    /:\s*(?:String|Bytes|bytes::Bytes|axum::body::Bytes|web::Query\b|web::Path\b|web::Form\b|web::Json\b|HttpRequest\b|actix_web::HttpRequest\b)/;
+  type Fn = { start: number; end: number; tainted: Set<string> };
+  const fns: Fn[] = [];
+  let cur: Fn | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i];
+    if (/^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        fns.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1, tainted: new Set() };
+      // collect param idents whose type matches extractor
+      const headerJoined = (() => {
+        let j = i;
+        let s = '';
+        while (j < lines.length && !/\{\s*$/.test(s)) {
+          s += lines[j];
+          if (/\{\s*$/.test(lines[j])) break;
+          j++;
+          if (j - i > 12) break;
+        }
+        return s;
+      })();
+      // params are between first '(' and matching ')'
+      const open = headerJoined.indexOf('(');
+      const close = headerJoined.lastIndexOf(')');
+      if (open !== -1 && close > open) {
+        const params = headerJoined.substring(open + 1, close);
+        // Split by top-level commas
+        let depth = 0;
+        let buf = '';
+        const parts: string[] = [];
+        for (const ch of params) {
+          if (ch === '<' || ch === '(') depth++;
+          else if (ch === '>' || ch === ')') depth--;
+          if (ch === ',' && depth === 0) {
+            parts.push(buf);
+            buf = '';
+            continue;
+          }
+          buf += ch;
+        }
+        if (buf.trim().length > 0) parts.push(buf);
+        for (const p of parts) {
+          const pm = p.match(/(?:mut\s+)?(\w+)\s*:/);
+          if (!pm) continue;
+          if (extractorTypeRe.test(p)) cur.tainted.add(pm[1]);
+        }
+      }
+    }
+  }
+  if (cur) fns.push(cur);
+
+  // Inside each function, scan assignments (let / let mut) to propagate
+  // taint from existing tainted vars into new bindings.
+  for (const fn of fns) {
+    for (let pass = 0; pass < 3; pass++) {
+      const before = fn.tainted.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const t = lines[i].trim();
+        const m = t.match(/^let\s+(?:mut\s+)?(\w+)\s*(?::\s*[^=]+)?=\s*(.+?);?$/);
+        if (!m) continue;
+        const lhs = m[1];
+        const rhs = m[2];
+        if (fn.tainted.has(lhs)) continue;
+        for (const v of fn.tainted) {
+          const re = new RegExp(`\\b${v}\\b`);
+          if (re.test(rhs)) {
+            fn.tainted.add(lhs);
+            break;
+          }
+        }
+      }
+      if (fn.tainted.size === before) break;
+    }
+  }
+
+  const evalExprRe =
+    /\bevalexpr\s*::\s*eval(?:_with_context|_boolean|_int|_float|_string|_tuple|_empty)?\s*\(\s*([^)]+)\s*\)/;
+  const libloadingRe =
+    /\blibloading\s*::\s*Library\s*::\s*new\s*\(\s*([^)]+)\s*\)/;
+  const luaLoadRe =
+    /\.\s*load\s*\(\s*([^)]+)\s*\)\s*\.\s*(?:exec|eval|call)\b/;
+
+  for (const fn of fns) {
+    if (fn.tainted.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      let arg: string | null = null;
+      let formLabel = '';
+      let m = trimmed.match(evalExprRe);
+      if (m) {
+        arg = m[1].trim();
+        formLabel = 'evalexpr::eval';
+      }
+      if (!arg) {
+        m = trimmed.match(libloadingRe);
+        if (m) {
+          arg = m[1].trim();
+          formLabel = 'libloading::Library::new';
+        }
+      }
+      if (!arg) {
+        m = trimmed.match(luaLoadRe);
+        if (m) {
+          arg = m[1].trim();
+          formLabel = 'mlua/rlua Lua::load().{exec|eval|call}';
+        }
+      }
+      if (arg === null) continue;
+      if (arg.length === 0) continue;
+      // unwrap leading '&' borrow
+      let unwrapped = arg.replace(/^&\s*/, '').trim();
+      if (/^"[^"]*"$/.test(unwrapped)) continue;
+      let tainted = false;
+      for (const v of fn.tainted) {
+        const re = new RegExp(`\\b${v}\\b`);
+        if (re.test(unwrapped)) {
+          tainted = true;
+          break;
+        }
+      }
+      if (!tainted) continue;
+      findings.push({
+        id: `code_injection-${file}-${i + 1}-rust-eval-crate`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'code_injection',
+        cwe: 'CWE-94',
+        severity: 'critical',
+        level: 'error',
+        message:
+          `Code injection: ${formLabel}(...) called with a value derived ` +
+          'from an HTTP request extractor (body / Query / Path / Form / ' +
+          'Json / HttpRequest). The expression / library / Lua chunk is ' +
+          'executed as code. Remove the dynamic-eval path or restrict ' +
+          'input to a fixed allow-list.',
+        file,
+        line: i + 1,
+        snippet: trimmed,
+      });
+    }
+  }
+  return findings;
 }
