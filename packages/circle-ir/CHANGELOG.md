@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.127.0] - 2026-06-29
+
+Sprint 76 — cognium-dev #216 Pattern B Java inline sanitizers. Closes
+2 of the 7 remaining FPs (`BenignPathNormalize.java`,
+`BenignRedactedLog.java`). #216 stays open for 5 remaining
+cross-language FPs.
+
+### Added
+
+- **Java `Path.resolve(...).normalize()` + `startsWith(ROOT)` guard
+  sanitizer (cognium-dev #216 Pattern B)** —
+  `findJavaPathNormalizeStartsWithGuardSanitizers` recognizes the
+  canonical resolve-under-root safe pattern:
+
+  ```java
+  Path full = ROOT.resolve(name).normalize();
+  if (!full.startsWith(ROOT)) throw new SecurityException("escape");
+  return full;
+  ```
+
+  Two-pass: pass 1 collects every `<v> = <root>.resolve(<arg>)
+  .normalize()` chain (capturing `<v>` + `<root>`); pass 2 confirms
+  a matching `if (!<v>.startsWith(<root>))` guard within 6 lines
+  whose body contains a `throw` or `return` terminator. On
+  confirmation, emits `path_traversal` + `external_taint_escape`
+  sanitizers at the resolve line and at every subsequent line
+  referencing `<v>` (covers `return full;`, `Files.read(full)`,
+  etc.). `.normalize()` alone is NOT recognized — absolute-path
+  arguments replace `ROOT` entirely, so the load-bearing check is
+  the `startsWith` guard (TP-1 control).
+
+- **Java inline CRLF/tab-strip log sanitizer (cognium-dev #216
+  Pattern B)** — `findJavaInlineCrlfStripLogSanitizers` recognizes
+  inline-at-sink CRLF redaction:
+
+  ```java
+  log.info("event=user_lookup value={}", user.replaceAll("[\\r\\n\\t]", "_"));
+  ```
+
+  Single-pass: emits a `log_injection` + `external_taint_escape`
+  sanitizer only when a recognized slf4j/log4j/JUL log call (`log`,
+  `logger`, `LOG`, `LOGGER`, `slog` receivers; `info`/`warn`/`error`
+  /`debug`/`trace`/`fatal`/`severe`/`fine{,r,st}`/`config`/`warning`
+  methods) appears on the same source line as a CRLF-stripping
+  `.replaceAll("[...\\r\\n...]", ...)` or single-char
+  `.replace('\\n'|'\\r'|'\\t', ...)` argument. A `replaceAll(...)`
+  on a different earlier line assigned to a temp variable is NOT
+  recognized (TP-2 control: a separately-tainted log argument still
+  fires `log_injection`).
+
+### Tests
+
+- New `tests/analysis/passes/issue-216-pattern-b-java.test.ts` with 4
+  cases: 2 TN reproducing both corpus FPs (resolve+normalize+
+  startsWith and inline log redaction) and 2 TP-control verifying
+  that resolve+normalize without the startsWith guard still fires
+  `path_traversal` and a wrong-variable `replaceAll` on a separate
+  line does not over-suppress `log_injection` at a later log call
+  with a different unsanitized argument.
+
+### Fixed
+
+- `BenignPathNormalize.java:9` no longer emits `path_traversal` or
+  `external_taint_escape` on `ROOT.resolve(name).normalize()` when
+  the canonical `.startsWith(ROOT)` guard is present.
+- `BenignRedactedLog.java:10` no longer emits `log_injection` or
+  `external_taint_escape` on
+  `log.info("...", user.replaceAll("[\\r\\n\\t]", "_"))`.
+
 ## [3.126.0] - 2026-06-29
 
 Sprint 75 — cognium-dev #216 Pattern D JS SSRF allow-list. Closes 2 of

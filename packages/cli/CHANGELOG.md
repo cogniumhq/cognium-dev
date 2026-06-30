@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.127.0] - 2026-06-29
+
+Engine bump only — adopts
+[`circle-ir@3.127.0`](https://www.npmjs.com/package/circle-ir) which
+closes 2 of the 7 remaining FPs on cognium-dev #216 (Java inline
+Pattern B: `Path.resolve(...).normalize()` + `startsWith(ROOT)` guard
+recognition and inline `<var>.replaceAll("[\r\n\t]", ...)` at log
+sink call site). No CLI surface changes.
+
 ## [3.126.0] - 2026-06-29
 
 Engine bump only — adopts

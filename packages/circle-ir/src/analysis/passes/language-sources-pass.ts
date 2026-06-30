@@ -315,6 +315,11 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // configured `deserialization` sinks).
     if (language === 'java') {
       additionalSanitizers.push(...findJavaSafeJsonParseSanitizers(code));
+      // Sprint 76 (#216 Pattern B): Java inline sanitizer recognition.
+      additionalSanitizers.push(
+        ...findJavaPathNormalizeStartsWithGuardSanitizers(code),
+      );
+      additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
     }
 
     // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
@@ -3065,6 +3070,162 @@ function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
         sanitizes: ['ssrf', 'external_taint_escape'],
       });
     }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Java: Path.resolve(...).normalize() + startsWith(ROOT) guard
+ * sanitizer (cognium-dev #216 Sprint 76 Pattern B).
+ *
+ * Pattern recognized:
+ *
+ *   private static final Path ROOT = Paths.get("/data");
+ *   public Path safe(String name) throws Exception {
+ *       Path full = ROOT.resolve(name).normalize();
+ *       if (!full.startsWith(ROOT)) throw new SecurityException("escape");
+ *       return full;
+ *   }
+ *
+ * Note: `.normalize()` alone is not safe (absolute-path arguments
+ * replace ROOT entirely); the load-bearing check is the subsequent
+ * `<full>.startsWith(<ROOT>)` guard with a terminator. Both the
+ * normalize chain and the matching guard must be present to emit
+ * the sanitizer.
+ *
+ * Emits a `path_traversal` + `external_taint_escape` sanitizer at
+ * the resolve line and at every subsequent line that references the
+ * normalized variable.
+ */
+function findJavaPathNormalizeStartsWithGuardSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // <var> = <root>.resolve(<arg>).normalize()
+  // Also accepts Paths.get(<root>, <arg>).normalize() and
+  // Path.of(<root>, <arg>).normalize() chained forms.
+  const resolveNormalizeRe =
+    /\b([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\.\s*resolve\s*\([^)]*\)\s*\.\s*normalize\s*\(\s*\)/;
+  const startsWithGuardRe = (varName: string, rootName: string) =>
+    new RegExp(
+      `if\\s*\\(\\s*!\\s*${varName}\\s*\\.\\s*startsWith\\s*\\(\\s*${rootName}\\s*\\)\\s*\\)`,
+    );
+  const terminatorRe = /\b(throw|return)\b/;
+
+  // First pass: find every normalize-chain declaration and remember
+  // its line + variable + root identifier.
+  const candidates: Array<{
+    line: number;
+    fullVar: string;
+    rootVar: string;
+  }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = resolveNormalizeRe.exec(lines[i]);
+    if (!m) continue;
+    candidates.push({ line: i + 1, fullVar: m[1], rootVar: m[2] });
+  }
+  if (candidates.length === 0) return sanitizers;
+
+  // Second pass: confirm each candidate has a matching startsWith
+  // guard with a terminator on the same or next line.
+  for (const c of candidates) {
+    const guardRe = startsWithGuardRe(c.fullVar, c.rootVar);
+    let guardLine = -1;
+    // Search ahead up to 6 lines for the guard.
+    for (
+      let l = c.line;
+      l < Math.min(lines.length, c.line + 6);
+      l++
+    ) {
+      if (!guardRe.test(lines[l])) continue;
+      // The terminator may be on the same line (single-line if) or on
+      // the next line (block-form if).
+      if (
+        terminatorRe.test(lines[l]) ||
+        (l + 1 < lines.length && terminatorRe.test(lines[l + 1]))
+      ) {
+        guardLine = l + 1;
+        break;
+      }
+    }
+    if (guardLine < 0) continue;
+
+    // Emit on the resolve line and on every subsequent line that
+    // references the normalized variable (covers the `return full;`
+    // / `Files.read(full)` / etc. sink sites).
+    const varRefRe = new RegExp(`\\b${c.fullVar}\\b`);
+    sanitizers.push({
+      type: 'java_path_normalize_startswith_guard',
+      method: 'normalize',
+      line: c.line,
+      sanitizes: ['path_traversal', 'external_taint_escape'],
+    });
+    for (let l = c.line; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'java_path_normalize_startswith_guard',
+        method: 'normalize',
+        line: l + 1,
+        sanitizes: ['path_traversal', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Java: inline CRLF/tab-strip wrapper at log-call site (cognium-dev
+ * #216 Sprint 76 Pattern B).
+ *
+ * Pattern recognized:
+ *
+ *   log.info("event=user_lookup value={}", user.replaceAll("[\\r\\n\\t]", "_"));
+ *
+ * The CRLF-strip `.replaceAll("[\\r\\n...]", ...)` (or
+ * `.replace('\\n'|'\\r'|'\\t', ...)`) must appear as a *direct*
+ * argument inside a recognized slf4j/log4j/JUL log-method call on
+ * the same source line. A `.replaceAll(...)` on a different earlier
+ * line (assigned to a temp variable) is NOT recognized — this
+ * preserves TP firing on a separately-tainted log argument.
+ *
+ * Emits a `log_injection` + `external_taint_escape` sanitizer at
+ * that line.
+ */
+function findJavaInlineCrlfStripLogSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Recognized log method receivers: common slf4j / log4j / JUL
+  // identifiers. Restricted set avoids matching arbitrary
+  // `something.info(...)` calls.
+  const logCallStart =
+    /\b(?:log|logger|LOG|LOGGER|slog|LOGGER_)\s*\.\s*(?:info|warn|error|debug|trace|fatal|severe|warning|fine|finer|finest|config)\s*\(/;
+  // Threat-char regex literal classes that count as a CRLF strip.
+  // Java string-literal escapes use \\r / \\n / \\t inside a "..."
+  // source. We accept either character-class `[...\r\n...]` or a
+  // single-char `replace('\n', ...)` / `replace('\r', ...)` /
+  // `replace('\t', ...)` form.
+  const crlfReplaceAll =
+    /\.\s*replaceAll\s*\(\s*"\[[^"]*\\\\?[rnt][^"]*\]"/;
+  const crlfReplaceChar =
+    /\.\s*replace\s*\(\s*'(?:\\\\?[rnt])'\s*,/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (!logCallStart.test(text)) continue;
+    if (!crlfReplaceAll.test(text) && !crlfReplaceChar.test(text)) continue;
+    sanitizers.push({
+      type: 'java_inline_crlf_strip_log',
+      method: 'replaceAll',
+      line: i + 1,
+      sanitizes: ['log_injection', 'external_taint_escape'],
+    });
   }
 
   return sanitizers;
