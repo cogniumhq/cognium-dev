@@ -5,6 +5,127 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.138.0] - 2026-06-30
+
+Combined Sprints 88 + 89 + 90 closing the tail of cognium-dev #189
+variant-regression scorecard.
+
+**Sprint 88** — JavaScript command_injection cluster (4 cells):
+`execa.command`, `child_process.execFile('sh','-c',...)`,
+`util.promisify(exec)`, `child_process.spawn('sh','-c',...)`. Baseline
+on 3.137.0 found **0 of 4 FN** — all four variants already TP via
+existing configured `nodejs.json` sinks (Sprint 54 added
+`execa.command`/`execa.commandSync`; `child_process.exec`/`execFile`/
+`spawn`/`spawnSync`/`execSync` have been sinks since the initial
+JS plugin). Coverage pinned with `issue-189-sprint88-cmdinj-cluster`
+regression tests (4 TP + 4 TN).
+
+**Sprint 89** — deserialization (4) + xpath (3) cluster (7 cells):
+3 of 7 FN on 3.137.0. Three new pattern detectors close the gap:
+
+- `findGoGobDeserializationFindings` — Go `encoding/gob`
+  `gob.NewDecoder(req.Body).Decode(&v)` (both assigned and inline
+  forms). The `gob` package reconstructs arbitrary registered types
+  from attacker-controlled bytes; without authenticated framing this
+  is a CWE-502. rule_id=`insecure_deserialization`, severity=critical.
+
+- `findJsJsonParseBodyFindings` — JS `JSON.parse(req.body)` (express
+  `text()`/`raw()` body middleware leaves `req.body` as an unvetted
+  string; the parsed object can carry `__proto__` payloads that
+  pollute downstream property lookups). Tracks taint through
+  `const raw = req.body; JSON.parse(raw)` aliases. CWE-502 /
+  CWE-1321-adjacent. severity=high.
+
+- `findJsDomXpathInjectionFindings` — JS DOM `document.evaluate(
+  <tainted>, ...)` with browser sources (`location.search`/`hash`/
+  `href`, `URLSearchParams`, `window.name`, `document.cookie`). Gates
+  on the presence of `XPathResult` to keep the detector scoped to
+  the DOM XPath API. CWE-643, severity=high.
+
+Already-TP cells re-pinned in regression tests: Java SnakeYAML
+`Yaml.load`, Rust `bincode::deserialize` (via configured
+deserialization sinks), Python `lxml tree.xpath`, Java
+`XPath.evaluate`.
+
+**Sprint 90** — xxe (3) + ssti (2) + path (1) cluster (6 cells):
+3 of 6 FN on 3.137.0. Three new pattern detectors close the gap:
+
+- `findGoXmlDecoderXxeFindings` — Go `encoding/xml`
+  `xml.NewDecoder(req.Body)` followed downstream by
+  `dec.Strict = false` or `dec.Entity = ...`. The standard library
+  is safe by default but disabling Strict (or overriding the Entity
+  map) reintroduces entity-resolution risks. CWE-611, severity=high.
+
+- `findPythonJinjaTemplateSstiFindings` — Python
+  `jinja2.Template(<tainted>).render(...)` where the template
+  source traces back to `flask.request.args` / `form` / `values` /
+  `json` / `data` / `cookies` / `headers`. Sandbox-escape gadgets
+  (`{{ ().__class__.__bases__[0].__subclasses__() }}` chains) make
+  this RCE-equivalent. rule_id=`template_injection`, CWE-1336,
+  severity=critical.
+
+- `findJsTemplateInjectionSstiFindings` — JS
+  `Handlebars.compile(<tainted>)` / `ejs.render(<tainted>, ...)` /
+  `ejs.compile(<tainted>)` where the template source traces back to
+  Express `req.query|body|params|headers|cookies`. Helper-shadowing
+  and prototype-gadget chains in both engines have historically led
+  to RCE. rule_id=`template_injection`, CWE-1336, severity=critical.
+
+Already-TP cells re-pinned: Java `DocumentBuilderFactory.parse`
+(via existing `xml-entity-expansion` pass), JS `libxmljs.parseXml`
+with `{ noent: true }`, Rust `Path::new(...).join(<tainted>)` →
+`fs::read_to_string` (via configured `path_traversal` sinks).
+
+### Risk + safety controls
+
+- **Go gob detector**: requires `*http.Request` in the signature and
+  the decoder variable to have been constructed from `<x>.Body`.
+  Inline-form (`gob.NewDecoder(r.Body).Decode(&p)`) and assigned-form
+  (`dec := gob.NewDecoder(r.Body)`) are matched separately to avoid
+  duplicate findings.
+- **JS JSON.parse-body**: only fires when `req.body` (the specific
+  raw-text extractor) appears as the parse argument — directly or
+  via a tracked alias. Never fires for `JSON.parse(req.query.X)` or
+  `JSON.parse(req.params.X)` (those are already parsed strings, not
+  unvetted JSON blobs).
+- **JS DOM XPath**: gated on `XPathResult` to scope the detector to
+  the browser DOM API; will not fire on Node-side `.evaluate()`
+  calls on unrelated objects (Mongoose, etc.).
+- **Go XML decoder XXE**: only fires when `dec.Strict = false` or
+  `dec.Entity = ...` is set on the same variable as the
+  `xml.NewDecoder(req.Body)` assignment. Default-Strict decoders
+  (the recommended posture) do not trip.
+- **Python Jinja Template SSTI**: requires the `jinja2.Template` name
+  to be imported (or qualified `jinja2.Template`) and the constructor
+  argument to trace to a Flask request extractor. Literal-template
+  calls and `render_template('file.html', ...)` (which is safe) do
+  not fire.
+- **JS Handlebars/EJS SSTI**: requires both the library reference
+  (`Handlebars.compile` / `ejs.render` / `ejs.compile`) and an
+  Express request-extractor source. Literal-template compilation
+  (the typical safe usage) does not fire.
+
+### Verification
+
+- `tests/analysis/passes/issue-189-sprint88-cmdinj-cluster.test.ts`
+  (NEW, 8 tests) — 4 TP + 4 TN regression lockdown
+- `tests/analysis/passes/issue-189-sprint89-deser-xpath-cluster.test.ts`
+  (NEW, 11 tests) — 3 new-detector TPs + 4 detector-control TNs +
+  4 already-TP regression-lockdown TPs
+- `tests/analysis/passes/issue-189-sprint90-xxe-ssti-path-cluster.test.ts`
+  (NEW, 10 tests) — 4 new-detector TPs + 3 detector-control TNs +
+  3 already-TP regression-lockdown TPs
+- Full suite: **3391 passed | 2 skipped** (was 3362 on 3.137.0)
+- `npm run typecheck && npm run build` clean
+- Pillar I clean (no LLM/AI identifiers in changed files)
+
+### #189 cumulative status
+
+After Sprint 90, all 80 addressable FN cells across the multi-language
+variant corpus are closed (the 16 trust_boundary cells stay parked
+behind #117 trust-boundary-pass work). Sprint plan is complete; #189
+can close pending the trust-boundary epic.
+
 ## [3.137.0] - 2026-06-30
 
 Sprint 87 — cognium-dev #189 variant-regression scorecard: ldap (4) +

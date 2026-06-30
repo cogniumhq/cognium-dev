@@ -304,6 +304,22 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 89 (#189): Go insecure_deserialization — encoding/gob
+      // NewDecoder(r.Body).Decode(&v).
+      for (const finding of findGoGobDeserializationFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 90 (#189): Go XXE — encoding/xml NewDecoder(r.Body) with
+      // Strict=false or custom Entity map.
+      for (const finding of findGoXmlDecoderXxeFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -369,6 +385,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 86 (#189): Python crlf / header injection —
       // `response.headers['X-Custom'] = <tainted>` (Flask/Werkzeug).
       for (const finding of findPythonHeaderCrlfInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 90 (#189): Python SSTI — jinja2.Template(<tainted>).render(...).
+      for (const finding of findPythonJinjaTemplateSstiFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -491,6 +514,30 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 87 (#189): JS/TS ldap_injection — ldapjs/ldapts
       // client.search(base, { filter: <tainted>, ... }).
       for (const finding of findJsLdapInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 89 (#189): JS insecure_deserialization —
+      // JSON.parse(req.body) on raw / text bodies.
+      for (const finding of findJsJsonParseBodyFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 89 (#189): JS xpath_injection — DOM
+      // document.evaluate(<tainted>, ...).
+      for (const finding of findJsDomXpathInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 90 (#189): JS template_injection — Handlebars.compile /
+      // ejs.render / ejs.compile with a tainted source.
+      for (const finding of findJsTemplateInjectionSstiFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -7493,6 +7540,550 @@ export function findRustLogInjectionFindings(
         snippet: line.trim(),
       });
     }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 89 detector A (#189) — Go insecure deserialization via
+ * `encoding/gob` `gob.NewDecoder(<req-body>).Decode(&v)`.
+ *
+ * The `gob` package will reconstruct arbitrary Go values, and any
+ * registered concrete type can be instantiated by the attacker through
+ * `gob.Register(...)` side effects. Decoding directly from
+ * `r.Body` (`*http.Request`) without authenticated framing is unsafe.
+ * CWE-502.
+ */
+export function findGoGobDeserializationFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bgob\s*\.\s*NewDecoder\s*\(/.test(code)) return findings;
+  if (!/\*http\.Request\b/.test(code) && !/\bhttp\.HandlerFunc\b/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  // Track variables holding a *gob.Decoder constructed from req body.
+  const decoderFromBody = new Set<string>();
+  const newDecoderAssignRe =
+    /^(\w+)\s*(?::=|=)\s*gob\s*\.\s*NewDecoder\s*\(\s*([^)]+)\)/;
+  for (const raw of lines) {
+    const t = raw.trim();
+    if (t.startsWith('//')) continue;
+    const m = t.match(newDecoderAssignRe);
+    if (!m) continue;
+    const lhs = m[1];
+    const arg = m[2];
+    if (/\b\w+\s*\.\s*Body\b/.test(arg)) {
+      decoderFromBody.add(lhs);
+    }
+  }
+
+  const seen = new Set<number>();
+  if (decoderFromBody.size > 0) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.trim().startsWith('//')) continue;
+      const m = line.match(/\b(\w+)\s*\.\s*Decode\s*\(/);
+      if (!m) continue;
+      if (!decoderFromBody.has(m[1])) continue;
+      if (seen.has(i + 1)) continue;
+      seen.add(i + 1);
+      findings.push({
+        id: `insecure_deserialization-${file}-${i + 1}-go-gob`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'insecure_deserialization',
+        cwe: 'CWE-502',
+        severity: 'critical',
+        level: 'error',
+        message:
+          'Insecure deserialization: `gob.NewDecoder(req.Body).Decode(...)` ' +
+          'reconstructs arbitrary registered Go types from attacker-controlled ' +
+          'bytes. Use an authenticated framing (signed/MAC payloads), avoid ' +
+          'decoding interface{} values, or switch to a schema-bound format ' +
+          '(JSON with explicit types, Protocol Buffers).',
+        file,
+        line: i + 1,
+        snippet: line.trim(),
+      });
+    }
+  }
+  // Inline form — `gob.NewDecoder(req.Body).Decode(&v)`.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('//')) continue;
+    if (
+      !/\bgob\s*\.\s*NewDecoder\s*\(\s*\w+\s*\.\s*Body\s*\)\s*\.\s*Decode\s*\(/.test(
+        line,
+      )
+    ) {
+      continue;
+    }
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `insecure_deserialization-${file}-${i + 1}-go-gob-inline`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'insecure_deserialization',
+      cwe: 'CWE-502',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'Insecure deserialization: `gob.NewDecoder(req.Body).Decode(...)` ' +
+        'reconstructs arbitrary registered Go types from attacker-controlled ' +
+        'bytes. Use an authenticated framing (signed/MAC payloads), avoid ' +
+        'decoding interface{} values, or switch to a schema-bound format ' +
+        '(JSON with explicit types, Protocol Buffers).',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 89 detector B (#189) — JS insecure deserialization via
+ * `JSON.parse(req.body)`.
+ *
+ * Express applications that register `express.text(...)` or
+ * `bodyParser.raw(...)` middleware leave `req.body` as an
+ * attacker-controlled string. Passing it through `JSON.parse(...)`
+ * exposes prototype-pollution paths if the parsed object is then
+ * merged into trusted state or used as a property bag. CWE-502 /
+ * CWE-1321 (prototype-pollution adjacent).
+ *
+ * Conservative gate: only fire on `JSON.parse(<expr>)` where
+ * `<expr>` resolves to `req.body` (the only express extractor that
+ * is genuinely a raw string when text/raw bodyparsing is used).
+ */
+export function findJsJsonParseBodyFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bJSON\s*\.\s*parse\s*\(/.test(code)) return findings;
+  if (!/\breq\s*\.\s*body\b/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const reqBodyRe = /\breq\s*\.\s*body\b/;
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqBodyRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  const callRe = /\bJSON\s*\.\s*parse\s*\(\s*([^)]+?)\s*\)/g;
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('//')) continue;
+    callRe.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = callRe.exec(line)) !== null) {
+      const arg = m[1];
+      let tainted = reqBodyRe.test(arg);
+      if (!tainted) {
+        for (const v of taintedVars) {
+          if (new RegExp(`\\b${v}\\b`).test(arg)) {
+            tainted = true;
+            break;
+          }
+        }
+      }
+      if (!tainted) continue;
+      if (seen.has(i + 1)) continue;
+      seen.add(i + 1);
+      findings.push({
+        id: `insecure_deserialization-${file}-${i + 1}-js-jsonparse-body`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'insecure_deserialization',
+        cwe: 'CWE-502',
+        severity: 'high',
+        level: 'warning',
+        message:
+          '`JSON.parse(req.body)` deserializes attacker-controlled bytes ' +
+          'directly. With `express.text()` / `bodyParser.raw()` middleware ' +
+          '`req.body` is an unvetted string; the parsed object can carry a ' +
+          '`__proto__` payload that pollutes downstream property lookups. ' +
+          'Validate against a schema (zod/ajv) before consuming the value.',
+        file,
+        line: i + 1,
+        snippet: line.trim(),
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 89 detector C (#189) — JS DOM XPath injection via
+ * `document.evaluate(<tainted>, ...)`.
+ *
+ * The DOM `XPathEvaluator.evaluate()` API takes a string XPath
+ * expression as its first argument. When that string is built from
+ * `location.search` / `location.hash` / URLSearchParams without
+ * escaping, the attacker can rewrite the query (e.g. injecting
+ * `' or '1'='1`-style predicates) and exfiltrate other nodes. CWE-643.
+ *
+ * Gate: file must reference `XPathResult` (strong DOM-XPath signal)
+ * AND call `.evaluate(`, AND contain a browser taint source
+ * (`location.search`, `location.hash`, `URLSearchParams`).
+ */
+export function findJsDomXpathInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\.\s*evaluate\s*\(/.test(code)) return findings;
+  if (!/\bXPathResult\b/.test(code)) return findings;
+  const browserSourceRe =
+    /\b(?:location\s*\.\s*(?:search|hash|href)|URLSearchParams|window\s*\.\s*name|document\s*\.\s*cookie)\b/;
+  if (!browserSourceRe.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (browserSourceRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  const evalRe = /\.\s*evaluate\s*\(\s*([^,)]+)/;
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('//')) continue;
+    const m = line.match(evalRe);
+    if (!m) continue;
+    const arg = m[1].trim();
+    let tainted = false;
+    for (const v of taintedVars) {
+      if (new RegExp(`\\b${v}\\b`).test(arg)) {
+        tainted = true;
+        break;
+      }
+    }
+    if (!tainted) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `xpath_injection-${file}-${i + 1}-js-dom-evaluate`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xpath_injection',
+      cwe: 'CWE-643',
+      severity: 'high',
+      level: 'warning',
+      message:
+        'XPath injection: `document.evaluate(<tainted>, ...)` lets the ' +
+        'attacker break out of the XPath expression and read sibling ' +
+        'nodes. Bind user input through XPath variables / parameterized ' +
+        'expressions, or escape with an allowlist before concatenation.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 90 detector A (#189) — Go XXE via `encoding/xml` decoder with
+ * `d.Strict = false` (allows DTD-like constructs and custom Entity
+ * resolution to be configured on the decoder). When the source stream
+ * is `*http.Request.Body`, the attacker can submit a payload that
+ * triggers entity-expansion / external-entity reads through the
+ * `Entity` map. CWE-611 / CWE-776.
+ */
+export function findGoXmlDecoderXxeFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bxml\s*\.\s*NewDecoder\s*\(/.test(code)) return findings;
+  if (!/\*http\.Request\b/.test(code) && !/\bhttp\.HandlerFunc\b/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  // Track decoder vars constructed from req.Body.
+  const decoderFromBody = new Map<string, number>(); // var -> line idx
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith('//')) continue;
+    const m = t.match(
+      /^(\w+)\s*(?::=|=)\s*xml\s*\.\s*NewDecoder\s*\(\s*([^)]+)\)/,
+    );
+    if (!m) continue;
+    if (/\b\w+\s*\.\s*Body\b/.test(m[2])) decoderFromBody.set(m[1], i);
+  }
+  if (decoderFromBody.size === 0) return findings;
+
+  // Only fire if downstream we see `<dec>.Strict = false` or
+  // `<dec>.Entity = ...` (entity-map override).
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('//')) continue;
+    const m = line.match(
+      /\b(\w+)\s*\.\s*(?:Strict\s*=\s*false|Entity\s*=)\b/,
+    );
+    if (!m) continue;
+    if (!decoderFromBody.has(m[1])) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `xml_entity_expansion-${file}-${i + 1}-go-xml-decoder`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xml_entity_expansion',
+      cwe: 'CWE-611',
+      severity: 'high',
+      level: 'warning',
+      message:
+        'XXE: Go `xml.NewDecoder(req.Body)` with `Strict = false` (or a ' +
+        'custom `Entity` map) allows entity references that the standard ' +
+        'library normally rejects. Keep `Strict = true` and avoid setting ' +
+        '`Entity` from attacker-controlled inputs.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 90 detector B (#189) — Python SSTI via Jinja2
+ * `Template(<tainted>).render(...)`.
+ *
+ * Constructing a `jinja2.Template` from attacker-controlled source
+ * gives the attacker the entire Jinja sandbox-escape surface
+ * (`{{ ''.__class__.__mro__[1].__subclasses__() ... }}`). CWE-1336.
+ *
+ * Gate: file must import `jinja2.Template` AND construct it from a
+ * Flask/FastAPI request extractor (request.args/form/values/json/data).
+ */
+export function findPythonJinjaTemplateSstiFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bfrom\s+jinja2\s+import\s+[^#\n]*\bTemplate\b/.test(code) &&
+      !/\bjinja2\s*\.\s*Template\b/.test(code)) {
+    return findings;
+  }
+  const reqExtractRe =
+    /\brequest\s*\.\s*(?:args|form|values|json|data|cookies|headers)\b/;
+  if (!reqExtractRe.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('#')) continue;
+      const m = t.match(/^(\w+)\s*=\s*(.+?)$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  const ctorRe = /\b(?:jinja2\s*\.\s*)?Template\s*\(\s*([^)]+?)\s*\)/;
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('#')) continue;
+    const m = line.match(ctorRe);
+    if (!m) continue;
+    const arg = m[1].trim();
+    let tainted = reqExtractRe.test(arg);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(arg)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `template_injection-${file}-${i + 1}-py-jinja-template`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'template_injection',
+      cwe: 'CWE-1336',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'Server-side template injection: `jinja2.Template(<tainted>).render()` ' +
+        'compiles attacker-controlled source. Sandbox-escape gadgets such as ' +
+        '`{{ ().__class__.__bases__[0].__subclasses__() }}` lead to RCE. ' +
+        'Render fixed templates with user data passed as context variables.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 90 detector C (#189) — JS SSTI via `Handlebars.compile(<tainted>)`
+ * or `ejs.render(<tainted>, ...)` / `ejs.compile(<tainted>)`.
+ *
+ * Compiling an attacker-controlled template lets the attacker execute
+ * arbitrary code through helper-shadowing / prototype gadgets
+ * (Handlebars CVE-2019-19919 chains, EJS render-options escape). CWE-1336.
+ */
+export function findJsTemplateInjectionSstiFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (
+    !/\bHandlebars\s*\.\s*compile\s*\(/.test(code) &&
+    !/\bejs\s*\.\s*(?:render|compile)\s*\(/.test(code)
+  ) {
+    return findings;
+  }
+  if (!/\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe = /\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/;
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  const callRe =
+    /\b(Handlebars\s*\.\s*compile|ejs\s*\.\s*(?:render|compile))\s*\(\s*([^,)]+)/;
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('//')) continue;
+    const m = line.match(callRe);
+    if (!m) continue;
+    const arg = m[2].trim();
+    let tainted = reqExtractRe.test(arg);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(arg)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `template_injection-${file}-${i + 1}-js-${m[1].replace(/[\s.]/g, '').toLowerCase()}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'template_injection',
+      cwe: 'CWE-1336',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'Server-side template injection: compiling/rendering a template ' +
+        'whose source is attacker-controlled (`Handlebars.compile(...)` / ' +
+        '`ejs.render(...)`) opens helper-shadowing and prototype-gadget RCE ' +
+        'paths. Use a fixed template and pass user data as context.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
   }
   return findings;
 }

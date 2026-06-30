@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.138.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.138.0`](https://www.npmjs.com/package/circle-ir) which
+closes all remaining addressable cells across three combined sprints
+on the cognium-dev #189 variant-regression scorecard:
+
+- **Sprint 88 — command_injection JS (4 cells)**: All 4 already TP via
+  existing `nodejs.json` sinks (execa.command, child_process.execFile
+  with sh -c, promisified exec, spawn with sh -c). Regression-pinned
+  with 8 new tests; no engine delta.
+- **Sprint 89 — deserialization (4) + xpath (3) cluster**: 3 new
+  pattern detectors close Go `gob.NewDecoder(req.Body).Decode`,
+  JS `JSON.parse(req.body)` with alias tracking, and DOM
+  `document.evaluate(<taint>, ...)` with browser-source seeding.
+- **Sprint 90 — xxe (3) + ssti (2) + path (1) cluster**: 3 new
+  pattern detectors close Go `xml.NewDecoder` with `Strict=false`/
+  custom Entity, Python `jinja2.Template(<taint>).render(...)`, and
+  JS `Handlebars.compile`/`ejs.render`/`ejs.compile` with tainted
+  source.
+
+Six new pattern detectors total. No CLI surface changes.
+
 ## [3.137.0] - 2026-06-30
 
 Engine bump only — adopts
