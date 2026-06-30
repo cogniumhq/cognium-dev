@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.129.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.129.0`](https://www.npmjs.com/package/circle-ir) which
+closes 8 of the 14 cognium-dev #190 Tier-2 misconfig regression cells
+(the other 6 were already detected on 3.128.0). New per-language
+pattern detectors:
+
+- Rust: `hardcoded-credential` (`pub const API_KEY: &str = "..."`),
+  `insecure-cookie` (`Cookie::build(...).secure(false).http_only(false)`),
+  `jwt-verify-disabled` (`.insecure_disable_signature_validation()`),
+  `weak-crypto` (raw `Aes::encrypt_block` / `decrypt_block` ECB)
+- Java: `jwt-verify-disabled` (bare `JWT.decode(token)` auth0 API),
+  `tls-verify-disabled` (anonymous `X509TrustManager` with empty
+  `checkServerTrusted` body)
+- Go: `weak-crypto` (raw `aes.NewCipher` + `<v>.Encrypt(...)` ECB)
+- JS: `xml-entity-expansion` (`libxmljs.parseXml(buf, { noent: true })`)
+
+No CLI surface changes.
+
 ## [3.128.0] - 2026-06-29
 
 Engine bump only — adopts

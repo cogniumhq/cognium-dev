@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.129.0] - 2026-06-30
+
+Sprint 78 (combined 78+79+80) — cognium-dev #190 Tier-2 misconfig
+regression. Engine inventory of the 14 pinned TP-FN cells on 3.128.0
+found 6 already detected (`go-insecure-cookie`, `py-cors-wildcard`,
+`py-xfo-csp-mismatch`, `py-tls-verify`, `rust-tls-verify`, `bash-md5`).
+This release adds 8 new per-language pattern detectors to close the
+remaining gap.
+
+### Added
+
+- **Rust hardcoded credential (cognium-dev #190)** —
+  `findRustHardcodedCredentialFindings` recognizes
+  `pub const <NAME>: &str = "literal"` where `<NAME>` matches
+  `/api[_]?key|secret|token|password|passwd|pwd|auth/i` and the
+  literal is non-trivial (length ≥ 8, not a placeholder). Emits
+  `hardcoded-credential` (CWE-798).
+
+- **Rust insecure-cookie builder chain (cognium-dev #190)** —
+  `findRustInsecureCookieFindings` recognizes the actix-web
+  `Cookie::build(...)` chain when it calls `.secure(false)` and/or
+  `.http_only(false)`. The dedicated `insecure-cookie-pass.ts`
+  handles the `format!("Set-Cookie: ...")` shape; this complements
+  it for the typed-builder shape. Emits `insecure-cookie` (CWE-1004).
+
+- **Rust JWT verify-disabled (cognium-dev #190)** —
+  `findRustJwtVerifyDisabledFindings` recognizes the jsonwebtoken
+  `.insecure_disable_signature_validation()` method call on
+  `Validation` values. Emits `jwt-verify-disabled` (CWE-347).
+
+- **Rust ECB-mode weak-crypto (cognium-dev #190)** —
+  `findRustWeakCryptoEcbFindings` two-pass: confirm the file
+  constructs a raw block cipher (`Aes128::new` / `Aes192::new` /
+  `Aes256::new` / `Aes*Ecb::new`), then emit on every
+  `.encrypt_block(` / `.decrypt_block(` line. Wrapped CBC/GCM/CTR
+  forms go through `Cbc::<Aes128, ...>::new` / `Aes128Gcm::new`
+  which expose different APIs and do not match. Emits `weak-crypto`
+  (CWE-327).
+
+- **Java pattern findings (cognium-dev #190)** —
+  `findJavaPatternFindings` adds two detectors that the dedicated
+  passes miss:
+  - `jwt-verify-disabled` (CWE-347) on bare `JWT.decode(<token>)`
+    on the auth0 `com.auth0.jwt.JWT` class. `decode` parses without
+    verifying the signature; `JWT.require(<algorithm>).build().verify(token)`
+    is the safe form.
+  - `tls-verify-disabled` (CWE-295) on anonymous `X509TrustManager`
+    implementations whose `checkServerTrusted(...)` body is empty
+    (`{}` without `throw` / `if`). Empty-body trust managers
+    accept every certificate.
+
+- **Go ECB-mode weak-crypto (cognium-dev #190)** —
+  `findGoPatternFindings` two-pass: collect every
+  `<v>, _ := aes.NewCipher(...)` cipher variable; drop variables
+  that are wrapped by `cipher.NewGCM(<v>)` /
+  `cipher.NewCBCEncrypter(<v>)` / `cipher.NewCTR(<v>)` /
+  `cipher.NewOFB(<v>)` / `cipher.NewCFB*(<v>)`; emit
+  `weak-crypto` (CWE-327) on every remaining `<v>.Encrypt(` /
+  `<v>.Decrypt(` line. The Go stdlib `aes.Cipher.Encrypt/Decrypt`
+  operate on a single 16-byte block — calling them directly is ECB.
+
+- **JS `libxmljs` XXE noent flag (cognium-dev #190)** —
+  `findJsPatternFindings` recognizes
+  `libxml(js).parseXml(buf, { noent: true })` and
+  `parseXmlString(...)` with `noent: true` and emits
+  `xml-entity-expansion` (CWE-611). The default `noent: false`
+  is benign and is not matched.
+
+### Tests
+
+- +16 in `tests/analysis/passes/issue-190-sprint78-misconfig.test.ts`
+  (8 TP-FN reproducing the verbatim corpus fixtures + 8 TN-control
+  proving the detectors do not over-fire on the obvious benign
+  variant — verify chain, secure flags, GCM mode, noent:false, etc.).
+
+Full suite: **3276 pass | 2 skipped** (was 3260 + 16 new tests).
+Typecheck + build clean. Pillar I clean.
+
 ## [3.128.0] - 2026-06-29
 
 Sprint 77a — cognium-dev #216 Pattern X mixed in-corpus sanitizers.

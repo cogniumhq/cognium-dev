@@ -265,6 +265,11 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'go') {
       additionalSanitizers.push(...findGoMapAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findGoHtmlTemplateImportSanitizers(code));
+      // Sprint 78 (#190): Go ECB-mode weak-crypto detection.
+      const goMisconfigFindings = findGoPatternFindings(code, graph.ir.meta.file);
+      for (const finding of goMisconfigFindings) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -302,6 +307,21 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of rustMisconfigFindings) {
         ctx.addFinding(finding);
       }
+      // Sprint 78 (#190): additional Rust misconfig pattern detectors —
+      // hardcoded-credential, insecure-cookie (builder chain),
+      // jwt-verify-disabled, weak-crypto (raw ECB block ops).
+      for (const finding of findRustHardcodedCredentialFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      for (const finding of findRustInsecureCookieFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      for (const finding of findRustJwtVerifyDisabledFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      for (const finding of findRustWeakCryptoEcbFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -314,6 +334,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
       // Sprint 75 (#216 Pattern D): JS SSRF allow-list guard (var-aware).
       additionalSanitizers.push(...findJsSsrfAllowlistGuardSanitizers(code));
+      // Sprint 78 (#190): JS misconfig pattern findings — libxmljs noent:true.
+      for (const finding of findJsPatternFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Java: Sprint 73 (#216 Pattern A) — Jackson readValue / Gson
@@ -328,6 +352,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
       additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
+      // Sprint 78 (#190): Java misconfig pattern findings —
+      // jwt-verify-disabled (auth0 JWT.decode bare) +
+      // tls-verify-disabled (empty-body X509TrustManager).
+      for (const finding of findJavaPatternFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
     }
 
     // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
@@ -3917,6 +3947,381 @@ export function findRustPatternFindings(code: string, file: string): SastFinding
       severity: 'high',
       level: 'error',
       message: `TLS ${what} verification disabled: reqwest builder ${method}(true)`,
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 78 (#190) — Tier-2 misconfig pattern extensions for Rust, Java, Go,
+// and JS that the dedicated misconfig passes don't yet recognize.
+// ---------------------------------------------------------------------------
+
+/**
+ * Rust `hardcoded-credential` (CWE-798). Pattern:
+ *   `(pub|const|static) <NAME>: &str = "literal";` where NAME matches
+ *   /api[_]?key|secret|token|password|passwd|pwd|auth/i and the literal is
+ *   non-trivial (length > 8 and not a placeholder).
+ */
+export function findRustHardcodedCredentialFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const re =
+    /\b(?:pub\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*&\s*'?[a-z_]*\s*str\s*=\s*"([^"]+)"/;
+  const nameRe = /(?:^|_)(?:API[_]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|AUTH)(?:_|$)/i;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const m = trimmed.match(re);
+    if (!m) continue;
+    const name = m[1];
+    const value = m[2];
+    if (!nameRe.test(name)) continue;
+    if (value.length < 8) continue;
+    if (/^(?:xxx|todo|fixme|placeholder|changeme)/i.test(value)) continue;
+    out.push({
+      id: `hardcoded-credential-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'hardcoded-credential',
+      cwe: 'CWE-798',
+      severity: 'high',
+      level: 'error',
+      message: `Hardcoded credential: const ${name} contains a literal secret value`,
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Rust `insecure-cookie` (CWE-1004 / CWE-614). Pattern:
+ *   `Cookie::build(...)` chain that explicitly calls `.secure(false)` or
+ *   `.http_only(false)` (or both). The dedicated `insecure-cookie-pass.ts`
+ *   handles the `format!("Set-Cookie: ...")` shape but not the actix-web
+ *   builder chain.
+ */
+export function findRustInsecureCookieFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const builderRe = /\bCookie\s*::\s*build\s*\(/;
+  const insecureFlagRe = /\.\s*(?:secure|http_only)\s*\(\s*false\s*\)/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!builderRe.test(trimmed)) continue;
+    if (!insecureFlagRe.test(trimmed)) continue;
+    out.push({
+      id: `insecure-cookie-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'insecure-cookie',
+      cwe: 'CWE-1004',
+      severity: 'medium',
+      level: 'warning',
+      message:
+        'Insecure cookie: Cookie::build chain disables Secure / HttpOnly flag(s)',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Rust `jwt-verify-disabled` (CWE-347). Pattern:
+ *   `.insecure_disable_signature_validation()` method call on a
+ *   jsonwebtoken `Validation` value. Any presence of this method
+ *   disables the signature check.
+ */
+export function findRustJwtVerifyDisabledFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const re = /\.\s*insecure_disable_signature_validation\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!re.test(trimmed)) continue;
+    out.push({
+      id: `jwt-verify-disabled-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'jwt-verify-disabled',
+      cwe: 'CWE-347',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'JWT signature verification disabled: ' +
+        'Validation::insecure_disable_signature_validation() forfeits signature enforcement',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Rust `weak-crypto` (CWE-327). Pattern (raw ECB via `aes` crate):
+ *   any line that calls `.encrypt_block(` or `.decrypt_block(` on a
+ *   block-cipher receiver constructed via `Aes128::new` / `Aes192::new` /
+ *   `Aes256::new` / `Aes128Ecb` / `Aes256Ecb`. We collect the cipher
+ *   constructor lines in a first pass (variable name → seen) and emit
+ *   on every `.encrypt_block(` / `.decrypt_block(` line in the same file.
+ *
+ *   The wrapped CBC/GCM/CTR forms go through `Cbc::<Aes128, ...>::new`
+ *   or `Aes128Gcm::new` — those do NOT call `.encrypt_block` directly
+ *   and so are not matched.
+ */
+export function findRustWeakCryptoEcbFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const ctorRe = /\bAes(?:128|192|256)(?:Ecb)?\s*::\s*new\s*\(/;
+  const blockOpRe = /\.\s*(encrypt_block|decrypt_block)\s*\(/;
+  // First: confirm the file uses raw block-cipher construction (Aes*::new)
+  // — without that, a stray `.encrypt_block(` on some other type isn't
+  // necessarily ECB.
+  let sawCtor = false;
+  for (const line of lines) {
+    if (ctorRe.test(line)) { sawCtor = true; break; }
+  }
+  if (!sawCtor) return out;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!blockOpRe.test(trimmed)) continue;
+    out.push({
+      id: `weak-crypto-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'weak-crypto',
+      cwe: 'CWE-327',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Weak crypto (ECB mode): raw Aes::encrypt_block/decrypt_block ' +
+        'leaks repeating-block patterns. Use AES-GCM, AES-CTR, or ' +
+        'AES-CBC with an HMAC.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Java pattern findings — Sprint 78 (#190):
+ *   - `jwt-verify-disabled` (CWE-347): bare `JWT.decode(<token>)` on the
+ *     auth0 `com.auth0.jwt.JWT` class. `decode` is documented as
+ *     "decode the token without performing any verification"; only
+ *     `JWT.require(...).build().verify(token)` enforces the signature.
+ *   - `tls-verify-disabled` (CWE-295): anonymous `X509TrustManager`
+ *     implementation whose `checkServerTrusted` body is empty
+ *     (returns void without raising). This trust-nothing implementation
+ *     accepts every certificate.
+ */
+export function findJavaPatternFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  // jwt-verify-disabled: `JWT.decode(<expr>)`. Anchored to the `JWT.`
+  // receiver to avoid matching unrelated `decode(` calls on Base64,
+  // URLDecoder, etc. Guarded against the safer `JWT.require(...).build()
+  // .verify(...)` chain by requiring `decode` to appear without
+  // `.verify(` later on the same line.
+  const jwtDecodeRe = /\bJWT\s*\.\s*decode\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (!jwtDecodeRe.test(trimmed)) continue;
+    if (/\.\s*verify\s*\(/.test(trimmed)) continue;
+    out.push({
+      id: `jwt-verify-disabled-${file}-${i + 1}-decode`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'jwt-verify-disabled',
+      cwe: 'CWE-347',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'JWT signature not verified: auth0 `JWT.decode(token)` parses ' +
+        'without checking the signature. Use `JWT.require(<algorithm>)' +
+        '.build().verify(token)` to enforce verification.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+
+  // tls-verify-disabled: anonymous X509TrustManager with empty
+  // checkServerTrusted body. Two-pass: locate the anonymous-class start
+  // line (`new X509TrustManager() {`), then scan ahead for the
+  // `checkServerTrusted(...)` method signature whose `{...}` body is
+  // empty (no `throw`, no `if`).
+  const anonStartRe = /\bnew\s+X509TrustManager\s*\(\s*\)\s*\{/;
+  const checkServerSig = /\bcheckServerTrusted\s*\([^)]*\)\s*(?:throws\s+[^\{]*)?\{\s*\}/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!anonStartRe.test(raw)) continue;
+    // Scan up to 15 lines ahead for the empty-body checkServerTrusted.
+    const end = Math.min(lines.length, i + 16);
+    let foundAt = -1;
+    for (let j = i; j < end; j++) {
+      if (checkServerSig.test(lines[j])) {
+        foundAt = j;
+        break;
+      }
+    }
+    if (foundAt < 0) continue;
+    out.push({
+      id: `tls-verify-disabled-${file}-${foundAt + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'tls-verify-disabled',
+      cwe: 'CWE-295',
+      severity: 'high',
+      level: 'error',
+      message:
+        'TLS certificate verification disabled: anonymous X509TrustManager ' +
+        'with empty checkServerTrusted body accepts every certificate.',
+      file,
+      line: foundAt + 1,
+      snippet: lines[foundAt].trim().substring(0, 100),
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Go pattern findings — Sprint 78 (#190):
+ *   - `weak-crypto` (CWE-327): raw ECB usage via `aes.NewCipher(...)`
+ *     followed by a direct `<cipher>.Encrypt(` / `.Decrypt(` call on the
+ *     constructed value (no `cipher.NewCBCEncrypter` / `NewGCM` / `NewCTR`
+ *     wrapper). The Go stdlib `aes.Cipher` exposes `Encrypt` / `Decrypt`
+ *     that operate on a single 16-byte block — calling these directly is
+ *     ECB mode.
+ *
+ *   Algorithm:
+ *     1. Collect every `<v>, _ := aes.NewCipher(...)` cipher variable.
+ *     2. If the file contains a `cipher.NewGCM(<v>)` / `cipher.NewCBC*(<v>)`
+ *        / `cipher.NewCTR(<v>)` wrapping line for that variable, skip it
+ *        (wrapped mode is not ECB).
+ *     3. Otherwise emit on every `<v>.Encrypt(` / `<v>.Decrypt(` line.
+ */
+export function findGoPatternFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const cipherVars = new Set<string>();
+  const ctorRe =
+    /\b([a-zA-Z_]\w*)\s*(?:,\s*[a-zA-Z_]\w*)?\s*:?=\s*aes\.NewCipher\s*\(/;
+  for (const line of lines) {
+    const m = line.match(ctorRe);
+    if (m) cipherVars.add(m[1]);
+  }
+  if (cipherVars.size === 0) return out;
+  // Drop wrapped ciphers (CBC/GCM/CTR/OFB/CFB) — those are not ECB.
+  for (const v of Array.from(cipherVars)) {
+    const wrapRe = new RegExp(
+      `\\bcipher\\.New(?:GCM|CBCEncrypter|CBCDecrypter|CTR|OFB|CFBEncrypter|CFBDecrypter)\\s*\\(\\s*${v}\\b`,
+    );
+    for (const line of lines) {
+      if (wrapRe.test(line)) { cipherVars.delete(v); break; }
+    }
+  }
+  if (cipherVars.size === 0) return out;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    for (const v of cipherVars) {
+      const opRe = new RegExp(`\\b${v}\\s*\\.\\s*(?:Encrypt|Decrypt)\\s*\\(`);
+      if (!opRe.test(trimmed)) continue;
+      out.push({
+        id: `weak-crypto-${file}-${i + 1}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'weak-crypto',
+        cwe: 'CWE-327',
+        severity: 'high',
+        level: 'error',
+        message:
+          'Weak crypto (ECB mode): raw aes.Cipher.Encrypt/Decrypt on a ' +
+          'block leaks repeating-block patterns. Wrap with cipher.NewGCM, ' +
+          'cipher.NewCTR, or cipher.NewCBCEncrypter + HMAC.',
+        file,
+        line: i + 1,
+        snippet: trimmed.substring(0, 100),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * JS pattern findings — Sprint 78 (#190):
+ *   - `xml-entity-expansion` (CWE-611 / CWE-776): libxmljs `parseXml`
+ *     (and `parseXmlString`) called with `{ noent: true }` resolves
+ *     external entities, enabling XXE / billion-laughs. The default is
+ *     `noent: false`; only the explicit-true form is unsafe.
+ */
+export function findJsPatternFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+  const parseRe = /\blibxml(?:js)?\s*\.\s*parseXml(?:String)?\s*\(/;
+  const noentTrueRe = /\bnoent\s*:\s*true\b/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    if (!parseRe.test(trimmed)) continue;
+    if (!noentTrueRe.test(trimmed)) continue;
+    out.push({
+      id: `xml-entity-expansion-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xml-entity-expansion',
+      cwe: 'CWE-611',
+      severity: 'high',
+      level: 'error',
+      message:
+        'XML external entity resolution enabled: libxmljs parseXml ' +
+        'called with `noent: true` resolves external entities (XXE / ' +
+        'billion-laughs). Omit the flag or set `noent: false`.',
       file,
       line: i + 1,
       snippet: trimmed.substring(0, 100),
