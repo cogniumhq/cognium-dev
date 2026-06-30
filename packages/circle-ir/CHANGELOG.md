@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.124.0] - 2026-06-29
+
+Sprint 73 — cognium-dev #216 Pattern A (`external_taint_escape`
+sanitizer-chain, JS/Java slice) plus Pattern B bonus (JS
+user-defined wrapper-function recognition). Closes 6 of the 18
+remaining FPs on cognium-dev #216 (4 ETE + 2 wrapper). #216 stays
+open for 12 remaining cross-language FPs (the 2 TS `safe_interop_*`
+fixtures aren't committed to the corpus and are deferred to Sprint
+73b; the Pattern B Python wrappers + Pattern D SSRF allowlist + the
+remaining Java/JS/Rust/htmljs/python rows go to subsequent sprints).
+
+### Added
+
+- **JS/Java `external_taint_escape` sanitizer detectors
+  (cognium-dev #216 Pattern A)** — five new conservative sanitizer
+  recognizers wired into `language-sources-pass.ts`:
+  - `findJavaSafeJsonParseSanitizers` — Jackson `mapper.readValue(...)`
+    and Gson `gson.fromJson(...)` recognized as ETE terminators.
+    Configured `deserialization` sinks (e.g. `enableDefaultTyping`
+    polymorphic Jackson) are unaffected because the two-tier filter
+    in `taint-propagation-pass.ts` gates configured sinks at the
+    sink line, while ETE is gated on the source→sink range.
+  - `findJsSafeJsonParseSanitizers` — `JSON.parse(...)` recognized
+    as ETE terminator. Cannot exec code, unlike configured `eval` /
+    `Function` / `vm.runInNewContext` sinks (unaffected).
+  - `findJsCryptoHashSanitizers` — one-way hashes
+    (`bcrypt.hash` / `bcrypt.hashSync`, `argon2.hash`,
+    `crypto.scrypt[Sync]`, `crypto.createHash(...)`, `.digest(...)`)
+    recognized as ETE terminators. `weak-password-hash` rule
+    continues firing independently for MD5/SHA1.
+  - `findJsCsvFormulaPrefixSanitizers` — Excel-formula sanitizer
+    pattern (`` `'${x}` `` template literal or `"'" + x` concat)
+    recognized as ETE-only sanitizer. Scoped strictly to ETE — does
+    not affect xss / sqli / command-injection sinks.
+- **JS user-defined wrapper-function sanitizer recognition
+  (cognium-dev #216 Pattern B)** — `findJsWrapperFunctionSanitizers`
+  is a two-pass detector: (1) discover `function NAME(...)` /
+  `const NAME = (...) =>` declarations whose body contains a
+  `.replace(...)` against a recognizable threat-character class
+  (`[&<>"']` → xss + external_taint_escape, `[\r\n\t]` →
+  log_injection + external_taint_escape); (2) emit a per-call-site
+  sanitizer at every line invoking the wrapper. Closes the
+  `safe_sanitizer_wrapped_xss.js` and `safe_sanitizer_wrapped_loginj.js`
+  Pattern B FPs from the v3.107.0 scorecard.
+
+### Tests
+
+- 9 new tests in `tests/analysis/passes/issue-216-pattern-a.test.ts`
+  (6 TN reproducing the verbatim corpus FPs + 3 TP-control proving
+  the sanitizers don't over-suppress: `bcrypt.hash` does NOT sanitize
+  sql_injection; `JSON.parse` does NOT sanitize command_injection;
+  CSV `'`-prefix on var A does NOT sanitize raw var B at xss sink).
+- Suite: 3231+2 → 3240+2 (+9).
+
 ## [3.123.0] - 2026-06-29
 
 Sprints 67 + 69 + 70 + 71 (wave 1) + 72. Closes the last bash FP in

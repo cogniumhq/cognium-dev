@@ -292,6 +292,23 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
     }
 
+    // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
+    // sanitizer-chain recognition (JSON.parse / bcrypt.hash / csv
+    // '-prefix) plus wrapper-function recognition for xss / log_injection.
+    if (language === 'javascript' || language === 'typescript' || language === 'htmljs') {
+      additionalSanitizers.push(...findJsSafeJsonParseSanitizers(code));
+      additionalSanitizers.push(...findJsCryptoHashSanitizers(code));
+      additionalSanitizers.push(...findJsCsvFormulaPrefixSanitizers(code));
+      additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
+    }
+
+    // -- Java: Sprint 73 (#216 Pattern A) — Jackson readValue / Gson
+    // fromJson recognized as ETE terminator (does not affect
+    // configured `deserialization` sinks).
+    if (language === 'java') {
+      additionalSanitizers.push(...findJavaSafeJsonParseSanitizers(code));
+    }
+
     // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
     // Pattern findings only — no taint flow required (composed-flow shape that
     // the engine misses because the env source and the egress sink are
@@ -2359,6 +2376,182 @@ function findRustCanonicalizeGuardSanitizers(code: string): TaintSanitizer[] {
     }
   }
 
+  return sanitizers;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 73 (#216 Pattern A + B) — JS/Java safe-handler sanitizer
+// recognition for the synthetic `external_taint_escape` (CWE-668) fallback
+// flow, plus JS user-defined wrapper-function recognition for `xss` /
+// `log_injection`.
+//
+// Suppression mechanism: `taint-propagation-pass.ts:198-232` already
+// filters ETE flows when ANY sanitizer between source and sink lists
+// `external_taint_escape` in its `sanitizes` array. These detectors emit
+// the sanitizer entries so the existing filter can do its job.
+//
+// Conservative scoping: each detector restricts `sanitizes` to the
+// minimum justifiable set so configured (real) sinks are unaffected.
+// ---------------------------------------------------------------------------
+
+/**
+ * Java: Jackson `mapper.readValue(...)` and Gson `gson.fromJson(...)`
+ * construct typed POJOs from JSON. Without `enableDefaultTyping` they
+ * cannot instantiate attacker-chosen classes, so the synthetic ETE
+ * fallback over-fires. The configured `deserialization` sink remains
+ * unaffected (different sink_type, gated at the sink line).
+ */
+function findJavaSafeJsonParseSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const safeParse = /\.(?:readValue|fromJson)\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!safeParse.test(lines[i])) continue;
+    sanitizers.push({
+      type: 'java_safe_json_parse',
+      method: 'readValue',
+      line: i + 1,
+      sanitizes: ['external_taint_escape'],
+    });
+  }
+  return sanitizers;
+}
+
+/**
+ * JS: `JSON.parse(...)` produces only primitives / plain objects. It
+ * cannot execute code (unlike `eval` / `Function` / `vm.runInNewContext`,
+ * which remain configured sinks).
+ */
+function findJsSafeJsonParseSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const safeParse = /\bJSON\.parse\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!safeParse.test(lines[i])) continue;
+    sanitizers.push({
+      type: 'js_safe_json_parse',
+      method: 'JSON.parse',
+      line: i + 1,
+      sanitizes: ['external_taint_escape'],
+    });
+  }
+  return sanitizers;
+}
+
+/**
+ * JS: one-way crypto hashes destroy original content. Bcrypt/argon2/
+ * scrypt/createHash...digest cannot be reversed. The `weak-password-hash`
+ * rule fires independently for MD5/SHA1 algorithms.
+ */
+function findJsCryptoHashSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  // bcrypt.hash(...) / bcrypt.hashSync(...)
+  // argon2.hash(...)
+  // crypto.scrypt(...) / crypto.scryptSync(...)
+  // crypto.createHash(...) / hash.digest(...)
+  const hashCall = /\b(?:bcrypt|argon2)\s*\.\s*hash(?:Sync)?\s*\(|\bcrypto\s*\.\s*(?:scrypt(?:Sync)?|createHash)\s*\(|\.digest\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!hashCall.test(lines[i])) continue;
+    sanitizers.push({
+      type: 'js_crypto_hash',
+      method: 'hash',
+      line: i + 1,
+      sanitizes: ['external_taint_escape'],
+    });
+  }
+  return sanitizers;
+}
+
+/**
+ * JS: Excel-formula-injection sanitizer. Prepending a literal single
+ * quote (`'`) to a CSV cell prevents Excel/LibreOffice from interpreting
+ * the value as a formula. Scoped to ETE only — the `'` prefix does NOT
+ * mitigate xss, command_injection, sql_injection, etc.
+ */
+function findJsCsvFormulaPrefixSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  // Template literal `'${x}...` — leading `'` inside backticks.
+  const tickPrefix = /`'\$\{/;
+  // Concat form  "'" + x  or  '\'' + x
+  const concatPrefix = /["']\\?'["']\s*\+\s*[A-Za-z_]/;
+  for (let i = 0; i < lines.length; i++) {
+    if (tickPrefix.test(lines[i]) || concatPrefix.test(lines[i])) {
+      sanitizers.push({
+        type: 'js_csv_formula_prefix',
+        method: "'-prefix",
+        line: i + 1,
+        sanitizes: ['external_taint_escape'],
+      });
+    }
+  }
+  return sanitizers;
+}
+
+/**
+ * JS: user-defined wrapper functions that perform a `.replace(...)`
+ * against a recognizable threat-character class. Two-pass:
+ *
+ *   1. Discover wrappers — `function NAME(...) { ... .replace(/.../...) }`
+ *      or arrow form `const NAME = (...) => { ... .replace(...) }`.
+ *      Classify by the character class:
+ *        - `[&<>"']` → xss + external_taint_escape
+ *        - `[\r\n\t]` → log_injection + external_taint_escape
+ *   2. For every call site `NAME(...)`, emit a sanitizer at that line
+ *      listing the wrapper's kinds.
+ *
+ * Conservative: requires explicit `.replace` against a recognizable
+ * threat-set. Custom wrappers using different escape strategies (e.g.
+ * URL encode) are not yet covered.
+ */
+function findJsWrapperFunctionSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  type WrapperKind = 'xss' | 'log_injection' | 'external_taint_escape';
+  const wrappers = new Map<string, Set<WrapperKind>>();
+
+  const fnDeclRe = /\bfunction\s+([A-Za-z_]\w*)\s*\(/;
+  const arrowDeclRe = /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)|[A-Za-z_]\w*)\s*=>/;
+  // Threat-char classes — must appear inside a .replace(/.../, ...) call.
+  const xssCharClass = /\.replace\s*\(\s*\/[^/]*[&<>"'][^/]*\//;
+  const crlfCharClass = /\.replace\s*\(\s*\/[^/]*(?:\\r|\\n|\\t)[^/]*\//;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = fnDeclRe.exec(lines[i]) ?? arrowDeclRe.exec(lines[i]);
+    if (!m) continue;
+    const name = m[1];
+    // Scan up to 8 lines for the body's .replace(...) call.
+    const body = lines.slice(i, Math.min(lines.length, i + 8)).join('\n');
+    const kinds = new Set<WrapperKind>();
+    if (xssCharClass.test(body)) {
+      kinds.add('xss');
+      kinds.add('external_taint_escape');
+    }
+    if (crlfCharClass.test(body)) {
+      kinds.add('log_injection');
+      kinds.add('external_taint_escape');
+    }
+    if (kinds.size > 0) wrappers.set(name, kinds);
+  }
+  if (wrappers.size === 0) return sanitizers;
+
+  for (let i = 0; i < lines.length; i++) {
+    for (const [name, kinds] of wrappers) {
+      // Skip the declaration line itself.
+      const declSelf = new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`);
+      if (declSelf.test(lines[i])) continue;
+      const callRe = new RegExp(`\\b${name}\\s*\\(`);
+      if (!callRe.test(lines[i])) continue;
+      sanitizers.push({
+        type: 'js_wrapper_function',
+        method: name,
+        line: i + 1,
+        sanitizes: [...kinds],
+      });
+    }
+  }
   return sanitizers;
 }
 
