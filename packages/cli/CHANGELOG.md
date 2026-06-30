@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.136.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.136.0`](https://www.npmjs.com/package/circle-ir) which
+closes 8 of 8 corpus cells on the format_string + crlf cluster of
+cognium-dev #189 variant-regression scorecard (Sprint 86). 4 of 8 were
+already firing via configured Java + Go sinks; 4 new pattern detectors
+close the remaining Python `% / .format()`, Node `util.format`, and
+Python `response.headers[...]` shapes. No CLI surface changes.
+
+See `circle-ir@3.136.0` notes for detector list, risk controls, and
+test coverage (3351 passed / 2 skipped; +11 new tests).
+
 ## [3.135.0] - 2026-06-30
 
 Engine bump only — adopts

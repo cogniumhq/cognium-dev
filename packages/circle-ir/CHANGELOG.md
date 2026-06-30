@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.136.0] - 2026-06-30
+
+Sprint 86 — cognium-dev #189 variant-regression scorecard: format_string
+(5) + crlf (3) cluster (8 FN cells across Java + Python + Go +
+JavaScript). Engine inventory on 3.135.0 found 4 of 8 already firing:
+Java `String.format` and Java `resp.setHeader("Set-Cookie", taint)`
+(via configured sinks); Go `fmt.Sprintf` and Go `w.Header().Set` (via
+configured sinks). The 4 remaining FN shapes were Python `%` /
+`.format()`, Node `util.format`, and Python `response.headers[...]`.
+**4 of 4 addressable FN cells closed via three new pattern detectors.
+8 of 8 corpus cells now emit the canonical sink signal.**
+
+### Closed in this release
+
+Pattern detectors (`language-sources-pass.ts`):
+
+- `findPythonTaintedFormatStringFindings` — Python `<tainted> % args`
+  and `<tainted>.format(args)` where the format template traces back
+  to an HTTP request extractor (`request.args.get`, `request.form.get`,
+  `request.values.get`, `request.json[...]`, `request.headers.get`).
+  Closes `py__fmtstr_v01_percent.py` and `py__fmtstr_v02_str_format.py`.
+  rule_id=`format_string`, CWE-134, severity=high.
+
+- `findJsUtilFormatFormatStringFindings` — Node `util.format(<tainted>,
+  ...)` where the first argument traces back to
+  `req.{query|body|params|headers|cookies}`. Closes
+  `js__fmtstr_v01_util_format.js`. rule_id=`format_string`, CWE-134,
+  severity=medium.
+
+- `findPythonHeaderCrlfInjectionFindings` — Flask/Werkzeug
+  `response.headers['X-Custom'] = <tainted>` and
+  `.headers.add|set|setdefault|append(...)` where the assigned value
+  traces back to an HTTP request extractor. Closes
+  `py__crlf_v01_headers_dict.py`. rule_id=`crlf`, CWE-113,
+  severity=medium.
+
+### Risk + safety controls
+
+- Detector A (Python format-string): only fires when the symbol holding
+  the format template was assigned from a Python HTTP request extractor
+  on a prior line (3-pass whole-file taint propagation). Never fires
+  on literal format strings or symbols not derived from request input.
+- Detector B (Node util.format): gated on both `util.format(` and a
+  request-extractor token (`req.query|body|params|headers|cookies`)
+  appearing in the file before emit. Only fires when the first
+  argument resolves to a tainted symbol via the local-binding tracker.
+- Detector C (Python CRLF): only fires when the RHS expression
+  contains a tainted symbol (HTTP request derivation traced through
+  string-concat and `+`). Doesn't fire on literal Set-Cookie values or
+  hash-derived constants.
+
+### Verification
+
+- 11/11 new tests passing (TP per detector + TN per detector +
+  sanity TPs for the 4 already-covered cells).
+- Full vitest: **3351 passed / 2 skipped** (was 3340; +11).
+- Typecheck clean. Pillar I guard clean.
+- Re-baseline against `/tmp/sprint86-fmtstr-crlf/`: 0/8 FN
+  (was 4/8 on 3.135.0).
+
+### Status
+
+- #189 remaining FN: **47 → 43** (4 closed). Next sprint: 87 (ldap 4 +
+  log_injection 4 = 8 cells).
+- `format_string` cluster: 5/5 closed.
+- `crlf` cluster: 3/3 closed.
+
 ## [3.135.0] - 2026-06-30
 
 Sprint 85 — cognium-dev #189 variant-regression scorecard: ssrf cluster

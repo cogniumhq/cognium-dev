@@ -349,6 +349,23 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 86 (#189): Python format_string — `<tainted> % args` and
+      // `<tainted>.format(args)` where the format template comes from
+      // an HTTP request extractor.
+      for (const finding of findPythonTaintedFormatStringFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 86 (#189): Python crlf / header injection —
+      // `response.headers['X-Custom'] = <tainted>` (Flask/Werkzeug).
+      for (const finding of findPythonHeaderCrlfInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Rust: safe-handler sanitizer detectors (cognium-dev #115 Sprint 31) --
@@ -434,6 +451,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 83 (#189): JS code_injection — indirect eval forms
       // ((0, eval)(x), globalThis.eval(x), aliased eval).
       for (const finding of findJsIndirectEvalCodeInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 86 (#189): JS format_string — `util.format(<tainted>, ...)`
+      // where the format template comes from an HTTP request extractor.
+      for (const finding of findJsUtilFormatFormatStringFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -6489,6 +6514,320 @@ export function findJavaUrlOpenStreamSsrfFindings(
         'guard is present, the host portion remains attacker-controlled — ' +
         'use a strict host allowlist (parse the URL, check `getHost()`) ' +
         'before issuing the request.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 86 detector A (#189) — Python uncontrolled format-string.
+ *
+ * Two shapes:
+ *   1. `<tainted> % args`                 — old-style percent formatting
+ *   2. `<tainted>.format(args)`           — `str.format` API
+ *
+ * When the format string itself comes from HTTP request input, an
+ * attacker can probe arbitrary attributes/items via `str.format`
+ * (`{0.__class__.__init__.__globals__}`) or crash the process via
+ * malformed `%` specifiers. CWE-134.
+ */
+export function findPythonTaintedFormatStringFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: the file must use a Flask/Django/FastAPI request extractor.
+  if (
+    !/\b(?:request\.(?:args|form|values|json|files|cookies|headers|data)|flask\.request)\b/.test(
+      code,
+    )
+  ) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b(?:request\.(?:args|form|values|json|files|cookies|headers|data)\b|flask\.request\b)/;
+
+  // 3-pass whole-file taint propagation across simple `name = expr`
+  // assignments.
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('#')) continue;
+      const a = t.match(/^(\w+)\s*=\s*(.+?)$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  // Percent format: `<name> % <rhs>` where `<name>` is tainted and not a
+  // string literal. Avoid false-fire on `2 % x` etc. by gating on
+  // taintedVar appearing as the LHS of `%`.
+  const percentRe = /\b(\w+)\s*%\s*[\(\[\{"'\w]/;
+  // str.format(...): `<name>.format(`
+  const dotFormatRe = /\b(\w+)\s*\.\s*format\s*\(/;
+  const seen = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const t = line.trim();
+    if (t.startsWith('#')) continue;
+
+    // Percent format
+    const pm = line.match(percentRe);
+    if (pm && taintedVars.has(pm[1])) {
+      // Avoid string literal LHS (already a literal would have been
+      // assigned as a literal, but we double-check the var was tainted —
+      // which the check above asserts).
+      const key = `${i + 1}:percent`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        findings.push({
+          id: `format_string-${file}-${i + 1}-py-percent`,
+          pass: 'language-sources',
+          category: 'security',
+          rule_id: 'format_string',
+          cwe: 'CWE-134',
+          severity: 'high',
+          level: 'error',
+          message:
+            'Format-string injection: Python `<tainted> % args` uses an ' +
+            'HTTP-request-controlled format string. Malformed specifiers can ' +
+            'crash the handler (TypeError) and `%(name)s` access can reveal ' +
+            'arbitrary mapping keys. Use a literal format string and pass ' +
+            'untrusted values as arguments only.',
+          file,
+          line: i + 1,
+          snippet: line.trim(),
+        });
+      }
+    }
+
+    // str.format
+    const dm = line.match(dotFormatRe);
+    if (dm && taintedVars.has(dm[1])) {
+      const key = `${i + 1}:dotformat`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        findings.push({
+          id: `format_string-${file}-${i + 1}-py-strformat`,
+          pass: 'language-sources',
+          category: 'security',
+          rule_id: 'format_string',
+          cwe: 'CWE-134',
+          severity: 'high',
+          level: 'error',
+          message:
+            'Format-string injection: Python `<tainted>.format(...)` lets ' +
+            'the attacker control the format template. Field-access shapes ' +
+            'such as `{0.__class__.__init__.__globals__}` can leak module ' +
+            'globals (e.g. secret keys). Use a literal template and pass ' +
+            'untrusted values as positional/keyword arguments only.',
+          file,
+          line: i + 1,
+          snippet: line.trim(),
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 86 detector B (#189) — JavaScript uncontrolled format-string
+ * via Node `util.format(<tainted>, ...args)`. `util.format` honours
+ * `%s`/`%d`/`%j`/`%O` specifiers; a tainted format string can fingerprint
+ * argument types and is the documented sink for CWE-134 in Node.
+ */
+export function findJsUtilFormatFormatStringFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\butil\s*\.\s*format\s*\(/.test(code)) return findings;
+  if (!/\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/;
+
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      const a = t.match(/^(?:const|let|var)\s+(\w+)\s*=\s*(.+?);?$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  // util.format(<firstArg>, ...) — check whether <firstArg> is tainted.
+  const callRe = /\butil\s*\.\s*format\s*\(\s*([\w.]+)\s*[,)]/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(callRe);
+    if (!m) continue;
+    const arg = m[1];
+    // First token of dotted path is the var name.
+    const root = arg.split('.')[0];
+    if (!taintedVars.has(root) && !reqExtractRe.test(arg)) continue;
+    findings.push({
+      id: `format_string-${file}-${i + 1}-js-util-format`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'format_string',
+      cwe: 'CWE-134',
+      severity: 'medium',
+      level: 'error',
+      message:
+        'Format-string injection: Node `util.format(<tainted>, ...)` uses ' +
+        'an HTTP-request-controlled format string. The attacker can ' +
+        'manipulate `%s`/`%j`/`%O` specifiers to alter the rendered ' +
+        'output. Pass user input as a subsequent argument with a literal ' +
+        'format string.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 86 detector C (#189) — Python HTTP header CRLF injection via
+ * Flask/Werkzeug `response.headers['X-Custom'] = <tainted concat>` or
+ * `response.headers.add(...)` / `response.headers.set(...)`. CWE-113.
+ */
+export function findPythonHeaderCrlfInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\b\w+\s*\.\s*headers\b/.test(code)) return findings;
+  if (
+    !/\b(?:request\.(?:args|form|values|json|files|cookies|headers|data)|flask\.request)\b/.test(
+      code,
+    )
+  ) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b(?:request\.(?:args|form|values|json|files|cookies|headers|data)\b|flask\.request\b)/;
+
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('#')) continue;
+      const a = t.match(/^(\w+)\s*=\s*(.+?)$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  // Patterns:
+  //   resp.headers['X-Custom'] = <expr>
+  //   resp.headers.add('X-Custom', <expr>)
+  //   resp.headers.set('X-Custom', <expr>)
+  //   resp.headers.update({'X-Custom': <expr>})
+  const subscriptRe =
+    /\b\w+\s*\.\s*headers\s*\[\s*['"][^'"]+['"]\s*\]\s*=\s*(.+)$/;
+  const methodRe =
+    /\b\w+\s*\.\s*headers\s*\.\s*(?:add|set|setdefault|append)\s*\(\s*['"][^'"]+['"]\s*,\s*(.+?)\)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const t = line.trim();
+    if (t.startsWith('#')) continue;
+    let expr: string | null = null;
+    const sm = line.match(subscriptRe);
+    if (sm) expr = sm[1];
+    else {
+      const mm = line.match(methodRe);
+      if (mm) expr = mm[1];
+    }
+    if (!expr) continue;
+    let tainted = reqExtractRe.test(expr);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(expr)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    findings.push({
+      id: `crlf-${file}-${i + 1}-py-headers`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'crlf',
+      cwe: 'CWE-113',
+      severity: 'medium',
+      level: 'error',
+      message:
+        'CRLF / header injection: Python Flask/Werkzeug ' +
+        '`response.headers[...] = <tainted>` lets an attacker inject a ' +
+        '`\\r\\n` sequence and forge additional headers or split the ' +
+        'response body. Validate the value (reject control characters) or ' +
+        'use a fixed allowlist.',
       file,
       line: i + 1,
       snippet: line.trim(),
