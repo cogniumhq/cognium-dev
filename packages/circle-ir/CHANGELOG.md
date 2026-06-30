@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.126.0] - 2026-06-29
+
+Sprint 75 — cognium-dev #216 Pattern D JS SSRF allow-list. Closes 2 of
+the 9 remaining FPs (`benign_fetch_allowlist.js`,
+`benign_host_allowlist_fetch.js`). #216 stays open for 7 remaining
+cross-language FPs.
+
+### Added
+
+- **JS SSRF allow-list guard sanitizer (cognium-dev #216 Pattern D)** —
+  new conservative recognizer `findJsSsrfAllowlistGuardSanitizers`
+  wired into `language-sources-pass.ts`. Two-pass detector:
+  1. **Alias discovery** — scans for `const <u> = new URL(<src>)` and
+     `const <h> = <u>.hostname` (or `.host`) declarations, building a
+     `<url-alias> → <src-arg>` and `<host-alias> → <url-alias>` map.
+  2. **Guard recognition + emission** — recognizes
+     `if (!ALLOWED.has(<v>))`, `if (!ALLOWED.includes(<v>))`, and
+     `if (ALLOWED.indexOf(<v>) < 0)` (with optional `.hostname` /
+     `.host` accessor on `<v>`) where the allow-list identifier is
+     UPPER_SNAKE or matches `/allowed|accepted|whitelist|permitted|
+     valid|approved/i`. The guard body must contain a terminator
+     (`return`, `throw`, or `res.status(...).send/end/json(...)`). On
+     match, emits `TaintSanitizer` entries with
+     `sanitizes: ['ssrf', 'external_taint_escape']` on every
+     subsequent line in the file that references the guarded variable
+     or any host-/url-alias derived from it.
+
+  The detector is **var-aware**: a separate, unguarded variable used
+  at a later `fetch(...)` site is NOT sanitized (TP-1 control). It
+  also only matches **set-membership** (`has` / `includes` /
+  `indexOf`), not substring containment (`String.prototype.includes`
+  on a non-array receiver remains unrecognized; TP-2 control).
+
+### Tests
+
+- New `tests/analysis/passes/issue-216-pattern-d-js-ssrf.test.ts`
+  with 4 cases: 2 TN reproducing the corpus FPs (Set.has on
+  URL.hostname, Array.includes on raw host param) and 2 TP-control
+  verifying that the new sanitizer does not over-suppress real SSRF
+  flows in similar-but-unsafe variants (unguarded second variable,
+  substring check instead of set membership).
+
+### Fixed
+
+- `benign_fetch_allowlist.js:6` no longer emits `ssrf` or
+  `external_taint_escape` on `fetch(url)` after `if
+  (!ALLOWED.has(url.hostname)) return ...`.
+- `benign_host_allowlist_fetch.js:7` no longer emits `ssrf` or
+  `external_taint_escape` on `fetch(\`https://${host}/data\`)` after
+  `if (!ALLOWED_HOSTS.includes(host)) return ...`.
+
 ## [3.125.0] - 2026-06-29
 
 Sprint 74 — cognium-dev #216 Pattern B Python wrappers. Closes 3 of

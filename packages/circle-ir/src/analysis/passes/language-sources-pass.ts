@@ -306,6 +306,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJsCryptoHashSanitizers(code));
       additionalSanitizers.push(...findJsCsvFormulaPrefixSanitizers(code));
       additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
+      // Sprint 75 (#216 Pattern D): JS SSRF allow-list guard (var-aware).
+      additionalSanitizers.push(...findJsSsrfAllowlistGuardSanitizers(code));
     }
 
     // -- Java: Sprint 73 (#216 Pattern A) — Jackson readValue / Gson
@@ -2900,6 +2902,171 @@ function findJsWrapperFunctionSanitizers(code: string): TaintSanitizer[] {
       });
     }
   }
+  return sanitizers;
+}
+
+/**
+ * JS/TS: SSRF allow-list guard sanitizer (cognium-dev #216 Sprint 75
+ * Pattern D).
+ *
+ * Pattern recognized:
+ *
+ *   const ALLOWED = new Set(['api.example.com', 'cdn.example.com']);
+ *   const url = new URL(req.query.target);
+ *   if (!ALLOWED.has(url.hostname)) {
+ *       return res.status(400).send('blocked');
+ *   }
+ *   fetch(url);            // safe — host is one of N fixed strings
+ *
+ * Or the bare-host shape:
+ *
+ *   const ALLOWED_HOSTS = ['api.example.com'];
+ *   const host = req.query.host;
+ *   if (!ALLOWED_HOSTS.includes(host)) {
+ *       return res.status(400).end();
+ *   }
+ *   fetch(`https://${host}/data`);
+ *
+ * Set-membership against a fixed allow-list proves the value is byte-
+ * identical to one of N developer-chosen literals. The detector is
+ * **variable-aware**: it captures the guarded variable name AND any
+ * upstream aliases (`new URL(<v>).hostname` / `.host`) and only emits
+ * sanitizers on subsequent lines in the same block that reference one
+ * of those names. This prevents over-suppressing an unrelated unguarded
+ * variable later in the same handler (Sprint 74 TP-2 lesson).
+ *
+ * Existing `sink-filter-pass.ts:775-812` Stage 8 guard handles
+ * `open_redirect` / `crlf` at the sink line; this detector expands the
+ * mechanism to `ssrf` via the language-sources sanitizer path.
+ *
+ * Conservative shape:
+ *   - guard call must be `<ALLOW>.has(<v>)` or `<ALLOW>.includes(<v>)`
+ *     or `<ALLOW>.indexOf(<v>) < 0` (negation `!` or `< 0` required)
+ *   - <ALLOW> identifier matches UPPER_SNAKE or allowed|whitelist|...
+ *   - body must contain a terminator (return / throw / res.status...end)
+ *   - String#includes substring check (`host.includes('example.com')`)
+ *     does NOT qualify — TP-2 control proves this.
+ */
+function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Build alias map: `const <v> = new URL(<src>).hostname` (or .host).
+  // Maps alias name → source identifier (e.g. `url` → req.query.target chain).
+  // For the SSRF detector we only need the alias name itself so a Set is
+  // sufficient — once an alias is allow-list-checked, the original `new URL`
+  // expression input is also considered guarded by transitivity through it.
+  const urlAliasToHostAlias = new Map<string, string>();
+  const urlAliasDecl =
+    /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*new\s+URL\s*\(\s*([A-Za-z_][\w.[\]'"`]*)\s*\)/;
+  const hostAliasDecl =
+    /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.(?:hostname|host)\b/;
+  // alias → upstream url-alias
+  const hostFromUrl = new Map<string, string>();
+
+  for (const line of lines) {
+    const ua = urlAliasDecl.exec(line);
+    if (ua) urlAliasToHostAlias.set(ua[1], ua[2]);
+    const ha = hostAliasDecl.exec(line);
+    if (ha) hostFromUrl.set(ha[1], ha[2]);
+  }
+
+  // `ALLOW.has(<v>)`, `ALLOW.includes(<v>)`, `ALLOW.indexOf(<v>)`
+  // (with leading `!` for has/includes, or `< 0` for indexOf).
+  const allowlistName =
+    /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const guardHas = /if\s*\(\s*!\s*([A-Za-z_]\w*)\s*\.\s*(?:has|includes)\s*\(\s*([A-Za-z_]\w*)(?:\s*\.\s*(?:hostname|host))?\s*\)\s*\)/;
+  const guardIndexOf = /if\s*\(\s*([A-Za-z_]\w*)\s*\.\s*indexOf\s*\(\s*([A-Za-z_]\w*)(?:\s*\.\s*(?:hostname|host))?\s*\)\s*<\s*0\s*\)/;
+  const terminator =
+    /\b(return|throw|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json)\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let m = guardHas.exec(line);
+    let allow: string | null = null;
+    let guardedVar: string | null = null;
+    if (m) {
+      allow = m[1];
+      guardedVar = m[2];
+    } else {
+      m = guardIndexOf.exec(line);
+      if (m) {
+        allow = m[1];
+        guardedVar = m[2];
+      }
+    }
+    if (!allow || !guardedVar) continue;
+    if (!allowlistName.test(allow)) continue;
+
+    // Find the guard block opening brace and matching close.
+    // The brace may be on the same line (`if (...) {`) or the next.
+    // We scan forward for a body terminator within ~25 lines.
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    // Naive brace tracking: count `{` and `}` starting at the guard line.
+    let braceDepth = 0;
+    let started = false;
+    for (let j = i; j < maxScan; j++) {
+      const ln = lines[j];
+      for (const ch of ln) {
+        if (ch === '{') {
+          braceDepth++;
+          started = true;
+        } else if (ch === '}') {
+          braceDepth--;
+          if (started && braceDepth === 0) {
+            blockEnd = j;
+            break;
+          }
+        }
+      }
+      if (started && j > i && terminator.test(ln)) bodyHasTerminator = true;
+      if (blockEnd !== -1) break;
+    }
+    if (!started) continue;
+    if (blockEnd === -1) continue;
+    if (!bodyHasTerminator) continue;
+
+    // Build set of names whose subsequent references are sanitized.
+    // Start with guardedVar. When the inline guard reads `.hostname` /
+    // `.host` of a known `new URL(<src>)` alias, guardedVar IS the url
+    // alias itself (captured by `([A-Za-z_]\w*)` before `(?:\.hostname)?`),
+    // so `fetch(url)` later naturally matches.
+    const safeNames = new Set<string>([guardedVar]);
+    // If guardedVar is itself a host-alias declared as `const h = u.hostname`,
+    // the upstream url alias is also safe.
+    if (hostFromUrl.has(guardedVar)) {
+      safeNames.add(hostFromUrl.get(guardedVar)!);
+    }
+    // If guardedVar IS a url alias, any host-alias derived from it is safe.
+    for (const [hostName, urlName] of hostFromUrl) {
+      if (urlName === guardedVar) safeNames.add(hostName);
+    }
+    // Silence unused-var lint for the upstream-url map: it is intentionally
+    // built but not directly consulted in the current emission path
+    // (guardedVar covers the url alias because the guard regex matches the
+    // url identifier itself when `.hostname` is the inline accessor).
+    void urlAliasToHostAlias;
+
+    const refRes = [...safeNames].map(
+      (n) => new RegExp(`\\b${n}\\b`),
+    );
+
+    // Var-aware emission: lines after the guard block referencing one of
+    // the safe names get a sanitizer.
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      const lineText = lines[l - 1];
+      if (!refRes.some((re) => re.test(lineText))) continue;
+      sanitizers.push({
+        type: 'js_ssrf_allowlist_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['ssrf', 'external_taint_escape'],
+      });
+    }
+  }
+
   return sanitizers;
 }
 

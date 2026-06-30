@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.126.0] - 2026-06-29
+
+Engine bump only — adopts
+[`circle-ir@3.126.0`](https://www.npmjs.com/package/circle-ir) which
+closes 2 of the 9 remaining FPs on cognium-dev #216 (JS SSRF
+allow-list Pattern D: `Set.has` / `Array.includes` /
+`Array.indexOf` guards on `URL.hostname` or a raw host param,
+var-aware). No CLI surface changes.
+
 ## [3.125.0] - 2026-06-29
 
 Engine bump only — adopts
