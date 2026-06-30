@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.128.0] - 2026-06-29
+
+Engine bump only — adopts
+[`circle-ir@3.128.0`](https://www.npmjs.com/package/circle-ir) which
+closes 3 of the 5 remaining FPs on cognium-dev #216 (Pattern X
+mixed in-corpus: Java `Runtime.getRuntime().exec(new String[]{...})`
+argv-form recognition, Rust `Command::new(literal).arg(...)` argv-form
+recognition, Python Jinja2 `Environment(autoescape=...)` + `.render(...)`
+recognition). No CLI surface changes.
+
 ## [3.127.0] - 2026-06-29
 
 Engine bump only — adopts

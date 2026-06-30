@@ -277,6 +277,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findPythonRegexAllowlistWrapperSanitizers(code));
       additionalSanitizers.push(...findPythonSetMembershipXssGuardSanitizers(code));
       additionalSanitizers.push(...findPythonDefusedXmlSanitizers(code));
+      // Sprint 77a (#216 Pattern X): Jinja2 Environment(autoescape=...) +
+      // .render(...) sanitizer.
+      additionalSanitizers.push(...findPythonJinjaAutoescapeSanitizers(code));
       // Sprint 71 (#190): pattern-based misconfig findings for subscript/context
       // assignment shapes (cors-wildcard-origin, xfo-csp-mismatch, tls-verify-
       // disabled) that the language-agnostic detectors miss in Python.
@@ -290,6 +293,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'rust') {
       additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
+      // Sprint 77a (#216 Pattern X): argv-form Command::new(literal).arg(...)
+      // sanitizer.
+      additionalSanitizers.push(...findRustArgvCommandSanitizers(code));
       // Sprint 71 (#190): Rust reqwest builder `danger_accept_invalid_*(true)`
       // is `tls-verify-disabled` — same rule as the Python/JS shapes.
       const rustMisconfigFindings = findRustPatternFindings(code, graph.ir.meta.file);
@@ -320,6 +326,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ...findJavaPathNormalizeStartsWithGuardSanitizers(code),
       );
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
+      // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
+      additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
     }
 
     // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
@@ -3226,6 +3234,161 @@ function findJavaInlineCrlfStripLogSanitizers(
       line: i + 1,
       sanitizes: ['log_injection', 'external_taint_escape'],
     });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Java: argv-form `Runtime.getRuntime().exec(new String[]{...})` and
+ * `new ProcessBuilder(new String[]{...})` sanitizer (cognium-dev #216
+ * Sprint 77a Pattern X).
+ *
+ * Pattern recognized:
+ *
+ *   Runtime.getRuntime().exec(new String[]{"echo", "--", arg});
+ *   new ProcessBuilder(new String[]{"ls", "-l", dir});
+ *
+ * Argv-form exec splits the program and arguments into a fixed array
+ * with no shell interpretation, so a tainted argv element cannot
+ * smuggle shell metacharacters into a separate command. The
+ * single-string form `exec("echo " + arg)` is NOT matched and remains
+ * a `command_injection` finding (TP-1 control).
+ *
+ * Emits a `command_injection` + `external_taint_escape` sanitizer at
+ * that line.
+ */
+function findJavaArgvFormExecSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // .exec(new String[]{...}) -- Runtime, Process, Desktop, etc.
+  const argvExecRe =
+    /\.\s*exec\s*\(\s*new\s+String\s*\[\s*\]\s*\{/;
+  // new ProcessBuilder(new String[]{...})
+  const argvPbRe =
+    /\bnew\s+ProcessBuilder\s*\(\s*new\s+String\s*\[\s*\]\s*\{/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (!argvExecRe.test(text) && !argvPbRe.test(text)) continue;
+    sanitizers.push({
+      type: 'java_argv_form_exec',
+      method: 'exec',
+      line: i + 1,
+      sanitizes: ['command_injection', 'external_taint_escape'],
+    });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Rust: argv-form `Command::new("literal").arg(...).arg(...)` sanitizer
+ * (cognium-dev #216 Sprint 77a Pattern X).
+ *
+ * Pattern recognized:
+ *
+ *   Command::new("grep").arg(p).arg("/var/log/app.log").status();
+ *
+ * Argv-form exec with a string-literal program splits arguments into
+ * the argv slot with no shell interpretation. Tainted-program slot
+ * `Command::new(prog).arg(...)` is NOT matched (TP-2 control), and
+ * explicit shell-via-argv `Command::new("sh").arg("-c")` /
+ * `Command::new("bash").arg("-c")` is excluded since `-c` re-enables
+ * shell parsing of the tainted slot.
+ *
+ * Emits a `command_injection` + `external_taint_escape` sanitizer at
+ * that line.
+ */
+function findRustArgvCommandSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Command::new("LITERAL").arg(... -- literal program + at least one .arg().
+  const argvCommandRe =
+    /\bCommand\s*::\s*new\s*\(\s*"[^"]*"\s*\)\s*\.\s*arg\s*\(/;
+  // Shell-via-argv exclusion: Command::new("sh"/"bash"/...).arg("-c"/...)
+  const shellArgvRe =
+    /\bCommand\s*::\s*new\s*\(\s*"(?:sh|bash|zsh|ksh|dash|cmd(?:\.exe)?|powershell|pwsh)"\s*\)\s*\.\s*arg\s*\(\s*"-c"/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (!argvCommandRe.test(text)) continue;
+    if (shellArgvRe.test(text)) continue;
+    sanitizers.push({
+      type: 'rust_argv_command',
+      method: 'arg',
+      line: i + 1,
+      sanitizes: ['command_injection', 'external_taint_escape'],
+    });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Python: Jinja2 `Environment(..., autoescape=...)` + `.render(...)`
+ * autoescape sanitizer (cognium-dev #216 Sprint 77a Pattern X).
+ *
+ * Pattern recognized:
+ *
+ *   env = Environment(loader=..., autoescape=select_autoescape(["html"]))
+ *   env.get_template("hello.html").render(name=name)
+ *
+ * Autoescape-on environments html-escape all `.render(**ctx)` output
+ * by default, blocking xss. `autoescape=False` / `None` / `0`
+ * environments are NOT matched (TP-3 control), and only env vars
+ * declared with an explicit `autoescape=` keyword argument are
+ * recognized.
+ *
+ * Emits an `xss` + `external_taint_escape` sanitizer at every
+ * `env.get_template(...).render(...)` chained call line.
+ */
+function findPythonJinjaAutoescapeSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Find Environment(...) assigned to an identifier and require an
+  // autoescape= keyword somewhere on the same line. Two-regex form so
+  // nested parens (e.g. PackageLoader("app", "templates")) inside the
+  // Environment(...) call don't break the match.
+  const envAssignRe =
+    /\b([A-Za-z_]\w*)\s*=\s*Environment\s*\(/;
+  const autoescapeOnRe = /\bautoescape\s*=/;
+  // Explicit "off" forms that must NOT be recognized.
+  const autoescapeOffRe = /\bautoescape\s*=\s*(?:False|None|0)\b/;
+
+  const envVars = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = envAssignRe.exec(lines[i]);
+    if (!m) continue;
+    if (!autoescapeOnRe.test(lines[i])) continue;
+    if (autoescapeOffRe.test(lines[i])) continue;
+    envVars.add(m[1]);
+  }
+  if (envVars.size === 0) return sanitizers;
+
+  // Emit at every `<env>.get_template(...).render(...)` chain.
+  for (const envVar of envVars) {
+    const renderChainRe = new RegExp(
+      `\\b${envVar}\\s*\\.\\s*get_template\\s*\\([^)]*\\)\\s*\\.\\s*render\\s*\\(`,
+    );
+    for (let i = 0; i < lines.length; i++) {
+      if (!renderChainRe.test(lines[i])) continue;
+      sanitizers.push({
+        type: 'python_jinja_autoescape',
+        method: 'render',
+        line: i + 1,
+        sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
   }
 
   return sanitizers;

@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.128.0] - 2026-06-29
+
+Sprint 77a — cognium-dev #216 Pattern X mixed in-corpus sanitizers.
+Closes 3 of the 5 remaining FPs (`SafeInteropShellInString.java`,
+`benign_exec_argv.rs`, `benign_autoescape_template.py`). #216 stays
+open for 2 TS Pattern A FPs (corpus-blocked; fixtures not yet
+committed to `coggiyadmin/typescript-vuln-demo`, deferred to
+Sprint 77b).
+
+### Added
+
+- **Java argv-form exec sanitizer (cognium-dev #216 Pattern X)** —
+  `findJavaArgvFormExecSanitizers` recognizes the argv-array exec
+  forms that cannot smuggle shell metacharacters:
+
+  ```java
+  Runtime.getRuntime().exec(new String[]{"echo", "--", arg});
+  new ProcessBuilder(new String[]{"ls", "-l", dir});
+  ```
+
+  Emits `command_injection` + `external_taint_escape` sanitizers at
+  the exec line. The single-string concat form
+  `exec("echo " + arg)` is NOT matched and remains a
+  `command_injection` finding (TP-1 control).
+
+- **Rust argv-form `Command::new(literal).arg(...)` sanitizer
+  (cognium-dev #216 Pattern X)** — `findRustArgvCommandSanitizers`
+  recognizes argv-form exec with a string-literal program:
+
+  ```rust
+  Command::new("grep").arg(p).arg("/var/log/app.log").status();
+  ```
+
+  Emits `command_injection` + `external_taint_escape` sanitizers at
+  the call line. Tainted-program slot
+  `Command::new(prog).arg(...)` is NOT matched (TP-2 control), and
+  shell-via-argv `Command::new("sh"/"bash"/...).arg("-c")` is
+  explicitly excluded since `-c` re-enables shell parsing of the
+  tainted slot.
+
+- **Python Jinja2 `Environment(autoescape=...)` + `.render(...)`
+  sanitizer (cognium-dev #216 Pattern X)** —
+  `findPythonJinjaAutoescapeSanitizers` recognizes the canonical
+  Jinja2 autoescape-on render chain:
+
+  ```python
+  env = Environment(loader=..., autoescape=select_autoescape(["html"]))
+  env.get_template("hello.html").render(name=name)
+  ```
+
+  Two-pass: pass 1 collects every identifier assigned an
+  `Environment(... autoescape=<expr> ...)` call (rejecting
+  `autoescape=False` / `None` / `0`); pass 2 emits `xss` +
+  `external_taint_escape` sanitizers at every
+  `<env>.get_template(...).render(...)` chain line. Plain
+  `Environment(...)` without an explicit `autoescape=` keyword is
+  NOT matched (TP-3 control).
+
+### Mechanism
+
+All three detectors wire into the existing
+`taint-propagation-pass.ts:198-232` sanitizer suppression: configured
+`command_injection`/`xss` flows are filtered at the sink line, and
+synthetic `external_taint_escape` flows are filtered across the
+`[source, sink]` range.
+
+### Tests
+
++6 in `tests/analysis/passes/issue-216-pattern-x-sprint77a.test.ts`
+(3 TN reproducing the verbatim corpus FPs + 3 TP-control proving the
+sanitizers do not over-suppress real vulns in similar
+shell-concat / tainted-program / autoescape-off variants).
+
 ## [3.127.0] - 2026-06-29
 
 Sprint 76 — cognium-dev #216 Pattern B Java inline sanitizers. Closes
