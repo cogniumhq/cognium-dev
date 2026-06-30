@@ -473,6 +473,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 85 (#189): Java ssrf — `new URL(<tainted>)` →
+      // `.openStream()` / `.openConnection()` / `.getContent()` receiver
+      // chains (basic_fetch + weak_allowlist variants).
+      for (const finding of findJavaUrlOpenStreamSsrfFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // Sprint 70 (#151): cross-language env-secret → external-network exfiltration.
@@ -6370,6 +6379,116 @@ export function findPythonMongoengineWhereNosqlInjectionFindings(
         'JavaScript on the server; tainted string concatenation lets an ' +
         'attacker inject arbitrary JS. Replace `$where` with field-based ' +
         'operators or validate the input.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 85 detector (#189) — Java SSRF via `new URL(<tainted>)` →
+ * `.openStream()` / `.openConnection()` / `.getContent()` receiver chains
+ * that the configured `URL.openStream` / `URL.openConnection` sinks
+ * recognize but the cross-statement flow construction misses (URL value
+ * passes through an intermediate local variable). Also fires when the
+ * tainted URL is gated only by a weak allowlist — a scheme-only check
+ * such as `url.startsWith("https://")` is NOT a sanitizer because the
+ * host is still attacker-controlled.
+ */
+export function findJavaUrlOpenStreamSsrfFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: require URL construction + a fetch-style method call.
+  if (
+    !/\bnew\s+URL\s*\(/.test(code) &&
+    !/\bURI\s*\.\s*create\s*\(/.test(code)
+  ) {
+    return findings;
+  }
+  if (!/\.\s*(?:openStream|openConnection|getContent)\s*\(/.test(code)) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\b\w+\s*\.\s*(?:getParameter|getParameterValues|getHeader|getHeaders|getCookies|getReader|getQueryString|getRequestURI|getInputStream|getPart|getParts)\s*\(/;
+
+  // Whole-file 3-pass taint propagation. Tracks straightforward
+  // `Type name = expr;` / `name = expr;` assignments. Notably
+  // includes the `new URL(<tainted>)` wrapper — substring match on
+  // the rhs is sufficient because no built-in URL constructor erases
+  // taint.
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      const a = t.match(/^(?:final\s+)?(?:[\w<>?,\[\]]+\s+)?(\w+)\s*=\s*(.+?);?$/);
+      if (!a) continue;
+      const lhs = a[1];
+      const rhs = a[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  const sinkRe = /\.\s*(openStream|openConnection|getContent)\s*\(/;
+  const seen = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(sinkRe);
+    if (!m) continue;
+    const op = m[1];
+    const sinkIdx = line.indexOf(`.${op}`);
+    if (sinkIdx < 0) continue;
+    // Identify the receiver span: everything to the left of the `.op(`
+    // call. The receiver may be a chained call (e.g.
+    // `new URL(url).openStream()`) — treat the entire pre-call span as
+    // the analysis target and ask whether any tainted var appears in it.
+    const head = line.substring(0, sinkIdx + 1);
+    let tainted = reqExtractRe.test(head);
+    if (!tainted) {
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(head)) {
+          tainted = true;
+          break;
+        }
+      }
+    }
+    if (!tainted) continue;
+    const key = `${i + 1}:${op}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    findings.push({
+      id: `ssrf-${file}-${i + 1}-java-url-${op.toLowerCase()}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'ssrf',
+      cwe: 'CWE-918',
+      severity: 'critical',
+      level: 'error',
+      message:
+        `SSRF: Java \`URL.${op}()\` invoked on a URL derived from servlet ` +
+        'request input. Even when an `if (url.startsWith("https://"))` ' +
+        'guard is present, the host portion remains attacker-controlled — ' +
+        'use a strict host allowlist (parse the URL, check `getHost()`) ' +
+        'before issuing the request.',
       file,
       line: i + 1,
       snippet: line.trim(),

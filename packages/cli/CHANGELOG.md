@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.135.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.135.0`](https://www.npmjs.com/package/circle-ir) which
+closes 6 of 6 corpus cells on the ssrf cluster of cognium-dev #189
+variant-regression scorecard (Sprint 85). 4 of 6 were already firing
+via configured `nodejs.json` sinks (axios.get / got(url) / http.get /
+request(url) — the last two match the existing `request` method-name
+sink rows by name, no class binding required). One new pattern detector
+closes the two Java URL fetch chains:
+
+- `findJavaUrlOpenStreamSsrfFindings` — Java `new URL(<servlet-request
+  taint>)` → `.openStream()` / `.openConnection()` / `.getContent()`
+  receiver chains across an intermediate `URL u = new URL(url);`
+  binding that the cross-statement flow construction misses. Also
+  fires for the weak-allowlist variant — `if (url.startsWith
+  ("https://"))` is not a sanitizer because the host portion remains
+  attacker-controlled. Emits `rule_id: 'ssrf'`, CWE-918, critical.
+
+See `circle-ir@3.135.0` notes for the cumulative #189 closure table
+(45 of 47 addressable cells closed across Sprints 81-85).
+
+No user-visible CLI behavior changes; output formatters (text / JSON /
+SARIF) gain one additional `rule_id: 'ssrf'` finding line per
+Java URL fetch fixture.
+
 ## [3.134.0] - 2026-06-30
 
 Engine bump only — adopts

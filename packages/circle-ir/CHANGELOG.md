@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.135.0] - 2026-06-30
+
+Sprint 85 — cognium-dev #189 variant-regression scorecard: ssrf cluster
+(6 FN cells across Java + JavaScript). Engine inventory on 3.134.0 found
+4 of 6 already firing via configured nodejs.json sinks (axios/got/
+http.get/request — `got(url)` and `request(url)` match the existing
+`request` sink rows by method-name; `http.get` and `axios.get` via
+class-scoped rows). The 2 remaining FN shapes were both Java URL fetch
+chains. **2 of 2 addressable FN cells closed via one new pattern
+detector. 6 of 6 corpus cells now emit the canonical sink signal.**
+
+### Closed in this release
+
+Pattern detector (`language-sources-pass.ts`):
+
+- `findJavaUrlOpenStreamSsrfFindings` — Java `new URL(<servlet-request
+  taint>)` → `.openStream()` / `.openConnection()` / `.getContent()`
+  receiver chains that the configured `URL.openStream` /
+  `URL.openConnection` sinks recognize but the cross-statement flow
+  construction misses (the URL value passes through an intermediate
+  `URL u = new URL(url);` local binding). Tracks tainted vars derived
+  from servlet request extractors (`getParameter`, `getParameterValues`,
+  `getHeader`, `getHeaders`, `getCookies`, `getReader`,
+  `getQueryString`, `getRequestURI`, `getInputStream`, `getPart`,
+  `getParts`) via 3-pass whole-file propagation. Also fires for the
+  weak-allowlist variant: an `if (url.startsWith("https://"))` guard is
+  not a sanitizer because the host portion remains attacker-controlled
+  (URL-parsing + `getHost()` allowlist is the only sound fix). Emits
+  `rule_id: 'ssrf'`, CWE-918, critical. Closes `java__V01BasicFetch`
+  and `java__V02WeakAllowlist`.
+
+### Already-TP (existing configured sinks)
+
+The four JavaScript cells fire via existing `configs/sinks/nodejs.json`
+rows without any code change:
+
+- `axios.get(req.query.url)` — `axios.get` class-scoped row.
+- `got(req.query.url)` and `got.get(req.query.url)` — match the `request`
+  method-name rows in the existing sink table (no `got` class binding
+  required).
+- `http.get(req.query.url, cb)` — `http.get` class-scoped row.
+- `request(req.query.url, cb)` — matches the `request` method-name rows
+  (standalone callable).
+
+### Tests
+
+`tests/analysis/passes/issue-189-sprint85-ssrf-cluster.test.ts` — 6 new
+test cases (4 TP for the Java detector including chained-URL form and
+weak-allowlist variant, 1 TN for literal URL, 2 sanity for JS axios +
+http.get cells). All 3340 tests passing (was 3334 on 3.134.0; +6 new);
+2 pre-existing skipped.
+
+### Files touched
+
+- `src/analysis/passes/language-sources-pass.ts` (+109 LOC: 1 new
+  detector + 1 wire-in block).
+- `tests/analysis/passes/issue-189-sprint85-ssrf-cluster.test.ts`
+  (NEW).
+- `package.json` (3.134.0 → 3.135.0).
+
+### #189 cumulative progress
+
+| Sprint | Ver | Cluster | Closed |
+|---|---|---|---|
+| 81 | 3.130.0 | xss (11) | 9 (cells 5, 7 deferred) |
+| 82 | 3.132.0 | open_redirect (10) | 10 |
+| 83 | 3.133.0 | code_injection (8) | 8 |
+| 84 | 3.134.0 | nosql + sqli (12) | 10 + 2 manifest deferrals |
+| 85 | 3.135.0 | ssrf (6) | 6 |
+
+45 of 47 addressable #189 cells closed across Sprints 81-85.
+Remaining: format_string + crlf (8) → Sprint 86, ldap +
+log_injection (8) → Sprint 87, command_injection JS (4) →
+Sprint 88, deserialization + xpath (7) → Sprint 89, xxe + ssti +
+path (6) → Sprint 90.
+
 ## [3.134.0] - 2026-06-30
 
 Sprint 84 — cognium-dev #189 variant-regression scorecard: nosql + sqli
