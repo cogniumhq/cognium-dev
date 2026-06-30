@@ -182,12 +182,19 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // splitting (CWE-113) — Sprint 6, issue #86.
     // mass_assignment added to http_body / http_param: Object.assign(user, req.body),
     // User(**request.form) — CWE-915.
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment'],
-    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment'],
-    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf'],
-    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment'],
+    // open_redirect added to http_param/http_query/http_header/http_cookie/http_body/http_path
+    // Sprint 82 (#189): a user-controlled value reaching res.sendRedirect /
+    // res.redirect / Location header / append_header(("Location", x)) /
+    // Header().Set("Location", x) IS open_redirect (CWE-601). The reach map
+    // previously omitted open_redirect so the inline-colocation flow detector
+    // silently skipped all `http_* → open_redirect` co-located flows
+    // (java sendRedirect, JS res.redirect, Rust append_header tuple, etc.).
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect'],
+    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect'],
+    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
     // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF
@@ -199,7 +206,7 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
     network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf'],
     config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf'], // Servlet init params
-    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment'], // Cross-method taint
+    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect'], // Cross-method taint; Sprint 82 (#189) — open_redirect added
     plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection'], // Plugin/config parameters
   };
 

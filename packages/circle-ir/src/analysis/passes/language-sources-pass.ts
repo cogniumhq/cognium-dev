@@ -274,6 +274,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of findGoXssFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
       }
+      // Sprint 82 (#189): Go open_redirect — Header().Set("Location", taint).
+      for (const finding of findGoLocationHeaderOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -302,6 +309,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
       for (const finding of findPythonJinjaMarkupXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 82 (#189): Python open_redirect — resp.headers["Location"] = taint.
+      for (const finding of findPythonHeadersSubscriptOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
         ctx.addFinding(finding);
       }
     }
@@ -334,6 +348,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of findRustWeakCryptoEcbFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
       }
+      // Sprint 82 (#189): Rust open_redirect — append_header(("Location", taint)).
+      for (const finding of findRustAppendHeaderTupleOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -360,6 +381,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
       for (const finding of findTsAngularBypassXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 82 (#189): JS/HTML DOM open_redirect — location.href /
+      // window.location / location.assign|replace() / <meta>.content shapes
+      // sourced from URLSearchParams / location.search|hash.
+      for (const finding of findJsDomOpenRedirectFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
         ctx.addFinding(finding);
       }
     }
@@ -4980,6 +5010,454 @@ export function findPythonJinjaMarkupXssFindings(
         snippet: trimmed.substring(0, 100),
       });
       break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Go open_redirect — `<rw>.Header().Set("Location", <expr>)` where
+ * `<rw>` is bound to `http.ResponseWriter`. The configured sink rows
+ * for `Header.Set` are typed `crlf` (CWE-113); the same line is also a
+ * CWE-601 open_redirect when the header key is exactly `"Location"`
+ * (case-insensitive). This pattern detector emits the open_redirect
+ * finding directly, complementing the engine's crlf classification.
+ *
+ * Sprint 82 (#189): closes go__v02_location_header.
+ *
+ * Conservative: only fires when the receiver matches a parameter typed
+ * `http.ResponseWriter` AND the literal key value is `Location` AND no
+ * recognized URL-allowlist sanitizer wraps the value argument.
+ */
+export function findGoLocationHeaderOpenRedirectFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const rwNames = new Set<string>();
+  const sigRe = /\(\s*([A-Za-z_]\w*)\s+http\.ResponseWriter\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    sigRe.lastIndex = 0;
+    while ((m = sigRe.exec(line)) !== null) rwNames.add(m[1]);
+  }
+  if (rwNames.size === 0) return out;
+
+  // Recognized URL-allowlist / strict-equality sanitizers. Conservative
+  // — keeps the FP set tight (Sprint 74 lesson). `url.Parse` alone is
+  // not a sanitizer; we require an `IsAbs`/`Host`/`==` check.
+  const safeWrapRe =
+    /\b(?:net\/url|url)\.Parse\b[\s\S]{0,120}?\b(?:IsAbs|Host)\b|\bstrings\.HasPrefix\s*\(/;
+
+  // Match: `<rw>.Header().Set("Location", <expr>)` — also accept
+  // `Add` (header-stacking variant) which has the same redirect effect.
+  const callRe =
+    /\b([A-Za-z_]\w*)\s*\.\s*Header\s*\(\s*\)\s*\.\s*(?:Set|Add)\s*\(\s*(['"])([^'"]+)\2\s*,\s*([\s\S]*)\)\s*(?:\/\/.*)?$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const m = trimmed.match(callRe);
+    if (!m) continue;
+    const recv = m[1];
+    if (!rwNames.has(recv)) continue;
+    const key = m[3];
+    if (key.toLowerCase() !== 'location') continue;
+    const valExpr = m[4];
+    // Skip when the value is a pure string literal (no taint shape).
+    const valTrim = valExpr.trim();
+    if (/^"(?:\\.|[^"\\])*"$/.test(valTrim)) continue;
+    if (safeWrapRe.test(valExpr)) continue;
+    out.push({
+      id: `open_redirect-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'open_redirect',
+      cwe: 'CWE-601',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Open redirect: ResponseWriter.Header().Set("Location", ...) ' +
+        'writes a user-controlled value into the Location header without ' +
+        'validating the target. Restrict to an allow-list of hosts/paths ' +
+        'or compare against a known-safe set before issuing the redirect.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Python Flask open_redirect — `<resp>.headers["Location"] = <expr>`
+ * subscript-assignment shape. The engine's configured sinks for
+ * Flask `Response.headers` model the dict-add form but not subscript
+ * assignment, so the open_redirect signal is missed even though the
+ * source (`request.args.get`) is detected.
+ *
+ * Sprint 82 (#189): closes py__v02_location_header.
+ *
+ * Conservative: requires the rhs to be a recognized request-source
+ * variable OR an inline `request.<x>.get/[]` expression. Skips when
+ * the value is wrapped in a recognized URL-allowlist call.
+ */
+export function findPythonHeadersSubscriptOpenRedirectFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const requestSourceRe =
+    /\b([A-Za-z_]\w*)\s*=\s*request\s*\.\s*(?:args|form|values|files|json|cookies|headers)(?:\s*\.\s*get\s*\(|\s*\[)/;
+  const taintedVars = new Set<string>();
+  for (const line of lines) {
+    const m = line.match(requestSourceRe);
+    if (m) taintedVars.add(m[1]);
+  }
+
+  // Recognized URL-allowlist sanitizers (tight, Sprint 74 lesson).
+  const safeWrapRe =
+    /\b(?:urllib\.parse\.urlparse|urlparse)\s*\([\s\S]{0,120}?\bnetloc\b|\b(?:startswith)\s*\(/;
+
+  const subscriptRe =
+    /\b([A-Za-z_]\w*)\s*\.\s*headers\s*\[\s*(['"])([^'"]+)\2\s*\]\s*=\s*(.+)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = trimmed.match(subscriptRe);
+    if (!m) continue;
+    const key = m[3];
+    if (key.toLowerCase() !== 'location') continue;
+    const rhs = m[4].replace(/\s*(?:#.*)?$/, '').trim();
+    // Skip pure string literal.
+    if (/^['"](?:\\.|[^'"\\])*['"]$/.test(rhs)) continue;
+    // Skip when wrapped in a recognized allowlist check.
+    if (safeWrapRe.test(rhs)) continue;
+
+    const hasTaintedVar = [...taintedVars].some(v =>
+      new RegExp(`\\b${v}\\b`).test(rhs),
+    );
+    const inlineSource =
+      /\brequest\s*\.\s*(?:args|form|values|files|cookies|headers|json)(?:\s*\.\s*get\s*\(|\s*\[)/.test(
+        rhs,
+      );
+    if (!hasTaintedVar && !inlineSource) continue;
+
+    out.push({
+      id: `open_redirect-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'open_redirect',
+      cwe: 'CWE-601',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Open redirect: response.headers["Location"] = ... assigns a ' +
+        'user-controlled value to the Location header. Validate the URL ' +
+        'against an allow-list of trusted hosts before sending.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Rust open_redirect — Actix/Rocket builder pattern
+ * `<builder>.append_header(("Location", <expr>))` or
+ * `.insert_header(("Location", <expr>))` where the value traces back
+ * to a `web::Query` / `web::Path` / `Form` extractor. The tuple-arg
+ * form is the idiomatic Actix HeaderName→HeaderValue API; the
+ * engine's configured sinks model single-arg `set_header(value)` but
+ * not the tuple builder shape.
+ *
+ * Sprint 82 (#189): closes rust__v01_redirect_param.
+ *
+ * Conservative: requires the function to accept a recognized
+ * `web::Query` / `web::Path` / `web::Form` / `HttpRequest` parameter
+ * and the value expression to reference it (directly, or transitively
+ * via a `.get(...)` / `.cloned()` / `.unwrap_or_default()` chain).
+ */
+export function findRustAppendHeaderTupleOpenRedirectFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  // Discover request-extractor parameter names.
+  const extractorRe =
+    /\b([A-Za-z_]\w*)\s*:\s*(?:web\s*::\s*)?(?:Query|Path|Form|Json)\s*<|\b([A-Za-z_]\w*)\s*:\s*&?\s*HttpRequest\b/g;
+  const extractorParams = new Set<string>();
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    extractorRe.lastIndex = 0;
+    while ((m = extractorRe.exec(line)) !== null) {
+      const name = m[1] ?? m[2];
+      if (name) extractorParams.add(name);
+    }
+  }
+  if (extractorParams.size === 0) return out;
+
+  // Build transitive tainted-let set: `let v = <expr>` where <expr>
+  // references an extractor param or a previously tainted var.
+  const taintedVars = new Set<string>(extractorParams);
+  const letRe = /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*([^;]+);/g;
+  for (let pass = 0; pass < 4; pass++) {
+    const before = taintedVars.size;
+    let lm: RegExpExecArray | null;
+    letRe.lastIndex = 0;
+    while ((lm = letRe.exec(code)) !== null) {
+      const name = lm[1];
+      const rhs = lm[2];
+      if (taintedVars.has(name)) continue;
+      for (const tv of taintedVars) {
+        if (new RegExp(`\\b${tv}\\b`).test(rhs)) {
+          taintedVars.add(name);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  const safeWrapRe =
+    /\b(?:Url\s*::\s*parse|url\s*::\s*Url\s*::\s*parse)\s*\([\s\S]{0,160}?\b(?:host_str|host|origin)\b/;
+
+  const tupleCallRe =
+    /\.\s*(?:append_header|insert_header)\s*\(\s*\(\s*(['"])([^'"]+)\1\s*,\s*([^)]*?)\s*\)\s*\)/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    let cm: RegExpExecArray | null;
+    tupleCallRe.lastIndex = 0;
+    while ((cm = tupleCallRe.exec(raw)) !== null) {
+      const key = cm[2];
+      if (key.toLowerCase() !== 'location') continue;
+      const valExpr = cm[3];
+      if (/^['"](?:\\.|[^'"\\])*['"]$/.test(valExpr.trim())) continue;
+      if (safeWrapRe.test(valExpr)) continue;
+      const hasTainted = [...taintedVars].some(v =>
+        new RegExp(`\\b${v}\\b`).test(valExpr),
+      );
+      if (!hasTainted) continue;
+      out.push({
+        id: `open_redirect-${file}-${i + 1}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'open_redirect',
+        cwe: 'CWE-601',
+        severity: 'high',
+        level: 'error',
+        message:
+          'Open redirect: HttpResponse builder ' +
+          '.append_header(("Location", ...)) sets the Location header from ' +
+          'a request-derived value without allow-list validation. Parse ' +
+          'with url::Url::parse and compare host_str against an allow-list.',
+        file,
+        line: i + 1,
+        snippet: trimmed.substring(0, 100),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * JS/HTML DOM open_redirect — assignment / call patterns that drive
+ * `location.href`, `window.location`, `document.location`,
+ * `location.assign(...)`, `location.replace(...)`, or `<elem>.content
+ * = '...;url=' + ...` (meta-refresh DOM shape) where the right-hand
+ * side traces back to a DOM source (`location.search`,
+ * `location.hash`, `URLSearchParams.get(...)`, `document.referrer`,
+ * `window.name`).
+ *
+ * Sprint 82 (#189): closes html__v01_redirect_param,
+ * html__v03_meta_refresh, htmljs__v03_meta_refresh.
+ *
+ * Conservative: only fires when the rhs expression contains (or
+ * references a var that contains) a recognized DOM source token;
+ * never fires on literal-only assignments.
+ */
+export function findJsDomOpenRedirectFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  // DOM source pattern — direct references to user-controlled URL
+  // pieces. `document.referrer` / `window.name` round out the common
+  // taint sources beyond URLSearchParams.
+  const domSourceRe =
+    /\blocation\s*\.\s*(?:search|hash|href|pathname)\b|\bwindow\s*\.\s*location\s*\.\s*(?:search|hash|href|pathname)\b|\bURLSearchParams\b|\bdocument\s*\.\s*(?:referrer|URL|location\s*\.\s*(?:search|hash|href|pathname))\b|\bwindow\s*\.\s*name\b/;
+
+  // Transitive tainted variable set: `const x = <DOM source ...>`,
+  // then `const y = x.get(...)`, etc.
+  const taintedVars = new Set<string>();
+  const assignRe =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
+  let am: RegExpExecArray | null;
+  assignRe.lastIndex = 0;
+  while ((am = assignRe.exec(code)) !== null) {
+    if (domSourceRe.test(am[2])) taintedVars.add(am[1]);
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    const before = taintedVars.size;
+    assignRe.lastIndex = 0;
+    while ((am = assignRe.exec(code)) !== null) {
+      if (taintedVars.has(am[1])) continue;
+      for (const tv of taintedVars) {
+        if (new RegExp(`\\b${tv}\\b`).test(am[2])) {
+          taintedVars.add(am[1]);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+
+  // Recognized sanitizers (tight): explicit allow-list check against a
+  // known set / startsWith on a same-origin literal prefix.
+  const safeWrapRe =
+    /\b(?:startsWith|includes)\s*\(\s*['"`]\/[^'"`]*['"`]\s*\)|\bnew\s+URL\s*\([\s\S]{0,80}?\)\s*\.\s*(?:origin|hostname)\s*===/;
+
+  const containsTaint = (expr: string): boolean => {
+    if (domSourceRe.test(expr)) return true;
+    for (const tv of taintedVars) {
+      if (new RegExp(`\\b${tv}\\b`).test(expr)) return true;
+    }
+    return false;
+  };
+
+  // Sink shape (a1): `[<X>.]location.href = <expr>`.
+  const hrefSinkRe =
+    /\b(?:(?:window|document|self|top|parent)\s*\.\s*)?location\s*\.\s*href\s*=\s*([^;\n]+?)\s*;?\s*(?:\/\/.*)?$/;
+  // Sink shape (a2): `window.location = <expr>` etc.
+  const locSinkRe =
+    /\b(?:window|document|self|top|parent)\s*\.\s*location\s*=\s*([^;\n]+?)\s*;?\s*(?:\/\/.*)?$/;
+  // Sink shape (a3): `<elem>.content = <expr>` — only counts when the
+  // rhs looks like a meta-refresh string (`'...url=' + ...`). Allow `;`
+  // inside string literals on the rhs (meta-refresh format is
+  // `'<delay>;url=<...>'`), so match up to newline then trim trailing
+  // semicolon/comment manually.
+  const contentSinkRe =
+    /\.\s*content\s*=\s*([^\n]+?)\s*$/;
+  // Sink shape (b): `[<X>.]location.assign(<expr>)` /
+  // `[<X>.]location.replace(<expr>)`.
+  const callSinkRe =
+    /\b(?:(?:window|document|self|top|parent)\s*\.\s*)?location\s*\.\s*(?:assign|replace)\s*\(\s*([^)]+)\)/;
+
+  const emit = (line: number, msg: string, snippet: string) => {
+    out.push({
+      id: `open_redirect-${file}-${line}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'open_redirect',
+      cwe: 'CWE-601',
+      severity: 'high',
+      level: 'error',
+      message: msg,
+      file,
+      line,
+      snippet: snippet.substring(0, 100),
+    });
+  };
+
+  const isLiteralOnly = (expr: string): boolean =>
+    /^['"`](?:\\.|[^'"`\\])*['"`]$/.test(expr.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+
+    let matched = false;
+
+    // (a1) location.href = ...
+    const hm = trimmed.match(hrefSinkRe);
+    if (hm) {
+      const rhs = hm[1].trim();
+      if (!isLiteralOnly(rhs) && containsTaint(rhs) && !safeWrapRe.test(rhs)) {
+        emit(
+          i + 1,
+          'Open redirect: assignment to location.href uses a value ' +
+            'derived from a URL query/hash without allow-list validation. ' +
+            'Compare the target origin to a known-safe set before navigating.',
+          trimmed,
+        );
+        matched = true;
+      }
+    }
+
+    // (a2) window.location = ... (skip if already matched as href)
+    if (!matched) {
+      const lm = trimmed.match(locSinkRe);
+      if (lm) {
+        const rhs = lm[1].trim();
+        if (!isLiteralOnly(rhs) && containsTaint(rhs) && !safeWrapRe.test(rhs)) {
+          emit(
+            i + 1,
+            'Open redirect: assignment to window.location uses a value ' +
+              'derived from a URL query/hash without allow-list validation. ' +
+              'Compare the target origin to a known-safe set before navigating.',
+            trimmed,
+          );
+          matched = true;
+        }
+      }
+    }
+
+    // (a3) <elem>.content = '...url=' + ... (meta-refresh DOM shape)
+    if (!matched) {
+      const cm = trimmed.match(contentSinkRe);
+      if (cm) {
+        // Strip trailing `;` and comment from captured rhs.
+        const rhs = cm[1].replace(/\s*\/\/.*$/, '').replace(/\s*;\s*$/, '').trim();
+        if (
+          !isLiteralOnly(rhs) &&
+          /['"`][^'"`]*\burl\s*=/i.test(rhs) &&
+          containsTaint(rhs) &&
+          !safeWrapRe.test(rhs)
+        ) {
+          emit(
+            i + 1,
+            'Open redirect: DOM assignment to <meta>.content with a ' +
+              'meta-refresh URL built from a URL query/hash without ' +
+              'allow-list validation. Validate origin before navigating.',
+            trimmed,
+          );
+          matched = true;
+        }
+      }
+    }
+
+    // (b) location.assign(...) / location.replace(...)
+    if (!matched) {
+      const callm = trimmed.match(callSinkRe);
+      if (callm) {
+        const arg = callm[1].trim();
+        if (!isLiteralOnly(arg) && containsTaint(arg) && !safeWrapRe.test(arg)) {
+          emit(
+            i + 1,
+            'Open redirect: location.assign / location.replace invoked ' +
+              'with a value derived from a URL query/hash without allow-' +
+              'list validation. Validate origin before navigating.',
+            trimmed,
+          );
+        }
+      }
     }
   }
   return out;

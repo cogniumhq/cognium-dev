@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.132.0] - 2026-06-30
+
+Sprint 82 — cognium-dev #189 variant-regression scorecard: open_redirect
+cluster (10 FN cells across 8 languages). Three engine fixes unblock 4
+of the cells through the configured-sink path, and four new pattern
+detectors cover the remaining 6 shapes that the configured-sink model
+doesn't reach. **10 of 10 open_redirect FN cells closed.**
+
+### Closed in this release
+
+Engine fixes (configured-sink path):
+
+- `findings.ts:175-209` — `canSourceReachSink` reach map gap.
+  `open_redirect` was missing from the http-source reach lists, so the
+  inline-source colocation detector at `taint-propagation-pass.ts:1259`
+  silently dropped every `http_param`/`http_body`/`http_header`/
+  `http_cookie`/`http_path`/`http_query`/`interprocedural_param` →
+  `open_redirect` pair. Added `'open_redirect'` to all 7 lists.
+- `config-loader.ts:1243-1246` — Java
+  `HttpServletResponse.sendRedirect(...)` was mis-typed as `ssrf` (the
+  CWE column already pointed to `CWE-601`). Re-typed to
+  `open_redirect` so manifest sink_type matches downstream consumers
+  (closes `java__V01RedirectParam`).
+- `taint-propagation-pass.ts` lines 90/102/124/760 — flow-merge dedup
+  keyed on `(source_line, sink_line)` only and silently dropped the
+  second-iterated sink when one source line had multiple
+  distinct-`type` sinks. `res.redirect` is configured both as
+  `open_redirect` (CWE-601) and `crlf` (CWE-113); the dedup dropped
+  the second one. Added `sink_type` to all four dedup keys (closes
+  `js__v01_redirect_param`).
+
+Pattern detectors (`language-sources-pass.ts`):
+
+- `findGoLocationHeaderOpenRedirectFindings` — Go
+  `<rw>.Header().Set("Location", taint)` /
+  `<rw>.Header().Add("Location", taint)` where `<rw>` is typed
+  `http.ResponseWriter`. The configured sink rows for `Header.Set`
+  are typed `crlf` (CWE-113); the same line is also CWE-601 when the
+  literal key is `Location` (closes `go__v02_location_header`).
+- `findPythonHeadersSubscriptOpenRedirectFindings` — Flask
+  `resp.headers["Location"] = taint` subscript-assignment shape.
+  The configured sinks for `Response.headers` model the dict-add
+  form but not subscript assignment (closes `py__v02_location_header`).
+- `findRustAppendHeaderTupleOpenRedirectFindings` — Actix builder
+  pattern `<builder>.append_header(("Location", taint))` /
+  `.insert_header(("Location", taint))` where the value traces back
+  to a `web::Query`/`Path`/`Form`/`Json` or `HttpRequest`
+  extractor. The configured sinks model single-arg `set_header(value)`
+  but not the tuple-arg HeaderName→HeaderValue API (closes
+  `rust__v01_redirect_param`).
+- `findJsDomOpenRedirectFindings` — DOM open_redirect sinks:
+  `location.href = taint`, `window.location = taint`,
+  `<elem>.content = '<...>;url=' + taint` (meta-refresh DOM shape),
+  `location.assign(taint)` / `location.replace(taint)`. Tainted
+  values trace back to `location.search` / `location.hash` /
+  `URLSearchParams` / `document.referrer` / `window.name`. Runs in
+  the `javascript`/`typescript`/`htmljs` block, which receives the
+  extracted `<script>` blocks from HTML files via
+  `analyzeMarkupFile` (closes `html__v01_redirect_param`,
+  `html__v03_meta_refresh`, `htmljs__v03_meta_refresh`).
+
+### Conservative shape (TP-controls preserved)
+
+- Go: only fires when receiver type-of-name is `http.ResponseWriter`,
+  literal key is case-insensitive `"Location"`, and the value isn't
+  wrapped in `url.Parse`+`Host` / `IsAbs` / `strings.HasPrefix`.
+  `Header().Set("X-Custom-*", taint)` is NOT fired (TN-A2).
+- Python: requires the rhs to be a recognized request-source variable
+  OR inline `request.<x>.get/[]`. Literal rhs is skipped (TN-B1).
+  `headers["X-Custom"] = taint` is NOT fired (TN-B2).
+- Rust: requires the value to trace back to an extractor parameter;
+  literal value is skipped (TN-C1); non-Location key is skipped (TN-C2).
+- JS DOM: requires the rhs to contain (or transitively reference)
+  a recognized DOM source token; never fires on literal-only
+  assignments (TN-D1, TN-D2, TN-D4). `<elem>.content` only fires
+  when the rhs actually looks like a meta-refresh URL string
+  (`'<delay>;url=...'`).
+- All four detectors skip lines where a recognized URL-allowlist
+  sanitizer wraps the value (`startsWith` against a literal `/`-path,
+  `URL(...).origin === ...`, Rust `url::Url::parse(...).host_str`).
+
+### Tests
+
+- +19 in
+  `tests/analysis/passes/issue-189-sprint82-open-redirect-cluster.test.ts`
+  (3 engine-fix TPs + 4 detector TPs + 8 TN-controls + 4 additional
+  TPs for shape coverage).
+
+### Pillar I
+
+No LLM/AI identifiers introduced. The only matches in changed files
+(`grep -inE '\\bllm\\b|openai|anthropic|claude|\\bgpt\\b'`) are
+pre-existing comments unrelated to this sprint.
+
 ## [3.131.0] - 2026-06-30
 
 Sprint 77b — cognium-dev #216 FPR scorecard tail: 2 last corpus-blocked

@@ -1240,8 +1240,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'transform', class: 'Transformer', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
 
   // SSRF - Server-Side Request Forgery (CWE-918) and Open Redirect (CWE-601)
-  { method: 'sendRedirect', class: 'HttpServletResponse', type: 'ssrf', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
-  { method: 'sendRedirect', type: 'ssrf', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  // Sprint 82 (#189): HttpServletResponse.sendRedirect is CWE-601 / open_redirect,
+  // not ssrf. Re-typing so manifest sink_type='open_redirect' matches.
+  { method: 'sendRedirect', class: 'HttpServletResponse', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
+  { method: 'sendRedirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
   { method: 'openConnection', class: 'URL', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [] },
   { method: 'openStream', class: 'URL', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [] },
   // NOTE: URL/URI constructors removed — constructing a URL object doesn't make a network

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.132.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.132.0`](https://www.npmjs.com/package/circle-ir) which
+closes 10 of 10 open_redirect FN cells on cognium-dev #189 variant-
+regression scorecard (Sprint 82). Three engine fixes
+(`canSourceReachSink` reach map, Java `sendRedirect` type-fix,
+sink-type-aware flow dedup) plus four new pattern detectors
+(Go `Header().Set("Location", ...)`, Python `headers["Location"] = ...`,
+Rust Actix `append_header(("Location", ...))`, JS/HTML DOM
+`location.href` / `window.location` / `<meta>.content` / `location.assign`
+/ `location.replace`).
+
 ## [3.131.0] - 2026-06-30
 
 Engine bump only — adopts

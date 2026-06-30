@@ -353,14 +353,17 @@ public class RedirectStrategy {
     ]);
 
     expect(result.taint_paths.length).toBeGreaterThanOrEqual(1);
-    const ssrf = result.taint_paths.find(p => p.sink.type === 'ssrf');
-    expect(ssrf).toBeDefined();
-    expect(ssrf!.source.file).toBe('UrlHandler.java');
-    expect(ssrf!.source.type).toBe('http_param');
-    expect(ssrf!.sink.file).toBe('RedirectStrategy.java');
-    expect(ssrf!.sink.cwe).toBe('CWE-601');
+    // Sprint 82 (#189): HttpServletResponse.sendRedirect was misclassified
+    // as `ssrf` before — CVE-2011-2732 is CWE-601 / open_redirect. Assertion
+    // updated to match corrected sink type.
+    const openRedirect = result.taint_paths.find(p => p.sink.type === 'open_redirect');
+    expect(openRedirect).toBeDefined();
+    expect(openRedirect!.source.file).toBe('UrlHandler.java');
+    expect(openRedirect!.source.type).toBe('http_param');
+    expect(openRedirect!.sink.file).toBe('RedirectStrategy.java');
+    expect(openRedirect!.sink.cwe).toBe('CWE-601');
     // Multi-hop chain: source -> wrapper return -> sink call -> sink.
-    expect(ssrf!.hops.length).toBeGreaterThanOrEqual(3);
+    expect(openRedirect!.hops.length).toBeGreaterThanOrEqual(3);
 
     // The cross-file call carrying `url` to sendRedirect should mark
     // taint_propagates=true on param 2.

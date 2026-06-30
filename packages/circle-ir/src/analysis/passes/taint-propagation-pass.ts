@@ -85,9 +85,13 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }));
 
     // Supplement: array element flows
+    // Sprint 82 (#189) — dedup keys on (source_line, sink_line, sink_type) so
+    // distinct sink-types at the same call site (e.g. `res.redirect` registered
+    // as both `open_redirect` and `crlf`) both survive instead of the second
+    // being silently dropped.
     const arrayFlows = detectArrayElementFlows(calls, sources, sinks, constProp.taintedArrayElements, constProp.unreachableLines, types) ?? [];
     for (const f of arrayFlows) {
-      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) {
+      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) {
         flows.push(f);
       }
     }
@@ -95,7 +99,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // Supplement: collection/iterator flows — with FP filtering
     const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code, types) ?? [];
     for (const f of collectionFlows) {
-      if (flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) continue;
+      if (flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) continue;
 
       const flowForCheck = {
         source: { line: f.source_line },
@@ -114,9 +118,10 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: direct parameter-to-sink flows
+    // Sprint 82 (#189) — sink-type-aware dedup (see arrayFlows comment).
     const paramFlows = detectParameterSinkFlows(types, calls, sources, sinks, constProp.unreachableLines, constProp.tainted, ctx.code) ?? [];
     for (const f of paramFlows) {
-      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line)) {
+      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) {
         flows.push(f);
       }
     }
@@ -749,7 +754,10 @@ function detectParameterSinkFlows(
           }
           const paramSource = methodParamSources.get(arg.variable);
           if (paramSource) {
-            const exists = flows.some(f => f.source_line === paramSource.line && f.sink_line === sink.line);
+            // Sprint 82 (#189) — sink-type-aware dedup so a sink registered
+            // under multiple types at the same call site (e.g. `redirect` as
+            // both `open_redirect` and `crlf`) emits a flow for each type.
+            const exists = flows.some(f => f.source_line === paramSource.line && f.sink_line === sink.line && f.sink_type === sink.type);
             if (!exists) {
               if (
                 typeof code === 'string' &&
