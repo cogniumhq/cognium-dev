@@ -296,6 +296,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 87 (#189): Go ldap_injection — go-ldap NewSearchRequest with
+      // a tainted filter argument (slot 7).
+      for (const finding of findGoLdapInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -411,6 +419,22 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      // Sprint 87 (#189): Rust ldap_injection — ldap3 LdapConn::search with
+      // tainted filter argument (slot 3).
+      for (const finding of findRustLdapInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 87 (#189): Rust log_injection — log crate macros
+      // (info!/warn!/error!/debug!/trace!) with tainted format args.
+      for (const finding of findRustLogInjectionFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -459,6 +483,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 86 (#189): JS format_string — `util.format(<tainted>, ...)`
       // where the format template comes from an HTTP request extractor.
       for (const finding of findJsUtilFormatFormatStringFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 87 (#189): JS/TS ldap_injection — ldapjs/ldapts
+      // client.search(base, { filter: <tainted>, ... }).
+      for (const finding of findJsLdapInjectionFindings(
         code,
         graph.ir.meta.file,
       )) {
@@ -6832,6 +6864,635 @@ export function findPythonHeaderCrlfInjectionFindings(
       line: i + 1,
       snippet: line.trim(),
     });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 87 detector A (#189) — JavaScript / TypeScript LDAP injection
+ * via ldapjs / ldapts `client.search(base, { filter: <tainted>, ... })`.
+ *
+ * ldapjs and ldapts share the same call shape: `client.search(base, opts,
+ * cb)` where `opts.filter` is the LDAP filter string. When an attacker
+ * controls the filter content, they can break out of the intended filter
+ * (e.g. `*)(uid=*` injection) to enumerate the directory. CWE-90.
+ *
+ * The detector tracks taint propagation from Express request extractors
+ * (`req.query.X`, `req.body.X`, `req.params.X`, `req.headers.X`,
+ * `req.cookies.X`) through both `let|const|var` assignments and
+ * template-literal / `+`-concat construction of the filter string.
+ */
+export function findJsLdapInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  // Gate: must reference an ldapjs/ldapts-shaped `.search(...)` call AND
+  // an Express-shaped request extractor.
+  if (!/\.\s*search\s*\(/.test(code)) return findings;
+  if (!/\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/.test(code)) {
+    return findings;
+  }
+  // Soft library gate — only fire when ldapjs or ldapts is in the file.
+  if (!/\b(?:ldapjs|ldapts|require\(['"]ldapjs['"]\)|from\s+['"]ldapts['"])\b/.test(
+    code,
+  )) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe = /\breq\s*\.\s*(?:query|body|params|headers|cookies)\b/;
+  const taintedVars = new Set<string>();
+
+  // 3-pass whole-file taint propagation across `(const|let|var) x = expr`.
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  // Find lines containing `filter: <expr>` (object property) where the
+  // expression resolves to a tainted symbol, plus the shorthand
+  // `{ filter, ... }` / `{ ..., filter }` form (ES6 property shorthand
+  // means `{ filter }` is equivalent to `{ filter: filter }`).
+  const filterPropRe = /\bfilter\s*:\s*([^,}\n]+)/;
+  const filterShorthandRe = /(?:^|[\{,])\s*filter\s*[,}]/;
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fm = line.match(filterPropRe);
+    let expr: string | null = null;
+    if (fm) {
+      expr = fm[1].trim();
+    } else if (filterShorthandRe.test(line)) {
+      // Shorthand: value is the local symbol named "filter".
+      expr = 'filter';
+    } else {
+      continue;
+    }
+    // Tainted if any tainted var appears in the expression.
+    let tainted = false;
+    for (const v of taintedVars) {
+      if (new RegExp(`\\b${v}\\b`).test(expr)) {
+        tainted = true;
+        break;
+      }
+    }
+    if (!tainted) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `ldap_injection-${file}-${i + 1}-js-ldap-filter`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'ldap_injection',
+      cwe: 'CWE-90',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'LDAP injection: ldapjs/ldapts `client.search(..., { filter: ' +
+        '<tainted>, ... })` lets the attacker break out of the filter ' +
+        'expression (e.g. `*)(uid=*`) and enumerate the directory. ' +
+        'Escape the user input with a tight allowlist (`[A-Za-z0-9_-]+`) ' +
+        'or use a structured filter builder.',
+      file,
+      line: i + 1,
+      snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 87 detector B (#189) — Go LDAP injection via go-ldap/ldap.v3
+ * `ldap.NewSearchRequest(base, scope, deref, sizeLimit, timeLimit,
+ * typesOnly, <tainted-filter>, attributes, controls)`.
+ *
+ * The 7th positional argument is the LDAP filter. The detector tracks
+ * tainted strings derived from `r.URL.Query().Get(...)` / `r.Form.Get`
+ * / `r.PostForm.Get` / `r.FormValue` / `r.PostFormValue` through
+ * `:=`/`=` assignments and `fmt.Sprintf` calls, then fires when the
+ * filter slot resolves to a tainted symbol. CWE-90.
+ */
+export function findGoLdapInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\bldap\s*\.\s*NewSearchRequest\s*\(/.test(code)) return findings;
+  if (!/\br\s*\.\s*(?:URL\s*\.\s*Query\s*\(\s*\)|Form|PostForm|FormValue|PostFormValue|Header)/.test(
+    code,
+  )) {
+    return findings;
+  }
+
+  const lines = code.split('\n');
+  const reqExtractRe =
+    /\br\s*\.\s*(?:URL\s*\.\s*Query\s*\(\s*\)\s*\.\s*Get|Form\s*\.\s*Get|PostForm\s*\.\s*Get|FormValue|PostFormValue|Header\s*\.\s*Get)\s*\(/;
+
+  const taintedVars = new Set<string>();
+  for (let pass = 0; pass < 3; pass++) {
+    const before = taintedVars.size;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith('//')) continue;
+      // `name := expr` or `name = expr`
+      const m = t.match(/^(\w+)\s*(?::=|=)\s*(.+?)$/);
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (taintedVars.has(lhs)) continue;
+      if (reqExtractRe.test(rhs)) {
+        taintedVars.add(lhs);
+        continue;
+      }
+      for (const v of taintedVars) {
+        if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+          taintedVars.add(lhs);
+          break;
+        }
+      }
+    }
+    if (taintedVars.size === before) break;
+  }
+  if (taintedVars.size === 0) return findings;
+
+  // Multiline-tolerant scan: NewSearchRequest call may span several
+  // lines. Find each opener and collect its full argument span.
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const openIdx = lines[i].indexOf('NewSearchRequest(');
+    if (openIdx === -1) continue;
+    // Aggregate text from `i` until we balance the parens.
+    let depth = 0;
+    let buf = '';
+    let endLine = i;
+    let started = false;
+    for (let j = i; j < Math.min(i + 25, lines.length); j++) {
+      for (const ch of lines[j]) {
+        if (ch === '(') {
+          depth++;
+          started = true;
+        } else if (ch === ')') {
+          depth--;
+        }
+        buf += ch;
+        if (started && depth === 0) {
+          endLine = j;
+          break;
+        }
+      }
+      if (started && depth === 0) break;
+      buf += '\n';
+    }
+    // buf now contains "NewSearchRequest(...)". Strip prefix.
+    const argsStart = buf.indexOf('(');
+    if (argsStart === -1) continue;
+    const args = buf.substring(argsStart + 1, buf.length - 1);
+    // Top-level split on commas (string-literal aware).
+    const parts: string[] = [];
+    {
+      let d = 0;
+      let b = '';
+      let inStr: string | null = null;
+      for (let k = 0; k < args.length; k++) {
+        const ch = args[k];
+        if (inStr) {
+          if (ch === '\\') {
+            b += ch + (args[k + 1] ?? '');
+            k++;
+            continue;
+          }
+          if (ch === inStr) inStr = null;
+          b += ch;
+          continue;
+        }
+        if (ch === '"' || ch === '`') {
+          inStr = ch;
+          b += ch;
+          continue;
+        }
+        if (ch === '(' || ch === '[' || ch === '{') d++;
+        else if (ch === ')' || ch === ']' || ch === '}') d--;
+        if (ch === ',' && d === 0) {
+          parts.push(b);
+          b = '';
+          continue;
+        }
+        b += ch;
+      }
+      if (b.trim().length > 0) parts.push(b);
+    }
+    if (parts.length < 7) continue;
+    const filterExpr = parts[6].trim();
+    let tainted = false;
+    for (const v of taintedVars) {
+      if (new RegExp(`\\b${v}\\b`).test(filterExpr)) {
+        tainted = true;
+        break;
+      }
+    }
+    if (!tainted) continue;
+    if (seen.has(i + 1)) continue;
+    seen.add(i + 1);
+    findings.push({
+      id: `ldap_injection-${file}-${i + 1}-go-newsearchrequest`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'ldap_injection',
+      cwe: 'CWE-90',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'LDAP injection: go-ldap `ldap.NewSearchRequest(..., <tainted ' +
+        'filter>, ...)` lets the attacker break out of the filter ' +
+        'expression and enumerate the directory. Escape the user input ' +
+        'with `ldap.EscapeFilter(...)` or use a structured filter ' +
+        'builder.',
+      file,
+      line: i + 1,
+      snippet: (lines[i] + (endLine > i ? ' …' : '')).trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Sprint 87 detector C (#189) — Rust LDAP injection via ldap3
+ * `LdapConn::search(base, scope, &<tainted-filter>, attrs)` (and the
+ * async `Ldap::search(...)` mirror).
+ *
+ * The 3rd positional argument is the LDAP filter. Tainted strings come
+ * from actix-web `web::Query<HashMap<String, String>>` / `web::Path` /
+ * `web::Form` / `web::Json` parameter types (extractor handlers) and
+ * propagate through `let` bindings and `format!(...)` macros. CWE-90.
+ */
+export function findRustLdapInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\.\s*search\s*\(/.test(code)) return findings;
+  if (!/\b(?:ldap3|LdapConn|Ldap)\b/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const extractorTypeRe =
+    /:\s*(?:String|Bytes|bytes::Bytes|axum::body::Bytes|web::Query\b|web::Path\b|web::Form\b|web::Json\b|HttpRequest\b|actix_web::HttpRequest\b)/;
+
+  // Discover per-function tainted params: scan `fn ...(params)` headers.
+  type Fn = { start: number; end: number; tainted: Set<string> };
+  const fns: Fn[] = [];
+  let cur: Fn | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i];
+    if (/^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        fns.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1, tainted: new Set() };
+      // Assemble multi-line header.
+      let headerJoined = '';
+      for (let j = i; j < Math.min(i + 12, lines.length); j++) {
+        headerJoined += lines[j];
+        if (/\{\s*$/.test(lines[j])) break;
+      }
+      const open = headerJoined.indexOf('(');
+      const close = headerJoined.lastIndexOf(')');
+      if (open !== -1 && close > open) {
+        const params = headerJoined.substring(open + 1, close);
+        let depth = 0;
+        let buf = '';
+        const parts: string[] = [];
+        for (const ch of params) {
+          if (ch === '<' || ch === '(') depth++;
+          else if (ch === '>' || ch === ')') depth--;
+          if (ch === ',' && depth === 0) {
+            parts.push(buf);
+            buf = '';
+            continue;
+          }
+          buf += ch;
+        }
+        if (buf.trim().length > 0) parts.push(buf);
+        for (const p of parts) {
+          const pm = p.match(/(?:mut\s+)?(\w+)\s*:/);
+          if (!pm) continue;
+          if (extractorTypeRe.test(p)) cur.tainted.add(pm[1]);
+        }
+      }
+    }
+  }
+  if (cur) fns.push(cur);
+
+  // Propagate taint through `let` bindings.
+  for (const fn of fns) {
+    for (let pass = 0; pass < 3; pass++) {
+      const before = fn.tainted.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const t = lines[i].trim();
+        const m = t.match(/^let\s+(?:mut\s+)?(\w+)\s*(?::\s*[^=]+)?=\s*(.+?);?$/);
+        if (!m) continue;
+        const lhs = m[1];
+        const rhs = m[2];
+        if (fn.tainted.has(lhs)) continue;
+        for (const v of fn.tainted) {
+          if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+            fn.tainted.add(lhs);
+            break;
+          }
+        }
+      }
+      if (fn.tainted.size === before) break;
+    }
+  }
+
+  // Multiline-tolerant `.search(` call walker.
+  const seen = new Set<number>();
+  for (const fn of fns) {
+    if (fn.tainted.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const searchIdx = lines[i].indexOf('.search(');
+      if (searchIdx === -1) continue;
+      // Assemble args span.
+      let depth = 0;
+      let buf = '';
+      let started = false;
+      for (let j = i; j < Math.min(i + 15, lines.length); j++) {
+        const startCol = j === i ? searchIdx : 0;
+        for (let k = startCol; k < lines[j].length; k++) {
+          const ch = lines[j][k];
+          if (ch === '(') {
+            depth++;
+            started = true;
+          } else if (ch === ')') {
+            depth--;
+          }
+          buf += ch;
+          if (started && depth === 0) break;
+        }
+        if (started && depth === 0) break;
+        buf += '\n';
+      }
+      const argsStart = buf.indexOf('(');
+      if (argsStart === -1) continue;
+      const args = buf.substring(argsStart + 1, buf.length - 1);
+      // String-literal aware top-level comma split.
+      const parts: string[] = [];
+      {
+        let d = 0;
+        let b = '';
+        let inStr: string | null = null;
+        for (let k = 0; k < args.length; k++) {
+          const ch = args[k];
+          if (inStr) {
+            if (ch === '\\') {
+              b += ch + (args[k + 1] ?? '');
+              k++;
+              continue;
+            }
+            if (ch === inStr) inStr = null;
+            b += ch;
+            continue;
+          }
+          if (ch === '"') {
+            inStr = ch;
+            b += ch;
+            continue;
+          }
+          if (ch === '(' || ch === '[' || ch === '{') d++;
+          else if (ch === ')' || ch === ']' || ch === '}') d--;
+          if (ch === ',' && d === 0) {
+            parts.push(b);
+            b = '';
+            continue;
+          }
+          b += ch;
+        }
+        if (b.trim().length > 0) parts.push(b);
+      }
+      // ldap3 search signature: search(base, scope, filter, attrs)
+      if (parts.length < 3) continue;
+      const filterExpr = parts[2].trim();
+      let tainted = false;
+      for (const v of fn.tainted) {
+        if (new RegExp(`\\b${v}\\b`).test(filterExpr)) {
+          tainted = true;
+          break;
+        }
+      }
+      if (!tainted) continue;
+      if (seen.has(i + 1)) continue;
+      seen.add(i + 1);
+      findings.push({
+        id: `ldap_injection-${file}-${i + 1}-rust-ldap3-search`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'ldap_injection',
+        cwe: 'CWE-90',
+        severity: 'critical',
+        level: 'error',
+        message:
+          'LDAP injection: ldap3 `LdapConn::search(..., &<tainted ' +
+          'filter>, ...)` lets the attacker break out of the filter ' +
+          'expression and enumerate the directory. Escape the user input ' +
+          'or use a structured filter builder.',
+        file,
+        line: i + 1,
+        snippet: lines[i].trim(),
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Sprint 87 detector D (#189) — Rust log injection via the `log` crate
+ * macros (`info!`, `warn!`, `error!`, `debug!`, `trace!`) where a
+ * tainted value is interpolated into the format args.
+ *
+ * Unsanitized CRLF in log lines can split log entries, forge
+ * authentication events, or escape into log-aggregation pipelines that
+ * parse newlines as record boundaries. CWE-117.
+ */
+export function findRustLogInjectionFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  if (!/\b(?:info|warn|error|debug|trace)\s*!\s*\(/.test(code)) return findings;
+  if (!/\b(?:log|tracing)\b/.test(code)) return findings;
+
+  const lines = code.split('\n');
+  const extractorTypeRe =
+    /:\s*(?:String|Bytes|bytes::Bytes|axum::body::Bytes|web::Query\b|web::Path\b|web::Form\b|web::Json\b|HttpRequest\b|actix_web::HttpRequest\b)/;
+
+  type Fn = { start: number; end: number; tainted: Set<string> };
+  const fns: Fn[] = [];
+  let cur: Fn | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i];
+    if (/^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        fns.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1, tainted: new Set() };
+      let headerJoined = '';
+      for (let j = i; j < Math.min(i + 12, lines.length); j++) {
+        headerJoined += lines[j];
+        if (/\{\s*$/.test(lines[j])) break;
+      }
+      const open = headerJoined.indexOf('(');
+      const close = headerJoined.lastIndexOf(')');
+      if (open !== -1 && close > open) {
+        const params = headerJoined.substring(open + 1, close);
+        let depth = 0;
+        let buf = '';
+        const parts: string[] = [];
+        for (const ch of params) {
+          if (ch === '<' || ch === '(') depth++;
+          else if (ch === '>' || ch === ')') depth--;
+          if (ch === ',' && depth === 0) {
+            parts.push(buf);
+            buf = '';
+            continue;
+          }
+          buf += ch;
+        }
+        if (buf.trim().length > 0) parts.push(buf);
+        for (const p of parts) {
+          const pm = p.match(/(?:mut\s+)?(\w+)\s*:/);
+          if (!pm) continue;
+          if (extractorTypeRe.test(p)) cur.tainted.add(pm[1]);
+        }
+      }
+    }
+  }
+  if (cur) fns.push(cur);
+
+  for (const fn of fns) {
+    for (let pass = 0; pass < 3; pass++) {
+      const before = fn.tainted.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const t = lines[i].trim();
+        const m = t.match(/^let\s+(?:mut\s+)?(\w+)\s*(?::\s*[^=]+)?=\s*(.+?);?$/);
+        if (!m) continue;
+        const lhs = m[1];
+        const rhs = m[2];
+        if (fn.tainted.has(lhs)) continue;
+        for (const v of fn.tainted) {
+          if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+            fn.tainted.add(lhs);
+            break;
+          }
+        }
+      }
+      if (fn.tainted.size === before) break;
+    }
+  }
+
+  const macroRe = /\b(info|warn|error|debug|trace)\s*!\s*\(\s*([^;]+?)\)\s*;?\s*$/;
+  const seen = new Set<string>();
+  for (const fn of fns) {
+    if (fn.tainted.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const m = line.match(macroRe);
+      if (!m) continue;
+      const macroName = m[1];
+      const argSpan = m[2];
+      // Split on top-level commas to separate the fmt-string from args.
+      const parts: string[] = [];
+      {
+        let d = 0;
+        let b = '';
+        let inStr: string | null = null;
+        for (let k = 0; k < argSpan.length; k++) {
+          const ch = argSpan[k];
+          if (inStr) {
+            if (ch === '\\') {
+              b += ch + (argSpan[k + 1] ?? '');
+              k++;
+              continue;
+            }
+            if (ch === inStr) inStr = null;
+            b += ch;
+            continue;
+          }
+          if (ch === '"') {
+            inStr = ch;
+            b += ch;
+            continue;
+          }
+          if (ch === '(' || ch === '[' || ch === '{') d++;
+          else if (ch === ')' || ch === ']' || ch === '}') d--;
+          if (ch === ',' && d === 0) {
+            parts.push(b);
+            b = '';
+            continue;
+          }
+          b += ch;
+        }
+        if (b.trim().length > 0) parts.push(b);
+      }
+      if (parts.length < 2) continue;
+      // Any of the format args (parts[1..]) being tainted = fire.
+      let tainted = false;
+      for (let p = 1; p < parts.length; p++) {
+        for (const v of fn.tainted) {
+          if (new RegExp(`\\b${v}\\b`).test(parts[p])) {
+            tainted = true;
+            break;
+          }
+        }
+        if (tainted) break;
+      }
+      if (!tainted) continue;
+      const key = `${i + 1}:${macroName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({
+        id: `log_injection-${file}-${i + 1}-rust-${macroName}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'log_injection',
+        cwe: 'CWE-117',
+        severity: 'medium',
+        level: 'warning',
+        message:
+          `Log injection: Rust \`${macroName}!(...)\` interpolates a ` +
+          'tainted value into the log line. Unsanitized CRLF lets an ' +
+          'attacker forge log entries or split records. Strip control ' +
+          'characters or use a structured logging API.',
+        file,
+        line: i + 1,
+        snippet: line.trim(),
+      });
+    }
   }
   return findings;
 }

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.137.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.137.0`](https://www.npmjs.com/package/circle-ir) which
+closes 8 of 8 corpus cells on the ldap + log_injection cluster of
+cognium-dev #189 variant-regression scorecard (Sprint 87). 3 of 8 were
+already firing via existing configured logging sinks (Python `logger`,
+JS `console`, TS `pino`); 4 new pattern detectors close the remaining
+4 LDAP variants (ldapjs/ldapts/go-ldap/ldap3) and the Rust `log` crate
+macros. No CLI surface changes.
+
 ## [3.136.0] - 2026-06-30
 
 Engine bump only — adopts

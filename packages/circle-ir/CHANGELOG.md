@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.137.0] - 2026-06-30
+
+Sprint 87 — cognium-dev #189 variant-regression scorecard: ldap (4) +
+log_injection (4) cluster (8 FN cells across JavaScript + TypeScript +
+Go + Rust + Python). Engine inventory on 3.136.0 found 3 of 8 already
+firing (Python `logger.info` concat, JS `console.log` concat, TS
+`pino.info` concat via the existing configured logging sinks). The 5
+remaining FN shapes were the four LDAP variants (ldapjs/ldapts/go-ldap/
+ldap3) and the Rust `log` crate macros. **5 of 5 addressable FN cells
+closed via four new pattern detectors. 8 of 8 corpus cells now emit the
+canonical sink signal.**
+
+### Closed in this release
+
+Pattern detectors (`language-sources-pass.ts`):
+
+- `findJsLdapInjectionFindings` — ldapjs / ldapts
+  `client.search(base, { filter: <tainted>, ... })` including the ES6
+  property-shorthand form `{ filter, ... }` where `filter` traces back
+  to an Express request extractor (`req.query|body|params|headers|
+  cookies`). Closes `js__ldap_v01_ldapjs.js` and
+  `ts__ldap_v01_ldapts.ts`. rule_id=`ldap_injection`, CWE-90,
+  severity=critical.
+
+- `findGoLdapInjectionFindings` — go-ldap
+  `ldap.NewSearchRequest(base, scope, deref, sizeLimit, timeLimit,
+  typesOnly, <tainted-filter>, attrs, controls)` (slot 7) where the
+  filter traces back to `r.URL.Query().Get` / `r.Form.Get` /
+  `r.FormValue` / etc. String-literal-aware multiline argument walker
+  honors commas inside `"ou=users,dc=example,dc=com"` literals. Closes
+  `go__ldap_v01_goldap.go`. rule_id=`ldap_injection`, CWE-90,
+  severity=critical.
+
+- `findRustLdapInjectionFindings` — ldap3
+  `LdapConn::search(base, scope, &<tainted-filter>, attrs)` (slot 3)
+  inside actix-web extractor handlers (`web::Query` / `web::Path` /
+  `web::Form` / `web::Json` / `HttpRequest`). Per-function tainted-param
+  tracking with multiline `.search(` call walker (string-literal aware).
+  Closes `rust__ldap_v01_ldap3.rs`. rule_id=`ldap_injection`, CWE-90,
+  severity=critical.
+
+- `findRustLogInjectionFindings` — Rust `log` crate macros
+  (`info!`, `warn!`, `error!`, `debug!`, `trace!`) where any
+  interpolated format argument traces back to an actix-web extractor
+  parameter via local `let`-binding propagation. Closes
+  `rust__loginj_v01_logcrate.rs`. rule_id=`log_injection`, CWE-117,
+  severity=medium.
+
+### Risk + safety controls
+
+- Detector A (JS/TS LDAP): gated on `.search(` + Express request
+  extractor token + library reference (`ldapjs`/`ldapts`). Only fires
+  when the `filter:` property value (or shorthand symbol) traces to a
+  tainted variable via 3-pass whole-file binding propagation. Never
+  fires on literal filter strings.
+- Detector B (Go LDAP): gated on `ldap.NewSearchRequest(` + Go HTTP
+  extractor token. String-literal-aware top-level comma split avoids
+  spurious splits on commas inside `"ou=users,dc=example,dc=com"`
+  literals. Slot-7-specific.
+- Detector C (Rust LDAP): per-function tainted-param scope (params
+  typed as `web::Query` / `web::Path` / `web::Form` / `web::Json` /
+  `HttpRequest`). Multiline `.search(` walker only fires for the
+  slot-3 filter argument, with the same string-literal-aware split.
+- Detector D (Rust log): same per-function tainted-param model. Fires
+  only on macros from `log`/`tracing` namespaces (gated by file-level
+  import token). Literal-only format args are ignored.
+
+### Verification
+
+```bash
+cd packages/circle-ir
+npx vitest run tests/analysis/passes/issue-189-sprint87-ldap-loginj-cluster.test.ts
+# 11/11 passing
+npx vitest run                              # full suite: 3362 passed / 2 skipped
+npm run typecheck && npm run build          # clean
+```
+
+Re-running the Sprint 87 inventory script against the 3.137.0 dist
+shows 0/8 FN (was 5/8 on 3.136.0).
+
 ## [3.136.0] - 2026-06-30
 
 Sprint 86 — cognium-dev #189 variant-regression scorecard: format_string
