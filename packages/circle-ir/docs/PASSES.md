@@ -58,19 +58,19 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 |---|---------|-----|-------------|
 | 1 | `sql-injection` | CWE-89 | User input in SQL without parameterization |
 | 2 | `command-injection` | CWE-78 | User input in shell exec/system |
-| 3 | `xss` | CWE-79 | User input in HTML output without encoding. Sprint 73 (#216): JS user-defined replace-based wrapper functions (e.g. `function esc(s) { return String(s).replace(/[&<>"']/g, ...) }`) are recognized as sanitizers via two-pass discovery + call-site emission |
+| 3 | `xss` | CWE-79 | User input in HTML output without encoding. Sprint 73 (#216): JS user-defined replace-based wrapper functions (e.g. `function esc(s) { return String(s).replace(/[&<>"']/g, ...) }`) are recognized as sanitizers via two-pass discovery + call-site emission. Sprint 74 (#216 Pattern B): Python var-aware set-membership allow-list guard (`if t not in ALLOWED: abort(...)` → only sanitizes `xss` on lines referencing `t`) covers Jinja `env.from_string` SSTI |
 | 4 | `path-traversal` | CWE-22 | User input in file path operations |
 | 5 | `ssrf` | CWE-918 | User input in outbound HTTP URL |
 | 6 | `deserialization` | CWE-502 | Untrusted data passed to deserialization |
-| 7 | `xxe` | CWE-611 | External entities enabled in XML parser |
-| 8 | `ldap-injection` | CWE-90 | User input in LDAP query string |
+| 7 | `xxe` | CWE-611 | External entities enabled in XML parser. Sprint 74 (#216 Pattern B): Python `defusedxml.*` imports (`import defusedxml.ElementTree as ET`, `from defusedxml.ElementTree import fromstring`) recognized — calls through such aliases are treated as xxe-safe |
+| 8 | `ldap-injection` | CWE-90 | User input in LDAP query string. Sprint 74 (#216 Pattern B): Python regex-fullmatch tight-allowlist wrapper functions (e.g. `def checked_uid(uid): if not re.fullmatch(r"[A-Za-z0-9_-]+", uid): abort(...); return uid`) recognized as sanitizers via var-aware call-site emission |
 | 9 | `xpath-injection` | CWE-643 | User input in XPath expression |
 | 10 | `nosql-injection` | CWE-943 | User input in NoSQL query |
 | 11 | `code-injection` | CWE-94 | User input in eval/exec/ScriptEngine |
 | 12 | `open-redirect` | CWE-601 | User input controls HTTP redirect target |
 | 13 | `log-injection` | CWE-117 | User input written to log without sanitization. Sprint 73 (#216): JS user-defined CRLF-redaction wrapper functions (e.g. `function redact(s) { return String(s).replace(/[\r\n\t]/g, '_') }`) are recognized as sanitizers |
 | 14 | `trust-boundary` | CWE-501 | Tainted data crosses trust boundary (e.g. session write) |
-| 15 | `external-taint` | CWE-668 | External input reaches sensitive operation (interprocedural). Sprint 73 (#216 Pattern A): recognized terminators no longer fire synthetic ETE flow — Java Jackson `mapper.readValue` / Gson `gson.fromJson`; JS `JSON.parse`, `bcrypt.hash` / `argon2.hash` / `crypto.scrypt` / `crypto.createHash(...).digest(...)`, Excel-formula CSV `'`-prefix (` \`'${x}\` `), and user-defined wrapper functions with threat-char `.replace(...)` |
+| 15 | `external-taint` | CWE-668 | External input reaches sensitive operation (interprocedural). Sprint 73 (#216 Pattern A): recognized terminators no longer fire synthetic ETE flow — Java Jackson `mapper.readValue` / Gson `gson.fromJson`; JS `JSON.parse`, `bcrypt.hash` / `argon2.hash` / `crypto.scrypt` / `crypto.createHash(...).digest(...)`, Excel-formula CSV `'`-prefix (` \`'${x}\` `), and user-defined wrapper functions with threat-char `.replace(...)`. Sprint 74 (#216 Pattern B): Python regex-fullmatch wrapper, var-aware set-membership allow-list guard, and `defusedxml.*` import-alias recognition all suppress synthetic ETE on safe-handler patterns |
 | 15a | `redos` | CWE-1333 | Tainted regex pattern reaches `re.match/search/compile/findall/sub`, `Pattern.compile`, `String.matches/replaceAll/replaceFirst/split`, `new RegExp`, `regexp.Compile/Match` (issue #86) |
 | 15b | `format-string` | CWE-134 | Tainted format string reaches `String.format` / `Formatter.format` / `System.out.printf` / `fmt.Sprintf|Printf|Fprintf|Errorf` / `ctypes printf` (issue #86) |
 | 15c | `crlf` | CWE-113 | Tainted value reaches a response-header / cookie / status-line sink: Java `HttpServletResponse.setHeader/addHeader`, JS Express `res.setHeader/writeHead/cookie/location/redirect`, Go `Header.Set/Add`. Re-routes from `xss` for header-only sinks (issue #86, Sprint 6) |

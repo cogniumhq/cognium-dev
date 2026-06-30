@@ -271,6 +271,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'python') {
       additionalSanitizers.push(...findPythonNetlocAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findPythonRangeCheckGuardSanitizers(code));
+      // Sprint 74 (#216 Pattern B): regex-allowlist wrapper functions,
+      // var-aware set-membership xss guard, and defusedxml import-alias
+      // recognition.
+      additionalSanitizers.push(...findPythonRegexAllowlistWrapperSanitizers(code));
+      additionalSanitizers.push(...findPythonSetMembershipXssGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonDefusedXmlSanitizers(code));
       // Sprint 71 (#190): pattern-based misconfig findings for subscript/context
       // assignment shapes (cors-wildcard-origin, xfo-csp-mismatch, tls-verify-
       // disabled) that the language-agnostic detectors miss in Python.
@@ -2230,6 +2236,348 @@ function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
         sanitizes: ['xss', 'external_taint_escape'],
       });
     }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Python regex-fullmatch allow-list wrapper functions
+ * (cognium-dev #216 Sprint 74 Pattern B).
+ *
+ * Pattern recognized:
+ *
+ *   def checked_uid(uid):
+ *       if not re.fullmatch(r"[a-zA-Z0-9_-]+", uid):
+ *           abort(400)
+ *       return uid
+ *
+ * Two-pass: (1) scan for `def NAME(arg):` declarations whose body
+ * contains `if not re.fullmatch(<TIGHT_REGEX>, arg): <terminator>`
+ * and returns `arg`; (2) for every line containing `NAME(...)` outside
+ * the declaration, emit a sanitizer.
+ *
+ * "Tight" regex means a character-class allow-list that admits only
+ * alphanumerics and a small fixed set of safe separators
+ * ([A-Za-z0-9], \w, plus optional `-`, `_`, `.`). Such an allow-list
+ * strips every injection metacharacter, so the sanitizer lists
+ * ldap/xpath/sql/command/path-traversal/xss + ETE.
+ *
+ * Loose patterns like `.*` or `.+` are rejected (TP-controls cover
+ * the bypass case where the wrapper return value is not what reaches
+ * the sink).
+ */
+function findPythonRegexAllowlistWrapperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Match `def NAME(arg):` — single argument, no default.
+  const defOpen = /^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*:\s*$/;
+  // Tight char-class allow-list: starts with `[` followed by safe ranges
+  // and an explicit `+` / `*` / `{n,m}` quantifier; or `\w+`-style.
+  const tightRegex = /r?["'](?:\^)?(?:\\w[+*]|\\d[+*]|\[[A-Za-z0-9_\\\-\.\s]+\][+*]|[A-Za-z0-9_\-\.]+)(?:\$)?["']/;
+  const terminator = /\b(return\s+(?:None|"|'|\(|\[|\{|False|jsonify|make_response|redirect|abort)|raise\s+\w|abort\s*\(|sys\.exit\s*\()/;
+
+  // Pass 1: discover wrappers.
+  type WrapperInfo = { name: string; defLine: number; defIndent: number };
+  const wrappers: WrapperInfo[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = defOpen.exec(lines[i]);
+    if (!m) continue;
+    const defIndent = m[1].length;
+    const wrapperName = m[2];
+    const argName = m[3];
+
+    // Walk the indented body of the def. Look for
+    // `if not re.fullmatch(<tight>, <arg>): <terminator>` and `return arg`.
+    let foundGuard = false;
+    let returnsArg = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 40);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= defIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (!foundGuard) {
+        const guard = new RegExp(
+          `if\\s+not\\s+re\\.(?:fullmatch|match)\\s*\\(\\s*(${tightRegex.source})\\s*,\\s*${argName}\\s*\\)\\s*:`,
+        );
+        if (guard.test(line)) {
+          // Confirm the next deeper-indented line is a terminator.
+          for (let k = j + 1; k < maxScan; k++) {
+            const klin = lines[k];
+            if (klin.trim() === '') continue;
+            const kindent = klin.length - klin.trimStart().length;
+            if (kindent <= indent) break;
+            if (terminator.test(klin)) foundGuard = true;
+            break;
+          }
+        }
+      }
+      if (new RegExp(`^\\s*return\\s+${argName}\\s*$`).test(line)) {
+        returnsArg = true;
+      }
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 39);
+    if (!foundGuard || !returnsArg) continue;
+
+    wrappers.push({ name: wrapperName, defLine: i, defIndent });
+  }
+
+  if (wrappers.length === 0) return sanitizers;
+
+  // The kinds a tight-regex wrapper sanitizes.
+  const wrapperKinds = [
+    'ldap_injection',
+    'xpath_injection',
+    'sql_injection',
+    'command_injection',
+    'path_traversal',
+    'xss',
+    'external_taint_escape',
+  ] as const;
+
+  // Pass 2: var-aware emission. For each call of the form
+  //   `<VALIDATED> = NAME(...)`
+  // mark every subsequent line in the same function block that
+  // references `<VALIDATED>` as a sanitizer for the wrapper kinds.
+  // This avoids over-suppressing unrelated tainted vars introduced
+  // later in the same function.
+  for (const w of wrappers) {
+    const assignedCallRe = new RegExp(
+      `^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*${w.name}\\s*\\(`,
+    );
+    const bareCallRe = new RegExp(`\\b${w.name}\\s*\\(`);
+
+    for (let i = 0; i < lines.length; i++) {
+      if (i === w.defLine) continue;
+      const line = lines[i];
+      if (!bareCallRe.test(line)) continue;
+
+      // Skip calls inside the wrapper's own body.
+      if (i > w.defLine) {
+        const lineIndent = line.length - line.trimStart().length;
+        if (lineIndent > w.defIndent) {
+          let stillInside = true;
+          for (let k = w.defLine + 1; k < i; k++) {
+            const kline = lines[k];
+            if (kline.trim() === '') continue;
+            const kindent = kline.length - kline.trimStart().length;
+            if (kindent <= w.defIndent) {
+              stillInside = false;
+              break;
+            }
+          }
+          if (stillInside) continue;
+        }
+      }
+
+      // Emit a sanitizer at the call line itself (covers ETE on a
+      // single-line `NAME(req.args.get(...))` shape).
+      sanitizers.push({
+        type: 'python_regex_allowlist_wrapper',
+        method: w.name,
+        line: i + 1,
+        sanitizes: [...wrapperKinds],
+      });
+
+      // If the call result is assigned to a variable, track it and
+      // emit sanitizers on every later line in the same function
+      // block that mentions that variable name. End the scan when
+      // we leave the call's enclosing block.
+      const am = assignedCallRe.exec(line);
+      if (!am) continue;
+      const callIndent = am[1].length;
+      const validated = am[2];
+      const validatedRe = new RegExp(`\\b${validated}\\b`);
+
+      for (let j = i + 1; j < lines.length; j++) {
+        const jline = lines[j];
+        if (jline.trim() === '') continue;
+        const jindent = jline.length - jline.trimStart().length;
+        if (jindent < callIndent) break;
+        if (validatedRe.test(jline)) {
+          sanitizers.push({
+            type: 'python_regex_allowlist_wrapper',
+            method: w.name,
+            line: j + 1,
+            sanitizes: [...wrapperKinds],
+          });
+        }
+      }
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Python set-membership allow-list guards that should sanitize
+ * `xss` flows (cognium-dev #216 Sprint 74 Pattern B, SSTI fixture).
+ *
+ * Pattern recognized:
+ *
+ *   t = request.args.get("t", "")
+ *   if t not in ALLOWED:
+ *       abort(403)
+ *   env.from_string("{{ " + t + " }}").render()
+ *
+ * The existing `findPythonNetlocAllowlistGuardSanitizers` already
+ * handles the source pattern but cannot list `xss` as a blanket
+ * sanitizer (over-suppression risk: a different unguarded variable
+ * later in the same handler would be incorrectly cleared). This
+ * detector is variable-aware: it only emits an `xss` sanitizer on
+ * lines that actually reference the guarded variable.
+ */
+function findPythonSetMembershipXssGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if <ident> not in <ALLOWLIST>:`
+  const guardOpen = /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\s+not\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*$/;
+  const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const guardIndent = m[1].length;
+    const guardedVar = m[2];
+    const allowName = m[3];
+    if (!allowlistName.test(allowName)) continue;
+
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    // Var-aware emission: only lines that reference the guarded var.
+    const varRe = new RegExp(`\\b${guardedVar}\\b`);
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      const lineText = lines[l - 1];
+      if (!varRe.test(lineText)) continue;
+      sanitizers.push({
+        type: 'python_set_membership_xss_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect Python `defusedxml` import-alias usage as xxe sanitizer
+ * (cognium-dev #216 Sprint 74 Pattern B).
+ *
+ * defusedxml is the canonical Python defense against XML External
+ * Entity (CWE-611) attacks — its parsers reject DTD and entity
+ * expansion by design. Recognize three import shapes:
+ *
+ *   import defusedxml.ElementTree as ET
+ *   from defusedxml.ElementTree import fromstring
+ *   import defusedxml as DX
+ *
+ * For every line that calls `<alias>.<method>(...)` (module-alias
+ * shape) or bare `<name>(...)` (from-import shape) emit a sanitizer
+ * with `sanitizes: ['xxe', 'external_taint_escape']`.
+ */
+function findPythonDefusedXmlSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Aliases bound to a defusedxml.* module (or defusedxml itself).
+  const moduleAliases = new Set<string>();
+  // Names imported FROM defusedxml.*.
+  const fromNames = new Set<string>();
+
+  const importAs = /^\s*import\s+defusedxml(?:\.[A-Za-z_][A-Za-z0-9_.]*)?\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/;
+  const importBare = /^\s*import\s+defusedxml(?:\.([A-Za-z_][A-Za-z0-9_.]*))?\s*$/;
+  const fromImport = /^\s*from\s+defusedxml(?:\.[A-Za-z_][A-Za-z0-9_.]*)?\s+import\s+(.+)$/;
+
+  for (const raw of lines) {
+    const line = raw.replace(/#.*$/, '');
+    let m: RegExpExecArray | null;
+    if ((m = importAs.exec(line))) {
+      moduleAliases.add(m[1]);
+      continue;
+    }
+    if ((m = importBare.exec(line))) {
+      // `import defusedxml.ElementTree` → callers use full
+      // `defusedxml.ElementTree.fromstring`. Bind the leaf segment
+      // when present, else `defusedxml`.
+      if (m[1]) {
+        moduleAliases.add(m[1].split('.').pop()!);
+      }
+      moduleAliases.add('defusedxml');
+      continue;
+    }
+    if ((m = fromImport.exec(line))) {
+      const items = m[1].split(',');
+      for (const item of items) {
+        const trimmed = item.trim().replace(/[()\\]/g, '');
+        if (!trimmed) continue;
+        const asMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(trimmed);
+        if (asMatch) {
+          fromNames.add(asMatch[2]);
+        } else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+          fromNames.add(trimmed);
+        }
+      }
+    }
+  }
+
+  if (moduleAliases.size === 0 && fromNames.size === 0) return sanitizers;
+
+  // Emit per-line sanitizers at each call site.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip import lines themselves.
+    if (/^\s*(?:import|from)\s+/.test(line)) continue;
+
+    let matched = false;
+    for (const alias of moduleAliases) {
+      const re = new RegExp(`\\b${alias}\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(`);
+      if (re.test(line)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      for (const name of fromNames) {
+        const re = new RegExp(`\\b${name}\\s*\\(`);
+        if (re.test(line)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) continue;
+
+    sanitizers.push({
+      type: 'python_defusedxml_import',
+      method: 'defusedxml',
+      line: i + 1,
+      sanitizes: ['xxe', 'external_taint_escape'],
+    });
   }
 
   return sanitizers;

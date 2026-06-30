@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.125.0] - 2026-06-29
+
+Sprint 74 — cognium-dev #216 Pattern B Python wrappers. Closes 3 of
+the 12 remaining FPs (`safe_sanitizer_wrapped_ldap.py`,
+`safe_sanitizer_wrapped_ssti.py`, `safe_sanitizer_wrapped_xxe.py`).
+#216 stays open for 9 remaining cross-language FPs.
+
+### Added
+
+- **Python wrapper / allow-list / defusedxml sanitizer detectors
+  (cognium-dev #216 Pattern B)** — three new conservative sanitizer
+  recognizers wired into `language-sources-pass.ts`:
+  - `findPythonRegexAllowlistWrapperSanitizers` — discovers
+    `def NAME(arg): if not re.fullmatch(<TIGHT_REGEX>, arg):
+    <terminator>; return arg` wrapper functions. A "tight" regex is
+    a character-class allow-list of `\w`, `\d`, or
+    `[A-Za-z0-9_\-\.]`-style with explicit quantifier. Loose
+    patterns such as `.*` are rejected. Var-aware emission: for
+    every assignment `<v> = NAME(...)` the wrapper kinds
+    (`ldap_injection`, `xpath_injection`, `sql_injection`,
+    `command_injection`, `path_traversal`, `xss`,
+    `external_taint_escape`) are emitted on subsequent lines in the
+    same block that reference `<v>`. Unrelated tainted variables
+    introduced later are not over-suppressed.
+  - `findPythonSetMembershipXssGuardSanitizers` — companion to the
+    existing `findPythonNetlocAllowlistGuardSanitizers`. Recognizes
+    `if <var> not in ALLOWED: abort(...)` and emits `xss` +
+    `external_taint_escape` sanitizers only on subsequent lines
+    that reference `<var>`. Covers Jinja `env.from_string` SSTI
+    safe-handler patterns. The existing netloc detector still
+    handles `open_redirect` / `ssrf` / `path_traversal` /
+    `external_taint_escape` at file-line granularity (unchanged).
+  - `findPythonDefusedXmlSanitizers` — recognizes `import
+    defusedxml.<module>`, `import defusedxml.<module> as <alias>`,
+    `import defusedxml as <alias>`, and
+    `from defusedxml.<module> import <name>`. Emits `xxe` +
+    `external_taint_escape` sanitizers on every line whose call
+    receiver alias was bound to defusedxml. Plain
+    `xml.etree.ElementTree as ET` is unaffected.
+
+### Tests
+
+- New `tests/analysis/passes/issue-216-pattern-b-python.test.ts`
+  with 6 tests (3 TN reproducing the verbatim corpus FPs + 3 TP-
+  control proving the sanitizers do not over-suppress real vulns at
+  configured sinks: regex wrapper declared but uncalled does not
+  sanitize a separately-tainted var; netloc allow-list on var A
+  does not sanitize var B at xss sink; plain
+  `xml.etree.ElementTree as ET` is not treated as defusedxml).
+- Full suite: 3240+2 → 3246+2 (+6).
+
 ## [3.124.0] - 2026-06-29
 
 Sprint 73 — cognium-dev #216 Pattern A (`external_taint_escape`
