@@ -270,6 +270,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of goMisconfigFindings) {
         ctx.addFinding(finding);
       }
+      // Sprint 81 (#189): Go xss — fmt.Fprint(f|ln) to http.ResponseWriter.
+      for (const finding of findGoXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Python: safe-handler sanitizer detectors (cognium-dev #114 Sprint 31) --
@@ -290,6 +294,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // disabled) that the language-agnostic detectors miss in Python.
       const pyMisconfigFindings = findPythonPatternFindings(code, graph.ir.meta.file);
       for (const finding of pyMisconfigFindings) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 81 (#189): Python xss — Flask string-concat / f-string returns
+      // and Jinja Markup wrap bypass.
+      for (const finding of findPythonFlaskStringConcatXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      for (const finding of findPythonJinjaMarkupXssFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
       }
     }
@@ -338,6 +350,14 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       for (const finding of findJsPatternFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
       }
+      // Sprint 81 (#189): JS/TS xss — Vue v-html directive tied to tainted
+      // template binding, and Angular DomSanitizer.bypassSecurityTrust*.
+      for (const finding of findJsVueVHtmlXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      for (const finding of findTsAngularBypassXssFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
     }
 
     // -- Java: Sprint 73 (#216 Pattern A) — Jackson readValue / Gson
@@ -356,6 +376,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // jwt-verify-disabled (auth0 JWT.decode bare) +
       // tls-verify-disabled (empty-body X509TrustManager).
       for (const finding of findJavaPatternFindings(code, graph.ir.meta.file)) {
+        ctx.addFinding(finding);
+      }
+      // Sprint 81 (#189): Java xss — HttpServletResponse.getWriter().{print,
+      // println,write} receiver-chain that the configured PrintWriter sink
+      // doesn't resolve.
+      for (const finding of findJavaResponseWriterXssFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
       }
     }
@@ -4326,6 +4352,504 @@ export function findJsPatternFindings(
       line: i + 1,
       snippet: trimmed.substring(0, 100),
     });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 81 (#189) — xss-cluster FN coverage. Six per-language pattern
+// detectors that emit SastFinding{rule_id:'xss'} directly, bypassing the
+// source→sink→flow construction where the engine can't yet build a flow
+// (e.g. Python string-concat / f-string, Java receiver-chain typing).
+// ---------------------------------------------------------------------------
+
+/**
+ * Go xss — `fmt.Fprint(f|ln)?(w, ...)` writing tainted data directly to an
+ * `http.ResponseWriter`. Two-pass:
+ *
+ *   1. Discover ResponseWriter parameter names by scanning function
+ *      signatures `(<name> http.ResponseWriter, ...)`.
+ *   2. For every `fmt.Fprint(f|ln)?(<name>, <format>, <args...>)` whose
+ *      first argument matches a discovered name, emit xss UNLESS one of
+ *      the args is wrapped in a recognized HTML escaper
+ *      (`html.EscapeString` / `template.HTMLEscapeString` /
+ *      `template.HTMLEscaper`).
+ */
+export function findGoXssFindings(code: string, file: string): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const rwNames = new Set<string>();
+  const sigRe = /\(\s*([A-Za-z_]\w*)\s+http\.ResponseWriter\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    sigRe.lastIndex = 0;
+    while ((m = sigRe.exec(line)) !== null) rwNames.add(m[1]);
+  }
+  if (rwNames.size === 0) return out;
+
+  const escaperRe =
+    /\b(?:html|template)\.(?:EscapeString|HTMLEscapeString|HTMLEscaper|JSEscapeString|URLQueryEscaper)\s*\(/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const callRe =
+      /\bfmt\.Fprint(?:f|ln)?\s*\(\s*([A-Za-z_]\w*)\s*,\s*([\s\S]*)\)\s*(?:\/\/.*)?$/;
+    const m = trimmed.match(callRe);
+    if (!m) continue;
+    if (!rwNames.has(m[1])) continue;
+    const tail = m[2];
+    if (escaperRe.test(tail)) continue;
+    // Require at least one identifier in tail outside string literals.
+    if (!/[A-Za-z_]\w*/.test(tail.replace(/"[^"]*"|`[^`]*`/g, ''))) continue;
+    out.push({
+      id: `xss-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xss',
+      cwe: 'CWE-79',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Reflected XSS: fmt.Fprint writes data to http.ResponseWriter ' +
+        'without HTML escaping. Wrap user-controlled args with ' +
+        'html.EscapeString / template.HTMLEscapeString.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Java xss — `<recv>.getWriter().{print,println,write,printf,format,append}
+ * (<arg>)` chained call where `<recv>` is typed `HttpServletResponse`.
+ * The receiver-chain form bypasses the configured `PrintWriter.print`
+ * sink because the engine doesn't yet trace `HttpServletResponse
+ * .getWriter()` → `PrintWriter` type resolution.
+ *
+ * Conservative: only fires when the receiver token matches a parameter
+ * named with the `HttpServletResponse` type AND no recognized HTML
+ * encoder wraps the argument.
+ */
+export function findJavaResponseWriterXssFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const respNames = new Set<string>();
+  const sigRe = /\bHttpServletResponse\s+([A-Za-z_]\w*)\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    sigRe.lastIndex = 0;
+    while ((m = sigRe.exec(line)) !== null) respNames.add(m[1]);
+  }
+  if (respNames.size === 0) return out;
+
+  const safeWrapRe =
+    /\b(?:Encode\.(?:forHtml|forHtmlAttribute|forHtmlContent|forJavaScript)|StringEscapeUtils\.escape(?:Html3|Html4|EcmaScript|Xml)|HtmlUtils\.htmlEscape(?:Decimal|Hex)?|Escaper\.escapeHtml|HtmlEscapers\.(?:escapeHtml|htmlEscaper)|Encoder\.encodeForHTML(?:Attribute)?|Jsoup\.clean)\s*\(/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const chainRe =
+      /\b([A-Za-z_]\w*)\s*\.\s*getWriter\s*\(\s*\)\s*\.\s*(print|println|write|printf|format|append)\s*\(([\s\S]*)\)\s*;?\s*(?:\/\/.*)?$/;
+    const m = trimmed.match(chainRe);
+    if (!m) continue;
+    const recv = m[1];
+    if (!respNames.has(recv)) continue;
+    const args = m[3];
+    if (safeWrapRe.test(args)) continue;
+    // Skip when args is a pure string-literal call like `print("hello")`.
+    // Anything else (`+`-concat, bare identifier, method call) is a write
+    // of dynamic content that should have gone through an HTML encoder.
+    const argsTrim = args.trim();
+    if (/^"(?:\\.|[^"\\])*"$/.test(argsTrim)) continue;
+    if (!/[A-Za-z_]\w*/.test(argsTrim)) continue;
+    out.push({
+      id: `xss-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xss',
+      cwe: 'CWE-79',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Reflected XSS: HttpServletResponse.getWriter().' +
+        m[2] +
+        '(...) writes data to the response without HTML escaping. ' +
+        'Wrap user-controlled values with OWASP Encode.forHtml / ' +
+        'StringEscapeUtils.escapeHtml4 / Jsoup.clean.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Vue xss — `template: '<...v-html="<var>"...>'` directive binding to a
+ * variable that is sourced from a tainted location (URLSearchParams,
+ * location.search/hash, route.query/params, fetch, etc.).
+ *
+ * Conservative: when the bound variable is a literal initializer
+ * (`<var>: 'static'`) or sourced from a non-recognized location, no
+ * finding is emitted.
+ */
+export function findJsVueVHtmlXssFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const sourceRe =
+    /\b(?:URLSearchParams|location\s*\.\s*(?:search|hash|href|pathname)|window\s*\.\s*location|route\s*\.\s*(?:query|params)|router\s*\.\s*(?:currentRoute|query)|\$route\s*\.\s*(?:query|params)|fetch\s*\(|axios\s*\.\s*(?:get|post)|XMLHttpRequest|document\s*\.\s*location)\b/;
+
+  const tplRe = /\btemplate\s*:\s*(['"`])([\s\S]*?)\1/g;
+  let tm: RegExpExecArray | null;
+  const boundVars = new Set<string>();
+  while ((tm = tplRe.exec(code)) !== null) {
+    const tpl = tm[2];
+    const vhRe = /\bv-html\s*=\s*"([^"]+)"/g;
+    let vm: RegExpExecArray | null;
+    while ((vm = vhRe.exec(tpl)) !== null) {
+      const expr = vm[1].trim();
+      const idMatch = expr.match(/^([A-Za-z_$][\w$]*)/);
+      if (idMatch) boundVars.add(idMatch[1]);
+    }
+  }
+  if (boundVars.size === 0) return out;
+
+  // Build a set of variables transitively tainted by a recognized source
+  // pattern: `const params = new URLSearchParams(...)` taints `params`,
+  // then `const q = params.get('q')` taints `q` (one-hop).
+  const taintedSet = new Set<string>();
+  const assignRe =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
+  let am: RegExpExecArray | null;
+  // First pass: direct source-pattern assignments.
+  assignRe.lastIndex = 0;
+  while ((am = assignRe.exec(code)) !== null) {
+    if (sourceRe.test(am[2])) taintedSet.add(am[1]);
+  }
+  // Second pass: one-hop through tainted vars (limit 3 iterations).
+  for (let pass = 0; pass < 3; pass++) {
+    assignRe.lastIndex = 0;
+    const before = taintedSet.size;
+    while ((am = assignRe.exec(code)) !== null) {
+      if (taintedSet.has(am[1])) continue;
+      for (const tv of taintedSet) {
+        if (new RegExp(`\\b${tv}\\b`).test(am[2])) {
+          taintedSet.add(am[1]);
+          break;
+        }
+      }
+    }
+    if (taintedSet.size === before) break;
+  }
+
+  const taintedBindings = new Set<string>();
+  for (const v of boundVars) {
+    const bindRe = new RegExp(`\\b${v}\\s*[:=]\\s*([^,;\\n]+)`);
+    for (const line of lines) {
+      const m = line.match(bindRe);
+      if (!m) continue;
+      const val = m[1];
+      if (sourceRe.test(val)) {
+        taintedBindings.add(v);
+        break;
+      }
+      let found = false;
+      for (const tv of taintedSet) {
+        if (new RegExp(`\\b${tv}\\b`).test(val)) {
+          taintedBindings.add(v);
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+    const propsRe = new RegExp(
+      `\\bprops\\s*:\\s*\\[[^\\]]*['"\`]${v}['"\`][^\\]]*\\]`,
+    );
+    if (propsRe.test(code)) taintedBindings.add(v);
+  }
+
+  if (taintedBindings.size === 0) return out;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!/v-html\s*=/.test(raw)) continue;
+    const vm = raw.match(/v-html\s*=\s*"([^"]+)"/);
+    if (!vm) continue;
+    const idMatch = vm[1].trim().match(/^([A-Za-z_$][\w$]*)/);
+    if (!idMatch || !taintedBindings.has(idMatch[1])) continue;
+    out.push({
+      id: `xss-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xss',
+      cwe: 'CWE-79',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Vue v-html XSS: directive binds to "' +
+        idMatch[1] +
+        '" which is sourced from user-controlled input. Use {{ }} ' +
+        'interpolation (auto-escapes) or sanitize the HTML with ' +
+        'DOMPurify before binding.',
+      file,
+      line: i + 1,
+      snippet: raw.trim().substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Angular xss — `<recv>.bypassSecurityTrust(Html|Script|Url|ResourceUrl|
+ * Style)(<arg>)` where `<recv>` is typed `DomSanitizer`. Skip when
+ * `<arg>` is a string literal (intentional safe-by-author escape hatch).
+ */
+export function findTsAngularBypassXssFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const sanitizerNames = new Set<string>();
+  const declRe =
+    /\b(?:public|private|protected|readonly|\s)?\s*([A-Za-z_$][\w$]*)\s*:\s*DomSanitizer\b/g;
+  let m: RegExpExecArray | null;
+  declRe.lastIndex = 0;
+  while ((m = declRe.exec(code)) !== null) sanitizerNames.add(m[1]);
+  if (sanitizerNames.size === 0) return out;
+
+  const assignRe = /\bthis\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\b/g;
+  let am: RegExpExecArray | null;
+  assignRe.lastIndex = 0;
+  while ((am = assignRe.exec(code)) !== null) {
+    if (sanitizerNames.has(am[2])) sanitizerNames.add(am[1]);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const callRe =
+      /\b(?:this\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\.\s*bypassSecurityTrust(Html|Script|Url|ResourceUrl|Style)\s*\(([\s\S]*?)\)/;
+    const cm = trimmed.match(callRe);
+    if (!cm) continue;
+    const recv = cm[1];
+    if (!sanitizerNames.has(recv)) continue;
+    const arg = cm[3].trim();
+    if (/^(['"`])[^'"`]*\1$/.test(arg)) continue;
+    out.push({
+      id: `xss-${file}-${i + 1}`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'xss',
+      cwe: 'CWE-79',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Angular XSS: DomSanitizer.bypassSecurityTrust' +
+        cm[2] +
+        '() opts out of Angular\'s built-in sanitization for a ' +
+        'non-literal argument. Prefer leaving Angular\'s default ' +
+        'sanitizer in place, or sanitize the input with DOMPurify ' +
+        'before bypassing.',
+      file,
+      line: i + 1,
+      snippet: trimmed.substring(0, 100),
+    });
+  }
+  return out;
+}
+
+/**
+ * Python Flask xss — route function returning HTML built from a
+ * `request.<args|form|values|files>.get(...)` value via string concat,
+ * f-string, %, or .format(). Bypasses the engine's flow construction
+ * gap for these string ops.
+ *
+ * Conservative: requires a Flask-style route decorator (`@<x>.route(`)
+ * above the function; skip when the variable is escape()-wrapped.
+ */
+export function findPythonFlaskStringConcatXssFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  type Fn = { name: string; startLine: number; endLine: number };
+  const fns: Fn[] = [];
+  const defRe = /^(\s*)def\s+([A-Za-z_]\w*)\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const dm = raw.match(defRe);
+    if (!dm) continue;
+    const indent = dm[1].length;
+    let hasRoute = false;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = lines[j].trim();
+      if (prev === '' || prev.startsWith('#')) continue;
+      if (!prev.startsWith('@')) break;
+      if (/@\s*[A-Za-z_]\w*\s*\.\s*route\s*\(/.test(prev) ||
+          /@\s*route\s*\(/.test(prev)) {
+        hasRoute = true;
+      }
+    }
+    if (!hasRoute) continue;
+    let end = lines.length;
+    for (let k = i + 1; k < lines.length; k++) {
+      const ln = lines[k];
+      if (!ln.trim()) continue;
+      const ind = ln.match(/^(\s*)/)?.[1].length ?? 0;
+      if (ind <= indent) { end = k; break; }
+    }
+    fns.push({ name: dm[2], startLine: i + 1, endLine: end });
+  }
+  if (fns.length === 0) return out;
+
+  const requestSourceRe =
+    /\b([A-Za-z_]\w*)\s*=\s*request\s*\.\s*(?:args|form|values|files|json|cookies|headers)(?:\s*\.\s*get\s*\(|\s*\[)/;
+  const escapeWrapRe =
+    /\b(?:html\.escape|markupsafe\.escape|escape|markupsafe\.Markup\s*\.\s*escape|werkzeug\.utils\.escape)\s*\(/;
+
+  for (const fn of fns) {
+    const taintedVars = new Set<string>();
+    for (let li = fn.startLine; li < fn.endLine; li++) {
+      const raw = lines[li];
+      const rm = raw.match(requestSourceRe);
+      if (rm) taintedVars.add(rm[1]);
+    }
+
+    for (let li = fn.startLine; li < fn.endLine; li++) {
+      const raw = lines[li];
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const retMatch = trimmed.match(/^(?:return|yield)\s+(.+)$/);
+      if (!retMatch) continue;
+      const expr = retMatch[1];
+
+      const inlineSource =
+        /\brequest\s*\.\s*(?:args|form|values|files|cookies|headers)(?:\s*\.\s*get\s*\(|\s*\[)/.test(
+          expr,
+        );
+      const hasTaintedVar = [...taintedVars].some(v =>
+        new RegExp(`\\b${v}\\b`).test(expr),
+      );
+
+      if (!hasTaintedVar && !inlineSource) continue;
+      if (escapeWrapRe.test(expr)) continue;
+
+      const buildsHtml =
+        (/['"`]\s*\+/.test(expr) || /\+\s*['"`]/.test(expr)) ||
+        // f-string with interpolation. Allow any non-`{` char between the
+        // opening quote and the first `{` (Python f-strings may embed `"`
+        // when single-quoted and vice-versa, e.g. f'<a href="{u}">').
+        /\bf['"`][^{\n]*\{[^}]+\}/.test(expr) ||
+        /['"`]\s*%\s*[^=]/.test(expr) ||
+        /['"`]\.\s*format\s*\(/.test(expr);
+      if (!buildsHtml) continue;
+
+      out.push({
+        id: `xss-${file}-${li + 1}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        level: 'error',
+        message:
+          'Reflected XSS: Flask route returns HTML built from request ' +
+          'input via string concatenation / f-string / format. Wrap ' +
+          'user input with markupsafe.escape() or render via a ' +
+          'Jinja2 template (autoescape on by default).',
+        file,
+        line: li + 1,
+        snippet: trimmed.substring(0, 100),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Python Jinja2 Markup-bypass xss — `Markup(<var>)` where `<var>` is
+ * request-sourced, then passed into a `<X>.render(...)` call. The
+ * `Markup` wrap deliberately disables Jinja autoescape for the value.
+ *
+ * Namespace-scoped alias tracking (Sprint 74 lesson): only treats
+ * `Markup` as dangerous when imported from `markupsafe` or `flask`,
+ * and only when no user-defined `class Markup` shadows the import.
+ */
+export function findPythonJinjaMarkupXssFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const out: SastFinding[] = [];
+  const lines = code.split('\n');
+
+  const importRe =
+    /^\s*from\s+(?:markupsafe|flask)\s+import\s+(?:[^#\n]*\b)?Markup\b/m;
+  const classDefRe = /^\s*class\s+Markup\b/m;
+  if (!importRe.test(code)) return out;
+  if (classDefRe.test(code)) return out;
+
+  const requestSourceRe =
+    /\b([A-Za-z_]\w*)\s*=\s*request\s*\.\s*(?:args|form|values|files|json|cookies|headers)(?:\s*\.\s*get\s*\(|\s*\[)/;
+  const taintedVars = new Set<string>();
+  for (const line of lines) {
+    const m = line.match(requestSourceRe);
+    if (m) taintedVars.add(m[1]);
+  }
+  if (taintedVars.size === 0) return out;
+
+  if (!/\.\s*render\s*\(/.test(code)) return out;
+
+  const markupCallRe = /\bMarkup\s*\(\s*([A-Za-z_]\w*)\s*[,)]/g;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    let mm: RegExpExecArray | null;
+    markupCallRe.lastIndex = 0;
+    while ((mm = markupCallRe.exec(trimmed)) !== null) {
+      const argName = mm[1];
+      if (!taintedVars.has(argName)) continue;
+      out.push({
+        id: `xss-${file}-${i + 1}`,
+        pass: 'language-sources',
+        category: 'security',
+        rule_id: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        level: 'error',
+        message:
+          'Jinja2 autoescape bypass: Markup(' +
+          argName +
+          ') wraps a request-derived value, disabling autoescape when ' +
+          'rendered. Pass the raw value to render() and let Jinja2 ' +
+          'auto-escape, or sanitize with bleach.clean first.',
+        file,
+        line: i + 1,
+        snippet: trimmed.substring(0, 100),
+      });
+      break;
+    }
   }
   return out;
 }

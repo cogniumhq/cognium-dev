@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.130.0] - 2026-06-30
+
+Sprint 81 — cognium-dev #189 variant-regression: xss cluster (11 FN
+cells). Engine inventory on 3.129.0 found cell 8 (React
+`dangerouslySetInnerHTML`) already fires and cell 5 (`eval(location
+.hash)`) is a corpus-manifest mis-tag (engine correctly emits
+`code_injection`, not xss — deferred as corpus correction). The
+remaining 9 FN cells are closed by six new per-language pattern
+detectors that emit `SastFinding{rule_id:'xss'}` directly, bypassing
+the source→sink→flow construction in places where the engine cannot
+yet build a flow (string-concat / f-string, Java receiver-chain
+typing, framework templates).
+
+### Added
+
+- **Go xss to http.ResponseWriter (cognium-dev #189)** —
+  `findGoXssFindings` two-pass: discover ResponseWriter parameter
+  names from function signatures `(<name> http.ResponseWriter, ...)`,
+  then for every `fmt.Fprint(f|ln)?(<name>, ...)` whose first arg
+  matches a discovered name, emit xss unless one of the args is
+  wrapped in a recognized HTML escaper (`html.EscapeString`,
+  `template.HTMLEscapeString`, etc.). Tolerates trailing `//`
+  comments. Emits `xss` (CWE-79).
+
+- **Java HttpServletResponse receiver-chain xss (cognium-dev #189)** —
+  `findJavaResponseWriterXssFindings` recognizes the chained call
+  `<recv>.getWriter().{print,println,write,printf,format,append}
+  (<args>)` where `<recv>` is a parameter typed `HttpServletResponse`.
+  Skip when args is a pure string literal or when an OWASP encoder
+  (`Encode.forHtml*`, `StringEscapeUtils.escapeHtml4`,
+  `HtmlEscapers.htmlEscaper`, `Jsoup.clean`, …) wraps the value.
+  Closes the receiver-chain gap where the configured `PrintWriter
+  .print` sink doesn't resolve. Emits `xss` (CWE-79).
+
+- **Vue v-html template directive xss (cognium-dev #189)** —
+  `findJsVueVHtmlXssFindings` scans `template: '<...v-html="<var>"
+  ...>'` strings in Vue component options. Builds a transitive
+  set of variables tainted by `URLSearchParams`, `location.*`,
+  `route.query/params`, `fetch(...)`, `axios.get/post`, etc.,
+  then emits xss when the bound variable is in the tainted set
+  or declared as a `props` member. Doesn't fire when the binding
+  is a literal. Emits `xss` (CWE-79).
+
+- **Angular DomSanitizer bypass xss (cognium-dev #189)** —
+  `findTsAngularBypassXssFindings` two-pass: discover
+  `DomSanitizer`-typed variable names from constructor parameter
+  declarations / class-field type annotations + `this.<f> = <ctor
+  param>` aliasing, then emit xss on every `<recv>.bypassSecurity
+  Trust(Html|Script|Url|ResourceUrl|Style)(<arg>)` whose `<recv>`
+  matches and whose `<arg>` is not a string literal. Emits `xss`
+  (CWE-79).
+
+- **Python Flask string-concat / f-string xss (cognium-dev #189)** —
+  `findPythonFlaskStringConcatXssFindings` requires a Flask route
+  decorator (`@<x>.route(`) above the function and a tainted symbol
+  traceable to `request.<args|form|values|files|cookies|headers
+  >.{get,[]}`. Detects HTML construction via `+`-concat, f-string
+  interpolation (quote-aware so `f'<a href="{u}">'` fires), `%`
+  formatting, or `.format()`. Skips when the expression wraps the
+  value in `markupsafe.escape` / `html.escape`. Emits `xss` (CWE-79).
+
+- **Python Jinja Markup autoescape-bypass xss (cognium-dev #189)** —
+  `findPythonJinjaMarkupXssFindings` namespace-scoped alias tracking
+  (Sprint 74 lesson): only treats `Markup` as dangerous when imported
+  from `markupsafe` or `flask` and no user-defined `class Markup`
+  shadows it. Emits xss when `Markup(<var>)` wraps a request-derived
+  value and the file contains a `.render(...)` call. Emits `xss`
+  (CWE-79).
+
+### Verification
+
+Inventory re-run on `/tmp/sprint81-xss/` (11 fixtures): 10 of 11
+cells fire; cell 5 (`eval(location.hash)`) deferred as corpus-
+manifest revision (engine correctly emits `code_injection`).
+
+Tests: 13/13 new in
+`tests/analysis/passes/issue-189-sprint81-xss-cluster.test.ts`.
+Full suite: 3289 passed, 2 skipped. Pillar I clean.
+
 ## [3.129.0] - 2026-06-30
 
 Sprint 78 (combined 78+79+80) — cognium-dev #190 Tier-2 misconfig

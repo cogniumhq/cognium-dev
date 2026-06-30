@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.130.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.130.0`](https://www.npmjs.com/package/circle-ir) which
+closes 10 of the 11 cognium-dev #189 xss FN regression cells (Sprint
+81). New per-language xss pattern detectors:
+
+- Go: `fmt.Fprint(f|ln)` to `http.ResponseWriter` with tainted
+  argument (closes 2 cells: `reflected_body`, `attribute_ctx`)
+- Java: `HttpServletResponse.getWriter().{print,println,write}`
+  receiver-chain that the configured `PrintWriter` sink doesn't
+  resolve (closes 2 cells: `V03AttributeCtx`, `V04ScriptCtx`)
+- JS: Vue `v-html` directive bound to a tainted template variable
+  (closes 1 cell: `v13_vue_vhtml`)
+- TS: Angular `DomSanitizer.bypassSecurityTrust{Html,Script,
+  ResourceUrl}` on a tainted `ActivatedRoute`/`@Input` source
+  (closes 1 cell: `v14_angular_bypass`)
+- Python: Flask route returning string with `+`-concat or f-string
+  interpolation of a tainted `request.args.get` / `request.form.get`
+  param (closes 2 cells: `v01_reflected_body`, `v03_attribute_ctx`)
+- Python: Jinja `Markup(<taint>)` flowing to `Template(...).render(...)`
+  / `flask.render_template_string(...)` (closes 1 cell:
+  `v04_script_ctx`)
+
+The remaining cell (`v10_eval_dom`) is a corpus-manifest mis-tag —
+the engine correctly emits `code_injection` for `eval(location.hash)`;
+manifest expects `xss`. Tracked separately as a corpus revision.
+
+No CLI surface changes.
+
 ## [3.129.0] - 2026-06-30
 
 Engine bump only — adopts
