@@ -346,6 +346,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
       // Sprint 75 (#216 Pattern D): JS SSRF allow-list guard (var-aware).
       additionalSanitizers.push(...findJsSsrfAllowlistGuardSanitizers(code));
+      // Sprint 77b (#216 Pattern X): JS/TS argv-form execFile/spawn and
+      // parameterized SQL placeholder sanitizers.
+      additionalSanitizers.push(...findJsArgvFormExecSanitizers(code));
+      additionalSanitizers.push(...findJsParameterizedSqlSanitizers(code));
       // Sprint 78 (#190): JS misconfig pattern findings — libxmljs noent:true.
       for (const finding of findJsPatternFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
@@ -3134,6 +3138,133 @@ function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
         sanitizes: ['ssrf', 'external_taint_escape'],
       });
     }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: argv-form `execFile`/`spawn`/`execFileSync`/`spawnSync` with
+ * a string-literal program and an array literal argv (cognium-dev #216
+ * Sprint 77b Pattern X).
+ *
+ * Pattern recognized:
+ *
+ *   execFile('echo', ['--', arg], () => {});
+ *   spawn('grep', ['--', pattern, '/var/log/app.log']);
+ *   execFileSync('cat', [path]);
+ *
+ * Argv-form exec with a string-literal program splits arguments into
+ * the argv slot with no shell interpretation, so a tainted argv element
+ * cannot smuggle shell metacharacters into a separate command.
+ *
+ * The shell-via-argv form `execFile('sh', ['-c', tainted])` is excluded
+ * since `-c` re-enables shell parsing of the subsequent argv slot. A
+ * tainted-program slot `execFile(prog, [arg])` is NOT matched (TP-2
+ * control), nor is the single-string `exec("cmd " + arg)` form (TP-1
+ * control — `exec` itself spawns a shell regardless).
+ *
+ * Emits a `command_injection` + `external_taint_escape` sanitizer at
+ * that line.
+ */
+function findJsArgvFormExecSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // execFile/spawn (+Sync) with a string-literal program and array argv.
+  // Quoted program slot, then comma, then `[`.
+  const argvExecRe =
+    /\b(?:execFile|spawn)(?:Sync)?\s*\(\s*(?:'[^']*'|"[^"]*"|`[^`]*`)\s*,\s*\[/;
+  // Shell-via-argv exclusion: program is sh/bash/etc. (possibly with a
+  // leading path like /bin/ or /usr/bin/) AND first argv is "-c".
+  const shellArgvRe =
+    /\b(?:execFile|spawn)(?:Sync)?\s*\(\s*['"`](?:[\w./-]*\/)?(?:sh|bash|zsh|ksh|dash|cmd(?:\.exe)?|powershell|pwsh)['"`]\s*,\s*\[\s*['"`]-c['"`]/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (!argvExecRe.test(text)) continue;
+    if (shellArgvRe.test(text)) continue;
+    sanitizers.push({
+      type: 'js_argv_form_exec',
+      method: 'execFile',
+      line: i + 1,
+      sanitizes: ['command_injection', 'external_taint_escape'],
+    });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: parameterized SQL query sanitizer (cognium-dev #216 Sprint 77b
+ * Pattern X).
+ *
+ * Pattern recognized:
+ *
+ *   await pool.query('SELECT * FROM users WHERE name = $1', [name]);
+ *   await conn.execute('SELECT * FROM users WHERE id = ?', [id]);
+ *   await client.query(`UPDATE u SET name = $1 WHERE id = $2`, [name, id]);
+ *
+ * The query string is a STRING-LITERAL (`'...'` / `"..."` / `` `...` ``
+ * with no `${}` interpolation) that contains positional placeholders
+ * (`$1`-style PostgreSQL or `?` MySQL/SQLite), AND a second argument
+ * that begins with `[` (array literal of bound parameters). The driver
+ * binds those parameters at the protocol layer rather than splicing
+ * them into the SQL text, so the tainted values cannot become SQL.
+ *
+ * The concat form `pool.query("SELECT * FROM u WHERE n = '" + name + "'")`
+ * and the interpolated template literal
+ * `` pool.query(`SELECT * FROM u WHERE n = '${name}'`) `` are NOT
+ * matched and continue to fire `sql_injection` (TP-1 / TP-2 controls).
+ *
+ * Emits a `sql_injection` + `external_taint_escape` sanitizer at that
+ * line.
+ */
+function findJsParameterizedSqlSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `.query(...)` / `.execute(...)` with a non-interpolating string
+  // literal containing $N or ? placeholders, followed by `, [`.
+  // Single quotes:
+  const singleRe =
+    /\.\s*(?:query|execute)\s*\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*,\s*\[/;
+  // Double quotes:
+  const doubleRe =
+    /\.\s*(?:query|execute)\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*,\s*\[/;
+  // Backticks WITHOUT `${...}` interpolation:
+  const tickRe = /\.\s*(?:query|execute)\s*\(\s*`([^`]*)`\s*,\s*\[/;
+
+  const placeholderRe = /(?:\$\d+|\?)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    let sql: string | null = null;
+
+    const s = singleRe.exec(text);
+    if (s) sql = s[1];
+    if (sql == null) {
+      const d = doubleRe.exec(text);
+      if (d) sql = d[1];
+    }
+    if (sql == null) {
+      const t = tickRe.exec(text);
+      // Reject template literals that interpolate values.
+      if (t && !/\$\{/.test(t[1])) sql = t[1];
+    }
+    if (sql == null) continue;
+    if (!placeholderRe.test(sql)) continue;
+
+    sanitizers.push({
+      type: 'js_parameterized_sql',
+      method: 'query',
+      line: i + 1,
+      sanitizes: ['sql_injection', 'external_taint_escape'],
+    });
   }
 
   return sanitizers;

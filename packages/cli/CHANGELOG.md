@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.131.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.131.0`](https://www.npmjs.com/package/circle-ir) which
+closes the last 2 corpus-blocked TS Pattern X interop FPs on
+cognium-dev #216 (Sprint 77b). Two new JS/TS sanitizer detectors:
+
+- `findJsArgvFormExecSanitizers` — `execFile`/`spawn`(+Sync) with a
+  string-literal program and array-literal argv (excludes shell-via-
+  argv `execFile('sh', ['-c', taint])` and tainted-program slots)
+- `findJsParameterizedSqlSanitizers` — `.query`/`.execute` with a
+  non-interpolating string-literal SQL containing `$N`/`?`
+  placeholders and an array-literal bound-parameter argument
+  (excludes concat and template-literal interpolation forms)
+
+With Sprint 77b, all 24 corpus FPs originally enumerated on the
+v3.107.0 #216 scorecard are now closed.
+
+No CLI surface changes.
+
 ## [3.130.0] - 2026-06-30
 
 Engine bump only — adopts

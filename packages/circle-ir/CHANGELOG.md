@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.131.0] - 2026-06-30
+
+Sprint 77b — cognium-dev #216 FPR scorecard tail: 2 last corpus-blocked
+TS Pattern X interop FPs (now unblocked — fixtures committed at
+`coggiyadmin/typescript-vuln-demo:interop/`). Two new JS/TS sanitizer
+detectors emit `TaintSanitizer` entries that the existing suppression
+mechanism in `taint-propagation-pass.ts:198-232` then uses to silence
+synthetic `external_taint_escape` flows at the `[source, sink]` range.
+
+### Closed in this release
+
+- `safe_interop_shell_in_string.ts` —
+  `execFile('echo', ['--', arg], () => {})` argv-form exec with a
+  string-literal program. New `findJsArgvFormExecSanitizers` (in
+  `src/analysis/passes/language-sources-pass.ts`) recognizes the
+  `(execFile|spawn)(Sync)?('<literal>', [<argv>...])` shape. Emits
+  `command_injection` + `external_taint_escape` sanitizer at that
+  line.
+- `safe_interop_sql_in_string.ts` —
+  `pool.query('SELECT * FROM users WHERE name = $1', [name])`
+  parameterized pg query. New `findJsParameterizedSqlSanitizers`
+  recognizes `.query(<string-literal>, [...])` where the SQL contains
+  positional placeholders (`$N` PostgreSQL or `?` MySQL/SQLite) AND
+  the second argument is an array literal. Emits `sql_injection` +
+  `external_taint_escape` sanitizer at that line.
+
+### Conservative shape (TP-controls preserved)
+
+- Shell-via-argv exclusion: `execFile('sh' | '/bin/sh' | 'bash' | ...,
+  ['-c', tainted])` is NOT suppressed since `-c` re-enables shell
+  parsing of the subsequent argv slot. Path prefixes (`/bin/`,
+  `/usr/bin/`) are recognized.
+- Tainted-program slot exclusion: `execFile(prog, [arg])` where
+  `prog` is a variable is NOT matched (TP-2 control). Only literal
+  programs (`'literal'` / `"literal"` / `` `literal` ``) qualify.
+- Single-string `exec` form: `exec("echo " + arg)` is NOT matched
+  (TP-1 control — `exec` itself spawns a shell regardless of argv
+  form). Detector is scoped to `execFile`/`spawn` (+Sync variants).
+- Concat SQL: `pool.query("SELECT ... '" + name + "'")` is NOT
+  matched (TP-3 control — string is not a pure literal).
+- Interpolated template SQL: `` pool.query(`SELECT ... '${name}'`) ``
+  is NOT matched (TP-4 control — backtick form is rejected when the
+  string body contains `${`).
+- Placeholder requirement: `.query("SELECT * FROM users", [])` with
+  no `$N`/`?` placeholder is NOT matched.
+
+### Tests
+
+- +6 in `tests/analysis/passes/issue-216-pattern-x-sprint77b.test.ts`
+  (2 TN reproducing the verbatim corpus FPs + 4 TP-control proving
+  the sanitizers do not over-suppress shell-via-argv exec, concat
+  SQL, or interpolated template SQL).
+
+Full suite: **3295 pass | 2 skipped**. Typecheck + build clean.
+Pillar I clean — no LLM/AI identifiers in changed files.
+
+**#216 status:** all 24 corpus FPs now closed. Ticket may close
+pending external corpus re-baseline.
+
 ## [3.130.0] - 2026-06-30
 
 Sprint 81 — cognium-dev #189 variant-regression: xss cluster (11 FN
