@@ -47,6 +47,7 @@
  *  40. NamingConventionPass    — class/method names violate language conventions
  *  41. ScanSecretsPass         — hardcoded credentials: provider regexes + Shannon entropy (CWE-798)
  *  42. Spring4ShellPass        — Spring MVC implicit form-data binding RCE (CVE-2022-22965, CWE-94)
+ *  43. MissingSanitizerGatePass — HTML output reached without sanitizer call on dominating path (CWE-79, speculative)
  *
  * Removed from default pipeline (raw IR signals still available for circle-ir-ai):
  *  – MissingGuardDomPass  — false positives in framework-auth codebases (see pass file)
@@ -150,6 +151,7 @@ import { WeakPasswordHashPass } from './analysis/passes/weak-password-hash-pass.
 import { WeakPasswordEncodingPass } from './analysis/passes/weak-password-encoding-pass.js';
 import { InfoDisclosureStacktracePass } from './analysis/passes/info-disclosure-stacktrace-pass.js';
 import { UnrestrictedFileUploadPass } from './analysis/passes/unrestricted-file-upload-pass.js';
+import { MissingSanitizerGatePass } from './analysis/passes/missing-sanitizer-gate-pass.js';
 import { PlaintextPasswordStoragePass } from './analysis/passes/plaintext-password-storage-pass.js';
 import { CleartextCredentialTransportPass } from './analysis/passes/cleartext-credential-transport-pass.js';
 import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
@@ -679,6 +681,7 @@ export async function analyze(
   if (!disabledPasses.has('mass-assignment'))       pipeline.add(new MassAssignmentPass());
   if (!disabledPasses.has('info-disclosure-stacktrace')) pipeline.add(new InfoDisclosureStacktracePass());
   if (!disabledPasses.has('unrestricted-file-upload')) pipeline.add(new UnrestrictedFileUploadPass());
+  if (!disabledPasses.has('missing-sanitizer-gate')) pipeline.add(new MissingSanitizerGatePass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

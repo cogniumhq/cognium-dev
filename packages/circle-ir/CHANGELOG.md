@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.139.0] - 2026-06-30
+
+New engine pass `missing-sanitizer-gate` (#107, CWE-79) targeting
+CVE-2023-37908 (xwiki-rendering `XHTMLWikiPrinter`) and the general
+"HTML attribute pass-through without sanitizer-call gate" pattern.
+
+**Pass shape.** Java-only, intra-procedural, dominator-based. For each
+non-entry-point Java method that accepts a `Map<String,String>` /
+`Attributes` / attribute-shaped `String` parameter, the pass builds a
+method-scoped `DominatorGraph` and, for every HTML output sink call
+inside the method, requires at least one sanitizer-named call to
+dominate the sink block on all CFG paths. If none does, a finding is
+emitted at the sink line.
+
+- **Sinks (name match):** `addAttribute`, `setAttribute`, `write`,
+  `writeAttribute`, `writeRaw`, `writeStartElement`, `writeEndElement`,
+  `writeCharacters`, `printXML`, `printXMLElement`,
+  `printXMLStartElement`, `printXMLEndElement`, `printRaw`, `print`,
+  `println`, `printf`, `append`, `format`.
+- **Sanitizers (name match):** `isAttributeAllowed`,
+  `isElementAllowed`, `isSafe`, `sanitize`, `clean`, `escape`,
+  `encode`, `forHtml*`, `encodeForHTML*`, `escapeHtml*`,
+  `escapeXml`, `htmlEscape`, `xmlEscape`, plus the prefix rule
+  `/^(?:clean|sanitize|escape|encode)[A-Z]/` (matches project-local
+  wrappers like `cleanAttributes`).
+- **Skips:** Tier 1 entry points (network trust boundary is already
+  covered by configured `xss` sinks + taint sources), methods without
+  an HTML-shaped parameter, and non-Java languages. Deduped at max one
+  finding per method.
+
+**Speculative by default.** Every emitted finding is stamped
+`confidence: 'medium'`, `level: 'note'`, so `applyConfidenceFilter`
+(3.94.0) drops it from the surface unless the caller opts in via
+`analyze(..., { includeSpeculative: true })`. Zero surface impact on
+existing users; the CLI's default text/JSON/SARIF output is unchanged.
+
+**Per-method DominatorGraph.** The file-level CFG has one
+`type='entry'` block per method, but a single top-level
+`new DominatorGraph(cfg)` uses only the first entry — every other
+method's blocks are marked unreachable and `dominates()` returns
+false. The pass builds one `DominatorGraph` per method rooted at the
+method's own entry block (falls back to the first block whose lines
+lie within the method for minimal test-fixture CFGs). Avoids the FP
+cliff that killed the earlier `missing-guard-dom` pass.
+
+**CVE regression lock.** Vendored `XHTMLWikiPrinter` pre- and post-fix
+from `xwiki/xwiki-rendering@c40e2f5f9482` (XRENDERING-663 —
+"Restrict allowed attributes in HTML rendering") into
+`tests/fixtures/cve-2023-37908/`. The pre-fix file emits at least one
+`missing-sanitizer-gate` finding on one of the
+`printXMLElement`/`printXMLStartElement` overloads; the post-fix file
+(which introduces the `cleanAttributes(...)` wrapper calling
+`htmlElementSanitizer.isAttributeAllowed(...)`) emits zero. Pinned in
+`tests/analysis/passes/missing-sanitizer-gate-cve-2023-37908.test.ts`.
+
+Tests: 9 synthetic (TP-1, TP-2, TN-1, TN-2, TN-3 param gate,
+TN-4 `@RestController` entry-point gate, TN-5 language gate,
+speculative gating, dedup) + 3 CVE regression = 12 new tests.
+Full suite: 3403 passed | 2 skipped.
+
+Closes cognium-dev#153.
+
+### Files
+- **new:** `src/analysis/passes/missing-sanitizer-gate-pass.ts`
+- **new:** `tests/analysis/passes/missing-sanitizer-gate.test.ts`
+- **new:** `tests/analysis/passes/missing-sanitizer-gate-cve-2023-37908.test.ts`
+- **new:** `tests/fixtures/cve-2023-37908/XHTMLWikiPrinter-prefix.java`
+- **new:** `tests/fixtures/cve-2023-37908/XHTMLWikiPrinter-postfix.java`
+- **mod:** `src/analyzer.ts` — pipeline registration + numbered comment
+- **mod:** `docs/PASSES.md` — pass #107 row
+
 ## [3.138.0] - 2026-06-30
 
 Combined Sprints 88 + 89 + 90 closing the tail of cognium-dev #189

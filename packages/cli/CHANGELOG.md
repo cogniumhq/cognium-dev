@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.139.0] - 2026-06-30
+
+Engine bump only — adopts
+[`circle-ir@3.139.0`](https://www.npmjs.com/package/circle-ir), which
+ships a new engine pass `missing-sanitizer-gate` (#107, CWE-79)
+targeting CVE-2023-37908 (xwiki-rendering `XHTMLWikiPrinter`) and the
+general "HTML attribute pass-through without sanitizer-call gate"
+pattern in Java library helpers.
+
+**Zero CLI surface impact.** The new pass emits every finding at
+`confidence: 'medium'`, `level: 'note'`, which the built-in confidence
+filter drops from the default output stream. Default `cognium-dev
+scan` output (text, JSON, SARIF) is unchanged. Downstream verifiers
+(`circle-ir-ai`, `cognium-ai`) receive the speculative stream by
+setting `includeSpeculative: true` on the library-level `analyze()`
+call.
+
+Closes cognium-dev#153.
+
 ## [3.138.0] - 2026-06-30
 
 Engine bump only — adopts
