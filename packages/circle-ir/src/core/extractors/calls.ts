@@ -952,6 +952,21 @@ function resolveReceiverType(
   // `super` — defer; cannot determine parent class without hierarchy
   if (receiver === 'super') return { simpleName: null, fqn: null };
 
+  // Constructor receiver: `new X(...)` or `new pkg.X(...)` — resolves to the
+  // constructed class. Enables sink matching on inline receivers built via
+  // `new Yaml().load(taint)` (#189 Sprint 92 SnakeYAML) or
+  // `new ObjectMapper().readValue(taint)` (#189 Sprint 92 Jackson). Nested
+  // constructor arguments are ignored — only the outer class name matters
+  // for method-receiver resolution.
+  const ctorMatch = receiver.match(/^new\s+([A-Za-z_$][\w$.]*)\s*[<(]/);
+  if (ctorMatch) {
+    const ctorClass = ctorMatch[1];
+    const simple = ctorClass.includes('.')
+      ? ctorClass.substring(ctorClass.lastIndexOf('.') + 1)
+      : ctorClass;
+    return resolveFqn(simple, context);
+  }
+
   // Local variable, parameter, or field declared in this file
   const declaredType =
     context.localVarTypes.get(receiver) ??

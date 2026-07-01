@@ -956,11 +956,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // ProcessBuilder constructor sink (the other PB sinks use
     // method='start' / method='command'). The line-text regex then
     // verifies the constructor-call shape carries argv-form arguments.
+    //
+    // Sprint 93 (#189) adds `start` to the suppression cover: after the
+    // `new X(...)` receiver-type resolution landed, chained
+    // `new ProcessBuilder(...).start()` now correctly resolves the
+    // `start()` receiver to `ProcessBuilder`, which activates the
+    // pre-existing `class: 'ProcessBuilder', method: 'start'` sink
+    // pattern. When the `.start()` call site is on the SAME line as an
+    // argv-form ProcessBuilder ctor, the same argv-form logic proves
+    // the exec is non-injectable and the `start` sink is dropped too.
     if (language === 'java') {
       const sourceLines = ctx.code.split('\n');
       filtered = filtered.filter(sink => {
         if (sink.type !== 'command_injection') return true;
-        if (sink.method !== 'ProcessBuilder') return true;
+        if (sink.method !== 'ProcessBuilder' && sink.method !== 'start') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
         if (PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;

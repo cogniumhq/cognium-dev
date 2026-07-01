@@ -1238,15 +1238,21 @@ function detectExpressionScanFlows(
   // for the simple cases where the source pattern matches the iterable
   // and the loop variable is used on the same line.
   //
-  // Restricted to sources with no `variable` field: an inline-pattern
-  // source has no enclosing assignment, so it can't be confused with an
-  // assignment-style source whose use happens to land on the same line
-  // (the latter must still respect "source precedes sink" — see the
-  // taint-propagation-pass "does NOT emit when source line is at or
-  // after sink line" regression guard).
+  // Sources without a `variable` field are the classic inline-pattern case
+  // (e.g. `exec(req.getParameter("u"))`). Sources WITH a `variable` field
+  // are also admitted when the LHS-bound identifier does NOT appear in the
+  // sink call's source-line `code`. This covers Sprint 93 (#189)
+  // `Object o = y.load(req.getParameter("y"))` where Java LHS-binding tags
+  // the source with the outer assignment target `o`, yet `o` cannot appear
+  // in the sink's own arguments because it is being *defined by* the sink
+  // expression. The variable-scan path already emits when the sink args
+  // reference the source var, so gating on absence of the var in the sink
+  // code preserves the "assignment-after-use is impossible" regression
+  // guard (`uid = source(); doSink("x = " + uid)` on the same line would
+  // still have `uid` present in the sink code and thus fall to
+  // variable-scan, not colocation).
   const sourcesByLine = new Map<number, typeof sources>();
   for (const s of sources) {
-    if (s.variable && s.variable.length > 0) continue;
     const arr = sourcesByLine.get(s.line) ?? [];
     arr.push(s);
     sourcesByLine.set(s.line, arr);
@@ -1257,6 +1263,39 @@ function detectExpressionScanFlows(
     if (!colocSources || colocSources.length === 0) continue;
     for (const source of colocSources) {
       if (!canSourceReachSink(source.type, sink.type)) continue;
+      // Variable-scan handoff — if the source carries an LHS-bound
+      // variable AND that identifier is textually present in the RHS of
+      // the sink's own source-line code, the variable-scan path is
+      // authoritative for this pair. Skipping the colocation emission
+      // here preserves the "assignment-then-same-line-use is impossible"
+      // regression guard (`uid = source(); doSink(uid)` collapsed onto
+      // one line). When the LHS var is absent from the RHS (i.e. the
+      // sink expression IS the RHS being assigned to that var), the
+      // source is nested inside the sink expression (Sprint 93 (#189)
+      // nested `Object o = y.load(req.getParameter("y"))` pattern) and
+      // the colocation emission is the only path that will surface the
+      // flow. We strip an optional leading `TYPE ident =` prefix from
+      // the sink code so the LHS binding of THIS line does not
+      // spuriously match the source var.
+      const sourceVar = (source as { variable?: string }).variable;
+      if (sourceVar && sourceVar.length > 0) {
+        const sinkCode = (sink as { code?: string }).code;
+        if (!sinkCode) {
+          // Conservative fallback: without sink source-line text we
+          // cannot verify the nested-source shape, so preserve the
+          // pre-Sprint-93 behaviour of dropping variable-bound sources
+          // from colocation. The variable-scan supplement remains
+          // authoritative for these cases.
+          continue;
+        }
+        // Strip a possible declaration/assignment LHS: `TYPE var =` or
+        // `var =`. Matches single `=` only (not ==, !=, <=, >=).
+        const assignMatch = sinkCode.match(/^\s*(?:[A-Za-z_][\w.<>[\]\s,?]*\s+)?[A-Za-z_]\w*\s*=(?!=)\s*/);
+        const rhs = assignMatch ? sinkCode.slice(assignMatch[0].length) : sinkCode;
+        if (new RegExp(`\\b${sourceVar}\\b`).test(rhs)) {
+          continue;
+        }
+      }
       // Skip the degenerate `file_input` → `path_traversal` colocation
       // where the source and sink describe the SAME call (one being the
       // chained accessor of the other). Example: Python

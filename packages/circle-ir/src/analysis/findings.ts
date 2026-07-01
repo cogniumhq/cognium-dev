@@ -196,12 +196,20 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // flow detector silently dropped `http_* → trust_boundary` co-located
     // flows like `req.getSession().setAttribute("u", req.getParameter("u"))`
     // (0% recall on OWASP Java trustbound category).
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'],
+    // deserialization added Sprint 93 (#189): SnakeYAML/Jackson/etc. sinks
+    // like `new Yaml().load(req.getParameter("y"))` are real RCE gadget chains
+    // (CWE-502). The reach map previously restricted deserialization to
+    // http_body so http_param/http_query request-derived values feeding
+    // Yaml.load, ObjectInputStream ctor, XMLDecoder ctor, etc. silently
+    // dropped their inline-colocation flow. Typed-overload FPs are gated by
+    // the sink pattern's `safe_if_class_literal_at` flag (Jackson readValue,
+    // Yaml.loadAs, Gson.fromJson) so the wider reach does not regress.
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization'],
     http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'],
     http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
     http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
     http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
     // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF

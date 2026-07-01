@@ -873,6 +873,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // reflection remains a downstream concern of body-writing sinks.
   { method: 'setHeader', class: 'HttpServletResponse', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1] },
   { method: 'addHeader', class: 'HttpServletResponse', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1] },
+  // Cookie constructor + addCookie — HTTP response splitting via cookie
+  // name/value (CWE-113). Reflects the #189 Sprint 92 V02SetCookie fixture
+  // where `res.addCookie(new Cookie(name, req.getParameter("v")))` allows
+  // CRLF injection into the Set-Cookie header. Both the ctor arg[1] (value)
+  // and the addCookie arg[0] (Cookie handle) are flagged so intermediate-var
+  // and inline-ctor shapes both surface.
+  { method: 'Cookie', class: 'constructor', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0, 1] },
+  { method: 'addCookie', class: 'HttpServletResponse', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0] },
   // Note: `sendRedirect` is primarily classified as `ssrf` / open-redirect
   // (CWE-601) further down — see entry near line 1195. CRLF via Location
   // header is a secondary concern; keeping the canonical SSRF entry avoids

@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.142.0] - 2026-07-01
+
+Second sub-batch of cognium-dev #189 (Java FN, Sprint 93). Closes the
+remaining Java false negatives from the Sprint 92 top-100 rerun by
+resolving the `new X(...)` constructor-receiver form for chained method
+calls, registering CRLF sink patterns on the `Cookie` constructor and
+`HttpServletResponse.addCookie`, extending the source-to-sink reach map
+so `http_param` / `http_query` can reach `deserialization`, and
+relaxing the inline-colocation-flow generator to admit nested-source
+shapes where the outer LHS binding does not appear in the sink's RHS.
+
+**Shapes flipped from FN → TP.**
+1. `crlf` — `res.addCookie(new Cookie("k", req.getParameter("v")))` and
+   the intermediate-var variant `Cookie c = new Cookie(name, v);
+   res.addCookie(c);` (CVE-analogue V02SetCookie). Now emits
+   `http_param → crlf` (CWE-113) at both the constructor and the
+   `addCookie` call site.
+2. `deserialization` —
+   `Object o = new Yaml().load(req.getParameter("y"))` (V02YamlUnsafe
+   SnakeYAML shape). Now emits `http_param → deserialization`
+   (CWE-502). The `new Yaml()` inline receiver was previously
+   unresolvable so the `Yaml.load` sink pattern never matched.
+3. `deserialization` — intermediate-var variant `Yaml y = new Yaml();
+   Object o = y.load(req.getParameter("y"));`. The colocation flow
+   generator previously dropped sources with an LHS-bound `variable`
+   field (Java LHS binding tags the source with the outer `o` target
+   though `o` is the load *result*), silently suppressing the flow.
+   Now emits `http_param → deserialization`.
+
+**Fixes.**
+- `resolveReceiverType` in `core/extractors/calls.ts` recognises the
+  `new <ClassName>(...)` receiver form ahead of the existing local /
+  param / field / static-ref tiers. The constructed class name (simple
+  or fully qualified) becomes the resolved receiver type, so chained
+  method calls like `new Yaml().load(...)`,
+  `new ObjectMapper().readValue(...)`, and
+  `new ProcessBuilder(argv).start()` bind to their proper class for
+  sink-pattern matching.
+- `config-loader.ts` adds two `crlf` (CWE-113) sink entries: the
+  `Cookie` constructor at arg positions `[0, 1]` (name + value) and
+  `HttpServletResponse.addCookie` at arg position `[0]` (the built
+  Cookie handle). Both surface so the inline-ctor and
+  intermediate-var shapes each emit a flow.
+- `canSourceReachSink` in `analysis/findings.ts` adds
+  `deserialization` to the `http_param` and `http_query` allowlists.
+  Previously only `http_body` and `io_input` reached `deserialization`,
+  so `req.getParameter("y") → Yaml.load(...)` on the same line was
+  filtered out by the reach gate. Typed-overload FPs continue to be
+  suppressed by the sink pattern's `safe_if_class_literal_at` flag
+  (Jackson `readValue`, Yaml `loadAs`, Gson `fromJson`).
+- The inline-colocation flow generator in
+  `passes/taint-propagation-pass.ts` now admits sources with an
+  LHS-bound `variable` field when that variable is absent from the
+  sink's RHS. This unblocks the nested-source
+  `Object o = y.load(req.getParameter("y"))` shape where Java LHS
+  binding tags the source with the outer assignment target. The
+  regression guard (`uid = source(); doSink("x = " + uid)`) is
+  preserved: when the LHS var appears in the sink's RHS, colocation
+  hands off to the variable-scan supplement. When the sink carries no
+  source-line text (synthetic contexts), colocation conservatively
+  drops variable-bound sources.
+- `sink-filter-pass.ts` Stage 11 extends its argv-form ProcessBuilder
+  FP suppression to cover the newly resolved
+  `sink.method === 'start', sink.class === 'ProcessBuilder'` case.
+  When the `.start()` call site is on the same line as an argv-form
+  ProcessBuilder ctor, the same argv-form logic drops the `start`
+  sink too, preserving the pre-existing FP-179 recall lock.
+
+**Tests.** Adds
+`tests/analysis/repro-issue-189-java-3142.test.ts` locking down all
+three CRLF shapes, both Yaml shapes (inline ctor + intermediate var),
+and the ObjectInputStream baseline recall. Full suite: 3417 passed | 2
+skipped (was 3411 passed).
+
 ## [3.141.0] - 2026-07-01
 
 Partial fix for cognium-dev #189 (Java FN sub-batch, Sprint 92): extends

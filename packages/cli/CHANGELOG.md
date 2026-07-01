@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.142.0] - 2026-07-01
+
+Engine bump only — adopts
+[`circle-ir@3.142.0`](https://www.npmjs.com/package/circle-ir), which
+closes the remaining cognium-dev #189 Java false negatives from the
+Sprint 92 top-100 rerun. The `new X(...)` constructor-receiver form is
+now resolved for chained method calls, `Cookie` / `addCookie` gain CRLF
+sink patterns, `http_param` / `http_query` reach `deserialization` in
+the source-to-sink allowlist, and the inline-colocation flow generator
+admits nested-source shapes.
+
+Users scanning Java code with `res.addCookie(new Cookie(k, taint))`,
+`new Yaml().load(taint)`, or `Yaml y = new Yaml(); y.load(taint)`
+will see new `crlf` (CWE-113) or `deserialization` (CWE-502) findings
+that were previously silently dropped. The pre-existing FP-179
+ProcessBuilder argv-form recall lock is preserved by extending
+Stage 11 suppression to the newly resolved `.start()` sinks.
+
 ## [3.141.0] - 2026-07-01
 
 Engine bump only — adopts
