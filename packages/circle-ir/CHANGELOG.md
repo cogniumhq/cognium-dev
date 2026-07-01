@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.141.0] - 2026-07-01
+
+Partial fix for cognium-dev #189 (Java FN sub-batch, Sprint 92): extends
+the #117 chained-receiver resolver to walk multi-level factory chains and
+adds the JAXP factory return-type entries so class-scoped sink patterns
+(`DocumentBuilder.parse`, `SAXParser.parse`, `XPath.evaluate`) fire on
+inline JAXP chains without an intermediate typed local.
+
+**Shapes flipped from FN → TP.**
+1. `xxe` —
+   `DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(taint)`
+   was silently dropped because `resolveReceiverType` could only walk one
+   chain level; the `.newDocumentBuilder()` prefix resolved to `null` and
+   the `DocumentBuilder.parse` sink pattern never matched. Now emits
+   `http_param → xxe`.
+2. `xxe` — same shape for `SAXParserFactory.newInstance().newSAXParser()
+   .parse(...)`. Now emits `http_param → xxe`.
+3. `xpath_injection` — `XPathFactory.newInstance().newXPath()
+   .evaluate(...)`. Now emits `http_param → xpath_injection`.
+
+**Fix.**
+- `resolveReceiverType` in `core/extractors/calls.ts` recurses into
+  chained receivers via a new `splitChainedReceiver` helper that walks
+  a receiver expression right-to-left, tracking paren depth, to split
+  `<prefix>.<method>(args)` into `{ prefix, methodName }`. The prefix is
+  itself resolved recursively; the recursion terminates on a bare
+  identifier (local var / param / field) or a static class reference.
+- `JAVA_CHAINED_FACTORY_RETURN_TYPES` is extended with the JAXP families:
+  `DocumentBuilderFactory`, `SAXParserFactory`, `SAXParser`,
+  `XPathFactory`, `TransformerFactory`, `XMLInputFactory`. Each factory's
+  static `newInstance` self-loop is registered so both `Factory.newInstance()
+  .newFoo()` and `Factory.newInstance()` are resolvable.
+
+The Sprint 91 (#117) servlet single-level chain
+(`req.getSession().setAttribute(...)`) is preserved by a dedicated
+regression test in the same file, ensuring the recursive rewrite does
+not regress the existing fix.
+
+**Out of scope (deferred).** The `ssrf/URL.openConnection` and
+`crlf/addCookie + new Cookie(...)` shapes remain FN — they need
+receiver-taint propagation on `URL` and constructor-argument
+propagation through `Cookie`, both of which are separate infrastructure
+work outside the chained-receiver walker.
+
+### Added
+- `splitChainedReceiver()` helper in `core/extractors/calls.ts` for
+  right-to-left chain splitting with paren-depth tracking.
+- JAXP factory entries (`DocumentBuilderFactory`, `SAXParserFactory`,
+  `SAXParser`, `XPathFactory`, `TransformerFactory`, `XMLInputFactory`)
+  in `JAVA_CHAINED_FACTORY_RETURN_TYPES`.
+- `tests/analysis/repro-issue-189-java.test.ts` — 4-test regression lock
+  covering the three chained JAXP shapes and the Sprint 91 servlet chain.
+
+### Changed
+- `resolveReceiverType()` in `core/extractors/calls.ts` now recurses into
+  chained receivers instead of matching only a single `<var>.<method>(...)`
+  level.
+
 ## [3.140.0] - 2026-07-01
 
 Fix for cognium-dev #117 (CWE-501 Trust Boundary Violation) — 0% recall on

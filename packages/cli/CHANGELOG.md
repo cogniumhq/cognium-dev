@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.141.0] - 2026-07-01
+
+Engine bump only — adopts
+[`circle-ir@3.141.0`](https://www.npmjs.com/package/circle-ir), which
+partially fixes cognium-dev #189 (Java FN sub-batch, Sprint 92). Java
+receiver-type resolution now recurses into multi-level chained factory
+calls and the JAXP factory return-type table gains
+`DocumentBuilderFactory`, `SAXParserFactory`, `SAXParser`,
+`XPathFactory`, `TransformerFactory`, and `XMLInputFactory` entries.
+
+Users scanning Java code with inline JAXP chains such as
+`DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(taint)`
+or `XPathFactory.newInstance().newXPath().evaluate(taint, doc)` will
+now see `xxe` and `xpath_injection` findings that were previously
+silently dropped due to unresolved chained-receiver classes.
+
+The `ssrf/URL.openConnection` and `crlf/addCookie + new Cookie(...)`
+Java shapes remain FN and are tracked as separate infrastructure work
+(receiver-taint on `URL`, constructor-argument propagation through
+`Cookie`).
+
 ## [3.140.0] - 2026-07-01
 
 Engine bump only — adopts

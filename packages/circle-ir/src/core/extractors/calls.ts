@@ -972,23 +972,24 @@ function resolveReceiverType(
     }
   }
 
-  // Chained receiver: `<var>.<method>(...)` — resolve the return type via the
-  // servlet factory map so sink patterns keyed on the returned class (e.g.
-  // `HttpSession.setAttribute` for trust_boundary) match receivers built from
-  // `req.getSession()` / `req.getSession(false)`. cognium-dev #117 Sprint 91:
-  // 0% recall on OWASP Java trust-boundary category because chained factory
-  // calls produced receiver_type=null, dropping trust_boundary sink matches
-  // while xss's classless setAttribute pattern still fired at the same line.
-  const chained = receiver.match(/^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\([^()]*\)$/);
-  if (chained) {
-    const varName = chained[1];
-    const methodName = chained[2];
-    const varType =
-      context.localVarTypes.get(varName) ??
-      context.paramTypes.get(varName) ??
-      context.fieldTypes.get(varName);
-    if (varType) {
-      const returnType = JAVA_CHAINED_FACTORY_RETURN_TYPES[stripGenerics(varType)]?.[methodName];
+  // Chained receiver: `<prefix>.<method>(...)` — resolve the return type via
+  // the servlet/JAXP factory map so sink patterns keyed on the returned class
+  // (e.g. `HttpSession.setAttribute` for trust_boundary, `DocumentBuilder.parse`
+  // for xxe) match receivers built from chained factory calls like
+  // `req.getSession().setAttribute(...)` (#117 Sprint 91) or
+  // `DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(...)`
+  // (#189 Sprint 92 JAXP factory chains).
+  //
+  // The prefix can itself be a chained call: recursion terminates on a bare
+  // identifier (local var / param / field) or a static class reference. Each
+  // step's return type is looked up in JAVA_CHAINED_FACTORY_RETURN_TYPES so
+  // multi-level factory chains like `X.newInstance().newY()` resolve to Y.
+  const chain = splitChainedReceiver(receiver);
+  if (chain) {
+    const prefixType = resolveReceiverType(chain.prefix, context);
+    if (prefixType.simpleName) {
+      const returnType =
+        JAVA_CHAINED_FACTORY_RETURN_TYPES[prefixType.simpleName]?.[chain.methodName];
       if (returnType) return resolveFqn(returnType, context);
     }
   }
@@ -997,7 +998,39 @@ function resolveReceiverType(
 }
 
 /**
- * Chained factory-method return types for Java servlet/JSP APIs.
+ * Split a chained receiver expression into `<prefix>.<methodName>(...)`.
+ * Walks the string from the right to find the matching open-paren of the
+ * outer call, then finds the last `.` before it to isolate the method name
+ * and prefix expression. Returns `null` when the receiver is not a method
+ * invocation shape (bare identifier, dotted class name, `this.field`, etc.).
+ */
+function splitChainedReceiver(
+  receiver: string,
+): { prefix: string; methodName: string } | null {
+  if (!receiver.endsWith(')')) return null;
+  let depth = 0;
+  let openIdx = -1;
+  for (let i = receiver.length - 1; i >= 0; i--) {
+    const c = receiver[i];
+    if (c === ')') depth++;
+    else if (c === '(') {
+      depth--;
+      if (depth === 0) { openIdx = i; break; }
+    }
+  }
+  if (openIdx <= 0) return null;
+  const beforeParen = receiver.substring(0, openIdx);
+  const dotIdx = beforeParen.lastIndexOf('.');
+  if (dotIdx <= 0) return null;
+  const methodName = beforeParen.substring(dotIdx + 1).trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(methodName)) return null;
+  const prefix = beforeParen.substring(0, dotIdx).trim();
+  if (!prefix) return null;
+  return { prefix, methodName };
+}
+
+/**
+ * Chained factory-method return types for Java servlet / JAXP / JSP APIs.
  *
  * Keyed as `receiverType -> methodName -> returnType`. Used by
  * `resolveReceiverType` to pin the type of a receiver written as
@@ -1005,11 +1038,18 @@ function resolveReceiverType(
  * recognise `getSession()` as producing `HttpSession` and thus fire the
  * class-scoped `HttpSession.setAttribute` trust_boundary sink pattern.
  *
- * Deliberately narrow: only the servlet-container APIs where the return
+ * The `resolveReceiverType` walker is recursive (via `splitChainedReceiver`),
+ * so multi-level chains like
+ * `DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(...)`
+ * resolve to `DocumentBuilder` and fire the class-scoped
+ * `DocumentBuilder.parse` xxe sink pattern (#189 Sprint 92).
+ *
+ * Deliberately narrow: only well-known JDK factory APIs where the return
  * type is defined by the interface contract are listed. Application-level
  * factories (`someService.getFoo()`) are still unresolved.
  */
 const JAVA_CHAINED_FACTORY_RETURN_TYPES: Record<string, Record<string, string>> = {
+  // Servlet API (Sprint 91 / #117)
   HttpServletRequest: {
     getSession: 'HttpSession',
     getServletContext: 'ServletContext',
@@ -1020,6 +1060,32 @@ const JAVA_CHAINED_FACTORY_RETURN_TYPES: Record<string, Record<string, string>> 
   },
   ServletContext: {
     getRequestDispatcher: 'RequestDispatcher',
+  },
+  // JAXP DOM / SAX / XPath / Transformer / StAX factories (Sprint 92 / #189)
+  DocumentBuilderFactory: {
+    newInstance: 'DocumentBuilderFactory',
+    newDocumentBuilder: 'DocumentBuilder',
+  },
+  SAXParserFactory: {
+    newInstance: 'SAXParserFactory',
+    newSAXParser: 'SAXParser',
+  },
+  SAXParser: {
+    getXMLReader: 'XMLReader',
+  },
+  XPathFactory: {
+    newInstance: 'XPathFactory',
+    newXPath: 'XPath',
+  },
+  TransformerFactory: {
+    newInstance: 'TransformerFactory',
+    newTransformer: 'Transformer',
+  },
+  XMLInputFactory: {
+    newInstance: 'XMLInputFactory',
+    newFactory: 'XMLInputFactory',
+    createXMLStreamReader: 'XMLStreamReader',
+    createXMLEventReader: 'XMLEventReader',
   },
 };
 
