@@ -972,8 +972,56 @@ function resolveReceiverType(
     }
   }
 
+  // Chained receiver: `<var>.<method>(...)` — resolve the return type via the
+  // servlet factory map so sink patterns keyed on the returned class (e.g.
+  // `HttpSession.setAttribute` for trust_boundary) match receivers built from
+  // `req.getSession()` / `req.getSession(false)`. cognium-dev #117 Sprint 91:
+  // 0% recall on OWASP Java trust-boundary category because chained factory
+  // calls produced receiver_type=null, dropping trust_boundary sink matches
+  // while xss's classless setAttribute pattern still fired at the same line.
+  const chained = receiver.match(/^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\([^()]*\)$/);
+  if (chained) {
+    const varName = chained[1];
+    const methodName = chained[2];
+    const varType =
+      context.localVarTypes.get(varName) ??
+      context.paramTypes.get(varName) ??
+      context.fieldTypes.get(varName);
+    if (varType) {
+      const returnType = JAVA_CHAINED_FACTORY_RETURN_TYPES[stripGenerics(varType)]?.[methodName];
+      if (returnType) return resolveFqn(returnType, context);
+    }
+  }
+
   return { simpleName: null, fqn: null };
 }
+
+/**
+ * Chained factory-method return types for Java servlet/JSP APIs.
+ *
+ * Keyed as `receiverType -> methodName -> returnType`. Used by
+ * `resolveReceiverType` to pin the type of a receiver written as
+ * `req.getSession().setAttribute(...)` so downstream sink matchers can
+ * recognise `getSession()` as producing `HttpSession` and thus fire the
+ * class-scoped `HttpSession.setAttribute` trust_boundary sink pattern.
+ *
+ * Deliberately narrow: only the servlet-container APIs where the return
+ * type is defined by the interface contract are listed. Application-level
+ * factories (`someService.getFoo()`) are still unresolved.
+ */
+const JAVA_CHAINED_FACTORY_RETURN_TYPES: Record<string, Record<string, string>> = {
+  HttpServletRequest: {
+    getSession: 'HttpSession',
+    getServletContext: 'ServletContext',
+    getRequestDispatcher: 'RequestDispatcher',
+  },
+  HttpSession: {
+    getServletContext: 'ServletContext',
+  },
+  ServletContext: {
+    getRequestDispatcher: 'RequestDispatcher',
+  },
+};
 
 /**
  * Look up the FQN of a simple type name in the file's imports map.

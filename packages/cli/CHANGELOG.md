@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.140.0] - 2026-07-01
+
+Engine bump only — adopts
+[`circle-ir@3.140.0`](https://www.npmjs.com/package/circle-ir), which
+fixes cognium-dev #117 (CWE-501 Trust Boundary Violation). Java
+receiver-type resolution now handles the servlet chained-factory shape
+`req.getSession().setAttribute(...)`, so the class-scoped
+`HttpSession.setAttribute` trust_boundary sink pattern matches the
+inline shape that OWASP Java Benchmark's trustbound category uses in
+all 83 test cases. The `canSourceReachSink` compatibility matrix also
+gains `trust_boundary` for `http_*` sources so the inline-colocation
+flow detector no longer drops these flows at emit time.
+
+Users scanning Java servlet code with the `req.getSession()
+.setAttribute("k", req.getParameter("v"))` shape will now see CWE-501
+trust_boundary findings on top of the pre-existing CWE-79 xss
+findings that the classless `setAttribute` pattern was already firing.
+
 ## [3.139.0] - 2026-06-30
 
 Engine bump only — adopts

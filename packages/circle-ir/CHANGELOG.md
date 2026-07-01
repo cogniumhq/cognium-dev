@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.140.0] - 2026-07-01
+
+Fix for cognium-dev #117 (CWE-501 Trust Boundary Violation) — 0% recall on
+OWASP Java Benchmark's trustbound category (83 misses) is caused by the
+inline chained-receiver shape, not by same-line dedup as previously
+suspected in the Sprint 51 comment.
+
+**Root cause (two-part).**
+1. `req.getSession().setAttribute("k", req.getParameter("v"))` produced
+   `receiver_type=null` on the `setAttribute` call because the Java
+   receiver-type resolver only handled `this`, `super`, local vars,
+   params, fields, and static class references — chained factory calls
+   (`<var>.<method>()`) were left unresolved. The class-scoped
+   `HttpSession.setAttribute` trust_boundary sink pattern therefore did
+   not match, while the classless `xss` `setAttribute` pattern still
+   fired at the same line, leaving the trust_boundary flow absent from
+   the taint stream. The DFG-based intermediate shape
+   (`HttpSession s = req.getSession(); s.setAttribute(...)`) worked
+   because `s` resolves via `localVarTypes`.
+2. Even if the trust_boundary sink had been recognised on the inline
+   shape, `canSourceReachSink` at `findings.ts:175` did not list
+   `trust_boundary` as a valid sink for any `http_*` or
+   `interprocedural_param` source. The inline-colocation flow detector
+   in `taint-propagation-pass.ts:1259` calls this compatibility check
+   at emit time, so the `http_param → trust_boundary` co-located flow
+   would still have been silently dropped. (The DFG-based path does
+   not apply this filter, which is why the intermediate shape worked
+   pre-fix once the sink was recognised.)
+
+**Fix.**
+- `resolveReceiverType` in `core/extractors/calls.ts` learns a narrow
+  Java servlet chained-factory return-type table: `HttpServletRequest
+  .getSession()` → `HttpSession`, `.getServletContext()` →
+  `ServletContext`, `.getRequestDispatcher()` → `RequestDispatcher`;
+  and `HttpSession.getServletContext()` → `ServletContext`. Applied
+  only when the receiver expression matches `<localVar>.<method>(...)`
+  and the local variable's declared type is in the table. Preserves
+  the existing conservative-null fallback for unrecognised chains.
+- `canSourceReachSink` reach map gains `trust_boundary` as a valid
+  sink for `http_param`, `http_body`, `http_header`, `http_cookie`,
+  `http_path`, `http_query`, and `interprocedural_param`. Mirrors the
+  Sprint 82 (#189) fix that added `open_redirect` to the same set for
+  the equivalent inline-colocation reason.
+
+**Regression lock.** New `tests/analysis/repro-issue-117.test.ts` (4
+tests) asserts:
+- Inline `req.getSession().setAttribute(...)` emits BOTH `xss` and
+  `trust_boundary` flows.
+- Intermediate `HttpSession s = req.getSession(); s.setAttribute(...)`
+  emits BOTH `xss` and `trust_boundary` flows (unchanged behaviour).
+- Inline `req.getServletContext().setAttribute(...)` emits at least
+  one `trust_boundary` flow.
+- Spring `model.addAttribute("q", q)` does NOT spuriously emit
+  `trust_boundary` (chained-factory resolution is narrow to the
+  servlet API table, not any `setAttribute` receiver).
+
+**Impact.** OWASP Java Benchmark trustbound category recall lifts from
+0% to a positive value for the inline shape (measured by the new
+regression tests; benchmark reruns will land in a follow-up). Zero
+existing tests changed behaviour. No new pass number; both fixes are
+config-map / resolver extensions to shipped code paths.
+
+**Suite.** 3407 passed | 2 skipped (was 3403 | 2 in 3.139.0). Typecheck
+clean.
+
 ## [3.139.0] - 2026-06-30
 
 New engine pass `missing-sanitizer-gate` (#107, CWE-79) targeting
