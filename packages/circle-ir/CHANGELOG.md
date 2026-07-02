@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.2] - 2026-07-02
+
+Two FP-drop fixes surfaced by the CVE-intake / trust-category harness
+against 3.144.1:
+
+- **cognium-dev #219 — Jinja `Environment(autoescape=True)` safe mirror.**
+  `isSafeJinjaRenderCall` in `taint-matcher.ts` gains a new Case D that
+  scans the file for `Environment(autoescape=True)` or
+  `Environment(autoescape=select_autoescape(...))` and treats
+  `template.render(**ctx)` calls as safe when either is present without
+  a coexisting `Environment(autoescape=False)` (mixed-shape recall
+  guard). Autoescape enables Jinja to HTML-escape context values at
+  render time, so tainted context is not user-controlled HTML.
+  Tests: `tests/analysis/repro-issue-219.test.ts` — 4 SAFE (autoescape
+  True / select_autoescape / mixed True+False fall-through /
+  Template(concat)) + 2 UNSAFE recall guards (no autoescape kwarg /
+  explicit False).
+
+- **cognium-dev #222 — Bash `case "$URL" in https://host/*)` allowlist.**
+  Extends the existing `findBashRealpathPrefixGuardSanitizers`
+  prefix-arm regex to recognize literal URL prefixes (`https?://<host>`)
+  in addition to path prefixes. The URL-prefix arm with a terminating
+  catch-all (`*) exit`) now sanitizes `ssrf` / `command_injection` /
+  `open_redirect` inside the arm body — same guard shape as #221 for
+  Java. Tests: `tests/analysis/repro-issue-222.test.ts` — 2 SAFE
+  (https, http) + 3 UNSAFE recall guards (no guard / no terminator /
+  leading wildcard).
+
+**Recall unchanged.** Both fixes are conservative: absence of
+autoescape / absence of a terminating catch-all falls through to the
+normal sink emission.
+
+Full suite: 3488 passed | 2 skipped.
+
 ## [3.144.1] - 2026-07-02
 
 Ships cognium-dev #221 — a narrow **host-allowlist sanitizer gate**

@@ -2184,10 +2184,11 @@ function findBashRealpathPrefixGuardSanitizers(code: string): TaintSanitizer[] {
   // An arm pattern is everything up to the first unparenthesised `)`.
   // `arm[1]` is the trimmed pattern text.
   const armOpener = /^\s*([^)\s][^)]*?)\)/;
-  // A prefix arm starts with a literal path or a `"$VAR"` expansion and
-  // is followed by `/` (root prefix) or `*` (already anchored). The
+  // A prefix arm starts with a literal path, a `"$VAR"` expansion, or a
+  // literal URL prefix (`https://host.example.com/*` — #222 Sprint 86),
+  // and is followed by `/` (root prefix) or `*` (already anchored). The
   // leading character must not itself be `*` — that's the catch-all.
-  const prefixArm = /^(?:"\$\{?\w+\}?"|"[^"]*"|\/[\w\-./]+|\$\{?\w+\}?|[\w\-./]+)(?:\/|\*)/;
+  const prefixArm = /^(?:"\$\{?\w+\}?"|"[^"]*"|\/[\w\-./]+|\$\{?\w+\}?|https?:\/\/[\w\-.]+|[\w\-./]+)(?:\/|\*)/;
   // Catch-all is exactly `*` (with optional leading `|`).
   const catchAllArm = /^(?:\*|\\\*)$/;
 

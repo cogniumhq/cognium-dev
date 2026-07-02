@@ -1281,10 +1281,35 @@ function isSafeGoJsonUnmarshalCall(
 const TEMPLATE_LITERAL_RECEIVER_RE =
   /^Template\(\s*(?:"[^"\\]*"|'[^'\\]*')\s*\)$/;
 
+// #219 — Jinja Environment autoescape detection.
+// Matches `Environment(...autoescape=True...)` or
+// `Environment(...autoescape=select_autoescape(...)...)` anywhere in the
+// file. Autoescape=True and select_autoescape both cause Jinja to HTML-
+// escape context values at render time, so tainted context is safe.
+const JINJA_AUTOESCAPE_TRUE_RE =
+  /\bEnvironment\s*\([^)]*\bautoescape\s*=\s*True\b/;
+const JINJA_SELECT_AUTOESCAPE_RE =
+  /\bEnvironment\s*\([^)]*\bautoescape\s*=\s*select_autoescape\s*\(/;
+// Presence of Environment(...autoescape=False...) disables the gate to
+// avoid masking real FPs where both a safe and unsafe env coexist.
+const JINJA_AUTOESCAPE_FALSE_RE =
+  /\bEnvironment\s*\([^)]*\bautoescape\s*=\s*False\b/;
+
+function fileHasSafeJinjaEnvironment(sourceLines: string[] | undefined): boolean {
+  if (!sourceLines || sourceLines.length === 0) return false;
+  const text = sourceLines.join('\n');
+  if (JINJA_AUTOESCAPE_FALSE_RE.test(text)) return false;
+  return (
+    JINJA_AUTOESCAPE_TRUE_RE.test(text) ||
+    JINJA_SELECT_AUTOESCAPE_RE.test(text)
+  );
+}
+
 function isSafeJinjaRenderCall(
   call: CallInfo,
   pattern: SinkPattern,
   language: SupportedLanguage | undefined,
+  sourceLines?: string[],
 ): boolean {
   if (language !== 'python') return false;
   if (pattern.type !== 'xss' && pattern.type !== 'code_injection') return false;
@@ -1310,7 +1335,16 @@ function isSafeJinjaRenderCall(
   // no identifiers, no nested calls inside the parens).
   if (method === 'render') {
     const receiver = (call.receiver ?? '').trim();
-    return TEMPLATE_LITERAL_RECEIVER_RE.test(receiver);
+    if (TEMPLATE_LITERAL_RECEIVER_RE.test(receiver)) return true;
+
+    // Case D (#219) — `env.get_template(...).render(**ctx)` or
+    // `template.render(**ctx)` where the file constructs a jinja2
+    // Environment with autoescape enabled (True or select_autoescape).
+    // Jinja escapes context values at render time in that mode, so the
+    // tainted context arg does NOT produce XSS/SSTI. The gate is
+    // whole-file: any Environment(autoescape=False) elsewhere in the
+    // file disables it, preserving recall on mixed shapes.
+    if (fileHasSafeJinjaEnvironment(sourceLines)) return true;
   }
 
   return false;
@@ -1442,7 +1476,7 @@ function findSinks(
         // alone are safe: the template SOURCE is a constant string and Jinja2
         // auto-escapes context values by default. Tainted-template-source
         // variants (concat, identifier, function call) keep the sink.
-        if (isSafeJinjaRenderCall(call, pattern, language)) {
+        if (isSafeJinjaRenderCall(call, pattern, language, sourceLines)) {
           continue;
         }
 

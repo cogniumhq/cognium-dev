@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.2] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.144.2`](https://www.npmjs.com/package/circle-ir), which
+ships two FP-drop fixes:
+
+- **cognium-dev #219** — Jinja `Environment(autoescape=True)` /
+  `select_autoescape(...)` safe-mirror suppression. Prior 3.144.1
+  behaviour incorrectly flagged `template.render(**ctx)` on
+  autoescape-enabled environments as `code_injection` / `xss`.
+- **cognium-dev #222** — Bash `case "$URL" in https://host/*)`
+  URL-prefix allowlist sanitizer. The existing case-prefix guard
+  (previously path-only) now recognizes literal URL prefixes with
+  the same terminating catch-all requirement.
+
+Neither fix touches recall on unguarded shapes. Full suite:
+3488 passed | 2 skipped.
+
 ## [3.144.1] - 2026-07-02
 
 Engine bump only — adopts
