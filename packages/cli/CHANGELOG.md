@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.147.0] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.147.0`](https://www.npmjs.com/package/circle-ir), which
+ships recall recovery for the Go `exec.Command` package-manager
+subcommand shape (cognium-dev #218 / CVE-2026-33634).
+
+Now flags `exec.Command("go", "install", url+"@latest")` and the
+equivalent shapes on `npm install/exec`, `npx *`, `pip install`,
+`gem install`, `cargo install/run`, `yarn add/exec/dlx`, and `pnpm
+add/exec/dlx` when any argv slot is attacker-controlled. Recall
+guards preserve safe-shape suppression for `git clone`, literal-only
+argv, `go version`, and `npm run test`.
+
 ## [3.146.0] - 2026-07-02
 
 Engine bump only — adopts

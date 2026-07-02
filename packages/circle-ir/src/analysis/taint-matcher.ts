@@ -773,6 +773,49 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
 
+  // cognium-dev #218 (CVE-2026-33634) — package-manager install/exec
+  // subcommands fetch and execute code from user-controlled package
+  // identifiers. Even though `go`, `npm`, `pip`, etc. are not shell
+  // interpreters, the install/run/get subcommands amount to RCE
+  // when the package identifier or URL is attacker-controlled
+  // (module init(), install hooks, arbitrary Go code executed at
+  // build/run time). Treat as CWE-078 command_injection.
+  //
+  // Only fires when argv[1] (subcommand for Command / argv[2] for
+  // CommandContext) is a code-executing subcommand literal. Fixed
+  // argv `exec.Command("go", "version")` or
+  // `exec.Command("git", "clone", tainted)` remain safe-by-shape.
+  const PACKAGE_MANAGER_EXEC_SUBCOMMANDS: Record<string, Set<string>> = {
+    go: new Set(['install', 'run', 'get']),
+    npm: new Set(['install', 'i', 'exec']),
+    npx: new Set(['*']),
+    pip: new Set(['install']),
+    pip3: new Set(['install']),
+    gem: new Set(['install']),
+    cargo: new Set(['install', 'run']),
+    yarn: new Set(['add', 'install', 'exec', 'dlx']),
+    pnpm: new Set(['add', 'install', 'exec', 'dlx']),
+  };
+  const pmSubcommands = PACKAGE_MANAGER_EXEC_SUBCOMMANDS[program];
+  if (pmSubcommands !== undefined) {
+    const subcommandArgPos = pattern.method === 'CommandContext' ? 2 : 1;
+    const subcommandArg = call.arguments.find(a => a.position === subcommandArgPos);
+    if (!subcommandArg) return false; // no subcommand visible → assume dangerous
+    let subcommand: string | undefined;
+    if (subcommandArg.literal !== null && subcommandArg.literal !== undefined) {
+      subcommand = String(subcommandArg.literal);
+    } else {
+      const expr = (subcommandArg.expression ?? '').trim();
+      if (expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'")) {
+        subcommand = expr.slice(1, -1);
+      }
+    }
+    if (subcommand === undefined) return false; // dynamic subcommand → dangerous
+    if (pmSubcommands.has('*') || pmSubcommands.has(subcommand)) {
+      return false; // code-executing subcommand → keep dangerous
+    }
+  }
+
   // Non-shell program literal: subsequent args are argv elements, not
   // shell metacharacters. Sink is safe.
   return true;

@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.147.0] - 2026-07-02
+
+Recall recovery for the Go package-manager subcommand shape surfaced by
+the `sast-validation` cve-intake-b harness (INTAKE-39 / REG-107-03).
+
+- **cognium-dev #218 — Go `exec.Command` package-manager install/exec FN
+  (CVE-2026-33634 shape).** `isSafeGoExecCommandCall` in
+  `src/analysis/taint-matcher.ts` (Sprint 23 / #102 FP-25) was
+  suppressing `exec.Command("go", "install", url+"@latest").Run()`
+  because `"go"` is not in `SHELL_PROGRAMS`. But `go install/run/get`,
+  `npm install/exec/i`, `npx *`, `pip install`, `gem install`,
+  `cargo install/run`, `yarn add/exec/dlx`, and `pnpm add/exec/dlx`
+  all fetch and execute attacker-controlled code (module init(),
+  install hooks, arbitrary compiled artifacts). Same CWE-078 class
+  as shell-in-string, different attack surface.
+  Fix extends the safe-shape gate with a
+  `PACKAGE_MANAGER_EXEC_SUBCOMMANDS` map: when the program literal is
+  a package manager AND the subcommand literal is in the executor set,
+  `isSafeGoExecCommandCall` returns false so the sink stays dangerous
+  and taint in any later argv slot fires `command_injection`.
+  Handles the `CommandContext` (ctx, prog, subcommand, ...args) shift
+  as well.
+  Regression lock: `tests/analysis/repro-issue-218.test.ts` — 11/11
+  pass. Recall guards:
+  - `exec.Command("git", "clone", tainted)` — safe (git is not a
+    package manager)
+  - `exec.Command("go", "version")` — safe (no exec subcommand)
+  - `exec.Command("npm", "run", "test")` — safe (`run` not in the
+    npm exec set)
+  - `exec.Command("sh", "-c", tainted)` — dangerous (shell-in-string,
+    unchanged)
+  - `exec.Command(taintedProg)` — dangerous (argv[0] tainted,
+    unchanged)
+
+Full suite: 257 files, 3545 passed, 2 skipped (11 new).
+
 ## [3.146.0] - 2026-07-02
 
 Precision sweep for three v3.144.0 regressions surfaced by
