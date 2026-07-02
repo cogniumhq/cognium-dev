@@ -139,6 +139,20 @@ const COMPILED_TEMPLATE_TYPES = new Set<string>([
   'VelocityTemplate', 'BeetlTemplate',
 ]);
 
+// #156 (reopen 3.144.0) — template-engine receivers whose render /
+// merge / process / evaluate calls are safe when the template-name
+// (arg 0) is a string literal. The user-controlled payload flows
+// into the Context, not the template body — same guarantee as the
+// compiled-template case (COMPILED_TEMPLATE_TYPES), just at the
+// engine-level API instead of the compiled-Template API.
+const TEMPLATE_ENGINE_LITERAL_TARGETS = new Set<string>([
+  'VelocityEngine', 'Velocity',
+  'TemplateEngine', 'SpringTemplateEngine',
+  'Configuration',          // Freemarker
+  'PebbleEngine', 'Pebble',
+  'Handlebars',
+]);
+
 // #159 — reflection methods whose first arg, when literal /
 // annotation-accessor / empty, makes the call statically resolvable.
 const REFLECTION_LITERAL_METHODS = new Set<string>([
@@ -215,9 +229,16 @@ const PROCESS_BUILDER_ARGV_FORM_RE =
 // `throw new <SomeException|Error>(...)` is structurally never a runtime
 // sink: it constructs the exception object then unwinds the stack. No
 // SQL execution, no command exec, no XSS, no path I/O happens. Drops any
-// sink whose own line begins with `throw new <Word>(Exception|Error)`.
-// Sink-type-agnostic: a throw is never a runtime sink regardless of CWE.
-const JAVA_THROW_STATEMENT_RE = /^\s*throw\s+new\s+\w+(?:Exception|Error)\b/;
+// sink whose own line is EXACTLY a throw statement (nothing after the
+// closing semicolon except whitespace or a comment). Sink-type-agnostic:
+// a throw is never a runtime sink regardless of CWE.
+//
+// The end-of-line anchor is deliberate. Lines like
+//   throw new SQLException("x"); stmt.executeQuery(sql);
+// contain a real sink after the throw; those must keep firing (#157
+// reopen v3.107.0).
+const JAVA_THROW_STATEMENT_RE =
+  /^\s*throw\s+new\s+\w+(?:Exception|Error)\b[^;]*;\s*(?:\/\/.*|\/\*.*)?$/;
 
 // ---------------------------------------------------------------------------
 // Stage 9e — Java code_injection (CWE-094) library-API surface tag.
@@ -842,6 +863,32 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         ) {
           const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
           if (recvType && COMPILED_TEMPLATE_TYPES.has(recvType)) return false;
+          // 9b (reopen 3.144.0) — engine-level render/merge/process/
+          // evaluate with a string-literal template name. The user
+          // payload flows into the Context (arg ≥1), not the template
+          // body — same safety as the compiled-Template case above.
+          // If the first arg is a non-literal expression, keep firing.
+          if (recvType && TEMPLATE_ENGINE_LITERAL_TARGETS.has(recvType)) {
+            const args = extractJavaCallArgs(method, sinkLineText);
+            if (args !== null && args.length >= 1 &&
+                isJavaLiteralOrAnnotationAccessor(args[0])) {
+              return false;
+            }
+          }
+        }
+        // 9b (reopen 3.144.0) — engine-level `evaluate` shape:
+        // `Velocity.evaluate(context, writer, logTag, templateStr)`
+        // or `VelocityEngine.evaluate(...)`. When the last arg (the
+        // template *string*, not name) is a literal, the sink is safe.
+        if (method === 'evaluate' && receiver) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && TEMPLATE_ENGINE_LITERAL_TARGETS.has(recvType)) {
+            const args = extractJavaCallArgs(method, sinkLineText);
+            if (args !== null && args.length >= 1) {
+              const last = args[args.length - 1] ?? '';
+              if (isJavaLiteralOrAnnotationAccessor(last)) return false;
+            }
+          }
         }
 
         // 9c — #159: reflection / SpEL with literal / annotation-accessor

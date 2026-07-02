@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.146.0] - 2026-07-02
+
+Precision sweep for three v3.144.0 regressions surfaced by
+`cognium-dev` issue triage (aisec safe-mirror harness + Java
+false-positive corpus).
+
+- **cognium-dev #223 — JS/TS aisec safe-mirror false-positives
+  (REG-144-17/18/19/20).** Two new sanitizer recognizers added to
+  `LanguageSourcesPass`:
+    1. **`findJsPathResolveStartsWithGuardSanitizers`** — recognises
+       `const full = path.resolve(root, name); if (!full.startsWith(root)) throw...;`
+       (also `path.join`) followed by `fs.<op>(full)`. Emits
+       `path_traversal` + `external_taint_escape` sanitizers at the
+       resolve line and every downstream reference to the canonicalized
+       variable. Mirrors the existing Java
+       `findJavaPathNormalizeStartsWithGuardSanitizers` pattern.
+    2. **`findJsCommandAllowlistGuardSanitizers`** — recognises
+       `if (!ALLOWED.includes(v)) throw...` /
+       `if (!ALLOWED.has(v)) throw...` /
+       `if (ALLOWED.indexOf(v) < 0) throw...` followed by
+       `execFile(v, args)` / `spawn(v, args)`. Emits
+       `command_injection` + `external_taint_escape` sanitizers on
+       every downstream reference to the guarded variable. Allowlist
+       identifier must look like an allowlist (SHOUTY_CASE, or contain
+       one of `allowed|accepted|whitelist|permitted|valid|approved|
+       cmds|commands|tools`); an unnamed variable does NOT satisfy the
+       gate. Guard body must terminate (`throw` / `return` / response
+       terminator).
+  Both recognizers are conservative — they do NOT match when the
+  guarded variable is missing, when the guard body is logging-only,
+  or when the receiver is not a canonicalized `path.resolve/join` /
+  a named allowlist. Recall on unguarded `fs.readFileSync(name)` /
+  `execFile(tool, args)` is unchanged.
+
+- **cognium-dev #156 — compiled-template `code_injection` FP
+  (REG-144-03/04, reopen v3.144.0).** Stage 9b in `SinkFilterPass`
+  originally gated only the *compiled-Template* render/merge/process/
+  renderTo shape (receiver ∈ COMPILED_TEMPLATE_TYPES). The reopen
+  surfaced the engine-level shape:
+    ```java
+    VelocityEngine engine = new VelocityEngine();
+    engine.merge("safe.vm", "UTF-8", ctx, writer);   // arg 0 literal
+    ```
+  User payload flows into the Context, not the template body; the
+  template name is a compile-time constant so template compilation
+  cannot be attacker-influenced. Fix extends Stage 9b:
+    1. New `TEMPLATE_ENGINE_LITERAL_TARGETS` set (`VelocityEngine`,
+       `Velocity`, `TemplateEngine`, `SpringTemplateEngine`,
+       `Configuration`, `PebbleEngine`, `Pebble`, `Handlebars`).
+       When the receiver type resolves into this set AND the method
+       is `render`/`process`/`merge`/`renderTo` AND the first arg is
+       a string literal / annotation-accessor, drop the sink.
+    2. Symmetric `evaluate(...)` gate — Velocity's overload takes
+       the template *string* as the last arg; when that arg is a
+       literal, drop the sink.
+  Recall preserved: `engine.merge(userName, ...)`,
+  `Velocity.evaluate(ctx, w, tag, userTemplate)`, and
+  `Configuration.getTemplate(userName)` all continue to fire.
+
+- **cognium-dev #157 — Stage 12 throw regex over-broad
+  (REG-107-02, reopen v3.107.0).** The Stage 12 gate dropped any
+  Java sink whose line matched `/^\s*throw\s+new\s+\w+(?:Exception|Error)\b/`
+  (no end-of-line anchor). This incorrectly swallowed real sinks on
+  compound lines like
+    ```java
+    if (x == null) throw new SQLException("null"); stmt.executeQuery(sql);
+    ```
+  where the throw is the first statement but a real sink follows.
+  Regex tightened to require the throw to terminate the line (only
+  trailing whitespace or a comment allowed). Pure-throw suppression
+  (real FP shape) is unchanged.
+
+Deferred: **cognium-dev #153** (missing-sanitizer-gate FP/FN pair
+against `V01BaselineSafe.java` / `HtmlAttributePassthroughTp.java`)
+— fixture access blocked; follow-up comment posted requesting the
+exact source lines before altering the pass.
+
+Full suite: **256 files, 3534 passed | 2 skipped**. Typecheck +
+build clean. Pillar I zero-LLM boundary preserved (no `llm*` /
+`ai*` identifiers in new code).
+
 ## [3.145.0] - 2026-07-02
 
 Recall recovery for the CWE-078 regression cluster surfaced by the

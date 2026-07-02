@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.146.0] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.146.0`](https://www.npmjs.com/package/circle-ir), which
+ships precision fixes for three v3.144.0 regressions:
+
+- **cognium-dev #223** — JS/TS aisec safe-mirror false-positives
+  (REG-144-17/18/19/20). Two new sanitizer recognizers in
+  `LanguageSourcesPass`: `path.resolve/join` + `.startsWith(root)`
+  guard (drops `path_traversal`), and command allowlist guard
+  (`ALLOWED.includes/has/indexOf`) + `execFile/spawn` (drops
+  `command_injection`). Conservative — allowlist name must look
+  like an allowlist and guard body must terminate.
+- **cognium-dev #156** — Compiled-template `code_injection` FP
+  (REG-144-03/04, reopen v3.144.0). Stage 9b in `SinkFilterPass`
+  now also gates engine-level `render/merge/process/renderTo` on
+  receivers like `VelocityEngine` / `TemplateEngine` when the
+  first arg is a string literal, plus `Velocity#evaluate(...)`
+  when the last arg is a literal. Recall on tainted template
+  names / bodies is unchanged.
+- **cognium-dev #157** — Stage 12 throw regex over-broad
+  (REG-107-02, reopen v3.107.0). Anchored the
+  `throw new *Exception|Error` match to end-of-line so real sinks
+  on compound lines
+  (`throw new SQLException(...); stmt.executeQuery(sql);`) keep
+  firing.
+
+No CLI surface change. Details:
+[`circle-ir@3.146.0` CHANGELOG](https://www.npmjs.com/package/circle-ir).
+
 ## [3.145.0] - 2026-07-02
 
 Engine bump only — adopts

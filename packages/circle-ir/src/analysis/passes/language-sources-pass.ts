@@ -474,6 +474,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // parameterized SQL placeholder sanitizers.
       additionalSanitizers.push(...findJsArgvFormExecSanitizers(code));
       additionalSanitizers.push(...findJsParameterizedSqlSanitizers(code));
+      // #223 REG-144-20: JS path.resolve/join + startsWith(root) guard.
+      additionalSanitizers.push(
+        ...findJsPathResolveStartsWithGuardSanitizers(code),
+      );
+      // #223 REG-144-17/18/19: JS/TS command allowlist guard
+      // (Set.has / Array.includes / indexOf) before execFile/spawn.
+      additionalSanitizers.push(
+        ...findJsCommandAllowlistGuardSanitizers(code),
+      );
       // Sprint 78 (#190): JS misconfig pattern findings — libxmljs noent:true.
       for (const finding of findJsPatternFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
@@ -3542,6 +3551,202 @@ function findJsParameterizedSqlSanitizers(
       line: i + 1,
       sanitizes: ['sql_injection', 'external_taint_escape'],
     });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: `path.resolve(root, name)` (or `path.join`) + `.startsWith(root)`
+ * guard sanitizer (cognium-dev #223 REG-144-20).
+ *
+ * Pattern recognized:
+ *
+ *   const full = path.resolve(root, name);
+ *   if (!full.startsWith(root)) throw new Error('escape');
+ *   return fs.readFileSync(full);
+ *
+ * The `path.resolve(root, name)` canonicalizes `..` traversal (an
+ * absolute-path `name` replaces `root` entirely — that case is caught
+ * by the subsequent `full.startsWith(root)` guard with a terminator).
+ * Both the resolve/join and the matching startsWith guard must be
+ * present to emit the sanitizer. Recall on plain `fs.readFile(name)`
+ * without the canonicalize step is unchanged.
+ *
+ * Emits a `path_traversal` + `external_taint_escape` sanitizer at the
+ * resolve line and at every subsequent line that references the
+ * canonicalized variable.
+ */
+function findJsPathResolveStartsWithGuardSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // <var> = path.resolve(<root>, ...) | path.join(<root>, ...) | path.normalize(...)
+  // Also accepts `nodePath` / `Path` aliases (`import Path from 'path'`).
+  const resolveDeclRe =
+    /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:(?:node:)?path|nodePath|Path)\s*\.\s*(?:resolve|join)\s*\(\s*([A-Za-z_]\w*(?:\.\w+)*)\s*,/;
+  const startsWithGuardRe = (varName: string, rootName: string) =>
+    new RegExp(
+      `if\\s*\\(\\s*!\\s*${varName}\\s*\\.\\s*startsWith\\s*\\(\\s*${rootName}\\b`,
+    );
+  const terminatorRe =
+    /\b(?:throw|return|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+
+  const candidates: Array<{
+    line: number;
+    fullVar: string;
+    rootVar: string;
+  }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = resolveDeclRe.exec(lines[i]);
+    if (!m) continue;
+    candidates.push({ line: i + 1, fullVar: m[1], rootVar: m[2] });
+  }
+  if (candidates.length === 0) return sanitizers;
+
+  for (const c of candidates) {
+    const guardRe = startsWithGuardRe(c.fullVar, c.rootVar);
+    let guardLine = -1;
+    for (
+      let l = c.line;
+      l < Math.min(lines.length, c.line + 6);
+      l++
+    ) {
+      if (!guardRe.test(lines[l])) continue;
+      if (
+        terminatorRe.test(lines[l]) ||
+        (l + 1 < lines.length && terminatorRe.test(lines[l + 1]))
+      ) {
+        guardLine = l + 1;
+        break;
+      }
+    }
+    if (guardLine < 0) continue;
+
+    const varRefRe = new RegExp(`\\b${c.fullVar}\\b`);
+    sanitizers.push({
+      type: 'js_path_resolve_startswith_guard',
+      method: 'startsWith',
+      line: c.line,
+      sanitizes: ['path_traversal', 'external_taint_escape'],
+    });
+    for (let l = c.line; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'js_path_resolve_startswith_guard',
+        method: 'startsWith',
+        line: l + 1,
+        sanitizes: ['path_traversal', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: bounded-command allowlist guard sanitizer (cognium-dev #223
+ * REG-144-17/18/19).
+ *
+ * Pattern recognized:
+ *
+ *   const ALLOWED = ['npm', 'yarn', 'pnpm'];
+ *   if (!ALLOWED.includes(tool)) throw new Error('unknown tool');
+ *   execFile(tool, args);
+ *
+ * When a tainted variable is guarded by an `if (!ALLOW.includes(v))` /
+ * `if (!ALLOW.has(v))` / `if (ALLOW.indexOf(v) < 0)` check followed by
+ * a terminating `throw` / `return`, subsequent references to that
+ * variable point at a value from the allowlist. The value is one of a
+ * fixed set of literals — exec with that value as the program slot
+ * cannot smuggle shell metacharacters. Emits a `command_injection` +
+ * `external_taint_escape` sanitizer for every downstream reference.
+ *
+ * The allowlist name must look like an allowlist: SHOUTY_CASE
+ * (`ALLOWED`, `TOOLS`, `CMDS`) OR contain a substring like `allowed`,
+ * `accepted`, `whitelist`, `permitted`, `valid`, `approved`, `cmds`,
+ * `commands`, `tools`. Conservative bias: an untyped
+ * `if (!x.includes(v))` on an arbitrary `x` does NOT emit the
+ * sanitizer.
+ */
+function findJsCommandAllowlistGuardSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Two-branch match: SHOUTY_CASE (case-sensitive) OR name containing
+  // a known allowlist token (case-insensitive substring test done in
+  // code, not via /i flag, so SHOUTY_CASE stays strict).
+  const shoutyCase = /^[A-Z][A-Z0-9_]+$/;
+  const allowlistTokens =
+    /(?:allowed|accepted|whitelist|permitted|valid|approved|cmds|commands|tools)/i;
+  const isAllowlistName = (n: string): boolean =>
+    shoutyCase.test(n) || allowlistTokens.test(n);
+  // `if (!ALLOW.has(v))` / `if (!ALLOW.includes(v))`
+  const guardHas =
+    /\bif\s*\(\s*!\s*([A-Za-z_]\w*)\s*\.\s*(?:has|includes)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\)/;
+  // `if (ALLOW.indexOf(v) < 0)` / `=== -1`
+  const guardIndexOf =
+    /\bif\s*\(\s*([A-Za-z_]\w*)\s*\.\s*indexOf\s*\(\s*([A-Za-z_]\w*)\s*\)\s*(?:<\s*0|===\s*-1|==\s*-1)\s*\)/;
+  const terminator =
+    /\b(?:return|throw|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let m = guardHas.exec(line);
+    let allow: string | null = null;
+    let guardedVar: string | null = null;
+    if (m) {
+      allow = m[1];
+      guardedVar = m[2];
+    } else {
+      m = guardIndexOf.exec(line);
+      if (m) {
+        allow = m[1];
+        guardedVar = m[2];
+      }
+    }
+    if (!allow || !guardedVar) continue;
+    if (!isAllowlistName(allow)) continue;
+
+    // Confirm the guard body terminates (throw / return). Same-line
+    // single-statement form is common: `if (!A.includes(v)) throw ...;`
+    let bodyHasTerminator = terminator.test(line);
+    let blockEnd = i;
+    if (!bodyHasTerminator) {
+      // Block-form: scan forward for the closing brace and require a
+      // terminator inside.
+      let braceDepth = 0;
+      let started = false;
+      const maxScan = Math.min(lines.length, i + 26);
+      for (let j = i; j < maxScan; j++) {
+        const ln = lines[j];
+        for (const ch of ln) {
+          if (ch === '{') { braceDepth++; started = true; }
+          else if (ch === '}') {
+            braceDepth--;
+            if (started && braceDepth === 0) { blockEnd = j; break; }
+          }
+        }
+        if (started && j > i && terminator.test(ln)) bodyHasTerminator = true;
+        if (started && braceDepth === 0 && blockEnd !== i) break;
+      }
+      if (!started || !bodyHasTerminator) continue;
+    }
+
+    const varRefRe = new RegExp(`\\b${guardedVar}\\b`);
+    for (let l = blockEnd + 1; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'js_command_allowlist_guard',
+        method: 'if',
+        line: l + 1,
+        sanitizes: ['command_injection', 'external_taint_escape'],
+      });
+    }
   }
 
   return sanitizers;
