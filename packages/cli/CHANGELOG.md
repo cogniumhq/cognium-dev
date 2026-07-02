@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.3] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.144.3`](https://www.npmjs.com/package/circle-ir), which
+ships one FN recovery:
+
+- **cognium-dev #220** — Java `Runtime.exec(new String[]{"/bin/sh","-c",cmd})`
+  shell-in-string interop. Prior 3.144.2 emitted zero
+  `command_injection` flows for tainted parameters/HTTP sources that
+  reach the sink through a `String cmd = "prefix " + arg;` alias and
+  the argv-form exec sanitizer suppression. Three-part fix: Java-only
+  `variable` field on `interprocedural_param` sources, new
+  `buildJavaTaintedVars` fixpoint + taint-propagation branch, and
+  shell-in-string exclusion in `findJavaArgvFormExecSanitizers`.
+  Recall unchanged (non-shell argv exec / single-string exec /
+  ProcessBuilder). Details:
+  [`circle-ir@3.144.3` CHANGELOG](https://www.npmjs.com/package/circle-ir).
+
 ## [3.144.2] - 2026-07-02
 
 Engine bump only — adopts

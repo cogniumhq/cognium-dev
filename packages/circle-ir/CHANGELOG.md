@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.3] - 2026-07-02
+
+FN recovery for the Java shell-in-string interop pattern surfaced by
+the 22-repo harness on 3.144.2.
+
+- **cognium-dev #220 — Java `Runtime.exec(new String[]{"/bin/sh","-c",cmd})`
+  shell-in-string FN.**
+  Three-part fix:
+    1. `interprocedural_param` sources in `taint-matcher.ts` now expose
+       `variable: param.name` **for Java only** so the variable-scan
+       flow generator has a seed for parameter-derived taint. Gating
+       to Java avoids regressing Python/Rust alias-expansion anchor
+       selection.
+    2. New `buildJavaTaintedVars` in `language-sources-pass.ts` runs a
+       fixpoint over Java declarations and assignments, mirroring the
+       existing `buildPythonTaintedVars` / `buildRustTaintedVars`. A
+       new Java branch in `taint-propagation-pass.ts` (after the Rust
+       branch) synthesizes derived-alias sources so
+       `String cmd = "echo " + arg; exec(new String[]{"/bin/sh","-c",cmd});`
+       propagates back to `arg`.
+    3. `findJavaArgvFormExecSanitizers` (Sprint 77a Pattern X, #216)
+       now excludes shell-in-string invocations
+       (`{"/bin/sh","-c",...}`, `{"sh","-c",...}`, `{"bash","-c",...}`,
+       `{"cmd.exe","/c",...}`, `{"powershell.exe","-Command",...}`,
+       etc). These shapes DO execute shell code, so argv splitting is
+       NOT a sanitizer — the trailing element IS a shell command.
+  Recall guards: non-shell argv exec (`{"ls","-la",arg}`) remains
+  sanitized; single-string `exec(String)` and `ProcessBuilder(tainted)`
+  continue to fire. Tests: `tests/analysis/repro-issue-220.test.ts` —
+  3 canonical + inline shapes fire, safe literal emits no flow, 3
+  recall guards preserved.
+
+Full suite: 3495 passed | 2 skipped.
+
 ## [3.144.2] - 2026-07-02
 
 Two FP-drop fixes surfaced by the CVE-intake / trust-category harness

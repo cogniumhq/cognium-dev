@@ -1600,6 +1600,84 @@ export function buildRustTaintedVars(
   return derived;
 }
 
+/**
+ * cognium-dev #220 — Java derived-taint expansion.
+ *
+ * Mirrors {@link buildRustTaintedVars} for Java: given a seed set of
+ * already-tainted variable names (real source variables), scan the file
+ * for `[Type] lhs = rhs;` declarations and `lhs = rhs;` assignments and
+ * propagate taint whenever the RHS references a known tainted name via a
+ * word-boundary match. Iterates to a fixpoint to handle multi-hop chains.
+ *
+ * The primary motivation is Java's array-form `Runtime.exec(String[])`
+ * shape:
+ *   String cmd = "echo " + arg;
+ *   Runtime.getRuntime().exec(new String[]{"/bin/sh", "-c", cmd});
+ * where the variable-scan flow detector would otherwise miss `cmd` since
+ * only `arg` is in the source's `variable` field. The alias map is
+ * consumed by `detectExpressionScanFlows` in `taint-propagation-pass.ts`
+ * to synthesize a virtual source for each derived var.
+ */
+export function buildJavaTaintedVars(
+  sourceCode: string,
+  seedVars: Set<string>,
+): Map<string, number> {
+  const derived = new Map<string, number>();
+  const knownTainted = new Set(seedVars);
+  const lines = sourceCode.split('\n');
+
+  // Declaration:  [modifiers] Type[<...>] [ ] lhs = rhs;
+  // Simple assignment: lhs = rhs;
+  // The declaration form is tried first because a Type token in front
+  // would otherwise be matched by the assignment regex as an identifier.
+  //
+  // Kept intentionally conservative:
+  //   - single-line RHS only (terminated by `;`)
+  //   - no `?:` / `??` fixup — a word-boundary hit anywhere on the RHS
+  //     is treated as taint (matches Rust behavior)
+  //   - no multi-declaration syntax (`String a, b = x;`) — rare in
+  //     tainted contexts and the following-scan will still see the
+  //     original var directly.
+  const declRe =
+    /^\s*(?:public|private|protected|static|final|volatile|transient|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const assignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const JAVA_KEYWORDS = new Set([
+    'if', 'else', 'while', 'for', 'do', 'switch', 'case', 'return',
+    'throw', 'try', 'catch', 'finally', 'new', 'this', 'super',
+    'break', 'continue', 'default', 'class', 'interface', 'enum',
+  ]);
+
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < lines.length + 2) {
+    changed = false;
+    guard++;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      const declMatch = declRe.exec(line);
+      const assignMatch = !declMatch ? assignRe.exec(line) : null;
+      const m = declMatch ?? assignMatch;
+      if (!m) continue;
+      const lhs = m[1];
+      const rhs = m[2];
+      if (JAVA_KEYWORDS.has(lhs)) continue;
+      if (knownTainted.has(lhs)) continue;
+      const escaped = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const ref = [...knownTainted].some(v =>
+        new RegExp(`(?<![\\p{L}\\p{N}_])${escaped(v)}(?![\\p{L}\\p{N}_])`, 'u').test(rhs),
+      );
+      if (ref) {
+        derived.set(lhs, i + 1);
+        knownTainted.add(lhs);
+        changed = true;
+      }
+    }
+  }
+  return derived;
+}
+
 // ---------------------------------------------------------------------------
 // Bash/Shell taint sources
 // ---------------------------------------------------------------------------
@@ -3643,6 +3721,15 @@ function findJavaInlineCrlfStripLogSanitizers(
  *
  * Emits a `command_injection` + `external_taint_escape` sanitizer at
  * that line.
+ *
+ * cognium-dev #220 — DO NOT sanitize shell-in-string invocations of the
+ * shape `{"/bin/sh", "-c", cmd}` / `{"bash", "-c", cmd}` /
+ * `{"cmd.exe", "/c", cmd}` etc. In these shapes the shell is explicitly
+ * invoked with a `-c` / `/c` command string, so a tainted trailing
+ * element IS executed as shell code — the argv-splitting protection
+ * does not apply. The exclusion is intentionally conservative: only
+ * lines whose array literal begins with a recognised shell binary
+ * followed by `-c` / `/c` are skipped.
  */
 function findJavaArgvFormExecSanitizers(
   code: string,
@@ -3656,10 +3743,21 @@ function findJavaArgvFormExecSanitizers(
   // new ProcessBuilder(new String[]{...})
   const argvPbRe =
     /\bnew\s+ProcessBuilder\s*\(\s*new\s+String\s*\[\s*\]\s*\{/;
+  // Shell-in-string exclusion (cognium-dev #220):
+  //   new String[]{"/bin/sh", "-c", ...}
+  //   new String[]{"sh", "-c", ...}
+  //   new String[]{"bash", "-c", ...}
+  //   new String[]{"/usr/bin/sh", "-c", ...}
+  //   new String[]{"cmd.exe", "/c", ...} / {"cmd", "/c", ...}
+  //   new String[]{"powershell.exe", "-Command", ...}
+  const shellInStringRe =
+    /new\s+String\s*\[\s*\]\s*\{\s*"(?:\/(?:usr\/)?bin\/(?:sh|bash|zsh|ksh|dash)|(?:sh|bash|zsh|ksh|dash)|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh)"\s*,\s*"(?:-c|\/c|-Command|-command)"/i;
 
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i];
     if (!argvExecRe.test(text) && !argvPbRe.test(text)) continue;
+    // #220: shell-in-string invocations are NOT sanitized by argv splitting.
+    if (shellInStringRe.test(text)) continue;
     sanitizers.push({
       type: 'java_argv_form_exec',
       method: 'exec',

@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 
 export interface TaintPropagationPassResult {
@@ -1091,6 +1091,35 @@ function detectExpressionScanFlows(
   if (language === 'rust' && typeof code === 'string' && sourcesWithVar.length > 0) {
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
     const derived = buildRustTaintedVars(code, seedVars);
+    if (derived.size > 0) {
+      let anchor: typeof sourcesWithVar[0] = sourcesWithVar[0];
+      for (const s of sourcesWithVar) {
+        if (s.line < anchor.line) anchor = s;
+      }
+      const existingVars = new Set(sourcesWithVar.map(s => s.variable));
+      for (const [varName] of derived) {
+        if (!varName || existingVars.has(varName)) continue;
+        sourcesWithVar.push({
+          ...anchor,
+          variable: varName,
+        });
+        existingVars.add(varName);
+      }
+    }
+  }
+
+  // Java alias expansion (cognium-dev #220): mirror the Rust branch so
+  // that the array-form `Runtime.exec(String[])` shape
+  //   String cmd = "echo " + arg;
+  //   Runtime.getRuntime().exec(new String[]{"/bin/sh", "-c", cmd});
+  // produces a flow back to `arg`. Without this, the variable-scan below
+  // never sees `cmd` (only `arg` is in the source's variable field) and
+  // the array literal defeats the sink-arg colocation heuristic. Seeds
+  // with real source variables (HTTP source `arg` or the now-populated
+  // interprocedural_param parameter name) and iterates to a fixpoint.
+  if (language === 'java' && typeof code === 'string' && sourcesWithVar.length > 0) {
+    const seedVars = new Set(sourcesWithVar.map(s => s.variable));
+    const derived = buildJavaTaintedVars(code, seedVars);
     if (derived.size > 0) {
       let anchor: typeof sourcesWithVar[0] = sourcesWithVar[0];
       for (const s of sourcesWithVar) {

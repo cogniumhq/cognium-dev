@@ -379,6 +379,19 @@ function findSources(
             line: paramLine,
             confidence: param.type ? 0.7 : 0.5, // Lower confidence for untyped params
             in_method: method.name,
+            // cognium-dev #220 — expose the parameter name to variable-scan flow
+            // detection so uses of the param (including through concat-derived
+            // aliases via `buildJavaTaintedVars`) can be bridged to sinks.
+            //
+            // Java-only: the Python/Rust alias-expansion branches in
+            // taint-propagation-pass.ts use the earliest sourcesWithVar entry
+            // as the anchor for synthetic derived sources. Adding
+            // interprocedural_param to sourcesWithVar in those languages
+            // would cause the anchor to become the low-confidence
+            // interprocedural_param at the method decl line instead of the
+            // real HTTP source, breaking downstream sink-type filters
+            // (regressed #78, #92.1, #105 FP-31, #215 recall).
+            ...(language === 'java' ? { variable: param.name } : {}),
           });
         }
       }
