@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.143.0] - 2026-07-01
+
+Ships cognium-dev #138 — a **source-semantics gate** that tags every
+`TaintSource` in `ir.taint.sources` with three deterministic booleans
+consumed downstream to drop false-positive taint flows and downgrade
+demo-path credential findings. New canonical pass **#108
+`source-semantics`** runs after `LanguageSourcesPass` and before
+`SinkFilterPass` / `TaintPropagationPass`, so the tags are visible to
+both the sink pre-filter and the flow generator.
+
+**Three source-taggers.**
+1. **`constant`** — set to `true` when `source.code` matches one of
+   three compile-time-constant shapes: (a) `[final] TYPE ident =
+   "literal";`, (b) `[public|private|protected] static final …` with
+   RHS that is a string / numeric / boolean literal or a bare
+   identifier reference, (c) `= SomeEnum.VALUE;` (enum constant ref
+   with PascalCase or SCREAMING_SNAKE LHS and all-caps constant RHS).
+2. **`spi`** — set to `true` when `source.code` matches
+   `ServiceLoader.{load,loadInstalled,stream}(…)`, OR
+   `Class.forName(…)` with a co-located
+   `.getResources("META-INF/services/…")` lookup within a ±30-line
+   window of the source line (mirrors the Stage 9f co-location check
+   already used by `sink-filter-pass.ts`).
+3. **`demoPath`** — set to `true` on every source in the file when
+   `ir.meta.file` matches the path-component regex
+   `(?:^|\/)(?:demo|example|examples|samples|integration-tests|integration_tests)(?:\/|$)` (case-insensitive). Filename-only
+   matches (e.g. `DemoParser.java`) intentionally do not trigger.
+
+**Consumption policy.** The new
+`sourceSemanticsAllowed(source, sinkType)` predicate in `findings.ts`
+enforces:
+- `constant === true` → flow dropped for every taint sink type
+  (constants cannot carry attacker-controlled data). The
+  `hardcoded-credential` rule continues to fire on constants — that is
+  precisely what that rule detects.
+- `spi === true` → flow dropped for every taint sink type **except**
+  `code_injection` (Stage 9f already downgrades those to
+  library-API-surface; dropping again would double-suppress and lose
+  recall on real reflection bugs).
+- `demoPath === true` → never consumed by the sink allowlist. Instead,
+  `scan-secrets-pass.ts` uses it to downgrade `hardcoded-credential`
+  findings emitted from Layer 1 (provider patterns) and Layer 1b
+  (named-credential) from `severity: 'high' → 'low'` and
+  `level: 'warning'|'error' → 'note'`. Layer 2
+  (`hardcoded-credential-entropy`) is intentionally left untouched.
+
+**Wiring.**
+- `TaintSource` type extended with three optional booleans plus JSDoc
+  documenting the consumption policy on the type itself.
+- Both the colocation flow generator and the variable-scan flow
+  generator in `taint-propagation-pass.ts` now gate flow emission on
+  `sourceSemanticsAllowed(source, sink.type)`.
+- `scan-secrets-pass.ts` imports the shared `DEMO_PATH_RE` from
+  `source-semantics-pass.ts` and applies a per-finding
+  `applyDemoDowngrade` at both Layer 1 provider emission and Layer 1b
+  named-credential emission. The regex is exported from the pass file
+  so the two consumers share a single source of truth.
+- Pass registered in `analyzer.ts` guarded on
+  `disabledPasses.has('source-semantics')`; sits after
+  `LanguageSourcesPass` (so the full source list is available) and
+  before `SinkFilterPass` (so the tags are visible to sink pre-filter).
+- Detection is **line-text-only MVP** — regex on `source.code`, no DFG
+  lift. This is deliberately shallow: sink allowlist is explicit, so a
+  false-negative in the tagger merely means the tag isn't set and the
+  flow proceeds normally. There is no silent-drop failure mode.
+
+**Deferred (called out in the ticket, not shipped in this release).**
+- DFG-based constant propagation (integration with the existing
+  `ConstantPropagationPass` sanitizedVars / constants maps). MVP uses
+  regex on `source.code`; DFG lift is a follow-up if the FP audit
+  shows recall gaps.
+- Spring `@Component` / `@Service` / component-scan tagging (requires
+  type-hierarchy resolution).
+- SPI tag on custom plugin loader APIs beyond `ServiceLoader` /
+  `Class.forName` (ticket lists `Plugin.load(name)` as a shape but
+  doesn't specify the API surface).
+- Demo-path regex refinement to match `-demo` / `_demo` suffixes on
+  path segments (the ticket's real-world path shape
+  `sa-token-oauth2-server-demo/…` currently does NOT match, only
+  proper `/demo/` components). Deferred pending the FP-drop harness
+  rerun that is #138's acceptance criterion.
+
+**Tests.** Adds
+`tests/analysis/passes/source-semantics.test.ts` (21 tests covering
+constant tagging TP/TN, SPI tagging TP/TN, demoPath tagging TP/TN, and
+`sourceSemanticsAllowed` consumption behaviour across every taint
+sink type) and `tests/analysis/repro-issue-138.test.ts` (4 regression
+locks: jib PropertyNames constant shape, Sa-Token ServiceLoader spi
+tag, Sa-Token OAuth demo-path downgrade, non-demo-path
+`hardcoded-credential` severity preservation). Full suite: 3442
+passed | 2 skipped (was 3417 passed).
+
 ## [3.142.0] - 2026-07-01
 
 Second sub-batch of cognium-dev #189 (Java FN, Sprint 93). Closes the

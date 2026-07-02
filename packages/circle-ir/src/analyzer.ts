@@ -103,6 +103,7 @@ import type { ScriptBlockResult } from './analysis/html/html-merge.js';
 import { TaintMatcherPass } from './analysis/passes/taint-matcher-pass.js';
 import { ConstantPropagationPass } from './analysis/passes/constant-propagation-pass.js';
 import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js';
+import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { TaintPropagationPass } from './analysis/passes/taint-propagation-pass.js';
 import { InterproceduralPass } from './analysis/passes/interprocedural-pass.js';
@@ -617,6 +618,11 @@ export async function analyze(
   pipeline.add(new TaintMatcherPass());
   pipeline.add(new ConstantPropagationPass(tree));
   pipeline.add(new LanguageSourcesPass());
+  // cognium-dev #138: tags sources with constant/spi/demoPath booleans;
+  // consumed by findings.ts:sourceSemanticsAllowed (via
+  // TaintPropagationPass) and by scan-secrets-pass demo-path downgrade.
+  // Guarded on disabledPasses so users can opt out.
+  if (!disabledPasses.has('source-semantics')) pipeline.add(new SourceSemanticsPass());
   pipeline.add(new SinkFilterPass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({

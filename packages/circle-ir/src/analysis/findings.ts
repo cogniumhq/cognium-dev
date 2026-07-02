@@ -229,6 +229,52 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
   return validSinks ? validSinks.includes(sinkType) : false;
 }
 
+/**
+ * Source-semantics gate (cognium-dev #138).
+ *
+ * Consumed by `taint-propagation-pass.ts` (both colocation and
+ * variable-scan flow generators) to drop flows whose source has been
+ * tagged as a compile-time constant or an SPI-loaded value by
+ * `SourceSemanticsPass`. The `demoPath` tag is deliberately NOT
+ * consumed here — it is used by `scan-secrets-pass.ts` to downgrade
+ * hardcoded-credential severity but never to drop flows.
+ *
+ * Policy (hardcoded per-sink allowlist):
+ *   - `source.constant === true`  → drop for every taint sink type.
+ *     Compile-time constants cannot carry attacker-controlled data,
+ *     so no taint flow is possible. Hardcoded-credential emission
+ *     happens in `scan-secrets-pass` and does not go through this
+ *     predicate, so it is unaffected.
+ *   - `source.spi === true`       → drop for every sink EXCEPT
+ *     `code_injection`. Stage 9f in `sink-filter-pass.ts` already
+ *     downgrades `Class.forName(spiLoaded)` to a library-API-surface
+ *     tag; dropping again here would double-suppress real reflection
+ *     bugs.
+ *   - No relevant tags set        → allowed (default is to preserve
+ *     the flow — this predicate is a subtractive gate only).
+ *
+ * The predicate must be called AFTER `canSourceReachSink` (which is
+ * the coarse sink-type reachability check). Both must pass for the
+ * flow to be emitted.
+ */
+export function sourceSemanticsAllowed(
+  source: { constant?: boolean; spi?: boolean },
+  sinkType: SinkType,
+): boolean {
+  if (source.constant === true) {
+    // Compile-time constants cannot carry attacker input.
+    return false;
+  }
+  if (source.spi === true) {
+    // SPI-loaded values are provider-controlled configuration, not
+    // attacker-controlled input. `code_injection` is preserved so
+    // Stage 9f's library-API-surface downgrade remains the single
+    // decision point for reflection-based RCE.
+    return sinkType === 'code_injection';
+  }
+  return true;
+}
+
 interface PathResult {
   pathExists: boolean;
   hops: TaintHop[];

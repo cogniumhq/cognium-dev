@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.143.0] - 2026-07-01
+
+Engine bump only — adopts
+[`circle-ir@3.143.0`](https://www.npmjs.com/package/circle-ir), which
+ships cognium-dev #138: a source-semantics gate that tags every
+`TaintSource` with `constant` / `spi` / `demoPath` booleans and
+consumes those tags to (a) drop taint flows from compile-time-constant
+sources and SPI-loaded (ServiceLoader / Class.forName with META-INF)
+sources, and (b) downgrade `hardcoded-credential` findings on demo /
+example / samples / integration-tests paths from `high → low` and
+`warning|error → note`.
+
+Users scanning Java repos with heavy use of `static final String
+CONFIG_KEY = "…";` property-key constants, `ServiceLoader.load(…)`
+plugin registration, or credential fixtures under `demo/`, `examples/`,
+or `samples/` directories will see a reduction in false-positive
+taint flows and a severity-level downgrade (rather than a drop) for
+demo-path secrets so they remain visible without escalating pipelines.
+The pre-existing `code_injection` recall on reflection is preserved
+by an explicit special-case in the sink allowlist.
+
 ## [3.142.0] - 2026-07-01
 
 Engine bump only — adopts

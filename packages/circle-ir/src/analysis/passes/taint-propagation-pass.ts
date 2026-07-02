@@ -19,7 +19,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
-import { canSourceReachSink } from '../findings.js';
+import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -1164,6 +1164,14 @@ function detectExpressionScanFlows(
           const re = reCache.get(source.variable);
           if (!re || !re.test(expr)) continue;
 
+          // cognium-dev #138: source-semantics gate. Drop flows whose
+          // source was tagged constant / SPI-loaded by
+          // SourceSemanticsPass — a compile-time constant cannot carry
+          // attacker-controlled data, and SPI-loaded values are
+          // provider-controlled configuration (see the predicate's
+          // JSDoc in findings.ts for the exact per-sink policy).
+          if (!sourceSemanticsAllowed(source, sink.type)) continue;
+
           // Dedupe by (source_line, sink_line, sink.type) — a single source
           // can reach multiple distinct sinks at the same line (e.g. an
           // execute() call modeled as both `xss` and `sql_injection`).
@@ -1263,6 +1271,10 @@ function detectExpressionScanFlows(
     if (!colocSources || colocSources.length === 0) continue;
     for (const source of colocSources) {
       if (!canSourceReachSink(source.type, sink.type)) continue;
+      // cognium-dev #138: source-semantics gate for inline sources.
+      // Drop flows tagged constant / SPI (see sourceSemanticsAllowed
+      // JSDoc for the per-sink policy).
+      if (!sourceSemanticsAllowed(source, sink.type)) continue;
       // Variable-scan handoff — if the source carries an LHS-bound
       // variable AND that identifier is textually present in the RHS of
       // the sink's own source-line code, the variable-scan path is

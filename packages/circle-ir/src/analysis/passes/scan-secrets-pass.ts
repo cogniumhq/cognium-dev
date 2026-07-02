@@ -41,6 +41,37 @@
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { SastFinding, Severity, SarifLevel } from '../../types/index.js';
 import { pemHasInlineBody, isCliOptionKeyValue } from './_fp-allowlists.js';
+import { DEMO_PATH_RE } from './source-semantics-pass.js';
+
+// ---------------------------------------------------------------------------
+// Demo-path severity downgrade (cognium-dev #138 Filter 3 consumption)
+//
+// When the file lives under a demo / example / samples / integration-tests
+// path segment, hardcoded-credential findings still fire (developers should
+// still see them) but at reduced severity so they do not gate CI. Layer 2
+// (`hardcoded-credential-entropy`) is intentionally excluded — the plan
+// only targets the `hardcoded-credential` rule.
+// ---------------------------------------------------------------------------
+
+function applyDemoDowngrade(
+  demoPath: boolean,
+  severity: Severity,
+  level: SarifLevel,
+): { severity: Severity; level: SarifLevel } {
+  if (!demoPath) return { severity, level };
+  // Only downgrade `high`; a real critical secret (AWS AKIA, GitHub ghp_,
+  // PEM private key) in a demo folder is still critical.
+  //
+  // The plan document (`distributed-painting-yeti.md`) speaks of a
+  // "high → info" transition, but the `Severity` taxonomy is
+  // `critical | high | medium | low` — `low` is the codebase-level
+  // equivalent of "note-only severity" and pairs with SARIF level
+  // `note`.
+  if (severity === 'high') {
+    return { severity: 'low', level: 'note' };
+  }
+  return { severity, level };
+}
 
 // ---------------------------------------------------------------------------
 // Test-file skip heuristic
@@ -560,6 +591,12 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       return { providerFindings: 0, entropyFindings: 0 };
     }
 
+    // cognium-dev #138 Filter 3 consumption. `demoPath` is precomputed
+    // once and passed to `applyDemoDowngrade` at each `hardcoded-credential`
+    // emission site (Layers 1 and 1b). Layer 2 (`hardcoded-credential-
+    // entropy`) is deliberately NOT downgraded.
+    const demoPath = DEMO_PATH_RE.test(file);
+
     const lines = ctx.code.split('\n');
     const prior = ctx.getFindings?.() ?? [];
     // Build dedup index keyed on `${line}:${rule_id}` for O(1) lookup.
@@ -614,14 +651,15 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         if (seen.has(key)) continue;
         seen.add(key);
 
+        const dg = applyDemoDowngrade(demoPath, pattern.severity, pattern.level);
         ctx.addFinding({
           id: `hardcoded-credential-${file}-${lineNum}`,
           pass: this.name,
           category: this.category,
           rule_id: 'hardcoded-credential',
           cwe: 'CWE-798',
-          severity: pattern.severity,
-          level: pattern.level,
+          severity: dg.severity,
+          level: dg.level,
           message: `Hardcoded credential: ${pattern.name} detected`,
           file,
           line: lineNum,
@@ -651,14 +689,15 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       if (seen.has(key)) continue;
       seen.add(key);
 
+      const dg = applyDemoDowngrade(demoPath, 'high', 'error');
       ctx.addFinding({
         id: `hardcoded-credential-${file}-${lineNum}`,
         pass: this.name,
         category: this.category,
         rule_id: 'hardcoded-credential',
         cwe: 'CWE-798',
-        severity: 'high',
-        level: 'error',
+        severity: dg.severity,
+        level: dg.level,
         message: `Hardcoded credential: \`${hit.name}\` assigned a literal value`,
         file,
         line: lineNum,

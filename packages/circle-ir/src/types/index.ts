@@ -339,6 +339,39 @@ export interface TaintSource {
    * differently. Has no effect on the DFG-reachability gate.
    */
   discoveryMethod?: 'static' | 'llm';
+
+  /**
+   * Source-semantics tags set by `SourceSemanticsPass` (cognium-dev #138).
+   * These are consumed by `sourceSemanticsAllowed(source, sinkType)` in
+   * `findings.ts` to gate flow emission at the taint-propagation stage,
+   * and by `ScanSecretsPass` to downgrade hardcoded-credential severity
+   * on demo/example paths.
+   *
+   * - `constant`  — source value resolves to a compile-time constant
+   *                 (string literal, `static final` initialized from a
+   *                 literal, enum-constant reference). Constant sources
+   *                 cannot carry attacker-controlled data and are dropped
+   *                 for all taint sinks; `hardcoded-credential` continues
+   *                 to fire (that is precisely the rule's purpose).
+   * - `spi`       — source value came from a Service Provider Interface
+   *                 lookup (`ServiceLoader.load/loadInstalled/stream`,
+   *                 or `Class.forName` co-located with a
+   *                 `META-INF/services/…` resource lookup). SPI-loaded
+   *                 values are provider-controlled configuration, not
+   *                 attacker-controlled input; dropped for all sinks
+   *                 EXCEPT `code_injection` (already tagged
+   *                 library-API-surface by Stage 9f — dropping again
+   *                 would double-suppress).
+   * - `demoPath`  — source file's path contains `/demo/`, `/example/`,
+   *                 `/examples/`, `/samples/`, `/integration-tests/`, or
+   *                 `/integration_tests/`. Never dropped by the gate;
+   *                 `scan-secrets-pass` downgrades hardcoded-credential
+   *                 findings on demo paths from `high` → `info` and
+   *                 `warning/error` → `note`.
+   */
+  constant?: boolean;
+  spi?: boolean;
+  demoPath?: boolean;
 }
 
 export interface TaintSink {
