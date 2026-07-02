@@ -6492,6 +6492,44 @@ export function findPythonMongoengineWhereNosqlInjectionFindings(
 }
 
 /**
+ * #221 (3.144.1) — host-allowlist sanitizer gate.
+ *
+ * Returns true when a line strictly BEFORE the sink line applies a
+ * narrow host-allowlist check to a tainted variable that reaches the
+ * sink. Two shapes are recognized (both deliberately narrow):
+ *
+ *   1. `<ALLOWLIST>.contains(<var>.getHost())` — Set/List membership
+ *   2. `<var>.getHost().equals(literal)` /
+ *      `<var>.getHost().equalsIgnoreCase(literal)`
+ *
+ * Per Sprint 85 design, scheme-only checks like
+ * `url.startsWith("https://")` are NOT recognized — the host portion
+ * remains attacker-controlled.
+ */
+function hasHostAllowlistBeforeSink(
+  taintedVars: Set<string>,
+  lines: string[],
+  sinkLineIdx: number,
+): boolean {
+  for (let i = 0; i < sinkLineIdx; i++) {
+    const t = lines[i];
+    for (const v of taintedVars) {
+      // Pattern 1: <ALLOWLIST>.contains(<var>.getHost())
+      const containsRe = new RegExp(
+        `\\.\\s*contains\\s*\\(\\s*${v}\\s*\\.\\s*getHost\\s*\\(\\s*\\)\\s*\\)`,
+      );
+      if (containsRe.test(t)) return true;
+      // Pattern 2: <var>.getHost().equals(literal) / equalsIgnoreCase(literal)
+      const equalsRe = new RegExp(
+        `\\b${v}\\s*\\.\\s*getHost\\s*\\(\\s*\\)\\s*\\.\\s*equals(?:IgnoreCase)?\\s*\\(\\s*"[^"]+"\\s*\\)`,
+      );
+      if (equalsRe.test(t)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Sprint 85 detector (#189) — Java SSRF via `new URL(<tainted>)` →
  * `.openStream()` / `.openConnection()` / `.getContent()` receiver chains
  * that the configured `URL.openStream` / `URL.openConnection` sinks
@@ -6576,6 +6614,10 @@ export function findJavaUrlOpenStreamSsrfFindings(
       }
     }
     if (!tainted) continue;
+    // #221 (3.144.1) — host-allowlist sanitizer gate. Suppress the
+    // finding when a narrow allowlist check on the tainted var's
+    // `.getHost()` dominates the sink line.
+    if (hasHostAllowlistBeforeSink(taintedVars, lines, i)) continue;
     const key = `${i + 1}:${op}`;
     if (seen.has(key)) continue;
     seen.add(key);

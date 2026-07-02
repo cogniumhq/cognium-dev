@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.1] - 2026-07-02
+
+Ships cognium-dev #221 — a narrow **host-allowlist sanitizer gate**
+on the Sprint 85 SSRF detector (`findJavaUrlOpenStreamSsrfFindings`
+in `language-sources-pass.ts`). Two shapes are recognized when they
+appear on a line strictly BEFORE the `openStream` / `openConnection`
+/ `getContent` sink and reference a tainted variable that reaches
+the sink:
+
+1. `<ALLOWLIST>.contains(<var>.getHost())` — Set/List membership
+2. `<var>.getHost().equals(literal)` /
+   `<var>.getHost().equalsIgnoreCase(literal)`
+
+**Deliberately narrow.** Per the Sprint 85 (#189) design note,
+scheme-only guards such as `url.startsWith("https://")` are still
+NOT recognized as sanitizers — the host portion remains
+attacker-controlled.
+
+**Recall unchanged.** Guards placed AFTER the sink line don't
+suppress. A `contains(otherVar.getHost())` check on an unrelated
+variable doesn't suppress. All 6 Sprint 85 SSRF cluster tests
+remain green.
+
+**Tests.**
+- `tests/analysis/passes/issue-221-ssrf-host-allowlist.test.ts` —
+  4 SAFE cases (List/Set `contains`, `equals`, `equalsIgnoreCase`)
+  + 4 TP recall guards (no check; `startsWith` weak; guard AFTER
+  sink; wrong-var).
+
+Full suite: 3477 passed | 2 skipped.
+
 ## [3.144.0] - 2026-07-01
 
 Ships cognium-dev #139 Tier A — a **sink-semantics registry** that
