@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.145.0] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.145.0`](https://www.npmjs.com/package/circle-ir), which
+ships CWE-078 recall recovery:
+
+- **cognium-dev #224** — Restores CWE-078 findings on xstream +
+  Jenkins docker-commons shapes regressed by the #128 entry-point
+  gate (Sprint 35, ~3.95.0). Extends the Tier 1 seed lists with
+  Jenkins Stapler `@DataBoundConstructor` / `@DataBoundSetter`
+  annotations and XStream converter supertypes
+  (`Converter`, `SingleValueConverter`, `ConverterMatcher`,
+  `AbstractReflectionConverter`, `AbstractSingleValueConverter`,
+  `AbstractCollectionConverter`). Addresses CVE-2020-26217,
+  CVE-2021-21345 (xstream), CVE-2022-20617 (docker-commons).
+  Precision unchanged: library-facade short-circuit still trumps
+  the new seeds. Details:
+  [`circle-ir@3.145.0` CHANGELOG](https://www.npmjs.com/package/circle-ir).
+
 ## [3.144.3] - 2026-07-02
 
 Engine bump only — adopts

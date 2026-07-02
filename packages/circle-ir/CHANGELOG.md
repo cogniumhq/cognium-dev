@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.145.0] - 2026-07-02
+
+Recall recovery for the CWE-078 regression cluster surfaced by the
+CWE-Bench-Java benchmark on 3.90.0 → 3.144.x (strict score
+104/120 → 101/120, entire delta concentrated in CWE-078).
+
+- **cognium-dev #224 — CWE-078 regression on xstream + Jenkins docker-commons.**
+  Root cause: the #128 entry-point gate (Sprint 35, ~3.95.0) classifies
+  methods without framework annotations as `TIER_3_LIBRARY_API` and
+  drops their `interprocedural_param` sources. Two surfaces failed
+  this test — XStream converters (no framework annotation, but the
+  `unmarshal` contract IS invoked by the deserializer with attacker
+  XML) and Jenkins Stapler classes (form-binding annotations were
+  not in the Tier 1 list). Fix extends the `entry-point-detection.ts`
+  seed lists:
+    1. **`TIER_1_METHOD_ANNOTATIONS`** += `DataBoundConstructor`,
+       `DataBoundSetter` (Jenkins Stapler form-binding — the trust
+       boundary between Jenkins UI / persisted `config.xml` and the
+       plugin). Directly addresses CVE-2022-20617 (docker-commons).
+    2. **`TIER_1_BY_SUPERTYPE`** += XStream converter contract:
+       - `Converter#{marshal, unmarshal}`
+       - `SingleValueConverter#{fromString, toString}`
+       - `ConverterMatcher#{marshal, unmarshal}`
+       - `AbstractReflectionConverter#{marshal, unmarshal, doMarshal, doUnmarshal}`
+       - `AbstractSingleValueConverter#{fromString, toString}`
+       - `AbstractCollectionConverter#{marshal, unmarshal}`
+
+       Direct-parent `extends` / `implements` match covers the common
+       shape where user converters subclass an abstract base rather
+       than implementing `Converter` directly. Addresses CVE-2020-26217
+       and CVE-2021-21345 (xstream RCE via converter chain).
+  Precision locks unchanged: the library-facade short-circuit still
+  runs BEFORE annotation / supertype detection, so an accidental
+  `*Util` class carrying `@DataBoundConstructor` stays TIER_3.
+  Non-lifecycle helper methods on Converter-shaped classes also stay
+  TIER_3 — only the exact contract method names are elevated. Tests:
+  17 new classifier asserts in `entry-point-detection.test.ts` +
+  7 taint-flow asserts in `repro-issue-224.test.ts` covering the
+  three CVE shapes end-to-end.
+
+Full suite: 3517 passed | 2 skipped.
+
 ## [3.144.3] - 2026-07-02
 
 FN recovery for the Java shell-in-string interop pattern surfaced by

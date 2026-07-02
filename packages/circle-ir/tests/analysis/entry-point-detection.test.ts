@@ -497,3 +497,104 @@ describe('classifyEntryPointTier — TIER_3 by library-facade shape (#128 step 2
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #224 — XStream Converter + Jenkins Stapler seed extensions
+// ---------------------------------------------------------------------------
+
+describe('classifyEntryPointTier — #224 XStream Converter supertype', () => {
+  it.each([
+    { supertype: 'Converter',                    kind: 'implements', method: 'unmarshal' },
+    { supertype: 'Converter',                    kind: 'implements', method: 'marshal'   },
+    { supertype: 'SingleValueConverter',         kind: 'implements', method: 'fromString' },
+    { supertype: 'ConverterMatcher',             kind: 'implements', method: 'unmarshal' },
+    { supertype: 'AbstractReflectionConverter',  kind: 'extends',    method: 'unmarshal' },
+    { supertype: 'AbstractReflectionConverter',  kind: 'extends',    method: 'doUnmarshal' },
+    { supertype: 'AbstractSingleValueConverter', kind: 'extends',    method: 'fromString' },
+    { supertype: 'AbstractCollectionConverter',  kind: 'extends',    method: 'unmarshal' },
+  ] as const)('returns TIER_1 for $method on a $supertype $kind', ({ supertype, kind, method: mname }) => {
+    const m = method(mname, {
+      parameters: [
+        param({ name: 'reader', type: 'HierarchicalStreamReader' }),
+        param({ name: 'ctx',    type: 'UnmarshallingContext' }),
+      ],
+    });
+    const t = kind === 'extends'
+      ? type('MyConverter', { extends: supertype })
+      : type('MyConverter', { implements: [supertype] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('CVE-2020-26217 shape: unmarshal on a class implementing Converter is not gated', () => {
+    // End-to-end: the interprocedural_param source on the unmarshal
+    // parameter must survive so the reader.getAttribute → exec flow
+    // fires. Pre-fix (3.144.x) this was silently dropped by the #128
+    // entry-point gate because the class carries no framework
+    // annotation.
+    const m = method('unmarshal', {
+      parameters: [
+        param({ name: 'reader', type: 'HierarchicalStreamReader' }),
+        param({ name: 'ctx',    type: 'UnmarshallingContext' }),
+      ],
+    });
+    const t = type('DynamicProxyConverter', { implements: ['Converter'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    expect(shouldGateInterproceduralParam('interprocedural_param', m, t, javaCtx)).toBe(false);
+  });
+
+  it('returns TIER_3 for a non-lifecycle helper on a Converter class', () => {
+    // Only the named lifecycle methods (marshal/unmarshal/fromString/
+    // toString/doMarshal/doUnmarshal) are TIER_1. A helper method on
+    // the same class stays TIER_3.
+    const m = method('formatEntry');
+    const t = type('MyConverter', { implements: ['Converter'] });
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+  });
+});
+
+describe('classifyEntryPointTier — #224 Jenkins Stapler form-binding annotations', () => {
+  it.each([
+    '@DataBoundConstructor',
+    '@DataBoundSetter',
+  ])('returns TIER_1 for a method annotated %s', (ann) => {
+    const m = method('setCredentialsId', {
+      annotations: [ann],
+      parameters: [param({ name: 'credentialsId', type: 'String' })],
+    });
+    const t = type('DockerRegistryEndpoint');
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+  });
+
+  it('CVE-2022-20617 shape: @DataBoundConstructor is not gated', () => {
+    // End-to-end: the DockerRegistryEndpoint constructor parameter is
+    // a Jenkins Stapler-bound user input source; the interprocedural_param
+    // source must survive the entry-point gate so the credentialsId
+    // → subprocess flow fires.
+    const m = method('DockerRegistryEndpoint', {
+      annotations: ['@DataBoundConstructor'],
+      parameters: [
+        param({ name: 'url',           type: 'String' }),
+        param({ name: 'credentialsId', type: 'String' }),
+      ],
+    });
+    const t = type('DockerRegistryEndpoint');
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_1_ENTRY_POINT');
+    expect(shouldGateInterproceduralParam('interprocedural_param', m, t, javaCtx)).toBe(false);
+  });
+
+  it('returns TIER_3 for an unannotated helper on the same class', () => {
+    // Only the @DataBoundConstructor / @DataBoundSetter methods are
+    // TIER_1. A helper method with no annotation stays TIER_3.
+    const m = method('getEffectiveUrl');
+    const t = type('DockerRegistryEndpoint');
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+  });
+
+  it('library-facade short-circuit still trumps @DataBoundConstructor', () => {
+    // Precision lock: an accidental `*Util` class carrying
+    // @DataBoundConstructor stays TIER_3 (facade override runs first).
+    const m = method('CredentialsUtil', { annotations: ['@DataBoundConstructor'] });
+    const t = type('CredentialsUtil');
+    expect(classifyEntryPointTier(m, t, javaCtx)).toBe('TIER_3_LIBRARY_API');
+  });
+});

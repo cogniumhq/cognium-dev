@@ -163,6 +163,14 @@ const TIER_1_METHOD_ANNOTATIONS = new Set([
   'PATCH',
   'HEAD',
   'OPTIONS',
+  // Jenkins Stapler form-binding (#224 — CVE-2022-20617 docker-commons).
+  // `@DataBoundConstructor` / `@DataBoundSetter` mark the trust boundary
+  // between Jenkins UI (or `config.xml` unmarshal) and the plugin: the
+  // Stapler runtime invokes the annotated constructor / setter with
+  // user-supplied strings from a submitted form or a persisted job
+  // config. Every parameter is a user-supplied taint source.
+  'DataBoundConstructor',
+  'DataBoundSetter',
 ]);
 
 /**
@@ -235,6 +243,29 @@ const TIER_1_BY_SUPERTYPE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['ChannelInboundHandlerAdapter', new Set(['channelRead', 'channelReadComplete'])],
   ['ChannelDuplexHandler', new Set(['channelRead', 'channelReadComplete'])],
   ['NettyRequestProcessor', new Set(['process'])],
+  // XStream deserialization converters (#224 — CVE-2020-26217,
+  // CVE-2021-21345). The xstream deserializer invokes `unmarshal`
+  // with attacker-controlled `HierarchicalStreamReader` state whenever
+  // untrusted XML reaches `XStream.fromXML`. Each converter is a
+  // deserialization gadget surface — its `unmarshal` parameters are
+  // network-facing taint sources even though the enclosing class
+  // carries no framework annotation. `marshal` is included for the
+  // symmetric round-trip surface but is rarely exploitable on its
+  // own; the fixup targets `unmarshal` primarily.
+  //
+  // `SingleValueConverter` is the string-form variant (fromString
+  // parses an attacker string; toString is the sink half of the
+  // round-trip). `ConverterMatcher` is the shared base and some
+  // downstream projects subclass it directly.
+  ['Converter', new Set(['marshal', 'unmarshal'])],
+  ['SingleValueConverter', new Set(['fromString', 'toString'])],
+  ['ConverterMatcher', new Set(['marshal', 'unmarshal'])],
+  // XStream abstract base classes — direct-parent `extends` match
+  // covers the common shape where user converters subclass a base
+  // rather than implementing `Converter` directly.
+  ['AbstractReflectionConverter', new Set(['marshal', 'unmarshal', 'doMarshal', 'doUnmarshal'])],
+  ['AbstractSingleValueConverter', new Set(['fromString', 'toString'])],
+  ['AbstractCollectionConverter', new Set(['marshal', 'unmarshal'])],
 ]);
 
 // ---------------------------------------------------------------------------
