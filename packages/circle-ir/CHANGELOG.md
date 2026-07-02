@@ -5,6 +5,117 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.0] - 2026-07-01
+
+Ships cognium-dev #139 Tier A — a **sink-semantics registry** that
+drops sinks whose emitted `SinkType` label disagrees with a curated
+`<ClassName>#<methodName>` → real-behavior classification. New
+canonical pass **#109 `sink-semantics`** runs after `SinkFilterPass`
+and before `TaintPropagationPass`, so mismatched sinks are removed
+before either flow generator (per-file or cross-file) sees them.
+
+**Motivation.** The 22-repo harness audit surfaced false positives
+where a sink's *label* did not match its *actual behavior*. Canonical
+example: `Jedis.executeCommand(...)` was flagged as
+`command_injection` because `configs/sinks/command.yaml`'s
+`executeCommand` pattern had no `class` filter — but the call is
+Redis wire-protocol serialization, not OS exec. The registry gate
+fixes this class of FP without weakening the recall guarantee for
+`Runtime.exec`, `ProcessBuilder.start`, `Statement.execute`, or
+`Class.forName`.
+
+**New `class?: string` field on `TaintSink`.** Populated at sink
+creation in `taint-matcher.ts` from the call-site's
+`receiver_type`. Fully-qualified receiver types are reduced to their
+simple-name tail (`redis.clients.jedis.Jedis` → `Jedis`) so the
+registry can match without per-repo package variance. Unresolved
+receivers leave the field `undefined`; the semantics gate then
+falls through — the pass is false-negative-safe.
+
+**Registry (`configs/sink-semantics.json`).** Mirrored inline as the
+new `DEFAULT_SINK_SEMANTICS` constant in `config-loader.ts` so the
+gate is active in browser + Node.js callers that never call
+`createTaintConfig`. Registry schema:
+
+```json
+{
+  "sinks": [
+    {
+      "signature": "Jedis#executeCommand",
+      "real_class": "db_protocol",
+      "overrides": ["command_injection", "code_injection"],
+      "note": "Redis wire-protocol serialization, not OS exec"
+    }
+  ]
+}
+```
+
+- `signature` — `<ClassName>#<methodName>`, simple-name, case-sensitive
+- `real_class` — one of `db_protocol` / `jdk_internal` /
+  `functional_dispatch` / `admin_config` / `logging` (informational)
+- `overrides` — list of `SinkType` values dropped when the matched
+  sink's `type` field appears here
+
+**Tier A seed entries (8 signatures).** Every entry class-scoped so
+unrelated recall paths are unaffected:
+
+1. `Jedis#executeCommand` → drop `command_injection`, `code_injection`
+2. `Connection#executeCommand` → drop `command_injection`, `code_injection`
+3. `JedisCluster#executeCommand` → drop `command_injection`, `code_injection`
+4. `Func1#exec` (RxJava) → drop `command_injection`, `code_injection`
+5. `Action0#call` (RxJava) → drop `command_injection`
+6. `Action1#call` (RxJava) → drop `command_injection`
+7. `Unsafe#defineAnonymousClass` → drop `code_injection`
+   (`sun.misc.Unsafe` JDK-internal bridge)
+8. `MethodHandle#invokeExact` → drop `code_injection`
+   (JDK invokeExact; not attacker-controllable)
+
+**Configuration.** `createTaintConfig` gained a third optional
+argument `sinkSemanticsContents: string[]` for callers that preload
+registry JSON strings. Existing 2-arg callers still work — an
+undefined `sinkSemantics` on `TaintConfig` disables the gate. The
+pass is guarded on `disabledPasses: ['sink-semantics']`.
+
+**Registry contract.** Duplicate signatures union their overrides,
+so multiple files can safely extend the same `<Class>#<method>`
+entry. Registry lookup is O(1) via a `Map<string, Set<SinkType>>`
+built once per pass invocation. The pass mutates
+`graph.ir.taint.sinks` in place (preserves array identity so any
+consumer that captured a reference before the pass ran continues to
+see the reduced sink set).
+
+**Explicitly out of scope.**
+- **Tier B speculative verifier on disagreements** — Pillar I
+  forbids in circle-ir; belongs in cognium-ai / circle-ir-ai. Tier B
+  outputs can be reviewed and promoted to Tier A registry entries
+  by hand.
+- **Admin-configured binary paths** (PlantUML latex/dot) — requires
+  argument-shape analysis distinguishing configured path from
+  user-controlled path; deferred.
+- **Fully-qualified signature matching** — MVP uses simple-name tail
+  match; package-qualified `redis.clients.jedis.Jedis#executeCommand`
+  is a follow-up if simple-name collisions surface.
+- **Wildcard signatures** (`*Mapper#*`) — deferred; register
+  concrete signatures until the registry outgrows explicit entries.
+
+**Tests (all green).**
+- `tests/analysis/passes/sink-semantics.test.ts` — 21 tests locking
+  every drop path (`Jedis#executeCommand`,
+  `Connection#executeCommand`, `Func1#exec`,
+  `Unsafe#defineAnonymousClass`, `MethodHandle#invokeExact`), every
+  recall guard (`Runtime.exec`, `Statement.execute`, `Class.forName`,
+  `MyCustomJedis#executeCommand`, unresolved-receiver fallthrough,
+  cross-type label preservation), and the registry-lifecycle edge
+  cases (empty registry, duplicate-signature union, array-identity
+  preservation, missing `sinkSemantics` config).
+- `tests/analysis/repro-issue-139.test.ts` — 6 end-to-end regression
+  locks: Jedis FP shape, Func1 FP shape, Unsafe FP shape, Runtime
+  recall guard, class-scoped MyCustomJedis recall guard, and simple-
+  name normalization invariant.
+- Full suite: **3469 passed | 2 skipped** (was 3442 + 27 new).
+
+**PASSES.md** — #109 row added with full seed-entry summary.
+
 ## [3.143.0] - 2026-07-01
 
 Ships cognium-dev #138 — a **source-semantics gate** that tags every

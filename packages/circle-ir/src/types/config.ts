@@ -103,6 +103,59 @@ export interface SanitizerPattern {
 }
 
 // =============================================================================
+// Sink-Semantics Registry (configs/sink-semantics.json) — cognium-dev #139
+// =============================================================================
+
+/**
+ * Sink-semantics registry entry. Maps a `<ClassName>#<methodName>`
+ * signature to the real-behavior class of the sink and the list of
+ * `SinkType` values that must be dropped when a sink with that
+ * signature is emitted with that type.
+ *
+ * See `docs/PASSES.md` #109 (`sink-semantics`) and cognium-dev #139
+ * for the rationale and the seed entries.
+ */
+export interface SinkSemanticsEntry {
+  /**
+   * `<ClassName>#<methodName>` — simple names only. Match is
+   * case-sensitive; class is compared to `sink.class` (the
+   * simple-name tail of `call.receiver_type`).
+   */
+  signature: string;
+
+  /**
+   * Informational label for the sink's real behavior. One of:
+   *   - `db_protocol`         — DB driver wire-protocol serialization
+   *   - `jdk_internal`        — JDK-internal reflective bridge
+   *   - `functional_dispatch` — RxJava / Function.apply dispatch
+   *   - `admin_config`        — admin-configured binary path
+   *   - `logging`             — logging/observability sink
+   *
+   * Not consumed at runtime; documents intent for contributors.
+   */
+  real_class:
+    | 'db_protocol'
+    | 'jdk_internal'
+    | 'functional_dispatch'
+    | 'admin_config'
+    | 'logging';
+
+  /**
+   * `SinkType` values to drop for this signature. When a sink's
+   * `type` field appears in this list AND the signature matches,
+   * the sink is removed from `graph.ir.taint.sinks` before flow
+   * generation runs.
+   */
+  overrides: SinkType[];
+
+  note?: string;
+}
+
+export interface SinkSemanticsConfig {
+  sinks: SinkSemanticsEntry[];
+}
+
+// =============================================================================
 // Combined Config (loaded at runtime)
 // =============================================================================
 
@@ -110,6 +163,14 @@ export interface TaintConfig {
   sources: SourcePattern[];
   sinks: SinkPattern[];
   sanitizers: SanitizerPattern[];
+  /**
+   * Optional sink-semantics registry (cognium-dev #139 Tier A). When
+   * present, `SinkSemanticsPass` consults it to drop sinks whose
+   * `type` label disagrees with the registry's declared
+   * `real_class`. Omitting this field disables the gate — no sink
+   * is dropped.
+   */
+  sinkSemantics?: SinkSemanticsEntry[];
 }
 
 // =============================================================================

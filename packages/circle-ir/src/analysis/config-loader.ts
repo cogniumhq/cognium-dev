@@ -7,6 +7,8 @@
 import type {
   SourceConfig,
   SinkConfig,
+  SinkSemanticsConfig,
+  SinkSemanticsEntry,
   TaintConfig,
   SourcePattern,
   SinkPattern,
@@ -67,19 +69,46 @@ export function loadSinkConfigs(configs: SinkConfig[]): {
 }
 
 /**
+ * Load and merge sink-semantics registry entries from one or more
+ * configs. Used by `SinkSemanticsPass` (cognium-dev #139 Tier A) to
+ * drop sinks whose emitted `SinkType` label disagrees with the
+ * registry's real-behavior classification.
+ */
+export function loadSinkSemanticsConfigs(
+  configs: SinkSemanticsConfig[],
+): SinkSemanticsEntry[] {
+  const entries: SinkSemanticsEntry[] = [];
+  for (const config of configs) {
+    if (config.sinks) {
+      entries.push(...config.sinks);
+    }
+  }
+  return entries;
+}
+
+/**
  * Create a combined taint configuration from raw config contents.
+ *
+ * `sinkSemanticsContents` is optional to preserve backward
+ * compatibility with existing callers; passing an empty array (or
+ * omitting the argument) disables the sink-semantics gate.
  */
 export function createTaintConfig(
   sourceContents: string[],
-  sinkContents: string[]
+  sinkContents: string[],
+  sinkSemanticsContents: string[] = [],
 ): TaintConfig {
   const sourceConfigs = sourceContents.map((c) => parseConfig<SourceConfig>(c));
   const sinkConfigs = sinkContents.map((c) => parseConfig<SinkConfig>(c));
+  const sinkSemanticsConfigs = sinkSemanticsContents.map((c) =>
+    parseConfig<SinkSemanticsConfig>(c),
+  );
 
   const sources = loadSourceConfigs(sourceConfigs);
   const { sinks, sanitizers } = loadSinkConfigs(sinkConfigs);
+  const sinkSemantics = loadSinkSemanticsConfigs(sinkSemanticsConfigs);
 
-  return { sources, sinks, sanitizers };
+  return { sources, sinks, sanitizers, sinkSemantics };
 }
 
 /**
@@ -2435,6 +2464,67 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
 ];
 
 /**
+ * Embedded default sink-semantics registry (cognium-dev #139 Tier A).
+ * Mirrors `configs/sink-semantics.json` so the default gate is active
+ * in browser/Node.js callers that never call `createTaintConfig`.
+ *
+ * Each entry maps a `<ClassName>#<methodName>` receiver signature to
+ * the `SinkType` labels that should be dropped when the taint-matcher
+ * emits that signature with a mismatched label. Class match is
+ * simple-name and case-sensitive against `TaintSink.class`.
+ */
+export const DEFAULT_SINK_SEMANTICS: SinkSemanticsEntry[] = [
+  {
+    signature: 'Jedis#executeCommand',
+    real_class: 'db_protocol',
+    overrides: ['command_injection', 'code_injection'],
+    note: 'Redis wire-protocol serialization, not OS exec',
+  },
+  {
+    signature: 'Connection#executeCommand',
+    real_class: 'db_protocol',
+    overrides: ['command_injection', 'code_injection'],
+    note: 'Jedis abstract Connection base',
+  },
+  {
+    signature: 'JedisCluster#executeCommand',
+    real_class: 'db_protocol',
+    overrides: ['command_injection', 'code_injection'],
+    note: 'Jedis cluster client',
+  },
+  {
+    signature: 'Func1#exec',
+    real_class: 'functional_dispatch',
+    overrides: ['command_injection', 'code_injection'],
+    note: 'RxJava functional dispatch, not OS exec',
+  },
+  {
+    signature: 'Action0#call',
+    real_class: 'functional_dispatch',
+    overrides: ['command_injection'],
+    note: 'RxJava Action0 dispatch',
+  },
+  {
+    signature: 'Action1#call',
+    real_class: 'functional_dispatch',
+    overrides: ['command_injection'],
+    note: 'RxJava Action1 dispatch',
+  },
+  {
+    signature: 'Unsafe#defineAnonymousClass',
+    real_class: 'jdk_internal',
+    overrides: ['code_injection'],
+    note: 'sun.misc.Unsafe JDK-internal reflective bridge',
+  },
+  {
+    signature: 'MethodHandle#invokeExact',
+    real_class: 'jdk_internal',
+    overrides: ['code_injection'],
+    note: 'java.lang.invoke.MethodHandle — JDK-internal',
+  },
+];
+
+/**
  * Get the default taint configuration.
  */
 export function getDefaultConfig(): TaintConfig {
@@ -2442,6 +2532,7 @@ export function getDefaultConfig(): TaintConfig {
     sources: DEFAULT_SOURCES,
     sinks: DEFAULT_SINKS,
     sanitizers: DEFAULT_SANITIZERS,
+    sinkSemantics: DEFAULT_SINK_SEMANTICS,
   };
 }
 

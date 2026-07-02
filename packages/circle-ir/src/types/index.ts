@@ -387,6 +387,18 @@ export interface TaintSink {
   code?: string;            // Trimmed source-line text at `line` (when available)
 
   /**
+   * Simple-name receiver type at the sink call site (e.g. `Jedis`,
+   * `Runtime`, `ProcessBuilder`). Populated from the taint-matcher's
+   * resolved `call.receiver_type` (fully-qualified names are reduced
+   * to the tail segment). Nullable when the receiver cannot be
+   * resolved statically. Consumed by `SinkSemanticsPass`
+   * (cognium-dev #139) to key into the sink-semantics registry — a
+   * missing value falls through to the normal flow generator
+   * (false-negative-safe).
+   */
+  class?: string;
+
+  /**
    * How this sink was discovered. `'static'` (or absent) = identified by
    * circle-ir's deterministic pattern-matching. `'llm'` = identified by an
    * upstream LLM-enhanced consumer (e.g. circle-ir-ai). Used by

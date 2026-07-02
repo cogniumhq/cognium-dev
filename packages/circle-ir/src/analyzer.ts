@@ -105,6 +105,7 @@ import { ConstantPropagationPass } from './analysis/passes/constant-propagation-
 import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js';
 import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
+import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { TaintPropagationPass } from './analysis/passes/taint-propagation-pass.js';
 import { InterproceduralPass } from './analysis/passes/interprocedural-pass.js';
 import { DeadCodePass } from './analysis/passes/dead-code-pass.js';
@@ -624,6 +625,11 @@ export async function analyze(
   // Guarded on disabledPasses so users can opt out.
   if (!disabledPasses.has('source-semantics')) pipeline.add(new SourceSemanticsPass());
   pipeline.add(new SinkFilterPass());
+  // cognium-dev #139 Tier A: drops sinks whose SinkType label disagrees
+  // with the curated <Class>#<method> registry (configs/sink-semantics.json).
+  // Runs after SinkFilterPass so upstream FP suppressions have already fired,
+  // and before TaintPropagationPass so flow generators never see dropped sinks.
+  if (!disabledPasses.has('sink-semantics')) pipeline.add(new SinkSemanticsPass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,

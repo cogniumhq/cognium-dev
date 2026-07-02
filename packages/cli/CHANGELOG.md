@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.144.0] - 2026-07-01
+
+Engine bump only — adopts
+[`circle-ir@3.144.0`](https://www.npmjs.com/package/circle-ir), which
+ships cognium-dev #139 Tier A: a **sink-semantics registry** that
+drops sinks whose emitted `SinkType` label disagrees with a curated
+`<ClassName>#<methodName>` → real-behavior classification. Fixes
+false positives where the sink label did not match the sink's
+actual behavior — e.g. `Jedis.executeCommand(...)` flagged as
+`command_injection` was actually Redis wire-protocol serialization.
+
+Tier A seed registry covers 8 signatures (Jedis / Connection /
+JedisCluster `executeCommand`, RxJava `Func1#exec` / `Action0#call`
+/ `Action1#call`, `Unsafe#defineAnonymousClass`,
+`MethodHandle#invokeExact`). Every entry is class-scoped so
+`Runtime.exec`, `ProcessBuilder.start`, `Statement.execute`,
+`Class.forName`, and `Method.invoke` recall paths are unaffected.
+
+Users scanning Java repos with heavy use of Jedis, RxJava, or JDK
+internal reflection APIs will see fewer false positives on the
+`command_injection` / `code_injection` axes. No CLI flags added; the
+gate is on by default and can be disabled per-project via
+`cognium.config.json`'s `disabledPasses: ["sink-semantics"]`.
+
 ## [3.143.0] - 2026-07-01
 
 Engine bump only — adopts

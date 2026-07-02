@@ -1452,6 +1452,16 @@ function findSinks(
 
         const existing = sinkMap.get(key);
         if (!existing || confidence > existing.confidence) {
+          // Reduce fully-qualified receiver types to their simple-name tail
+          // so downstream consumers (SinkSemanticsPass — cognium-dev #139)
+          // can key the registry on `<SimpleClass>#<method>` without
+          // per-repo package variance. Unresolved receivers leave the
+          // field undefined; the registry then falls through.
+          const receiverType = call.receiver_type;
+          const simpleClass = receiverType
+            ? receiverType.split('.').pop() || undefined
+            : undefined;
+
           sinkMap.set(key, {
             type: pattern.type,
             cwe: pattern.cwe,
@@ -1460,6 +1470,7 @@ function findSinks(
             confidence,
             method: call.method_name,
             argPositions: pattern.arg_positions,
+            class: simpleClass,
           });
         }
       }

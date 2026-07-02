@@ -1,0 +1,53 @@
+{
+  "$description": "Sink-semantics registry — cognium-dev #139 Tier A. Each entry maps a <ClassName>#<methodName> signature to the sink's real behavior class and the list of SinkType labels that must be dropped when that signature is emitted with that label. Consumed by SinkSemanticsPass (canonical #109). Simple-name class match; fully-qualified receiver types are reduced to the tail segment. Missing sink.class (unresolved receiver) falls through — the gate is false-negative-safe.",
+  "sinks": [
+    {
+      "signature": "Jedis#executeCommand",
+      "real_class": "db_protocol",
+      "overrides": ["command_injection", "code_injection"],
+      "note": "Redis wire-protocol serialization, not OS exec"
+    },
+    {
+      "signature": "Connection#executeCommand",
+      "real_class": "db_protocol",
+      "overrides": ["command_injection", "code_injection"],
+      "note": "Jedis abstract Connection base — same shape as Jedis.executeCommand"
+    },
+    {
+      "signature": "JedisCluster#executeCommand",
+      "real_class": "db_protocol",
+      "overrides": ["command_injection", "code_injection"],
+      "note": "Jedis cluster client — same shape as Jedis.executeCommand"
+    },
+    {
+      "signature": "Func1#exec",
+      "real_class": "functional_dispatch",
+      "overrides": ["command_injection", "code_injection"],
+      "note": "RxJava functional dispatch, not OS exec"
+    },
+    {
+      "signature": "Action0#call",
+      "real_class": "functional_dispatch",
+      "overrides": ["command_injection"],
+      "note": "RxJava Action0 dispatch"
+    },
+    {
+      "signature": "Action1#call",
+      "real_class": "functional_dispatch",
+      "overrides": ["command_injection"],
+      "note": "RxJava Action1 dispatch"
+    },
+    {
+      "signature": "Unsafe#defineAnonymousClass",
+      "real_class": "jdk_internal",
+      "overrides": ["code_injection"],
+      "note": "sun.misc.Unsafe JDK-internal reflective bridge — not attacker-controllable input"
+    },
+    {
+      "signature": "MethodHandle#invokeExact",
+      "real_class": "jdk_internal",
+      "overrides": ["code_injection"],
+      "note": "java.lang.invoke.MethodHandle — JDK-internal, not attacker-controllable"
+    }
+  ]
+}
