@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.148.0] - 2026-07-02
+
+Java response-writer xss FP fix for the case where the HTML encoder wraps
+the value on an assignment line, not inline in the write() argument.
+
+- **cognium-dev #153 — Attribute-context xss FP on
+  `V01BaselineSafe.java`.** `findJavaResponseWriterXssFindings` in
+  `src/analysis/passes/language-sources-pass.ts` is a text-pattern sink
+  detector that skipped the finding only when the args string literally
+  contained an encoder call (`safeWrapRe.test(args)`). It didn't see
+  ```java
+  String url = StringEscapeUtils.escapeHtml4(req.getParameter("url"));
+  resp.getWriter().write("<a href=\"" + url + "\">click</a>");
+  ```
+  and emitted a high-severity xss.
+
+  Fix: same-file `sanitizedVars` tracker. Before the sink loop, scan
+  lines for `<Type>? <var> = <encoderPattern>(...)` and collect the LHS
+  names. In the sink loop, extract non-literal identifiers from the
+  write() args and skip when every identifier is a sanitized var.
+  Recall guard preserved: any tainted identifier outside the set (bare
+  `req.getParameter(...)`, mixed sanitized+raw concat) still emits.
+
+  Regression lock: `tests/analysis/repro-issue-153-encoder-var.test.ts`
+  — 4/4 (FP suppress for `StringEscapeUtils.escapeHtml4` and
+  `Encode.forHtml`, recall for the unsanitized TP twin and the
+  mixed-args shape).
+- Full suite: **3549 passed | 2 skipped** (was 3545); typecheck clean.
+
 ## [3.147.0] - 2026-07-02
 
 Recall recovery for the Go package-manager subcommand shape surfaced by

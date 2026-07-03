@@ -5087,6 +5087,21 @@ export function findJavaResponseWriterXssFindings(
   const safeWrapRe =
     /\b(?:Encode\.(?:forHtml|forHtmlAttribute|forHtmlContent|forJavaScript)|StringEscapeUtils\.escape(?:Html3|Html4|EcmaScript|Xml)|HtmlUtils\.htmlEscape(?:Decimal|Hex)?|Escaper\.escapeHtml|HtmlEscapers\.(?:escapeHtml|htmlEscaper)|Encoder\.encodeForHTML(?:Attribute)?|Jsoup\.clean)\s*\(/;
 
+  // cognium-dev#153 — same-file sanitized-variable tracking.
+  // Collect names of local variables that were assigned from a recognized
+  // HTML/attribute encoder in this file. When ALL non-literal identifiers
+  // in the sink args are in this set, the write is treated as sanitized.
+  const sanitizedVars = new Set<string>();
+  const sanAssignRe =
+    /(?:^|[\s;{},(])(?:final\s+)?(?:[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*[^=]/;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t.startsWith('//') || t.startsWith('*')) continue;
+    if (!safeWrapRe.test(t)) continue;
+    const am = t.match(sanAssignRe);
+    if (am) sanitizedVars.add(am[1]);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     const trimmed = raw.trim();
@@ -5105,6 +5120,21 @@ export function findJavaResponseWriterXssFindings(
     const argsTrim = args.trim();
     if (/^"(?:\\.|[^"\\])*"$/.test(argsTrim)) continue;
     if (!/[A-Za-z_]\w*/.test(argsTrim)) continue;
+    // cognium-dev#153 — if every non-literal identifier in the args is a
+    // locally-sanitized var, the concatenation was pre-encoded. Skip.
+    if (sanitizedVars.size > 0) {
+      const stripped = argsTrim.replace(/"(?:\\.|[^"\\])*"/g, '');
+      const idents = stripped.match(/\b[A-Za-z_]\w*\b/g) ?? [];
+      const nonKeyword = idents.filter(
+        (x) => x !== 'null' && x !== 'true' && x !== 'false',
+      );
+      if (
+        nonKeyword.length > 0 &&
+        nonKeyword.every((x) => sanitizedVars.has(x))
+      ) {
+        continue;
+      }
+    }
     out.push({
       id: `xss-${file}-${i + 1}`,
       pass: 'language-sources',
