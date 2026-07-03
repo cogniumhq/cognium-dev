@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.149.0] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.149.0`](https://www.npmjs.com/package/circle-ir), which
+ships:
+
+- **cognium-dev #162 — antlr TestRig developer-CLI reflection FP
+  (Option B).** New `CliMainReflectionSuppressPass` (canonical #110)
+  drops reflection `code_injection` sinks in Java files that declare
+  `main(String[])` AND carry no web-framework Tier-1 signal
+  (annotation / supertype / method annotation). Blocks 5/49 HIGH FPs
+  in the top-100 Java harness. False-negative-safe: any
+  `@RestController` / `HttpServlet` / `CommandLineRunner` / Netty
+  handler / Kafka listener signal disables the gate.
+
+- Latent pipeline bug fix — post-`SinkFilterPass` sink-gating passes
+  (`SinkSemanticsPass`, `CliMainReflectionSuppressPass`) now mutate
+  `SinkFilterResult.sinks` (the authoritative array consumed by
+  `TaintPropagationPass` and folded into the final `taint.sinks`),
+  not `graph.ir.taint.sinks` (which the pipeline never populates).
+
+No CLI-side code changes.
+
 ## [3.148.0] - 2026-07-02
 
 Engine bump only — adopts

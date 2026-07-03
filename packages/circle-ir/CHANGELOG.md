@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.149.0] - 2026-07-02
+
+Java fat-jar CLI reflection FP suppression + latent pipeline bug fix.
+
+- **cognium-dev #162 — antlr TestRig developer-CLI reflection FP
+  (Option B).** `TestRig.java` and other fat-jar developer tools
+  (`javac`, `java -jar`, `python -m` shape) reflectively load
+  user-supplied class names from `args[]`. The OS shell IS the trust
+  boundary; the `main(String[])` entry point is the CLI. These are
+  documented behaviors, not vulnerabilities.
+
+  New `CliMainReflectionSuppressPass` (canonical **#110**, category
+  `security`) — Java-only per-file heuristic:
+
+  1. Signal: file declares `main(String[])` AND carries NO Tier-1
+     web-framework signal (class annotation `@RestController` /
+     `@Controller` / `@Service` / `@Component` / `@Path` /
+     `@WebServlet` / `@ServerEndpoint` / `@FeignClient` /
+     `@Repository`; method annotation Spring `@*Mapping` /
+     `@KafkaListener` / `@JmsListener` / JAX-RS verbs / `@Scheduled` /
+     `@DataBoundConstructor`; supertype `HttpServlet` /
+     `GenericServlet` / `Filter` / `HandlerInterceptor` /
+     `CommandLineRunner` / `SimpleChannelInboundHandler` /
+     XStream converter base).
+  2. Action: drop sinks whose `type === 'code_injection'` AND `method`
+     is one of `forName`, `newInstance`, `invoke`, `getMethod`,
+     `getDeclaredMethod`, `getConstructor`, `getDeclaredConstructor`,
+     `loadClass`, `defineClass`. ScriptEngine.eval / GroovyShell /
+     SpEL `parseExpression` are NOT in the set — those still fire.
+
+  False-negative-safe: any web-framework signal disables the gate;
+  the recall for `@RestController` classes, `HttpServlet` subclasses,
+  Netty handlers, Jenkins plugins, Spring Boot `CommandLineRunner`
+  and Kafka/JMS listeners that also expose a `main` is preserved.
+
+  Pipeline slot: after `SinkSemanticsPass`, before
+  `TaintPropagationPass`, guarded on
+  `disabledPasses.has('cli-main-reflection-suppress')`. Blocks 5/49
+  HIGH FPs in the top-100 Java harness (antlr TestRig canonical shape).
+
+- **Latent pipeline bug — `SinkFilterResult.sinks` is now the
+  authoritative mutation target for post-filter sink-gating passes.**
+  `SinkSemanticsPass` (shipped in 3.144.0) mutated
+  `graph.ir.taint.sinks`, but the pipeline never populates that
+  array — `TaintMatcherPass` returns sinks in its result object,
+  `SinkFilterPass` reads them from that result and returns filtered
+  sinks in `SinkFilterResult.sinks`, and `analyzer.ts` assembles the
+  final `taint.sinks` from `sinkFilter.sinks + interProc.additionalSinks`.
+  In the real pipeline, `SinkSemanticsPass`'s in-place mutation of
+  `graph.ir.taint.sinks` was a no-op; the pass only appeared to work
+  in its unit test harness (which pre-populates `graph.ir.taint.sinks`
+  directly). No user-visible regression fired because the seeded
+  Jedis/Func1/Unsafe fixtures don't emit a real source-to-sink flow
+  at the finding level anyway.
+
+  Fix: both `SinkSemanticsPass` and the new
+  `CliMainReflectionSuppressPass` now prefer
+  `ctx.getResult<SinkFilterResult>('sink-filter').sinks` and fall
+  back to `graph.ir.taint.sinks` for stand-alone unit-test harnesses.
+
+- Regression locks: `tests/analysis/repro-issue-162-antlr-testrig.test.ts`
+  — 5/5 (antlr TestRig FP suppress + LoaderCli FP suppress + 3 recall
+  guards asserting the gate correctly skips for `@RestController`,
+  `HttpServlet extends`, and no-`main` shapes at the sink level).
+  Unit lock: `tests/analysis/passes/cli-main-reflection-suppress.test.ts`
+  — 18/18 (4 TP drops, 14 TN recall guards).
+- Full suite: **3572 passed | 2 skipped** (was 3549); typecheck clean.
+
 ## [3.148.0] - 2026-07-02
 
 Java response-writer xss FP fix for the case where the HTML encoder wraps

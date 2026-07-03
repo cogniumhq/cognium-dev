@@ -106,6 +106,7 @@ import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js'
 import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
+import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { TaintPropagationPass } from './analysis/passes/taint-propagation-pass.js';
 import { InterproceduralPass } from './analysis/passes/interprocedural-pass.js';
 import { DeadCodePass } from './analysis/passes/dead-code-pass.js';
@@ -630,6 +631,15 @@ export async function analyze(
   // Runs after SinkFilterPass so upstream FP suppressions have already fired,
   // and before TaintPropagationPass so flow generators never see dropped sinks.
   if (!disabledPasses.has('sink-semantics')) pipeline.add(new SinkSemanticsPass());
+  // cognium-dev #162 Option B: drops Java reflection `code_injection`
+  // sinks in files that declare `main(String[])` AND carry no
+  // web-framework Tier-1 signal (annotation OR supertype OR method
+  // annotation). Same trust-boundary reasoning as `javac` / `java -jar`:
+  // the user IS the CLI. Runs after SinkSemanticsPass so its curated
+  // drops fire first, and before TaintPropagationPass so flow
+  // generators never see the dropped sinks.
+  if (!disabledPasses.has('cli-main-reflection-suppress'))
+    pipeline.add(new CliMainReflectionSuppressPass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,

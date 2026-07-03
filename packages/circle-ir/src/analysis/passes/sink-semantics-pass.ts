@@ -40,7 +40,8 @@
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { SinkSemanticsEntry } from '../../types/config.js';
-import type { SinkType } from '../../types/index.js';
+import type { SinkType, TaintSink } from '../../types/index.js';
+import type { SinkFilterResult } from './sink-filter-pass.js';
 
 export interface SinkSemanticsResult {
   /** Number of sinks dropped by the registry gate this run. */
@@ -87,7 +88,16 @@ export class SinkSemanticsPass
     }
 
     const registry = buildRegistry(entries);
-    const sinks = graph.ir.taint.sinks;
+    // Authoritative sink list in the real pipeline is
+    // `SinkFilterResult.sinks` — that is what `analyzer.ts` assembles
+    // the final `taint.sinks` from and what `TaintPropagationPass` /
+    // `InterproceduralPass` consume. `graph.ir.taint.sinks` starts
+    // empty and is never populated by the pipeline. Prefer the
+    // sink-filter result; fall back to `graph.ir.taint.sinks` for
+    // stand-alone unit-test harnesses that don't run `SinkFilterPass`.
+    const sinks: TaintSink[] = ctx.hasResult('sink-filter')
+      ? ctx.getResult<SinkFilterResult>('sink-filter').sinks
+      : graph.ir.taint.sinks;
 
     let droppedCount = 0;
     const kept = sinks.filter((sink) => {
