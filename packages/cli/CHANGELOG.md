@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.150.0] - 2026-07-02
+
+Engine bump only — adopts
+[`circle-ir@3.150.0`](https://www.npmjs.com/package/circle-ir), which
+ships two Java `resource-leak` (Pass #21) false-positive fixes:
+
+- **cognium-dev #226 — wrapper-constructor ownership transfer.**
+  Streams passed as constructor argument to a known `java.io` /
+  `java.util.zip` wrapper (`GZIPInputStream`, `BufferedReader`,
+  `InputStreamReader`, ...) no longer produce a spurious leak on the
+  inner reference. Confirmed on calcite-avatica `Sources.java`.
+
+- **cognium-dev #227 — nested-worker field-close.** Resource fields
+  closed inside a `Runnable#run` / `Callable#call` / `Consumer#accept`
+  / `Supplier#get` / `Function#apply` literal nested in the outer
+  method no longer produce a spurious leak. Confirmed on angus-mail
+  `IdleManager.java` (`selector = Selector.open()` closed in
+  executor's `finally`).
+
+No CLI surface changes.
+
 ## [3.149.0] - 2026-07-02
 
 Engine bump only — adopts

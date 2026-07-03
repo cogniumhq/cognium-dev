@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.150.0] - 2026-07-02
+
+Java `resource-leak` (Pass #21) — two ownership-transfer false-positive
+suppressions.
+
+- **cognium-dev #226 — wrapper-constructor ownership transfer.**
+  When a `Closeable` stream is immediately passed as the constructor
+  argument to a known `java.io` / `java.util.zip` wrapper (per JDK
+  javadoc: closing the wrapper cascades to the underlying stream),
+  the inner reference no longer needs an independent close.
+
+  Confirmed shape (calcite-avatica `Sources.java`):
+
+  ```java
+  InputStream fis = openStream();
+  is = new GZIPInputStream(fis);   // ownership transfer
+  return new InputStreamReader(is, StandardCharsets.UTF_8);
+  ```
+
+  New `WRAPPER_CTORS` whitelist covers:
+  - `java.io`: `BufferedInputStream`, `BufferedOutputStream`,
+    `BufferedReader`, `BufferedWriter`, `InputStreamReader`,
+    `OutputStreamWriter`, `DataInputStream`, `DataOutputStream`,
+    `PrintStream`, `PrintWriter`, `LineNumberReader`,
+    `PushbackInputStream`, `PushbackReader`, `SequenceInputStream`
+  - `java.util.zip`: `GZIPInputStream`, `GZIPOutputStream`,
+    `ZipInputStream`, `ZipOutputStream`, `InflaterInputStream`,
+    `DeflaterOutputStream`, `CheckedInputStream`, `CheckedOutputStream`
+
+  Suppression (#4) triggers when the resource variable appears as an
+  argument to a wrapper-ctor call within the enclosing method's line
+  range. Non-whitelisted wrappers still fire (`MyCustomWrapper`).
+
+- **cognium-dev #227 — nested-worker field-close.** When a resource
+  field is stored in the outer method and closed inside a worker-
+  literal method (`Runnable#run`, `Callable#call`, `Consumer#accept`,
+  `Supplier#get`, `Function#apply`) nested in the same outer method,
+  ownership transfers to the executor thread. Confirmed shape
+  (angus-mail `IdleManager.java`):
+
+  ```java
+  selector = Selector.open();
+  es.execute(new Runnable() {
+      public void run() {
+          try { select(); }
+          finally { selector.close(); }   // nested finally close
+      }
+  });
+  ```
+
+  New suppression (#5) requires BOTH:
+  1. The resource variable matches a declared field on the enclosing
+     class, OR the resource is text-assigned to `<field>` /
+     `this.<field>` where `<field>` is declared.
+  2. A `<field>.close()` (or CLOSE_METHODS receiver) call appears on
+     a line inside a method whose name is in `WORKER_METHODS` AND
+     whose `start_line` lies strictly within the outer method's body.
+
+  Conservative-bias: a local `selector` (not a class field) still
+  fires; a `helper()` method (not in `WORKER_METHODS`) still fires.
+
+**Regression / tests**
+
+- New unit tests: `tests/analysis/passes/resource-leak.test.ts`
+  (7 new — 4× #226, 3× #227).
+- New regression fixtures: `tests/analysis/repro-issues-226-227.test.ts`
+  (6 — full Java sources through `analyze()`, including 3 recall
+  guards).
+- Full suite: 3585 passed | 2 skipped (was 3572 | 2 in 3.149.0).
+
+**Files changed**
+
+- `src/analysis/passes/resource-leak-pass.ts`:
+  - Added `WRAPPER_CTORS` and `WORKER_METHODS` constants
+  - Added `isWrappedByCloseableCtor()` and `isClosedInNestedWorker()`
+    helpers
+  - Wired suppressions #4 and #5 after existing #158 suppressions
+    (returned / field-stored / factory-shape name), before the
+    close-call lookup
+
+**Implementation note.** Java tree-sitter does not reliably set
+`is_constructor: true` on `new X()` calls in the current plugin, so
+the wrapper check matches by class name only (`WRAPPER_CTORS` names
+are PascalCase JDK class names — no plain-method collision risk).
+The pre-existing `RESOURCE_CTORS`-based detection has the same
+latent limitation but is out of scope for this ship.
+
 ## [3.149.0] - 2026-07-02
 
 Java fat-jar CLI reflection FP suppression + latent pipeline bug fix.
