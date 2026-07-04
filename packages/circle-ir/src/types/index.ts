@@ -17,6 +17,22 @@ export interface Meta {
   loc: number;
   hash: string;  // SHA256 prefix (16 chars)
   package?: string;
+
+  /**
+   * Resolved `ProjectProfile` for this file, when
+   * `analyzeOptions.projectProfile` is supplied by the caller. Absent
+   * when the caller does not supply a profile — signals that the
+   * ADR-008 profile transform was a no-op for this file.
+   *
+   * Populated by `analyze()` from `makeProfileResolver(options.projectProfile)`.
+   * Value is exactly what the resolver returned (may be `'unknown'` when
+   * the caller supplied a per-file map that did not cover this file).
+   *
+   * See `docs/ARCHITECTURE.md` ADR-008.
+   *
+   * Added in 3.150.1 (#235).
+   */
+  projectProfile?: ProjectProfile;
 }
 
 // =============================================================================
@@ -807,6 +823,27 @@ export interface TaintHop {
 // 12. Project-Level Analysis
 // =============================================================================
 
+/**
+ * Rollup of resolved `ProjectProfile` values across every file in a
+ * project scan. Populated on `ProjectMeta.projectProfileSummary` when
+ * the caller supplies `analyzeOptions.projectProfile`; absent otherwise.
+ *
+ * Each bucket counts the number of files whose resolved profile
+ * matched that shape / env. `unknown` collects files that either had
+ * no per-file map entry or resolved to the literal `'unknown'` value.
+ *
+ * Consumers use this to verify what fraction of a repo was classified
+ * as `library/*` before treating downstream findings as caller-driven
+ * FPs — see cognium-ai#189 §2 for the Tier 2 use case.
+ *
+ * Added in 3.150.1 (#235).
+ */
+export interface ProjectProfileSummary {
+  byShape: Record<ProjectShape | 'unknown', number>;
+  byEnv: Record<ProjectEnv | 'unknown', number>;
+  totalFiles: number;
+}
+
 export interface ProjectMeta {
   name: string;
   root: string;
@@ -817,6 +854,15 @@ export interface ProjectMeta {
   total_files: number;
   total_loc: number;
   analyzed_at: string;  // ISO timestamp
+
+  /**
+   * Per-scan rollup of resolved `ProjectProfile` values. Populated by
+   * `analyzeProject()` when `analyzeOptions.projectProfile` is supplied.
+   * Absent when the caller does not supply a profile.
+   *
+   * Added in 3.150.1 (#235).
+   */
+  projectProfileSummary?: ProjectProfileSummary;
 }
 
 export interface CrossFileCall {

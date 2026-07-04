@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.150.1] - 2026-07-04
+
+Engine bump only — adopts
+[`circle-ir@3.150.1`](https://www.npmjs.com/package/circle-ir), which
+adds observability output for the ADR-008 project-profile transform
+(cognium-dev#235):
+
+- `Meta.projectProfile` is now populated on per-file IR when the
+  caller supplies `analyzeOptions.projectProfile`.
+- `ProjectMeta.projectProfileSummary` is now populated on
+  `analyzeProject()` output with per-shape / per-env / total-files
+  rollup counts under the same condition.
+
+No CLI-facing changes — the CLI does not yet supply `projectProfile`
+to the engine. Downstream consumers (`cognium-ai`) can now read the
+profile rollup off `scan.json` to verify what fraction of a repo the
+engine classified as `library/*` before treating tagged findings as
+caller-driven FPs.
+
 ## [3.150.0] - 2026-07-02
 
 Engine bump only — adopts

@@ -666,8 +666,40 @@ uniform downgrade hook so the profile transform has a value to restore.
   (e.g. a future `resource-leak` that ignores library API boundaries)
   is a pure additive change that doesn't reopen the ADR.
 
+**Observability output (3.150.1, #235).** The resolved profile is now
+surfaced on the IR so downstream consumers (cognium-ai#189 Tier 2
+audit, cognium-ai#130 profile detector, ledger tooling) can verify
+what the transform actually saw without re-running detection:
+
+- `Meta.projectProfile?: ProjectProfile` — populated by `analyze()`
+  when the caller supplies `options.projectProfile`. Value is exactly
+  what `makeProfileResolver` returned for this file (may be
+  `'unknown'` when a per-file `Map` did not cover the file). Absent
+  when the caller omits the option, preserving 3.106.0–3.150.0 output
+  shape.
+- `ProjectMeta.projectProfileSummary?: ProjectProfileSummary` —
+  populated by `analyzeProject()` under the same condition. Rollup
+  shape:
+  ```
+  {
+    byShape: Record<ProjectShape | 'unknown', number>,
+    byEnv:   Record<ProjectEnv   | 'unknown', number>,
+    totalFiles: number,
+  }
+  ```
+  Buckets are always initialised to zero for every enum value, so
+  consumers can index without existence checks. `unknown` collects
+  files that either resolved to the literal `'unknown'` profile or
+  were absent from the per-file map.
+
+Both fields are pure observability — no downgrade decision is derived
+from them. They exist so a Tier 2 auditor can look at `scan.json` and
+answer "which files did the engine treat as library callers?" without
+having to reconstruct the resolver externally.
+
 **Reference.** `#169` (project profile architecture), Sprint 47 release
-notes (3.105.0), Sprint 48 design discussion (this ADR).
+notes (3.105.0), Sprint 48 design discussion (this ADR),
+`#235` (Sprint 51 / 3.150.1 — observability output fields).
 
 ---
 

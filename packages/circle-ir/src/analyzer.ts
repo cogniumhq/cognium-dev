@@ -54,7 +54,7 @@
  *  – FeatureEnvyPass      — fires on legitimate delegation patterns (see pass file)
  */
 
-import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, SastFinding } from './types/index.js';
+import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
 import type { TaintConfig } from './types/config.js';
 import {
   initParser,
@@ -521,6 +521,44 @@ function makeProfileResolver(
   return (file: string) => p.get(file) ?? 'unknown';
 }
 
+/**
+ * Compute a per-scan rollup of resolved `ProjectProfile` values across a
+ * set of per-file analyses. Returns `null` if none of the analyses carry
+ * a `meta.projectProfile` field (i.e. the caller did not supply
+ * `options.projectProfile`).
+ *
+ * Buckets:
+ *  - `byShape` counts the leading `ProjectShape` segment (or `'unknown'`)
+ *  - `byEnv`   counts the trailing `ProjectEnv` segment (or `'unknown'`)
+ *  - `totalFiles` is the total number of analyzed files
+ *
+ * Added in circle-ir 3.150.1 (#235). See `docs/ARCHITECTURE.md` ADR-008.
+ */
+function computeProjectProfileSummary(
+  fileAnalyses: Array<{ file: string; analysis: CircleIR }>,
+): ProjectProfileSummary {
+  const byShape: Record<ProjectShape | 'unknown', number> = {
+    library: 0, application: 0, cli: 0, server: 0, plugin: 0, unknown: 0,
+  };
+  const byEnv: Record<ProjectEnv | 'unknown', number> = {
+    production: 0, dev: 0, sample: 0, benchmark: 0, test: 0, unknown: 0,
+  };
+  for (const { analysis } of fileAnalyses) {
+    const profile = analysis.meta.projectProfile ?? 'unknown';
+    if (profile === 'unknown') {
+      byShape.unknown += 1;
+      byEnv.unknown += 1;
+      continue;
+    }
+    const slash = profile.indexOf('/');
+    const shape = profile.slice(0, slash) as ProjectShape;
+    const env   = profile.slice(slash + 1) as ProjectEnv;
+    byShape[shape] += 1;
+    byEnv[env]     += 1;
+  }
+  return { byShape, byEnv, totalFiles: fileAnalyses.length };
+}
+
 // ---------------------------------------------------------------------------
 // Main analysis function
 // ---------------------------------------------------------------------------
@@ -592,6 +630,13 @@ export async function analyze(
 
   // Extract all IR components
   const meta    = extractMeta(code, tree, filePath, language);
+  // #235 (3.150.1) — surface the resolved ProjectProfile on per-file meta
+  // when the caller supplied one, so downstream consumers can see the exact
+  // profile the ADR-008 transform used. Absent when the caller did not pass
+  // `options.projectProfile` (preserves 3.150.0 behavior).
+  if (options.projectProfile !== undefined) {
+    meta.projectProfile = makeProfileResolver(options.projectProfile)(filePath);
+  }
   const types   = extractTypes(tree, nodeCache, language);
   const calls   = extractCalls(tree, nodeCache, language);
   const imports = extractImports(tree, language);
@@ -1263,6 +1308,15 @@ export async function analyzeProject(
     total_loc:    totalLoc,
     analyzed_at:  new Date().toISOString(),
   };
+  // #235 (3.150.1) — attach a per-scan ProjectProfile rollup so consumers
+  // (cognium-ai#189 Tier 2 audit; cognium-ai#130 detector; downstream
+  // ledgers) can verify what fraction of the repo was classified as
+  // `library/*` before treating tagged findings as caller-driven FPs.
+  // Only emitted when the caller supplied `options.projectProfile`; a
+  // no-op absence preserves 3.150.0 output shape.
+  if (options.projectProfile !== undefined) {
+    meta.projectProfileSummary = computeProjectProfileSummary(fileAnalyses);
+  }
 
   const projectAnalysis: ProjectAnalysis = {
     meta,

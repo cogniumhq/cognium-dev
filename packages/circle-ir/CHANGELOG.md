@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.150.1] - 2026-07-04
+
+Observability — surface the resolved `ProjectProfile` on IR output so
+downstream consumers (cognium-ai#189 Tier 2 audit, cognium-ai#130
+profile detector, ledger tooling) can verify what the ADR-008
+transform actually saw without re-running detection externally.
+
+- **cognium-dev #235 — `meta.projectProfile` on per-file IR.**
+  `analyze()` now writes the resolved `ProjectProfile` string onto
+  `Meta.projectProfile` whenever the caller supplies
+  `options.projectProfile`. Value is exactly what `makeProfileResolver`
+  returned for the file (may be `'unknown'` when a per-file `Map` did
+  not cover the file). Absent when the caller omits the option, so
+  callers unaware of the profile API see identical 3.150.0 output.
+
+- **cognium-dev #235 — `ProjectMeta.projectProfileSummary` rollup.**
+  `analyzeProject()` now writes a per-scan rollup onto
+  `ProjectMeta.projectProfileSummary` under the same condition:
+
+  ```
+  {
+    byShape: Record<ProjectShape | 'unknown', number>,
+    byEnv:   Record<ProjectEnv   | 'unknown', number>,
+    totalFiles: number,
+  }
+  ```
+
+  Every enum bucket is initialised to zero so consumers can index
+  without existence checks. `unknown` collects files that resolved
+  to the literal `'unknown'` profile or were absent from the per-file
+  map.
+
+Both fields are pure observability — no downgrade decision is derived
+from them. The C-Yes-Yes policy (#169 / ADR-008) is unchanged.
+
+Types added:
+- `ProjectProfileSummary` (exported from `circle-ir`)
+- `Meta.projectProfile?: ProjectProfile`
+- `ProjectMeta.projectProfileSummary?: ProjectProfileSummary`
+
+Tests: `tests/analysis/project-profile-summary.test.ts` (11 new,
+3596 total; was 3585 in 3.150.0).
+
+See `docs/ARCHITECTURE.md` ADR-008 "Observability output (3.150.1)".
+
 ## [3.150.0] - 2026-07-02
 
 Java `resource-leak` (Pass #21) — two ownership-transfer false-positive
