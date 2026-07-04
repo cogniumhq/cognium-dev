@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.151.0] - 2026-07-04
+
+Engine bump only — adopts
+[`circle-ir@3.151.0`](https://www.npmjs.com/package/circle-ir), which
+adds source-side scoping under the `library/*` project profile
+(cognium-dev#236):
+
+- New pass `library-profile-source-gate` (canonical #111, category
+  `security`) drops speculative `interprocedural_param` and
+  `constructor_field` sources from the taint graph when the
+  caller-supplied `ProjectProfile` begins with `library/`. Concrete
+  sources (`http_param`, `env_input`, `db_input`, `file_input`, …)
+  are preserved unconditionally.
+- No CLI-facing changes — the CLI does not yet supply
+  `projectProfile` to the engine, so scan output is unchanged for
+  cognium-dev CLI users. Downstream consumers (`cognium-ai`) that
+  supply the profile see the `external_taint_escape` (CWE-668)
+  false-positive class removed for library codebases.
+- Guarded on `disabledPasses: ['library-profile-source-gate']` at
+  the engine.
+
 ## [3.150.1] - 2026-07-04
 
 Engine bump only — adopts

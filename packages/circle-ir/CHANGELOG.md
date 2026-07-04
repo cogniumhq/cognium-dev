@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.151.0] - 2026-07-04
+
+Precision — source-side scoping under `library/*` project profile.
+
+- **cognium-dev #236 — `LibraryProfileSourceGatePass`
+  (`rule_id: library-profile-source-gate`, canonical #111,
+  category `security`).** New source-gating pass that reads the
+  resolved `ProjectProfile` from `graph.ir.meta.projectProfile`
+  (populated in 3.150.1 via #235) and, when the profile begins with
+  `library/`, drops speculative sources — `interprocedural_param`
+  and `constructor_field` — from `graph.ir.taint.sources` before
+  any flow generator sees them. Concrete anchors (`http_param`,
+  `env_input`, `db_input`, `file_input`, etc.) are preserved
+  unconditionally.
+
+  Motivation. `TaintMatcher` emits an `interprocedural_param`
+  source for every public method parameter under the presumption
+  of an attacker-controlled caller. That presumption is defensible
+  under `application/*` but systematically wrong under `library/*`:
+  the callers are downstream consumers with their own threat
+  models, not attackers. In the 22-repo harness audit the
+  Scenario-B `external_taint_escape` sink (CWE-668) alone
+  accounted for ~35% of Tier 2 H+C findings on library code, all
+  synthesised from `interprocedural_param` seeds — removing the
+  seeds source-side removes the entire class without touching the
+  sink pipeline.
+
+  Pipeline slot: after `SourceSemanticsPass` (semantic tags are
+  preserved for observability), before `SinkFilterPass` /
+  `TaintPropagationPass` (no dropped seed reaches flow generators
+  or Scenario B of `InterproceduralPass`).
+
+  No-op when the profile is absent, `'unknown'`, or a non-library
+  shape (`application/*`, `cli/*`, `server/*`, `plugin/*`).
+  Callers that do not opt in to profile detection see the exact
+  3.150.1 output. Guarded on `disabledPasses:
+  ['library-profile-source-gate']`.
+
+- **Docs.** ADR-008 in `docs/ARCHITECTURE.md` documents the
+  source-side gate and its relationship to #128 (method-level
+  entry-point gate) and #138 (per-source semantic tagging).
+  `docs/PASSES.md` gains a #111 entry.
+
+- **Tests.** 16 new unit tests (`tests/analysis/passes/
+  library-profile-source-gate.test.ts`) exercise drop / preserve
+  behaviour across every `ProjectShape` × `ProjectEnv`
+  combination, mixed-source lists, and empty inputs.
+
 ## [3.150.1] - 2026-07-04
 
 Observability — surface the resolved `ProjectProfile` on IR output so

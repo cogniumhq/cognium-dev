@@ -104,6 +104,7 @@ import { TaintMatcherPass } from './analysis/passes/taint-matcher-pass.js';
 import { ConstantPropagationPass } from './analysis/passes/constant-propagation-pass.js';
 import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js';
 import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
+import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-source-gate-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
@@ -670,6 +671,14 @@ export async function analyze(
   // TaintPropagationPass) and by scan-secrets-pass demo-path downgrade.
   // Guarded on disabledPasses so users can opt out.
   if (!disabledPasses.has('source-semantics')) pipeline.add(new SourceSemanticsPass());
+  // cognium-dev #236: under `library/*` project profile, drop
+  // speculative `interprocedural_param` / `constructor_field` sources
+  // before flow generation so `external_taint_escape` (CWE-668) and
+  // other `interprocedural_param → *` flows are never emitted. Reads
+  // `graph.ir.meta.projectProfile` (populated in 3.150.1 via #235).
+  // No-op when profile is absent, `'unknown'`, or non-library shape.
+  if (!disabledPasses.has('library-profile-source-gate'))
+    pipeline.add(new LibraryProfileSourceGatePass());
   pipeline.add(new SinkFilterPass());
   // cognium-dev #139 Tier A: drops sinks whose SinkType label disagrees
   // with the curated <Class>#<method> registry (configs/sink-semantics.json).

@@ -697,9 +697,62 @@ from them. They exist so a Tier 2 auditor can look at `scan.json` and
 answer "which files did the engine treat as library callers?" without
 having to reconstruct the resolver externally.
 
+**Source-side scoping (3.151.0, #236).** With `Meta.projectProfile`
+now populated on every per-file IR, the pipeline gained a companion
+gate to the post-hoc `applyProjectProfileTransform` severity
+downgrade: `LibraryProfileSourceGatePass` (canonical rule_id
+`library-profile-source-gate`, category `security`).
+
+The pass runs between `SourceSemanticsPass` and `SinkFilterPass` and,
+when `graph.ir.meta.projectProfile` begins with `library/`, drops
+speculative sources — `interprocedural_param` and
+`constructor_field` — from `graph.ir.taint.sources` before any flow
+generator sees them. Concrete anchors (`http_param`, `env_input`,
+`db_input`, `file_input`, etc.) are preserved unconditionally.
+
+Motivation. `TaintMatcher` emits an `interprocedural_param` source
+for every public method parameter (the "this parameter MIGHT receive
+attacker-controlled data at some caller" seed). Under
+`application/*` the assumption is defensible: unresolved callers
+eventually reduce to entry points the application owns. Under
+`library/*` it is systematically wrong — the callers are downstream
+consumers, and the correct trust-boundary answer is "the consumer's
+threat model, not ours". In the 22-repo harness audit
+`external_taint_escape` (CWE-668) alone accounted for ~35% of Tier 2
+H+C findings; those flows are synthesised in Scenario B of
+`InterproceduralPass` from `interprocedural_param` seeds, so removing
+the seeds removes the whole class of finding at the source-side
+without touching the sink pipeline.
+
+Interaction with existing gates:
+
+- **#128 entry-point gate** — method-level classifier
+  (`classifyEntryPointTier` in `entry-point-detection.ts`) that
+  suppresses Scenario A `TIER_3_LIBRARY_API` flows. Still runs
+  under application shapes where the coarse profile signal is
+  unavailable or insufficient.
+- **#138 source-semantics gate** — per-source tagger (constant / SPI
+  / demoPath) that runs immediately before this pass. Its tags are
+  preserved for observability even when the source is subsequently
+  dropped.
+- **This pass (#236)** — profile-level guard. When the caller
+  declares the whole project a library, the presumption of external
+  callers is turned off wholesale, avoiding the per-method
+  false-negative risk of #128 on library API surfaces.
+
+Guardrails:
+
+- No-op when profile is absent, `'unknown'`, or non-library shape.
+  Callers that skip profile detection get the exact 3.150.1 output.
+- Guarded on `disabledPasses.has('library-profile-source-gate')` at
+  the pipeline registration site.
+- Only speculative source types are eligible for the drop. Any future
+  concrete source type must be omitted from the eligible-types set.
+
 **Reference.** `#169` (project profile architecture), Sprint 47 release
 notes (3.105.0), Sprint 48 design discussion (this ADR),
-`#235` (Sprint 51 / 3.150.1 — observability output fields).
+`#235` (Sprint 51 / 3.150.1 — observability output fields),
+`#236` (Sprint 52 / 3.151.0 — source-side scoping under `library/*`).
 
 ---
 
