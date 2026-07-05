@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.152.0] - 2026-07-04
+
+Precision — sink-side scoping under `library/*` project profile.
+
+- **cognium-dev #232 — `LibraryProfileSinkGatePass`
+  (`rule_id: library-profile-sink-gate`, canonical #112,
+  category `security`).** Sink-side companion to #236 (3.151.0).
+  New sink-gating pass that reads the resolved `ProjectProfile`
+  from `graph.ir.meta.projectProfile` and, when the profile begins
+  with `library/`, drops the entire `log_injection` (CWE-117) sink
+  class from the authoritative sink list (fetched from
+  `SinkFilterResult.sinks` with fallback to `graph.ir.taint.sinks`
+  for stand-alone test harnesses). Every other `SinkType`
+  (`sql_injection`, `command_injection`, `xss`, `path_traversal`,
+  `deserialization`, …) is preserved unconditionally.
+
+  Motivation. `log_injection` has real, non-speculative sources
+  (`http_param`, `env_input`, `db_input`, …) that flow into
+  concrete sink calls (`Logger.info`, `logging.info`,
+  `console.log`, …), so the #236 source-side gate does not remove
+  them. The vulnerability class itself is off-topic for library
+  code: CWE-117 requires a downstream log-viewer that interprets
+  attacker-controlled log content — an application-integration
+  concern, not a library defect. Empirically ~10% of H+C findings
+  on the Tier 2 8-repo library cohort were `log_injection` (402
+  findings in cognium-ai#189 §1).
+
+  Pipeline slot: after `CliMainReflectionSuppressPass` (so every
+  sink-side categorisation / suppression pass fires first), before
+  `TaintPropagationPass` (so no dropped sink ever reaches the flow
+  generators).
+
+  No-op when the profile is absent, `'unknown'`, or a non-library
+  shape (`application/*`, `cli/*`, `server/*`, `plugin/*`) — 3.151.0
+  output is preserved verbatim for callers that skip profile
+  detection. Guarded on
+  `disabledPasses: ['library-profile-sink-gate']`. Extending
+  `DROPPED_SINK_TYPES` beyond `log_injection` is a deliberate,
+  reviewable one-line change.
+
+  Scope note. Rust log-macro findings (`info!`, `println!`,
+  `eprintln!`, …) are emitted directly by `LanguageSourcesPass`
+  and bypass the sink pipeline entirely, so they bypass this pass.
+  Deferred to a follow-up if the harness rerun shows material
+  Rust residuals; the Tier 2 8-repo cohort is Java-heavy.
+
+- **Docs.** `docs/PASSES.md` — new #112 row for
+  `library-profile-sink-gate`. `docs/ARCHITECTURE.md` ADR-008
+  section renamed "Profile-driven scoping" and extended to cover
+  both #236 (source-side) and #232 (sink-side) gates.
+
+- **Tests.** 18 new unit tests in
+  `tests/analysis/passes/library-profile-sink-gate.test.ts` —
+  drop under every `library/*` environment binding, preserve for
+  every other sink type, no-op for every non-library shape,
+  `'unknown'`, absent profile, and empty inputs.
+
 ## [3.151.0] - 2026-07-04
 
 Precision — source-side scoping under `library/*` project profile.

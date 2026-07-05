@@ -108,6 +108,7 @@ import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
+import { LibraryProfileSinkGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { TaintPropagationPass } from './analysis/passes/taint-propagation-pass.js';
 import { InterproceduralPass } from './analysis/passes/interprocedural-pass.js';
 import { DeadCodePass } from './analysis/passes/dead-code-pass.js';
@@ -694,6 +695,16 @@ export async function analyze(
   // generators never see the dropped sinks.
   if (!disabledPasses.has('cli-main-reflection-suppress'))
     pipeline.add(new CliMainReflectionSuppressPass());
+  // cognium-dev #232: under `library/*` project profile, drop the
+  // entire `log_injection` (CWE-117) sink class before flow generation.
+  // Rationale: CWE-117 requires a downstream log-viewer executing
+  // content — an application-integration concern, not a library defect.
+  // Empirically ~10% of H+C findings on Tier 2 library repos are
+  // `log_injection` (cognium-ai#189 §1). Sink-side companion to #236
+  // (source-side drop). Reads `graph.ir.meta.projectProfile` (#235).
+  // No-op when profile is absent, `'unknown'`, or non-library shape.
+  if (!disabledPasses.has('library-profile-sink-gate'))
+    pipeline.add(new LibraryProfileSinkGatePass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,

@@ -697,18 +697,24 @@ from them. They exist so a Tier 2 auditor can look at `scan.json` and
 answer "which files did the engine treat as library callers?" without
 having to reconstruct the resolver externally.
 
-**Source-side scoping (3.151.0, #236).** With `Meta.projectProfile`
-now populated on every per-file IR, the pipeline gained a companion
-gate to the post-hoc `applyProjectProfileTransform` severity
-downgrade: `LibraryProfileSourceGatePass` (canonical rule_id
-`library-profile-source-gate`, category `security`).
+**Profile-driven scoping (3.151.0, 3.152.0 — #236 + #232).** With
+`Meta.projectProfile` now populated on every per-file IR, the
+pipeline gained two profile-driven gates that complement the
+post-hoc `applyProjectProfileTransform` severity downgrade with
+upstream drops before flow generation:
 
-The pass runs between `SourceSemanticsPass` and `SinkFilterPass` and,
-when `graph.ir.meta.projectProfile` begins with `library/`, drops
-speculative sources — `interprocedural_param` and
-`constructor_field` — from `graph.ir.taint.sources` before any flow
-generator sees them. Concrete anchors (`http_param`, `env_input`,
-`db_input`, `file_input`, etc.) are preserved unconditionally.
+- `LibraryProfileSourceGatePass` (#236, 3.151.0, rule_id
+  `library-profile-source-gate`, category `security`) — **source-side**.
+- `LibraryProfileSinkGatePass` (#232, 3.152.0, rule_id
+  `library-profile-sink-gate`, category `security`) — **sink-side**.
+
+**Source-side gate (#236).** Runs between `SourceSemanticsPass` and
+`SinkFilterPass` and, when `graph.ir.meta.projectProfile` begins
+with `library/`, drops speculative sources — `interprocedural_param`
+and `constructor_field` — from `graph.ir.taint.sources` before any
+flow generator sees them. Concrete anchors (`http_param`,
+`env_input`, `db_input`, `file_input`, etc.) are preserved
+unconditionally.
 
 Motivation. `TaintMatcher` emits an `interprocedural_param` source
 for every public method parameter (the "this parameter MIGHT receive
@@ -724,6 +730,26 @@ H+C findings; those flows are synthesised in Scenario B of
 the seeds removes the whole class of finding at the source-side
 without touching the sink pipeline.
 
+**Sink-side gate (#232).** Runs between
+`CliMainReflectionSuppressPass` and `TaintPropagationPass` and, when
+`graph.ir.meta.projectProfile` begins with `library/`, drops the
+entire `log_injection` (CWE-117) sink class from the authoritative
+sink list (`SinkFilterResult.sinks`, fallback
+`graph.ir.taint.sinks`). Every other `SinkType` is preserved
+unconditionally.
+
+Motivation. `log_injection` has real, non-speculative sources
+(`http_param`, `env_input`, `db_input`, …) that flow into concrete
+sink calls (`Logger.info`, `logging.info`, `console.log`, …), so
+the source-side gate does not remove them. The vulnerability class
+itself is off-topic for library code: CWE-117 requires a downstream
+log-viewer that interprets attacker-controlled log content — an
+application-integration concern, not a library defect. Empirically
+~10% of H+C findings on the Tier 2 8-repo library cohort were
+`log_injection` (402 findings in cognium-ai#189 §1). Extending the
+drop set (`DROPPED_SINK_TYPES`) to other library-off-topic sink
+classes is a deliberate, reviewable one-line change.
+
 Interaction with existing gates:
 
 - **#128 entry-point gate** — method-level classifier
@@ -732,27 +758,40 @@ Interaction with existing gates:
   under application shapes where the coarse profile signal is
   unavailable or insufficient.
 - **#138 source-semantics gate** — per-source tagger (constant / SPI
-  / demoPath) that runs immediately before this pass. Its tags are
+  / demoPath) that runs immediately before #236. Its tags are
   preserved for observability even when the source is subsequently
   dropped.
-- **This pass (#236)** — profile-level guard. When the caller
-  declares the whole project a library, the presumption of external
-  callers is turned off wholesale, avoiding the per-method
-  false-negative risk of #128 on library API surfaces.
+- **#139 sink-semantics gate** — per-signature sink classifier
+  (`configs/sink-semantics.json`) that fires before #232. Its curated
+  drops (e.g. `Jedis#executeCommand`) are preserved for the residual
+  application-shape output; #232 layers the whole-class library-shape
+  drop on top.
+- **#236 (source-side) + #232 (sink-side)** — profile-level guards.
+  When the caller declares the whole project a library, both
+  ends of the taint-flow pipeline turn off the presumptions that
+  are systematically wrong for library code (speculative caller-side
+  sources; log-forging as a library defect).
 
 Guardrails:
 
-- No-op when profile is absent, `'unknown'`, or non-library shape.
-  Callers that skip profile detection get the exact 3.150.1 output.
-- Guarded on `disabledPasses.has('library-profile-source-gate')` at
-  the pipeline registration site.
-- Only speculative source types are eligible for the drop. Any future
-  concrete source type must be omitted from the eligible-types set.
+- Both gates are no-ops when profile is absent, `'unknown'`, or
+  non-library shape. Callers that skip profile detection get the
+  exact 3.151.0 (source-gate-only) output from the sink-gate; the
+  source-gate itself remains identical to 3.151.0.
+- Each gate is independently guardable via
+  `disabledPasses.has('library-profile-source-gate' |
+  'library-profile-sink-gate')`.
+- Only speculative source types are eligible for the source-side
+  drop; only `log_injection` is eligible for the sink-side drop.
+  Extending either set is a deliberate change reviewed against the
+  Pillar I trust-boundary rationale.
 
 **Reference.** `#169` (project profile architecture), Sprint 47 release
 notes (3.105.0), Sprint 48 design discussion (this ADR),
 `#235` (Sprint 51 / 3.150.1 — observability output fields),
-`#236` (Sprint 52 / 3.151.0 — source-side scoping under `library/*`).
+`#236` (Sprint 52 / 3.151.0 — source-side scoping under `library/*`),
+`#232` (Sprint 53 / 3.152.0 — sink-side scoping under `library/*`,
+seeded with `log_injection`).
 
 ---
 

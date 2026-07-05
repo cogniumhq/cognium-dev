@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.152.0] - 2026-07-04
+
+Engine bump only — adopts
+[`circle-ir@3.152.0`](https://www.npmjs.com/package/circle-ir), which
+adds sink-side scoping under the `library/*` project profile
+(cognium-dev#232):
+
+- New pass `library-profile-sink-gate` (canonical #112, category
+  `security`) drops the entire `log_injection` (CWE-117) sink class
+  from the taint graph when the caller-supplied `ProjectProfile`
+  begins with `library/`. Every other sink type is preserved
+  unconditionally.
+- Sink-side companion to #236 (3.151.0). Where the source-side gate
+  removed speculative `interprocedural_param` seeds under
+  `library/*`, this gate removes an entire vulnerability class
+  (log forging / CWE-117) whose exploit is exercised at the
+  application-integration boundary, not inside a library. Empirically
+  ~10% of H+C findings on the Tier 2 8-repo library cohort were
+  `log_injection`.
+- No CLI-facing changes — the CLI does not yet supply
+  `projectProfile` to the engine, so scan output is unchanged for
+  cognium-dev CLI users. Downstream consumers (`cognium-ai`) that
+  supply the profile see the `log_injection` FP class removed for
+  library codebases.
+- Guarded on `disabledPasses: ['library-profile-sink-gate']` at the
+  engine.
+
 ## [3.151.0] - 2026-07-04
 
 Engine bump only — adopts
