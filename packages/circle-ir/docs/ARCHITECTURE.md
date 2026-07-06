@@ -1218,6 +1218,223 @@ preserved unconditionally. Non-library profiles are no-ops.
 
 ---
 
+### ADR-013: DFG-walk sanitizer credit
+
+**Status:** Accepted (2026-07-06, shipped 3.155.0). Closes
+`cognium-dev#238` sub-part A.1.
+
+**Context.** `TaintPropagationPass`
+(`src/analysis/taint-propagation.ts`) enumerates source→sink paths on
+the DFG and drops any path whose taint was neutralized by a
+`TaintSanitizer` upstream of the sink. Sanitizer credit is checked at
+three call sites in the pass:
+
+1. Inner propagation-hop check — per-line fast path during the hop
+   walk.
+2. Sink-reachability check — fires the finding when a taint use
+   reaches a sink use.
+3. Interprocedural fallback check — used by `InterproceduralPass` when
+   a sink is not reached directly.
+
+Prior to 3.155.0 all three sites credited a sanitizer only when its
+recorded `line` equaled the taint hop's current line. This produced a
+load-bearing false negative on the idiomatic sanitize-then-sink shape:
+
+```java
+String safe = ESAPI.encoder().encodeForHTML(userInput);
+response.getWriter().println(safe);   // sink on a different line
+```
+
+The `encodeForHTML` sanitizer entry carries the line of the sanitize
+call. At site #2 the equality check compared it against the sink line
+of `println` — a mismatch — so the flow was emitted, producing a
+cross-repo false-positive cluster measured at ~110 findings across
+the Tier 2 polyglot cohort.
+
+Naive fixes considered and rejected:
+
+- Widen the equality check to a line window. Rejected: silent recall
+  regression across the sanitizer test corpus; window size is
+  fundamentally arbitrary.
+- Store the sanitizer's downstream defs at sanitizer-emission time.
+  Rejected: requires reshaping every language plugin's sanitizer
+  emission path and permanently expands `TaintSanitizer` payloads.
+- Extend all three sites (#1 + #2 + #3) with a DFG walk. Rejected:
+  site #1 runs in the inner propagation loop where an O(N) walk per
+  hop would regress analysis time by ~40% on large files; site #3 is
+  a fallback where credit is already granted more liberally via
+  interprocedural sanitizer inheritance.
+
+**Decision.**
+
+- Add `walkBackwardDefs()` in a new file
+  `src/analysis/dfg-walk.ts` — a bounded backward BFS on the DFG
+  chain from a starting def id, returning the visited def-id set and
+  the set of lines touched. Hop cap default 32, cycle-safe via a
+  `visited: Set<number>`.
+- Add `SanitizerCheckCtx` — an optional trailing parameter on
+  `checkSanitized()` carrying `{ startDefId, chainsByToDef, defById,
+  maxHops? }`. When present, the function credits any sanitizer whose
+  `line` intersects the lines set returned by `walkBackwardDefs`.
+- Wire `ctx` only at call site #2 (sink-reachability). Sites #1 and
+  #3 continue to invoke `checkSanitized` without `ctx` — per-line
+  fast path preserved.
+- Add a lazy `chainsByToDef` mirror on `CodeGraph.taint.chains`
+  (`src/graph/code-graph.ts`) — mirror of the existing
+  `chainsByFromDef` index built once on first access. Ensures the
+  reverse walk starts from the sink use's reaching def and follows
+  edges backward without a per-finding O(N) index build.
+- Kill switch: `passOptions.taintPropagation.dfgSanitizerWalk: 'on' |
+  'off'` (default `'on'`). When `'off'`, site #2 never passes `ctx`
+  and the engine behaves identically to 3.154.0. One-line revert
+  without a patch release if a downstream regression surfaces.
+
+**Consequences.**
+
+- 100% of the Juliet CWE-79/89/78/22/502 test corpus preserved —
+  every case ships a sanitizer on the same line as the sink or no
+  sanitizer at all; the walk is only exercised on cross-line chains.
+- OWASP Benchmark Java TPR/FPR unchanged (measured pre-ship).
+- SecuriBench Micro TPR unchanged.
+- Sanitize-then-sink shapes now credited. Projected FP-drop on the
+  Tier 2 polyglot cohort: ~110 findings (`cognium-dev#238` measurement
+  taken from 3.154.0 residual stream).
+- Complexity budget: worst-case walk cost is `O(maxHops)` per site-#2
+  check, bounded at 32 hops. Cycle safety comes free from the
+  `visited` sentinel.
+- `checkSanitized` external signature extended with an optional
+  trailing parameter — BC-safe for any existing caller.
+
+**Files.**
+
+- `packages/circle-ir/src/analysis/dfg-walk.ts` (**NEW**)
+- `packages/circle-ir/src/analysis/taint-propagation.ts` (add
+  `SanitizerCheckCtx`, wire site #2)
+- `packages/circle-ir/src/graph/code-graph.ts` (add lazy
+  `chainsByToDef` index)
+- `packages/circle-ir/tests/analysis/passes/taint-sanitizer-dfg-walk.test.ts`
+  (**NEW**)
+- `packages/circle-ir/docs/PASSES.md` §A subsection
+  "TaintPropagationPass sanitizer credit (3.155.0, #238 A.1)"
+
+---
+
+### ADR-014: Type-confusion FP targeted fixes
+
+**Status:** Accepted (2026-07-06, shipped 3.155.0). Closes
+`cognium-dev#239` sub-parts C.1, C.2, C.4. Sub-part C.3 (TOCTOU
+single-thread fast-path) is deferred — no dedicated TOCTOU pass
+exists in the codebase; `Files.exists`-family sinks were already
+dropped from the sink registry in 3.154.0 (ADR-012 §RC2), so C.3
+became a no-op at the time of shipping.
+
+**Context.** Cognium-dev issue #239 collected five type-confusion
+false positives from the polyglot Tier 2 cohort residual after
+3.154.0:
+
+- **FP#3.** `Class.forName("com.foo.Bar")` under `configs/sinks/code_injection.yaml`
+  was registered as a CWE-470 sink without a literal-argument guard.
+  Any literal `Class.forName(...)` fired.
+- **FP#1 + FP#5.** `weak-crypto-pass.ts` flagged `IvParameterSpec(new
+  byte[16])` / `SecretKeySpec(new byte[]{...}, "AES")` in test
+  fixtures. KAT (Known-Answer-Test) vectors legitimately hardcode
+  IVs and keys for reproducibility.
+- **FP#4.** JS `document.write("<hr/>")` in a library codebase was
+  emitted as an XSS sink even though the argument is a string
+  literal with no attacker-controlled surface.
+
+The 3.153.0 primitive `safe_if_string_literal_at: <argIndex>` (see
+`configs/sinks/sql_injection.yaml` JDBC entries) is the natural
+mechanism for FP#3, but `document.write` (FP#4) is emitted by the
+text-scan `findJavaScriptDOMSinks` in
+`src/analysis/passes/language-sources-pass.ts` — a regex pattern
+list that predates yaml-driven sink configuration and does not read
+the yaml literal guard. `weak-crypto-pass.ts` (FP#1/#5) runs before
+sink registration and needs a path-based short-circuit; there is no
+existing test-path allowlist primitive shared across passes.
+
+**Decision.**
+
+- **C.1 — `Class.forName` literal guard.** Add `safe_if_string_literal_at: 0`
+  to the `Class.forName` entry in
+  `configs/sinks/code_injection.yaml`. Literal `Class.forName("com.foo.Bar")`
+  becomes safe; `Class.forName(userInput)` remains flagged as CWE-470.
+- **C.2 — Weak-crypto test-file allowlist.** Introduce a new module
+  `src/analysis/path-classification.ts` exporting a
+  `isTestPath(filepath: string | undefined): boolean` predicate.
+  Regex-only (no glob library — browser compatible). Matches Java
+  Maven/Gradle (`**/test/**`, `**/tests/**`, `*Test.{java,kt}`),
+  Python (`tests/`, `test_*.py`, `*_test.py`), Go (`*_test.go`),
+  JS/TS (`*.test.{ts,tsx,js,jsx}`, `*.spec.{ts,js}`, Jest
+  `__tests__/`), RSpec (`spec/`). Backslash-normalized for Windows
+  callers. `WeakCryptoPass` short-circuits when `isTestPath(file)`
+  is true — returns `{ findings: [] }` after the existing
+  `isProtocolMandatedCryptoFile` check.
+- **C.4 — `document.write` / `document.writeln` literal guard.** Add
+  an inline literal check to `findJavaScriptDOMSinks` in
+  `src/analysis/passes/language-sources-pass.ts`. When the emitted
+  method is `document.write` or `document.writeln`, extract the
+  argument via regex, reject any argument containing `+` (string
+  concatenation), then accept as literal only if the whole argument
+  matches one of three strict quote-balanced regexes:
+
+  - Double-quoted: `/^"(?:[^"\\]|\\.)*"$/`
+  - Single-quoted: `/^'(?:[^'\\]|\\.)*'$/`
+  - Template literal (no `${}` interpolation): `` /^`(?:[^`\\$]|\\.|\$(?!\{))*`$/ ``
+
+  Rationale for the strict form: an early implementation used
+  `arg.startsWith('"')` and broke regression test #80
+  (`document.write('<p>' + q + '</p>')` — starts and ends with `'`
+  but contains user-controlled concatenation). The `+`-reject
+  filter plus quote-balanced regex is the minimal correct guard.
+
+- **C.3 — deferred.** `packages/circle-ir/src/analysis/passes/safe-toctou-pass.ts`
+  referenced in the ticket does not exist. `Files.exists`,
+  `Files.isDirectory`, `Files.isRegularFile` were already dropped
+  from the default `path_traversal` sink registry in 3.154.0
+  (ADR-012 §RC2), which is the reason FP#2 no longer reproduces
+  independently. If a dedicated TOCTOU pattern pass is added later,
+  a single-thread fast-path predicate can be layered in then. Out
+  of scope for 3.155.0.
+
+**Consequences.**
+
+- 5 projected FP drops on the polyglot Tier 2 cohort (`cognium-dev#239`
+  measurement).
+- Juliet CWE-329 / CWE-321 non-test paths still flagged (100%
+  preserved — the allowlist is filepath-scoped, not shape-scoped).
+- Juliet CWE-470 `Class.forName(userInput)` still flagged.
+- Juliet CWE-79 dynamic `document.write` shapes still flagged;
+  regression test #80 (`document.write('<p>' + q + '</p>')`) verifies
+  the concatenation branch remains a sink.
+- OWASP Benchmark unchanged (all Benchmark cases live under
+  `src/main/java/...` — `isTestPath` returns false).
+- Shared `path-classification.ts` module opens the door for other
+  passes to consume the same test-file heuristic (e.g. `todo-in-prod`,
+  `hardcoded-credential`) in a future ADR without duplicating the
+  regex list.
+
+**Files.**
+
+- `packages/circle-ir/configs/sinks/code_injection.yaml`
+  (`safe_if_string_literal_at: 0` on `Class.forName`)
+- `packages/circle-ir/src/analysis/path-classification.ts` (**NEW**)
+- `packages/circle-ir/src/analysis/passes/weak-crypto-pass.ts`
+  (test-path early-return after protocol-mandated-crypto check)
+- `packages/circle-ir/src/analysis/passes/language-sources-pass.ts`
+  (`document.write` / `document.writeln` literal guard in
+  `findJavaScriptDOMSinks`)
+- `packages/circle-ir/tests/analysis/path-classification.test.ts`
+  (**NEW**, 12 tests)
+- `packages/circle-ir/tests/analysis/passes/weak-crypto-test-path.test.ts`
+  (**NEW**, 8 tests)
+- `packages/circle-ir/tests/analysis/passes/class-forname-literal.test.ts`
+  (**NEW**, 2 tests)
+- `packages/circle-ir/tests/analysis/passes/document-write-literal.test.ts`
+  (**NEW**, 3 tests)
+
+---
+
 ## Analysis Pipeline
 
 `analyze()` runs a single `AnalysisPipeline` of **36 sequential `AnalysisPass` implementations**. Each pass declares a `category: PassCategory` and can emit `SastFinding` objects via `context.addFinding()`.

@@ -58,7 +58,7 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 |---|---------|-----|-------------|
 | 1 | `sql-injection` | CWE-89 | User input in SQL without parameterization |
 | 2 | `command-injection` | CWE-78 | User input in shell exec/system. Sprint 77a (#216 Pattern X): Java `Runtime.getRuntime().exec(new String[]{...})` / `new ProcessBuilder(new String[]{...})` argv-array forms recognized as `command_injection` + `external_taint_escape` sanitizers (no shell interpretation, tainted argv element cannot smuggle metacharacters; single-string concat form `exec("echo " + arg)` intentionally NOT matched). Sprint 77a: Rust `Command::new("LITERAL").arg(...).arg(...)` argv-form with string-literal program recognized as sanitizer (tainted-program slot `Command::new(prog).arg(...)` NOT matched; shell-via-argv `Command::new("sh"/"bash"/...).arg("-c")` explicitly excluded since `-c` re-enables shell parsing) |
-| 3 | `xss` | CWE-79 | User input in HTML output without encoding. Sprint 73 (#216): JS user-defined replace-based wrapper functions (e.g. `function esc(s) { return String(s).replace(/[&<>"']/g, ...) }`) are recognized as sanitizers via two-pass discovery + call-site emission. Sprint 74 (#216 Pattern B): Python var-aware set-membership allow-list guard (`if t not in ALLOWED: abort(...)` → only sanitizes `xss` on lines referencing `t`) covers Jinja `env.from_string` SSTI. Sprint 77a (#216 Pattern X): Python Jinja2 `Environment(..., autoescape=<expr>)` declarations (where `<expr>` is not `False`/`None`/`0`) recognized — `xss` + `external_taint_escape` sanitizer emitted at every `<env>.get_template(...).render(...)` chain line on the same `<env>` identifier; plain `Environment(...)` without `autoescape=` keyword intentionally NOT matched |
+| 3 | `xss` | CWE-79 | User input in HTML output without encoding. Sprint 73 (#216): JS user-defined replace-based wrapper functions (e.g. `function esc(s) { return String(s).replace(/[&<>"']/g, ...) }`) are recognized as sanitizers via two-pass discovery + call-site emission. Sprint 74 (#216 Pattern B): Python var-aware set-membership allow-list guard (`if t not in ALLOWED: abort(...)` → only sanitizes `xss` on lines referencing `t`) covers Jinja `env.from_string` SSTI. Sprint 77a (#216 Pattern X): Python Jinja2 `Environment(..., autoescape=<expr>)` declarations (where `<expr>` is not `False`/`None`/`0`) recognized — `xss` + `external_taint_escape` sanitizer emitted at every `<env>.get_template(...).render(...)` chain line on the same `<env>` identifier; plain `Environment(...)` without `autoescape=` keyword intentionally NOT matched. **3.155.0 (#239 C.4):** JS `document.write` / `document.writeln` with a single **string-literal** argument (double-quoted, single-quoted, or template literal without `${}` interpolation and without `+` concatenation) is no longer emitted as an `xss` sink at the text-scan layer in `findJavaScriptDOMSinks` (`language-sources-pass.ts`). Literals such as `document.write("<hr/>")` carry no attacker-controlled surface; concatenated forms (`document.write('<p>' + q + '</p>')`) and variable arguments remain flagged |
 | 4 | `path-traversal` | CWE-22 | User input in file path operations. Sprint 76 (#216 Pattern B): Java `Path full = ROOT.resolve(name).normalize()` chain followed by `if (!full.startsWith(ROOT)) throw/return` guard recognized as sanitizer for `path_traversal` + `external_taint_escape` at the resolve line and every subsequent line referencing `full` (`.normalize()` alone is intentionally NOT recognized — absolute-path arguments replace `ROOT`; the `startsWith` guard is load-bearing) |
 | 5 | `ssrf` | CWE-918 | User input in outbound HTTP URL. Sprint 75 (#216 Pattern D): JS var-aware allow-list guard (`if (!ALLOWED.has(url.hostname))`, `if (!ALLOWED_HOSTS.includes(host))`, `if (ALLOWED.indexOf(host) < 0)` with `return`/`throw`/`res.status(...).send/end/json(...)` terminator) recognized as sanitizer for both `ssrf` and synthetic `external_taint_escape`; URL/host alias chain (`const url = new URL(src); const h = url.hostname`) tracked |
 | 6 | `deserialization` | CWE-502 | Untrusted data passed to deserialization |
@@ -66,7 +66,7 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 | 8 | `ldap-injection` | CWE-90 | User input in LDAP query string. Sprint 74 (#216 Pattern B): Python regex-fullmatch tight-allowlist wrapper functions (e.g. `def checked_uid(uid): if not re.fullmatch(r"[A-Za-z0-9_-]+", uid): abort(...); return uid`) recognized as sanitizers via var-aware call-site emission |
 | 9 | `xpath-injection` | CWE-643 | User input in XPath expression |
 | 10 | `nosql-injection` | CWE-943 | User input in NoSQL query |
-| 11 | `code-injection` | CWE-94 | User input in eval/exec/ScriptEngine |
+| 11 | `code-injection` | CWE-94 | User input in eval/exec/ScriptEngine. **3.155.0 (#239 C.1):** `Class.forName` in `configs/sinks/code_injection.yaml` carries `safe_if_string_literal_at: 0` — literal `Class.forName("com.foo.Bar")` is dropped as a CWE-470 sink; `Class.forName(userInput)` remains flagged |
 | 12 | `open-redirect` | CWE-601 | User input controls HTTP redirect target |
 | 13 | `log-injection` | CWE-117 | User input written to log without sanitization. Sprint 73 (#216): JS user-defined CRLF-redaction wrapper functions (e.g. `function redact(s) { return String(s).replace(/[\r\n\t]/g, '_') }`) are recognized as sanitizers. Sprint 76 (#216 Pattern B): Java inline `log.info("...", user.replaceAll("[\\r\\n\\t]", "_"))` recognized — `log_injection` + `external_taint_escape` sanitizer emitted on the same source line when a recognized slf4j/log4j/JUL log call (`log`/`logger`/`LOG`/`LOGGER`/`slog` receivers; `info`/`warn`/`error`/`debug`/`trace`/`fatal`/`severe`/`fine{,r,st}`/`config`/`warning` methods) contains an inline CRLF-strip `.replaceAll("[...\\r\\n...]", ...)` or `.replace('\\n'\|'\\r'\|'\\t', ...)` argument. A `replaceAll` on a different earlier line is intentionally NOT recognized |
 | 14 | `trust-boundary` | CWE-501 | Tainted data crosses trust boundary (e.g. session write) |
@@ -79,6 +79,47 @@ All 19 passes operate on the `taint` graph. SARIF level: `error`.
 | 17 | `weak-hash` | CWE-328 | MD5 or SHA-1 used for security purposes (pattern pass — see §A6) |
 | 18 | `weak-crypto` | CWE-327 / CWE-329 / CWE-321 / CWE-326 | Weak ciphers, ECB mode, static/zero IV, hardcoded symmetric key, weak RSA key size (< 2048) (pattern pass — see §A6). Sprint 7 (3.56.0) finished cross-language parity: Python `modes.ECB()` / `AES.new(b"…", …)` / `rsa.generate_private_key(key_size<2048)`; Go `aes.NewCipher([]byte("…"))` / `rsa.GenerateKey(_, <2048)` (issue #87) |
 | 19 | `insecure-cookie` | CWE-614 | Cookie set without Secure or HttpOnly flag (pattern pass — see §A6) |
+
+#### TaintPropagationPass sanitizer credit (3.155.0, #238 A.1)
+
+Passes 1–15 above are rule labels emitted from a single upstream engine —
+`TaintPropagationPass` (`src/analysis/taint-propagation.ts`) — which
+enumerates source→sink paths via the DFG and drops any path whose taint
+was sanitized along the way. Sanitizer credit is checked at three call
+sites in the pass: **(1)** inner propagation-hop check (per-line fast
+path), **(2)** sink-reachability check (fires the finding), **(3)**
+interprocedural fallback check. Before 3.155.0, all three sites only
+credited a sanitizer whose `line` equaled the taint hop's current line.
+
+Idiomatic sanitize-then-sink shapes never received credit:
+
+```java
+String safe = ESAPI.encoder().encodeForHTML(userInput);
+response.getWriter().println(safe);   // sink on a different line
+```
+
+The `encodeForHTML` sanitizer entry carries the line of the sanitize
+call, not the sink; the equality check at site #2 missed it.
+
+**3.155.0 fix (#238 A.1):** `checkSanitized()` gained an optional
+`SanitizerCheckCtx` parameter carrying `{ startDefId, chainsByToDef,
+defById, maxHops }` (default hop cap 32). When present at **site #2
+only**, the check performs a backward walk on the DFG chain from the
+sink use's reaching def (`walkBackwardDefs` in
+`src/analysis/dfg-walk.ts`), crediting any sanitizer whose `line`
+matches a def in the walk. Cycle-safe via a `visited: Set<number>`
+sentinel; hop cap bounds worst-case cost. Sites #1 and #3 are
+unchanged — the per-line fast path is preserved, and interprocedural
+sanitizer credit is unchanged.
+
+`CodeGraph.taint.chains` gained a lazy `chainsByToDef` mirror of
+`chainsByFromDef` (built once on first access) so the walk starts from
+the sink use's reaching def and follows edges in reverse without an
+extra O(N) index build per finding.
+
+Kill switch: `passOptions.taintPropagation.dfgSanitizerWalk: 'on' |
+'off'` (default `'on'`). When `'off'`, `ctx` is never passed → engine
+behaves identically to 3.154.0.
 
 ### A2. HTML Security Passes (category = `security`, HTML files only)
 
@@ -165,7 +206,7 @@ of `config-loader.ts` into dedicated `AnalysisPass` implementations.
 |---|---------|-----|-------|--------|-------------|
 | 16 | `weak-random` | CWE-330 | warning | shipped | Non-cryptographic PRNG used (Java `new Random()` / `Math.random` / `ThreadLocalRandom`, Python `random.*`, JS `Math.random`, Go `math/rand` — import-aware to avoid `crypto/rand` FPs). Mirrors gosec G404 / Bandit B311 |
 | 17 | `weak-hash` | CWE-328 | warning | shipped | MD2/MD4/MD5/SHA-1 via Java `MessageDigest.getInstance`, Apache Commons `DigestUtils.{md5,sha1}{,Hex}`, Python `hashlib.{md5,sha1,new("md5",…)}`, JS `crypto.createHash`/`createHmac`, Go `crypto/md5` + `crypto/sha1`. Mirrors gosec G401 / Bandit B303. (sprint 71: bash `md5`/`sha1`/`md5sum`/`sha1sum` command in pipeline/standalone) |
-| 18 | `weak-crypto` | CWE-327 / CWE-329 / CWE-321 / CWE-326 | error | shipped | Weak symmetric cipher (DES/3DES/RC2/RC4/Blowfish/IDEA/SEED/CAST5) **or** ECB mode (incl. Java AES default = ECB) via Java `Cipher.getInstance`, Python pycryptodome `*.new(...)`/`AES.new(key, MODE_ECB)` and `cryptography.hazmat algorithms.{TripleDES,Blowfish,ARC4,…}`, JS `crypto.createCipher` (deprecated) / `createCipheriv("…-ecb"|"des-…")`, Go `des.NewCipher`/`des.NewTripleDESCipher`/`rc4.NewCipher`. **Java config patterns (issue #87):** static/zero IV (`new IvParameterSpec(new byte[N])`, `"…".getBytes()` → CWE-329), hardcoded symmetric key material (`new SecretKeySpec("…".getBytes(), …)` → CWE-321), weak RSA key size (`KeyPairGenerator.initialize(<2048)` → CWE-326). Mirrors gosec G401/G405 / Bandit B304/B305. (sprint 78: Go raw ECB via `aes.NewCipher` + unwrapped `<v>.Encrypt/Decrypt` — drops vars wrapped by `cipher.NewGCM/CBCEncrypter/CTR/OFB/CFB`; Rust raw ECB via `Aes128/192/256::new` + `.encrypt_block/.decrypt_block`) |
+| 18 | `weak-crypto` | CWE-327 / CWE-329 / CWE-321 / CWE-326 | error | shipped | Weak symmetric cipher (DES/3DES/RC2/RC4/Blowfish/IDEA/SEED/CAST5) **or** ECB mode (incl. Java AES default = ECB) via Java `Cipher.getInstance`, Python pycryptodome `*.new(...)`/`AES.new(key, MODE_ECB)` and `cryptography.hazmat algorithms.{TripleDES,Blowfish,ARC4,…}`, JS `crypto.createCipher` (deprecated) / `createCipheriv("…-ecb"|"des-…")`, Go `des.NewCipher`/`des.NewTripleDESCipher`/`rc4.NewCipher`. **Java config patterns (issue #87):** static/zero IV (`new IvParameterSpec(new byte[N])`, `"…".getBytes()` → CWE-329), hardcoded symmetric key material (`new SecretKeySpec("…".getBytes(), …)` → CWE-321), weak RSA key size (`KeyPairGenerator.initialize(<2048)` → CWE-326). Mirrors gosec G401/G405 / Bandit B304/B305. (sprint 78: Go raw ECB via `aes.NewCipher` + unwrapped `<v>.Encrypt/Decrypt` — drops vars wrapped by `cipher.NewGCM/CBCEncrypter/CTR/OFB/CFB`; Rust raw ECB via `Aes128/192/256::new` + `.encrypt_block/.decrypt_block`). **3.155.0 (#239 C.2):** file-path allowlist via `isTestPath(file)` in `src/analysis/path-classification.ts` — `WeakCryptoPass` short-circuits (returns zero findings) when the filepath matches a test-fixture convention (Java `**/test/**`, `**/tests/**`, `*Test.{java,kt}`; Python `tests/`, `test_*.py`, `*_test.py`; Go `*_test.go`; JS/TS `*.test.{ts,tsx,js,jsx}`, `*.spec.{ts,js}`, Jest `__tests__/`; RSpec `spec/`). KAT (Known-Answer-Test) vectors legitimately use fixed IVs / keys / weak hashes for reproducibility; `src/`, `app/`, `main/` shapes remain flagged unconditionally |
 | 19 | `insecure-cookie` | CWE-614 | warning | shipped | Cookie set without Secure / HttpOnly: Express `res.cookie(name, val, opts)` and Fastify `reply.cookie`, Python Flask/Django/Starlette `response.set_cookie(...)`, Java `new javax.servlet.http.Cookie(...)` without `setSecure(true)` + `setHttpOnly(true)` (text-based heuristic — full DFG-based version requires variable-to-call linkage). (sprint 78: Rust actix-web `Cookie::build(...).secure(false).http_only(false)` chain) |
 | 92 | `tls-verify-disabled` | CWE-295 | error | shipped | TLS certificate / hostname verification disabled: Go `tls.Config{InsecureSkipVerify: true}` (source-text scan — composite literals are not IR calls), Python `requests/httpx(verify=False)` + `ssl._create_unverified_context` + module-level `ssl._create_default_https_context` override, JS `rejectUnauthorized: false` in any args + `process.env.NODE_TLS_REJECT_UNAUTHORIZED='0'` assignment, Java `setHostnameVerifier((h,s)->true)` / `NoopHostnameVerifier.INSTANCE` / `AllowAllHostnameVerifier`. Mirrors gosec G402 / Bandit B501/B504/B505. (sprint 71: Python `ctx.verify_mode = ssl.CERT_NONE`/`ctx.check_hostname = False` post-create mutation; Rust reqwest `.danger_accept_invalid_certs(true)`/`.danger_accept_invalid_hostnames(true)`) (sprint 78: Java anonymous `X509TrustManager` with empty `checkServerTrusted(...){}` body) |
 | 93 | `jwt-verify-disabled` | CWE-347 | error | shipped | JWT signature verification disabled or set to `none`: Python PyJWT `jwt.decode(..., options={"verify_signature": False})` / `verify=False` / `algorithms=["none"]`, JS jsonwebtoken `jwt.verify(t, secret, {algorithms:["none"]})` / `jwt.verify(t, null)` / `verify:false`, Java auth0 `JWT.require(Algorithm.none())`, jjwt `Jwts.parser()…parse(token)` (vs `parseClaimsJws`). Critical severity. Issue #86, Sprint 5. (sprint 78: Java bare `JWT.decode(token)` on auth0 API — decode parses without verifying; Rust jsonwebtoken `.insecure_disable_signature_validation()`) |
