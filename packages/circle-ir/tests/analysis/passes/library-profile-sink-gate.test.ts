@@ -18,12 +18,16 @@ import { CodeGraph } from '../../../src/graph/code-graph.js';
 import {
   LibraryProfileSinkGatePass,
   type LibraryProfileSinkGateResult,
+  LibraryProfileCwe22PathGatePass,
+  type LibraryProfileCwe22PathGateResult,
 } from '../../../src/analysis/passes/library-profile-sink-gate-pass.js';
 import type {
   CircleIR,
   ProjectProfile,
   SastFinding,
   SinkType,
+  SourceType,
+  TaintFlowInfo,
   TaintSink,
 } from '../../../src/types/index.js';
 import type { PassContext } from '../../../src/graph/analysis-pass.js';
@@ -311,6 +315,175 @@ describe('LibraryProfileSinkGatePass — empty inputs', () => {
   it('empty sink list under absent profile returns applied=false', () => {
     const { result, remaining } = runGate([], undefined);
     expect(result.applied).toBe(false);
+    expect(result.dropped).toBe(0);
+    expect(remaining).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// LibraryProfileCwe22PathGatePass (cognium-dev #245 RC1 belt-and-suspenders)
+// ===========================================================================
+
+function makeFlowIR(
+  flows: TaintFlowInfo[],
+  profile: ProjectProfile | undefined,
+): CircleIR {
+  const ir: CircleIR = {
+    meta: {
+      circle_ir: '3.0',
+      file: 'src/Foo.java',
+      language: 'java',
+      loc: flows.length,
+      hash: '',
+    },
+    types: [],
+    calls: [],
+    cfg: { blocks: [], edges: [] },
+    dfg: { defs: [], uses: [], chains: [] },
+    taint: { sources: [], sinks: [], sanitizers: [], flows },
+    imports: [],
+    exports: [],
+    unresolved: [],
+    enriched: {} as CircleIR['enriched'],
+  };
+  if (profile !== undefined) {
+    ir.meta.projectProfile = profile;
+  }
+  return ir;
+}
+
+function runCwe22Gate(
+  flows: TaintFlowInfo[],
+  profile: ProjectProfile | undefined,
+): { result: LibraryProfileCwe22PathGateResult; remaining: TaintFlowInfo[] } {
+  const ir = makeFlowIR(flows, profile);
+  const graph = new CodeGraph(ir);
+  const findings: SastFinding[] = [];
+  const ctx: PassContext = {
+    graph,
+    code: '',
+    language: 'java',
+    config: { sources: [], sinks: [], sanitizers: [] } as TaintConfig,
+    getResult: () => {
+      throw new Error('not used');
+    },
+    hasResult: () => false,
+    addFinding: (f) => findings.push(f),
+    getFindings: () => findings,
+  };
+  const result = new LibraryProfileCwe22PathGatePass().run(ctx);
+  return { result, remaining: graph.ir.taint.flows ?? [] };
+}
+
+function flow(
+  sourceType: SourceType,
+  sinkType: SinkType,
+  line = 10,
+): TaintFlowInfo {
+  return {
+    source_line: 1,
+    sink_line: line,
+    source_type: sourceType,
+    sink_type: sinkType,
+    path: [],
+    confidence: 0.8,
+    sanitized: false,
+  };
+}
+
+describe('LibraryProfileCwe22PathGatePass — CWE-22 speculative-source drops', () => {
+  it('CWE22-1: library/production drops path_traversal + interprocedural_param flow', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('interprocedural_param', 'path_traversal')],
+      'library/production',
+    );
+    expect(result.applied).toBe(true);
+    expect(result.profile).toBe('library/production');
+    expect(result.dropped).toBe(1);
+    expect(result.droppedBySourceType.interprocedural_param).toBe(1);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('CWE22-2: library/production drops path_traversal + constructor_field flow', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('constructor_field', 'path_traversal')],
+      'library/production',
+    );
+    expect(result.applied).toBe(true);
+    expect(result.dropped).toBe(1);
+    expect(result.droppedBySourceType.constructor_field).toBe(1);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('CWE22-3: library/sample drops both speculative source shapes in mixed list', () => {
+    const flows = [
+      flow('interprocedural_param', 'path_traversal', 10),
+      flow('constructor_field', 'path_traversal', 20),
+      flow('http_param', 'path_traversal', 30),  // preserved
+    ];
+    const { result, remaining } = runCwe22Gate(flows, 'library/sample');
+    expect(result.applied).toBe(true);
+    expect(result.dropped).toBe(2);
+    expect(result.droppedBySourceType.interprocedural_param).toBe(1);
+    expect(result.droppedBySourceType.constructor_field).toBe(1);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].source_type).toBe('http_param');
+  });
+
+  it('CWE22-4: library/production preserves path_traversal + http_param (genuine)', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('http_param', 'path_traversal')],
+      'library/production',
+    );
+    expect(result.applied).toBe(true);
+    expect(result.dropped).toBe(0);
+    expect(remaining).toHaveLength(1);
+  });
+
+  it('CWE22-5: library/production preserves sql_injection + interprocedural_param (not CWE-22)', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('interprocedural_param', 'sql_injection')],
+      'library/production',
+    );
+    expect(result.applied).toBe(true);
+    expect(result.dropped).toBe(0);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].sink_type).toBe('sql_injection');
+  });
+
+  it('CWE22-6: application/spring preserves path_traversal + interprocedural_param (not library/*)', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('interprocedural_param', 'path_traversal')],
+      'application/spring',
+    );
+    expect(result.applied).toBe(false);
+    expect(result.dropped).toBe(0);
+    expect(remaining).toHaveLength(1);
+  });
+
+  it("CWE22-7: 'unknown' profile is a no-op", () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('interprocedural_param', 'path_traversal')],
+      'unknown',
+    );
+    expect(result.applied).toBe(false);
+    expect(result.profile).toBe('unknown');
+    expect(remaining).toHaveLength(1);
+  });
+
+  it('CWE22-8: absent profile is a no-op', () => {
+    const { result, remaining } = runCwe22Gate(
+      [flow('interprocedural_param', 'path_traversal')],
+      undefined,
+    );
+    expect(result.applied).toBe(false);
+    expect(result.profile).toBeUndefined();
+    expect(remaining).toHaveLength(1);
+  });
+
+  it('CWE22-9: empty flow list under library shape returns applied=true, dropped=0', () => {
+    const { result, remaining } = runCwe22Gate([], 'library/production');
+    expect(result.applied).toBe(true);
     expect(result.dropped).toBe(0);
     expect(remaining).toHaveLength(0);
   });

@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.154.0] - 2026-07-06
+
+Precision — two `library/*` sink-narrowing tightenings paired in one
+release, targeting the residual H+C false-positive stream measured on
+the Tier-2 Java cohort (hutool, xdocreport, languagetool,
+AndroidAsync, Sentinel, mybatis-plus, flyingsaucer, jedis) in
+`cognium-ai#189` §3–§4 after #234 + #233 shipped in 3.153.0.
+
+Projected delta on the 10-repo cohort: **−507 CWE-79** + **−182
+CWE-22** H+C findings, zero recall regressions.
+
+### Added — cognium-dev #244 — Pass #114 `library-profile-xss-gate`
+
+New sink-side gate (`LibraryProfileXssGatePass` in
+`src/analysis/passes/library-profile-xss-gate-pass.ts`) modeled 1:1 on
+`library-profile-sink-gate-pass.ts` (#112). Runs immediately after
+#112, before `RequireEntryPathPass` (#113), so #113 does not waste
+BFS on sinks that will be dropped.
+
+**Drop policy.** Under `library/*` profile only, drops `TaintSink`
+entries whose `type === 'xss'` and whose simple-name receiver class
+(`sink.class`) is on `XSS_NON_HTML_OUTPUT_CLASSES` — a 26-entry
+denylist of classes measured with **zero** true-positive HTML-output
+flows across the 10-repo census:
+
+- In-memory buffers: `StringBuilder`, `StringBuffer`,
+  `CharArrayWriter`, `ByteArrayOutputStream`
+- CLI stdio: `PrintStream`, `System`
+- HTTP client builders (source, not sink): `HttpRequest`,
+  `HttpRequestBuilder`, `HttpResponse`
+- Servlet non-body IO: `HttpSession`, `ServletRequest`,
+  `HttpServletRequest`
+- Wire-protocol writers (jedis internal): `RedisOutputStream`,
+  `SafeEncoder`, `RESP2`, `Protocol`
+- JSON parsers (source, not sink): `JSONUtil`, `JSON`,
+  `ObjectMapper`, `JsonReader`
+- Loggers (CWE-117, not CWE-79): `Logger`, `LoggerFactory`, `Log`,
+  `Slf4jLogger`
+- Router/context stores (Zuul, Sentinel): `RequestContext`, `Context`
+
+**Preserve list.** Genuine HTML-output classes are deliberately
+NOT on the denylist: `HttpServletResponse` (`getWriter`,
+`setContentType`), `JspWriter`, `ServletOutputStream`, `PrintWriter`.
+JAX-RS `Response.ok(...)` deferred (needs mediaType inspection).
+
+**Guardrails.** No-op when profile is absent / `'unknown'` /
+non-`library/*`. Explicit disable via
+`disabledPasses.has('library-profile-xss-gate')`. In-place mutation
+of `SinkFilterResult.sinks` (or `graph.ir.taint.sinks` fallback)
+prevents downstream `TaintPropagationPass` from emitting paths to
+dropped sinks.
+
+15 unit tests in `tests/analysis/passes/library-profile-xss-gate.test.ts`.
+See `docs/PASSES.md` row #114 and `docs/ARCHITECTURE.md` ADR-011.
+
+### Added — cognium-dev #245 — Pass #115 `library-profile-cwe22-path-gate` + check-only receiver removal
+
+Two orthogonal CWE-22 fixes shipped together.
+
+**RC1 — Pass #115 `library-profile-cwe22-path-gate` (belt-and-
+suspenders).** New companion class `LibraryProfileCwe22PathGatePass`
+co-located in `library-profile-sink-gate-pass.ts` (shares
+`isLibraryShape` helper). Registered in `analyzer.ts` immediately
+after `InterproceduralPass` — post-flow, so it filters
+`graph.ir.taint.flows` (per-file `TaintFlowInfo[]`) rather than
+sinks.
+
+Drops `TaintFlowInfo` where ALL:
+
+1. `isLibraryShape(projectProfile)` — `library/*` only.
+2. `flow.sink_type === 'path_traversal'` — CWE-22 only.
+3. `flow.source_type ∈ {'interprocedural_param', 'constructor_field'}`
+   — speculative source shapes only. Concrete anchors
+   (`http_param`, `annotated_param`, etc.) preserved.
+
+Rationale: 170/246 (69%) of the CWE-22 H+C findings measured on
+`library/*` corpora carried an empty `source.code` — the
+`interprocedural_param` shape. `LibraryProfileSourceGatePass` (#111,
+3.151.0) already drops these from `graph.ir.taint.sources`, but the
+new pass is a defensive companion at the flow layer, closing any
+residual gap where a code path bypasses the source-side mutation.
+
+**RC2 — check-only receiver removal (all profiles).** Deleted three
+entries from `configs/sinks/path.yaml` registration in
+`src/analysis/config-loader.ts`:
+
+- `Files.exists` (CWE-22)
+- `Files.isDirectory` (CWE-22)
+- `Files.isRegularFile` (CWE-22)
+
+These are pure boolean queries; they cannot cause traversal escape.
+`java.io.File` instance methods (`isDirectory()`, `exists()`,
+`canRead()`) were already not registered.
+
+**Guardrails.** #115 no-ops when profile absent / `'unknown'` /
+non-`library/*`. Explicit disable via
+`disabledPasses.has('library-profile-cwe22-path-gate')`. Diagnostic
+result exposes `droppedBySourceType` breakdown for observability.
+
+9 unit tests in `tests/analysis/passes/library-profile-sink-gate.test.ts`
+(CWE22-1..CWE22-9) + 1 preserve test in
+`tests/analysis/sink-config-coverage.test.ts` (`Files.exists /
+isDirectory / isRegularFile` never registered).
+
+See `docs/PASSES.md` row #115 and `docs/ARCHITECTURE.md` ADR-012.
+
+### Out of scope
+
+- **#245 RC3** (LLM verifier hallucinates HTTP context under
+  `library/*`) — owned in cognium-ai prompt engineering.
+- **AsyncHttpRequest source configuration** — #115 preserves
+  genuine HTTP-borne CWE-22 flows *if* they carry a concrete
+  `SourceType`; wiring AndroidAsync's `AsyncHttpRequest.*` as a
+  first-class HTTP source is a follow-up ticket.
+- **JAX-RS `Response.ok(...)` mediaType inspection** for XSS —
+  deferred; needs argument-inspection primitives not currently
+  available at the sink-side gate layer.
+
+### Recall guard
+
+- Juliet CWE-22 / CWE-89 / CWE-78 / CWE-79 / CWE-502: 100%.
+- OWASP Benchmark Java: 100% TPR / 0% FPR.
+- SecuriBench Micro: 97.7% TPR.
+- Every removed sink pattern paired with a preserve test.
+
 ## [3.153.0] - 2026-07-06
 
 Precision — entry-path anchoring on H+C findings + sink-signature

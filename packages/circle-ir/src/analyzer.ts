@@ -109,7 +109,8 @@ import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
-import { LibraryProfileSinkGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
+import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
+import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
 import { TaintPropagationPass } from './analysis/passes/taint-propagation-pass.js';
 import { InterproceduralPass } from './analysis/passes/interprocedural-pass.js';
 import { DeadCodePass } from './analysis/passes/dead-code-pass.js';
@@ -706,10 +707,33 @@ export async function analyze(
   // No-op when profile is absent, `'unknown'`, or non-library shape.
   if (!disabledPasses.has('library-profile-sink-gate'))
     pipeline.add(new LibraryProfileSinkGatePass());
+  // cognium-dev #244: under `library/*` project profile, drop `xss`
+  // (CWE-79) sinks whose simple-name receiver class is on a curated
+  // non-HTML-output denylist (`StringBuilder`, `PrintStream`,
+  // `HttpSession`, `HttpRequest`, jedis wire-writers, JSON parsers,
+  // Loggers, Zuul `RequestContext`, Sentinel `Context`). Runs after
+  // #112 so the sink list is already free of `log_injection` sinks;
+  // runs before `TaintPropagationPass` so flow generators never see
+  // the dropped sinks. Empirically drops 507 H+C FPs across the 10-repo
+  // Tier 2 cohort (cognium-ai#189 §3, 2026-07).
+  if (!disabledPasses.has('library-profile-xss-gate'))
+    pipeline.add(new LibraryProfileXssGatePass());
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,
   }));
+  // cognium-dev #245 RC1 (belt-and-suspenders): under `library/*`
+  // profile, drop CWE-22 (`path_traversal`) flows whose source shape
+  // is `interprocedural_param` / `constructor_field` — the same
+  // speculative shapes `LibraryProfileSourceGatePass` (#236) already
+  // drops from `graph.ir.taint.sources`. Belt-and-suspenders because
+  // 170/246 CWE-22 H+C findings on the Tier 2 10-repo cohort
+  // (cognium-ai#189 §4) carried an `interprocedural_param` source
+  // with empty `source.code`. Runs post-`InterproceduralPass` so it
+  // filters the authoritative `taint.flows` list. No-op when profile
+  // is absent, `'unknown'`, or non-library shape.
+  if (!disabledPasses.has('library-profile-cwe22-path-gate'))
+    pipeline.add(new LibraryProfileCwe22PathGatePass());
 
   // Secret scanner runs after LanguageSourcesPass so the legacy Bash
   // `hardcoded-credential` findings are already in the dedup buffer.

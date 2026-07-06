@@ -387,4 +387,24 @@ def handler(name):
     );
     expect(sqli).toBeDefined();
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Issue #245 RC2 — check-only NIO receivers are NOT path_traversal sinks
+  // Files.exists / Files.isDirectory / Files.isRegularFile are pure boolean
+  // queries; they cannot cause traversal escape. Removed in 3.154.0.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('#245 Java: Files.exists / isDirectory / isRegularFile are not registered as path_traversal sinks', () => {
+    const cfg = getDefaultConfig();
+    const dropped = ['exists', 'isDirectory', 'isRegularFile'];
+    for (const method of dropped) {
+      const entry = cfg.sinks.find(
+        s => s.class === 'Files' && s.method === method && s.type === 'path_traversal',
+      );
+      expect(
+        entry,
+        `Files.${method} must not be a path_traversal sink (check-only receiver, #245 RC2)`,
+      ).toBeUndefined();
+    }
+  });
 });

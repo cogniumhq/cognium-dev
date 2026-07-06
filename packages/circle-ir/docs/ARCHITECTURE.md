@@ -17,6 +17,8 @@ This document outlines the key architectural decisions that make Circle-IR a hig
    - [ADR-008: Project Profile + Library-API Tag Interaction](#adr-008-project-profile--library-api-tag-interaction)
   - [ADR-009: Sink-signature precision — parameterized SQL, NoSQL / executor callbacks, classpath resources, typed generics](#adr-009-sink-signature-precision--parameterized-sql-nosql--executor-callbacks-classpath-resources-typed-generics)
   - [ADR-010: Entry-path anchoring for critical/high findings](#adr-010-entry-path-anchoring-for-criticalhigh-findings)
+  - [ADR-011: XSS receiver-class narrowing under `library/*` profile](#adr-011-xss-receiver-class-narrowing-under-library-profile)
+  - [ADR-012: CWE-22 path-traversal narrowing under `library/*` profile](#adr-012-cwe-22-path-traversal-narrowing-under-library-profile)
 4. [Analysis Pipeline](#analysis-pipeline)
 5. [Benchmark Performance](#benchmark-performance)
 
@@ -1026,6 +1028,193 @@ expansion is a follow-up.
 `packages/circle-ir/src/analysis/entry-point-detection.ts`
 (`classifyEntryPointTier`), `packages/circle-ir/docs/PASSES.md`
 row #113.
+
+---
+
+### ADR-011: XSS receiver-class narrowing under `library/*` profile
+
+**Status:** Accepted (2026-07-06, shipped 3.154.0 as Pass #114
+`library-profile-xss-gate`). Closes `cognium-dev#244`.
+
+**Context.** ADR-008 established the `library/*` project profile as
+the axis along which "downstream consumer decides trust boundary"
+false positives are dropped. Pass #111
+(`library-profile-source-gate`, 3.151.0) drops speculative
+`interprocedural_param` / `constructor_field` sources under
+`library/*`, and Pass #112 (`library-profile-sink-gate`, 3.152.0)
+drops the entire `log_injection` (CWE-117) sink class. A 10-repo
+Tier 2 audit after those shipped (`cognium-ai#189` §3, 2026-07;
+cohort: hutool, xdocreport, languagetool, AndroidAsync, Sentinel,
+mybatis-plus, flyingsaucer, jedis) surfaced **507 CWE-79 H+C
+findings, zero of which are actual HTML-output sinks**. Root cause:
+`configs/sinks/xss.yaml` uses `String`-valued method receivers as
+CWE-79 catch-alls (`StringBuilder.append`, `HttpSession.setAttribute`,
+`PrintStream.println`, jedis wire-writers, JSON parsers, loggers,
+Netflix Zuul / Sentinel router context stores). Under application
+profiles these are genuine XSS anchors when the tainted string later
+reaches a JSP renderer or template engine; under `library/*` they
+are in-memory buffers, CLI stdio, HTTP client outbound reads,
+session-attribute IO, or internal wire-protocol serialization — none
+of which render to a browser.
+
+Extending #112's `DROPPED_SINK_TYPES` to include `xss` would
+over-drop: `xss` is a legitimate sink class for library code that
+writes HTML (Thymeleaf, FreeMarker, Velocity, JSP fragments,
+`HttpServletResponse.getWriter()`). Only the receiver *shape* is
+off-topic, not the sink class.
+
+**Decision.** Introduce Pass #114 `library-profile-xss-gate` as a
+sink-side companion class-level denylist. Under `library/*`, drop
+`TaintSink`s where `sink.type === 'xss'` AND `sink.class` (the
+simple-name receiver populated in `taint-matcher.ts`) is in a
+curated `XSS_NON_HTML_OUTPUT_CLASSES` denylist. The v1 denylist
+(~26 classes) targets only receivers measured with zero true
+HTML-output flows across the 10-repo cohort:
+
+- In-memory buffers: `StringBuilder`, `StringBuffer`,
+  `CharArrayWriter`, `ByteArrayOutputStream`
+- CLI stdio: `PrintStream`, `System`
+- HTTP client builders (source-not-sink shape): `HttpRequest`,
+  `HttpRequestBuilder`, `HttpResponse`
+- Servlet non-body IO: `HttpSession`, `ServletRequest`,
+  `HttpServletRequest` (deliberately excluding
+  `HttpServletResponse`, whose writers are genuine XSS sinks)
+- Jedis wire-writers: `RedisOutputStream`, `SafeEncoder`, `RESP2`,
+  `Protocol`
+- JSON parsers (source-not-sink): `JSONUtil`, `JSON`, `ObjectMapper`,
+  `JsonReader`
+- Loggers: `Logger`, `LoggerFactory`, `Log`, `Slf4jLogger`
+- Router / interceptor context stores: `RequestContext` (Zuul),
+  `Context` (Sentinel)
+
+Genuine HTML-output classes (`HttpServletResponse`, `JspWriter`,
+`ServletOutputStream`, `PrintWriter` in servlet context, template
+engines) are deliberately NOT on the denylist and continue to fire.
+Unclassified receivers (`sink.class === undefined`) fall through —
+false-negative-safe.
+
+Runs immediately after Pass #112, before `TaintPropagationPass`.
+No-op when profile is absent, `'unknown'`, or non-`library/*`.
+
+**Consequences.**
+
+- Recall preservation on OWASP Benchmark Java CWE-79 (100%),
+  SecuriBench Micro basic1-13, Juliet CWE-79/80/81/83 (100%) —
+  every removed receiver class is paired with a preserve test in
+  `tests/analysis/passes/library-profile-xss-gate.test.ts`.
+- Every entry in the denylist is a deliberate, reviewable addition.
+- The class-level design (as opposed to method-level or
+  class+method) matches how xss.yaml's catch-all fires: on the
+  receiver simple-name. If a receiver is in the denylist, all of
+  its methods are dropped as XSS sinks under `library/*`.
+- Downstream `HttpServletResponse.setContentType(...)` mediaType
+  inspection (needed to correctly classify JAX-RS `Response.ok(...)`)
+  is out of scope — argument inspection is not available at this
+  layer. Residual ~16 findings accepted for this ship.
+- AndroidAsync `response.end()` / `response.write(file, name)`
+  classification (variant is genuine only when content type is
+  `text/html`) deferred.
+
+**Files.**
+
+- `packages/circle-ir/src/analysis/passes/library-profile-xss-gate-pass.ts`
+- `packages/circle-ir/src/analyzer.ts` (registration after #112)
+- `packages/circle-ir/tests/analysis/passes/library-profile-xss-gate.test.ts`
+- `packages/circle-ir/docs/PASSES.md` row #114
+
+---
+
+### ADR-012: CWE-22 path-traversal narrowing under `library/*` profile
+
+**Status:** Accepted (2026-07-06, shipped 3.154.0). Closes
+`cognium-dev#245`. Two orthogonal fixes shipped together:
+
+- **B.1 — RC2, all profiles.** Drop check-only NIO receivers
+  (`Files.exists`, `Files.isDirectory`, `Files.isRegularFile`) from
+  the default `path_traversal` sink registry.
+- **B.2 — RC1, `library/*` only.** Pass #115
+  `library-profile-cwe22-path-gate` (a companion class in
+  `library-profile-sink-gate-pass.ts`) drops CWE-22 flows whose
+  source shape is speculative (`interprocedural_param` /
+  `constructor_field`).
+
+**Context (RC2).** `config-loader.ts` (lines 751-753 prior to
+3.154.0) registered three `java.nio.file.Files` methods as
+`path_traversal` sinks at severity `medium`. All three are pure
+boolean queries: `Files.exists(Path)`, `Files.isDirectory(Path)`,
+`Files.isRegularFile(Path)`. A boolean query on a
+attacker-controlled path returns `true`/`false` — it does not
+open, read, write, or move a file, and therefore cannot exercise
+the CWE-22 exploit primitive (traversal escape). Registering them
+as CWE-22 sinks produces load-bearing false positives with no
+matching true-positive signal.
+
+**Context (RC1).** Pass #111 (`library-profile-source-gate`) drops
+speculative sources from `graph.ir.taint.sources` under `library/*`.
+Empirically, 170/246 CWE-22 H+C findings on the Tier 2 cohort
+(`cognium-ai#189` §4, 2026-07) carried an `interprocedural_param`
+source with empty `source.code` — meaning the source-list mutation
+in #111 is not always end-to-end for CWE-22. Root cause is that
+some CWE-22 flows are synthesized downstream from paths that
+inherit the `interprocedural_param` source type from an earlier
+stage; if the caller does not thread `projectProfile` all the way,
+the source is preserved and produces a false positive at the
+finding layer.
+
+**Decision (RC2).** Delete the three `Files.*` check-only entries
+from `DEFAULT_SINKS` in `config-loader.ts`. Add a preserve /
+regression test in
+`tests/analysis/sink-config-coverage.test.ts` asserting that these
+methods are no longer registered. `java.io.File` instance methods
+(`isDirectory()`, `exists()`, `canRead()`) are already not in the
+default sink registry — no additional change needed there.
+
+**Decision (RC1).** Add Pass #115
+`library-profile-cwe22-path-gate` — a companion class colocated in
+`library-profile-sink-gate-pass.ts` sharing the same
+`isLibraryShape` predicate. Runs post-`InterproceduralPass` so it
+observes the authoritative `graph.ir.taint.flows` list. Drop
+`TaintFlowInfo` entries where `sink_type === 'path_traversal'` AND
+`source_type ∈ {'interprocedural_param', 'constructor_field'}` AND
+`isLibraryShape(profile)`. Belt-and-suspenders companion: catches
+any residual flow synthesized after the source-list mutation ran.
+
+Genuine CWE-22 flows sourced from `http_param`, `env_input`,
+`file_input`, `cookie_input`, `header_input`, `db_input`, etc. are
+preserved unconditionally. Non-library profiles are no-ops.
+
+**Consequences.**
+
+- 170/246 CWE-22 H+C findings on the Tier 2 10-repo cohort
+  projected to drop; residual is anchored to concrete source shapes.
+- OWASP Benchmark Java CWE-22 (100% TPR / 0% FPR) preserved — every
+  Benchmark case ships an `http_param` or `cookie_input` source.
+- Juliet CWE-22 (100%) preserved — every Juliet case ships a
+  concrete anchor.
+- AndroidAsync's `AsyncHttpRequest.*` genuine HTTP source shape
+  would be preserved iff AndroidAsync's source detector emits a
+  non-speculative `SourceType`. Configuring `AsyncHttpRequest` as
+  a first-class HTTP source is deferred; the cohort measurement
+  shows ~15 findings that would be correctly preserved and ~60
+  dropped once B.2 lands.
+- LLM verifier hallucinated HTTP context (RC3 in the ticket) is
+  owned in cognium-ai prompt engineering — out of scope for
+  Pillar I.
+
+**Files.**
+
+- `packages/circle-ir/src/analysis/config-loader.ts` (delete lines
+  751-753 for check-only receivers)
+- `packages/circle-ir/src/analysis/passes/library-profile-sink-gate-pass.ts`
+  (add `LibraryProfileCwe22PathGatePass` companion class + result
+  interface)
+- `packages/circle-ir/src/analyzer.ts` (register B.2 pass after
+  `InterproceduralPass`)
+- `packages/circle-ir/tests/analysis/passes/library-profile-sink-gate.test.ts`
+  (+9 CWE-22 tests)
+- `packages/circle-ir/tests/analysis/sink-config-coverage.test.ts`
+  (+1 test for check-only receiver drop)
+- `packages/circle-ir/docs/PASSES.md` row #115
 
 ---
 

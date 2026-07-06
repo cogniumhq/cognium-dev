@@ -1,10 +1,23 @@
 /**
  * LibraryProfileSinkGatePass — cognium-dev #232
+ * LibraryProfileCwe22PathGatePass — cognium-dev #245 RC1 (belt-and-suspenders)
  *
  * Sink-side companion to `LibraryProfileSourceGatePass` (#236,
  * shipped 3.151.0). Under the `library/*` project profile, drops
  * sinks whose entire vulnerability class is off-topic for library
  * code — currently just `log_injection` (CWE-117).
+ *
+ * The second (companion) class `LibraryProfileCwe22PathGatePass`
+ * runs post-`InterproceduralPass` and filters `graph.ir.taint.flows`
+ * for CWE-22 (`path_traversal`) flows whose source shape is
+ * speculative (`interprocedural_param` / `constructor_field`).
+ * `LibraryProfileSourceGatePass` already drops those `SourceType`s
+ * from `graph.ir.taint.sources` under `library/*`, but this
+ * companion catches any residual flows synthesised downstream that
+ * bypassed the source-list mutation (belt-and-suspenders).
+ * Empirically 170/246 CWE-22 H+C findings on the Tier 2 10-repo
+ * cohort carried an `interprocedural_param` source with empty
+ * `source.code` (cognium-ai#189 §4).
  *
  * Motivation:
  *
@@ -57,7 +70,7 @@
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
-import type { ProjectProfile, SinkType, TaintSink } from '../../types/index.js';
+import type { ProjectProfile, SinkType, SourceType, TaintFlowInfo, TaintSink } from '../../types/index.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 
 /**
@@ -167,6 +180,106 @@ export class LibraryProfileSinkGatePass
       applied: true,
       dropped,
       droppedByType,
+    };
+  }
+}
+
+/**
+ * `SourceType`s eligible for the CWE-22 belt-and-suspenders drop.
+ * These are the same speculative shapes that `LibraryProfileSourceGatePass`
+ * drops from `graph.ir.taint.sources` under `library/*`. Listed
+ * here so the post-flow companion catches any flow that made it
+ * past the source-list mutation.
+ */
+const CWE22_SPECULATIVE_SOURCE_TYPES: ReadonlySet<SourceType> = new Set<SourceType>([
+  'interprocedural_param',
+  'constructor_field',
+]);
+
+export interface LibraryProfileCwe22PathGateResult {
+  /**
+   * Resolved `ProjectProfile` observed on `graph.ir.meta.projectProfile`
+   * at the time this pass ran. `undefined` when no profile was
+   * supplied by the caller.
+   */
+  profile: ProjectProfile | undefined;
+  /**
+   * Whether the profile matched the library-shape trigger and the
+   * gate was applied. `false` for every non-library shape and for
+   * `'unknown'` / absent profiles.
+   */
+  applied: boolean;
+  /**
+   * Number of CWE-22 flows removed from `graph.ir.taint.flows`.
+   * Zero when `applied === false` or when no matching flow existed.
+   */
+  dropped: number;
+  /**
+   * Breakdown of drops by speculative source shape. Empty object
+   * when `applied === false` or when no drops fired.
+   */
+  droppedBySourceType: Partial<Record<SourceType, number>>;
+}
+
+export class LibraryProfileCwe22PathGatePass
+  implements AnalysisPass<LibraryProfileCwe22PathGateResult>
+{
+  readonly name = 'library-profile-cwe22-path-gate';
+  readonly category = 'security' as const;
+
+  run(ctx: PassContext): LibraryProfileCwe22PathGateResult {
+    const { graph } = ctx;
+    const profile = graph.ir.meta.projectProfile;
+
+    if (!isLibraryShape(profile)) {
+      return {
+        profile,
+        applied: false,
+        dropped: 0,
+        droppedBySourceType: {},
+      };
+    }
+
+    // `TaintPropagationPass` / `InterproceduralPass` populate
+    // `graph.ir.taint.flows`. Nothing to filter if no flow ever ran.
+    const flows = graph.ir.taint.flows;
+    if (!flows || flows.length === 0) {
+      return {
+        profile,
+        applied: true,
+        dropped: 0,
+        droppedBySourceType: {},
+      };
+    }
+
+    const droppedBySourceType: Partial<Record<SourceType, number>> = {};
+    const kept: TaintFlowInfo[] = [];
+    for (const flow of flows) {
+      if (
+        flow.sink_type === 'path_traversal' &&
+        CWE22_SPECULATIVE_SOURCE_TYPES.has(flow.source_type)
+      ) {
+        droppedBySourceType[flow.source_type] =
+          (droppedBySourceType[flow.source_type] ?? 0) + 1;
+        continue;
+      }
+      kept.push(flow);
+    }
+
+    const dropped = flows.length - kept.length;
+
+    // Mutate the flow array in place so downstream consumers
+    // (`CrossFilePass`, SARIF writer) see the filtered list.
+    if (dropped > 0) {
+      flows.length = 0;
+      flows.push(...kept);
+    }
+
+    return {
+      profile,
+      applied: true,
+      dropped,
+      droppedBySourceType,
     };
   }
 }

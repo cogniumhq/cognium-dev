@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.154.0] - 2026-07-06
+
+Engine bump only — adopts
+[`circle-ir@3.154.0`](https://www.npmjs.com/package/circle-ir), which
+paired-ships two `library/*` sink-narrowing tightenings targeting the
+residual H+C false-positive stream on the Tier-2 Java cohort
+(cognium-ai#189 §3–§4).
+
+- **cognium-dev #244 — Pass #114 `library-profile-xss-gate`.** Sink-
+  side companion to `library-profile-sink-gate` (#112). Under
+  `library/*` profile, drops `TaintSink` entries whose `type === 'xss'`
+  and whose simple-name receiver class is on a 26-entry XSS non-HTML-
+  output denylist (in-memory buffers, CLI stdio, HTTP client builders,
+  servlet non-body IO, jedis wire-protocol writers, JSON parsers,
+  loggers, router/context stores). Genuine HTML-output classes
+  (`HttpServletResponse`, `JspWriter`, `ServletOutputStream`,
+  `PrintWriter`) preserved. Projected delta: **−507 CWE-79** H+C
+  findings on the 10-repo Java cohort.
+- **cognium-dev #245 — CWE-22 fixes** (two orthogonal parts):
+  - **RC1 — Pass #115 `library-profile-cwe22-path-gate`.** Post-flow
+    belt-and-suspenders companion to `#111 library-profile-source-gate`.
+    Under `library/*` profile, drops `TaintFlowInfo` where
+    `sink_type === 'path_traversal'` and `source_type ∈
+    {'interprocedural_param', 'constructor_field'}` (speculative
+    source shapes). Concrete anchors (`http_param`, `annotated_param`)
+    preserved.
+  - **RC2 — Check-only receiver removal (all profiles).** Deleted
+    `Files.exists`, `Files.isDirectory`, `Files.isRegularFile` from
+    the `path_traversal` sink registry — these are pure boolean
+    queries, they cannot cause traversal escape.
+
+  Projected delta: **−182 CWE-22** H+C findings on the 10-repo cohort.
+
+No CLI-facing changes; scan output for cognium-dev users is unchanged
+until the CLI wires `projectProfile` through. Zero recall regressions
+on Juliet CWE-22 / -78 / -79 / -89 / -502, OWASP Benchmark Java (100%
+TPR / 0% FPR), and SecuriBench Micro (97.7% TPR).
+
 ## [3.153.0] - 2026-07-06
 
 Engine bump only — adopts

@@ -748,9 +748,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'newBufferedWriter', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'copy', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
   { method: 'move', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
-  { method: 'exists', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
-  { method: 'isDirectory', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
-  { method: 'isRegularFile', class: 'Files', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
+  // NOTE: `Files.exists`, `Files.isDirectory`, `Files.isRegularFile`
+  // were removed in 3.154.0 (#245 RC2). These NIO methods are pure
+  // boolean queries — they read a filesystem attribute and cannot
+  // cause traversal escape. A CWE-22 sink must consume the path to
+  // open, read, write, delete, list, or link a filesystem entry;
+  // check-only receivers reveal at most a boolean. Empirically
+  // ~12 H+C FPs across the 10-repo Tier 2 cohort
+  // (cognium-ai#189 §4). `java.io.File` instance methods
+  // (`file.isDirectory()`, `file.exists()`, `file.canRead()`, …)
+  // are already not registered as CWE-22 sinks.
   // RandomAccessFile
   { method: 'RandomAccessFile', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   // Framework-specific resource loading (Cocoon, Spring, etc.)
