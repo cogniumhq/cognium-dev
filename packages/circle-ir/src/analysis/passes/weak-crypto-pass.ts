@@ -52,6 +52,7 @@ import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { isProtocolMandatedCryptoFile } from './_fp-allowlists.js';
+import { isTestPath } from '../path-classification.js';
 
 // Weak symmetric ciphers (algorithm name set, lowercased).
 const WEAK_CIPHER_BASES = new Set([
@@ -404,6 +405,12 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
     // HTTP Digest). DES/RC4/MD4/MD5 are hardcoded by the protocol spec;
     // switching algorithms would break interop with conformant peers.
     if (isProtocolMandatedCryptoFile(file, code)) {
+      return { findings: [] };
+    }
+
+    // cognium-dev #239 C.2 — skip test-fixture files. KAT reproducibility
+    // vectors legitimately use fixed IVs / keys / weak hashes.
+    if (isTestPath(file)) {
       return { findings: [] };
     }
 

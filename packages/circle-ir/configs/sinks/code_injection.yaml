@@ -109,7 +109,8 @@
       "arg_positions": [
         0
       ],
-      "note": "Can load arbitrary classes with user input"
+      "safe_if_string_literal_at": 0,
+      "note": "Can load arbitrary classes with user input. Literal FQN (Class.forName(\"com.foo.Bar\")) is safe; tainted argument still fires (cognium-dev #239 C.1)."
     },
     {
       "method": "newInstance",

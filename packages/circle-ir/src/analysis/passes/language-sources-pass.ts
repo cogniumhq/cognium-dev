@@ -1523,6 +1523,29 @@ function findJavaScriptDOMSinks(sourceCode: string, language: string): Array<{
         else if (line.includes('.cssText')) method = 'cssText';
         else if (line.includes('style.textContent')) method = 'textContent';
 
+        // cognium-dev #239 C.4 — `document.write("static")` and
+        // `document.writeln("static")` with a single string-literal
+        // argument carry no user-input attack surface. Skip when the
+        // argument is one bare quoted literal (no concatenation, no
+        // template expressions).
+        if (method === 'document.write' || method === 'document.writeln') {
+          const argMatch = line.match(/document\.write(?:ln)?\s*\(\s*([^)]*)\)/);
+          if (argMatch) {
+            const arg = argMatch[1].trim();
+            // Reject concatenation.
+            if (!arg.includes('+')) {
+              // Bare `"..."` or `'...'` with no interior quotes matching the wrapper,
+              // or `` `...` `` with no `${...}` interpolation.
+              const doubleQ = /^"(?:[^"\\]|\\.)*"$/;
+              const singleQ = /^'(?:[^'\\]|\\.)*'$/;
+              const backtick = /^`(?:[^`\\$]|\\.|\$(?!\{))*`$/;
+              if (doubleQ.test(arg) || singleQ.test(arg) || backtick.test(arg)) {
+                break;
+              }
+            }
+          }
+        }
+
         const alreadyExists = sinks.some(s => s.line === lineNumber && s.cwe === cwe);
         if (!alreadyExists) {
           sinks.push({ type, cwe, severity, line: lineNumber, location: line.trim().substring(0, 80), method });

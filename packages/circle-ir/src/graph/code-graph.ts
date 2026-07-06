@@ -112,6 +112,24 @@ export class CodeGraph {
     return this._chainsByFromDef;
   }
 
+  /**
+   * Mirror of chainsByFromDef keyed by chain.to_def. Enables backward
+   * walks from a use's reaching def to earlier defs in the chain
+   * (cognium-dev #238 — DFG-walk sanitizer credit).
+   */
+  private _chainsByToDef: Map<number, DFGChain[]> | null = null;
+  get chainsByToDef(): Map<number, DFGChain[]> {
+    if (!this._chainsByToDef) {
+      this._chainsByToDef = new Map();
+      for (const chain of this.ir.dfg.chains ?? []) {
+        const arr = this._chainsByToDef.get(chain.to_def) ?? [];
+        arr.push(chain);
+        this._chainsByToDef.set(chain.to_def, arr);
+      }
+    }
+    return this._chainsByToDef;
+  }
+
   // ---------------------------------------------------------------------------
   // Call indexes
   // ---------------------------------------------------------------------------

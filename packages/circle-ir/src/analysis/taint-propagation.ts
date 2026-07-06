@@ -17,6 +17,24 @@ import type {
   SinkType,
 } from '../types/index.js';
 import { CodeGraph } from '../graph/index.js';
+import { walkBackwardDefs } from './dfg-walk.js';
+
+/**
+ * Optional context used by checkSanitized to widen its search from a single
+ * line to the transitive reaching-def chain of the tainted use.
+ *
+ * cognium-dev #238 — sanitizer-credit failure.
+ */
+export interface SanitizerCheckCtx {
+  /** DFG def id of the tainted use at the sink. */
+  startDefId: number;
+  /** graph.chainsByToDef — backward chain index. */
+  chainsByToDef: ReadonlyMap<number, DFGChain[]>;
+  /** graph.defById — def id → DFGDef lookup. */
+  defById: ReadonlyMap<number, DFGDef>;
+  /** Max hops for the backward walk. Default 32. */
+  maxHops?: number;
+}
 
 /**
  * Represents a tainted variable at a specific point in the code.
@@ -187,12 +205,23 @@ export function propagateTaint(
               if (allTaintedDefIds.has(use.def_id)) {
                 const taintInfo = taintByDefId.get(use.def_id);
                 if (taintInfo) {
-                  // Check if sanitized
+                  // Check if sanitized.
+                  //
+                  // cognium-dev #238 — pass a SanitizerCheckCtx so
+                  // checkSanitized can walk the DFG backward from the sink
+                  // use's reaching def, crediting sanitizers along the
+                  // sanitize-then-sink chain (`safe = escape(x); sink(safe)`).
+                  // Cycle-safe + bounded (hop cap 32).
                   const isSanitized = checkSanitized(
                     taintInfo.line,
                     sink.line,
                     sink.type,
-                    sanitizersByLine
+                    sanitizersByLine,
+                    {
+                      startDefId: use.def_id,
+                      chainsByToDef: graph.chainsByToDef,
+                      defById,
+                    }
                   );
 
                   if (!isSanitized.sanitized) {
@@ -408,26 +437,49 @@ function checkSanitized(
   _fromLine: number,
   toLine: number,
   sinkType: string,
-  sanitizersByLine: Map<number, TaintSanitizer[]>
+  sanitizersByLine: Map<number, TaintSanitizer[]>,
+  ctx?: SanitizerCheckCtx
 ): { sanitized: boolean; sanitizer?: TaintSanitizer } {
-  const sanitizersAtTarget = sanitizersByLine.get(toLine);
-  if (!sanitizersAtTarget || sanitizersAtTarget.length === 0) {
-    return { sanitized: false };
-  }
-
   const isKnownSinkType = KNOWN_SINK_TYPES.has(sinkType);
 
-  for (const san of sanitizersAtTarget) {
-    if (isKnownSinkType) {
-      // Sink-check context: sanitizer must cover this specific vulnerability type.
-      if (san.sanitizes.includes(sinkType as SinkType)) {
+  // Per-line fast path — preserves 3.154.0 semantics for site #1 (propagation
+  // hop check) and site #3 (interprocedural fallback), and remains the primary
+  // hit for site #2 whenever the sanitizer lives at the sink line itself.
+  const sanitizersAtTarget = sanitizersByLine.get(toLine);
+  if (sanitizersAtTarget && sanitizersAtTarget.length > 0) {
+    for (const san of sanitizersAtTarget) {
+      if (isKnownSinkType) {
+        if (san.sanitizes.includes(sinkType as SinkType)) {
+          return { sanitized: true, sanitizer: san };
+        }
+      } else if (san.sanitizes.length > 0) {
         return { sanitized: true, sanitizer: san };
       }
-    } else {
-      // Propagation context: accept any sanitizer that covers at least one
-      // sink type (i.e. is a genuine sanitizer method, not a no-op stub).
-      if (san.sanitizes.length > 0) {
-        return { sanitized: true, sanitizer: san };
+    }
+  }
+
+  // cognium-dev #238 — widen the search to the transitive reaching-def chain
+  // of the tainted use. Only fires when the caller opts in via `ctx` (site #2
+  // sink-reachability check). Cycle-safe + bounded via walkBackwardDefs.
+  if (ctx) {
+    const walk = walkBackwardDefs(
+      ctx.startDefId,
+      ctx.chainsByToDef,
+      ctx.defById,
+      { maxHops: ctx.maxHops ?? 32 }
+    );
+    for (const line of walk.lines) {
+      if (line === toLine) continue; // already checked above
+      const sansAtLine = sanitizersByLine.get(line);
+      if (!sansAtLine || sansAtLine.length === 0) continue;
+      for (const san of sansAtLine) {
+        if (isKnownSinkType) {
+          if (san.sanitizes.includes(sinkType as SinkType)) {
+            return { sanitized: true, sanitizer: san };
+          }
+        } else if (san.sanitizes.length > 0) {
+          return { sanitized: true, sanitizer: san };
+        }
       }
     }
   }

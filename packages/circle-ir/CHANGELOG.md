@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.155.0] - 2026-07-06
+
+Precision — three FP-reduction tickets shipped together against the
+residual polyglot false-positive stream measured after 3.154.0. This
+release addresses **cognium-dev #238** (sanitizer-credit failure) and
+**cognium-dev #239** (type-confusion over-fire). **cognium-dev #237**
+(polyglot entry-point classifier) is deferred pending testharness
+verification.
+
+### Added — cognium-dev #238 — DFG-walk sanitizer credit
+
+`checkSanitized()` in `taint-propagation.ts` previously credited a
+sanitizer only when its `line` equalled the taint hop's current line,
+which failed the idiomatic `String safe = escape(x); sink(safe);`
+shape. Site #2 (sink-reachability check) now accepts an optional
+`SanitizerCheckCtx` that carries a backward DFG walk from the sink
+use's reaching def, hop-capped at 32 and cycle-safe via a
+`visited: Set<number>`. Sites #1 (per-hop) and #3 (interprocedural)
+are unchanged.
+
+- New primitive `walkBackwardDefs()` in `src/analysis/dfg-walk.ts`.
+- New lazy `chainsByToDef` index on `CodeGraph.taint.chains`,
+  mirroring the existing `chainsByFromDef` index.
+- 10 unit tests in `tests/analysis/passes/taint-sanitizer-dfg-walk.test.ts`.
+
+### Added — cognium-dev #238 A.2 — XPath sanitizer registrations
+
+`configs/sinks/xpath.yaml` previously registered only two sanitizers
+(measured 0% XPath sanitizer credit across the Java cohort). Added
+five more:
+
+- `XPathExpression.setXPathVariableResolver` (parameterised XPath).
+- `Encoder.encodeForXPath` (ESAPI).
+- `StringEscapeUtils.escapeXml` / `escapeXml10` / `escapeXml11`
+  (commons-text + commons-lang3 legacy).
+
+### Added — cognium-dev #238 A.3 — `parseBoolean` hardening-coercion
+
+`Boolean.parseBoolean(userInput)` narrows the exploitable surface for
+XSS / SQLi / path-traversal / command_injection / code_injection /
+XXE / LDAP / XPath / CRLF / log-injection. Added to
+`DEFAULT_SANITIZERS` in `config-loader.ts`.
+
+### Added — cognium-dev #239 C.1 — `Class.forName` literal guard
+
+`configs/sinks/code_injection.yaml` `Class.forName` entry now carries
+`safe_if_string_literal_at: 0`. Literal `Class.forName("com.foo.Bar")`
+becomes safe; `Class.forName(userInput)` remains flagged.
+
+### Added — cognium-dev #239 C.2 — weak-crypto test-file allowlist
+
+New zero-dependency module `src/analysis/path-classification.ts`
+exports `isTestPath(filepath)` covering Java Maven/Gradle
+`src/test/`, Python `tests/` and `test_*.py`, Go `*_test.go`, JS/TS
+`*.test.*` and `*.spec.*`, Jest `__tests__/`, RSpec `spec/`, and
+`*.test.{java,kt}` (JVM alt naming). Windows backslashes normalised.
+
+`WeakCryptoPass` short-circuits to `{ findings: [] }` when the file
+path matches `isTestPath`. Test fixtures with KAT-reproducibility
+vectors (fixed IVs, hardcoded keys, weak hashes) are no longer
+flagged. Non-test paths continue to fire.
+
+### Added — cognium-dev #239 C.4 — `document.write` literal guard
+
+`findJavaScriptDOMSinks()` in `language-sources-pass.ts` now skips
+the sink when `document.write("...")` / `document.writeln("...")`
+carries a bare string-literal argument (no concatenation, no template
+substitution). Preserves concatenated and interpolated shapes as
+XSS sinks.
+
+### Deferred
+
+- **cognium-dev #237** (polyglot entry-point classifier) — extending
+  Java-primary `RequireEntryPathPass` classifier to Python / JS / Go
+  / Bash requires both extending `entry-point-detection.ts` and
+  removing the `if (language !== 'java')` gate in
+  `require-entry-path.ts:355`. Deferred pending testharness rerun to
+  avoid TPR regression risk.
+- **TOCTOU single-thread fast-path (#239 C.3)** — not applicable in
+  this codebase; no dedicated TOCTOU pass exists (the check-only
+  receivers were already dropped from the sink registry in 3.154.0
+  RC2). The FP was already fixed upstream.
+
 ## [3.154.0] - 2026-07-06
 
 Precision — two `library/*` sink-narrowing tightenings paired in one

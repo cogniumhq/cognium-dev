@@ -21,7 +21,8 @@
       "cwe": "CWE-79",
       "severity": "critical",
       "arg_positions": [0],
-      "note": "DOM XSS - document.write with user input"
+      "safe_if_string_literal_at": 0,
+      "note": "DOM XSS - document.write with user input. Literal-only argument is safe (cognium-dev #239 C.4)."
     },
     {
       "method": "writeln",
@@ -30,7 +31,8 @@
       "cwe": "CWE-79",
       "severity": "critical",
       "arg_positions": [0],
-      "note": "DOM XSS - document.writeln with user input"
+      "safe_if_string_literal_at": 0,
+      "note": "DOM XSS - document.writeln with user input. Literal-only argument is safe (cognium-dev #239 C.4)."
     },
     {
       "method": "insertAdjacentHTML",

@@ -112,10 +112,50 @@
       "note": "Using variables is safe"
     },
     {
+      "method": "setXPathVariableResolver",
+      "class": "XPathExpression",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "cognium-dev #238 A.2 — XPathExpression receiver variant"
+    },
+    {
       "method": "encodeForXPath",
       "removes": [
         "xpath_injection"
       ]
+    },
+    {
+      "method": "encodeForXPath",
+      "class": "Encoder",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "cognium-dev #238 A.2 — ESAPI.encoder().encodeForXPath()"
+    },
+    {
+      "method": "escapeXml",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "cognium-dev #238 A.2 — commons-text / commons-lang3"
+    },
+    {
+      "method": "escapeXml10",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "cognium-dev #238 A.2 — commons-text"
+    },
+    {
+      "method": "escapeXml11",
+      "class": "StringEscapeUtils",
+      "removes": [
+        "xpath_injection"
+      ],
+      "note": "cognium-dev #238 A.2 — commons-text"
     }
   ]
 }

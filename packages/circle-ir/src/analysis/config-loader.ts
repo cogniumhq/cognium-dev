@@ -2457,6 +2457,9 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'parseDouble', class: 'Double', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
   { method: 'parseShort', class: 'Short', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
   { method: 'parseByte', class: 'Byte', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+  // cognium-dev #238 A.3 — parseBoolean and expanded coercion coverage for XSS/CRLF/log/xpath/ldap/xxe.
+  // A parsed boolean/numeric cannot carry a string-injection payload for any string-based sink.
+  { method: 'parseBoolean', class: 'Boolean', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection', 'xss', 'crlf', 'log_injection', 'xpath_injection', 'ldap_injection', 'xxe'] },
   // Java UUID parse — UUID.fromString rejects non-UUID strings
   { method: 'fromString', class: 'UUID', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
 

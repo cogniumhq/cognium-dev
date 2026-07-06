@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.155.0] - 2026-07-06
+
+Engine bump only — adopts
+[`circle-ir@3.155.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #238** (sanitizer-credit failure) and
+**cognium-dev #239** (type-confusion over-fire).
+
+- **#238** — DFG-walk sanitizer credit at `checkSanitized()` site #2;
+  new `walkBackwardDefs()` primitive; new `chainsByToDef` lazy index
+  on `CodeGraph.taint.chains`. Idiomatic
+  `String safe = escape(x); sink(safe);` now receives credit.
+- **#238 A.2** — Five missing XPath sanitizers registered
+  (`XPathExpression.setXPathVariableResolver`,
+  `Encoder.encodeForXPath`,
+  `StringEscapeUtils.escapeXml{,10,11}`).
+- **#238 A.3** — `Boolean.parseBoolean` added as
+  `hardening_coercion` sanitizer across XSS / SQLi / path-traversal /
+  command_injection / code_injection / XXE / LDAP / XPath / CRLF /
+  log-injection.
+- **#239 C.1** — `Class.forName(literal)` no longer flagged as
+  code_injection.
+- **#239 C.2** — `WeakCryptoPass` short-circuits on test-file paths
+  (KAT fixtures with fixed IVs / hardcoded keys are no longer
+  flagged). New reusable `path-classification.ts` predicate.
+- **#239 C.4** — `document.write("literal")` /
+  `document.writeln("literal")` no longer flagged. Concatenated /
+  interpolated shapes preserved.
+
+**#237** (polyglot entry-point classifier) deferred pending
+testharness rerun.
+
 ## [3.154.0] - 2026-07-06
 
 Engine bump only — adopts
