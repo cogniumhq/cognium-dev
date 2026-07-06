@@ -48,6 +48,108 @@
       "real_class": "jdk_internal",
       "overrides": ["code_injection"],
       "note": "java.lang.invoke.MethodHandle — JDK-internal, not attacker-controllable"
+    },
+    {
+      "signature": "MongoTemplate#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring Data MongoDB template — BSON serialization, not SQL / shell. Added 3.153.0 (#233)."
+    },
+    {
+      "signature": "MongoOperations#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring Data MongoDB interface — same shape as MongoTemplate"
+    },
+    {
+      "signature": "MongoCollection#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Mongo driver collection — BSON operation dispatch"
+    },
+    {
+      "signature": "CqlSession#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["command_injection"],
+      "note": "DataStax Cassandra driver — CQL statement dispatch (SQL-injection remains valid; command_injection alias is dropped)"
+    },
+    {
+      "signature": "RedisTemplate#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring Data Redis template — RESP protocol dispatch, not SQL / shell"
+    },
+    {
+      "signature": "StringRedisTemplate#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring Data Redis string-specialised template — same shape as RedisTemplate"
+    },
+    {
+      "signature": "RedissonClient#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Redisson Redis client — RESP dispatch"
+    },
+    {
+      "signature": "LettuceConnection#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Lettuce Redis driver connection — RESP dispatch"
+    },
+    {
+      "signature": "RedisConnection#execute",
+      "real_class": "nosql_protocol",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring Data Redis connection interface — RESP dispatch"
+    },
+    {
+      "signature": "ExecutorService#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "java.util.concurrent.ExecutorService — Runnable dispatch, not OS exec. JDK concurrency executor callback dispatch. Added 3.153.0 (cognium-dev #233)."
+    },
+    {
+      "signature": "ThreadPoolExecutor#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "JDK ThreadPoolExecutor — Runnable dispatch"
+    },
+    {
+      "signature": "ForkJoinPool#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "JDK ForkJoinPool — Runnable/ForkJoinTask dispatch"
+    },
+    {
+      "signature": "ScheduledExecutorService#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "JDK ScheduledExecutorService — Runnable dispatch"
+    },
+    {
+      "signature": "TaskExecutor#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "Spring TaskExecutor — Runnable dispatch, not OS exec"
+    },
+    {
+      "signature": "AsyncTaskExecutor#execute",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection", "sql_injection"],
+      "note": "Spring AsyncTaskExecutor — Runnable dispatch"
+    },
+    {
+      "signature": "TransactionTemplate#execute",
+      "real_class": "framework_callback",
+      "overrides": ["sql_injection", "command_injection"],
+      "note": "Spring TransactionTemplate — TransactionCallback dispatch, not raw SQL / shell"
+    },
+    {
+      "signature": "Handler#post",
+      "real_class": "framework_callback",
+      "overrides": ["command_injection"],
+      "note": "Android / Netty Handler — Runnable dispatch, not OS exec"
     }
   ]
 }

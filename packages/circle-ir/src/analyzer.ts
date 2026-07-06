@@ -86,6 +86,7 @@ import {
 } from './analysis/per-file-finding-cap.js';
 import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
+import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
@@ -1316,6 +1317,18 @@ export async function analyzeProject(
       fa.analysis.findings = [...(fa.analysis.findings ?? []), finding];
     }
   }
+
+  // 3.5 (3.153.0, #234) — require-entry-path gate. After every pass has
+  // deposited its findings into per-file `analysis.findings`, walk the
+  // full project method graph and drop H+C security findings that have
+  // no reachable path from a classified Tier-1 entry point. Findings
+  // that ARE reachable get annotated with `entryPath[]`. Runs BEFORE
+  // ProjectMeta assembly so downstream consumers see the gated stream.
+  // No-op when the caller disabled the rule via `disabledPasses`.
+  applyRequireEntryPath(fileAnalyses, {
+    projectProfile: options.projectProfile,
+    disabledPasses: options.disabledPasses,
+  });
 
   // 4. Assemble ProjectMeta
   const filePaths = files.map(f => f.filePath);

@@ -184,16 +184,6 @@
     },
     {
       "method": "execute",
-      "class": "Executor",
-      "type": "command_injection",
-      "cwe": "CWE-078",
-      "severity": "critical",
-      "arg_positions": [
-        0
-      ]
-    },
-    {
-      "method": "execute",
       "class": "DefaultExecutor",
       "type": "command_injection",
       "cwe": "CWE-078",

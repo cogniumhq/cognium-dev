@@ -276,69 +276,6 @@
       ]
     },
     {
-      "method": "getResource",
-      "class": "ClassLoader",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "ClassLoader resource path traversal"
-    },
-    {
-      "method": "getResourceAsStream",
-      "class": "ClassLoader",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ]
-    },
-    {
-      "method": "getResources",
-      "class": "ClassLoader",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ]
-    },
-    {
-      "method": "getResource",
-      "class": "Class",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Class.getResource() path traversal"
-    },
-    {
-      "method": "getResourceAsStream",
-      "class": "Class",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ]
-    },
-    {
-      "method": "getResource",
-      "class": "ResourceLoader",
-      "type": "path_traversal",
-      "cwe": "CWE-022",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Spring ResourceLoader"
-    },
-    {
       "method": "PathResource",
       "type": "path_traversal",
       "cwe": "CWE-022",
@@ -399,26 +336,6 @@
       ]
     },
     {
-      "method": "getResourceAsStream",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
-      "method": "getResource",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
-    },
-    {
       "method": "File",
       "class": "constructor",
       "type": "path_traversal",
@@ -429,17 +346,6 @@
         1
       ],
       "note": "Auto-mined from CVE analysis. arg 1 covers File(parent, child) overload (CVE-2018-8041)"
-    },
-    {
-      "method": "openStream",
-      "class": "URL",
-      "type": "path_traversal",
-      "cwe": "CWE-22",
-      "severity": "high",
-      "arg_positions": [
-        0
-      ],
-      "note": "Auto-mined from CVE analysis"
     },
     {
       "method": "resolve",

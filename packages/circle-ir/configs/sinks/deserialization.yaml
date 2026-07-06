@@ -100,6 +100,60 @@
         "insecure_deserialization"
       ],
       "note": "JSON deserialization (safe if default typing disabled)"
+    },
+    {
+      "method": "setupDefaultSecurity",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream 1.4.18+ hardened default security. Added 3.153.0 (#233)."
+    },
+    {
+      "method": "allowTypes",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream type whitelist — restricts deserialized types. Added 3.153.0 (#233)."
+    },
+    {
+      "method": "allowTypeHierarchy",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream type-hierarchy whitelist. Added 3.153.0 (#233)."
+    },
+    {
+      "method": "allowTypesByRegExp",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream regex type whitelist. Added 3.153.0 (#233)."
+    },
+    {
+      "method": "allowTypesByWildcard",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream wildcard type whitelist. Added 3.153.0 (#233)."
+    },
+    {
+      "method": "denyTypes",
+      "class": "XStream",
+      "removes": [
+        "insecure_deserialization",
+        "deserialization"
+      ],
+      "note": "XStream deny-list. Added 3.153.0 (#233)."
     }
   ]
 }

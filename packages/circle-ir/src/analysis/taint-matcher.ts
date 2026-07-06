@@ -988,7 +988,51 @@ function argIsClassLiteral(call: CallInfo, position: number): boolean {
   if (!arg) return false;
   const expr = (arg.literal ?? arg.expression ?? '').trim();
   if (!expr) return false;
-  return CLASS_LITERAL_RE.test(expr);
+  if (CLASS_LITERAL_RE.test(expr)) return true;
+  // Added 3.153.0 (cognium-dev #233): recognise Jackson `TypeReference<T>`
+  // and Gson `TypeToken<T>` typed generics — the anonymous inner class
+  // captures the generic type at compile time exactly like `Foo.class`
+  // does for the raw type. Only the empty-body form matches; bodied
+  // subclasses (`new TypeReference<...>() { @Override … }`) are treated
+  // as dynamic to preserve recall on suspicious overrides.
+  return TYPE_TOKEN_RE.test(expr);
+}
+
+/**
+ * Matches `new TypeReference<...>() {}` (Jackson) and
+ * `new TypeToken<...>() {}` (Gson) with an empty anonymous body — the
+ * two canonical shapes for expressing a compile-time-fixed generic
+ * type at a Java call site.
+ *
+ * Whitespace is tolerated between tokens; nested generics
+ * (`<Map<String, List<User>>>`) are captured non-greedily and the
+ * body must be empty (`{}` with only whitespace inside).
+ */
+const TYPE_TOKEN_RE = /^new\s+(?:TypeReference|TypeToken)\s*<[\s\S]*>\s*\(\s*\)\s*\{\s*\}$/;
+
+/**
+ * Returns true when the call's argument at `position` is a compile-time
+ * string literal (not a variable / expression / concatenation).
+ *
+ * Used by `SinkPattern.safe_if_string_literal_at` — added 3.153.0 for
+ * JDBC `JdbcTemplate` query-family sinks that carry `?` placeholders
+ * (parameterised queries cannot be tainted at the SQL layer).
+ */
+function argIsStringLiteral(call: CallInfo, position: number): boolean {
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg) return false;
+  // Prefer `arg.literal` (the extractor's normalised literal value)
+  // when populated; fall back to `arg.expression` for languages whose
+  // extractor does not split literals out separately.
+  if (arg.literal !== undefined && arg.literal !== null && arg.literal !== '') return true;
+  const expr = (arg.expression ?? '').trim();
+  if (!expr) return false;
+  // Double-quoted, single-quoted (Groovy / Bash), or Java text-block (`"""…"""`).
+  return (
+    (expr.startsWith('"') && expr.endsWith('"') && expr.length >= 2) ||
+    (expr.startsWith("'") && expr.endsWith("'") && expr.length >= 2) ||
+    (expr.startsWith('"""') && expr.endsWith('"""'))
+  );
 }
 
 /**
@@ -1470,6 +1514,19 @@ function findSinks(
         if (
           pattern.safe_if_class_literal_at !== undefined &&
           argIsClassLiteral(call, pattern.safe_if_class_literal_at)
+        ) {
+          continue;
+        }
+
+        // Skip parameterised SQL query overloads whose SQL is a compile-time
+        // string literal (e.g. `JdbcTemplate.queryForObject("SELECT ... WHERE
+        // id = ?", args, RowMapper)`) — `?` placeholders are bound by the
+        // driver, so a literal at the query position cannot carry taint.
+        // Non-literal overloads (variable, concat, `String.format`) still
+        // match. Added 3.153.0 (cognium-dev #233).
+        if (
+          pattern.safe_if_string_literal_at !== undefined &&
+          argIsStringLiteral(call, pattern.safe_if_string_literal_at)
         ) {
           continue;
         }

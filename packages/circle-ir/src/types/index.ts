@@ -651,6 +651,31 @@ export interface SastFinding {
    * ADR-008 for the composition rules.
    */
   original_severity?: Severity;
+  /**
+   * Chain of methods traversed from a classified entry point (Spring MVC
+   * handler, JAX-RS resource, Servlet lifecycle, `main(String[])`, …) down
+   * to the method containing this finding's sink. Added in 3.153.0
+   * (cognium-dev #234).
+   *
+   * When present, the finding has a demonstrable call chain from an
+   * application entry point to the sink. When absent, either:
+   *   - the finding was emitted by a non-taint pass (metric-shape, dead
+   *     code, …) where the concept does not apply, or
+   *   - `applyRequireEntryPath` did not run (no `projectGraph`, disabled
+   *     via `disabledPasses`, or `library/*` profile — already handled by
+   *     #236 / #232).
+   *
+   * Pre-3.153.0 findings do not set this field. Consumers MUST treat it
+   * as optional. Additive and non-breaking.
+   */
+  entryPath?: TaintHop[];
+  /**
+   * Tier of the entry point that anchors `entryPath[0]` (added 3.153.0).
+   * Semantics mirror `entry-point-detection.EntryPointTier`. `'unknown'`
+   * means the classifier could not decide — findings with this tier are
+   * kept and never dropped by the require-entry-path gate.
+   */
+  entryPathTier?: 'tier1-entry-point' | 'tier2-reachable' | 'tier3-library-api' | 'unknown';
 }
 
 // =============================================================================

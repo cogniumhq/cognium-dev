@@ -15,6 +15,8 @@ This document outlines the key architectural decisions that make Circle-IR a hig
    - [ADR-006: Runtime Pass Configuration](#adr-006-runtime-pass-configuration)
    - [ADR-007: Pillar I — zero LLM in cognium-dev](#adr-007-pillar-i--zero-llm-in-cognium-dev)
    - [ADR-008: Project Profile + Library-API Tag Interaction](#adr-008-project-profile--library-api-tag-interaction)
+  - [ADR-009: Sink-signature precision — parameterized SQL, NoSQL / executor callbacks, classpath resources, typed generics](#adr-009-sink-signature-precision--parameterized-sql-nosql--executor-callbacks-classpath-resources-typed-generics)
+  - [ADR-010: Entry-path anchoring for critical/high findings](#adr-010-entry-path-anchoring-for-criticalhigh-findings)
 4. [Analysis Pipeline](#analysis-pipeline)
 5. [Benchmark Performance](#benchmark-performance)
 
@@ -792,6 +794,238 @@ notes (3.105.0), Sprint 48 design discussion (this ADR),
 `#236` (Sprint 52 / 3.151.0 — source-side scoping under `library/*`),
 `#232` (Sprint 53 / 3.152.0 — sink-side scoping under `library/*`,
 seeded with `log_injection`).
+
+---
+
+### ADR-009: Sink-signature precision — parameterized SQL, NoSQL / executor callbacks, classpath resources, typed generics
+
+**Status:** Accepted (2026-07-06, shipped Sprint 54 / 3.153.0).
+Closes `cognium-dev#233`.
+
+**Context.** Post-3.152.0 residual measurement on the Tier-2 Java
+cohort (hutool, Sentinel, plantuml, mockserver — cognium-ai#189 §1)
+showed 780 H+C false positives concentrated in four sink families
+whose YAML patterns and sink-semantics registry over-approximated by
+signature name alone:
+
+- **`sql_injection`** (166 residual) — Spring
+  `JdbcTemplate.{query,queryForObject,queryForList,queryForMap,queryForRowSet,update,execute,batchUpdate}`
+  called with a compile-time SQL string literal at arg[0] was flagged
+  even though the `?` placeholders on that overload force
+  driver-level parameterisation. Also NoSQL wire-protocol drivers
+  (`MongoTemplate.execute`, `CqlSession.execute`, `RedisTemplate.execute`,
+  `RedissonClient.execute`) aliased `execute` → `sql_injection` /
+  `command_injection` on the sink-alias name alone.
+- **`command_injection`** (48 residual) — bare `class: "Executor"` in
+  `command.yaml` collides with `java.util.concurrent.Executor` (a
+  Runnable dispatcher) and Apache Commons Exec's `Executor` interface
+  (behaviour-carried on `DefaultExecutor`). The JDK / Spring executor
+  family (`ExecutorService`, `ThreadPoolExecutor`, `ForkJoinPool`,
+  `TaskExecutor`, `TransactionTemplate`, `Handler.post`) mis-attributed
+  as OS `exec`.
+- **`path_traversal`** (460 residual — largest bucket) —
+  `ClassLoader.getResource(name)`, `ClassLoader.getResourceAsStream`,
+  `ClassLoader.getResources`, `Class.getResource`,
+  `Class.getResourceAsStream`, `ResourceLoader.getResource`, and two
+  unscoped `getResource*` catch-alls flagged as CWE-22 filesystem
+  path traversal. **They are not filesystem sinks** — classpath
+  resource resolution walks the JAR / classpath tree and cannot
+  escape the classpath root via `../` (JAR entries are opaque). If a
+  future rule wants to catch untrusted classpath resource lookups the
+  correct CWE is **CWE-829** (untrusted classpath), not CWE-22. Also
+  `URL.openStream` was double-registered as both `path_traversal` and
+  `ssrf` — the SSRF entry survives; the path_traversal duplicate was
+  the mis-classified one.
+- **`deserialization`** (106 residual) — Jackson
+  `readValue(json, new TypeReference<List<User>>() {})` and Gson
+  `fromJson(json, new TypeToken<...>() {}.getType())` are
+  compile-time-fixed types (empty-body anonymous inner class), but
+  `argIsClassLiteral()` only recognised the `Foo.class` syntax.
+  Additionally the config had no defaults for `ObjectReader#readValue`,
+  `ObjectMapper#convertValue`, or `Kryo#readObject`, and XStream's
+  hardening API (`setupDefaultSecurity` / `allowTypes` /
+  `allowTypeHierarchy` / `denyTypes`) was not recognised as a
+  deserialization sanitizer.
+
+**Decision.** Precision here is a sink-signature problem, not a
+pass-pipeline problem. The fix is entirely YAML config + registry +
+matcher predicates — no new pass, no schema break, no recall loss on
+Juliet / OWASP Benchmark / SecuriBench Micro / OWASP BenchmarkPython.
+
+The three matcher-level primitives introduced:
+
+1. **`safe_if_string_literal_at?: number`** on `SinkPattern` — suppress
+   the sink when arg[position] is a compile-time non-empty string
+   literal. Mirrors the shape of the existing
+   `safe_if_class_literal_at`. Applied to the eight JdbcTemplate
+   query-family entries in `sql.yaml`.
+2. **Extended `argIsClassLiteral()`** in `taint-matcher.ts` — accepts
+   `new (TypeReference|TypeToken)<...>() {}` (empty-body anonymous
+   inner class) in addition to `Foo.class`. Bodied subclasses (`new
+   TypeReference<>() { @Override public Type getType() { ... } }`) are
+   deliberately excluded — a body means the type is not compile-time
+   fixed.
+3. **`real_class` union widened** with `'nosql_protocol' |
+   'framework_callback'` — the `sink-semantics` pass drops any sink
+   whose (class, method) matches a registry entry with these
+   real_classes and whose alias is in the `overrides` list.
+   `sink-semantics.json` gains 18 new drop entries covering
+   Mongo / Cassandra / Redis wire-protocol dispatch and the JDK /
+   Spring executor callback surface.
+
+Deletions (no replacement):
+
+- 9 patterns from `path.yaml`
+  (ClassLoader/Class/ResourceLoader/unscoped getResource +
+  `URL.openStream` path_traversal duplicate).
+- Duplicate hardcoded ClassLoader/Class getResource entries in
+  `config-loader.ts` (paired with the YAML deletes to make the drop
+  effective — the hardcoded `DEFAULT_SINKS` shadow the YAML when
+  both fire).
+- Bare `class: "Executor"` in `command.yaml` (kept the Apache Commons
+  `DefaultExecutor` entry which is the actual OS-exec surface).
+
+Additions:
+
+- Three deserialization defaults in `config-loader.ts` after the Gson
+  `fromJson` entry: `ObjectReader#readValue`,
+  `ObjectMapper#convertValue`, `Kryo#readObject`, all with
+  `safe_if_class_literal_at: 1`.
+- Six XStream sanitizer entries in `deserialization.yaml`
+  (`setupDefaultSecurity`, `allowTypes`, `allowTypeHierarchy`,
+  `allowTypesByRegExp`, `allowTypesByWildcard`, `denyTypes`) with
+  `removes: ['insecure_deserialization', 'deserialization']`.
+
+**Recall guard.** Every deletion / drop is paired with a preserve
+test in the new / extended vitest files
+(`taint-jdbc-string-literal.test.ts`,
+`taint-nosql-execute.test.ts`, `taint-classloader-resource.test.ts`,
+`taint-typed-deserialization.test.ts`). Regression sweep on
+Juliet CWE-89 / CWE-78 / CWE-22 / CWE-502, OWASP Benchmark Java
+(100% TPR / 0% FPR unchanged), SecuriBench Micro (97.7% unchanged).
+
+**Consequences.**
+
+- 27 new tests, full circle-ir suite: 3670 passed / 2 skipped.
+- Post-3.153.0 measurement on the Tier-2 cohort is tracked on
+  `cognium-ai#189`.
+- Ownership: any future addition to
+  `SinkPattern.safe_if_string_literal_at`, `real_class`, or the
+  `sink-semantics.json` registry must be paired with the corresponding
+  preserve test in the file cross-referenced above.
+
+**Reference.** cognium-dev#233 (this ticket), `cognium-ai#189` §1
+(residual bucket measurement), matcher primitives in
+`packages/circle-ir/src/analysis/taint-matcher.ts` and
+`packages/circle-ir/src/analysis/config-loader.ts`.
+
+---
+
+### ADR-010: Entry-path anchoring for critical/high findings
+
+**Status:** Accepted (2026-07-06, shipped Sprint 54 / 3.153.0 as
+Pass #113 `require-entry-path`). Closes `cognium-dev#234`.
+
+**Context.** ADR-008 (project profile + library-API tag) and
+ADR-007's downgrade / drop hooks address false positives on
+**published-library** shapes by treating externally-callable
+functions as attacker-reachable and gating library-API tags. But the
+Tier-2 Java cohort measurement on hutool (`cognium-ai#189` §1) showed
+a distinct residual class: **utility methods in application /
+server / cli / unknown shapes** that carry a sink but are never
+called from an HTTP / RPC entry point — dead-in-practice code paths
+that ADR-008 preserves because the profile is not `library/*`. On
+hutool alone this residual bucket was 1942 H+C findings.
+
+The right question for a critical/high finding under a non-library
+profile is: *"is there a demonstrable caller-chain from a classified
+entry point (Spring `@RestController`, `@RequestMapping`, `@GetMapping`,
+JAX-RS `@Path`, Servlet `doGet/doPost`, `main(String[])`,
+`CommandLineRunner`, HttpServlet lifecycle supertypes …) to this
+sink method?"* If the answer is a conclusive **no** from a reverse
+call-graph BFS, the finding is not exploitable in the shipped shape
+of the codebase.
+
+**Decision.** Introduce Pass #113 `require-entry-path` as a
+**post-pipeline finding-gate helper**
+(`applyRequireEntryPath` in `src/analysis/require-entry-path.ts`),
+invoked from `analyzeProject()` after per-file passes and cross-file
+findings materialize. Two behaviors:
+
+1. **Annotation (always-on when `projectGraph` is present, including
+   `library/*` profiles).** For every H+C `SastFinding`, resolve the
+   containing method by `file` + line range against
+   `InterproceduralResult.methodNodes`. Reverse-BFS from the sink
+   method along `callersOf` (adjacency built once from `callEdges`)
+   capped at `MAX_VISITED_METHODS = 2000`. First hit on a
+   TIER_1_ENTRY_POINT method wins (lexicographic tiebreak for
+   determinism). Reconstruct `entryPath: TaintHop[]` from the BFS
+   parent map. Annotate the finding with `entryPath[]` and
+   `entryPathTier: 'tier1-entry-point' | 'tier2-reachable' |
+   'tier3-library-api' | 'unknown'`. Reuses the existing `TaintHop`
+   type — no schema break; downstream CLI / SARIF renderers already
+   print `TaintHop[]`.
+2. **Drop (gated).** Drop the finding iff ALL:
+   1. `projectGraph !== undefined` (cross-file ran).
+   2. `severity ∈ {'critical', 'high'}` (ticket scope is H+C only —
+      medium / low are preserved even when unreachable).
+   3. Profile is absent, `unknown`, or starts with `application/`,
+      `server/`, `cli/`, or `plugin/`. **Not `library/*`** — that
+      shape is already handled by ADR-008 + `#236`/`#232`; the two
+      gates must not double-drop.
+   4. BFS conclusively returned `null` (not `unknown`, not
+      depth-bailed at `MAX_VISITED_METHODS`).
+   5. The finding has a resolved containing method (sinks in field
+      initializers with no containing method → tier `unknown`, kept).
+   6. Not explicitly disabled via `disabledPasses.has('require-entry-path')`.
+
+Java-only in v1 — `entry-point-detection.ts`'s
+`classifyEntryPointTier()` covers the Java framework and lifecycle
+surface but is thin for JS/TS/Python/Go/Rust. Non-Java findings are
+tagged `entryPathTier: 'unknown'` and never dropped. Multi-language
+expansion is a follow-up.
+
+**Rejected alternatives.**
+
+- **Post-hoc severity downgrade** of unreachable H+C to medium.
+  Rejected in favor of drop; ADR-008's
+  `applyLibraryApiSurfaceDowngrade` already owns the downgrade slot
+  for a different signal (published-library-API caller responsibility),
+  and preserving unreachable H+C as medium would still consume
+  triage budget.
+- **`AnalysisPass` in the per-file pipeline.** Rejected —
+  reachability requires the fully materialized cross-file call graph
+  from `InterproceduralPass`. A per-file pass would need a second
+  cross-file pass anyway.
+- **Drop `TIER_UNKNOWN` classification when BFS misses.** Rejected —
+  the entry-point classifier is language-partial (Java-primary), so
+  a miss under `entryPathTier: 'unknown'` may reflect classifier
+  gaps rather than dead code. Silent recall loss is not acceptable.
+
+**Consequences.**
+
+- H+C findings under `application/*`, `server/*`, `cli/*`, `plugin/*`,
+  and `unknown` profiles gain an `entryPath[]` witness when reachable
+  and are dropped when not. Preserved findings carry a machine-readable
+  demonstration of exploit path for downstream triage and SARIF export.
+- Recall preserved on OWASP Benchmark Java (100% TPR unchanged — every
+  Benchmark case has a servlet entry point), Juliet, SecuriBench Micro.
+- 13 unit tests in
+  `tests/analysis/passes/require-entry-path.test.ts` cover the drop
+  policy, annotation policy, and no-op guards (library/* profile,
+  no `projectGraph`, `disabledPasses`, non-Java, depth bailout).
+- Post-3.153.0 delta on the hutool bucket is tracked on
+  `cognium-ai#189`.
+- Ownership: any addition to the entry-point tier classifier
+  (`entry-point-detection.ts`) automatically improves this pass;
+  changes to the reverse-BFS budget or drop policy must be paired
+  with a preserve test in the file cross-referenced above.
+
+**Reference.** cognium-dev#234 (this ticket),
+`packages/circle-ir/src/analysis/require-entry-path.ts`,
+`packages/circle-ir/src/analysis/entry-point-detection.ts`
+(`classifyEntryPointTier`), `packages/circle-ir/docs/PASSES.md`
+row #113.
 
 ---
 

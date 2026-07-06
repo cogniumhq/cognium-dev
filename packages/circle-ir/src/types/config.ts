@@ -83,6 +83,16 @@ export interface SinkPattern {
    */
   safe_if_class_literal_at?: number;
   /**
+   * Suppress the sink when the argument at the given 0-indexed position is a
+   * compile-time string literal (e.g. `"SELECT * FROM users WHERE id = ?"`).
+   * Used by JDBC `JdbcTemplate` query-family sinks — a literal SQL string
+   * that carries `?` placeholders cannot be tainted at those placeholders
+   * because the driver parameterises them separately. The non-literal
+   * overload (variable / concatenation / `String.format(...)`) remains
+   * dangerous and still matches. Added in 3.153.0 (cognium-dev #233).
+   */
+  safe_if_string_literal_at?: number;
+  /**
    * When true, the sink matches even if `receiver_type` is unresolved at the
    * call site, provided the receiver expression is a dotted property chain
    * (e.g. `req.db.query`, `ctx.app.db.execute`). This handles Express-style
@@ -138,7 +148,13 @@ export interface SinkSemanticsEntry {
     | 'jdk_internal'
     | 'functional_dispatch'
     | 'admin_config'
-    | 'logging';
+    | 'logging'
+    // Added 3.153.0 (cognium-dev #233): NoSQL wire-protocol dispatch
+    // (Mongo/Cassandra/Redis) and JDK-concurrency task-executor
+    // callbacks. Both accept `execute(...)` signatures that alias with
+    // SQL / command sinks and need per-signature drop rules.
+    | 'nosql_protocol'
+    | 'framework_callback';
 
   /**
    * `SinkType` values to drop for this signature. When a sink's

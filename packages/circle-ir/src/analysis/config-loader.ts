@@ -730,11 +730,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'FileOutputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileReader', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileWriter', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  // ClassLoader/Class resource loading (can be abused for path traversal)
-  { method: 'getResource', class: 'ClassLoader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'getResourceAsStream', class: 'ClassLoader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'getResource', class: 'Class', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  { method: 'getResourceAsStream', class: 'Class', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  // NOTE: ClassLoader.getResource / Class.getResource were removed in
+  // 3.153.0 (#233). Classpath resource resolution cannot escape the
+  // classpath root via `../` (JAR entries are opaque). If reintroduced,
+  // the correct CWE is CWE-829 (untrusted-classpath-resource), not
+  // CWE-22 path traversal.
   // Paths.get can be used for path traversal
   { method: 'get', class: 'Paths', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'of', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
@@ -1247,6 +1247,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'parseObject', class: 'JSON', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
   { method: 'parseObject', class: 'JSONObject', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
   { method: 'fromJson', class: 'Gson', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0], safe_if_class_literal_at: 1 },
+  // Jackson ObjectReader — pre-configured reader; typed 2-arg overload is safe
+  // when arg[1] is a class literal or TypeReference<>()/TypeToken<>() (handled
+  // by argIsClassLiteral extension). Added 3.153.0 (cognium-dev #233).
+  { method: 'readValue', class: 'ObjectReader', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
+  // Jackson ObjectMapper.convertValue — same class-literal shape as readValue.
+  { method: 'convertValue', class: 'ObjectMapper', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0], safe_if_class_literal_at: 1 },
+  // Kryo.readObject(input, User.class) — typed form is safe; polymorphic form
+  // (Kryo.readClassAndObject or non-literal type) remains a sink.
+  { method: 'readObject', class: 'Kryo', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0], safe_if_class_literal_at: 1 },
   // XMLDecoder
   { method: 'readObject', class: 'XMLDecoder', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [] },
   // Java serialization constructors

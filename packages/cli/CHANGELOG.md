@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.153.0] - 2026-07-06
+
+Engine bump only — adopts
+[`circle-ir@3.153.0`](https://www.npmjs.com/package/circle-ir), which
+adds entry-path anchoring on H+C findings (cognium-dev#234) and
+tightens sink signatures on four rule families (cognium-dev#233).
+
+- **cognium-dev #234 — Pass #113 `require-entry-path`.** Post-pipeline
+  finding-gate helper invoked from `analyzeProject()`. For every H+C
+  `SastFinding`, resolves the containing method and reverse-BFS along
+  the cross-file call graph to a classified entry point
+  (Spring `@RestController`, JAX-RS `@Path`, Servlet lifecycle,
+  `main(String[])`, `CommandLineRunner`, …). Preserved findings gain
+  a `SastFinding.entryPath?: TaintHop[]` witness plus a machine-readable
+  `entryPathTier` (`tier1-entry-point` | `tier2-reachable` |
+  `tier3-library-api` | `unknown`). Findings under `application/*`,
+  `server/*`, `cli/*`, `plugin/*`, and `unknown` profiles with no
+  reachable entry point are dropped. Java-only in v1. Library / *
+  profiles never drop (already handled by #232 / #236). No CLI-facing
+  changes; scan output for cognium-dev users is unchanged until the
+  CLI wires `projectProfile` through.
+- **cognium-dev #233 — Sink-signature precision on four rule
+  families.** Config + registry + matcher edits, no new pass:
+  - `sql_injection`: `JdbcTemplate.{query,queryForObject,queryForList,
+    queryForMap,queryForRowSet,update,execute,batchUpdate}` called with
+    a compile-time SQL string literal at arg[0] is no longer a sink
+    (`?` placeholders enforce parameterisation on that overload).
+    Non-literal / concat / format-string forms still fire.
+  - `command_injection`: dropped bare `class: "Executor"` (interface
+    name collides with `java.util.concurrent.Executor`); kept
+    Apache Commons `DefaultExecutor`. 18 new drops in
+    `sink-semantics.json` for NoSQL wire protocols
+    (`MongoTemplate#execute`, `CqlSession#execute`,
+    `RedisTemplate#execute`, `RedissonClient#execute`, …) and JDK /
+    Spring executor callbacks (`ExecutorService#execute`,
+    `ThreadPoolExecutor#execute`, `TaskExecutor#execute`,
+    `TransactionTemplate#execute`, …).
+  - `path_traversal`: deleted 9 patterns for
+    `ClassLoader.getResource*`, `Class.getResource*`,
+    `ResourceLoader.getResource`, unscoped `getResource*` catch-alls,
+    and `URL.openStream` (duplicate of the SSRF entry). Classpath
+    resource resolution cannot escape via `../`.
+  - `deserialization`: extended `argIsClassLiteral()` for
+    `new TypeReference<...>() {}` / `new TypeToken<...>() {}` shapes;
+    added `ObjectReader#readValue`, `ObjectMapper#convertValue`,
+    `Kryo#readObject` defaults with `safe_if_class_literal_at: 1`;
+    added six XStream hardening sanitizers
+    (`setupDefaultSecurity`, `allowTypes`, `allowTypeHierarchy`,
+    `allowTypesByRegExp`, `allowTypesByWildcard`, `denyTypes`).
+- **Recall guard.** OWASP Benchmark Java (100% TPR / 0% FPR), Juliet
+  (CWE-89 / CWE-78 / CWE-22 / CWE-502), SecuriBench Micro (97.7%),
+  and OWASP BenchmarkPython all unchanged. Full circle-ir suite:
+  3670 pass / 2 skip (+27 new tests, no regressions).
+- **Pillar I.** Clean — no LLM / AI identifiers introduced. New
+  behavior is deterministic reachability + config-driven signature
+  tightening.
+
 ## [3.152.0] - 2026-07-04
 
 Engine bump only — adopts

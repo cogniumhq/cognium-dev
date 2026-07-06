@@ -5,6 +5,171 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.153.0] - 2026-07-06
+
+Precision — entry-path anchoring on H+C findings + sink-signature
+tightening on four rule families. Paired ship targeting the residual
+H+C false-positive stream measured on the Tier-2 Java cohort in
+`cognium-ai#189` §1.
+
+### Added — cognium-dev #234 — Pass #113 `require-entry-path`
+
+Post-pipeline finding-gate helper (`applyRequireEntryPath` in
+`src/analysis/require-entry-path.ts`) invoked from `analyzeProject()`
+after per-file passes and cross-file findings materialize. Java-only.
+
+**Annotation (always-on when `projectGraph` is present, including
+`library/*` profiles).** For every H+C `SastFinding`, resolves the
+containing method by `file` + line range against
+`InterproceduralResult.methodNodes`, reverse-BFS from the sink
+method along `callersOf` (adjacency built once from `callEdges`),
+capped at `MAX_VISITED_METHODS = 2000`. First hit on a
+TIER_1_ENTRY_POINT method wins (lexicographic tiebreak for
+determinism). Annotates the finding with:
+
+- **`entryPath?: TaintHop[]`** — chain of methods from the classified
+  entry point to the sink method. Reuses the existing `TaintHop` type;
+  no schema break; downstream CLI / SARIF renderers already print
+  `TaintHop[]`.
+- **`entryPathTier?: 'tier1-entry-point' | 'tier2-reachable' |
+  'tier3-library-api' | 'unknown'`** — tier of the entry point that
+  anchors `entryPath[0]`.
+
+**Drop (gated).** Drops the finding iff ALL:
+
+1. `projectGraph !== undefined` (cross-file ran).
+2. `severity ∈ {'critical', 'high'}` — ticket scope is H+C only;
+   medium / low preserved even when unreachable.
+3. Profile absent, `unknown`, or starts with `application/`,
+   `server/`, `cli/`, or `plugin/`. **Not `library/*`** — that shape
+   is already handled by ADR-008 + `#236`/`#232`; the two gates
+   must not double-drop.
+4. BFS conclusively returned `null` (not `unknown`, not depth-bailed
+   at `MAX_VISITED_METHODS`).
+5. The finding has a resolved containing method (sinks in field
+   initializers with no containing method → tier `unknown`, kept).
+6. Not explicitly disabled via
+   `disabledPasses.has('require-entry-path')`.
+
+13 unit tests in `tests/analysis/passes/require-entry-path.test.ts`
+cover the drop policy, annotation policy, and no-op guards
+(library/* profile, no `projectGraph`, `disabledPasses`, non-Java,
+depth bailout). See `docs/PASSES.md` row #113 and `docs/ARCHITECTURE.md`
+ADR-010 for the full design.
+
+### Added — cognium-dev #233 — Sink-signature precision
+
+Config + registry + matcher edits on four sink families
+(`sql_injection`, `command_injection`, `path_traversal`,
+`deserialization`). No new pass. Every deletion / drop paired with
+a preserve test.
+
+**`SinkPattern.safe_if_string_literal_at?: number`** (matcher
+primitive) — suppresses the sink when arg[position] is a compile-time
+non-empty string literal. Mirrors `safe_if_class_literal_at`. Applied
+to the eight `JdbcTemplate.{query,queryForObject,queryForList,
+queryForMap,queryForRowSet,update,execute,batchUpdate}` entries in
+`sql.yaml` at position 0 (the `?` placeholders enforce driver-level
+parameterisation on the literal-SQL overload).
+
+**`SinkPattern.real_class` union widened** with `'nosql_protocol' |
+'framework_callback'`.
+
+**Extended `argIsClassLiteral()`** in `taint-matcher.ts` — accepts
+`new (TypeReference|TypeToken)<...>() {}` (empty-body anonymous
+inner class) in addition to `Foo.class`. Bodied subclasses
+deliberately excluded.
+
+**`configs/sink-semantics.json` — 18 new drops** for NoSQL wire
+protocols + JDK / Spring executor callbacks:
+`MongoTemplate#execute`, `MongoOperations#execute`,
+`CqlSession#execute`, `RedisTemplate#execute`,
+`StringRedisTemplate#execute`, `RedissonClient#execute`,
+`LettuceConnection#execute`, `RedisConnection#execute` (as
+`real_class: nosql_protocol`, dropping `sql_injection` /
+`command_injection` aliases); `ExecutorService#execute`,
+`ThreadPoolExecutor#execute`, `ForkJoinPool#execute`,
+`ScheduledExecutorService#execute`, `TaskExecutor#execute`,
+`AsyncTaskExecutor#execute`, `TransactionTemplate#execute`,
+`Handler#post` (as `real_class: framework_callback`).
+`CqlSession#execute` drops `command_injection` only — CQL is real SQL
+and stays flagged.
+
+**`configs/sinks/command.yaml`** — dropped bare `class: "Executor"`
+(collides with `java.util.concurrent.Executor` and Apache Commons
+`Executor` interface); kept `DefaultExecutor` (Apache Commons Exec's
+concrete OS-exec surface).
+
+**`configs/sinks/path.yaml`** — deleted 9 patterns:
+`ClassLoader.getResource(name)`,
+`ClassLoader.getResourceAsStream(name)`,
+`ClassLoader.getResources(name)`, `Class.getResource(name)`,
+`Class.getResourceAsStream(name)`, `ResourceLoader.getResource`,
+two unscoped `getResource*` catch-alls, and `URL.openStream`
+(path_traversal duplicate — SSRF entry survives). Classpath
+resource resolution cannot escape the classpath root via `../`
+(JAR entries are opaque); the correct CWE for untrusted classpath
+lookups if reintroduced is **CWE-829**, not CWE-22.
+
+**`src/analysis/config-loader.ts`** — paired removal of duplicate
+hardcoded `ClassLoader/Class getResource` entries at
+`DEFAULT_SINKS` (which shadowed the YAML deletion); added three
+deserialization defaults after the Gson `fromJson` entry:
+`ObjectReader#readValue` (high, `safe_if_class_literal_at: 1`),
+`ObjectMapper#convertValue` (medium, `safe_if_class_literal_at: 1`),
+`Kryo#readObject` (high, `safe_if_class_literal_at: 1`).
+
+**`configs/sinks/deserialization.yaml`** — added six XStream
+hardening sanitizers on `class: XStream`:
+`setupDefaultSecurity`, `allowTypes`, `allowTypeHierarchy`,
+`allowTypesByRegExp`, `allowTypesByWildcard`, `denyTypes`, all with
+`removes: ['insecure_deserialization', 'deserialization']`.
+
+### Tests
+
+- New: `tests/analysis/taint-jdbc-string-literal.test.ts` (6 tests)
+  — JdbcTemplate parameterised-SQL literal not a sink; identifier /
+  concat / format-string still is; `Statement.executeQuery("SELECT 1")`
+  preserved.
+- New: `tests/analysis/taint-nosql-execute.test.ts` (9 tests) —
+  Mongo / Redis / Redisson `.execute` not `sql_injection` /
+  `command_injection`; `CqlSession#execute` drops
+  `command_injection` and preserves `sql_injection`;
+  `Runtime.exec` + `Statement.execute` preserved.
+- New: `tests/analysis/taint-classloader-resource.test.ts` (6 tests)
+  — ClassLoader / Class / ResourceLoader `getResource` /
+  `getResourceAsStream` not `path_traversal`;
+  `FileInputStream(userPath)` preserved.
+- Extended: `tests/analysis/taint-typed-deserialization.test.ts`
+  (+6 tests) — `TypeReference<List<User>>() {}` /
+  `TypeToken<...>() {}` shapes not a sink; non-literal `Type`
+  variable still is; `ObjectReader.readValue(json)` a sink;
+  `ObjectMapper.convertValue(payload, User.class)` not a sink;
+  `Kryo.readObject(input, User.class)` still fires via the
+  receiver-agnostic base pattern (recall guard).
+- Full suite: **3670 pass, 2 skip** (baseline 3643 → +27 new tests,
+  no regressions).
+
+### Recall guard
+
+- Juliet CWE-89 / CWE-78 / CWE-22 / CWE-502: unchanged.
+- OWASP Benchmark Java: 100% TPR / 0% FPR unchanged.
+- SecuriBench Micro: 97.7% TPR unchanged.
+- OWASP BenchmarkPython: unchanged.
+
+### Documentation
+
+- Added `docs/ARCHITECTURE.md` ADR-009 (sink-signature precision)
+  and ADR-010 (entry-path anchoring).
+- Marked Pass #113 `require-entry-path` **shipped** in
+  `docs/PASSES.md`.
+
+### Pillar I
+
+Clean — deterministic reachability + config-driven signature
+tightening only. Zero LLM / AI identifiers in new files. Verified
+via `grep -RinE 'llm|openai|anthropic|claude|gpt|ai_'`.
+
 ## [3.152.0] - 2026-07-04
 
 Precision — sink-side scoping under `library/*` project profile.
