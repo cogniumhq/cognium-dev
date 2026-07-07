@@ -1930,10 +1930,44 @@ function matchesSinkPattern(
     // Prefer the IR-resolved receiver type when the language plugin populates it
     // (Java/TS resolve simple types). Falls back to the receiver-name heuristic
     // when the type is unresolved.
+    //
+    // Subtype-based matches (`isSubtypeOf`) are additionally gated on the call
+    // site providing the arguments the sink actually inspects — otherwise the
+    // JDBC-style `PreparedStatement.executeQuery()` (0 args) would spuriously
+    // match `Statement.executeQuery(String)` (arg_positions [0]) via the
+    // `PreparedStatement extends Statement` fact. The direct-name path is not
+    // gated to preserve legacy behaviour where sink pattern arity was checked
+    // downstream. — cognium-dev #241 Java
+    const subtypeArgArityOk =
+      !pattern.arg_positions ||
+      pattern.arg_positions.length === 0 ||
+      pattern.arg_positions.every((pos) => pos < (call.arguments?.length ?? 0));
+
     if (call.receiver_type && call.receiver_type === pattern.class) {
       // Resolved type matches — accept directly.
+    } else if (
+      call.receiver_type &&
+      typeHierarchy &&
+      subtypeArgArityOk &&
+      typeHierarchy.isSubtypeOf(call.receiver_type, pattern.class)
+    ) {
+      // Resolved type is a subtype of the sink class via TypeHierarchyResolver.
+      // Enables sink patterns keyed on a base interface/class (e.g.
+      // `HttpClient.execute`) to match subtype receivers (Apache
+      // `CloseableHttpClient`, `InternalHttpClient`, etc.) whose hierarchy is
+      // pre-registered via `registerCommonLibraries()`. — cognium-dev #241 Java
     } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
       // FQN tail matches simple class name.
+    } else if (
+      call.receiver_type_fqn &&
+      typeHierarchy &&
+      subtypeArgArityOk &&
+      typeHierarchy.isSubtypeOf(call.receiver_type_fqn, pattern.class)
+    ) {
+      // FQN receiver type is a subtype of the sink class via
+      // TypeHierarchyResolver. Same rationale as the simple-name subtype
+      // check above; covers the case where the language plugin resolves the
+      // receiver to a fully qualified name.
     } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {

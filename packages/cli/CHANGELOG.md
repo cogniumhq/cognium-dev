@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.156.0] - 2026-07-06
+
+Engine bump only — adopts
+[`circle-ir@3.156.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #241** Java sink-signature recall gaps:
+
+- **#241 Part A** — MyBatis `${}` annotation SQL sinks: new
+  `MyBatisAnnotationSqlSinkPass` emits synthetic `sql_injection`
+  (CWE-89) sinks on Mapper interface method call sites when the
+  method's `@Select` / `@Update` / `@Insert` / `@Delete` / `@*Provider`
+  annotation contains raw `${varname}` interpolation. `#{name}` binding
+  is safe and is not scanned. Custom mapper method names
+  (`findByName`, `getUserById`) with `${}` are now flagged.
+- **#241 Part B** — Apache HttpClient SSRF sink recognition:
+  `TypeHierarchyResolver.registerCommonLibraries()` pre-loads Apache
+  HttpClient 4.x + 5.x class-hierarchy facts (`CloseableHttpClient
+  extends HttpClient`, transitive chain), and `taint-matcher` gained
+  two `isSubtypeOf` branches gated on an arg-arity predicate.
+  `CloseableHttpClient.execute(request)` now fires as `ssrf` /
+  CWE-918 instead of the generic `external_taint_escape` / CWE-668
+  fallback.
+
+CLI surface unchanged — no new flags, no output-format changes.
+
 ## [3.155.0] - 2026-07-06
 
 Engine bump only — adopts

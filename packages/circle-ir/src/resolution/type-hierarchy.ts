@@ -588,5 +588,168 @@ export function createWithJdkTypes(): TypeHierarchyResolver {
     resolver.addType(type, 'jdk', type.package);
   }
 
+  // Add common third-party library hierarchies
+  registerCommonLibraries(resolver);
+
   return resolver;
+}
+
+/**
+ * Pre-registered type hierarchies for widely used third-party libraries.
+ *
+ * These are strictly additive facts — code that supplies its own IR types
+ * for these classes overrides the pre-registered facts via the normal
+ * `addFromIR()` path. Purpose: allow sink patterns keyed on a base class /
+ * interface (e.g. `HttpClient.execute`) to match subtype receivers
+ * (`CloseableHttpClient`, `InternalHttpClient`, etc.) via
+ * `TypeHierarchyResolver.isSubtypeOf()`.
+ *
+ * Currently registered:
+ * - Apache HttpClient 4.x (`org.apache.http.*`)
+ * - Apache HttpClient 5.x (`org.apache.hc.client5.*`)
+ */
+export function registerCommonLibraries(resolver: TypeHierarchyResolver): void {
+  // Apache HttpClient 4.x — org.apache.http.*
+  const apacheHttpClient4x: TypeInfo[] = [
+    {
+      name: 'HttpClient',
+      kind: 'interface',
+      package: 'org.apache.http.client',
+      extends: null,
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'AbstractHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: null,
+      implements: ['org.apache.http.client.HttpClient'],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'CloseableHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: null,
+      implements: ['org.apache.http.client.HttpClient'],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'InternalHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: 'org.apache.http.impl.client.CloseableHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'MinimalHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: 'org.apache.http.impl.client.CloseableHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'DefaultHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: 'org.apache.http.impl.client.AbstractHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'SystemDefaultHttpClient',
+      kind: 'class',
+      package: 'org.apache.http.impl.client',
+      extends: 'org.apache.http.impl.client.DefaultHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+  ];
+
+  // Apache HttpClient 5.x — org.apache.hc.client5.*
+  const apacheHttpClient5x: TypeInfo[] = [
+    {
+      name: 'HttpClient',
+      kind: 'interface',
+      package: 'org.apache.hc.client5.http.classic',
+      extends: null,
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'CloseableHttpClient',
+      kind: 'class',
+      package: 'org.apache.hc.client5.http.impl.classic',
+      extends: null,
+      implements: ['org.apache.hc.client5.http.classic.HttpClient'],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'InternalHttpClient',
+      kind: 'class',
+      package: 'org.apache.hc.client5.http.impl.classic',
+      extends: 'org.apache.hc.client5.http.impl.classic.CloseableHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'MinimalHttpClient',
+      kind: 'class',
+      package: 'org.apache.hc.client5.http.impl.classic',
+      extends: 'org.apache.hc.client5.http.impl.classic.CloseableHttpClient',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+  ];
+
+  for (const type of [...apacheHttpClient4x, ...apacheHttpClient5x]) {
+    resolver.addType(type, 'common-libraries', type.package);
+  }
 }

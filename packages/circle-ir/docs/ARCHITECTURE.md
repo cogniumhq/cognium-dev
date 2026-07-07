@@ -1435,6 +1435,197 @@ existing test-path allowlist primitive shared across passes.
 
 ---
 
+### ADR-015: MyBatis annotation-string SQL sinks
+
+**Status:** Accepted (2026-07-06, shipped 3.156.0). Closes
+`cognium-dev#241` Java Part A ("real-world sink signatures FN" —
+MyBatis `${}` annotation strings).
+
+**Context.** MyBatis exposes SQL two ways: XML mapper files
+(`UserMapper.xml`) and annotation-driven Mapper interfaces
+(`@Select`, `@Update`, `@Insert`, `@Delete`, and their `*Provider`
+variants) attached to method declarations. In annotation strings,
+`#{name}` performs JDBC PreparedStatement parameter binding (safe);
+`${name}` performs raw string interpolation into the SQL statement
+(SQLi). Prior to 3.156.0, `configs/sinks/sql.yaml:145-242` covered
+standard Mapper method-name wildcards (`insert/update/select*/delete`)
+and emitted a generic `mybatis_mapper_call` discovery marker — not
+a `sql_injection` sink. Custom Mapper method names (`findByName`,
+`getUserById`) with `${}` interpolation were missed entirely, and
+even for standard names the YAML sink registry has no primitive for
+inspecting the *content* of an annotation string.
+
+**Decision.** Add a new Java-only pass
+`MyBatisAnnotationSqlSinkPass` (`src/analysis/passes/mybatis-annotation-sql-sink-pass.ts`)
+that:
+
+1. Walks `graph.ir.types` for Java interfaces whose file imports
+   `org.apache.ibatis.*` (gates out unrelated libraries that reuse
+   the simple annotation name `@Select`).
+2. For each method carrying a MyBatis SQL annotation, extracts the
+   annotation body via `extractAnnotationBody()` and scans it with
+   the regex `` /\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_.]+)?\}/g ``
+   (matches `${name}`, deliberately excludes `#{name}`).
+3. Correlates each `${varname}` to a 0-based parameter index — first
+   via `@Param("varname")` on any method parameter, else via
+   MyBatis positional convention (`${param1}` → index 0, `${0}`
+   → index 0).
+4. Walks `graph.ir.calls` for call sites whose callee tail matches
+   the Mapper method (either by `resolution.target` suffix or by
+   `method_name` + `receiver_type` / `receiver_type_fqn`).
+5. Pushes synthetic `TaintSink` entries (`type: 'sql_injection'`,
+   `cwe: 'CWE-89'`, `confidence: 0.95`, `argPositions:` the
+   correlated positions) onto the `TaintMatcherResult.sinks`
+   array so downstream `SinkFilterPass` (FP suppression),
+   `TaintPropagationPass`, and `InterproceduralPass` pick them up
+   without a registry change.
+
+Pipeline slot: after `LibraryProfileSourceGatePass`, before
+`SinkFilterPass`. Kill switch: `disabledPasses: ['mybatis-annotation-sql-sink']`.
+
+**Alternatives considered.**
+
+- **YAML sink registry extension.** Adding annotation-string parsing
+  to the YAML sink loader would leak a Java-specific primitive into
+  the polyglot config layer and does not fit the current
+  `<class, method, arg_positions>` shape. Rejected.
+- **Extend `LanguageSourcesPass`.** `LanguageSourcesPass` handles
+  Java sources by shape (`@RequestParam`, `@QueryParam`), not by
+  string content. Annotation-string parsing for sinks is a distinct
+  concern that warrants its own pass. Rejected in favor of the new
+  pass.
+- **Emit at interface definition (not call site).** The MyBatis
+  interface method annotation is metadata; the actual data-flow
+  sink is a call site with tainted args. Emitting at the interface
+  declaration would give the flow generator no place to bind a
+  taint edge. Rejected.
+- **Support `#{}` too.** `#{}` is JDBC parameter binding — no SQLi.
+  Including it would over-fire on every parameterized Mapper query.
+  Rejected.
+
+**Out of scope.**
+
+- XML MyBatis mapper files (`UserMapper.xml`) — separate ticket.
+- `@SelectProvider` provider-method deep analysis — flat annotation
+  string is scanned as a best-effort recall bump, but the provider
+  method body is not.
+- MyBatis-Plus dynamic SQL (`QueryWrapper.apply("... ${x} ...")`) —
+  distinct sink shape; separate ticket.
+- Constant-only literal argument detection — conservative: even
+  when the ${}-mapped argument is a compile-time literal, the sink
+  is emitted. Downstream constant-propagation suppression already
+  fires when the argument is proven to be a literal.
+
+**Files touched (Part A).**
+
+- `packages/circle-ir/src/analysis/passes/mybatis-annotation-sql-sink-pass.ts`
+  (**NEW**, ~300 LOC)
+- `packages/circle-ir/src/analyzer.ts` (+11: import + pipeline slot
+  registration with disabledPasses gate)
+- `packages/circle-ir/tests/analysis/passes/mybatis-annotation-sql-sink.test.ts`
+  (**NEW**, 11 tests)
+
+---
+
+### ADR-016: Pre-registered common-library type hierarchy
+
+**Status:** Accepted (2026-07-06, shipped 3.156.0). Closes
+`cognium-dev#241` Java Part B ("real-world sink signatures FN" —
+Apache HttpClient SSRF fired as `external_taint_escape` CWE-668
+instead of `ssrf` CWE-918).
+
+**Context.** `configs/sinks/ssrf.yaml` registers
+`HttpClient.execute` as a critical `ssrf` (CWE-918) sink. Real-world
+usage typed the receiver as a concrete subtype:
+
+```java
+CloseableHttpClient client = HttpClients.createDefault();
+HttpGet request = new HttpGet(userProvidedUrl);
+client.execute(request);   // receiver typed CloseableHttpClient
+```
+
+Prior to 3.156.0, `taint-matcher.ts` `matchesSinkPattern()` only
+compared `call.receiver_type === pattern.class` for a direct-name
+match and `receiverMightBeClass(call.receiver, pattern.class)` for
+a receiver-name heuristic. Neither matched a subtype receiver, so
+the taint edge fell through to `InterproceduralPass`, which emitted
+the generic `external_taint_escape` (CWE-668) finding instead of
+the precise `ssrf` (CWE-918) label.
+
+The `TypeHierarchyResolver` (`src/resolution/type-hierarchy.ts`)
+supports transitive `isSubtypeOf()` queries, but
+`createWithJdkTypes()` only pre-registered JDK facts
+(`java.sql.PreparedStatement extends java.sql.Statement`, etc.).
+Apache HttpClient's third-party hierarchy
+(`org.apache.http.impl.client.CloseableHttpClient` implements
+`org.apache.http.client.HttpClient`) was unknown to the resolver.
+
+**Decision.**
+
+1. Extend `TypeHierarchyResolver` with a new exported function
+   `registerCommonLibraries(resolver: TypeHierarchyResolver): void`
+   that pre-loads type-hierarchy facts for widely used third-party
+   libraries. First registration: Apache HttpClient 4.x + 5.x
+   (11 types, 4 root interfaces, 7 implementing classes).
+2. Wire `registerCommonLibraries(resolver)` into `createWithJdkTypes()`
+   so every caller of that factory (in particular, `TaintMatcherPass`)
+   gets the pre-registered facts automatically.
+3. Extend `taint-matcher.ts` `matchesSinkPattern()` with two new
+   `else if` branches consulting `typeHierarchy.isSubtypeOf(...)`
+   on both `call.receiver_type` and `call.receiver_type_fqn`.
+   The subtype branches are gated on a `subtypeArgArityOk`
+   predicate that requires every `pattern.arg_positions[i]` to be
+   within `call.arguments.length` — this prevents the JDBC
+   `PreparedStatement.executeQuery()` (0 args) from spuriously
+   matching `Statement.executeQuery(String)` (arg_positions [0])
+   via the `PreparedStatement extends Statement` fact.
+
+**Alternatives considered.**
+
+- **Receiver-name heuristic widening.** Extending
+  `receiverMightBeClass()` (taint-matcher.ts:2018-2098) to match
+  receiver names like `client`, `httpClient`, `apacheClient` against
+  the `HttpClient` sink class would over-fire (any variable named
+  `client` on any type would match). Type-hierarchy resolution is
+  the correct primitive. Rejected.
+- **Switch `ssrf.yaml` to FQN `class: "org.apache.http.client.HttpClient"`.**
+  This would break the legacy simple-name matching path for other
+  sink patterns and would still need per-subtype entries for every
+  concrete `CloseableHttpClient` / `InternalHttpClient` type.
+  Rejected.
+- **YAML `type-hierarchy.yaml` config file.** Type-hierarchy is a
+  code-graph resolver concern, not a sink config concern. A YAML
+  file would duplicate the resolver's abstraction. Rejected in
+  favor of hardcoded facts in `type-hierarchy.ts` (same pattern as
+  JDK types).
+
+**Out of scope.**
+
+- OkHttp (`OkHttpClient.newCall(...).execute()`), Spring
+  `RestTemplate.exchange/getForObject`, Spring `WebClient.get().uri(...)`,
+  `HttpURLConnection` subclasses — each needs its own sink pattern
+  + type-hierarchy fact; deferred to follow-up tickets.
+- Kill switch for `registerCommonLibraries()` — the resolver's
+  pre-registered facts are strictly additive (they can only expand
+  the matcher's reach on subtypes; they cannot cause a FP on a
+  concrete type whose FQN does not match any pre-registered parent).
+  No knob needed.
+
+**Files touched (Part B).**
+
+- `packages/circle-ir/src/resolution/type-hierarchy.ts` (+~90:
+  `registerCommonLibraries()` + Apache HttpClient 4.x + 5.x facts +
+  wire from `createWithJdkTypes()`)
+- `packages/circle-ir/src/analysis/taint-matcher.ts` (+~25 in
+  `matchesSinkPattern()`: `subtypeArgArityOk` guard + two new
+  `isSubtypeOf` branches on `receiver_type` and `receiver_type_fqn`)
+- `packages/circle-ir/tests/resolution/type-hierarchy-common-libraries.test.ts`
+  (**NEW**, 8 tests)
+- `packages/circle-ir/tests/analysis/passes/ssrf-apache-httpclient.test.ts`
+  (**NEW**, 6 tests)
+
+---
+
 ## Analysis Pipeline
 
 `analyze()` runs a single `AnalysisPipeline` of **36 sequential `AnalysisPass` implementations**. Each pass declares a `category: PassCategory` and can emit `SastFinding` objects via `context.addFinding()`.

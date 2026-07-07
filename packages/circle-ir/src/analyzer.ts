@@ -106,6 +106,7 @@ import { ConstantPropagationPass } from './analysis/passes/constant-propagation-
 import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js';
 import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
 import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-source-gate-pass.js';
+import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotation-sql-sink-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
@@ -682,6 +683,13 @@ export async function analyze(
   // No-op when profile is absent, `'unknown'`, or non-library shape.
   if (!disabledPasses.has('library-profile-source-gate'))
     pipeline.add(new LibraryProfileSourceGatePass());
+  // cognium-dev #241 Java: scan MyBatis @Select/@Update/@Insert/@Delete
+  // annotation bodies for `${varname}` interpolation and emit synthetic
+  // `sql_injection` sinks on the call sites of the annotated Mapper
+  // methods. Runs before SinkFilterPass so the four-stage FP-elimination
+  // filter sees the added sinks. Java-only; no-op on other languages.
+  if (!disabledPasses.has('mybatis-annotation-sql-sink'))
+    pipeline.add(new MyBatisAnnotationSqlSinkPass());
   pipeline.add(new SinkFilterPass());
   // cognium-dev #139 Tier A: drops sinks whose SinkType label disagrees
   // with the curated <Class>#<method> registry (configs/sink-semantics.json).

@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.156.0] - 2026-07-06
+
+Recall — two Java-primary sink-signature defects from **cognium-dev #241**
+("real-world sink signatures FN"). Both are silent recall gaps that
+mis-classify or miss taint sinks on widely used Java libraries.
+
+### Added — cognium-dev #241 Part A — MyBatis `${}` annotation SQL sinks
+
+New pass **`MyBatisAnnotationSqlSinkPass`** (canonical #116) emits
+synthetic `sql_injection` sinks (CWE-89) on Mapper interface method
+call sites when the mapper method's `@Select` / `@Update` / `@Insert` /
+`@Delete` / `@SelectProvider` / `@UpdateProvider` / `@InsertProvider` /
+`@DeleteProvider` annotation contains raw `${varname}` interpolation.
+`#{name}` binding is safe (JDBC PreparedStatement binding) and is NOT
+scanned.
+
+- New file `src/analysis/passes/mybatis-annotation-sql-sink-pass.ts`
+  (~330 LOC).
+- Registered in `src/analyzer.ts` after `LanguageSourcesPass`,
+  before `SinkFilterPass` — synthetic sinks flow through
+  FP-suppression and reach `TaintPropagationPass` /
+  `InterproceduralPass` naturally.
+- Gate: file must import `org.apache.ibatis.*`.
+- `${x}` scan: regex
+  `/\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_.]+)?\}/g`.
+- Param correlation: `@Param("name")` annotation match, or positional
+  convention (`${param1}` → arg 0, `${0}` → arg 0). Duplicated
+  `${x}` refs collapse to a single arg position.
+- Sink emission: pushed into `TaintMatcherResult.sinks` (with fallback
+  to `graph.ir.taint.sinks` for stand-alone unit tests) with
+  `source: 'mybatis_annotation_scan'`, `confidence: 0.95`.
+- Kill switch: `disabledPasses: ['mybatis-annotation-sql-sink']`.
+- Rationale: `sql.yaml:145-242` registers `*Mapper.insert/update/…`
+  as `mybatis_mapper_call` (discovery marker, not `sql_injection`)
+  and cannot inspect annotation content — YAML sink registry has no
+  primitive for annotation-string parsing; custom method names
+  (`findByName`, `getUserById`) with `${}` interpolation were missed
+  entirely.
+- Out of scope: XML mapper files, `@SelectProvider` provider-method
+  deep body analysis, MyBatis-Plus `QueryWrapper.apply("... ${x} ...")`.
+- 11 new tests in
+  `tests/analysis/passes/mybatis-annotation-sql-sink.test.ts`.
+- See ADR-015 in `docs/ARCHITECTURE.md`.
+
+### Fixed — cognium-dev #241 Part B — Apache HttpClient SSRF sink recognition
+
+Apache HttpClient calls (`CloseableHttpClient.execute(request)`) fired
+as `external_taint_escape` (CWE-668, generic fallback) instead of
+`ssrf` (CWE-918). Root cause: receiver typed `CloseableHttpClient`
+never matched `class: "HttpClient"` sink pattern in `ssrf.yaml:94-101`
+because `TypeHierarchyResolver.createWithJdkTypes()` only registered
+JDK types — Apache HttpClient's class hierarchy was unknown.
+
+- `TypeHierarchyResolver.registerCommonLibraries()` extension in
+  `src/resolution/type-hierarchy.ts` pre-loads type-hierarchy facts
+  for Apache HttpClient 4.x + 5.x. Wired from `createWithJdkTypes()`.
+- Registered 4.x types: `org.apache.http.client.HttpClient` (root
+  interface), `AbstractHttpClient`, `CloseableHttpClient`,
+  `InternalHttpClient`, `MinimalHttpClient`, `DefaultHttpClient`,
+  `SystemDefaultHttpClient`.
+- Registered 5.x types: `org.apache.hc.client5.http.classic.HttpClient`
+  (root), 5.x `CloseableHttpClient`, `InternalHttpClient`,
+  `MinimalHttpClient`.
+- `taint-matcher.matchesSinkPattern()` (`src/analysis/taint-matcher.ts`)
+  extended with two `isSubtypeOf` branches (against `receiver_type`
+  and `receiver_type_fqn`), each gated on new `subtypeArgArityOk`
+  predicate: subtype match is accepted only when
+  `pattern.arg_positions.every(pos => pos < call.arguments.length)`.
+  This guard prevents the JDBC `PreparedStatement.executeQuery()`
+  (0 args) regression that would otherwise fire against
+  `Statement.executeQuery(String)` (arg_positions [0]) via the
+  `PreparedStatement extends Statement` JDK-registered fact.
+- 8 new tests in
+  `tests/resolution/type-hierarchy-common-libraries.test.ts` and 6
+  new tests in `tests/analysis/passes/ssrf-apache-httpclient.test.ts`.
+- See ADR-016 in `docs/ARCHITECTURE.md`.
+- Out of scope: OkHttp, Spring `RestTemplate` / `WebClient`,
+  `HttpURLConnection` subclasses — each will need its own sink
+  registration + type-hierarchy fact.
+
+### Tests
+
+- 3756 unit tests passing (up from 3745 in 3.155.0); coverage
+  ≥ 75%.
+- New passes wire through the deterministic Pillar I pipeline —
+  no LLM identifier introduced. Pillar I grep clean.
+
 ## [3.155.0] - 2026-07-06
 
 Precision — three FP-reduction tickets shipped together against the
