@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.158.0] - 2026-07-08
+
+Engine bump only — adopts
+[`circle-ir@3.158.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #246** regression fixes:
+
+- **REG-155-01** — three Java compiled-template XSS FPs
+  (`SafeFreemarkerRender`, `SafeHandlebarsCompile`,
+  `SafeCompiledTemplateRender`) suppressed via a new sink-filter
+  Stage 9g mirroring the code_injection Stage 9b safety gate for
+  `xss`-typed template render/process/merge/apply sinks.
+- **REG-155-02** — weak-crypto/Java recall drop on vulnerability
+  fixtures (`EcbCipherTp.java` under `src/test/java/fpcorpus/`)
+  fixed by tightening `isTestPath` for JVM-family source files
+  (require JUnit filename convention) and by restricting
+  `require-entry-path` reachability drops to taint-flow rule ids
+  only (rule-based crypto/config findings are no longer masked
+  under `unknown`/`application` profile).
+
+See `packages/circle-ir/CHANGELOG.md` for details.
+
+CLI surface unchanged.
+
 ## [3.157.0] - 2026-07-07
 
 Engine bump only — adopts

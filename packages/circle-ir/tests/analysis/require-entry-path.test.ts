@@ -232,6 +232,39 @@ describe('applyRequireEntryPath — preserve policy', () => {
     expect(ir.findings).toHaveLength(1);
   });
 
+  // cognium-dev #246 REG-155-02 — rule-based crypto/config findings must
+  // survive even under `unknown` / `application` profile with no
+  // reachable entry point.
+  it('preserves rule-based weak-crypto finding on unreachable method', () => {
+    const doStuff = makeMethod('encrypt', 3, 10);
+    const helper = makeType('EcbCipherTp', [doStuff]);
+    const finding = makeFinding('/src/EcbCipherTp.java', 5, {
+      rule_id: 'weak-crypto',
+      cwe: 'CWE-327',
+    });
+    const ir = makeIR('/src/EcbCipherTp.java', [helper], [], [finding]);
+
+    applyRequireEntryPath([{ file: '/src/EcbCipherTp.java', analysis: ir }]);
+
+    expect(ir.findings).toHaveLength(1);
+    expect(ir.findings![0].rule_id).toBe('weak-crypto');
+  });
+
+  it('preserves rule-based tls-verify-disabled finding on unreachable method', () => {
+    const doStuff = makeMethod('setup', 3, 10);
+    const helper = makeType('InsecureTls', [doStuff]);
+    const finding = makeFinding('/src/InsecureTls.java', 5, {
+      rule_id: 'tls-verify-disabled',
+      cwe: 'CWE-295',
+      severity: 'critical',
+    });
+    const ir = makeIR('/src/InsecureTls.java', [helper], [], [finding]);
+
+    applyRequireEntryPath([{ file: '/src/InsecureTls.java', analysis: ir }]);
+
+    expect(ir.findings).toHaveLength(1);
+  });
+
   it('preserves finding whose containing method cannot be resolved (field initializer)', () => {
     const helper = makeType('Helper', []); // no methods
     const finding = makeFinding('/src/Helper.java', 2); // in field-init at line 2

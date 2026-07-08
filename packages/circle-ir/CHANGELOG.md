@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.158.0] - 2026-07-08
+
+Regression fixes — cognium-dev **#246** (two Java-primary regressions
+introduced between 3.151.0 and 3.155.0).
+
+### REG-155-01 — Java compiled-template XSS false positives
+
+Three safe template-render mirrors regressed from clean → FP under
+`sink-filter-pass` XSS emission:
+
+- `SafeFreemarkerRender.render()` — Freemarker `Template` configured
+  with `HTMLOutputFormat` (auto-escapes by default). Call to
+  `template.process(...)` fired `xss` (CWE-79) despite the compiled
+  template being the auto-escaping safety boundary.
+- `SafeHandlebarsCompile.render()` — Handlebars `Handlebars` with
+  `EscapingStrategy.HTML_ENTITY` + `.compileInline(...)`. Call to
+  `template.apply(...)` fired `xss`.
+- `SafeCompiledTemplateRender.render()` — abstract compiled-template
+  API with an implicit-escape `renderEscaped(...)` method. FP mode
+  identical.
+
+Root cause: `sink-filter-pass.ts` Stage 9b (compiled-template safety
+gate for Java code_injection sinks) is scoped by
+`sink.type !== 'code_injection'` early-return at line 845, so the
+gate never applied to XSS-typed `Template.process` / `Template.apply`
+/ `Template.merge` / `Template.renderTo` sinks registered on the
+same receiver classes in `config-loader.ts` (Freemarker line 1036,
+Velocity line 1041, Handlebars line 1059).
+
+Fix (`sink-filter-pass.ts` — new **Stage 9g**): mirror Stage 9b for
+`sink.type === 'xss'` on Java. Suppress `render` / `process` / `merge`
+/ `renderTo` / `apply` sinks when the receiver resolves to a member
+of `COMPILED_TEMPLATE_TYPES` (`Template`, `JetTemplate`,
+`ITemplate`, `VelocityTemplate`, `BeetlTemplate`). Also suppress when
+the receiver resolves to a member of `TEMPLATE_ENGINE_LITERAL_TARGETS`
+(`VelocityEngine`, `Velocity`, `TemplateEngine`, `SpringTemplateEngine`,
+`Configuration`, `PebbleEngine`, `Pebble`, `Handlebars`) AND the first
+argument is a string literal or annotation accessor. Existing
+code_injection Stage 9b behaviour is preserved unchanged.
+
+### REG-155-02 — weak-crypto / Java recall drop on vulnerability fixtures
+
+`EcbCipherTp.java` (a canonical AES/ECB TP under
+`src/test/java/fpcorpus/`) stopped firing `weak-crypto` (CWE-327) in
+project-mode scans. Two independent regressions compounded:
+
+1. **`isTestPath` over-broad for JVM layouts.** The first pattern in
+   `path-classification.ts` — `(^|/)test/` — matched Maven's standard
+   `src/test/java/**` classpath, which hosts both real unit tests
+   AND vulnerability fixtures / KATs / demo sinks under corpora like
+   `fpcorpus/`, `tpcorpus/`, `fncorpus/`. `weak-crypto-pass.ts:411`
+   allowlists any file matching `isTestPath(...)`, so every fixture
+   under `src/test/java/` was silently suppressed.
+
+   Fix (`path-classification.ts`): tighten the classifier for
+   JVM-family source files (`.java` / `.kt` / `.scala` / `.groovy`).
+   Require a JUnit / Spock / Spring filename convention
+   (`FooTest.java`, `FooTests.java`, `FooSpec.java`, `FooIT.java`,
+   `FooITCase.java`, `FooTestCase.java`) OR alt naming
+   (`Foo.test.java`, `Foo.spec.java`). Fixtures / harnesses / helpers
+   under `src/test/java/` are no longer classified as tests.
+   Non-JVM languages retain the previous directory-based semantics.
+
+2. **`require-entry-path` over-broad drop scope.** The 3.153.0
+   reachability gate (`require-entry-path.ts:342-343`) filtered on
+   `category === 'security'` and dropped every H+C security finding
+   under `unknown` / `application` profile when reverse-BFS from
+   the containing method returned no classified Tier-1 entry point.
+   The module docstring scoped the drop to "H+C findings from taint
+   passes" only, but the implementation captured rule-based crypto /
+   config-anti-pattern findings (`weak-crypto`, `weak-hash`,
+   `weak-random`, `tls-verify-disabled`, `jwt-verify-disabled`,
+   `scan-secrets`, …) that flag defects existing regardless of
+   reachability.
+
+   Fix (`require-entry-path.ts`): add `TAINT_FLOW_RULE_IDS` allowlist
+   containing the underscore-cased `SinkType` union + dash-cased test
+   variants. Findings whose `rule_id` is not in the allowlist skip
+   the reachability gate entirely (keep-through). Existing taint drop
+   behaviour is preserved for `sql_injection`, `xss`, `path_traversal`,
+   `command_injection`, `code_injection`, `ssrf`, `xxe`, etc.
+
+### Tests
+
+- `tests/analysis/path-classification.test.ts` — +4 test blocks
+  (fixture recall guard, JVM JUnit convention preservation, JVM alt
+  naming preservation, helper-class rejection).
+- `tests/analysis/require-entry-path.test.ts` — +2 tests
+  (rule-based `weak-crypto` and `tls-verify-disabled` findings
+  survive on unreachable methods).
+- Full suite: 3760 tests / 277 files, all passing.
+
 ## [3.157.0] - 2026-07-07
 
 Precision — cognium-dev **#239 C4 residual** (JavaScript sanitizer credit

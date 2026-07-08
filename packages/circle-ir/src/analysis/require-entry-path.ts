@@ -86,6 +86,76 @@ export const RULE_ID_REQUIRE_ENTRY_PATH = 'require-entry-path';
  */
 const MAX_VISITED_METHODS = 2000;
 
+/**
+ * Taint-flow `rule_id` allowlist (cognium-dev #246 REG-155-02).
+ *
+ * The docstring at the top of this module scopes the reachability drop
+ * to "H+C findings from taint passes". Structurally, taint findings
+ * carry a `rule_id` matching the `SinkType` union (underscore-cased
+ * sink name), while rule-based crypto / config-anti-pattern passes
+ * (`weak-crypto`, `weak-hash`, `weak-random`, `tls-verify-disabled`,
+ * `jwt-verify-disabled`, `csrf-protection-disabled`, `security-headers`,
+ * `insecure-cookie`, `scan-secrets`, …) emit their pass name as
+ * `rule_id`. Those passes flag defects that exist regardless of
+ * reachability from an HTTP / RPC / lifecycle boundary — an
+ * `AES/ECB/PKCS5Padding` construction, a disabled TLS check, or a
+ * plaintext credential is a bug whether or not any classified entry
+ * point can reach the enclosing method.
+ *
+ * Before 3.158.0 the drop was scoped only on `category === 'security'`,
+ * which over-broadly captured every rule-based crypto finding as well.
+ * cognium-dev #246 REG-155-02 reproduced the mask on a plain
+ * `AES/ECB` sink (`weak-crypto`, CWE-327) in an `unknown`-profile
+ * scan with no entry point in the corpus. Restricting the drop to
+ * this taint-only allowlist restores rule-based crypto/config
+ * findings to full recall under `unknown` / `application` profiles
+ * while preserving the H+C taint-drop behaviour that #234 was
+ * designed for.
+ */
+const TAINT_FLOW_RULE_IDS: ReadonlySet<string> = new Set([
+  // Underscore-cased (SinkType convention — used by production emitters
+  // in language-sources-pass and the sink→finding lowering path).
+  'sql_injection',
+  'nosql_injection',
+  'command_injection',
+  'path_traversal',
+  'xss',
+  'xxe',
+  'deserialization',
+  'insecure_deserialization',
+  'ldap_injection',
+  'xpath_injection',
+  'ssrf',
+  'open_redirect',
+  'code_injection',
+  'log_injection',
+  'redos',
+  'format_string',
+  'crlf',
+  'mass_assignment',
+  'mybatis_mapper_call',
+  'external_taint_escape',
+  'template_injection',
+  // Dash-cased (used by some test fixtures and a handful of emitters
+  // in the language-sources / cross-file paths for consistency with
+  // metric-style rule ids). Kept side-by-side with the underscore
+  // forms so both conventions are honoured until a future refactor
+  // canonicalises on one spelling.
+  'sql-injection',
+  'nosql-injection',
+  'command-injection',
+  'path-traversal',
+  'ldap-injection',
+  'xpath-injection',
+  'open-redirect',
+  'code-injection',
+  'log-injection',
+  'format-string',
+  'mass-assignment',
+  'template-injection',
+  'insecure-deserialization',
+]);
+
 // ---------------------------------------------------------------------------
 // Public entrypoint
 // ---------------------------------------------------------------------------
@@ -341,6 +411,13 @@ function classifyFinding(
 ): FindingDecision {
   // Only taint findings from the security category are in scope.
   if (finding.category !== 'security') return { action: 'keep' };
+
+  // cognium-dev #246 REG-155-02 — restrict to taint-flow findings.
+  // Rule-based crypto / config-anti-pattern findings (`weak-crypto`,
+  // `weak-hash`, `tls-verify-disabled`, `scan-secrets`, …) do not
+  // depend on source→sink reachability and must not be dropped by
+  // this gate. See the `TAINT_FLOW_RULE_IDS` docstring.
+  if (!TAINT_FLOW_RULE_IDS.has(finding.rule_id)) return { action: 'keep' };
 
   // Only H+C findings are candidates for drop; lower-severity findings
   // are preserved regardless of reachability (may still be annotated

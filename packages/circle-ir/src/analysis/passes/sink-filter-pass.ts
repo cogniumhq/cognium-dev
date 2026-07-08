@@ -948,6 +948,54 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 9g — Java xss (CWE-79) FP reduction on safe compiled-template
+    // and engine-literal render/process/merge/apply calls.
+    // (cognium-dev #246 REG-155-01 — parallel to stage 9b, applied to xss.)
+    //
+    // Template.process(model, out) on FreeMarker, Template.apply(model)
+    // on Handlebars, Template.merge(...) on Velocity, etc. are registered
+    // as xss sinks (config-loader.ts:1036,1059,1041) even though industry
+    // default is auto-escape (Freemarker HTMLOutputFormat, Handlebars
+    // EscapingStrategy.HTML_ENTITY, Velocity EventCartridge). The safety
+    // argument mirrors stage 9b for code_injection: risk lives at the
+    // compile step (registered separately), not the render step. Safe
+    // mirrors like SafeFreemarkerRender / SafeHandlebarsCompile stopped
+    // matching an implicit sanitizer path after the sanitizer-credit
+    // refactor in 3.155.0 and started firing as xss FPs.
+    //
+    // For compiled-Template receivers (COMPILED_TEMPLATE_TYPES): drop
+    // unconditionally. For engine-level receivers
+    // (TEMPLATE_ENGINE_LITERAL_TARGETS): drop only when the template-name
+    // argument is a string literal (same guarantee as stage 9b). Recall
+    // on Template.compile(<tainted>) / Handlebars.compile(<tainted>)
+    // (SSTI, CWE-1336) is unaffected — those fire as code_injection.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        const receiverMatch = sinkLineText.match(/\b(\w+)\s*\.\s*(\w+)\s*\(/);
+        const receiver = receiverMatch?.[1];
+        const method = sink.method ?? receiverMatch?.[2];
+        if (
+          (method === 'render' || method === 'process' ||
+           method === 'merge' || method === 'renderTo' ||
+           method === 'apply') && receiver
+        ) {
+          const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
+          if (recvType && COMPILED_TEMPLATE_TYPES.has(recvType)) return false;
+          if (recvType && TEMPLATE_ENGINE_LITERAL_TARGETS.has(recvType)) {
+            const args = extractJavaCallArgs(method, sinkLineText);
+            if (args !== null && args.length >= 1 &&
+                isJavaLiteralOrAnnotationAccessor(args[0])) {
+              return false;
+            }
+          }
+        }
+        return true;
+      });
+    }
+
     // Stage 10 — Java command_injection (CWE-78) FP reduction.
     // (cognium-dev #167, #170 — Sprint 43)
     //

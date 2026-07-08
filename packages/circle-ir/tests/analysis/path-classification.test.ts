@@ -75,4 +75,41 @@ describe('isTestPath', () => {
     expect(isTestPath('src/main/java/AttestationService.java')).toBe(false);
     expect(isTestPath('src/latest.ts')).toBe(false);
   });
+
+  // cognium-dev #246 REG-155-02 — JVM-family fixture recall guard.
+  it('does NOT mask JVM vulnerability fixtures under src/test/java/', () => {
+    // TP corpus — must fire, must not be classified as test.
+    expect(isTestPath('src/test/java/fpcorpus/EcbCipherTp.java')).toBe(false);
+    expect(isTestPath('java-vuln-demo/src/test/java/fpcorpus/EcbCipherTp.java')).toBe(false);
+    expect(isTestPath('src/test/java/corpus/SqliVulnerable.java')).toBe(false);
+    expect(isTestPath('src/test/java/cve/Cve2021xxxxx.java')).toBe(false);
+    expect(isTestPath('src/test/kotlin/fpcorpus/MyBad.kt')).toBe(false);
+  });
+
+  it('preserves JVM JUnit convention (Test|Tests|Spec|IT|ITCase|TestCase)', () => {
+    expect(isTestPath('src/test/java/FooTest.java')).toBe(true);
+    expect(isTestPath('src/test/java/FooTests.java')).toBe(true);
+    expect(isTestPath('src/test/java/FooSpec.java')).toBe(true);
+    expect(isTestPath('src/test/java/FooIT.java')).toBe(true);
+    expect(isTestPath('src/test/java/FooITCase.java')).toBe(true);
+    expect(isTestPath('src/test/java/FooTestCase.java')).toBe(true);
+    expect(isTestPath('src/test/kotlin/FooTest.kt')).toBe(true);
+    expect(isTestPath('src/test/scala/FooSpec.scala')).toBe(true);
+    expect(isTestPath('src/test/groovy/FooSpec.groovy')).toBe(true);
+  });
+
+  it('preserves JVM alt naming (Foo.test.java / Foo.spec.java)', () => {
+    expect(isTestPath('src/Foo.test.java')).toBe(true);
+    expect(isTestPath('src/Foo.spec.java')).toBe(true);
+    expect(isTestPath('src/Foo.test.kt')).toBe(true);
+  });
+
+  it('rejects JVM main-src files even under `test` if not JUnit-named', () => {
+    // Edge case: someone has a `test/` subdir under `src/main/`. Still not
+    // a test dir semantically, and the file lacks the JUnit suffix.
+    expect(isTestPath('src/main/java/test/HelperUtil.java')).toBe(false);
+    // Sanity — a helper class named Helper.java inside a Maven test tree
+    // is a fixture / harness, not a unit test.
+    expect(isTestPath('src/test/java/util/HelperUtil.java')).toBe(false);
+  });
 });
