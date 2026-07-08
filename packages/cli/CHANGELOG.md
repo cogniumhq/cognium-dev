@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.157.0] - 2026-07-07
+
+Engine bump only — adopts
+[`circle-ir@3.157.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #239 C4 residual** — JavaScript sanitizer credit
+gap fix (DFG-walk credit for the four supplementary flow generators
+that emit `sanitized: false` without consulting the sanitizer registry).
+Also adds symmetric/AEAD cipher output as a taint barrier for
+Node.js `crypto.Cipher` and Java `javax.crypto.Cipher`. See
+`packages/circle-ir/CHANGELOG.md` for details.
+
+CLI surface unchanged.
+
 ## [3.156.0] - 2026-07-06
 
 Engine bump only — adopts

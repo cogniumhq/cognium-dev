@@ -20,6 +20,7 @@ import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
+import { walkBackwardDefs } from '../dfg-walk.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -226,10 +227,49 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           return true;
         }
         const sansAtSink = sanitizersByLine.get(f.sink_line);
-        if (!sansAtSink || sansAtSink.length === 0) return true;
-        for (const san of sansAtSink) {
-          if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
-            return false;
+        if (sansAtSink && sansAtSink.length > 0) {
+          for (const san of sansAtSink) {
+            if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+              return false;
+            }
+          }
+        }
+        // cognium-dev #239 C4 residual — DFG-walk sanitizer credit for
+        // configured sinks. Supplementary flow generators
+        // (detectExpressionScanFlows, detectCollectionFlows,
+        // detectParameterSinkFlows) emit sanitizer-blind flows. The
+        // sink-line fast path above misses the common `n = parseInt(x);
+        // sink(n);` shape where the sanitizer lives on the assignment
+        // line, not the sink line. Walk the reaching-def chain of the
+        // sink's tainted use and credit sanitizers on any def line in
+        // the chain. Variable-precise — mirrors site #2 walkback logic
+        // in taint-propagation.ts checkSanitized. Doesn't over-suppress
+        // bare `shlex.quote(host)` on unrelated non-sink lines because
+        // those calls don't create a def in the sink var's chain.
+        const usesAtSink = graph.usesByLine.get(f.sink_line);
+        if (!usesAtSink || usesAtSink.length === 0) return true;
+        const sinkVar = f.path.length > 0
+          ? f.path[f.path.length - 1].variable
+          : undefined;
+        if (!sinkVar) return true;
+        for (const use of usesAtSink) {
+          if (use.variable !== sinkVar) continue;
+          if (use.def_id === null || use.def_id === undefined) continue;
+          const walk = walkBackwardDefs(
+            use.def_id,
+            graph.chainsByToDef,
+            graph.defById,
+            { maxHops: 32 }
+          );
+          for (const line of walk.lines) {
+            if (line === f.sink_line) continue; // already checked above
+            const sansAtLine = sanitizersByLine.get(line);
+            if (!sansAtLine || sansAtLine.length === 0) continue;
+            for (const san of sansAtLine) {
+              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+                return false;
+              }
+            }
           }
         }
         return true;

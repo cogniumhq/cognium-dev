@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.157.0] - 2026-07-07
+
+Precision — cognium-dev **#239 C4 residual** (JavaScript sanitizer credit
+gap) plus small companion recall entry for symmetric-cipher output.
+
+### Fixed — cognium-dev #239 C4 residual — DFG-walk sanitizer credit for supplementary flow generators
+
+Root cause. Site #2 in `taint-propagation.ts:checkSanitized` already walks
+the DFG reaching-def chain (cognium-dev #238, 3.155.0), but the DFG
+propagator emits ONE flow path; the remaining flows come from four
+supplementary detectors (`detectExpressionScanFlows`,
+`detectCollectionFlows`, `detectArrayElementFlows`,
+`detectParameterSinkFlows`) that push `sanitized: false` without
+consulting `sanitizersByLine`. The subsequent uniform post-filter in
+`taint-propagation-pass.ts` (Sprint 24, cognium-dev #102) then checks
+only `sanitizersByLine.get(f.sink_line)`. Idiomatic JS
+`n = parseInt(req.query.text, 10); res.send(n);` — sanitizer on line 5,
+sink on line 6 — leaks past both.
+
+Fix. Extend the uniform post-filter with a DFG-walk credit step for
+configured sinks. For each surviving flow, locate the sink's tainted
+use at `f.sink_line`, run `walkBackwardDefs(use.def_id, …)`, and drop
+the flow if any line in the reaching-def chain carries a sanitizer
+covering `f.sink_type`.
+
+- File: `src/analysis/passes/taint-propagation-pass.ts`
+  (+40 LOC in the uniform-filter block; new `walkBackwardDefs` import).
+- Variable-precise: the walk only visits lines that reach the sink
+  variable's def, so a bare `shlex.quote(host)` on a non-sink,
+  non-chain line does NOT sanitize a subsequent `exec(host)` — preserves
+  the cognium-dev #65 pt2 recall guard.
+- Bounded via `maxHops: 32` and cycle-safe via `walkBackwardDefs`'s
+  `visited` Set (existing primitive).
+- Applies to all flow generators uniformly; benefits JS the most
+  (where supplementary detectors dominate) but Java/Python/Go/Rust
+  also gain from the missing chain-line coverage.
+
+### Added — Symmetric/AEAD cipher-output sanitizer (`DEFAULT_SANITIZERS`)
+
+New entries in `src/analysis/config-loader.ts:DEFAULT_SANITIZERS`:
+
+- `Cipher.update`, `Cipher.final`, `Cipher.doFinal` → remove `xss`,
+  `sql_injection`, `command_injection`, `path_traversal`,
+  `code_injection`, `crlf`, `log_injection`, `ldap_injection`,
+  `xpath_injection`.
+
+Rationale. High-entropy ciphertext bytes (Node.js `crypto.Cipher` /
+Java `javax.crypto.Cipher`) cannot carry an injection payload — an
+attacker would need to find plaintext that encrypts to a valid HTML /
+SQL / shell token under a keyed block cipher, which is infeasible.
+The receiver-name heuristic in `receiverMightBeClass()`
+(`taint-matcher.ts:2118` — case-insensitive `endsWith`) matches
+conventional `cipher` variable names in addition to typed `Cipher`
+receivers, so both Node.js (`const cipher = crypto.createCipheriv(...)`)
+and Java (`Cipher cipher = Cipher.getInstance(...)`) usage is covered.
+
+### Verification
+
+- All 3756 tests pass (unchanged from 3.156.0).
+- Typecheck clean.
+- Local repros of the four remaining #239 fixture patterns
+  (`parseint_test.js`, `single_var_assign.js`, `safe_static_iv.js`,
+  `direct_cipher_send.js`) now emit `flows: 0`.
+- Positive-recall guards:
+  - Real XSS (`res.send('<h1>' + name + '</h1>')`) — still fires.
+  - Unrelated sanitizer + tainted var to sink
+    (`const other = parseInt(count); res.send(host);`) — still fires.
+
+### Breaking changes
+
+None.
+
 ## [3.156.0] - 2026-07-06
 
 Recall — two Java-primary sink-signature defects from **cognium-dev #241**

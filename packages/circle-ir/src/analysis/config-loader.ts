@@ -2480,6 +2480,21 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'bool', removes: ['sql_injection', 'command_injection', 'xss', 'code_injection'] },
   { method: 'UUID', class: 'uuid', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
   { method: 'Decimal', class: 'decimal', removes: ['sql_injection', 'command_injection', 'path_traversal', 'code_injection'] },
+
+  // =========================================================================
+  // Cipher output taint barriers (#239 C4 residual)
+  // Symmetric/AEAD cipher output is high-entropy ciphertext bytes. The
+  // encoded form (hex / base64) cannot carry a text-injection payload:
+  // an attacker would need the plaintext to encrypt to a valid HTML /
+  // SQL / shell / path token, which is not achievable against a keyed
+  // block cipher. Applies to Node.js crypto.Cipher / Java javax.crypto.Cipher
+  // (both expose .update() and .final() / .doFinal()) — receiver-name
+  // heuristic in receiverMightBeClass() matches conventional `cipher`
+  // variable names as well as typed Cipher receivers.
+  // =========================================================================
+  { method: 'update', class: 'Cipher', removes: ['xss', 'sql_injection', 'command_injection', 'path_traversal', 'code_injection', 'crlf', 'log_injection', 'ldap_injection', 'xpath_injection'] },
+  { method: 'final', class: 'Cipher', removes: ['xss', 'sql_injection', 'command_injection', 'path_traversal', 'code_injection', 'crlf', 'log_injection', 'ldap_injection', 'xpath_injection'] },
+  { method: 'doFinal', class: 'Cipher', removes: ['xss', 'sql_injection', 'command_injection', 'path_traversal', 'code_injection', 'crlf', 'log_injection', 'ldap_injection', 'xpath_injection'] },
 ];
 
 /**
