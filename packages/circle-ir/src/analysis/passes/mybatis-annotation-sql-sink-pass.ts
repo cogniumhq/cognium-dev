@@ -49,6 +49,8 @@ export interface MyBatisAnnotationSqlSinkResult {
   annotatedMethodCount: number;
   /** Number of synthetic `sql_injection` sinks added. */
   addedSinkCount: number;
+  /** Number of declaration-site `SastFinding`s emitted. */
+  declarationFindingCount: number;
 }
 
 /**
@@ -186,6 +188,7 @@ function correlateDollarBraceToArgPositions(
   method: MethodInfo,
   refs: readonly string[],
 ): number[] {
+  // Priority 1: @Param("name") explicit binding.
   const paramNameToIndex = new Map<string, number>();
   method.parameters.forEach((param, idx) => {
     for (const ann of param.annotations) {
@@ -196,11 +199,27 @@ function correlateDollarBraceToArgPositions(
     }
   });
 
+  // Priority 2: declared parameter name — MyBatis with Java 8+ `-parameters`
+  // (or the MyBatis `useActualParamName=true` default) resolves `${name}`
+  // to the parameter literally named `name`. Only used as a fallback so
+  // @Param wins on conflict.
+  const declaredNameToIndex = new Map<string, number>();
+  method.parameters.forEach((param, idx) => {
+    if (param.name && !declaredNameToIndex.has(param.name)) {
+      declaredNameToIndex.set(param.name, idx);
+    }
+  });
+
   const positions = new Set<number>();
   for (const ref of refs) {
     const namedIdx = paramNameToIndex.get(ref);
     if (namedIdx !== undefined) {
       positions.add(namedIdx);
+      continue;
+    }
+    const declaredIdx = declaredNameToIndex.get(ref);
+    if (declaredIdx !== undefined) {
+      positions.add(declaredIdx);
       continue;
     }
     const positionalIdx = parsePositionalRef(ref);
@@ -270,7 +289,7 @@ export class MyBatisAnnotationSqlSinkPass
 
   run(ctx: PassContext): MyBatisAnnotationSqlSinkResult {
     if (ctx.language !== 'java') {
-      return { annotatedMethodCount: 0, addedSinkCount: 0 };
+      return { annotatedMethodCount: 0, addedSinkCount: 0, declarationFindingCount: 0 };
     }
 
     const { types, imports, calls } = ctx.graph.ir;
@@ -278,7 +297,7 @@ export class MyBatisAnnotationSqlSinkPass
     // Gate on file-level MyBatis import to distinguish real Mapper
     // interfaces from unrelated libraries reusing the `@Select` name.
     if (!fileImportsMyBatis(imports)) {
-      return { annotatedMethodCount: 0, addedSinkCount: 0 };
+      return { annotatedMethodCount: 0, addedSinkCount: 0, declarationFindingCount: 0 };
     }
 
     // Collect Mapper methods with `${}` interpolation and their tainted
@@ -287,6 +306,7 @@ export class MyBatisAnnotationSqlSinkPass
       interfaceSimpleName: string;
       interfaceFqn: string;
       methodName: string;
+      declarationLine: number;
       taintedArgPositions: number[];
     }
     const mapperMethods: MapperMethodRecord[] = [];
@@ -320,6 +340,7 @@ export class MyBatisAnnotationSqlSinkPass
           interfaceSimpleName: type.name,
           interfaceFqn,
           methodName: method.name,
+          declarationLine: method.start_line,
           taintedArgPositions: positions,
         });
       }
@@ -329,7 +350,38 @@ export class MyBatisAnnotationSqlSinkPass
       return {
         annotatedMethodCount: 0,
         addedSinkCount: 0,
+        declarationFindingCount: 0,
       };
+    }
+
+    // Declaration-site SastFinding — the `${}` interpolation in the
+    // annotation string is itself the SQLi disclosure, independent of
+    // in-file call sites. Any caller passing dynamic input into the
+    // tainted parameter position (which is the API contract of a
+    // parameterized Mapper method) will execute untrusted SQL. Emit
+    // one finding per annotated method so standalone Mapper interfaces
+    // (no in-file caller) still produce a hit. — cognium-dev #241 Java
+    const file = ctx.graph.ir.meta.file;
+    let declarationFindingCount = 0;
+    for (const rec of mapperMethods) {
+      ctx.addFinding({
+        id: `${this.name}-${file}-${rec.declarationLine}-${rec.methodName}`,
+        pass: this.name,
+        category: this.category,
+        rule_id: this.name,
+        cwe: 'CWE-89',
+        severity: 'critical',
+        level: 'error',
+        message:
+          `MyBatis Mapper method \`${rec.interfaceSimpleName}.${rec.methodName}\` uses raw ` +
+          `\`\${}\` interpolation in its @Select/@Update/@Insert/@Delete annotation. ` +
+          `Any caller passing dynamic input into arg position(s) ` +
+          `${rec.taintedArgPositions.join(', ')} will execute unbound SQL (CWE-89). ` +
+          `Replace \`\${x}\` with \`#{x}\` to enable JDBC parameter binding.`,
+        file,
+        line: rec.declarationLine,
+      });
+      declarationFindingCount++;
     }
 
     // Grab the taint-matcher sinks array to append into. When the pass is
@@ -388,6 +440,7 @@ export class MyBatisAnnotationSqlSinkPass
     return {
       annotatedMethodCount: mapperMethods.length,
       addedSinkCount,
+      declarationFindingCount,
     };
   }
 }

@@ -246,4 +246,43 @@ describe('#241 Java — MyBatis @Select/@Update/... ${} SQLi sinks', () => {
     );
     expect(findByNameSinks.length).toBe(0);
   });
+
+  it('TP — standalone Mapper interface (no in-file caller) emits declaration-site SastFinding', async () => {
+    // Regression: V80MybatisDollar.java from the #241 fixture set has only
+    // the interface declaration; there is no call site in the same file.
+    // The pass emits a `mybatis-annotation-sql-sink` finding at the method
+    // declaration line so the standalone probe still hits.
+    const code = [
+      'import org.apache.ibatis.annotations.Select;',
+      'public interface V80MybatisDollar {',
+      '  @Select("SELECT * FROM users WHERE name = \'${name}\'")',
+      '  Object findByName(String name);',
+      '}',
+    ].join('\n');
+    const r = await analyze(code, 'V80MybatisDollar.java', 'java');
+    const findings = (r.findings ?? []).filter(
+      (f: any) => f.rule_id === 'mybatis-annotation-sql-sink',
+    );
+    expect(findings.length).toBe(1);
+    expect(findings[0].cwe).toBe('CWE-89');
+    expect(findings[0].severity).toBe('critical');
+  });
+
+  it('TP — parameter-name fallback (no @Param) correlates ${name} → param `name`', async () => {
+    // MyBatis with Java 8+ `-parameters` compiles with actual parameter
+    // names, so `${name}` resolves to the declared param `name` even
+    // without an explicit @Param annotation.
+    const code = [
+      'import org.apache.ibatis.annotations.Select;',
+      'public interface UserMapper {',
+      '  @Select("SELECT * FROM users WHERE name = \'${name}\'")',
+      '  Object findByName(String name);',
+      '}',
+      'class Caller {',
+      '  Object doIt(UserMapper mapper, String s) { return mapper.findByName(s); }',
+      '}',
+    ].join('\n');
+    const r = await analyze(code, 'UserMapper.java', 'java');
+    expect(countSqlSinks(r)).toBeGreaterThanOrEqual(1);
+  });
 });

@@ -1968,6 +1968,23 @@ function matchesSinkPattern(
       // TypeHierarchyResolver. Same rationale as the simple-name subtype
       // check above; covers the case where the language plugin resolves the
       // receiver to a fully qualified name.
+    } else if (
+      !call.receiver_type &&
+      !call.receiver_type_fqn &&
+      call.receiver &&
+      typeHierarchy &&
+      subtypeArgArityOk &&
+      (() => {
+        const factoryReturn = typeHierarchy.resolveFactoryReturnType(call.receiver);
+        return factoryReturn !== null && typeHierarchy.isSubtypeOf(factoryReturn, pattern.class);
+      })()
+    ) {
+      // Static-factory receiver resolution: when the receiver is a chained
+      // static factory call (e.g. `HttpClients.createDefault().execute(req)`)
+      // that the language plugin has not annotated with a `receiver_type`,
+      // consult the factory-return-type registry on TypeHierarchyResolver.
+      // If the mapped return type is a subtype of the sink class, accept.
+      // — cognium-dev #241 Java
     } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {

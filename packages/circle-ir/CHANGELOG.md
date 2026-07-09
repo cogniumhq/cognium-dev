@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.160.0] - 2026-07-09
+
+FN fix — cognium-dev **#241 Java** ("real-world sink signatures FN").
+Two Java-primary sink-signature defects, both silent recall gaps on
+widely-used libraries.
+
+### Part A — MyBatis `@Select`/`@Update`/... `${}` SQL injection
+
+New `MyBatisAnnotationSqlSinkPass` (`mybatis-annotation-sql-sink`)
+scans Mapper interface methods carrying MyBatis SQL annotations
+(`@Select`, `@Update`, `@Insert`, `@Delete`, `*Provider` variants)
+for raw `${varname}` interpolation. `${}` performs raw string
+concatenation into the SQL statement (unlike safe `#{}` parameter
+binding), so any dynamic arg passed at the corresponding parameter
+position produces SQLi.
+
+The pass:
+
+- Correlates each `${name}` to a parameter position via (in priority
+  order) `@Param("name")`, declared parameter name, and MyBatis
+  positional convention (`${param1}`, `${0}`).
+- Emits a synthetic `sql_injection` (CWE-89) `TaintSink` at every
+  Mapper method call site, so `TaintPropagationPass` picks up flows
+  from HTTP-tainted arguments without any registry change.
+- Emits a declaration-site `SastFinding` (`rule_id:
+  'mybatis-annotation-sql-sink'`, CWE-89, `severity: critical`) at
+  the annotated method's start line. This ensures standalone Mapper
+  interfaces (no in-file caller) still hit — the annotation string
+  itself is the SQLi disclosure, independent of who calls it.
+
+Kill switch: `disabledPasses: ['mybatis-annotation-sql-sink']`.
+
+Fixture that flipped: `V80MybatisDollar.java`
+(`@Select("... '${name}'")` → now fires `mybatis-annotation-sql-sink`
+CWE-89 critical, was silent).
+
+### Part B — Apache HttpClient SSRF (static-factory receiver resolution)
+
+`HttpClients.createDefault().execute(new HttpGet(url))` is the
+canonical Apache HttpClient 4.x SSRF pattern. Prior to 3.160.0 the
+`.execute()` call fired `external_taint_escape` (CWE-20, generic
+fallback) instead of `ssrf` (CWE-918) because:
+
+1. `configs/sinks/ssrf.yaml` keys the sink on `class: "HttpClient"`.
+2. `TypeHierarchyResolver` (`registerCommonLibraries()`, shipped in
+   3.156.0) knows `CloseableHttpClient extends HttpClient`.
+3. But the Java plugin does not perform return-type inference on
+   chained static factory calls, so
+   `call.receiver_type = call.receiver_type_fqn = null` on the
+   `.execute(...)` call. Both subtype-match strategies short-circuit
+   and taint falls through to the interprocedural fallback.
+
+New static-factory return-type registry on `TypeHierarchyResolver`:
+
+- `registerFactoryReturnType(factorySimpleName, method, returnFqn)`
+- `resolveFactoryReturnType(receiver)` parses receivers of shape
+  `<Factory>.<method>()` and returns the mapped FQN.
+
+Registered facts (`registerCommonLibraries()`):
+- `HttpClients.createDefault()` →
+  `org.apache.http.impl.client.CloseableHttpClient`
+- `HttpClients.createSystem()` →
+  `org.apache.http.impl.client.CloseableHttpClient`
+- `HttpClients.createMinimal()` →
+  `org.apache.http.impl.client.MinimalHttpClient`
+
+`taint-matcher.ts::matchesSinkPattern()` gains a new subtype
+strategy: when `receiver_type` is null and receiver matches the
+factory shape, resolve the return type and check `isSubtypeOf`
+against the sink class.
+
+Fixture that flipped: `V80ApacheHttpclient.java`
+(`HttpClients.createDefault().execute(new HttpGet(url))` → now fires
+`ssrf` CWE-918 high, was `external_taint_escape` CWE-20).
+
+### Coverage
+
+- 3778 tests pass (37 new: 10 for MyBatis pass, 6 for SSRF Apache
+  HttpClient sink, 21 for static-factory return-type registry).
+- Juliet CWE-89 / Juliet CWE-918 unchanged.
+- OWASP Benchmark unchanged (Benchmark uses JDBC + `URLConnection`,
+  not MyBatis / Apache HttpClient).
+- Pillar I clean.
+
+### Changed
+
+- `packages/circle-ir/src/analysis/passes/mybatis-annotation-sql-sink-pass.ts` — declaration-site `SastFinding` + parameter-name correlation fallback.
+- `packages/circle-ir/src/resolution/type-hierarchy.ts` — static-factory return-type registry + Apache HttpClients registrations.
+- `packages/circle-ir/src/analysis/taint-matcher.ts` — factory-return-type subtype strategy in `matchesSinkPattern`.
+
 ## [3.159.0] - 2026-07-09
 
 FP fix — cognium-dev **#239 C4 residual** (last live safe-mirror FP

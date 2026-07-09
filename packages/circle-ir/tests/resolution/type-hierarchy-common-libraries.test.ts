@@ -117,3 +117,71 @@ describe('TypeHierarchyResolver — registerCommonLibraries is additive', () => 
     ).toBe(true);
   });
 });
+
+describe('TypeHierarchyResolver — static-factory return-type registry (#241)', () => {
+  it('HttpClients.createDefault() → CloseableHttpClient', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('HttpClients.createDefault()')).toBe(
+      'org.apache.http.impl.client.CloseableHttpClient',
+    );
+  });
+
+  it('HttpClients.createSystem() → CloseableHttpClient', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('HttpClients.createSystem()')).toBe(
+      'org.apache.http.impl.client.CloseableHttpClient',
+    );
+  });
+
+  it('HttpClients.createMinimal() → MinimalHttpClient', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('HttpClients.createMinimal()')).toBe(
+      'org.apache.http.impl.client.MinimalHttpClient',
+    );
+  });
+
+  it('FQN-prefixed receiver also resolves', () => {
+    const h = createWithJdkTypes();
+    expect(
+      h.resolveFactoryReturnType('org.apache.http.impl.client.HttpClients.createDefault()'),
+    ).toBe('org.apache.http.impl.client.CloseableHttpClient');
+  });
+
+  it('unregistered factory returns null', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('Foo.bar()')).toBeNull();
+  });
+
+  it('receiver without ()  returns null', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('HttpClients.createDefault')).toBeNull();
+  });
+
+  it('receiver with lowercase class returns null (guards ident collisions)', () => {
+    const h = createWithJdkTypes();
+    // `req.getParameter()` must NOT be interpreted as a factory.
+    expect(h.resolveFactoryReturnType('req.getParameter()')).toBeNull();
+  });
+
+  it('registerFactoryReturnType is additive (user override)', () => {
+    const h = createWithJdkTypes();
+    h.registerFactoryReturnType('MyFactory', 'create', 'com.example.MyClient');
+    expect(h.resolveFactoryReturnType('MyFactory.create()')).toBe(
+      'com.example.MyClient',
+    );
+  });
+
+  it('resolved factory return type is subtype of HttpClient interface', () => {
+    const h = createWithJdkTypes();
+    const returnFqn = h.resolveFactoryReturnType('HttpClients.createDefault()');
+    expect(returnFqn).not.toBeNull();
+    expect(h.isSubtypeOf(returnFqn!, 'org.apache.http.client.HttpClient')).toBe(true);
+  });
+
+  it('clear() empties the factory registry', () => {
+    const h = createWithJdkTypes();
+    expect(h.resolveFactoryReturnType('HttpClients.createDefault()')).not.toBeNull();
+    h.clear();
+    expect(h.resolveFactoryReturnType('HttpClients.createDefault()')).toBeNull();
+  });
+});

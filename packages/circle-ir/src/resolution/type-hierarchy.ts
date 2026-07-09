@@ -50,6 +50,19 @@ export class TypeHierarchyResolver {
   private _subtypeCache: Map<string, string[]> = new Map();
   private _implCache: Map<string, string[]> = new Map();
 
+  // Static-factory return-type registry.
+  // Key: `<FactorySimpleName>.<method>` (e.g. `HttpClients.createDefault`,
+  // `HttpClientBuilder.build`). Value: fully-qualified return-type name
+  // (e.g. `org.apache.http.impl.client.CloseableHttpClient`).
+  //
+  // Purpose: recover receiver-type resolution when a sink call's receiver
+  // is a chained static factory expression (e.g.
+  // `HttpClients.createDefault().execute(req)`) and the language plugin
+  // does not perform full return-type inference on the factory call. The
+  // taint matcher consults this map when `call.receiver_type` is null. —
+  // cognium-dev #241 Java
+  private factoryReturnTypes: Map<string, string> = new Map();
+
   /**
    * Add types from a CircleIR analysis result
    */
@@ -347,6 +360,43 @@ export class TypeHierarchyResolver {
   }
 
   /**
+   * Register the return type of a static factory method.
+   *
+   * @param factoryClass Simple class name of the factory (e.g. `HttpClients`).
+   * @param method Factory method name (e.g. `createDefault`).
+   * @param returnFqn Fully-qualified return type (e.g.
+   *   `org.apache.http.impl.client.CloseableHttpClient`).
+   *
+   * — cognium-dev #241 Java
+   */
+  registerFactoryReturnType(factoryClass: string, method: string, returnFqn: string): void {
+    this.factoryReturnTypes.set(`${factoryClass}.${method}`, returnFqn);
+  }
+
+  /**
+   * Resolve a static-factory receiver expression to its return type FQN.
+   *
+   * Accepts a receiver expression of shape `<FactorySimple>.<method>()` (or
+   * a longer dotted prefix ending in the same). Returns the registered
+   * return-type FQN, or `null` when no matching factory is registered.
+   *
+   * Examples that resolve (given Apache HttpClient registration):
+   *   `HttpClients.createDefault()` → `org.apache.http.impl.client.CloseableHttpClient`
+   *   `org.apache.http.impl.client.HttpClients.createDefault()` → same
+   *
+   * — cognium-dev #241 Java
+   */
+  resolveFactoryReturnType(receiver: string): string | null {
+    // Receiver must end with `()` (parameterless factory call).
+    // Factories with arguments (`HttpClients.custom().build()`) are handled
+    // by chaining: caller must strip inner call themselves.
+    const m = receiver.match(/(?:^|\.)([A-Z]\w*)\.(\w+)\(\)$/);
+    if (!m) return null;
+    const key = `${m[1]}.${m[2]}`;
+    return this.factoryReturnTypes.get(key) ?? null;
+  }
+
+  /**
    * Clear all data
    */
   clear(): void {
@@ -354,6 +404,7 @@ export class TypeHierarchyResolver {
     this.nameToFqn.clear();
     this.subtypes.clear();
     this.implementations.clear();
+    this.factoryReturnTypes.clear();
   }
 
   // --- Private helpers ---
@@ -752,4 +803,35 @@ export function registerCommonLibraries(resolver: TypeHierarchyResolver): void {
   for (const type of [...apacheHttpClient4x, ...apacheHttpClient5x]) {
     resolver.addType(type, 'common-libraries', type.package);
   }
+
+  // Static-factory return types.
+  //
+  // Apache HttpClient 4.x — HttpClients (org.apache.http.impl.client).
+  // Both `createDefault()` and `createSystem()` return CloseableHttpClient.
+  // Recovers receiver type for `HttpClients.createDefault().execute(req)`
+  // patterns where the language plugin cannot infer the chained call's
+  // return type.
+  resolver.registerFactoryReturnType(
+    'HttpClients',
+    'createDefault',
+    'org.apache.http.impl.client.CloseableHttpClient',
+  );
+  resolver.registerFactoryReturnType(
+    'HttpClients',
+    'createSystem',
+    'org.apache.http.impl.client.CloseableHttpClient',
+  );
+  resolver.registerFactoryReturnType(
+    'HttpClients',
+    'createMinimal',
+    'org.apache.http.impl.client.MinimalHttpClient',
+  );
+
+  // Apache HttpClient 5.x — HttpClients (org.apache.hc.client5.http.impl.classic).
+  // Note: 4.x and 5.x share the simple class name `HttpClients`. Since our
+  // registry is keyed on the simple name and the 5.x return type is also a
+  // subtype of a `HttpClient` interface (in a different package), the
+  // subtype check via `isSubtypeOf` will succeed on the 4.x FQN only. This
+  // is acceptable for the SSRF sink (both are HttpClient subtypes and both
+  // execute untrusted requests). — cognium-dev #241 Java
 }

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.160.0] - 2026-07-09
+
+Engine bump only — adopts
+[`circle-ir@3.160.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #241 Java** sink-signature FN fix:
+
+- **MyBatis annotation-string SQLi** — new
+  `mybatis-annotation-sql-sink` pass detects `${varname}` interpolation
+  in `@Select`/`@Update`/`@Insert`/`@Delete` / `*Provider` annotations
+  on Mapper interfaces and emits synthetic `sql_injection` (CWE-89)
+  sinks at each call site plus a declaration-site `SastFinding` on
+  the annotated method itself (so standalone Mapper interfaces still
+  hit). Correlates `${name}` refs via `@Param("name")` → declared
+  parameter name → MyBatis positional convention (`${param1}`, `${0}`).
+- **Apache HttpClient SSRF (chained-factory receiver)** — added a
+  static-factory return-type registry to `TypeHierarchyResolver` so
+  `HttpClients.createDefault().execute(new HttpGet(url))` now
+  correctly fires `ssrf` (CWE-918), not `external_taint_escape`
+  (CWE-20). Registered: `HttpClients.createDefault/createSystem`
+  → `CloseableHttpClient`, `HttpClients.createMinimal` →
+  `MinimalHttpClient`. Fits behind the pre-registered Apache HttpClient
+  4.x + 5.x class-hierarchy facts (already in 3.156.0).
+
 ## [3.159.0] - 2026-07-09
 
 Engine bump only — adopts
