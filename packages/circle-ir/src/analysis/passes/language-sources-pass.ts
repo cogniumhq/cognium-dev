@@ -563,6 +563,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJavaPathNormalizeStartsWithGuardSanitizers(code),
       );
+      // #239 C4 residual (3.159.0): Path.getFileName() strips path
+      // components — canonical path-traversal sanitizer.
+      additionalSanitizers.push(...findJavaPathGetFileNameSanitizers(code));
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
       additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
@@ -3868,6 +3871,85 @@ function findJavaPathNormalizeStartsWithGuardSanitizers(
       sanitizers.push({
         type: 'java_path_normalize_startswith_guard',
         method: 'normalize',
+        line: l + 1,
+        sanitizes: ['path_traversal', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Java: `Path.getFileName()` path-traversal sanitizer (cognium-dev #239
+ * C4 residual — 3.159.0).
+ *
+ * `java.nio.file.Path.getFileName()` returns the *last* name in the
+ * path (the leaf filename) as a fresh `Path`. Any path-separator
+ * content — including `..`/`../` traversal payloads — is stripped
+ * because those are separators, not filename characters. Chained with
+ * `.toString()` this is the canonical Java stanza for "keep only the
+ * user-supplied filename, discard any directory prefix":
+ *
+ *   String leaf = Paths.get(request.getParameter("f"))
+ *                     .getFileName().toString();
+ *   Path target = Paths.get(BASE, leaf);            // safe
+ *
+ * Recognition is conservative and receiver-anchored: the `.getFileName()`
+ * call must be chained directly onto `Paths.get(...)` or `Path.of(...)`
+ * to distinguish this sanitizer from the *taint source* case of
+ * `Part.getFileName()` (Servlet multipart) / `MultipartFile.getFileName()`
+ * (Spring) / `MimeBodyPart.getFileName()` (Jakarta Mail), all of which
+ * return the attacker-supplied filename and stay tainted.
+ *
+ * Emits a `path_traversal` + `external_taint_escape` sanitizer on the
+ * assignment line and on every subsequent line that references the
+ * bound variable (mirrors the `normalize()+startsWith()` emitter shape).
+ */
+function findJavaPathGetFileNameSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // <var> = <rhs> where <rhs> contains `.getFileName()` and the chain
+  // that produced its receiver starts with `Paths.get(` or `Path.of(`.
+  // Two-step match keeps the regex simple and avoids nested-paren
+  // counting on the argument to `Paths.get(...)` (which routinely
+  // wraps another call such as `request.getParameter("f")`).
+  const assignmentRe =
+    /^\s*(?:(?:final\s+)?[A-Za-z_][\w.<>?,\s\[\]]*?\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const rhsHasGetFileNameRe = /\.\s*getFileName\s*\(\s*\)/;
+  const rhsHasPathsChainRe = /\b(?:Paths\s*\.\s*get|Path\s*\.\s*of)\s*\(/;
+
+  const candidates: Array<{ line: number; boundVar: string }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignmentRe.exec(lines[i]);
+    if (!m) continue;
+    const rhs = m[2];
+    if (!rhsHasGetFileNameRe.test(rhs)) continue;
+    if (!rhsHasPathsChainRe.test(rhs)) continue;
+    candidates.push({ line: i + 1, boundVar: m[1] });
+  }
+  if (candidates.length === 0) return sanitizers;
+
+  for (const c of candidates) {
+    sanitizers.push({
+      type: 'java_path_get_filename',
+      method: 'getFileName',
+      line: c.line,
+      sanitizes: ['path_traversal', 'external_taint_escape'],
+    });
+    // Emit on every subsequent line that references the sanitized
+    // variable so the sink-site line also carries the sanitizer
+    // stamp (covers `Paths.get(BASE, leaf)`, `Files.newOutputStream(...)`,
+    // `new File(BASE, leaf)`, etc.).
+    const varRefRe = new RegExp(`\\b${c.boundVar}\\b`);
+    for (let l = c.line; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'java_path_get_filename',
+        method: 'getFileName',
         line: l + 1,
         sanitizes: ['path_traversal', 'external_taint_escape'],
       });

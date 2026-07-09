@@ -274,17 +274,57 @@ export class CrossFilePass {
       }
     }
 
+    // --- 2b. Sanitizer post-filter (cognium-dev #239 C4 residual — 3.159.0)
+    // ---------------------------------------------------------------------
+    // The per-file `TaintPropagationPass` already consults sanitizers, but
+    // the cross-file phases (1 direct, 2 interprocedural, 3 field-binding,
+    // 4 aliasing) build flows from raw source/sink coordinates without
+    // consulting either file's sanitizers. When the same source and sink
+    // live in the same file (a legitimate output shape when the cross-file
+    // resolver picks up a chain that never actually escapes the file), a
+    // sanitizer between them was previously ignored — producing an
+    // "intra-file" FP surface via the cross-file result.
+    //
+    // Filter is two-tier:
+    //   - Same-file paths: drop when any sanitizer between source.line and
+    //     sink.line covers sink.type.
+    //   - Cross-file paths: drop when a sanitizer AT sink.line covers
+    //     sink.type in the sink-file's IR (mirrors InterproceduralPass).
+    const filteredTaintPaths = taintPaths.filter(tp => {
+      const sinkIR = projectGraph.getIR(tp.sink.file);
+      if (!sinkIR) return true;
+      const sinkTypeStr = tp.sink.type as string;
+      if (tp.source.file === tp.sink.file) {
+        const lo = Math.min(tp.source.line, tp.sink.line);
+        const hi = Math.max(tp.source.line, tp.sink.line);
+        for (const san of sinkIR.taint.sanitizers ?? []) {
+          if (san.line < lo || san.line > hi) continue;
+          if ((san.sanitizes as readonly string[]).includes(sinkTypeStr)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      for (const san of sinkIR.taint.sanitizers ?? []) {
+        if (san.line !== tp.sink.line) continue;
+        if ((san.sanitizes as readonly string[]).includes(sinkTypeStr)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
     // --- 3. Type hierarchy --------------------------------------------------
     const typeHierarchy: TypeHierarchy = projectGraph.typeHierarchy.toTypeHierarchyData();
 
     logger.info('cross-file: complete', {
       totalMs: Date.now() - startMs,
-      paths: taintPaths.length,
+      paths: filteredTaintPaths.length,
       crossFileCalls: crossFileCalls.length,
       budgetExceeded: exceeded,
     });
 
-    const result: CrossFilePassResult = { crossFileCalls, taintPaths, typeHierarchy };
+    const result: CrossFilePassResult = { crossFileCalls, taintPaths: filteredTaintPaths, typeHierarchy };
     if (exceeded) result.budgetExceeded = true;
     return result;
   }

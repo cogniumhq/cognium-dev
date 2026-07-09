@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.159.0] - 2026-07-09
+
+FP fix — cognium-dev **#239 C4 residual** (last live safe-mirror FP
+after the 3.155 – 3.158 chain of type-confusion fixes).
+
+### `SafeToctou.java` — Java `Path.getFileName()` path-traversal sanitizer
+
+The aisec safe-mirror `SafeToctou.java` uses the canonical
+"open atomically under a fixed base" pattern:
+
+```java
+String leaf = Paths.get(request.getParameter("f")).getFileName().toString();
+Path target = Paths.get(BASE, leaf);
+try (OutputStream os = Files.newOutputStream(
+        target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+    ...
+}
+```
+
+`Path.getFileName()` strips every path component up to (and excluding)
+the trailing leaf — the standard way to defang an untrusted filename
+before joining it under a fixed base. Prior to 3.159.0 this idiom was
+not recognized as a `path_traversal` sanitizer, and the second
+`Paths.get(BASE, leaf)` call site fired a cross-file `path_traversal`
+(CWE-22) FP in project-mode scans.
+
+Root cause was two-layer:
+
+1. `configs/sources/*.yaml` registers `getFileName()` as a taint source
+   for `Part` / `BodyPart` / `MimeBodyPart` / `Path` (`return_tainted:
+   true`, `file_input`), but no `path_traversal` sanitizer was
+   registered on `Path.getFileName()`. `Paths.get(...).getFileName()`
+   yields a `java.nio.file.Path`, whose `getFileName()` on that
+   receiver is a sanitizer for `path_traversal`, not a source.
+2. `CrossFilePass` phases 2 – 4 (interprocedural, field-binding,
+   cross-instance-aliasing) built `taint_paths` from raw source/sink
+   coordinates without consulting per-file `taint.sanitizers`. Even
+   if a sanitizer had been emitted, cross-file paths would still
+   surface.
+
+### Fixes
+
+**`src/analysis/passes/language-sources-pass.ts`** — new emitter
+`findJavaPathGetFileNameSanitizers()` that anchors on
+`<var> = <rhs>;` assignments whose RHS contains both a
+`Paths.get(...)` / `Path.of(...)` chain and a `.getFileName()` call.
+Emits `java_path_get_filename` sanitizers at the assignment line and
+every downstream reference of the bound variable, covering both
+`path_traversal` and `external_taint_escape` sink types. The emitter
+uses a two-step match (assignment regex + separate RHS content
+checks) to survive nested parentheses in the chain (e.g.
+`Paths.get(request.getParameter("f"))`).
+
+Wired into the Java branch of the `LanguageSourcesPass` pipeline
+after the existing `findJavaPathNormalizeStartsWithGuardSanitizers`
+emitter.
+
+**`src/analysis/passes/cross-file-pass.ts`** — new step **2b**
+(sanitizer post-filter) between the interprocedural taint-path
+builder and the type-hierarchy phase. For each candidate cross-file
+`taint_path`, consults the sink file's per-file `taint.sanitizers`
+and drops the path if any sanitizer for the sink's type sits between
+source and sink (same-file) or on the sink line (cross-file). Fills
+the architectural gap where `InterproceduralPass`'s sink-line
+sanitizer filter did not carry over into cross-file phases.
+
+### Tests
+
+- `tests/analysis/passes/java-path-get-filename.test.ts` — 4 tests
+  (2 TN, 2 TP):
+  - `TN-1` SafeToctou repro: `Paths.get(req).getFileName()` sanitizes
+    `path_traversal` and no `path_traversal` flow fires
+  - `TN-2` `Path.of(...).getFileName()` chain sanitizes
+  - `TP-1` `Part.getFileName()` (multipart source) does NOT emit the
+    Paths-anchored sanitizer
+  - `TP-2` bare `.getFileName()` without a `Paths.get`/`Path.of`
+    anchor does NOT sanitize
+
+### Verification
+
+- New test file: 4/4 passing
+- Full suite: **3766 tests passing** (0 regressions)
+- Type check: clean
+- Node + browser + core bundles: clean
+- SafeToctou fixture project-mode scan: `cross_file_taint_paths: 0`
+- All 4 aisec fixtures (`safe_static_iv.{go,py,js}`, `SafeToctou.java`)
+  clean in both single-file and project-mode
+
+### Recall guard
+
+- Existing `Part` / `BodyPart` / `MimeBodyPart` / `Path` source
+  registrations preserved — upload-filename tainting still fires
+- Existing `resolve+normalize+startsWith` guard sanitizer preserved
+- Juliet CWE-22 — 100% preserved
+- OWASP Benchmark Path Traversal — TPR unchanged
+- Cross-file taint recall unchanged for genuinely unsanitized flows
+  (post-filter only drops paths where a per-file sanitizer covers
+  the sink type on the sink line)
+
+Pillar I clean. Browser + Node compatible. Ships as circle-ir
+**3.159.0** + cognium-dev **3.159.0**.
+
 ## [3.158.0] - 2026-07-08
 
 Regression fixes — cognium-dev **#246** (two Java-primary regressions

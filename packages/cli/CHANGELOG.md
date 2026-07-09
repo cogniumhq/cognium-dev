@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.159.0] - 2026-07-09
+
+Engine bump only — adopts
+[`circle-ir@3.159.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #239 C4 residual** fix:
+
+- **Java `Path.getFileName()` path-traversal sanitizer** — the aisec
+  safe-mirror `SafeToctou.java` idiom
+  `String leaf = Paths.get(userIn).getFileName().toString(); Paths.get(BASE, leaf);`
+  is now correctly recognized. Prior to 3.159.0 this shape fired a
+  cross-file `path_traversal` FP in project-mode scans. Fix ships a
+  new `findJavaPathGetFileNameSanitizers()` emitter in
+  `language-sources-pass` plus a new sanitizer post-filter step (2b)
+  in `cross-file-pass` that consults per-file sanitizers before
+  emitting cross-file taint paths.
+
+Full details: [`circle-ir@3.159.0`
+CHANGELOG](https://github.com/cogniumhq/circle-ir/blob/main/CHANGELOG.md#31590---2026-07-09).
+
 ## [3.158.0] - 2026-07-08
 
 Engine bump only — adopts
