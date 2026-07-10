@@ -20,21 +20,39 @@ import {
   getSourceDescription,
   getSinkDescription,
 } from './rules.js';
+import { isNonExecutableSourceLine } from './non-executable-lines.js';
 
 /**
  * Generate vulnerability findings from taint analysis results.
+ *
+ * cognium-dev#250 — When `sourceCode` and `language` are supplied,
+ * candidate sources whose `line` points at an import/package/comment/
+ * annotation-only/const-literal-declaration line are dropped before
+ * pair emission. This is a defense-in-depth gate against fabricated
+ * flows introduced upstream (LLM enrichment hallucinations or
+ * detector regressions). Both parameters are optional to preserve
+ * backward compatibility with pre-3.165 callers.
  */
 export function generateFindings(
   sources: TaintSource[],
   sinks: TaintSink[],
   dfg: DFG,
-  fileName: string
+  fileName: string,
+  sourceCode?: string,
+  language?: string,
 ): Finding[] {
   const findings: Finding[] = [];
   let findingId = 1;
 
+  // cognium-dev#250 — drop sources whose line is provably non-executable
+  // (import, package, comment, annotation-only, const-with-literal).
+  // No-op when `sourceCode` / `language` aren't supplied (legacy callers).
+  const gatedSources = (sourceCode && language)
+    ? sources.filter(s => !isNonExecutableSourceLine(sourceCode, s.line, language))
+    : sources;
+
   // For each source, find potential paths to sinks
-  for (const source of sources) {
+  for (const source of gatedSources) {
     for (const sink of sinks) {
       // Check if this source type can reach this sink type
       if (!canSourceReachSink(source.type, sink.type)) {

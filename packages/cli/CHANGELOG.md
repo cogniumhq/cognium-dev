@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.165.0] - 2026-07-10
+
+Engine bump only — adopts
+[`circle-ir@3.165.0`](https://www.npmjs.com/package/circle-ir), which
+ships a defense-in-depth non-executable-source-line gate:
+
+- **cognium-dev#250 — source misattribution.** Fabricated LLM-added
+  taint sources whose line points at import/package/comment/annotation/
+  const-literal declarations are now dropped inside `generateFindings()`
+  before emission. Circle-ir standalone scans are unaffected (engine
+  never emits such sources); downstream consumers (cognium-ai
+  no-verification path) benefit immediately.
+- New public utility: `isNonExecutableSourceLine(sourceCode, line,
+  language)`.
+- No CLI-side changes.
+
 ## [3.164.0] - 2026-07-10
 
 Engine bump only — adopts

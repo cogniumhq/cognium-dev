@@ -27,6 +27,10 @@ export {
 } from './findings.js';
 
 export {
+  isNonExecutableSourceLine,
+} from './non-executable-lines.js';
+
+export {
   setFindingsInstrumentation,
   isFindingsInstrumentationEnabled,
   emitFindingsInstrumentation,

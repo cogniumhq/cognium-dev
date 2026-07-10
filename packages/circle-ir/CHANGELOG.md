@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.165.0] - 2026-07-10
+
+Defense-in-depth FP suppression for cognium-dev#250 — source
+misattribution. Adds a public gate `isNonExecutableSourceLine()` and
+wires it into `generateFindings()` so fabricated taint sources that
+point at import/package/comment/annotation/const-literal lines are
+dropped before findings are emitted.
+
+### Root cause (documented for future readers)
+
+The tier-2 java sweep (cognium-ai 2.35.0 / circle-ir 3.164.0) showed
+61.2% of tier-2 C+H findings with `source.line` on non-executable
+lines — imports, copyright headers, const declarations. Direct-scan
+repro on circle-ir 3.164 shows the engine itself emits **zero** such
+sources. The fabricated flows originate in cognium-ai/circle-ir-ai's
+LLM enrichment step (`discoverSourcesForLanguage`), which
+occasionally hallucinates sources at the top of the file with
+`source.code: ""`. Downstream, cognium-ai's `runMerge()` accepts them
+into `mergedSources` unchecked, `generateFindings()` (no-verification
+path) or the LLM verifier (verified path) then emits them.
+
+This changelog entry addresses the circle-ir side. cognium-ai should
+add a mirror gate on `runMerge()` — filed separately as a follow-up.
+
+### Added
+
+- **`isNonExecutableSourceLine(sourceCode, line, language)`** — new
+  regex-based utility in `src/analysis/non-executable-lines.ts`.
+  Matches import/package/use/from (Java, JS/TS, Go, Rust, Python),
+  comments (block, line, jsdoc, hash, python docstring delimiters),
+  standalone annotations/decorators, and const-with-literal
+  declarations. Language-aware: java/js/ts/go/rust share the
+  curly-family grammar; python has its own gate. Unknown languages
+  return `false` (permissive). Exported from the package root.
+
+- **`generateFindings(sources, sinks, dfg, fileName, sourceCode?,
+  language?)`** — added two optional trailing params. When both are
+  supplied, sources whose line satisfies the non-executable predicate
+  are dropped before pair emission. Backward-compatible for all
+  pre-3.165 callers (no gate runs when they're omitted).
+
+### Impact
+
+- **Circle-ir standalone**: no observable change. The engine's own
+  detectors never emit at non-executable lines (verified by direct
+  repro on 3.164), so the filter drops 0 sources on any pure-static
+  scan.
+- **cognium-ai no-verification path** (`workflow.ts:1064`): drops
+  fabricated LLM-enrichment sources before finding emission. Reduces
+  cognium-dev#250 tier-2 fabricated-flow rate on this branch to
+  effectively zero.
+- **cognium-ai verified path** (`workflow.ts:856+`): no effect — that
+  path bypasses `generateFindings()`. Requires a mirror fix in
+  cognium-ai's `runMerge()`.
+
+### Tests
+
+- 33 new tests in
+  `tests/analysis/non-executable-source-lines.test.ts` covering
+  Java/Python/JS/TS/Go/Rust positive and negative cases plus the
+  cognium-dev#250 tier-2 repro (import-line http_param source →
+  xss sink; asserts drop with gate engaged, retention when disengaged,
+  and coexistence with a real assignment-line source).
+- 3837 tests pass (was 3804). Zero regressions.
+
 ## [3.164.0] - 2026-07-10
 
 FPR fix — Rust rust-synthetic benchmark `xss_safe_escaped` full

@@ -132,6 +132,7 @@ export {
   detectUnresolved,
   propagateTaint,
   generateFindings,
+  isNonExecutableSourceLine,
   setFindingsInstrumentation,
   isFindingsInstrumentationEnabled,
   analyzeConstantPropagation,
