@@ -142,6 +142,15 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getPathWithinApplication', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
   { method: 'getRequestUri', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
   { method: 'decodeRequestString', class: 'WebUtils', type: 'http_path', severity: 'high', return_tainted: true },
+  // cognium-dev #249 3.162.0: java.net.URLDecoder.decode reintroduces taint
+  // by expanding %XX sequences into arbitrary bytes. This is the
+  // decode-after-encode bypass pattern exercised by SecuriBench Micro
+  // `sanitizers/Sanitizers5.java`: encode sanitizes `//evil.com` into
+  // `%2F%2Fevil.com`, then decode restores the redirect payload before
+  // it reaches `sendRedirect`. Registering as a source ensures the
+  // reaching-def walk does not credit an upstream URLEncoder.encode
+  // sanitizer for taint that has since been re-expanded.
+  { method: 'decode', class: 'URLDecoder', type: 'http_path', severity: 'high', return_tainted: true },
   // Additional HTTP request methods that can be attacker-controlled
   { method: 'getProtocol', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
   { method: 'getScheme', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
@@ -2253,12 +2262,17 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'render', class: 'Template', removes: ['xss'] },  // Rust askama auto-escapes
   { method: 'encodeForJavaScript', removes: ['xss'] },
   { method: 'encodeForCSS', removes: ['xss'] },
-  { method: 'encodeForURL', removes: ['xss', 'ssrf'] },
+  // cognium-dev #249 3.162.0: `open_redirect` restored to the URL-encoder
+  // sanitizer cluster. Sprint 82 (#189) reclassified `sendRedirect` from
+  // `ssrf` → `open_redirect` (config-loader.ts:1296-1299) without updating
+  // this table; the drift surfaced as a SecuriBench Micro FP on
+  // `sanitizers/Sanitizers3.java` (`URLEncoder.encode` + `sendRedirect`).
+  { method: 'encodeForURL', removes: ['xss', 'ssrf', 'open_redirect'] },
   // URL encoding wrapper aliases (common patterns in benchmarks and real-world code)
-  { method: 'encodeURL', removes: ['xss', 'ssrf'] },
-  { method: 'urlEncode', removes: ['xss', 'ssrf'] },
-  { method: 'escapeUrl', removes: ['xss', 'ssrf'] },
-  { method: 'escapeURL', removes: ['xss', 'ssrf'] },
+  { method: 'encodeURL', removes: ['xss', 'ssrf', 'open_redirect'] },
+  { method: 'urlEncode', removes: ['xss', 'ssrf', 'open_redirect'] },
+  { method: 'escapeUrl', removes: ['xss', 'ssrf', 'open_redirect'] },
+  { method: 'escapeURL', removes: ['xss', 'ssrf', 'open_redirect'] },
 
   // Path Traversal
   { method: 'normalize', class: 'Path', removes: ['path_traversal'] },
@@ -2307,7 +2321,11 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'setProperty', class: 'XMLReader', removes: ['xxe'] },
 
   // SSRF / URL encoding
-  { method: 'encode', class: 'URLEncoder', removes: ['ssrf', 'xss', 'path_traversal'] },
+  // cognium-dev #249 3.162.0: `open_redirect` added — see rationale on the
+  // `encodeForURL` cluster above. `java.net.URLEncoder.encode` is the specific
+  // sanitizer used by SecuriBench Micro `sanitizers/Sanitizers3.java` before
+  // `HttpServletResponse.sendRedirect` (Sprint 82 CWE-601 sink).
+  { method: 'encode', class: 'URLEncoder', removes: ['ssrf', 'xss', 'path_traversal', 'open_redirect'] },
   { method: 'validateURL', removes: ['ssrf'] },
   { method: 'isAllowedHost', removes: ['ssrf'] },
   { method: 'isInternalHost', removes: ['ssrf'] },

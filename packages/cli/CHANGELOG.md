@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.162.0] - 2026-07-09
+
+Engine bump only — adopts
+[`circle-ir@3.162.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #249** ("SecuriBench Micro URL-encoder sanitizer
+FPR regression") + **#247** stale-premise close:
+
+- **URL-encoder sanitizers now cover `open_redirect`.** Post-Sprint-82
+  reclassification of `sendRedirect` from `ssrf` → `open_redirect`
+  left the `encodeForURL/URLEncoder.encode/escapeUrl/urlEncode`
+  sanitizer cluster silent on the new sink type. Sanitizer credit
+  now applies. Closes SecuriBench Micro sanitizers-category
+  FPR regression (66.7% → 0%).
+- **Encode-then-decode bypass detection.** New `URLDecoder.decode`
+  Java source + symmetric lower-bound guard on both sanitizer-credit
+  backward walks correctly flag the
+  `sendRedirect(URLDecoder.decode(URLEncoder.encode(userInput)))`
+  shape (SecuriBench Micro `Sanitizers5.java`).
+
+**Benchmarks:** SecuriBench Micro TPR 97.2% (was 96.3%), FPR **6.7%**
+(was 13.3%). OWASP Benchmark (Java) 100% TPR / 0% FPR unchanged.
+
+No CLI surface changes. Full engine regression: 3795 pass, 2 skipped.
+
 ## [3.161.0] - 2026-07-09
 
 Engine bump only — adopts

@@ -263,6 +263,17 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           );
           for (const line of walk.lines) {
             if (line === f.sink_line) continue; // already checked above
+            // cognium-dev #249 3.162.0 — bound sanitizer credit to lines
+            // >= source_line. When a re-taint source (e.g.
+            // `URLDecoder.decode` on a previously-encoded value) sits
+            // between an upstream sanitizer and the sink, the backward
+            // reaching-def walk crosses through the re-taint source.
+            // Sanitizers on lines strictly before the current flow's
+            // source line cannot cover the freshly re-introduced taint
+            // (SecuriBench Micro `sanitizers/Sanitizers5.java` shape).
+            // Mirrors the identical bound applied in
+            // `taint-propagation.ts::checkSanitized` site #2 (#249).
+            if (line < f.source_line) continue;
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
             for (const san of sansAtLine) {

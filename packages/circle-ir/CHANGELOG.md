@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.162.0] - 2026-07-09
+
+FPR fix — cognium-dev **#249** ("SecuriBench Micro URL-encoder sanitizer
+regression"), plus **#247** stale-premise close. Two coupled edits close
+a 6.6-point FPR bump introduced when Sprint 82 reclassified
+`HttpServletResponse.sendRedirect` from `ssrf` → `open_redirect` without
+extending the URL-encoder sanitizer coverage to the new sink type.
+
+### Fixed — sanitizer coverage (`DEFAULT_SANITIZERS` in `config-loader.ts`)
+
+- **URL-encoder sanitizers now cover `open_redirect`.** Added
+  `'open_redirect'` to the `sanitizes` set on all five URL-encoder
+  entries: `encodeForURL` (OWASP ESAPI), `encodeURL`, `urlEncode`,
+  `escapeUrl`, `escapeURL`, and the method-only `URLEncoder.encode`.
+  Previously these sanitizers only advertised
+  `['open_redirect_ssrf', 'ssrf']`, so post-Sprint-82 sink emissions
+  of type `open_redirect` bypassed the credit and produced FPs on
+  SecuriBench Micro `sanitizers/{Sanitizers3, Sanitizers4, Sanitizers6}`.
+
+### Fixed — encode-then-decode bypass (`taint-propagation.ts` +
+`taint-propagation-pass.ts`)
+
+Two independent backward reaching-def walks in the sanitizer credit
+logic could cross through a re-taint source line and spuriously
+credit an upstream sanitizer:
+
+- **`taint-propagation.ts::checkSanitized`** — the `SanitizerCheckCtx`
+  ctx-walk (added in #238) now skips lines strictly less than the
+  current taint's `fromLine`.
+- **`taint-propagation-pass.ts`** — the DFG-walk sanitizer suppression
+  loop (added in #239 C4 residual) receives the same guard against
+  `line < f.source_line`.
+
+Both fixes are minimal and symmetric: they preserve the classical
+`safe = escape(x); sink(safe)` credit path (sanitizer line == taint
+line, guarded by `>=`), but reject sanitizer credit for lines that
+sit *before* the current flow's re-taint source. Rationale: when
+`URLDecoder.decode` re-taints a previously-encoded value, the
+upstream `URLEncoder.encode` sanitizer is no longer effective on the
+re-tainted derivative — this is the classical
+`encode(x) → decode(enc)` bypass, shape captured by SecuriBench
+Micro `sanitizers/Sanitizers5.java`.
+
+### Added — new Java taint source (`DEFAULT_SOURCES` in
+`config-loader.ts`)
+
+- **`java.net.URLDecoder.decode`** now emits as a re-taint source
+  (`type: 'http_path'`, `return_tainted: true`). Enables detection of
+  the encode-then-decode bypass shape (`sendRedirect(decode(encode(x)))`)
+  that trivially defeats URL-encoding sanitizers.
+
+### Benchmarks
+
+- **SecuriBench Micro (Java)** — TPR **97.2%** (was 96.3% on 3.161.0),
+  FPR **6.7%** (was 13.3% on 3.161.0). `sanitizers` category:
+  100% TPR / 0% FPR (was 66.7% TPR / 66.7% FPR). Sanitizers5.java
+  (encode-then-decode bypass) now correctly flagged as
+  `open_redirect` CWE-601.
+- **OWASP Benchmark (Java)** — 100% TPR / 0% FPR unchanged.
+- **Full engine regression** — 3795 pass / 2 skipped (added 5 pinning
+  tests in `tests/analysis/passes/issue-249-securibench-sanitizers.test.ts`).
+
+### Closes
+
+- cognium-dev #249 (SecuriBench Micro URL-encoder sanitizer FPR
+  regression + Sanitizers5 encode-then-decode TP retention).
+- cognium-dev #247 (log_injection stale-premise close — no code
+  change; premise already resolved by prior refactor).
+
 ## [3.161.0] - 2026-07-09
 
 FN fix — cognium-dev **#241 non-Java** ("real-world sink signatures FN"),

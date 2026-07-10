@@ -434,7 +434,7 @@ const KNOWN_SINK_TYPES = new Set<string>([
  *     sanitized code.
  */
 function checkSanitized(
-  _fromLine: number,
+  fromLine: number,
   toLine: number,
   sinkType: string,
   sanitizersByLine: Map<number, TaintSanitizer[]>,
@@ -461,6 +461,17 @@ function checkSanitized(
   // cognium-dev #238 — widen the search to the transitive reaching-def chain
   // of the tainted use. Only fires when the caller opts in via `ctx` (site #2
   // sink-reachability check). Cycle-safe + bounded via walkBackwardDefs.
+  //
+  // cognium-dev #249 3.162.0 — bound sanitizer credit to lines >= fromLine.
+  // When a re-taint source (e.g. `URLDecoder.decode` on a previously-encoded
+  // value) sits between an upstream sanitizer and the sink, the backward
+  // reaching-def walk crosses through the re-taint source. Sanitizers on
+  // lines strictly before the current taint's origin cannot cover the
+  // freshly re-introduced taint (SecuriBench Micro `sanitizers/Sanitizers5.java`
+  // encode-then-decode bypass). The upper hop cap already bounds the walk;
+  // this lower bound closes the semantic gap without affecting the classical
+  // `safe = escape(x); sink(safe)` credit path (that sanitizer is at
+  // `fromLine == taintInfo.line`, which the `>=` check preserves).
   if (ctx) {
     const walk = walkBackwardDefs(
       ctx.startDefId,
@@ -470,6 +481,7 @@ function checkSanitized(
     );
     for (const line of walk.lines) {
       if (line === toLine) continue; // already checked above
+      if (line < fromLine) continue; // upstream of the current taint's origin
       const sansAtLine = sanitizersByLine.get(line);
       if (!sansAtLine || sansAtLine.length === 0) continue;
       for (const san of sansAtLine) {
