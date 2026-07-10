@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.164.0] - 2026-07-10
+
+FPR fix — Rust rust-synthetic benchmark `xss_safe_escaped` full
+suppression. Mirrors the Python `aliasSanitizedFor` pattern into the
+Rust derived-var expansion path so that sanitizer wraps around
+tainted vars (`encode_text`, `html_escape`, …) confer coverage to
+their downstream aliases and format-string compositions.
+
+### Fixed — Rust derived-var sanitizer coverage (`taint-propagation-pass.ts`)
+
+- **Rust `aliasSanitizedFor` recording.** The Rust branch that
+  post-processes `buildRustTaintedVars` (`taint-propagation-pass.ts`
+  lines 1142+) recorded derived vars but did NOT credit sanitizer
+  coverage. The `xss_safe_escaped` shape from cognium-dev#249
+  rust-synthetic:
+  ```rust
+  let name = req.query_string();
+  let escaped = encode_text(name);              // xss sanitizer
+  let html = format!("<h1>{}</h1>", escaped);
+  HttpResponse::Ok().body(html);                // xss sink
+  ```
+  was reported as an unsanitized xss flow because `escaped` (and
+  transitively `html`) had no coverage registered. Mirrors the
+  Python pattern at `taint-propagation-pass.ts` lines 1043-1130:
+  1. Per-line sanitizer credit: match the sanitizer method-name
+     token in the RHS of the derived line.
+  2. Transitive alias-chain propagation through pure `let x = y;`
+     and `x = y;` copies (LATEST-origin gated for soundness).
+  3. RHS-references extension: compound RHSes like
+     `format!(..., escaped)` inherit coverage when they reference at
+     least one covered alias AND no raw tainted operand
+     (intersection-of-coverages preserves multi-sink safety).
+
+### Added — pinning tests
+- `tests/analysis/passes/rust-sanitizer-alias-3164.test.ts` — three
+  tests freezing: (a) positive suppression via `encode_text`,
+  (b) negative retention for unsanitized derivations, and
+  (c) mixed-operand soundness (covered + raw → no credit).
+
+### Benchmarks
+- **rust-synthetic (cognium-dev#249)**: TPR **100%** unchanged,
+  FPR **15.4% → 7.7%**, Score **84.6% → 92.3%**. `xss_safe_escaped`
+  now correctly TN. Residual FP (`deser_safe_validated`) is a
+  harness methodology artifact documented in
+  `cognium-ai/circle-ir-ai/benchmarks/runners/HARNESS-NOTES.md` —
+  engine emits `flows: []` correctly; runner's
+  `sources && sinks && !hasSanitizer` fallback triggers.
+- **html-synthetic (cognium-dev#249)**: unchanged (FPR 9.1%). Sole
+  FP (`xss_eval_safe_json`) is also a harness methodology artifact —
+  engine emits `flows: undefined` correctly; runner rule is
+  `sources > 0 && sinks > 0` with no flow/sanitizer check.
+
 ## [3.163.0] - 2026-07-10
 
 TPR fix — SecuriBench Micro `basic/Basic35.java` full-source coverage

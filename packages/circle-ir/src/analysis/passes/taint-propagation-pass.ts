@@ -1156,6 +1156,160 @@ function detectExpressionScanFlows(
         });
         existingVars.add(varName);
       }
+
+      // cognium-dev #249 (rust-synthetic FP #1 — xss_safe_escaped):
+      // record per-alias sanitizer coverage for the Rust derivation path,
+      // mirroring the Python pattern above (lines 1043-1130).
+      //
+      // `buildRustTaintedVars` walks `let LHS = RHS` and `LHS = RHS` and
+      // marks LHS tainted whenever RHS references a known-tainted var —
+      // blind to sanitizers. Shape:
+      //   let name = req.query_string();          // source
+      //   let escaped = encode_text(name);        // sanitizer wrap → `escaped`
+      //   let html = format!("<h1>{}</h1>", escaped);
+      //   HttpResponse::Ok().body(html);          // sink
+      // Without recording sanitizer coverage on `escaped`, the flow
+      // emitter (variable-scan path, lines ~1268) sees `html` in the sink
+      // and reports an unsanitized flow.
+      //
+      // Extract the sanitizer method-name token and substring-match `<name>(`
+      // in the RHS of the derived line — same evidence check as Python.
+      if (sanitizers && sanitizers.length > 0) {
+        const sanitizersByLine = new Map<number, typeof sanitizers>();
+        for (const s of sanitizers) {
+          const arr = sanitizersByLine.get(s.line) ?? [];
+          arr.push(s);
+          sanitizersByLine.set(s.line, arr);
+        }
+        const codeLines = code.split('\n');
+        for (const [varName, originLine] of derived) {
+          const lineSans = sanitizersByLine.get(originLine);
+          if (!lineSans || lineSans.length === 0) continue;
+          const lineText = codeLines[originLine - 1] ?? '';
+          // Rust let-binding OR bare assignment RHS.
+          const rhsMatch = lineText.match(
+            /^\s*(?:let\s+(?:mut\s+)?)?[A-Za-z_]\w*(?:\s*:\s*[^=]+)?\s*=\s*(.+?)(?:;\s*)?$/
+          );
+          if (!rhsMatch) continue;
+          const rhs = rhsMatch[1];
+          for (const san of lineSans) {
+            const sanMatch = san.method.match(/(\w+)\(\)$/);
+            if (!sanMatch) continue;
+            const sanName = sanMatch[1];
+            if (!rhs.includes(`${sanName}(`)) continue;
+            let set = aliasSanitizedFor.get(varName);
+            if (!set) { set = new Set<string>(); aliasSanitizedFor.set(varName, set); }
+            for (const t of san.sanitizes) set.add(t);
+          }
+        }
+      }
+
+      // Transitive alias-chain propagation for Rust `let x = y;` and
+      // `x = y;` copies. Once `escaped` has xss coverage, a downstream
+      //   let html = format!(..., escaped);
+      // does NOT match this rule (RHS is not a bare identifier), so the
+      // sanitizer credit is instead conferred through the RHS-references
+      // check at flow emission time. We only propagate through pure
+      // identifier copies here to keep the rule sound (LATEST-origin gate
+      // per Python precedent).
+      const aliasChains: Array<{ lhs: string; upstream: string; line: number }> = [];
+      {
+        const codeLines2 = code.split('\n');
+        for (let i = 0; i < codeLines2.length; i++) {
+          const ln = codeLines2[i];
+          if (ln.trimStart().startsWith('//')) continue;
+          const m = ln.match(
+            /^\s*(?:let\s+(?:mut\s+)?)?([\p{L}\p{N}_]+)\s*(?::\s*[^=]+)?\s*=\s*([\p{L}\p{N}_]+)\s*;?\s*$/u
+          );
+          if (!m) continue;
+          const lineNum = i + 1;
+          const lhs = m[1];
+          if (derived.get(lhs) !== lineNum) continue;
+          aliasChains.push({ lhs, upstream: m[2], line: lineNum });
+        }
+      }
+      if (aliasChains.length > 0) {
+        let changed = true;
+        let guard = 0;
+        while (changed && guard < aliasChains.length + 2) {
+          changed = false;
+          guard++;
+          for (const { lhs, upstream } of aliasChains) {
+            const upCov = aliasSanitizedFor.get(upstream);
+            if (!upCov || upCov.size === 0) continue;
+            let downCov = aliasSanitizedFor.get(lhs);
+            if (!downCov) { downCov = new Set<string>(); aliasSanitizedFor.set(lhs, downCov); }
+            for (const t of upCov) {
+              if (!downCov.has(t)) { downCov.add(t); changed = true; }
+            }
+          }
+        }
+      }
+
+      // cognium-dev #249: RHS-references extension. `format!(..., escaped)`
+      // and other compound RHSes that reference a covered alias should
+      // inherit the coverage on the LHS. Without this, only pure identifier
+      // copies propagate coverage — the common
+      //   let escaped = encode_text(name);
+      //   let html = format!("<h1>{}</h1>", escaped);
+      // shape leaves `html` uncovered and re-emits the FP.
+      //
+      // Soundness: only credit coverage when the RHS references AT LEAST ONE
+      // covered alias AND references no other tainted-but-uncovered var.
+      // If the RHS mixes covered + raw tainted operands (e.g.
+      //   let x = format!("{} {}", raw, escaped);
+      // where `raw` is tainted-but-uncovered), we must NOT credit `x` —
+      // the raw operand is still a live flow.
+      {
+        const codeLines3 = code.split('\n');
+        let changed = true;
+        let guard = 0;
+        const derivedList = [...derived.entries()];
+        const taintedVars = new Set<string>([
+          ...seedVars,
+          ...derivedList.map(([v]) => v),
+        ]);
+        while (changed && guard < derivedList.length + 2) {
+          changed = false;
+          guard++;
+          for (const [varName, originLine] of derivedList) {
+            const lineText = codeLines3[originLine - 1] ?? '';
+            if (lineText.trimStart().startsWith('//')) continue;
+            const rhsMatch = lineText.match(
+              /^\s*(?:let\s+(?:mut\s+)?)?[A-Za-z_]\w*(?:\s*:\s*[^=]+)?\s*=\s*(.+?)(?:;\s*)?$/
+            );
+            if (!rhsMatch) continue;
+            const rhs = rhsMatch[1];
+            // Collect covered types from every referenced tainted var.
+            // A referenced var contributes its coverage; a referenced
+            // tainted var with NO coverage blocks credit (raw operand).
+            let anyReferenced = false;
+            let intersection: Set<string> | null = null;
+            let blocked = false;
+            for (const other of taintedVars) {
+              if (other === varName) continue;
+              const re = new RegExp(`\\b${other}\\b`);
+              if (!re.test(rhs)) continue;
+              anyReferenced = true;
+              const cov = aliasSanitizedFor.get(other);
+              if (!cov || cov.size === 0) { blocked = true; break; }
+              if (intersection === null) {
+                intersection = new Set(cov);
+              } else {
+                for (const t of [...intersection]) {
+                  if (!cov.has(t)) intersection.delete(t);
+                }
+              }
+            }
+            if (blocked || !anyReferenced || !intersection || intersection.size === 0) continue;
+            let downCov = aliasSanitizedFor.get(varName);
+            if (!downCov) { downCov = new Set<string>(); aliasSanitizedFor.set(varName, downCov); }
+            for (const t of intersection) {
+              if (!downCov.has(t)) { downCov.add(t); changed = true; }
+            }
+          }
+        }
+      }
     }
   }
 

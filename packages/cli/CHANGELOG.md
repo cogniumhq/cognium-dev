@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.164.0] - 2026-07-10
+
+Engine bump only — adopts
+[`circle-ir@3.164.0`](https://www.npmjs.com/package/circle-ir), which
+ships Rust derived-var sanitizer coverage:
+
+- **Rust `aliasSanitizedFor` recording.** Sanitizer wraps around
+  tainted Rust vars (`encode_text`, `html_escape`, …) now confer
+  coverage to their downstream aliases and format-string
+  compositions. Fixes cognium-dev#249 rust-synthetic
+  `xss_safe_escaped` FP.
+- **rust-synthetic**: TPR 100% unchanged, FPR **15.4% → 7.7%**,
+  Score **84.6% → 92.3%**.
+- No CLI-side changes.
+
 ## [3.163.0] - 2026-07-10
 
 Engine bump only — adopts
