@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.163.0] - 2026-07-10
+
+Engine bump only — adopts
+[`circle-ir@3.163.0`](https://www.npmjs.com/package/circle-ir), which
+ships a targeted `http_path → xss` reach-map fix:
+
+- **`http_path` sources now reach `xss` sinks.** Prior to 3.163.0 the
+  `canSourceReachSink` allow-list omitted `xss` from `http_path`, so
+  URL path components (`getRequestURI/getRequestURL/getPathInfo/
+  getServletPath`) reflected back into HTML output silently dropped
+  their inline-colocation flow. SecuriBench Micro `Basic35.java` now
+  detects the full 6/6 annotated `/* BAD */` flows.
+
+**Benchmarks:** SecuriBench Micro TPR **97.7%** (was 97.2%), FPR
+**6.7%** unchanged. `basic/` category 42/42 (100%). OWASP Benchmark
+(Java) 100% TPR / 0% FPR unchanged.
+
+No CLI surface changes. Full engine regression: 3801 pass, 2 skipped.
+
 ## [3.162.0] - 2026-07-09
 
 Engine bump only — adopts

@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.163.0] - 2026-07-10
+
+TPR fix — SecuriBench Micro `basic/Basic35.java` full-source coverage
+via `http_path → xss` reach-map. One-line allow-list edit closes a
+silent reach-map omission: URL path components
+(`getRequestURI/getRequestURL/getPathInfo/getServletPath`) reflected
+straight back into HTML output silently dropped their inline-colocation
+flow.
+
+### Fixed — `canSourceReachSink` reach map (`findings.ts:211`)
+
+- **`http_path` sources now reach `xss` sinks.** Prior to 3.163.0 the
+  `http_path` allow-list was
+  `['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary']`
+  — `xss` was missing. Reflected-XSS via URL path components is the
+  textbook attack shape (`writer.println(req.getRequestURL())`); the
+  omission caused SecuriBench Micro `Basic35.java` to detect 5/6 of
+  its annotated `/* BAD */` flows. Added `'xss'` to the entry.
+
+### Added — pinning tests
+- `tests/analysis/passes/http-path-xss-reach-3163.test.ts` — 4 positive
+  http_path accessors + full Basic35 replica (all 6 sources) + ESAPI-
+  sanitized negative. Freezes the fix and protects against future
+  reach-map regressions.
+
+### Benchmarks
+- **SecuriBench Micro (Java)**: TPR **97.7%** (was 97.2%), FPR **6.7%**
+  unchanged. `basic/` category now 42/42 (100%). Residual FNs
+  (Aliasing2, Collections8) are benchmark artifacts, not engine gaps:
+  Aliasing2 writes a literal (`/* OK */`, `gVC=0`), Collections8's
+  `c2.get(0)` returns the literal `"abc"` at index 0 (our precise
+  list-index taint tracking correctly rejects the flow — the benchmark
+  expects coarser conservative any-tainted-element-poisons-collection
+  analysis).
+- **OWASP Benchmark (Java)**: 100% TPR / 0% FPR unchanged.
+- Full engine regression: **3801 pass** (was 3795), 2 skipped.
+
 ## [3.162.0] - 2026-07-09
 
 FPR fix — cognium-dev **#249** ("SecuriBench Micro URL-encoder sanitizer

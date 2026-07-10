@@ -208,7 +208,13 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'],
     http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
     http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
-    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary'],
+    // xss added cognium-dev 3.163.0: URL path components (getRequestURI,
+    // getRequestURL, getPathInfo, getServletPath) reflected back into HTML
+    // output are a classic reflected-XSS vector — cf. Basic35 in
+    // SecuriBench Micro where `writer.println(req.getRequestURL())` is
+    // annotated `/* BAD */`. Prior to 3.163.0 the reach map omitted xss
+    // so http_path → xss inline-colocation flows were silently dropped.
+    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss'],
     http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
