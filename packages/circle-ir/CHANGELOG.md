@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.161.0] - 2026-07-09
+
+FN fix — cognium-dev **#241 non-Java** ("real-world sink signatures FN"),
+continuation of the Java batch shipped in 3.160.0. Four cross-language
+sink-signature gaps closed, plus one narrow engine correctness fix in
+`receiverMightBeClass`.
+
+### Added — DEFAULT_SINKS + Go plugin sink additions
+
+- **Python `httpx` SSRF** (`configs → DEFAULT_SINKS`, `httpx` module-level
+  and instance-method sinks): `httpx.get/post/request/stream/delete/put/patch/head`
+  now emit `ssrf` CWE-918 when a tainted URL flows to arg 0 (arg 1 for
+  `request/stream` where signature is `(method, url, ...)`). Closes
+  `v51_httpx_get.py`.
+- **Python `asyncpg` SQL injection** (`DEFAULT_SINKS`,
+  `Connection.execute/fetch/fetchrow/fetchval` + python-scoped
+  method-only `fetchrow/fetchval` fallbacks for aliased connection
+  variables / `Pool.acquire()`): `sql_injection` CWE-89 on arg 0.
+  Closes `v81_asyncpg_format.py`.
+- **Go `net/http.Redirect` open-redirect** (`DEFAULT_SINKS`,
+  language-scoped): `http.Redirect(w, r, url, code)` — URL at arg 2.
+  Emits `open_redirect` CWE-601. Closes `v51_go_http_redirect.go`.
+- **Go `fasthttp` SSRF** (Go plugin `getBuiltinSinks()`,
+  `packages/circle-ir/src/languages/plugins/go.ts`):
+  package-level `fasthttp.Get/Post/GetTimeout` (URL at arg 1) plus
+  `Client.Do/DoTimeout` in `DEFAULT_SINKS` (arg 0). Closes
+  `v82_fasthttp_get.go` — previously fell through to
+  `external_taint_escape` CWE-20 due to no matching signature.
+
+### Fixed — engine correctness (`taint-matcher.ts::receiverMightBeClass`)
+
+Removed the bare `lowerReceiver.endsWith(lowerClass)` case-insensitive
+suffix branch, which caused false cross-package matches. Concrete
+failure mode: `'fasthttp'.endsWith('http') === true` let the Go
+`class: 'http'` `http.Get` sink pattern hijack the `fasthttp.Get(...)`
+call site with `arg_positions: [0]` (which is `dst`, not the URL),
+suppressing the fasthttp SSRF signal. Now the suffix path requires
+either case-insensitive equality or a `.className` dotted boundary;
+fully qualified paths (`org.owasp.benchmark.helpers.DatabaseHelper`
+etc.) continue to match via the `.className` variant, and CamelCase
+suffix heuristics at the shared-word branch are untouched.
+
+Full regression: **3790 pass, 2 skipped** (unchanged from 3.160.0).
+
+### Sink table (contributions)
+
+| Fixture | Signal | CWE | Severity |
+|---|---|---|---|
+| `v81_asyncpg_format.py` | `sql_injection` | CWE-89 | critical |
+| `v51_httpx_get.py` | `ssrf` | CWE-918 | high |
+| `v51_go_http_redirect.go` | `open_redirect` | CWE-601 | medium |
+| `v82_fasthttp_get.go` | `ssrf` | CWE-918 | high |
+
+### Scope guard
+
+Additive-only sink surface. No pass registration changes, no
+`analyzer.ts` edits, no per-project config surface changes. Existing
+recall (`requests.get`/`urlopen` SSRF, Node `http.get`, Go `net/http.Get`,
+Java Sprint 82 open-redirect, Juliet CWE-89) unaffected. Pillar I
+clean — zero LLM identifiers.
+
 ## [3.160.0] - 2026-07-09
 
 FN fix — cognium-dev **#241 Java** ("real-world sink signatures FN").

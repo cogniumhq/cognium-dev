@@ -2129,10 +2129,18 @@ function receiverMightBeClass(receiver: string, className: string): boolean {
   }
 
   // Handle fully qualified paths like "org.owasp.benchmark.helpers.DatabaseHelper.JDBCtemplate"
-  // Check if the receiver ends with the class name (case insensitive)
+  // Check if the receiver ends with the class name (case insensitive).
+  //
+  // Word-boundary requirement (cognium-dev #241 3.161.0): the bare
+  // `endsWith(lowerClass)` variant used to accept any suffix match, which
+  // caused false collisions between related package names — most notably
+  // `'fasthttp'.endsWith('http') === true` letting a Go `class: 'http'`
+  // sink pattern hijack the `fasthttp.Get(...)` call site and vice versa.
+  // Now the bare suffix path requires case-insensitive equality; qualified
+  // paths still match via the `.className` boundary.
   const lowerReceiver = receiver.toLowerCase();
   const lowerClass = className.toLowerCase();
-  if (lowerReceiver.endsWith(lowerClass) || lowerReceiver.endsWith('.' + lowerClass)) {
+  if (lowerReceiver === lowerClass || lowerReceiver.endsWith('.' + lowerClass)) {
     return true;
   }
 

@@ -2190,6 +2190,41 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'unserialize', class: 'serialize',      type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'unserialize', class: 'node-serialize', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'unserialize',                          type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // =========================================================================
+  // cognium-dev #241 (non-Java) — real-world sink signatures
+  // =========================================================================
+
+  // Python SSRF — httpx (sync + async client + top-level module)
+  { method: 'get',     class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'post',    class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'request', class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [1] },   // request(method, url, ...)
+  { method: 'stream',  class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [1] },
+  { method: 'delete',  class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'put',     class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'patch',   class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  { method: 'head',    class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+
+  // Python SQLi — asyncpg Connection.*
+  { method: 'execute',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  { method: 'fetch',    class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  { method: 'fetchrow', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  { method: 'fetchval', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
+  // Method-only python-scoped fallback (aliased connections, pool.acquire())
+  { method: 'fetchrow', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'fetchval', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
+
+  // Go Open Redirect — net/http.Redirect(w, r, url, code)
+  { method: 'Redirect', class: 'http', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [2], languages: ['go'] },
+
+  // Go SSRF — fasthttp Client instance methods (class 'Client' does not
+  // fuzzy-collide with 'http', unlike class 'fasthttp' which would
+  // suffix-match receiver 'http' via receiverMightBeClass's 40% length
+  // heuristic. Package-level `fasthttp.Get/Post/GetTimeout` sinks live
+  // in the Go plugin (`languages/plugins/go.ts::getBuiltinSinks()`) so
+  // they iterate after net/http entries and don't hijack `http.Get`.
+  { method: 'Do',         class: 'Client',   type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['go'] },   // *fasthttp.Client.Do(req)
+  { method: 'DoTimeout',  class: 'Client',   type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['go'] },
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [

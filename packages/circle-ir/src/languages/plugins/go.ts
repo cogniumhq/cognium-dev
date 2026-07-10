@@ -379,6 +379,39 @@ export class GoPlugin extends BaseLanguagePlugin {
         argPositions: [0, 2],
       },
 
+      // fasthttp package-level helpers — registered here (plugin sinks
+      // iterate after DEFAULT_SINKS) so `net/http.Get` at line 366 wins
+      // the sink-map insertion race for receiver 'http' before the fuzzy
+      // suffix match in `receiverMightBeClass` ('fasthttp'.endsWith('http'))
+      // would otherwise let a `fasthttp` pattern hijack an `http.Get(url)`
+      // call site. Real `fasthttp.Get(dst, url)` calls have receiver
+      // 'fasthttp' which does not fuzzy-match 'http'. cognium-dev #241
+      // non-Java, 3.161.0.
+      {
+        method: 'Get',
+        class: 'fasthttp',
+        type: 'ssrf',
+        cwe: 'CWE-918',
+        severity: 'high',
+        argPositions: [1],
+      },
+      {
+        method: 'Post',
+        class: 'fasthttp',
+        type: 'ssrf',
+        cwe: 'CWE-918',
+        severity: 'high',
+        argPositions: [1],
+      },
+      {
+        method: 'GetTimeout',
+        class: 'fasthttp',
+        type: 'ssrf',
+        cwe: 'CWE-918',
+        severity: 'high',
+        argPositions: [1],
+      },
+
       // Deserialization
       {
         method: 'Unmarshal',

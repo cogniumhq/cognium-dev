@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.161.0] - 2026-07-09
+
+Engine bump only — adopts
+[`circle-ir@3.161.0`](https://www.npmjs.com/package/circle-ir), which
+ships **cognium-dev #241 non-Java** sink-signature FN fix (continuation
+of the Java batch from 3.160.0):
+
+- **Python `httpx` SSRF** — `httpx.get/post/request/stream/…` now
+  emit `ssrf` CWE-918 (arg 0 or arg 1 depending on signature).
+- **Python `asyncpg` SQL injection** —
+  `Connection.execute/fetch/fetchrow/fetchval` emit `sql_injection`
+  CWE-89 on arg 0.
+- **Go `net/http.Redirect` open-redirect** —
+  `http.Redirect(w, r, url, code)` emits `open_redirect` CWE-601 on
+  arg 2.
+- **Go `fasthttp` SSRF** — package-level
+  `fasthttp.Get/Post/GetTimeout` (arg 1) and instance
+  `Client.Do/DoTimeout` (arg 0) emit `ssrf` CWE-918. Previously fell
+  through to generic `external_taint_escape` CWE-20.
+- **Engine correctness** — narrow fix in
+  `receiverMightBeClass` removes a bare `endsWith` suffix branch that
+  caused `'fasthttp'.endsWith('http')` to spuriously collide across
+  Go's `net/http` and `github.com/valyala/fasthttp` sink patterns.
+
+No CLI surface changes. Full engine regression: 3790 pass, 2 skipped.
+
 ## [3.160.0] - 2026-07-09
 
 Engine bump only — adopts
