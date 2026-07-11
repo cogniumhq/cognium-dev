@@ -304,20 +304,33 @@ describe('classifyEntryPointTier — TIER_3 fallback', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TIER_UNKNOWN — non-Java language pass-through
+// TIER_UNKNOWN — languages without a classifier / missing language
 // ---------------------------------------------------------------------------
+//
+// Python / JS / Go / Bash all gained dedicated classifiers in 3.166.0
+// (cognium-dev#237). The previous "TIER_UNKNOWN for non-Java" batch
+// was tightened to only cover languages that still fall through
+// (rust / html / unrecognized) and the missing-language case.
 
-describe('classifyEntryPointTier — TIER_UNKNOWN for non-Java', () => {
-  it('returns TIER_UNKNOWN for a python controller (ship 1 scope)', () => {
-    const m = method('get_user', { annotations: ['@app.route("/u")'] });
-    const t = type('UserHandler', { annotations: ['@RestController'] });
-    expect(classifyEntryPointTier(m, t, pythonCtx)).toBe('TIER_UNKNOWN');
+describe('classifyEntryPointTier — TIER_UNKNOWN for unsupported languages', () => {
+  it('returns TIER_UNKNOWN for a python function with no Tier-1 signal', () => {
+    // Plain util method, no framework decorator, in a src/ path — Python
+    // classifier returns TIER_UNKNOWN so caller's safety guard preserves
+    // recall.
+    const m = method('get_user');
+    expect(classifyEntryPointTier(m, undefined, pythonCtx)).toBe('TIER_UNKNOWN');
   });
 
   it('returns TIER_UNKNOWN when language is missing', () => {
     const m = method('handle');
     const t = type('Foo');
     expect(classifyEntryPointTier(m, t, {})).toBe('TIER_UNKNOWN');
+  });
+
+  it('returns TIER_UNKNOWN for an unsupported language (rust)', () => {
+    const m = method('handle', { annotations: ['#[get("/x")]'] });
+    const t = type('Foo');
+    expect(classifyEntryPointTier(m, t, { language: 'rust' })).toBe('TIER_UNKNOWN');
   });
 });
 

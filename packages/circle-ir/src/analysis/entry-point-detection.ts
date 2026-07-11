@@ -97,7 +97,12 @@
  * - `interprocedural-pass.ts:137-146` — engine's awareness comment.
  */
 
-import type { TypeInfo, MethodInfo } from '../types/index.js';
+import type {
+  TypeInfo,
+  MethodInfo,
+  CallInfo,
+  RuntimeRegistration,
+} from '../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -119,6 +124,33 @@ export interface EntryPointContext {
    * follow-up; ship 1 classifies every non-Tier-1 method as Tier 3.
    */
   callGraph?: unknown;
+  /**
+   * File path (`CircleIR.meta.file`) — used by the polyglot library-
+   * facade path heuristic for Python / JS-TS / Go / Bash where package
+   * metadata is thin. Java classification does not require this.
+   *
+   * Added 3.166.0 for cognium-dev #237 polyglot expansion.
+   */
+  filePath?: string | null;
+  /**
+   * All `CallInfo` records for the file (`CircleIR.calls`). Consumed by
+   * the Go classifier for the `http.HandleFunc` / gin / chi framework-
+   * registration walk (no runtime-registration extractor exists for Go
+   * — the classifier walks `ir.calls` inline).
+   *
+   * Added 3.166.0 for cognium-dev #237.
+   */
+  calls?: ReadonlyArray<CallInfo> | null;
+  /**
+   * `RuntimeRegistration[]` records for the file
+   * (`CircleIR.runtime_registrations`). Consumed by the JS/TS and
+   * Python classifiers to resolve handler methods registered via
+   * Express / Fastify / Flask / FastAPI / Django / Click / Celery
+   * calls (already extracted per `core/extractors/runtime-registrations.ts`).
+   *
+   * Added 3.166.0 for cognium-dev #237.
+   */
+  runtimeRegistrations?: ReadonlyArray<RuntimeRegistration> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,42 +497,73 @@ export function classifyEntryPointTier(
   enclosingType: TypeInfo | undefined,
   ctx: EntryPointContext,
 ): EntryPointTier {
-  // Ship 1: Java only. Other languages route via UNKNOWN = pass-through.
-  const language = (ctx.language ?? '').toLowerCase();
-  if (language !== 'java') return 'TIER_UNKNOWN';
-
   if (!method) return 'TIER_UNKNOWN';
+  const language = (ctx.language ?? '').toLowerCase();
 
-  // 2. Library-facade short-circuit. Runs BEFORE Tier-1 annotation
-  // detection — see `classShapeIsLibraryFacade` for the trade-off.
+  // Language dispatch — Java retains the original in-line logic below;
+  // Python / JS-TS / Go / Bash route to dedicated classifiers added
+  // 3.166.0 (cognium-dev #237). Anything else routes via UNKNOWN so
+  // consumers pass the finding through unchanged.
+  switch (language) {
+    case 'java':
+      return classifyJavaEntryPoint(method, enclosingType);
+    case 'python':
+      return classifyPythonEntryPoint(method, enclosingType, ctx);
+    case 'javascript':
+    case 'typescript':
+    case 'tsx':
+    case 'jsx':
+      return classifyJsTsEntryPoint(method, enclosingType, ctx);
+    case 'go':
+      return classifyGoEntryPoint(method, enclosingType, ctx);
+    case 'bash':
+    case 'shell':
+      return classifyBashEntryPoint(method, enclosingType, ctx);
+    default:
+      return 'TIER_UNKNOWN';
+  }
+}
+
+/**
+ * Java classifier (original ship 1 logic — kept verbatim under the new
+ * language dispatch). Order:
+ *   1. Library-facade short-circuit (#128 step 2).
+ *   2. Method-level annotation → TIER_1.
+ *   3. Class-level annotation → TIER_1.
+ *   4. Supertype lifecycle method → TIER_1.
+ *   5. `main(String[])` → TIER_1.
+ *   6. Fallback → TIER_3_LIBRARY_API.
+ */
+function classifyJavaEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+): EntryPointTier {
+  // 1. Library-facade short-circuit.
   if (classShapeIsLibraryFacade(enclosingType)) {
     return 'TIER_3_LIBRARY_API';
   }
 
-  // 3. Method-level annotation
+  // 2. Method-level annotation
   if (annotationsInclude(method.annotations, TIER_1_METHOD_ANNOTATIONS)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 4. Class-level annotation (every public method of a controller is TIER_1)
+  // 3. Class-level annotation (every public method of a controller is TIER_1)
   if (enclosingType && annotationsInclude(enclosingType.annotations, TIER_1_CLASS_ANNOTATIONS)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 5. Supertype lifecycle method
+  // 4. Supertype lifecycle method
   if (methodIsSupertypeLifecycleEntryPoint(method, enclosingType)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 6. `public static void main(String[])`
+  // 5. `public static void main(String[])`
   if (looksLikeMainMethod(method)) {
     return 'TIER_1_ENTRY_POINT';
   }
 
-  // 7. Tier 2 reachability — deferred. See header doc.
-  // (Intentionally no fall-through here; ctx.callGraph is reserved.)
-
-  // 8. Fallback
+  // 6. Fallback
   return 'TIER_3_LIBRARY_API';
 }
 
@@ -528,4 +591,631 @@ export function shouldGateInterproceduralParam(
   if (!enclosingMethod) return false; // can't classify → preserve recall
   const tier = classifyEntryPointTier(enclosingMethod, enclosingType, ctx);
   return tier === 'TIER_3_LIBRARY_API';
+}
+
+// ===========================================================================
+// Polyglot classifiers (cognium-dev #237 — 3.166.0)
+// ===========================================================================
+//
+// Java-primary Tier-1 detection has been in production since 3.128.0. The
+// classifier is extended to Python / JS-TS / Go / Bash to close the ~14
+// polyglot FP tail surfaced by the 2026-06 Tier-2 audit. Each classifier
+// is designed to preserve recall on the OWASP BenchmarkPython
+// (TPR ≥81.2% floor) / Express-family / net/http / Bash test corpora
+// while identifying library-facade methods that should NOT be treated as
+// trust boundaries.
+//
+// Common design:
+//   1. Library-facade PATH short-circuit (`/lib/`, `/libapi/`, `/utils/`,
+//      `/helpers/`, `/vendor/`, `/node_modules/`, test dirs) → TIER_3
+//      before any framework check. Cheap, high-precision.
+//   2. Framework Tier-1 detection using whatever signal is available
+//      per-language (decorator strings, `RuntimeRegistration[]`, call
+//      site walk, script-body scan).
+//   3. Fallback: TIER_UNKNOWN — safer than TIER_3 for languages where
+//      the classifier's negative signal is thin. `require-entry-path.ts`
+//      applies an "empty-entry-point-keys → keep" safety guard for the
+//      same reason.
+//
+// ---------------------------------------------------------------------------
+
+/**
+ * Path substrings that mark a file as a library / helper / vendored
+ * dependency / test file — the enclosing method is invoked BY user
+ * code, not AT a trust boundary. Shared across Python / JS-TS / Go /
+ * Bash. Matched case-insensitively against the forward-slash-normalized
+ * file path with sentinel slashes so `/lib/` matches `src/lib/x.py`
+ * but not `src/library-not-quite/x.py`.
+ */
+const POLYGLOT_LIBRARY_PATH_FRAGMENTS: ReadonlyArray<string> = [
+  '/lib/',
+  '/libapi/',
+  '/libs/',
+  '/utils/',
+  '/util/',
+  '/helpers/',
+  '/helper/',
+  '/interop/',
+  '/vendor/',
+  '/vendored/',
+  '/node_modules/',
+  '/dist/',
+  '/build/',
+  '/_internal/',
+  '/__tests__/',
+  '/tests/',
+  '/test/',
+  '/testing/',
+  '/spec/',
+  '/specs/',
+  '/fixtures/',
+  '/mocks/',
+  '/__mocks__/',
+];
+
+/**
+ * Filename suffixes / substrings for test files. Matched against the
+ * lowercased basename after the last `/`.
+ */
+const POLYGLOT_TEST_FILE_MARKERS: ReadonlyArray<string> = [
+  '.test.',
+  '.spec.',
+  '_test.',
+  '_spec.',
+  '.tests.',
+];
+
+function pathLooksLikeLibraryOrTest(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  const padded = `/${normalized}/`;
+  for (const frag of POLYGLOT_LIBRARY_PATH_FRAGMENTS) {
+    if (padded.includes(frag)) return true;
+  }
+  const slash = normalized.lastIndexOf('/');
+  const base = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  for (const marker of POLYGLOT_TEST_FILE_MARKERS) {
+    if (base.includes(marker)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Python classifier
+// ---------------------------------------------------------------------------
+
+/**
+ * Python decorator names (bare, without the leading `@` and any
+ * dotted receiver) that mark a function as a framework entry point.
+ * The classifier tolerates receiver prefixes (`app.route`,
+ * `router.get`, `blueprint.post`) — see `pythonDecoratorLooksTier1`.
+ *
+ * Rationale — recall guard: this list covers Flask, FastAPI, Django
+ * view decorators, Click/Typer CLI commands, and Celery/RQ task
+ * handlers. OWASP BenchmarkPython is Flask-heavy — `route` alone
+ * covers the majority.
+ */
+const PYTHON_TIER_1_DECORATOR_NAMES: ReadonlySet<string> = new Set([
+  // Flask
+  'route',
+  'get',
+  'post',
+  'put',
+  'delete',
+  'patch',
+  'options',
+  'head',
+  'before_request',
+  'after_request',
+  'errorhandler',
+  'teardown_request',
+  // FastAPI
+  'websocket',
+  'websocket_route',
+  'api_route',
+  'middleware',
+  // Django
+  'login_required',
+  'csrf_exempt',
+  'csrf_protect',
+  'require_http_methods',
+  'require_GET',
+  'require_POST',
+  'require_safe',
+  'permission_required',
+  'user_passes_test',
+  'staff_member_required',
+  'api_view',
+  'action',
+  'detail_route',
+  'list_route',
+  'renderer_classes',
+  'authentication_classes',
+  'permission_classes',
+  // Click / Typer
+  'command',
+  'group',
+  // Celery / RQ / dramatiq
+  'task',
+  'shared_task',
+  'periodic_task',
+  'actor',
+  // aiohttp
+  'view',
+  // pytest fixtures ARE library callback surfaces (test framework calls
+  // them), so we mark them TIER_1 too — a taint sink inside a fixture
+  // is genuinely reachable when the test runs.
+  'fixture',
+]);
+
+/**
+ * Classify a Python function.
+ */
+function classifyPythonEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+  ctx: EntryPointContext,
+): EntryPointTier {
+  // 1. Library / test / vendored path → TIER_3.
+  if (pathLooksLikeLibraryOrTest(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 2. Decorator match. Python decorators are stored in
+  //    `MethodInfo.annotations` by the core extractor (same channel Java
+  //    uses). Tolerate `@app.route(...)`, `@blueprint.get(...)`, bare
+  //    `@task`, etc.
+  if (pythonDecoratorLooksTier1(method.annotations)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 3. RuntimeRegistration handler match. Phase-2 Python extractor
+  //    populates `runtime_registrations` with resolved handler names
+  //    for decorator-registered functions — reuse.
+  if (methodIsRuntimeRegistrationHandler(method, ctx.runtimeRegistrations)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 4. Module-level `main()` → TIER_1. This is the CLI-entry convention.
+  //    `enclosingType === undefined` (or a synthesized module-scope type)
+  //    means the function is at module top-level.
+  if (method.name === 'main' && !enclosingType) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+  if (method.name === 'main' && enclosingType && looksLikeModuleType(enclosingType)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 5. Convention-private helper (`_foo`) → TIER_3 signal. Weak — only
+  //    fires as TIER_3 when no framework signal was found.
+  if (method.name.startsWith('_') && !method.name.startsWith('__')) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 6. Fallback — UNKNOWN keeps recall in the tail. `require-entry-path`
+  //    only drops when the sink method classifies to a strong Tier via
+  //    the classifier + reverse-BFS combination.
+  return 'TIER_UNKNOWN';
+}
+
+function pythonDecoratorLooksTier1(annotations: string[] | undefined): boolean {
+  if (!annotations || annotations.length === 0) return false;
+  for (const raw of annotations) {
+    // Strip leading `@`, argument list `(...)`, generic `<...>`.
+    let name = raw.replace(/^@/, '').replace(/[<(].*$/, '').trim();
+    if (!name) continue;
+    // Take the last dotted segment: `app.route` → `route`,
+    // `flask_restful.Api.add_resource` → `add_resource`.
+    const dot = name.lastIndexOf('.');
+    if (dot >= 0) name = name.slice(dot + 1);
+    if (PYTHON_TIER_1_DECORATOR_NAMES.has(name)) return true;
+  }
+  return false;
+}
+
+function looksLikeModuleType(t: TypeInfo): boolean {
+  // Python extractor emits module-level functions under a synthesized
+  // container whose name matches the module (or is empty). Treat any
+  // container with no `extends` / `implements` / annotations as a
+  // module-scope wrapper.
+  return (
+    !t.extends &&
+    (!t.implements || t.implements.length === 0) &&
+    (!t.annotations || t.annotations.length === 0)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JS/TS classifier
+// ---------------------------------------------------------------------------
+
+/**
+ * NestJS method-level decorator names. Match against the bare name
+ * (leading `@` and `(args)` stripped).
+ */
+const JSTS_TIER_1_METHOD_DECORATORS: ReadonlySet<string> = new Set([
+  // NestJS HTTP method decorators
+  'Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options', 'All',
+  // NestJS WebSocket
+  'SubscribeMessage', 'MessageBody', 'ConnectedSocket',
+  // NestJS microservices / event
+  'EventPattern', 'MessagePattern', 'GrpcMethod', 'GrpcStreamMethod',
+  // Angular / other DI-registered handler hooks
+  'HostListener',
+]);
+
+/**
+ * NestJS class-level decorator names.
+ */
+const JSTS_TIER_1_CLASS_DECORATORS: ReadonlySet<string> = new Set([
+  'Controller',
+  'RestController',
+  'Resolver',
+  'WebSocketGateway',
+  'Gateway',
+]);
+
+/**
+ * Named exports that mark a file as a Lambda / Next.js App Router
+ * route module. Matched against the method name when the enclosing
+ * TypeInfo looks like a module-scope container.
+ */
+const JSTS_TIER_1_MODULE_EXPORTS: ReadonlySet<string> = new Set([
+  // AWS Lambda / Google Cloud Functions / Netlify / Vercel
+  'handler',
+  // Next.js App Router — HTTP method exports
+  'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS',
+  // SvelteKit / Remix
+  'load',
+  'action',
+  // Next.js middleware
+  'middleware',
+]);
+
+function classifyJsTsEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+  ctx: EntryPointContext,
+): EntryPointTier {
+  // 1. Library / test / vendored path → TIER_3.
+  if (pathLooksLikeLibraryOrTest(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 2. NestJS method-level decorator.
+  if (annotationsInclude(method.annotations, JSTS_TIER_1_METHOD_DECORATORS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 3. NestJS class-level decorator (every public method of a
+  //    controller is TIER_1).
+  if (enclosingType && annotationsInclude(enclosingType.annotations, JSTS_TIER_1_CLASS_DECORATORS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 4. Phase-1 RuntimeRegistration handler match. Covers
+  //    Express (`app.get`, `router.post`, `app.use`), Fastify,
+  //    Koa, EventEmitter (`.on`).
+  if (methodIsRuntimeRegistrationHandler(method, ctx.runtimeRegistrations)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 5. Module-level named-export entry point (Lambda `handler`,
+  //    Next.js `GET`, SvelteKit `load`, …).
+  if (JSTS_TIER_1_MODULE_EXPORTS.has(method.name) && (!enclosingType || looksLikeModuleType(enclosingType))) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 6. Convention: `main()` at module scope → TIER_1.
+  if (method.name === 'main' && (!enclosingType || looksLikeModuleType(enclosingType))) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 7. Fallback — UNKNOWN keeps recall.
+  return 'TIER_UNKNOWN';
+}
+
+// ---------------------------------------------------------------------------
+// Go classifier
+// ---------------------------------------------------------------------------
+
+/**
+ * Method / function names on receivers that register HTTP handlers.
+ * Matched against `CallInfo.method_name` when the receiver looks like
+ * a Go HTTP framework (see `GO_HTTP_REGISTRAR_RECEIVERS`).
+ */
+const GO_HTTP_REGISTRAR_METHODS: ReadonlySet<string> = new Set([
+  // net/http
+  'HandleFunc', 'Handle',
+  // gorilla/mux, chi, echo, gin
+  'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'Any',
+  'Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options',
+  // gorilla/chi/gin sub-routers
+  'Route', 'Mount', 'Method',
+]);
+
+/**
+ * Receiver expressions that indicate an HTTP router / mux / gin
+ * engine / echo group / chi router. Simple string match on the
+ * `CallInfo.receiver` field.
+ */
+const GO_HTTP_REGISTRAR_RECEIVERS: ReadonlyArray<string> = [
+  'http',       // net/http.HandleFunc
+  'mux',        // gorilla/mux
+  'router',     // chi/gin/gorilla common
+  'r',          // gin/chi convention
+  'e',          // echo convention
+  'g',          // gin group convention
+  'app',        // fiber convention
+  'engine',     // gin engine convention
+  'srv', 'server',
+];
+
+/**
+ * Classify a Go function.
+ */
+function classifyGoEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+  ctx: EntryPointContext,
+): EntryPointTier {
+  // 1. Library / test / vendored path → TIER_3. `_test.go` is picked
+  //    up by the shared test-marker set below (Go test naming convention).
+  if (pathLooksLikeLibraryOrTest(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+  // Go-specific test naming: `*_test.go`.
+  if (ctx.filePath && ctx.filePath.toLowerCase().endsWith('_test.go')) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 2. `main` in `main` package → TIER_1. Go's package is per-file
+  //    stored on `TypeInfo.package` for the synthesized module type.
+  if (method.name === 'main' && enclosingType?.package === 'main') {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 3. Function signature shape:
+  //      func(w http.ResponseWriter, r *http.Request)
+  //    matches the net/http handler contract. Robust across router
+  //    frameworks that adapt the same signature.
+  if (methodHasNetHttpHandlerSignature(method)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 4. gRPC handler convention:
+  //      func (s *server) MethodName(ctx context.Context, req *pb.Req) (*pb.Resp, error)
+  //    Weak signal alone; require receiver look like `*Server` + first
+  //    param be `context.Context`.
+  if (methodLooksLikeGrpcHandler(method, enclosingType)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 5. `ir.calls` walk — was this function registered via
+  //    `http.HandleFunc`, `router.GET`, etc. anywhere in the file?
+  //    We match the registrar call's second argument (handler
+  //    identifier) against the method name.
+  if (methodIsRegisteredByGoHttpFramework(method, ctx.calls)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 6. Fallback — UNKNOWN keeps recall.
+  return 'TIER_UNKNOWN';
+}
+
+function methodHasNetHttpHandlerSignature(method: MethodInfo): boolean {
+  const params = method.parameters ?? [];
+  if (params.length !== 2) return false;
+  const p0 = normalizeGoType(params[0]?.type ?? '');
+  const p1 = normalizeGoType(params[1]?.type ?? '');
+  const p0IsWriter = p0.includes('http.ResponseWriter') || p0.endsWith('ResponseWriter');
+  const p1IsRequest = p1.includes('http.Request') || p1.endsWith('*Request') || p1.endsWith('Request');
+  return p0IsWriter && p1IsRequest;
+}
+
+function methodLooksLikeGrpcHandler(method: MethodInfo, enclosingType: TypeInfo | undefined): boolean {
+  if (!enclosingType) return false;
+  const params = method.parameters ?? [];
+  if (params.length < 2) return false;
+  const p0 = normalizeGoType(params[0]?.type ?? '');
+  if (!p0.includes('context.Context') && !p0.endsWith('Context')) return false;
+  const typeName = enclosingType.name ?? '';
+  // Common gRPC server struct suffixes.
+  if (!/(Server|Service|Handler)$/.test(typeName)) return false;
+  return true;
+}
+
+function normalizeGoType(t: string): string {
+  return t.replace(/\s+/g, '').replace(/^\*+/, '');
+}
+
+function methodIsRegisteredByGoHttpFramework(
+  method: MethodInfo,
+  calls: ReadonlyArray<CallInfo> | null | undefined,
+): boolean {
+  if (!calls || calls.length === 0) return false;
+  for (const call of calls) {
+    if (!GO_HTTP_REGISTRAR_METHODS.has(call.method_name)) continue;
+    const receiver = call.receiver ?? '';
+    if (!goRegistrarReceiverMatches(receiver)) continue;
+    const args = call.arguments ?? [];
+    // net/http.HandleFunc(pattern, handler)  → handler is arg 1.
+    // router.GET(pattern, handler)           → handler is arg 1.
+    // Variadic chi middleware chains put handler last; scan every arg.
+    for (const arg of args) {
+      const expr = (arg.expression ?? arg.variable ?? arg.value ?? '').trim();
+      if (!expr) continue;
+      // Strip package qualifier (`pkg.Handler` → `Handler`).
+      const short = expr.slice(expr.lastIndexOf('.') + 1);
+      if (short === method.name) return true;
+    }
+  }
+  return false;
+}
+
+function goRegistrarReceiverMatches(receiver: string): boolean {
+  const trimmed = receiver.trim();
+  if (!trimmed) return false;
+  for (const target of GO_HTTP_REGISTRAR_RECEIVERS) {
+    if (trimmed === target) return true;
+    // Method-chain suffix (`app.Group("/api")` → subsequent receiver
+    // is a Group value that still holds a router; be permissive).
+    if (trimmed.endsWith(`.${target}`)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Bash classifier
+// ---------------------------------------------------------------------------
+
+/**
+ * Positional-parameter tokens whose presence in the script body
+ * indicates the script consumes command-line arguments — a real
+ * entry point from the OS's perspective.
+ */
+const BASH_POSITIONAL_TOKENS: ReadonlyArray<string> = [
+  '$1', '$2', '$3', '$4', '$5', '$6', '$7', '$8', '$9',
+  '$@', '$*', '$#',
+  '${1', '${2', '${3', '${@',
+  'getopts',
+];
+
+/**
+ * Filename prefixes that mark a script as a benign / safe fixture
+ * (per the ticket's `benign_*.sh` corpus convention) or a helper
+ * library that is `source`d from another script.
+ */
+const BASH_LIBRARY_FILENAME_PREFIXES: ReadonlyArray<string> = [
+  'benign_',
+  'safe_',
+  'lib_',
+  'common_',
+  'helpers_',
+  '_',
+];
+
+function classifyBashEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+  ctx: EntryPointContext,
+): EntryPointTier {
+  // 1. Library / test / vendored path → TIER_3.
+  if (pathLooksLikeLibraryOrTest(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 2. Benign / safe / library filename prefix → TIER_3.
+  if (bashFilenameLooksLikeLibrary(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  // 3. `main()` function → TIER_1. Bash convention: script-body
+  //    dispatches to `main "$@"`.
+  if (method.name === 'main') {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 4. Positional-parameter use scan — walk `ir.calls` in this
+  //    method's line range and look for `$1` / `$@` / `getopts` in
+  //    argument text. If the method reads positional args, it IS
+  //    the entry point.
+  if (methodConsumesPositionalArgs(method, ctx.calls)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 5. Script-body top-level → the enclosing "method" for Bash is
+  //    typically the file-level statement block. If we're in the
+  //    module-scope container and the file has ANY positional-arg
+  //    use, treat as TIER_1.
+  if (enclosingType && looksLikeModuleType(enclosingType) && fileHasPositionalArgUse(ctx.calls)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  // 6. Fallback — UNKNOWN keeps recall.
+  return 'TIER_UNKNOWN';
+}
+
+function bashFilenameLooksLikeLibrary(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const base = (slash >= 0 ? normalized.slice(slash + 1) : normalized).toLowerCase();
+  for (const prefix of BASH_LIBRARY_FILENAME_PREFIXES) {
+    if (base.startsWith(prefix)) return true;
+  }
+  // `.test.sh` / `_test.sh` — test scripts.
+  if (base.includes('.test.') || base.includes('_test.')) return true;
+  return false;
+}
+
+function methodConsumesPositionalArgs(
+  method: MethodInfo,
+  calls: ReadonlyArray<CallInfo> | null | undefined,
+): boolean {
+  if (!calls || calls.length === 0) return false;
+  for (const call of calls) {
+    if (call.location.line < method.start_line) continue;
+    if (call.location.line > method.end_line) continue;
+    if (callHasPositionalToken(call)) return true;
+  }
+  return false;
+}
+
+function fileHasPositionalArgUse(calls: ReadonlyArray<CallInfo> | null | undefined): boolean {
+  if (!calls || calls.length === 0) return false;
+  for (const call of calls) {
+    if (callHasPositionalToken(call)) return true;
+  }
+  return false;
+}
+
+function callHasPositionalToken(call: CallInfo): boolean {
+  // Check argument text for `$1` / `$@` / `getopts`.
+  for (const arg of call.arguments ?? []) {
+    const expr = arg.expression ?? arg.variable ?? arg.value ?? '';
+    for (const tok of BASH_POSITIONAL_TOKENS) {
+      if (expr.includes(tok)) return true;
+    }
+  }
+  // Also check method_name — `getopts` shows up as a call.
+  if (call.method_name === 'getopts') return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Shared runtime-registration handler lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when `method` is the named handler for any HTTP-route
+ * / event-listener registration recorded in
+ * `ctx.runtimeRegistrations`. Handler name match is exact — inline
+ * arrow / anonymous handlers (`handler.name === null`) do not
+ * match any named method and are ignored.
+ */
+function methodIsRuntimeRegistrationHandler(
+  method: MethodInfo,
+  regs: ReadonlyArray<RuntimeRegistration> | null | undefined,
+): boolean {
+  if (!regs || regs.length === 0) return false;
+  for (const reg of regs) {
+    // Only http_route / decorator / event_listener kinds mark a method
+    // as an entry point. `trait_impl` is a Rust-only concept and
+    // `middleware` alone is weak (framework middlewares often wrap
+    // library code) — include middleware because our engine treats it
+    // as a boundary.
+    if (
+      reg.kind !== 'http_route' &&
+      reg.kind !== 'decorator' &&
+      reg.kind !== 'event_listener' &&
+      reg.kind !== 'middleware'
+    ) {
+      continue;
+    }
+    const handlerName = reg.handler?.name;
+    if (!handlerName) continue;
+    if (handlerName === method.name) return true;
+  }
+  return false;
 }

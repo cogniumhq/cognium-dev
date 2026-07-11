@@ -115,12 +115,22 @@ function makeFinding(file: string, line: number, overrides: Partial<SastFinding>
 describe('applyRequireEntryPath — drop policy', () => {
   it('drops H+C finding on utility class with no callers', () => {
     // Foo.util() has a finding at line 5 but no caller anywhere.
+    // A stub controller in the scan ensures Java has ≥1 Tier-1 entry
+    // point key so the polyglot per-language safety guard (#237) does
+    // NOT fire — the drop path we want to exercise.
+    const stubHandle = makeMethod('handle', 3, 10, ['@GetMapping']);
+    const stubCtrl = makeType('StubController', [stubHandle], ['@RestController']);
+    const stubIR = makeIR('/src/StubController.java', [stubCtrl], []);
+
     const util = makeMethod('doStuff', 3, 10);
     const type = makeType('Helper', [util]); // no framework annotations
     const finding = makeFinding('/src/Helper.java', 5);
     const ir = makeIR('/src/Helper.java', [type], [], [finding]);
 
-    applyRequireEntryPath([{ file: '/src/Helper.java', analysis: ir }]);
+    applyRequireEntryPath([
+      { file: '/src/StubController.java', analysis: stubIR },
+      { file: '/src/Helper.java', analysis: ir },
+    ]);
 
     expect(ir.findings).toBeUndefined();
   });
@@ -192,13 +202,22 @@ describe('applyRequireEntryPath — drop policy', () => {
   });
 
   it('drops under application/production profile', () => {
+    // Stub controller ensures Java has ≥1 Tier-1 key so the polyglot
+    // per-language safety guard (#237) does not fire.
+    const stubHandle = makeMethod('handle', 3, 10, ['@GetMapping']);
+    const stubCtrl = makeType('StubController', [stubHandle], ['@RestController']);
+    const stubIR = makeIR('/src/StubController.java', [stubCtrl], []);
+
     const doStuff = makeMethod('doStuff', 3, 10);
     const helper = makeType('Helper', [doStuff]);
     const finding = makeFinding('/src/Helper.java', 5);
     const ir = makeIR('/src/Helper.java', [helper], [], [finding]);
 
     applyRequireEntryPath(
-      [{ file: '/src/Helper.java', analysis: ir }],
+      [
+        { file: '/src/StubController.java', analysis: stubIR },
+        { file: '/src/Helper.java', analysis: ir },
+      ],
       { projectProfile: 'application/production' },
     );
 

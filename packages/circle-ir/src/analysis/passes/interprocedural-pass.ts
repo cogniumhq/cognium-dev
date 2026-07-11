@@ -156,7 +156,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
                   source.type,
                   enclosing?.method,
                   enclosing?.type,
-                  { language, types: graph.ir.types },
+                  {
+                    language,
+                    types: graph.ir.types,
+                    filePath: graph.ir.meta.file,
+                    calls: graph.ir.calls,
+                    runtimeRegistrations: graph.ir.runtime_registrations ?? null,
+                  },
                 )) {
                   continue;
                 }

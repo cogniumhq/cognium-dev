@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.166.0] - 2026-07-10
+
+Engine bump only — adopts
+[`circle-ir@3.166.0`](https://www.npmjs.com/package/circle-ir), which
+extends the entry-point classifier from Java-only to Python /
+JavaScript-TypeScript / Go / Bash and removes the Java-only gate in
+`require-entry-path.ts`:
+
+- **cognium-dev#237 — polyglot Tier-2 FPs.** The require-entry-path
+  drop policy now applies to Python / JS-TS / Go / Bash findings on
+  library-tier files (interop helpers, libapi utilities, benign
+  shell scripts) with no reverse-BFS-reachable Tier-1 entry point.
+  Closes the 14 polyglot fixtures listed in the ticket.
+- Per-language safety guard: unsupported languages (rust, html, …)
+  and files with zero Tier-1 keys for the finding's language retain
+  findings unchanged — no OWASP Benchmark (Java) or rust-synthetic
+  regression.
+- No CLI-side changes. All Cognium output formats (text / JSON /
+  SARIF) unaffected.
+
 ## [3.165.0] - 2026-07-10
 
 Engine bump only — adopts

@@ -33,8 +33,12 @@
  *
  * # Scope
  *
- * - Java only (relies on `classifyEntryPointTier`, which is Java-primary).
- *   Non-Java files: pass-through, no annotation, no drop.
+ * - Java + Python + JS/TS + Go + Bash (as of 3.166.0, #237). Rust /
+ *   HTML / Vue / unknown languages pass through unchanged. The
+ *   `SUPPORTED_LANGUAGES` set below controls language admission; the
+ *   per-language safety guard (`entryPointKeysByLanguage.get(lang) === 0
+ *   → keep`) preserves recall on library-only bundles where the
+ *   classifier truly has no signal.
  * - Project-level only. Per-file `analyze()` never runs this helper —
  *   the reachability question is meaningful only across a full scan.
  * - Only H+C findings from taint passes are candidates for drop. Metric
@@ -194,8 +198,20 @@ export function applyRequireEntryPath(
   const graph = buildProjectMethodGraph(fileAnalyses);
   if (graph.methodsByKey.size === 0) return;
 
+  // Per-file classifier context (calls, runtime_registrations) — used
+  // by the polyglot classifier for Go inline call walks and JS/TS +
+  // Python handler resolution. Added 3.166.0 (#237).
+  const fileContext = buildFileContext(fileAnalyses);
+
   // Classify entry points once — reused for every finding.
-  const entryPointKeys = collectEntryPointKeys(graph);
+  const entryPointKeys = collectEntryPointKeys(graph, fileContext);
+
+  // Per-language entry-point-key count — used by the safety guard
+  // (#237): if a language has ZERO classified entry points across the
+  // whole scan, findings on that language MUST be preserved regardless
+  // of profile / BFS. Otherwise, the polyglot expansion could over-drop
+  // on languages where the classifier's positive signal is thin.
+  const entryPointKeysByLanguage = countEntryPointKeysByLanguage(graph, entryPointKeys);
 
   const profileResolver = makeProfileResolver(options.projectProfile);
 
@@ -209,6 +225,7 @@ export function applyRequireEntryPath(
         fa.analysis,
         graph,
         entryPointKeys,
+        entryPointKeysByLanguage,
         profileResolver(fa.file),
       );
       switch (decision.action) {
@@ -381,16 +398,68 @@ function resolveCalleeKeys(
 // Entry-point classification
 // ---------------------------------------------------------------------------
 
-function collectEntryPointKeys(graph: ProjectMethodGraph): Set<string> {
+function collectEntryPointKeys(
+  graph: ProjectMethodGraph,
+  fileContext: Map<string, FileClassifierContext>,
+): Set<string> {
   const entryPoints = new Set<string>();
   for (const rec of graph.methodsByKey.values()) {
+    const fileCtx = fileContext.get(rec.file);
     const tier = classifyEntryPointTier(rec.method, rec.enclosingType, {
       types: [rec.enclosingType],
       language: rec.language,
+      filePath: rec.file,
+      calls: fileCtx?.calls ?? null,
+      runtimeRegistrations: fileCtx?.runtimeRegistrations ?? null,
     });
     if (tier === 'TIER_1_ENTRY_POINT') entryPoints.add(rec.key);
   }
   return entryPoints;
+}
+
+/**
+ * Per-file context bag consumed by the polyglot classifier — the Go
+ * classifier walks `ir.calls`, the JS/TS + Python classifiers consume
+ * `ir.runtime_registrations`. Built once per project in
+ * `buildFileContext`.
+ */
+interface FileClassifierContext {
+  language: string;
+  calls: ReadonlyArray<import('../types/index.js').CallInfo> | null;
+  runtimeRegistrations: ReadonlyArray<import('../types/index.js').RuntimeRegistration> | null;
+}
+
+function buildFileContext(
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
+): Map<string, FileClassifierContext> {
+  const out = new Map<string, FileClassifierContext>();
+  for (const fa of fileAnalyses) {
+    out.set(fa.file, {
+      language: (fa.analysis.meta.language ?? '').toLowerCase(),
+      calls: fa.analysis.calls ?? null,
+      runtimeRegistrations: fa.analysis.runtime_registrations ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Bucket the entry-point-keys set by the language of each key's method
+ * record. Used by `classifyFinding` to enforce the per-language safety
+ * guard: if a language has zero Tier-1 entry points, keep every
+ * finding on that language (preserves recall — see #237 plan).
+ */
+function countEntryPointKeysByLanguage(
+  graph: ProjectMethodGraph,
+  entryPointKeys: Set<string>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const key of entryPointKeys) {
+    const rec = graph.methodsByKey.get(key);
+    if (!rec) continue;
+    out.set(rec.language, (out.get(rec.language) ?? 0) + 1);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,11 +471,35 @@ type FindingDecision =
   | { action: 'annotate'; entryPath: TaintHop[]; tier: NonNullable<SastFinding['entryPathTier']> }
   | { action: 'drop' };
 
+/**
+ * Languages whose entry-point classifier is expected to emit at least
+ * some Tier-1 signal on a well-formed application. Files whose
+ * language is NOT in this set short-circuit to `keep` — the classifier
+ * would return `TIER_UNKNOWN` and dropping on the miss branch would
+ * strip legitimate signal on languages we haven't taught the
+ * classifier yet (Rust, HTML, Vue).
+ *
+ * Added 3.166.0 for cognium-dev #237 polyglot expansion — replaces the
+ * hardcoded `if (language !== 'java')` gate.
+ */
+const SUPPORTED_LANGUAGES: ReadonlySet<string> = new Set([
+  'java',
+  'python',
+  'javascript',
+  'typescript',
+  'tsx',
+  'jsx',
+  'go',
+  'bash',
+  'shell',
+]);
+
 function classifyFinding(
   finding: SastFinding,
   ir: CircleIR,
   graph: ProjectMethodGraph,
   entryPointKeys: Set<string>,
+  entryPointKeysByLanguage: Map<string, number>,
   profile: ProjectProfile,
 ): FindingDecision {
   // Only taint findings from the security category are in scope.
@@ -424,12 +517,21 @@ function classifyFinding(
   // when we can).
   const isHighOrCritical = finding.severity === 'high' || finding.severity === 'critical';
 
-  // Java-only. The classifier is Java-primary (`classifyEntryPointTier`
-  // returns `TIER_UNKNOWN` for every other language), so applying the
-  // reachability drop to non-Java findings would strip legitimate
-  // signal on Python / Node / Go / Rust — pass through unchanged.
+  // Polyglot-supported languages (#237). Rust / HTML / Vue / unknown
+  // route via `keep` — the classifier lacks the framework tables to
+  // decide, and misclassifying to TIER_UNKNOWN cannot support a drop.
   const language = (ir.meta.language ?? '').toLowerCase();
-  if (language !== 'java') return { action: 'keep' };
+  if (!SUPPORTED_LANGUAGES.has(language)) return { action: 'keep' };
+
+  // Safety guard (#237). If the language's classifier found ZERO
+  // Tier-1 entry points across the whole scan, the reachability
+  // question has no answer we can trust — preserve the finding. This
+  // is what keeps recall on library / helper-only bundles where the
+  // classifier truly has no signal, and matches the plan's per-file-
+  // language guard specification.
+  if ((entryPointKeysByLanguage.get(language) ?? 0) === 0) {
+    return { action: 'keep' };
+  }
 
   // Resolve containing method by (file, line-range) lookup.
   const containing = findContainingMethod(finding, ir, graph);

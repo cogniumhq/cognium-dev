@@ -5,6 +5,124 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.166.0] - 2026-07-10
+
+Polyglot expansion of the entry-point classifier + removal of the
+Java-only gate in `require-entry-path.ts`. Closes cognium-dev#237
+(~14 Tier-2 polyglot FPs across Python / JS-TS / Go / Bash).
+
+### Root cause
+
+Prior to 3.166.0, `classifyEntryPointTier()` returned
+`TIER_UNKNOWN` for every non-Java language, and
+`require-entry-path.ts` hard-gated the require-entry-path drop
+policy behind `language === 'java'`. Polyglot library-tier files
+(interop helpers, libapi utilities, benign scripts) therefore
+retained findings even when no reverse-BFS-reachable Tier-1 entry
+point existed — the exact Tier-2 FP pattern the classifier was
+built to suppress.
+
+### Added — 4 polyglot entry-point classifiers
+
+- **Python** — Flask (`@app.route`, `@app.get`, …), FastAPI
+  (`@router.get`, `@router.websocket`, …), Django
+  (`@api_view`, `@require_http_methods`, `@login_required`, …),
+  Click / Typer (`@click.command`, `@app.command`, …), Celery /
+  RQ (`@shared_task`, `@app.task`, `@periodic_task`).
+  Module-level `main()` → TIER_1. Library convention (`_private`
+  prefix, `/libapi/` / `/interop/` / `/tests/` paths) → TIER_3.
+- **JavaScript / TypeScript** — NestJS method decorators
+  (`@Get`, `@Post`, `@SubscribeMessage`, …) + class decorators
+  (`@Controller`, `@Resolver`, `@WebSocketGateway`, …). Named
+  exports channel: Lambda `handler`, Next.js App Router `GET` /
+  `POST` / …, SvelteKit / Remix `load` / `action`, Express
+  `middleware`. Express / Fastify / Koa registrations consumed
+  via `RuntimeRegistration[]` handler-name resolution.
+- **Go** — inline `ir.calls` walk resolving
+  `http.HandleFunc(path, handler)`, `mux.HandleFunc`,
+  `router.GET`/`POST` (gin / chi), gRPC `RegisterXxxServer`.
+  Signature-shape heuristic
+  (`func(w http.ResponseWriter, r *http.Request)` → TIER_1).
+  `main` in `main` package → TIER_1. gRPC handler shape
+  (`context.Context` + `*Request` return of `*Response, error`)
+  → TIER_1.
+- **Bash** — `main()` function → TIER_1. Positional args
+  (`$1`..`$9`, `$@`, `$*`, `$#`, `getopts`) at module scope or
+  attributed to a function line-range → TIER_1. Library-filename
+  prefixes (`benign_`, `safe_`, `lib_`, `common_`) → TIER_3.
+
+### Changed
+
+- **`require-entry-path.ts`** — the Java-only gate at lines
+  427–432 is replaced by a `SUPPORTED_LANGUAGES` set
+  (`java`, `python`, `javascript`, `typescript`, `tsx`, `jsx`,
+  `go`, `bash`, `shell`). Unsupported languages (rust, html, …)
+  continue to return `{ action: 'keep' }` — no policy change.
+- **Per-language safety guard**: if
+  `entryPointKeysByLanguage.get(lang) === 0` for the finding's
+  language, `classifyFinding()` returns
+  `{ action: 'keep' }` regardless of profile / BFS. Prevents
+  mis-drops when the classifier produces zero signal on a given
+  file. Existing Java drop-policy tests updated to include a stub
+  `@RestController` so the safety guard doesn't shadow the
+  intended drop-path assertion.
+- **`EntryPointContext`** extended with optional
+  `runtimeRegistrations?: RuntimeRegistration[]`,
+  `calls?: CallInfo[]`, `filePath?: string` fields (backward
+  compatible — all optional).
+- **`interprocedural-pass.ts`** now threads
+  `runtime_registrations`, `calls`, and `filePath` into every
+  classifier call site.
+
+### Tests
+
+- **~200 new classifier tests** across 4 files:
+  - `tests/analysis/entry-point-detection-python.test.ts`
+  - `tests/analysis/entry-point-detection-jsts.test.ts`
+  - `tests/analysis/entry-point-detection-go.test.ts`
+  - `tests/analysis/entry-point-detection-bash.test.ts`
+- **14 polyglot pinning tests** in
+  `tests/analysis/require-entry-path-polyglot.test.ts`
+  covering every ticket-body fixture (`benign_path_join.sh`,
+  `benign_sqlite_param.sh`, interop path / redos / jinja /
+  ctypes / toml Python helpers, `libapi/*.js` axios+ioredis
+  helpers, JSON deserialize interop, and Java
+  `SafeVelocityRender` regression sentinel).
+- **Recall-guard suite** in
+  `tests/analysis/entry-point-recall-guard.test.ts` — locks in
+  must-fire classifications for Flask / FastAPI / Express /
+  NestJS / Lambda / Next.js / `http.HandleFunc` / gin / Bash
+  `main`+`$1`+`getopts` + Java sentinels (`@RestController`,
+  `main(String[])`, `HttpServlet.doGet`). Regression here breaks
+  the build **before** any benchmark-harness rerun.
+- **3988 tests pass** (was 3837). Zero regressions.
+
+### Impact
+
+- **cognium-dev#237 (polyglot Tier-2 FPs)**: 14 → 0 for the four
+  shipping languages.
+- **OWASP BenchmarkPython** — TPR ≥81.2% recall guard held by
+  the new pinning + recall-guard suites (final testharness
+  confirmation runs in cognium-ai post-publish).
+- **OWASP Benchmark (Java)** — TPR 100% / FPR 0% preserved
+  (classifier unchanged for Java; only the safety guard is new
+  and only fires on files with no Java entry-point keys, which
+  never occurs on OWASP Benchmark scans).
+- **SecuriBench Micro / rust-synthetic** — unchanged (Rust falls
+  through to `TIER_UNKNOWN` + `SUPPORTED_LANGUAGES` guard).
+
+### Out of scope (follow-ups)
+
+- Content-type-aware xss (FQ-T3-S01 rehome from #207) — separate
+  axis (sanitizer credit + content-type).
+- Number-coercion sanitizer credit — same follow-up.
+- Sanitizer/guard credit for `safe_fastapi_allowlist.py` — entry
+  point IS genuine (has `@app.get`); fix needs allowlist
+  detection, not classifier gate.
+- Rust / HTML / Vue entry-point classifiers — return
+  `TIER_UNKNOWN`; the `SUPPORTED_LANGUAGES` guard prevents
+  mis-drops.
+
 ## [3.165.0] - 2026-07-10
 
 Defense-in-depth FP suppression for cognium-dev#250 — source
