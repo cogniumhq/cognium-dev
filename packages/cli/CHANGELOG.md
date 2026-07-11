@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.166.1] - 2026-07-11
+
+Engine bump only — adopts
+[`circle-ir@3.166.1`](https://www.npmjs.com/package/circle-ir), which
+adds `xml-entity-expansion` (both spellings) to the
+`TAINT_FLOW_RULE_IDS` whitelist so require-entry-path can gate
+XXE-adjacent findings on library/helper files. Follow-up to
+cognium-dev#237.
+
 ## [3.166.0] - 2026-07-10
 
 Engine bump only — adopts

@@ -140,6 +140,7 @@ const TAINT_FLOW_RULE_IDS: ReadonlySet<string> = new Set([
   'mybatis_mapper_call',
   'external_taint_escape',
   'template_injection',
+  'xml_entity_expansion',
   // Dash-cased (used by some test fixtures and a handful of emitters
   // in the language-sources / cross-file paths for consistency with
   // metric-style rule ids). Kept side-by-side with the underscore
@@ -158,6 +159,7 @@ const TAINT_FLOW_RULE_IDS: ReadonlySet<string> = new Set([
   'mass-assignment',
   'template-injection',
   'insecure-deserialization',
+  'xml-entity-expansion',
 ]);
 
 // ---------------------------------------------------------------------------

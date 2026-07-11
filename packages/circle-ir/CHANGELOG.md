@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.166.1] - 2026-07-11
+
+Whitelist top-up: add `xml-entity-expansion` (both dash and underscore
+spellings) to `TAINT_FLOW_RULE_IDS` so require-entry-path can gate
+XXE-adjacent findings on library/helper files. Follow-up to
+cognium-dev#237 (measured 3/12 → 4/12 fixture drop on named tail).
+
+### Changed
+
+- `require-entry-path.ts` — added `xml_entity_expansion` and
+  `xml-entity-expansion` to `TAINT_FLOW_RULE_IDS`. Previously
+  these findings bypassed the classifier gate entirely and always
+  kept, even on `interop/` library files.
+
 ## [3.166.0] - 2026-07-10
 
 Polyglot expansion of the entry-point classifier + removal of the
