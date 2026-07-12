@@ -69,6 +69,8 @@ import type {
   MethodInfo,
   ProjectProfile,
   SastFinding,
+  SinkType,
+  TaintFlowInfo,
   TaintHop,
   TypeInfo,
 } from '../types/index.js';
@@ -218,38 +220,146 @@ export function applyRequireEntryPath(
   const profileResolver = makeProfileResolver(options.projectProfile);
 
   for (const fa of fileAnalyses) {
+    const profile = profileResolver(fa.file);
+
+    // ------------------------------------------------------------------
+    // Channel 1 — `analysis.findings[]` (rule-based emitters and
+    // language-sources / sink→finding lowering path).
+    // ------------------------------------------------------------------
     const findings = fa.analysis.findings;
-    if (!findings || findings.length === 0) continue;
-    const kept: SastFinding[] = [];
-    for (const finding of findings) {
-      const decision = classifyFinding(
-        finding,
-        fa.analysis,
-        graph,
-        entryPointKeys,
-        entryPointKeysByLanguage,
-        profileResolver(fa.file),
-      );
-      switch (decision.action) {
-        case 'keep':
-          kept.push(finding);
-          break;
-        case 'annotate':
-          kept.push({
-            ...finding,
-            entryPath: decision.entryPath,
-            entryPathTier: decision.tier,
-          });
-          break;
-        case 'drop':
-          // Findings dropped by the entry-path gate carry no
-          // side-channel signal — downstream consumers see them
-          // as if they were never emitted.
-          break;
+    if (findings && findings.length > 0) {
+      const kept: SastFinding[] = [];
+      for (const finding of findings) {
+        const decision = classifyFinding(
+          finding,
+          fa.analysis,
+          graph,
+          entryPointKeys,
+          entryPointKeysByLanguage,
+          profile,
+        );
+        switch (decision.action) {
+          case 'keep':
+            kept.push(finding);
+            break;
+          case 'annotate':
+            kept.push({
+              ...finding,
+              entryPath: decision.entryPath,
+              entryPathTier: decision.tier,
+            });
+            break;
+          case 'drop':
+            // Findings dropped by the entry-path gate carry no
+            // side-channel signal — downstream consumers see them
+            // as if they were never emitted.
+            break;
+        }
       }
+      fa.analysis.findings = kept.length > 0 ? kept : undefined;
     }
-    fa.analysis.findings = kept.length > 0 ? kept : undefined;
+
+    // ------------------------------------------------------------------
+    // Channel 2 — `analysis.taint.flows[]` (cognium-dev #237 follow-up,
+    // 3.167.0). The CLI, cognium-ai harness, and downstream SARIF/JSON
+    // consumers all read taint flows as first-class vulnerabilities.
+    // Prior to 3.167.0, `applyRequireEntryPath` only mutated
+    // `findings[]`, which meant SSRF / SQL-injection / XSS / path-
+    // traversal signal produced by `TaintPropagationPass` bypassed the
+    // reachability gate entirely — the JS / interop FPs in #237 that
+    // shipped as unresolved in 3.166.1 turned out to be dropped
+    // correctly from `findings[]` but retained on `taint.flows[]`.
+    // ------------------------------------------------------------------
+    const flows = fa.analysis.taint?.flows;
+    if (flows && flows.length > 0) {
+      const keptFlows: TaintFlowInfo[] = [];
+      for (const flow of flows) {
+        const pseudo = flowToPseudoFinding(fa.file, flow);
+        if (!pseudo) {
+          // Low/medium sink severity — never a drop candidate under
+          // the H+C predicate. Preserve unchanged.
+          keptFlows.push(flow);
+          continue;
+        }
+        const decision = classifyFinding(
+          pseudo,
+          fa.analysis,
+          graph,
+          entryPointKeys,
+          entryPointKeysByLanguage,
+          profile,
+        );
+        if (decision.action !== 'drop') keptFlows.push(flow);
+      }
+      fa.analysis.taint.flows = keptFlows;
+    }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Taint-flow → pseudo-finding synthesis
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal H+C severity map for `TaintFlowInfo.sink_type`. Only sink
+ * types whose canonical severity is `high` or `critical` are drop
+ * candidates under the entry-path gate — medium/low sinks (e.g.
+ * `open_redirect`, `log_injection`, `redos`, `crlf`) are always
+ * preserved regardless of reachability, matching the H+C predicate
+ * enforced by `classifyFinding`.
+ *
+ * Sourced from `packages/cli/src/formatters.ts:SINK_SEVERITY`. Kept in
+ * sync manually — the CLI copy is the source of truth for user-facing
+ * severity, this copy is only used to decide whether the entry-path
+ * gate is even in scope for a given flow.
+ */
+const SINK_HC_SEVERITY: Partial<Record<SinkType, 'high' | 'critical'>> = {
+  sql_injection: 'critical',
+  nosql_injection: 'high',
+  command_injection: 'critical',
+  path_traversal: 'high',
+  xss: 'high',
+  xxe: 'critical',
+  deserialization: 'critical',
+  ldap_injection: 'high',
+  xpath_injection: 'high',
+  ssrf: 'high',
+  code_injection: 'critical',
+  format_string: 'high',
+  mass_assignment: 'high',
+};
+
+/**
+ * Synthesize a minimal `SastFinding` shape from a taint flow so the
+ * shared `classifyFinding()` reachability logic can run over it.
+ * Returns `null` when the sink type is not in `SINK_HC_SEVERITY` — in
+ * that case the flow is not an H+C drop candidate and must be
+ * preserved unconditionally.
+ *
+ * Only fields actually consulted by `classifyFinding` are populated
+ * (`category`, `rule_id`, `severity`, `file`, `line`, `message`). All
+ * other `SastFinding` fields (`id`, `pass`, `cwe`, `level`, `fix`,
+ * `snippet`, …) are set to safe placeholders — this object never
+ * escapes this module.
+ */
+function flowToPseudoFinding(
+  file: string,
+  flow: TaintFlowInfo,
+): SastFinding | null {
+  const severity = SINK_HC_SEVERITY[flow.sink_type];
+  if (!severity) return null;
+  return {
+    id: `taint-flow:${file}:${flow.sink_line}:${flow.sink_type}`,
+    pass: 'taint-propagation',
+    category: 'security',
+    rule_id: flow.sink_type,
+    cwe: '',
+    severity,
+    level: 'error',
+    message: `${flow.sink_type} at line ${flow.sink_line}`,
+    file,
+    line: flow.sink_line,
+  };
 }
 
 // ---------------------------------------------------------------------------

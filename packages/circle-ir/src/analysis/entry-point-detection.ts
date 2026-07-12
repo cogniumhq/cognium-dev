@@ -900,6 +900,31 @@ function classifyJsTsEntryPoint(
     return 'TIER_1_ENTRY_POINT';
   }
 
+  // 4.5. File-level TIER_1 escalation (cognium-dev #252 workaround).
+  //      The JS/TS extractor currently doesn't surface anonymous
+  //      arrow / function-expression handlers as MethodInfo records,
+  //      so `runtime_registrations.handler.name` comes back as `null`
+  //      for the common `app.get('/x', (req, res) => …)` shape.
+  //      Without this escalation, files that ARE framework entry
+  //      points contribute zero TIER_1 keys, the per-language safety
+  //      guard in `require-entry-path.ts` fires, and every JS finding
+  //      is kept — including obviously-orphan library-file findings.
+  //
+  //      Fallback rule: if the file has ≥1 http_route / middleware /
+  //      event_listener registration attributable to a known web
+  //      framework, treat every module-scope function in that file
+  //      as TIER_1. False positives from this rule are recall wins
+  //      (module-scope helpers in a route file ARE reachable from a
+  //      trust boundary); the drop path from `require-entry-path`
+  //      still requires BFS reachability, so unrelated files are
+  //      unaffected.
+  if (
+    fileHasJsTsFrameworkRegistration(ctx.runtimeRegistrations) &&
+    (!enclosingType || looksLikeModuleType(enclosingType))
+  ) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
   // 5. Module-level named-export entry point (Lambda `handler`,
   //    Next.js `GET`, SvelteKit `load`, …).
   if (JSTS_TIER_1_MODULE_EXPORTS.has(method.name) && (!enclosingType || looksLikeModuleType(enclosingType))) {
@@ -913,6 +938,38 @@ function classifyJsTsEntryPoint(
 
   // 7. Fallback — UNKNOWN keeps recall.
   return 'TIER_UNKNOWN';
+}
+
+/**
+ * JS/TS framework labels whose presence in a `runtime_registrations[]`
+ * entry means the enclosing file is a framework entry-point host.
+ * Kept narrow — only web / RPC frameworks whose handlers process
+ * external input.
+ */
+const JSTS_FILE_LEVEL_TIER_1_FRAMEWORKS: ReadonlySet<string> = new Set([
+  'express',
+  'fastify',
+  'koa',
+  'nestjs',
+]);
+
+function fileHasJsTsFrameworkRegistration(
+  regs: ReadonlyArray<RuntimeRegistration> | null | undefined,
+): boolean {
+  if (!regs || regs.length === 0) return false;
+  for (const reg of regs) {
+    if (
+      reg.kind !== 'http_route' &&
+      reg.kind !== 'middleware' &&
+      reg.kind !== 'event_listener'
+    ) {
+      continue;
+    }
+    if (reg.framework && JSTS_FILE_LEVEL_TIER_1_FRAMEWORKS.has(reg.framework)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

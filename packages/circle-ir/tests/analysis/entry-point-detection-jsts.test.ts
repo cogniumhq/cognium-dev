@@ -130,7 +130,14 @@ describe('classifyJsTsEntryPoint — TIER_1 by runtime registration', () => {
     ).toBe('TIER_1_ENTRY_POINT');
   });
 
-  it('Anonymous inline handler does not attach TIER_1 to any named method', () => {
+  it('Anonymous inline handler in a framework-registered file escalates module-scope methods to TIER_1 (#252 workaround)', () => {
+    // Prior to 3.167.0 this returned TIER_UNKNOWN, causing the
+    // per-language safety guard in `require-entry-path.ts` to fire
+    // on any JS scan whose route handlers are all anonymous arrow
+    // functions — the extractor cannot surface anonymous handlers
+    // as MethodInfo records, so `handler.name === null`. File-level
+    // escalation restores TIER_1 signal at file granularity until
+    // the extractor learns to emit synthetic method records.
     const m = method('somethingElse');
     const regs: RuntimeRegistration[] = [
       {
@@ -143,7 +150,82 @@ describe('classifyJsTsEntryPoint — TIER_1 by runtime registration', () => {
     ];
     expect(
       classifyEntryPointTier(m, undefined, CTX('src/app.ts', 'typescript', { runtimeRegistrations: regs })),
+    ).toBe('TIER_1_ENTRY_POINT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TIER_1 — file-level escalation (#252 workaround for anonymous handlers)
+// ---------------------------------------------------------------------------
+
+describe('classifyJsTsEntryPoint — TIER_1 by file-level framework escalation (#252)', () => {
+  it.each(['express', 'fastify', 'koa', 'nestjs'])(
+    'escalates module-scope methods to TIER_1 when file has any %s http_route registration',
+    (framework) => {
+      const m = method('unrelatedHelper');
+      const regs: RuntimeRegistration[] = [
+        {
+          kind: 'http_route',
+          framework: framework as RuntimeRegistration['framework'],
+          registrar: { method: 'get', receiver: 'app', line: 5, column: 0 },
+          path: '/x',
+          handler: { name: null, line: 5, column: 15 },
+        },
+      ];
+      expect(
+        classifyEntryPointTier(m, undefined, CTX('src/app.ts', 'typescript', { runtimeRegistrations: regs })),
+      ).toBe('TIER_1_ENTRY_POINT');
+    },
+  );
+
+  it('does NOT escalate methods inside a real class (only module-scope)', () => {
+    const m = method('list');
+    const t = type('UserService', { extends: 'BaseService' });
+    const regs: RuntimeRegistration[] = [
+      {
+        kind: 'http_route',
+        framework: 'express',
+        registrar: { method: 'get', receiver: 'app', line: 5, column: 0 },
+        path: '/x',
+        handler: { name: null, line: 5, column: 15 },
+      },
+    ];
+    expect(
+      classifyEntryPointTier(m, t, CTX('src/app.ts', 'typescript', { runtimeRegistrations: regs })),
     ).toBe('TIER_UNKNOWN');
+  });
+
+  it('does NOT escalate when runtime_registrations exist but framework is unknown', () => {
+    const m = method('unrelatedHelper');
+    const regs: RuntimeRegistration[] = [
+      {
+        kind: 'http_route',
+        framework: 'unknown',
+        registrar: { method: 'get', receiver: 'app', line: 5, column: 0 },
+        path: '/x',
+        handler: { name: null, line: 5, column: 15 },
+      },
+    ];
+    expect(
+      classifyEntryPointTier(m, undefined, CTX('src/app.ts', 'typescript', { runtimeRegistrations: regs })),
+    ).toBe('TIER_UNKNOWN');
+  });
+
+  it('does NOT escalate a file classified as library/test (path fragment wins)', () => {
+    const m = method('unrelatedHelper');
+    const regs: RuntimeRegistration[] = [
+      {
+        kind: 'http_route',
+        framework: 'express',
+        registrar: { method: 'get', receiver: 'app', line: 5, column: 0 },
+        path: '/x',
+        handler: { name: null, line: 5, column: 15 },
+      },
+    ];
+    // libapi/ path → TIER_3 short-circuit fires before escalation.
+    expect(
+      classifyEntryPointTier(m, undefined, CTX('src/libapi/routes.ts', 'typescript', { runtimeRegistrations: regs })),
+    ).toBe('TIER_3_LIBRARY_API');
   });
 });
 

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.167.0] - 2026-07-11
+
+Engine bump only — adopts
+[`circle-ir@3.167.0`](https://www.npmjs.com/package/circle-ir), which
+closes the require-entry-path channel mismatch: `taint.flows[]` is
+now gated by the same reachability + profile predicate as
+`findings[]`. Prior to this ship the CLI was reading SSRF / XSS /
+insecure_deserialization / path-traversal flows straight from the
+ungated channel, so the #237 classifier work never landed for a
+large portion of taint findings. Measured coggiyadmin fixture delta
+rises from 4/12 (3.166.1) to **10/13** on the JS + interop + Python
+tail; residuals tracked in cognium-dev#252 (JS extractor synthetic
+handlers, bash type/method emission).
+
+Also picks up Option B from #252: file-level TIER_1 escalation for
+JS/TS files with any express / fastify / koa / nestjs `http_route`
+runtime registration.
+
 ## [3.166.1] - 2026-07-11
 
 Engine bump only — adopts

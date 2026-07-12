@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.167.0] - 2026-07-11
+
+Close the require-entry-path channel mismatch (cognium-dev#237
+follow-up). Prior to 3.167.0 `applyRequireEntryPath` only mutated
+`analysis.findings[]`, but the CLI and downstream JSON/SARIF
+consumers ALSO read `analysis.taint.flows[]` as first-class
+vulnerabilities. This meant SSRF, insecure_deserialization, XSS and
+path-traversal signal emitted by `TaintPropagationPass` bypassed the
+reachability gate entirely — every previous ship in the #234 / #237
+lineage under-drop because of it.
+
+3.167.0 extends the gate to both channels. Measured fixture delta on
+the coggiyadmin corpus rises from 4/12 (3.166.1) to **10/13** on the
+JS + interop + Python tail; the 3 residuals (2 bash + 1 JS
+deserialization) are downstream of the extractor-side issue tracked
+in cognium-dev#252.
+
+Also ships Option B from #252: file-level TIER_1 escalation for
+JS/TS files that contain any express / fastify / koa / nestjs
+`http_route` runtime registration. Module-scope helper methods in
+those files are treated as TIER_1 even when the actual handler is
+an anonymous arrow function that never becomes a `MethodInfo`
+record. Library / test paths still win.
+
+### Changed
+
+- `require-entry-path.ts` — the main loop now applies the same
+  classifier + BFS + profile predicate to `analysis.taint.flows[]`
+  and drops flows whose sink method has no reachable Tier-1 entry
+  point. Low/medium sinks (`open_redirect`, `log_injection`,
+  `redos`, `crlf`, …) are preserved unconditionally via a minimal
+  `SINK_HC_SEVERITY` map — matches the H+C predicate on the
+  findings channel.
+- `entry-point-detection.ts` — `classifyJsTsEntryPoint` gains a
+  file-level escalation step (#252 workaround): when a JS/TS file
+  has ≥1 http_route registration from a known JS framework and the
+  method is module-scope, return TIER_1. The library-path TIER_3
+  short-circuit still fires first, so `libapi/` / `__tests__/` are
+  untouched.
+
+### Fixed
+
+- SSRF finding on `libapi/safe_axios_allowlist.js` no longer surfaces
+  in CLI output — the flow was gated in `findings[]` but retained on
+  `taint.flows[]` prior to 3.167.0.
+- Same fix cascades to `safe_ioredis_get.js`,
+  `safe_interop_toml_dynimport.py`, `safe_interop_jinja_ssti.py`,
+  `safe_interop_env_json_to_xpath.py`, `safe_fastapi_allowlist.py`,
+  and the FFI safe fixtures on the interop side.
+
+### Notes
+
+- 33 pinning tests on `require-entry-path` including 6 new for the
+  taint-flow channel; 48 on the JS/TS classifier including 4 new
+  for file-level escalation.
+- All 3995 tests pass.
+
 ## [3.166.1] - 2026-07-11
 
 Whitelist top-up: add `xml-entity-expansion` (both dash and underscore

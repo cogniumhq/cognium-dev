@@ -368,3 +368,130 @@ describe('applyRequireEntryPath — reachability edge cases', () => {
     expect(daoIR.findings![0].entryPath!.length).toBe(3); // Controller.handle → Service.query → Dao.runSql
   });
 });
+
+// ---------------------------------------------------------------------------
+// Channel 2 — taint.flows[] gating (cognium-dev #237 follow-up, 3.167.0)
+// ---------------------------------------------------------------------------
+//
+// Prior to 3.167.0 `applyRequireEntryPath` only mutated
+// `analysis.findings[]`. The CLI, cognium-ai harness, and SARIF/JSON
+// consumers all read `analysis.taint.flows[]` as first-class
+// vulnerabilities, so a large class of taint-based signal (SSRF,
+// insecure_deserialization, xxe from `TaintPropagationPass`) bypassed
+// the reachability gate. These pinning tests lock in the parallel
+// behaviour on `taint.flows[]`.
+
+describe('applyRequireEntryPath — taint.flows[] gate', () => {
+  function makeFlow(sinkType: string, sinkLine: number) {
+    return {
+      source_line: 1,
+      sink_line: sinkLine,
+      source_type: 'http_param',
+      sink_type: sinkType,
+      path: [],
+      confidence: 0.9,
+      sanitized: false,
+    } as unknown as import('../../src/types/index.js').TaintFlowInfo;
+  }
+
+  it('drops H+C SSRF flow on utility method with no callers', () => {
+    // Stub controller ensures Java has ≥1 Tier-1 key so the polyglot
+    // per-language safety guard does NOT fire.
+    const stubHandle = makeMethod('handle', 3, 10, ['@GetMapping']);
+    const stubCtrl = makeType('StubController', [stubHandle], ['@RestController']);
+    const stubIR = makeIR('/src/StubController.java', [stubCtrl], []);
+
+    const doStuff = makeMethod('fetchUrl', 3, 10);
+    const helper = makeType('Helper', [doStuff]);
+    const ir = makeIR('/src/Helper.java', [helper], []);
+    ir.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 5)] };
+
+    applyRequireEntryPath([
+      { file: '/src/StubController.java', analysis: stubIR },
+      { file: '/src/Helper.java', analysis: ir },
+    ]);
+
+    expect(ir.taint.flows).toEqual([]);
+  });
+
+  it('preserves H+C SSRF flow reachable from @RestController', () => {
+    const handle = makeMethod('handle', 3, 10, ['@GetMapping']);
+    const controller = makeType('Controller', [handle], ['@RestController']);
+    const doStuff = makeMethod('fetchUrl', 3, 20);
+    const service = makeType('Service', [doStuff]);
+    const call = makeCall('fetchUrl', 'handle', 7, 'Service');
+
+    const ctrlIR = makeIR('/src/Controller.java', [controller], [call]);
+    const svcIR = makeIR('/src/Service.java', [service], []);
+    svcIR.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 12)] };
+
+    applyRequireEntryPath([
+      { file: '/src/Controller.java', analysis: ctrlIR },
+      { file: '/src/Service.java', analysis: svcIR },
+    ]);
+
+    expect(svcIR.taint.flows).toHaveLength(1);
+  });
+
+  it('preserves medium-severity flow (open_redirect) on unreachable method', () => {
+    // open_redirect is medium — never a drop candidate. Guarantees
+    // low/medium sinks are not accidentally over-dropped by the H+C
+    // predicate.
+    const stubHandle = makeMethod('handle', 3, 10, ['@GetMapping']);
+    const stubCtrl = makeType('StubController', [stubHandle], ['@RestController']);
+    const stubIR = makeIR('/src/StubController.java', [stubCtrl], []);
+
+    const doStuff = makeMethod('redirect', 3, 10);
+    const helper = makeType('Helper', [doStuff]);
+    const ir = makeIR('/src/Helper.java', [helper], []);
+    ir.taint = { sources: [], sinks: [], flows: [makeFlow('open_redirect', 5)] };
+
+    applyRequireEntryPath([
+      { file: '/src/StubController.java', analysis: stubIR },
+      { file: '/src/Helper.java', analysis: ir },
+    ]);
+
+    expect(ir.taint.flows).toHaveLength(1);
+  });
+
+  it('preserves flows under library/* profile (already gated by #236/#232)', () => {
+    const doStuff = makeMethod('fetchUrl', 3, 10);
+    const helper = makeType('Helper', [doStuff]);
+    const ir = makeIR('/src/Helper.java', [helper], []);
+    ir.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 5)] };
+
+    applyRequireEntryPath(
+      [{ file: '/src/Helper.java', analysis: ir }],
+      { projectProfile: 'library/production' },
+    );
+
+    expect(ir.taint.flows).toHaveLength(1);
+  });
+
+  it('is a full no-op on flows when disabled via disabledPasses', () => {
+    const doStuff = makeMethod('fetchUrl', 3, 10);
+    const helper = makeType('Helper', [doStuff]);
+    const ir = makeIR('/src/Helper.java', [helper], []);
+    ir.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 5)] };
+
+    applyRequireEntryPath(
+      [{ file: '/src/Helper.java', analysis: ir }],
+      { disabledPasses: ['require-entry-path'] },
+    );
+
+    expect(ir.taint.flows).toHaveLength(1);
+  });
+
+  it('preserves flows in supported languages when classifier has zero Tier-1 keys (safety guard)', () => {
+    // No Java controller in the scan → Java Tier-1 key count = 0 →
+    // per-language safety guard fires → flow preserved.
+    const doStuff = makeMethod('fetchUrl', 3, 10);
+    const helper = makeType('Helper', [doStuff]);
+    const ir = makeIR('/src/Helper.java', [helper], []);
+    ir.taint = { sources: [], sinks: [], flows: [makeFlow('ssrf', 5)] };
+
+    applyRequireEntryPath([{ file: '/src/Helper.java', analysis: ir }]);
+
+    expect(ir.taint.flows).toHaveLength(1);
+  });
+});
