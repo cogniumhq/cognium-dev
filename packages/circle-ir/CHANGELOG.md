@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.168.0] - 2026-07-11
+
+Hoist the non-executable-source-line gate to `SinkFilterPass`
+(cognium-dev#250). Prior to 3.168.0 the `isNonExecutableSourceLine`
+gate shipped in 3.165.0 only ran inside the legacy
+`generateFindings()` code path. `TaintPropagationPass` and
+`InterproceduralPass`, which populate `analysis.taint.flows[]` and
+`analysis.taint.sources[]` (the final IR channels), both consume the
+raw `sinkFilter.sources` array without the gate — so any source
+whose `line` pointed at a license-header block comment, an `import`
+line, a standalone annotation, or a `package` / `use` /
+`#include` declaration still emitted a flow.
+
+Real-world evidence on openapi-generator (3.166.0): 256/317
+Critical+High `taint.flows[]` entries reported `source.line=10`, the
+Apache-2.0 license comment interior-star line. The 3.167.0 flow-gate
+extension for #237 masked this partially, but every downstream flow
+generator keys off `source.line` — the fix must be upstream of both
+flow-producing passes.
+
+3.168.0 moves the gate to a single choke point in `SinkFilterPass`
+where `taintMatcher.sources` and `langSources.additionalSources` are
+merged. This one location covers all three consumers:
+`analysis.taint.sources[]` (final IR), `TaintPropagationPass`
+flows, and `InterproceduralPass` flows.
+
+### Changed
+
+- `sink-filter-pass.ts` — after merging sources from
+  `TaintMatcherPass` and `LanguageSourcesPass`, drop any source
+  whose `line` satisfies `isNonExecutableSourceLine(ctx.code,
+  s.line, ctx.language)`. No-op when `ctx.code` / `ctx.language`
+  aren't supplied (legacy programmatic callers pre-computing
+  sources).
+
+### Fixed
+
+- `taint.flows[]` no longer reports `source_line` pointing at
+  license-header block comments, import lines, standalone
+  annotations, or `package` / `use` / `#include` declarations on
+  Java, JavaScript, TypeScript, Python, Go, Rust and Bash.
+- `taint.sources[]` (final IR) receives the same gate — downstream
+  consumers no longer see fabricated non-executable-line sources.
+
+### Notes
+
+- 14 new pinning tests in
+  `tests/analysis/passes/sink-filter.test.ts` cover Java
+  block-comment / interior-star / package / import / standalone
+  annotation / blank / executable-preserved / mixed-with-fabricated
+  / additionalSources filtering, plus edge cases (legacy no-op with
+  empty ctx.code, no-op on unknown language) and per-language
+  smoke: Python `import`, JavaScript `import`, Go `package`.
+- Full test suite: 4015 pass (was 4001 on 3.167.0; +14 new).
+- No changes to OWASP Benchmark (Java) 100%/0%, SecuriBench Micro
+  97.7%, or BenchmarkPython 81.2% recall — the gate only filters
+  provably non-executable lines that could never carry taint.
+
 ## [3.167.0] - 2026-07-11
 
 Close the require-entry-path channel mismatch (cognium-dev#237

@@ -792,3 +792,221 @@ describe('SinkFilterPass — Stage 4: sanitized sinks filter', () => {
     expect(result.sinks).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: non-executable source-line gate (cognium-dev #250, 3.168.0)
+//
+// Locks in the hoist of the `isNonExecutableSourceLine` gate from
+// `generateFindings()` (per-file legacy) into `SinkFilterPass.run()`
+// (Circle-IR 3.0 pipeline). Sources whose `line` points at an import,
+// package, `use`, `#include`, block-comment continuation, line-comment,
+// standalone annotation/decorator, blank line, or `const NAME = <literal>`
+// declaration are dropped BEFORE `TaintPropagationPass` and
+// `InterproceduralPass` run, so no downstream flow generator emits a
+// `taint.flows[]` entry with a fabricated `source_line`.
+//
+// Real-world evidence: openapi-generator (~3.166.0) reported 256/317
+// C+H `taint.flows[]` entries with `source.line=10` (Apache-2.0
+// license comment continuation). Every downstream flow generator keys
+// off `source.line`, so this choke-point gate collapses the entire
+// residual at once.
+// ---------------------------------------------------------------------------
+
+describe('SinkFilterPass — non-executable source-line gate (#250)', () => {
+  // Line-number-annotated fixture mirroring the openapi-generator
+  // CodegenConfigurator.java repro (block-comment header + package +
+  // imports + real method body).
+  const javaCode = [
+    '/*',                                                 // 1  block-comment open
+    ' * Copyright 2018 OpenAPI-Generator Contributors',   // 2  interior star
+    ' *',                                                 // 3  interior star (blank)
+    ' * Licensed under the Apache License, Version 2.0',  // 4  interior star
+    ' */',                                                // 5  block-comment close
+    '',                                                   // 6  blank
+    'package org.openapitools.codegen.config;',           // 7  package
+    '',                                                   // 8  blank
+    'import java.util.List;',                             // 9  import
+    'import java.util.Map;',                              // 10 import  <-- #250 telltale
+    '',                                                   // 11 blank
+    '@Deprecated',                                        // 12 standalone annotation
+    'public class Foo {',                                 // 13 class body — executable
+    '    public String handle(String x) {',               // 14 executable
+    '        return x + " sink";',                        // 15 executable
+    '    }',                                              // 16 executable
+    '}',                                                  // 17
+  ].join('\n');
+
+  it('drops a source on a block-comment line (Java, line 1)', () => {
+    const bad = makeSource(1);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('drops a source on a block-comment interior-star line (Java, line 3)', () => {
+    const bad = makeSource(3);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('drops a source on a package declaration (Java, line 7)', () => {
+    const bad = makeSource(7);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('drops a source on an import line (Java, line 10 — openapi-generator repro)', () => {
+    const bad = makeSource(10);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('drops a source on a standalone annotation line (Java, line 12)', () => {
+    const bad = makeSource(12);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('drops a source on a blank line (Java, line 6)', () => {
+    const bad = makeSource(6);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(0);
+  });
+
+  it('preserves a source on an executable statement line (Java, line 15)', () => {
+    const good = makeSource(15);
+    const ctx = makeCtx({ language: 'java', code: javaCode, sources: [good] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(15);
+  });
+
+  it('drops only the fabricated source when both are present (Java)', () => {
+    const bad  = makeSource(10);   // import line
+    const good = makeSource(15);   // real method body
+    const ctx  = makeCtx({
+      language: 'java',
+      code:     javaCode,
+      sources:  [bad, good],
+    });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(15);
+  });
+
+  it('drops fabricated sources from additionalSources too (Java)', () => {
+    // Same as above but the fabricated source comes from
+    // langSources.additionalSources instead of taintMatcher.sources.
+    const bad  = makeSource(10);
+    const good = makeSource(15);
+    const ctx  = makeCtx({
+      language: 'java',
+      code:     javaCode,
+      sources:  [good],
+      additionalSources: [bad],
+    });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(15);
+  });
+
+  it('is a full no-op when ctx.code is empty (legacy caller)', () => {
+    // Preserves pre-3.168 behaviour for callers that don't pass file
+    // text. This guarantees external harnesses / tests that build a
+    // PassContext without source text keep observing every source.
+    const bad = makeSource(10);
+    const ctx = makeCtx({ language: 'java', code: '', sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(10);
+  });
+
+  it('is a full no-op on an unknown language (Cobol / etc.)', () => {
+    // `isNonExecutableSourceLine` returns false on unrecognised
+    // languages, so the gate degrades safely for languages the
+    // detector doesn't yet cover.
+    const bad = makeSource(10);
+    const ctx = makeCtx({ language: 'cobol', code: javaCode, sources: [bad] });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+  });
+
+  it('drops a source on a Python `import` line (line 3)', () => {
+    const pyCode = [
+      '# Copyright header',                    // 1  py line comment
+      '"""Module docstring."""',               // 2  docstring
+      'import os',                             // 3  import  <-- fabricated source
+      'from flask import Flask, request',      // 4  from-import
+      '',                                      // 5  blank
+      '@app.route("/x")',                      // 6  standalone decorator
+      'def handle():',                         // 7  executable
+      '    return request.args.get("x")',      // 8  executable — legit source
+    ].join('\n');
+    const bad  = makeSource(3);
+    const good = makeSource(8);
+    const ctx  = makeCtx({
+      language: 'python',
+      code:     pyCode,
+      sources:  [bad, good],
+    });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(8);
+  });
+
+  it('drops a source on a JavaScript `import` line (line 4)', () => {
+    const jsCode = [
+      '/**',                                   // 1  jsdoc open
+      ' * Foo controller.',                    // 2  jsdoc interior
+      ' */',                                   // 3  jsdoc close
+      "import express from 'express';",        // 4  import  <-- fabricated source
+      "import { readFile } from 'fs/promises';", // 5  import
+      '',                                      // 6  blank
+      'const app = express();',                // 7  executable
+      "app.get('/x', (req, res) => {",         // 8  executable
+      '  res.send(req.query.q);',              // 9  executable — legit source
+      '});',                                   // 10
+    ].join('\n');
+    const bad  = makeSource(4);
+    const good = makeSource(9);
+    const ctx  = makeCtx({
+      language: 'javascript',
+      code:     jsCode,
+      sources:  [bad, good],
+    });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(9);
+  });
+
+  it('drops a source on a Go `package` line and preserves a body-line source', () => {
+    const goCode = [
+      '// Copyright header',                   // 1  line comment
+      'package foo',                           // 2  package
+      '',                                      // 3  blank
+      'import (',                              // 4  import block open
+      '    "net/http"',                        // 5  import member
+      ')',                                     // 6  import block close
+      '',                                      // 7  blank
+      'func handle(w http.ResponseWriter, r *http.Request) {', // 8  executable
+      '    q := r.URL.Query().Get("q")',       // 9  executable — legit source
+      '    w.Write([]byte(q))',                // 10 executable
+      '}',                                     // 11
+    ].join('\n');
+    const bad  = makeSource(2);
+    const good = makeSource(9);
+    const ctx  = makeCtx({
+      language: 'go',
+      code:     goCode,
+      sources:  [bad, good],
+    });
+    const result = new SinkFilterPass().run(ctx);
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0].line).toBe(9);
+  });
+});

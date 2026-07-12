@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.168.0] - 2026-07-11
+
+Engine bump only — adopts
+[`circle-ir@3.168.0`](https://www.npmjs.com/package/circle-ir), which
+hoists the non-executable-source-line gate to `SinkFilterPass`
+(cognium-dev#250). The 3.165.0 gate on `generateFindings()` never
+covered the `taint.flows[]` / `taint.sources[]` channels; on
+openapi-generator the CLI was surfacing 256/317 Critical+High flows
+with `source.line` pointing at the Apache-2.0 license comment.
+3.168.0 filters at the merged-source choke point so all three
+channels (`taint.sources[]`, TaintPropagation flows, Interprocedural
+flows) inherit the gate.
+
 ## [3.167.0] - 2026-07-11
 
 Engine bump only — adopts

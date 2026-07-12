@@ -23,6 +23,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
+import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 
 /**
  * Common XSS sanitizer patterns for JavaScript/TypeScript.
@@ -616,7 +617,29 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     const langSources  = ctx.getResult<LanguageSourcesResult>('language-sources');
 
     // Merge sources and sinks from both upstream passes.
-    const sources: TaintSource[] = [...taintMatcher.sources, ...langSources.additionalSources];
+    const mergedSources: TaintSource[] = [...taintMatcher.sources, ...langSources.additionalSources];
+
+    // cognium-dev #250 (3.168.0) — drop sources whose `line` points at a
+    // provably non-executable statement (license header, block/line
+    // comment, `import` / `package` / `use` / `#include` line, standalone
+    // annotation / decorator, `const NAME = <literal>` etc.). Prior to
+    // this ship the gate was applied only inside `generateFindings()`,
+    // which is a code path DISTINCT from `TaintPropagationPass` +
+    // `InterproceduralPass` (both of which populate `taint.flows[]` from
+    // the same `sinkFilter.sources` array). Real-world evidence: on
+    // openapi-generator (~3.166.0), 256/317 C+H `taint.flows[]` entries
+    // reported `source.line=10` — the Apache-2.0 license comment. Every
+    // downstream flow generator keys off `source.line`, so hoisting the
+    // gate here fixes both `taint.sources[]` (final IR) and every flow
+    // channel at a single choke point. No-op when `ctx.code` /
+    // `ctx.language` aren't supplied (legacy callers) — this preserves
+    // pre-3.168 behaviour for programmatic callers that pass an
+    // already-computed source list without file text.
+    const sources: TaintSource[] = (ctx.code && ctx.language)
+      ? mergedSources.filter(
+          s => !isNonExecutableSourceLine(ctx.code as string, s.line, ctx.language as string),
+        )
+      : mergedSources;
 
     // Build merged sinks, deduplicating JS DOM sinks that may overlap with config sinks.
     const sinks: TaintSink[] = [...taintMatcher.sinks];
