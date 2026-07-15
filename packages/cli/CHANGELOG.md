@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.173.0] - 2026-07-15
+
+Engine bump only — adopts
+[`circle-ir@3.173.0`](https://www.npmjs.com/package/circle-ir),
+which ships Tier-2 perf fix T2-D (Java `buildResolutionContext`
+cache-miss elimination) from cognium-dev#254. On the 500-file
+langchain4j benchmark large-tier wall-clock drops 2592.4 ms →
+2499.8 ms (-3.6%), throughput climbs 21 600 → 22 400 LOC/s (+3.7%),
+`extractCalls` drops 246 ms → 99 ms (-59.8%). Cumulative vs 3.170.0:
+**-14.7% wall-clock, +17.2% throughput.** Zero API-surface changes,
+zero test regressions (4032 pass).
+
 ## [3.172.0] - 2026-07-15
 
 Engine bump only — adopts

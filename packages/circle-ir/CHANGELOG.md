@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.173.0] - 2026-07-15
+
+Tier-2 perf ship — Java `buildResolutionContext` cache-miss elimination
+(cognium-dev#254 T2-D). On the 500-file langchain4j benchmark
+(55 996 LOC) large-tier wall-clock drops **2592.4 ms → 2499.8 ms
+(-3.6%)** and throughput climbs **21 600 → 22 400 LOC/s (+3.7%)**.
+Cumulative vs 3.170.0 baseline: **2929.8 → 2499.8 ms (-14.7%)**,
+**+17.2% throughput**.
+
+- **T2-D — Java `getNodeTypesForLanguage` extension.**
+  `buildResolutionContext` in `extractors/calls.ts` queries the tree
+  root for two Java node types that were absent from the Java cache
+  set: `package_declaration` (line 805) and `local_variable_declaration`
+  (line 862). Every `getNodesFromCache` call for a missing type falls
+  back to a full-tree `findNodes` walk. Adding both types to the Java
+  default case in `analyzer.ts:getNodeTypesForLanguage` lets the
+  single `collectAllNodes` pre-order pass populate them once per file,
+  eliminating two per-file full walks (× 500 files on the large tier).
+  Zero code change in the extractors — behavior identical, only the
+  cache set grew by two entries. **Result: extractCalls 246 ms →
+  99 ms (-59.8%).**
+
+The parse+graph phase overall drops **846 ms → 729 ms (-13.8%)**.
+`collectAllNodes` held steady at 83 ms (+0 ms — the two extra Java
+types added negligible cost to the iterative pre-order walk).
+
+Residual parse+graph hotspots (top follow-up candidates from
+`/tmp/perf-run/run6.txt`): `parse` 171 ms (WASM parser itself),
+`extractTypes` 170 ms, `buildDFG` 105 ms, `extractCalls` 99 ms.
+`extractTypes` and `extractCalls` no longer share a "redundant tree
+walk" pattern — remaining cost is per-item work (`getNodeText`
+memoisation, `childForFieldName` batching, `resolveReceiverType`
+recursion). Different optimisation axis; tracked as T2-E.
+
+Recall unchanged — 4032/4032 tests pass, 2 skipped, zero API surface
+change (Java cache set is an implementation detail).
+
 ## [3.172.0] - 2026-07-15
 
 Tier-2 perf ship — parse+graph nodeCache reuse (cognium-dev#254 T2-A + T2-C).

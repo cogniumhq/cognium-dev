@@ -502,10 +502,15 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       // Java default. `method_declaration` / `constructor_declaration` /
       // `import_declaration` are reused by `buildCFG` and `extractImports`
       // (3.172.0 T2-A/T2-C) so the cache is populated once.
+      // `package_declaration` / `local_variable_declaration` added in
+      // 3.173.0 (T2-D) — `buildResolutionContext` in extractors/calls.ts
+      // queries both at tree-root scope; without cache membership each
+      // query fell back to a full-tree `findNodes` walk per file.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
         'import_declaration', 'interface_declaration', 'enum_declaration',
+        'package_declaration', 'local_variable_declaration',
       ]);
   }
 }
