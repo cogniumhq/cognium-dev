@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.169.0] - 2026-07-15
+
+Close CWE-Bench-Rust RustTest00015 SQL-injection FN
+(cognium-dev#251). Prior to 3.169.0 the classless second-arg
+`[…]` shortcut inside `isParameterizedQueryCall` matched **any**
+expression starting with `[` at position 1 — including the empty
+literal `[]`. On rusqlite the standard shape is
+
+```rust
+let sql = format!("DELETE FROM users WHERE id = '{}'", user_id);
+conn.execute(&sql, []).unwrap();
+```
+
+`sql` is assembled with unchecked `format!` interpolation and the
+`[]` at arg[1] is not evidence of parameterization — the driver
+cannot bind any values from an empty array. The pre-3.169.0 gate
+silently dropped the `sql_injection` sink emission, so no source →
+sink flow was even attempted.
+
+### Fixed
+
+- `taint-matcher.ts::isParameterizedQueryCall` — reject an empty
+  array literal (`[]` or `[ ]`) at arg[1]. Genuine parameterized-
+  query calls always pass at least one bound value; an empty array
+  cannot substitute for placeholder-driver binding.
+
+### Benchmarks
+
+- **CWE-Bench-Rust**: TPR 94.4% → **100%**, FPR 0% → **0%**,
+  F1 97.1% → **100%** (sqli category 60% → 100%; RustTest00015 was
+  the sole FN across all 6 categories).
+- **OWASP Benchmark (Java)**: unchanged (100% TPR, 0% FPR).
+- **SecuriBench Micro (Java)**: unchanged (97.7% TPR, 6.7% FPR).
+- **OWASP BenchmarkPython sqli**: unchanged (100%; 5 TP / 11 TN /
+  0 FP / 0 FN). No cross-language regression from the tightened
+  gate — the empty-array shape only occurs in JS/TS/Rust idiom.
+
+### Tests
+
+- `placeholder-sql-filter.test.ts` — add three pinning tests
+  covering `conn.execute(sql, [])`, `db.query(dynamicSql, [])`,
+  and `pool.execute("... " + userId, [ ])` (whitespace-only
+  variant). Existing Node.js `[id]` / `[id, name]` regression
+  tests continue to pass unchanged.
+
 ## [3.168.0] - 2026-07-11
 
 Hoist the non-executable-source-line gate to `SinkFilterPass`

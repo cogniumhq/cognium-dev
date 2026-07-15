@@ -170,4 +170,36 @@ describe('Unsafe SQL patterns (true positives)', () => {
     ])];
     expect(sqlSinks(calls).length).toBeGreaterThanOrEqual(1);
   });
+
+  // #251 pinning — `conn.execute(&sql, [])` on rusqlite where `sql` is
+  // assembled via `format!` is a real SQL injection. The **empty** array
+  // literal at arg[1] must NOT be treated as evidence of a parameterized
+  // query — the driver cannot bind any values from an empty array.
+  // Prior to 3.169.0 the classless second-arg-`[…]` shortcut fired on
+  // any expression starting with `[`, including `[]`, silently dropping
+  // the sink emission. This case is the RustTest00015 FN in
+  // CWE-Bench-Rust that pushed sqli TPR to 60%.
+  it('should flag conn.execute(sql, []) as sql_injection (empty params array)', () => {
+    const calls = [makeCall('execute', 'conn', [
+      { expression: '&sql', variable: 'sql' },
+      { expression: '[]', variable: null },
+    ])];
+    expect(sqlSinks(calls).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should flag db.query(dynamicSql, []) as sql_injection (empty params array)', () => {
+    const calls = [makeCall('query', 'db', [
+      { expression: 'dynamicSql', variable: 'dynamicSql' },
+      { expression: '[]', variable: null },
+    ])];
+    expect(sqlSinks(calls).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should flag pool.execute(sql, [ ]) as sql_injection (whitespace-only array)', () => {
+    const calls = [makeCall('execute', 'pool', [
+      { expression: '"DELETE FROM users WHERE id = " + userId', literal: null },
+      { expression: '[ ]', variable: null },
+    ])];
+    expect(sqlSinks(calls).length).toBeGreaterThanOrEqual(1);
+  });
 });

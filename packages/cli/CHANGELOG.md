@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.169.0] - 2026-07-15
+
+Engine bump only — adopts
+[`circle-ir@3.169.0`](https://www.npmjs.com/package/circle-ir), which
+closes the CWE-Bench-Rust RustTest00015 SQL-injection FN
+(cognium-dev#251). The classless second-arg `[…]` shortcut inside
+`isParameterizedQueryCall` previously matched empty array literals
+(`[]`), silently suppressing the `sql_injection` sink emission on
+`conn.execute(&sql, [])` — the standard rusqlite shape when `sql` is
+assembled via `format!` interpolation. CWE-Bench-Rust: TPR
+94.4% → **100%**, F1 97.1% → **100%**. OWASP Benchmark (Java) and
+SecuriBench Micro unchanged.
+
 ## [3.168.0] - 2026-07-11
 
 Engine bump only — adopts

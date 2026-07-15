@@ -661,12 +661,19 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
     }
   }
 
-  // Existing check: second arg is array literal [params] (Node.js pattern)
+  // Existing check: second arg is a non-empty array literal [params]
+  // (Node.js `db.query(sql, [id])` shape). An **empty** array literal `[]`
+  // is not evidence of a parameterized query — the driver cannot bind any
+  // values, so if `sql` was assembled with string interpolation the call
+  // is still injectable. #251 pinning: `conn.execute(&sql, [])` on
+  // rusqlite where `sql` is `format!("... {}", user_id)` MUST still fire.
   if (call.arguments.length >= 2) {
     const secondArg = call.arguments.find(a => a.position === 1);
     if (secondArg?.expression) {
       const expr = secondArg.expression.trim();
-      if (expr.startsWith('[')) {
+      // Reject an empty array literal (possibly with whitespace inside).
+      // Genuine parameterized-query calls always pass ≥1 bound value.
+      if (expr.startsWith('[') && !/^\[\s*\]$/.test(expr)) {
         return true;
       }
     }
