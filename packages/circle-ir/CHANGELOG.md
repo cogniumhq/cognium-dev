@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.171.0] - 2026-07-15
+
+Tier-1 perf ship — hotspot fixes H1 + H7 + H8 from the
+[performance deep-dive](https://github.com/cogniumhq/cognium-dev/issues/254).
+On the 500-file langchain4j benchmark (55 996 LOC) large-tier
+wall-clock drops **2929.8 ms → 2762.1 ms (-5.7%)** and throughput
+climbs **19 112 → 20 273 LOC/s (+6.1%)**. The three taint-hot passes
+combined go from **971 ms → 789 ms (-18.7%)**.
+
+- **H1 — regex re-compile in `isJavaScriptTaintedArgument`.**
+  Previously every JS/TS taint check compiled `new RegExp(...)`
+  inside a triple-nested `for call → for arg → for sp` loop —
+  ≈ 1.6 M compiles on the 500-file benchmark. Regex compilation is
+  now hoisted to module scope with `WeakMap<SourcePattern[],
+  CompiledJsSourcePatterns>` identity-keyed caching. Fallback
+  patterns compiled once at module load via IIFE. **Result:
+  taint-matcher pass 631 ms → 452 ms (-28.4%).**
+- **H7 — Set-keyed flow dedup in
+  `TaintPropagationPass.supplementFlows`.** Four supplement
+  blocks (arrayFlows, collectionFlows, paramFlows, exprScanFlows)
+  each did `flows.some(x => x.source_line === … && x.sink_line ===
+  … && x.sink_type === …)` before push — O(F × A) where F grows
+  as flows are appended. A shared `flowKeys: Set<string>`
+  prepopulated from the initial `flows` array with
+  `${source_line}|${sink_line}|${sink_type}` key gives O(1)
+  membership. Complexity drop: **O(F × A) → O(A)** per supplement
+  block; wins scale with flow density.
+- **H8 — `TaintSanitizer.sanitizes` Set-backed lookup.**
+  `san.sanitizes` is a `SinkType[]` (typically 1–3 entries but up
+  to ~12 for wide-coverage sanitizers). Ten hot sites across
+  `taint-propagation.ts`, `taint-propagation-pass.ts`,
+  `sink-filter-pass.ts`, `interprocedural-pass.ts`, and
+  `cross-file-pass.ts` used `.includes()` inside inner loops that
+  iterate over (sanitizers × sinks × taint checks). New helper
+  `sanitizer-index.ts::sanitizerCoversSink(san, sinkType)`
+  lazily builds and caches a `Set<string>` per sanitizer via a
+  module-scoped `WeakMap<TaintSanitizer, Set<string>>`. Zero
+  API-surface change on `TaintSanitizer`, no manual invalidation,
+  no memory leak. **Result: sink-filter pass 33 ms → 22 ms (-33%).**
+
+Recall unchanged — all 4032 unit tests pass. Zero API-surface
+churn. Follow-ups in #254: Tier-2 items T2-A (buildCFG nodeCache),
+T2-B (extractTypes+extractCalls fusion), T2-C (extractImports
+nodeCache) will land in subsequent ships.
+
 ## [3.170.0] - 2026-07-15
 
 Recognise modern taint sources (cognium-dev#242). Prior to 3.170.0

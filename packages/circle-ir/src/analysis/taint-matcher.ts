@@ -1710,6 +1710,80 @@ function matchesSourcePattern(call: CallInfo, pattern: SourcePattern): boolean {
 }
 
 /**
+ * Compiled JavaScript-property source patterns.
+ * H1 (#254 3.171.0): pre-compile once and cache per `SourcePattern[]` array
+ * identity, keyed via WeakMap. Previously `isJavaScriptTaintedArgument`
+ * called `new RegExp(...)` inside a triple-nested loop
+ * (`for call → for arg → for sp`), producing ~1.6M RegExp allocations on
+ * the 500-file langchain4j benchmark. WeakMap identity-key means downstream
+ * users can pass a stable pattern array and pay zero re-compile cost across
+ * files; passing a fresh array per call still gets amortised via the
+ * builder path.
+ */
+interface CompiledJsSourcePatterns {
+  exact: Array<{ pattern: RegExp; sourceType: SourceType }>;
+  contained: Array<{ pattern: RegExp; sourceType: SourceType }>;
+}
+
+const JS_SOURCE_PATTERN_CACHE: WeakMap<SourcePattern[], CompiledJsSourcePatterns> = new WeakMap();
+
+// Fallback hardcoded patterns — compiled exactly once at module load.
+const JS_FALLBACK_COMPILED: CompiledJsSourcePatterns = (() => {
+  const bases: Array<{ base: string; sourceType: SourceType }> = [
+    { base: 'req\\.params',       sourceType: 'http_param' },
+    { base: 'req\\.query',        sourceType: 'http_param' },
+    { base: 'req\\.body',         sourceType: 'http_body' },
+    { base: 'req\\.headers',      sourceType: 'http_header' },
+    { base: 'req\\.cookies',      sourceType: 'http_cookie' },
+    { base: 'req\\.url',          sourceType: 'http_path' },
+    { base: 'req\\.path',         sourceType: 'http_path' },
+    { base: 'req\\.originalUrl',  sourceType: 'http_path' },
+    { base: 'req\\.file',         sourceType: 'file_input' },
+    { base: 'req\\.files',        sourceType: 'file_input' },
+    { base: 'request\\.params',   sourceType: 'http_param' },
+    { base: 'request\\.query',    sourceType: 'http_param' },
+    { base: 'request\\.body',     sourceType: 'http_body' },
+    { base: 'request\\.headers',  sourceType: 'http_header' },
+    { base: 'process\\.env',      sourceType: 'env_input' },
+    { base: 'process\\.argv',     sourceType: 'io_input' },
+    { base: 'ctx\\.query',        sourceType: 'http_param' },
+    { base: 'ctx\\.params',       sourceType: 'http_param' },
+    { base: 'ctx\\.request',      sourceType: 'http_body' },
+  ];
+  const exact: CompiledJsSourcePatterns['exact'] = [];
+  const contained: CompiledJsSourcePatterns['contained'] = [];
+  for (const { base, sourceType } of bases) {
+    exact.push({ pattern: new RegExp(`^${base}\\b`), sourceType });
+    contained.push({ pattern: new RegExp(`\\b${base}\\b`), sourceType });
+  }
+  return { exact, contained };
+})();
+
+function compileJsSourcePatterns(sourcePatterns: SourcePattern[]): CompiledJsSourcePatterns {
+  const cached = JS_SOURCE_PATTERN_CACHE.get(sourcePatterns);
+  if (cached) return cached;
+
+  const exact: CompiledJsSourcePatterns['exact'] = [];
+  const contained: CompiledJsSourcePatterns['contained'] = [];
+  for (const sp of sourcePatterns) {
+    if (sp.property && sp.object && sp.property_tainted) {
+      exact.push({
+        pattern: new RegExp(`^${sp.object}\\.${sp.property}\\b`),
+        sourceType: sp.type,
+      });
+      contained.push({
+        pattern: new RegExp(`\\b${sp.object}\\.${sp.property}\\b`),
+        sourceType: sp.type,
+      });
+    }
+  }
+
+  const compiled: CompiledJsSourcePatterns = { exact, contained };
+  JS_SOURCE_PATTERN_CACHE.set(sourcePatterns, compiled);
+  return compiled;
+}
+
+/**
  * Check if a call's arguments contain tainted Express/Node.js property access patterns.
  * This handles patterns like req.params.id, req.query.name, req.body.data
  * Also handles binary expressions like 'str' + req.params.id
@@ -1718,63 +1792,28 @@ function isJavaScriptTaintedArgument(
   argExpression: string,
   sourcePatterns?: SourcePattern[]
 ): { isTainted: boolean; sourceType: SourceType | null } {
-  // Build patterns from config if provided - both exact and contained matches
-  const exactPatterns: Array<{ pattern: RegExp; sourceType: SourceType }> = [];
-  const containedPatterns: Array<{ pattern: RegExp; sourceType: SourceType }> = [];
-
-  if (sourcePatterns) {
-    // Use config-based property patterns
-    for (const sp of sourcePatterns) {
-      if (sp.property && sp.object && sp.property_tainted) {
-        // Create regex for exact match (direct argument)
-        const exactRegex = new RegExp(`^${sp.object}\\.${sp.property}\\b`);
-        exactPatterns.push({ pattern: exactRegex, sourceType: sp.type });
-        // Create regex for contained match (binary expressions like 'str' + req.params.id)
-        const containedRegex = new RegExp(`\\b${sp.object}\\.${sp.property}\\b`);
-        containedPatterns.push({ pattern: containedRegex, sourceType: sp.type });
-      }
+  // H1 (#254 3.171.0): compile once and reuse. See CompiledJsSourcePatterns.
+  let compiled: CompiledJsSourcePatterns;
+  if (sourcePatterns && sourcePatterns.length > 0) {
+    compiled = compileJsSourcePatterns(sourcePatterns);
+    // If the supplied array yielded no property-based patterns, fall back
+    // to the hardcoded set (preserves prior behavior).
+    if (compiled.exact.length === 0) {
+      compiled = JS_FALLBACK_COMPILED;
     }
-  }
-
-  // Fallback hardcoded patterns (for backwards compatibility)
-  if (exactPatterns.length === 0) {
-    const basePatterns = [
-      { base: 'req\\.params', sourceType: 'http_param' as SourceType },
-      { base: 'req\\.query', sourceType: 'http_param' as SourceType },
-      { base: 'req\\.body', sourceType: 'http_body' as SourceType },
-      { base: 'req\\.headers', sourceType: 'http_header' as SourceType },
-      { base: 'req\\.cookies', sourceType: 'http_cookie' as SourceType },
-      { base: 'req\\.url', sourceType: 'http_path' as SourceType },
-      { base: 'req\\.path', sourceType: 'http_path' as SourceType },
-      { base: 'req\\.originalUrl', sourceType: 'http_path' as SourceType },
-      { base: 'req\\.file', sourceType: 'file_input' as SourceType },
-      { base: 'req\\.files', sourceType: 'file_input' as SourceType },
-      { base: 'request\\.params', sourceType: 'http_param' as SourceType },
-      { base: 'request\\.query', sourceType: 'http_param' as SourceType },
-      { base: 'request\\.body', sourceType: 'http_body' as SourceType },
-      { base: 'request\\.headers', sourceType: 'http_header' as SourceType },
-      { base: 'process\\.env', sourceType: 'env_input' as SourceType },
-      { base: 'process\\.argv', sourceType: 'io_input' as SourceType },
-      { base: 'ctx\\.query', sourceType: 'http_param' as SourceType },
-      { base: 'ctx\\.params', sourceType: 'http_param' as SourceType },
-      { base: 'ctx\\.request', sourceType: 'http_body' as SourceType },
-    ];
-
-    for (const { base, sourceType } of basePatterns) {
-      exactPatterns.push({ pattern: new RegExp(`^${base}\\b`), sourceType });
-      containedPatterns.push({ pattern: new RegExp(`\\b${base}\\b`), sourceType });
-    }
+  } else {
+    compiled = JS_FALLBACK_COMPILED;
   }
 
   // First check exact patterns (direct argument like req.params.id)
-  for (const { pattern, sourceType } of exactPatterns) {
+  for (const { pattern, sourceType } of compiled.exact) {
     if (pattern.test(argExpression)) {
       return { isTainted: true, sourceType };
     }
   }
 
   // Then check contained patterns (binary expressions like 'str' + req.params.id)
-  for (const { pattern, sourceType } of containedPatterns) {
+  for (const { pattern, sourceType } of compiled.contained) {
     if (pattern.test(argExpression)) {
       return { isTainted: true, sourceType };
     }

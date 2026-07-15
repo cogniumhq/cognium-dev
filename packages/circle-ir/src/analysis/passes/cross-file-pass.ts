@@ -23,6 +23,7 @@ import type {
 import type { ProjectGraph } from '../../graph/project-graph.js';
 import type { InterproceduralTaintPath } from '../../resolution/cross-file.js';
 import { logger } from '../../utils/logger.js';
+import { sanitizerCoversSink } from '../sanitizer-index.js';
 
 export interface CrossFilePassResult {
   /** Inter-file method calls (source file → target file). */
@@ -299,7 +300,7 @@ export class CrossFilePass {
         const hi = Math.max(tp.source.line, tp.sink.line);
         for (const san of sinkIR.taint.sanitizers ?? []) {
           if (san.line < lo || san.line > hi) continue;
-          if ((san.sanitizes as readonly string[]).includes(sinkTypeStr)) {
+          if (sanitizerCoversSink(san, sinkTypeStr)) {
             return false;
           }
         }
@@ -307,7 +308,7 @@ export class CrossFilePass {
       }
       for (const san of sinkIR.taint.sanitizers ?? []) {
         if (san.line !== tp.sink.line) continue;
-        if ((san.sanitizes as readonly string[]).includes(sinkTypeStr)) {
+        if (sanitizerCoversSink(san, sinkTypeStr)) {
           return false;
         }
       }

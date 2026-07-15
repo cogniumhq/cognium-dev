@@ -21,6 +21,7 @@ import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagatio
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
+import { sanitizerCoversSink } from '../sanitizer-index.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -85,6 +86,25 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       sanitized: flow.sanitized,
     }));
 
+    // H7 (#254 3.171.0): Set-keyed dedup index shared across all four
+    // supplement generators below. Was previously 4× `flows.some(x => …)`
+    // — O(F×A) per supplement (F=flows so far, A=candidates). On the
+    // 500-file langchain4j benchmark that shape is measurable
+    // (~8–12% of taint-propagation pass time). Set-keyed check + push is
+    // O(F+A). Semantics preserved: same key tuple as before
+    // (source_line, sink_line, sink_type).
+    const flowKey = (x: { source_line: number; sink_line: number; sink_type: string }) =>
+      `${x.source_line}|${x.sink_line}|${x.sink_type}`;
+    const flowKeys = new Set<string>();
+    for (const x of flows) flowKeys.add(flowKey(x));
+    const pushIfNew = (f: TaintFlowInfo): boolean => {
+      const k = flowKey(f);
+      if (flowKeys.has(k)) return false;
+      flowKeys.add(k);
+      flows.push(f);
+      return true;
+    };
+
     // Supplement: array element flows
     // Sprint 82 (#189) — dedup keys on (source_line, sink_line, sink_type) so
     // distinct sink-types at the same call site (e.g. `res.redirect` registered
@@ -92,15 +112,13 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // being silently dropped.
     const arrayFlows = detectArrayElementFlows(calls, sources, sinks, constProp.taintedArrayElements, constProp.unreachableLines, types) ?? [];
     for (const f of arrayFlows) {
-      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) {
-        flows.push(f);
-      }
+      pushIfNew(f);
     }
 
     // Supplement: collection/iterator flows — with FP filtering
     const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code, types) ?? [];
     for (const f of collectionFlows) {
-      if (flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) continue;
+      if (flowKeys.has(flowKey(f))) continue;
 
       const flowForCheck = {
         source: { line: f.source_line },
@@ -115,16 +133,14 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
       if (isFP) continue;
 
-      flows.push(f);
+      pushIfNew(f);
     }
 
     // Supplement: direct parameter-to-sink flows
     // Sprint 82 (#189) — sink-type-aware dedup (see arrayFlows comment).
     const paramFlows = detectParameterSinkFlows(types, calls, sources, sinks, constProp.unreachableLines, constProp.tainted, ctx.code) ?? [];
     for (const f of paramFlows) {
-      if (!flows.some(x => x.source_line === f.source_line && x.sink_line === f.sink_line && x.sink_type === f.sink_type)) {
-        flows.push(f);
-      }
+      pushIfNew(f);
     }
 
     // Supplement: expression-scan flows for assignment-style sources (#18).
@@ -146,11 +162,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // benefits Python the most because Java sources rarely set `variable`.
     const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, constProp.tainted, ctx.code, ctx.language) ?? [];
     for (const f of exprScanFlows) {
-      if (flows.some(x =>
-        x.source_line === f.source_line &&
-        x.sink_line === f.sink_line &&
-        x.sink_type === f.sink_type
-      )) continue;
+      if (flowKeys.has(flowKey(f))) continue;
 
       const flowForCheck = {
         source: { line: f.source_line },
@@ -165,7 +177,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
       if (isFP) continue;
 
-      flows.push(f);
+      pushIfNew(f);
     }
 
     // Sprint 9 #58.1 — final pass: drop any flow whose source variable was
@@ -219,7 +231,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine) continue;
             for (const san of sansAtLine) {
-              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+              if (sanitizerCoversSink(san, f.sink_type)) {
                 return false;
               }
             }
@@ -229,7 +241,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (sansAtSink && sansAtSink.length > 0) {
           for (const san of sansAtSink) {
-            if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+            if (sanitizerCoversSink(san, f.sink_type)) {
               return false;
             }
           }
@@ -277,7 +289,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
             for (const san of sansAtLine) {
-              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+              if (sanitizerCoversSink(san, f.sink_type)) {
                 return false;
               }
             }

@@ -607,10 +607,25 @@ export async function analyze(
 
   logger.debug('Analyzing file', { filePath, language, parseGrammar, codeLength: code.length });
 
+  // #254: opt-in sub-phase timing for the parse+graph bucket. Reuses the
+  // same `__circleIrPassTiming` global as AnalysisPipeline (see
+  // graph/analysis-pass.ts:127). Emits `[phase-timing] <phase> <ms>ms file=<path>`
+  // to stderr. Browser-safe (no `process` access). Zero cost when disabled.
+  const phaseTimingEnabled =
+    (globalThis as { __circleIrPassTiming?: boolean }).__circleIrPassTiming === true;
+  const phaseStart = (): number => (phaseTimingEnabled ? Date.now() : 0);
+  const phaseEnd = (label: string, t0: number): void => {
+    if (!phaseTimingEnabled) return;
+    // eslint-disable-next-line no-console
+    console.error(`[phase-timing] ${label} ${Date.now() - t0}ms file=${filePath}`);
+  };
+
   // Parse the code. The Tree holds tree-sitter WASM memory; we MUST dispose
   // it before returning, otherwise the WASM heap grows unboundedly across
   // many analyze() calls in the same process (issue #16).
+  const tParse = phaseStart();
   const tree = await parse(code, parseGrammar);
+  phaseEnd('parse', tParse);
   try {
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 
@@ -620,7 +635,9 @@ export async function analyze(
   // signal that the file parsed cleanly. Compute the report once here and
   // attach it to the IR so consumers can distinguish "no findings" from
   // "no findings because the parser dropped half the file".
+  const tParseStatus = phaseStart();
   const parseStatus = extractParseStatus(tree);
+  phaseEnd('extractParseStatus', tParseStatus);
   if (parseStatus.has_errors) {
     logger.warn('Partial parse — IR may be incomplete', {
       filePath,
@@ -631,9 +648,12 @@ export async function analyze(
   }
 
   // Collect all node types in a single traversal for better performance
+  const tCollect = phaseStart();
   const nodeCache = collectAllNodes(tree.rootNode, getNodeTypesForLanguage(language));
+  phaseEnd('collectAllNodes', tCollect);
 
   // Extract all IR components
+  const tMeta = phaseStart();
   const meta    = extractMeta(code, tree, filePath, language);
   // #235 (3.150.1) — surface the resolved ProjectProfile on per-file meta
   // when the caller supplied one, so downstream consumers can see the exact
@@ -642,21 +662,38 @@ export async function analyze(
   if (options.projectProfile !== undefined) {
     meta.projectProfile = makeProfileResolver(options.projectProfile)(filePath);
   }
+  phaseEnd('extractMeta', tMeta);
+  const tTypes = phaseStart();
   const types   = extractTypes(tree, nodeCache, language);
+  phaseEnd('extractTypes', tTypes);
+  const tCalls = phaseStart();
   const calls   = extractCalls(tree, nodeCache, language);
+  phaseEnd('extractCalls', tCalls);
+  const tImports = phaseStart();
   const imports = extractImports(tree, language);
+  phaseEnd('extractImports', tImports);
+  const tExports = phaseStart();
   const exports = extractExports(types);
+  phaseEnd('extractExports', tExports);
+  const tCFG = phaseStart();
   const cfg     = buildCFG(tree, language);
+  phaseEnd('buildCFG', tCFG);
+  const tDFG = phaseStart();
   const dfg     = buildDFG(tree, nodeCache, language);
+  phaseEnd('buildDFG', tDFG);
+  const tRuntime = phaseStart();
   const runtimeRegistrations = extractRuntimeRegistrations(tree, nodeCache, language, imports);
+  phaseEnd('extractRuntimeRegistrations', tRuntime);
 
   // Build CodeGraph once — shared across all passes.
   // Taint is empty at construction time; sources/sinks/sanitizers are populated by passes.
+  const tGraph = phaseStart();
   const graph = new CodeGraph({
     meta, types, calls, cfg, dfg,
     taint: { sources: [], sinks: [], sanitizers: [] },
     imports, exports, unresolved: [], enriched: {},
   });
+  phaseEnd('buildCodeGraph', tGraph);
 
   const config = options.taintConfig ?? getDefaultConfig();
 

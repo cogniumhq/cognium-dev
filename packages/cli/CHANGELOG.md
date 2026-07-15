@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.171.0] - 2026-07-15
+
+Engine bump only — adopts
+[`circle-ir@3.171.0`](https://www.npmjs.com/package/circle-ir),
+which ships Tier-1 perf fixes H1 + H7 + H8 from cognium-dev#254.
+On the 500-file langchain4j benchmark large-tier wall-clock drops
+2929.8 ms → 2762.1 ms (-5.7%), throughput climbs 19 112 → 20 273
+LOC/s (+6.1%), taint-hot passes combined 971 ms → 789 ms (-18.7%).
+Zero API-surface changes, zero test regressions (4032 pass).
+
 ## [3.170.0] - 2026-07-15
 
 Engine bump only — adopts

@@ -21,6 +21,7 @@ import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
 import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
+import { sanitizerCoversSink } from '../sanitizer-index.js';
 
 export interface InterproceduralPassResult {
   /** Additional sinks surfaced by inter-procedural analysis. */
@@ -306,7 +307,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine) continue;
             for (const san of sansAtLine) {
-              if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+              if (sanitizerCoversSink(san, f.sink_type)) {
                 sanitizedSinkKeys.add(`${f.sink_line}:${f.sink_type}`);
                 return false;
               }
@@ -317,7 +318,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (!sansAtSink || sansAtSink.length === 0) return true;
         for (const san of sansAtSink) {
-          if ((san.sanitizes as readonly string[]).includes(f.sink_type)) {
+          if (sanitizerCoversSink(san, f.sink_type)) {
             return false;
           }
         }

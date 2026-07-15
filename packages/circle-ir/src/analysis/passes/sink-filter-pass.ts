@@ -24,6 +24,7 @@ import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
+import { sanitizerCoversSink } from '../sanitizer-index.js';
 
 /**
  * Common XSS sanitizer patterns for JavaScript/TypeScript.
@@ -2073,7 +2074,7 @@ export function filterSanitizedSinks(
     if (!lineSanitizers || lineSanitizers.length === 0) return true;
 
     for (const san of lineSanitizers) {
-      if (san.sanitizes.includes(sink.type as typeof san.sanitizes[number])) {
+      if (sanitizerCoversSink(san, sink.type)) {
         const lineCalls = callsByLine.get(sink.line) ?? [];
         for (const call of lineCalls) {
           for (const arg of call.arguments) {

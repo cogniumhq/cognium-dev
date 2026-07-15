@@ -18,6 +18,7 @@ import type {
 } from '../types/index.js';
 import { CodeGraph } from '../graph/index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
+import { sanitizerCoversSink } from './sanitizer-index.js';
 
 /**
  * Optional context used by checkSanitized to widen its search from a single
@@ -449,7 +450,8 @@ function checkSanitized(
   if (sanitizersAtTarget && sanitizersAtTarget.length > 0) {
     for (const san of sanitizersAtTarget) {
       if (isKnownSinkType) {
-        if (san.sanitizes.includes(sinkType as SinkType)) {
+        // H8 (#254 3.171.0): Set-backed lookup — O(1) after first call.
+        if (sanitizerCoversSink(san, sinkType)) {
           return { sanitized: true, sanitizer: san };
         }
       } else if (san.sanitizes.length > 0) {
@@ -486,7 +488,8 @@ function checkSanitized(
       if (!sansAtLine || sansAtLine.length === 0) continue;
       for (const san of sansAtLine) {
         if (isKnownSinkType) {
-          if (san.sanitizes.includes(sinkType as SinkType)) {
+          // H8 (#254 3.171.0): Set-backed lookup — O(1) after first call.
+          if (sanitizerCoversSink(san, sinkType)) {
             return { sanitized: true, sanitizer: san };
           }
         } else if (san.sanitizes.length > 0) {
