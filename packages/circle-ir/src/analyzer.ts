@@ -472,6 +472,11 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         // JSX node types — tree-sitter-tsx grammar (.tsx/.jsx routing)
         'jsx_element', 'jsx_self_closing_element', 'jsx_opening_element',
         'jsx_attribute', 'jsx_expression',
+        // buildCFG containers (3.172.0 T2-A) — the two below are legacy
+        // tree-sitter-javascript node types for anonymous / expression
+        // functions; declaring them here lets `collectAllNodes` populate
+        // the cache in the same pass so `buildCFG` skips its per-type walk.
+        'function', 'function_expression',
       ]);
     case 'bash':
       return new Set([
@@ -494,6 +499,9 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'selector_expression', 'identifier',
       ]);
     default:
+      // Java default. `method_declaration` / `constructor_declaration` /
+      // `import_declaration` are reused by `buildCFG` and `extractImports`
+      // (3.172.0 T2-A/T2-C) so the cache is populated once.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
@@ -670,13 +678,13 @@ export async function analyze(
   const calls   = extractCalls(tree, nodeCache, language);
   phaseEnd('extractCalls', tCalls);
   const tImports = phaseStart();
-  const imports = extractImports(tree, language);
+  const imports = extractImports(tree, language, nodeCache);
   phaseEnd('extractImports', tImports);
   const tExports = phaseStart();
   const exports = extractExports(types);
   phaseEnd('extractExports', tExports);
   const tCFG = phaseStart();
-  const cfg     = buildCFG(tree, language);
+  const cfg     = buildCFG(tree, language, nodeCache);
   phaseEnd('buildCFG', tCFG);
   const tDFG = phaseStart();
   const dfg     = buildDFG(tree, nodeCache, language);

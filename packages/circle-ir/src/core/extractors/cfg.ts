@@ -4,7 +4,7 @@
 
 import type { Node, Tree } from 'web-tree-sitter';
 import type { CFG, CFGBlock, CFGEdge, SupportedLanguage } from '../../types/index.js';
-import { findNodes } from '../parser.js';
+import { findNodes, getNodesFromCache, type NodeCache } from '../parser.js';
 
 /**
  * Detect language from tree structure.
@@ -40,8 +40,17 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' {
 
 /**
  * Build CFG for all methods in the tree.
+ *
+ * `cache` (added in 3.172.0, cognium-dev#254 T2-A): when provided, top-level
+ * `findNodes` walks for function/method containers are replaced with O(1)
+ * cache lookups populated by `collectAllNodes` at analyzer entry. Java's
+ * `method_declaration`/`import_declaration` and JS's `function_declaration`/
+ * `arrow_function`/`method_definition` are already in the language-cache set;
+ * `constructor_declaration`, `function`, `function_expression` are added by
+ * this ship. Falls back to `findNodes` when cache is absent (test / library
+ * callers that build a Tree directly).
  */
-export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
+export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeCache): CFG {
   const effectiveLanguage = language ?? detectLanguage(tree);
   const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
 
@@ -60,11 +69,11 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
   if (isJavaScript) {
     // Find all JavaScript function bodies
     const functions = [
-      ...findNodes(tree.rootNode, 'function_declaration'),
-      ...findNodes(tree.rootNode, 'arrow_function'),
-      ...findNodes(tree.rootNode, 'method_definition'),
-      ...findNodes(tree.rootNode, 'function'),
-      ...findNodes(tree.rootNode, 'function_expression'),
+      ...getNodesFromCache(tree.rootNode, 'function_declaration', cache),
+      ...getNodesFromCache(tree.rootNode, 'arrow_function', cache),
+      ...getNodesFromCache(tree.rootNode, 'method_definition', cache),
+      ...getNodesFromCache(tree.rootNode, 'function', cache),
+      ...getNodesFromCache(tree.rootNode, 'function_expression', cache),
     ];
 
     for (const func of functions) {
@@ -91,8 +100,8 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage): CFG {
   } else {
     // Find all Java method bodies
     const methods = [
-      ...findNodes(tree.rootNode, 'method_declaration'),
-      ...findNodes(tree.rootNode, 'constructor_declaration'),
+      ...getNodesFromCache(tree.rootNode, 'method_declaration', cache),
+      ...getNodesFromCache(tree.rootNode, 'constructor_declaration', cache),
     ];
 
     for (const method of methods) {

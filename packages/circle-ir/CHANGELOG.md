@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.172.0] - 2026-07-15
+
+Tier-2 perf ship — parse+graph nodeCache reuse (cognium-dev#254 T2-A + T2-C).
+On the 500-file langchain4j benchmark (55 996 LOC) large-tier wall-clock
+drops **2762.1 ms → 2592.4 ms (-6.1%)** and throughput climbs
+**20 273 → 21 600 LOC/s (+6.5%)**. The parse+graph phase alone drops
+**1040 ms → 846 ms (-18.7%)**. Cumulative vs 3.170.0 baseline:
+**2929.8 → 2592.4 ms (-11.5%)**, **+13.0% throughput**.
+
+- **T2-A — `buildCFG` nodeCache reuse.** Previously `buildCFG` invoked
+  `findNodes(tree.rootNode, …)` 5 times for JS (function_declaration,
+  arrow_function, method_definition, function, function_expression) and
+  2 times for Java (method_declaration, constructor_declaration). Each
+  `findNodes` is a full iterative walk of the tree-sitter AST. The
+  builder now accepts `cache?: NodeCache` and uses `getNodesFromCache`,
+  reusing the single traversal already performed by `collectAllNodes`
+  at analyzer entry. Added `function` and `function_expression` to the
+  JS/TS cache-type set so the collect pass captures every container.
+  **Result: buildCFG 161 ms → 27 ms (-83.2%).**
+- **T2-C — `extractImports` nodeCache reuse.** Previously
+  `extractImports` did `findNodes` for `import_statement` /
+  `import_declaration` / `import_from_statement` / `use_declaration`
+  (per language) and, for JS, an extra `findNodes(call_expression)`
+  scan inside `findRequireCalls` for CommonJS `require()`. All 5 per-
+  language extractors now thread the shared `cache` parameter.
+  Java's `import_declaration`, Python's `import_statement` +
+  `import_from_statement`, Rust's `use_declaration`, Go's
+  `import_declaration`, and JS's `import_statement` +
+  `export_statement` + `call_expression` are all already in the
+  language-specific cache sets — zero new tree types needed for those
+  four languages. **Result: extractImports 72 ms → 4 ms (-94.4%).**
+
+Sub-phase timers landed in 3.171.0 remain in place; the residual
+parse+graph hotspots (extractCalls 246 ms, parse 164 ms,
+extractTypes 159 ms) are the next Pareto step. `extractCalls` and
+`extractTypes` already share `nodeCache` — their remaining cost is
+per-item argument/receiver/method-body extraction, not shared
+traversal. Different optimisation axis (memoising per-node text
+lookups, batching childForFieldName calls); tracked as follow-up.
+
+`collectAllNodes` picked up +13 ms (71 ms → 84 ms) from the two new
+JS node types added to the language cache set; net wins on the
+consumer side dwarf the collect delta by ~15×. Recall unchanged —
+all 4032 unit tests pass. Zero API-surface churn (both `buildCFG`
+and `extractImports` gain an optional trailing `cache?` parameter).
+
 ## [3.171.0] - 2026-07-15
 
 Tier-1 perf ship — hotspot fixes H1 + H7 + H8 from the

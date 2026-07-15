@@ -4,7 +4,7 @@
 
 import type { Node, Tree } from 'web-tree-sitter';
 import type { ImportInfo, SupportedLanguage } from '../../types/index.js';
-import { findNodes, getNodeText } from '../parser.js';
+import { getNodeText, getNodesFromCache, type NodeCache } from '../parser.js';
 
 /**
  * Detect language from tree structure.
@@ -58,36 +58,43 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' | 'python' | 'rust' {
 
 /**
  * Extract all imports from the tree.
+ *
+ * `cache` (added in 3.172.0, cognium-dev#254 T2-C): when provided, per-
+ * language `findNodes` walks (import_statement / import_declaration /
+ * import_from_statement / use_declaration / call_expression for
+ * CommonJS `require`) are replaced with O(1) cache lookups populated by
+ * `collectAllNodes` at analyzer entry. Falls back to `findNodes` when
+ * cache is absent (test / library callers).
  */
-export function extractImports(tree: Tree, language?: SupportedLanguage): ImportInfo[] {
+export function extractImports(tree: Tree, language?: SupportedLanguage, cache?: NodeCache): ImportInfo[] {
   const effectiveLanguage = language ?? detectLanguage(tree);
   const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
   const isPython = effectiveLanguage === 'python';
   const isRust = effectiveLanguage === 'rust';
 
   if (effectiveLanguage === 'go') {
-    return extractGoImports(tree);
+    return extractGoImports(tree, cache);
   }
   if (isRust) {
-    return extractRustImports(tree);
+    return extractRustImports(tree, cache);
   }
   if (isPython) {
-    return extractPythonImports(tree);
+    return extractPythonImports(tree, cache);
   }
   if (isJavaScript) {
-    return extractJavaScriptImports(tree);
+    return extractJavaScriptImports(tree, cache);
   }
-  return extractJavaImports(tree);
+  return extractJavaImports(tree, cache);
 }
 
 /**
  * Extract JavaScript/TypeScript imports.
  */
-function extractJavaScriptImports(tree: Tree): ImportInfo[] {
+function extractJavaScriptImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
   // Find all ES6 import statements
-  const importStatements = findNodes(tree.rootNode, 'import_statement');
+  const importStatements = getNodesFromCache(tree.rootNode, 'import_statement', cache);
 
   for (const importStmt of importStatements) {
     const importInfos = extractJSImportInfo(importStmt);
@@ -96,7 +103,7 @@ function extractJavaScriptImports(tree: Tree): ImportInfo[] {
 
   // Find re-export statements: `export { X } from './file'`
   // These create an implicit import dependency that must be tracked by ImportGraph.
-  const exportStatements = findNodes(tree.rootNode, 'export_statement');
+  const exportStatements = getNodesFromCache(tree.rootNode, 'export_statement', cache);
   for (const exportStmt of exportStatements) {
     const sourceNode = exportStmt.childForFieldName('source');
     if (!sourceNode) continue; // no `from '...'` clause — not a re-export
@@ -112,7 +119,7 @@ function extractJavaScriptImports(tree: Tree): ImportInfo[] {
   }
 
   // Find CommonJS require calls
-  const requireCalls = findRequireCalls(tree);
+  const requireCalls = findRequireCalls(tree, cache);
   imports.push(...requireCalls);
 
   return imports;
@@ -121,11 +128,11 @@ function extractJavaScriptImports(tree: Tree): ImportInfo[] {
 /**
  * Extract Java imports.
  */
-function extractJavaImports(tree: Tree): ImportInfo[] {
+function extractJavaImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
   // Find all import declarations
-  const importDecls = findNodes(tree.rootNode, 'import_declaration');
+  const importDecls = getNodesFromCache(tree.rootNode, 'import_declaration', cache);
 
   for (const importDecl of importDecls) {
     const importInfo = extractJavaImportInfo(importDecl);
@@ -312,11 +319,11 @@ function extractJSImportInfo(node: Node): ImportInfo[] {
 /**
  * Find CommonJS require calls: const x = require('module')
  */
-function findRequireCalls(tree: Tree): ImportInfo[] {
+function findRequireCalls(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
   // Find all call expressions
-  const callExpressions = findNodes(tree.rootNode, 'call_expression');
+  const callExpressions = getNodesFromCache(tree.rootNode, 'call_expression', cache);
 
   for (const call of callExpressions) {
     const funcNode = call.childForFieldName('function');
@@ -494,18 +501,18 @@ function parseImportPath(fullPath: string, isWildcard: boolean): { importedName:
 /**
  * Extract Python imports.
  */
-function extractPythonImports(tree: Tree): ImportInfo[] {
+function extractPythonImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
   // Find all import statements: import os, sys
-  const importStatements = findNodes(tree.rootNode, 'import_statement');
+  const importStatements = getNodesFromCache(tree.rootNode, 'import_statement', cache);
   for (const stmt of importStatements) {
     const importInfos = extractPythonImportStatement(stmt);
     imports.push(...importInfos);
   }
 
   // Find all from-import statements: from os import path
-  const importFromStatements = findNodes(tree.rootNode, 'import_from_statement');
+  const importFromStatements = getNodesFromCache(tree.rootNode, 'import_from_statement', cache);
   for (const stmt of importFromStatements) {
     const importInfos = extractPythonFromImportStatement(stmt);
     imports.push(...importInfos);
@@ -635,11 +642,11 @@ function extractPythonFromImportStatement(node: Node): ImportInfo[] {
 /**
  * Extract Rust use declarations.
  */
-function extractRustImports(tree: Tree): ImportInfo[] {
+function extractRustImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
   // Find all use declarations
-  const useDecls = findNodes(tree.rootNode, 'use_declaration');
+  const useDecls = getNodesFromCache(tree.rootNode, 'use_declaration', cache);
 
   for (const useDecl of useDecls) {
     const useImports = extractRustUseDecl(useDecl);
@@ -834,10 +841,10 @@ function extractRustScopedUseList(node: Node, lineNumber: number): ImportInfo[] 
 /**
  * Extract Go imports.
  */
-function extractGoImports(tree: Tree): ImportInfo[] {
+function extractGoImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
   const imports: ImportInfo[] = [];
 
-  const importDecls = findNodes(tree.rootNode, 'import_declaration');
+  const importDecls = getNodesFromCache(tree.rootNode, 'import_declaration', cache);
   for (const decl of importDecls) {
     // Single import: import "fmt"
     const singleSpec = findGoChildByType(decl, 'import_spec');

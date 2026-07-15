@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.172.0] - 2026-07-15
+
+Engine bump only — adopts
+[`circle-ir@3.172.0`](https://www.npmjs.com/package/circle-ir),
+which ships Tier-2 perf fixes T2-A (`buildCFG` nodeCache) and T2-C
+(`extractImports` nodeCache) from cognium-dev#254. On the 500-file
+langchain4j benchmark large-tier wall-clock drops 2762.1 ms →
+2592.4 ms (-6.1%), throughput climbs 20 273 → 21 600 LOC/s (+6.5%).
+Parse+graph phase itself drops 1040 ms → 846 ms (-18.7%).
+Cumulative vs 3.170.0: **-11.5% wall-clock, +13.0% throughput.**
+Zero API-surface changes, zero test regressions (4032 pass).
+
 ## [3.171.0] - 2026-07-15
 
 Engine bump only — adopts
