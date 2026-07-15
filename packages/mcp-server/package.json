@@ -1,0 +1,75 @@
+{
+  "name": "@cognium/mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server exposing the circle-ir SAST engine as structured tools for LLM agents (Claude Desktop, Claude Code, Cursor, cognium-ai).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "mcp-server-cognium-dev": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sast",
+    "security",
+    "static-analysis",
+    "taint-analysis",
+    "circle-ir",
+    "cognium",
+    "llm-tools",
+    "claude"
+  ],
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://cognium.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/mcp-server"
+  },
+  "homepage": "https://github.com/cogniumhq/cognium-dev/tree/main/packages/mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "circle-ir": "^3.168.0",
+    "yaml": "^2.8.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}
