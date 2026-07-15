@@ -567,6 +567,95 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'read', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read_to_end', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
   { method: 'read_to_string', class: 'TcpStream', type: 'network_input', severity: 'high', return_tainted: true },
+
+  // =========================================================================
+  // Modern taint sources (cognium-dev #242 — 3.170.0)
+  // GraphQL resolver args, gRPC request metadata, cache reads (second-order
+  // taint), and JWT claims (unverified decode). These attacker-influenced
+  // surfaces were previously silent — a resolver that concatenated an
+  // `Args`-annotated field into a SQL string produced zero flows.
+  // =========================================================================
+
+  // --- GraphQL resolver argument sources (JS / TS — Apollo, TypeGraphQL, NestJS) ---
+  // TypeGraphQL / NestJS annotate query/mutation/subscription methods; every
+  // parameter on the annotated method carries attacker input from the GraphQL
+  // POST body's `variables` field.
+  { method_annotation: 'Query', type: 'http_body', severity: 'high', languages: ['javascript', 'typescript'] },
+  { method_annotation: 'Mutation', type: 'http_body', severity: 'high', languages: ['javascript', 'typescript'] },
+  { method_annotation: 'Subscription', type: 'http_body', severity: 'high', languages: ['javascript', 'typescript'] },
+  { method_annotation: 'FieldResolver', type: 'http_body', severity: 'high', languages: ['javascript', 'typescript'] },
+  { method_annotation: 'ResolveField', type: 'http_body', severity: 'high', languages: ['javascript', 'typescript'] },
+  // Parameter-level: `@Arg('id') id: string`, `@Args('input') input: FooDto`.
+  { annotation: 'Arg', type: 'http_param', severity: 'high', param_tainted: true, languages: ['javascript', 'typescript'] },
+  { annotation: 'Args', type: 'http_param', severity: 'high', param_tainted: true, languages: ['javascript', 'typescript'] },
+
+  // --- GraphQL resolver argument sources (Python — Strawberry, Graphene, Ariadne) ---
+  { method_annotation: 'strawberry.field', type: 'http_body', severity: 'high', languages: ['python'] },
+  { method_annotation: 'strawberry.mutation', type: 'http_body', severity: 'high', languages: ['python'] },
+  { method_annotation: 'strawberry.subscription', type: 'http_body', severity: 'high', languages: ['python'] },
+
+  // --- GraphQL resolver argument sources (Java — Netflix DGS, SPQR, graphql-java-annotations) ---
+  { method_annotation: 'DgsQuery', type: 'http_body', severity: 'high', languages: ['java'] },
+  { method_annotation: 'DgsMutation', type: 'http_body', severity: 'high', languages: ['java'] },
+  { method_annotation: 'DgsSubscription', type: 'http_body', severity: 'high', languages: ['java'] },
+  { method_annotation: 'DgsData', type: 'http_body', severity: 'high', languages: ['java'] },
+  { method_annotation: 'GraphQLQuery', type: 'http_body', severity: 'high', languages: ['java'] },
+  { method_annotation: 'GraphQLMutation', type: 'http_body', severity: 'high', languages: ['java'] },
+  { annotation: 'InputArgument', type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'GraphQLArgument', type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
+
+  // --- gRPC request metadata (Python — grpcio) ---
+  // `context.invocation_metadata()` returns the caller-supplied metadata tuple.
+  // No `class` filter — receiver names vary (`context`, `ctx`, `servicer_context`).
+  { method: 'invocation_metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['python'] },
+
+  // --- gRPC request metadata (JS / TS — @grpc/grpc-js) ---
+  // `call.metadata.get(key)` / `call.metadata.getMap()` inside a service handler.
+  { method: 'get', class: 'Metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'getMap', class: 'Metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+
+  // --- gRPC request metadata (Go — google.golang.org/grpc/metadata) ---
+  // `md, _ := metadata.FromIncomingContext(ctx)` pulls the caller's headers.
+  { method: 'FromIncomingContext', class: 'metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
+
+  // --- gRPC request metadata (Java — io.grpc.Metadata) ---
+  // Server-side interceptor receives `Metadata headers`; `headers.get(KEY)`
+  // returns caller-supplied header values.
+  { method: 'get', class: 'Metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['java'] },
+
+  // --- Cache reads (second-order taint — Redis / Memcached / Django cache) ---
+  // The cache round-trip is a canonical second-order sink: whatever was
+  // written previously (potentially attacker-controlled) resurfaces on read.
+  // Severity 'medium' — cache contents are usually filtered by the writer but
+  // the read side often forgets that guarantee. Class-scoped to `Redis`,
+  // `Jedis`, `cache` to avoid colliding with generic `Map.get()`.
+  { method: 'get', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'hget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'mget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'lrange', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'get', class: 'cache', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'get_many', class: 'cache', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['python'] },
+  { method: 'get', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'hget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'mget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'get', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
+  { method: 'hget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
+  { method: 'mget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
+
+  // --- JWT claims (unverified decode — PyJWT / jose / jsonwebtoken / auth0 java-jwt / golang-jwt) ---
+  // A JWT's payload is *always* attacker-authored. Even after verification
+  // the *contents* of the claims (username, role, custom fields) are not
+  // trusted for downstream flows into SQL, HTML, shell, etc. The `decode`
+  // variants here return the parsed claims dictionary/object.
+  { method: 'decode', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'get_unverified_claims', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'get_unverified_header', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'decode', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'decode', class: 'jsonwebtoken', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'decodeJwt', class: 'jose', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'decodeProtectedHeader', class: 'jose', type: 'http_header', severity: 'high', return_tainted: true, languages: ['javascript', 'typescript'] },
+  { method: 'decode', class: 'JWT', type: 'http_header', severity: 'high', return_tainted: true, languages: ['java'] },
+  { method: 'ParseUnverified', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
 ];
 
 export const DEFAULT_SINKS: SinkPattern[] = [

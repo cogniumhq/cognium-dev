@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.170.0] - 2026-07-15
+
+Engine bump only — adopts
+[`circle-ir@3.170.0`](https://www.npmjs.com/package/circle-ir), which
+extends `DEFAULT_SOURCES` to recognise four previously-silent taint
+families (cognium-dev#242): GraphQL resolver arguments (TypeGraphQL,
+Strawberry, Netflix DGS, SPQR), gRPC request metadata,
+cache reads (Redis / Django cache / Jedis — second-order taint), and
+JWT unverified-decode claims. Also fixes a language-filter gap in
+the annotation-matching loops that would have caused Java Spring Data
+`@Query` to misfire as a GraphQL taint source. All existing benchmark
+scores are unchanged; the new sources are additive.
+
 ## [3.169.0] - 2026-07-15
 
 Engine bump only — adopts

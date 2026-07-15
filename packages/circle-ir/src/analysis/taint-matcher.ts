@@ -260,6 +260,17 @@ function findSources(
       for (const param of method.parameters) {
         for (const pattern of patterns) {
           if (pattern.annotation && pattern.param_tainted) {
+            // Honor language restriction on annotation-based sources — e.g.
+            // TypeGraphQL's `@Args` on JS/TS resolvers must not fire on a
+            // Python file that happens to annotate a parameter `@Args`.
+            if (
+              pattern.languages &&
+              pattern.languages.length > 0 &&
+              language !== undefined &&
+              !pattern.languages.includes(language)
+            ) {
+              continue;
+            }
             if (matchesAnnotation(param.annotations, pattern.annotation)) {
               // Use parameter line if available, fallback to method start line
               const paramLine = param.line ?? method.start_line;
@@ -285,6 +296,17 @@ function findSources(
     for (const method of type.methods) {
       for (const pattern of patterns) {
         if (!pattern.method_annotation) continue;
+        // Honor language restriction on method-level annotations. Critical
+        // for GraphQL patterns: TypeGraphQL's `@Query`/`@Mutation` (JS/TS)
+        // MUST NOT fire on Java `@Query` (Spring Data repository method).
+        if (
+          pattern.languages &&
+          pattern.languages.length > 0 &&
+          language !== undefined &&
+          !pattern.languages.includes(language)
+        ) {
+          continue;
+        }
         if (!matchesAnnotation(method.annotations, pattern.method_annotation)) continue;
         for (const param of method.parameters) {
           const paramLine = param.line ?? method.start_line;

@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.170.0] - 2026-07-15
+
+Recognise modern taint sources (cognium-dev#242). Prior to 3.170.0
+the taint model was silent on four families of attacker-influenced
+input:
+
+- **GraphQL resolver arguments** — TypeGraphQL / NestJS / DGS
+  decorated resolvers reached SQL/command sinks with zero flows.
+- **gRPC request metadata** — `context.invocation_metadata()`,
+  `Metadata.get`, `metadata.FromIncomingContext` were unmodeled;
+  header-derived taint into commands/queries was invisible.
+- **Cache reads (second-order taint)** — `Redis.get`, `cache.get`,
+  `Jedis.get` returned values were treated as trusted. A poisoned
+  cache entry flowing into a sink produced no finding.
+- **JWT unverified decode** — `jwt.decode(..., verify=False)`,
+  `jsonwebtoken.decode`, `jose.decodeJwt`, `JWT.decode`,
+  `jwt.ParseUnverified` returned claims that are attacker-controlled
+  by definition (signature not checked); they were unmodeled.
+
+A resolver like
+
+```typescript
+@Resolver()
+class UserResolver {
+  @Query(() => [User])
+  async search(@Arg('name') name: string) {
+    return this.db.query(`SELECT * FROM users WHERE name = '${name}'`);
+  }
+}
+```
+
+emitted zero findings on 3.169.0. On 3.170.0 the `@Arg` param is
+tagged `http_param` (severity `high`) and the SQL flow fires.
+
+### Added
+
+- `DEFAULT_SOURCES` extension in `config-loader.ts` covering:
+  - GraphQL: TypeGraphQL `@Query`/`@Mutation`/`@Subscription`/
+    `@FieldResolver`/`@ResolveField` (JS/TS), `@Arg`/`@Args` (JS/TS
+    params), `strawberry.field`/`.mutation`/`.subscription` (Python),
+    Netflix DGS `@DgsQuery`/`@DgsMutation`/`@DgsSubscription`/
+    `@DgsData` + SPQR `@GraphQLQuery`/`@GraphQLMutation` (Java) +
+    `@InputArgument`/`@GraphQLArgument` (Java params).
+  - gRPC metadata: `invocation_metadata` (Python), `Metadata.get`/
+    `getMap` (JS/TS/Java), `metadata.FromIncomingContext` (Go).
+  - Cache reads: `Redis.get`/`hget`/`mget`/`lrange`, Django
+    `cache.get`/`get_many` (Python); `Redis.get`/`hget`/`mget`
+    (JS/TS); `Jedis.get`/`hget`/`mget` (Java).
+  - JWT unverified decode: `jwt.decode`/`get_unverified_claims`/
+    `get_unverified_header` (Python); `jwt.decode`/
+    `jsonwebtoken.decode`/`jose.decodeJwt`/`decodeProtectedHeader`
+    (JS/TS); `JWT.decode` (Java); `jwt.ParseUnverified` (Go).
+
+### Fixed
+
+- `taint-matcher.ts::findSources` — the two annotation-matching
+  loops (parameter-level `annotation` + method-level
+  `method_annotation`) now honour `pattern.languages`. Without this
+  guard, TypeGraphQL's JS/TS-only `@Query`/`@Mutation` collided
+  with Java Spring Data `@Query` and Python `@Query` custom
+  decorators. Language-scoped patterns prevent cross-language
+  misfires by construction.
+
+### Tests
+
+- Added `tests/analysis/modern-taint-sources.test.ts` — 14 pinning
+  tests covering all four source families across Python, JS/TS,
+  Java, Go. Suite total: **4032 passing** (was 4018).
+
+### Benchmarks
+
+- OWASP Benchmark (Java): unchanged (100% TPR, 0% FPR).
+- OWASP BenchmarkPython: unchanged sink model — modern sources are
+  additive; recall floor preserved.
+- SecuriBench Micro (Java): unchanged.
+- CWE-Bench-Rust: unchanged (100% TPR, 0% FPR, F1 100%).
+
 ## [3.169.0] - 2026-07-15
 
 Close CWE-Bench-Rust RustTest00015 SQL-injection FN
