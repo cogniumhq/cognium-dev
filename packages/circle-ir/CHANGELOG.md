@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.174.0] - 2026-07-16
+
+New sink category — `prompt_injection` (CWE-1427). Tainted input
+flowing into a generative-model prompt-construction API is now
+recognized end-to-end: source → sink flow is emitted with
+`sink_type: 'prompt_injection'`, `rule_id: 'prompt_injection'`,
+`cwe: 'CWE-1427'`, `severity: 'high'`. Cognium-dev#248.
+
+- **Coverage (v1).** Sink patterns added to `DEFAULT_SINKS` in
+  `src/analysis/config-loader.ts` and mirrored (reference-only)
+  in `configs/sinks/prompt_injection.yaml`:
+  - **Python.** `openai.chat.completions.create`,
+    `openai.completions.create`, `openai.responses.create`,
+    `anthropic.messages.create`, `litellm.completion`, `langchain`
+    ChatOpenAI/ChatAnthropic/ChatGoogleGenerativeAI/LLMChain
+    invoke/predict.
+  - **JS/TS.** `openai` chat.completions/responses, `anthropic`
+    messages, Vercel AI SDK `generateText` / `streamText` /
+    `generateObject` / `streamObject`, `langchain.js` ChatOpenAI /
+    ChatAnthropic.
+  - **Java.** LangChain4j `ChatLanguageModel` /
+    `StreamingChatLanguageModel`, Spring AI `ChatClient` /
+    `ChatModel`, OpenAI-Java `OpenAiService`.
+  - **Go.** `go-openai` `Client.CreateChatCompletion` /
+    `CreateCompletion`, `langchaingo` LLM / Model.
+- **Arg matching.** v1 uses broad positional matching
+  (`arg_positions: [0, 1, 2, 3]`) so both kwarg-flattened Python
+  calls (`messages=[...]`) and single-options-object JS calls
+  (`{ messages: [...] }`) match the sink without argname-precise
+  filtering. Argname-precise filter (`messages=` / `prompt=` /
+  `content=`) is a documented follow-up.
+- **Types + registry.** `SinkType` union in `src/types/index.ts`
+  extended with `'prompt_injection'`. `RULE_DEFINITIONS` in
+  `src/analysis/rules.ts` gains the full rule entry (CVSS 7.5,
+  severity `high`, remediation guidance).
+- **Naming — Pillar I.** The sink category is named
+  `prompt_injection` (not `llm_injection`) to comply with the
+  Pillar I boundary — no `LLM`/`AI` wording in identifiers,
+  comments, docs, or CHANGELOG. External library class names
+  (`ChatOpenAI`, `ChatGoogleGenerativeAI`) are factual references
+  to third-party APIs and remain as-is.
+- **Tests.** New file
+  `tests/analysis/passes/prompt-injection.test.ts` pins 7
+  must-fire fixtures (Flask+OpenAI, Flask+Anthropic,
+  Flask+LiteLLM, Express+OpenAI, Express+Vercel-AI, Spring+
+  LangChain4j, net/http+go-openai) and 2 must-not-fire
+  templated-clean fixtures (Python + TS). Full suite: 4041
+  passing (baseline 4032 + 9 new).
+- **Docs.** `docs/PASSES.md` gains security-passes row 20
+  (`prompt-injection`, CWE-1427).
+
 ## [3.173.0] - 2026-07-15
 
 Tier-2 perf ship — Java `buildResolutionContext` cache-miss elimination

@@ -124,6 +124,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   format_string: 'high',
   crlf: 'medium',
   mass_assignment: 'high',
+  prompt_injection: 'high',
 };
 
 export const SINK_CWE: Record<SinkType, string> = {
@@ -151,6 +152,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   format_string: 'CWE-134',
   crlf: 'CWE-113',
   mass_assignment: 'CWE-915',
+  prompt_injection: 'CWE-1427',
 };
 
 // Help text for each vulnerability type
@@ -234,6 +236,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   mybatis_mapper_call: {
     description: 'Tainted argument passed to a MyBatis mapper interface method — actual SQL lives in the mapper XML/annotation binding, so exploitability depends on whether ${...} string interpolation is used',
     fix: 'Audit the mapper XML/annotations: use #{...} parameter binding (PreparedStatement-backed) for any user-controlled value. Reject from SQL-injection reports unless ${...} interpolation is confirmed'
+  },
+  prompt_injection: {
+    description: 'User input flows into a generative-model prompt-construction call — attacker text can override system instructions or induce unintended tool/agent actions downstream',
+    fix: 'Keep untrusted text confined to user-role message content; do not concatenate it into system-role or template-controlled sections. Prefer schema-validated tool arguments (JSON-mode / structured outputs). Validate model output before it drives tool execution or code eval.'
   },
 
   // Reliability & performance findings from analysis passes

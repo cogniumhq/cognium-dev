@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.174.0] - 2026-07-16
+
+Adopts [`circle-ir@3.174.0`](https://www.npmjs.com/package/circle-ir),
+which introduces a new sink category `prompt_injection` (CWE-1427)
+covering Python (openai/anthropic/litellm/langchain), JS/TS
+(openai/anthropic/vercel-ai/langchain.js), Java (langchain4j/spring-ai/
+openai-java) and Go (go-openai/langchaingo) prompt-construction APIs.
+Cognium-dev#248.
+
+- **CLI formatters.** `src/formatters.ts` extended with
+  `prompt_injection: 'high'` in `SINK_SEVERITY`,
+  `prompt_injection: 'CWE-1427'` in `SINK_CWE`, and a new entry in
+  `VULNERABILITY_HELP` (description + fix guidance). Existing
+  text / JSON / SARIF output paths pick up the new sink category
+  automatically.
+- **Naming — Pillar I.** Category is named `prompt_injection` (not
+  `llm_injection`). No `LLM`/`AI` wording in CLI source, help text,
+  or CHANGELOG.
+
 ## [3.173.0] - 2026-07-15
 
 Engine bump only — adopts

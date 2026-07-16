@@ -277,6 +277,15 @@ export const RULE_DEFINITIONS: Record<SinkType, RuleInfo> = {
     severityLevel: 'medium',
     cwe: 'CWE-89',
   },
+  prompt_injection: {
+    name: 'Prompt Injection',
+    shortDescription: 'Tainted input flows into a generative-model prompt-construction API',
+    fullDescription: 'The application passes user-controlled input into a prompt/messages payload sent to a generative model (chat completion, message create, invoke). An attacker can craft input that overrides system instructions, exfiltrates prior context, or induces the model to emit content that drives unintended tool/agent actions downstream. The finding is a data-flow signal at the call site; downstream trust layers can further classify by response consumption (agentic vs display-only).',
+    remediation: 'Do not concatenate untrusted text into system-role messages or template-controlled sections. Constrain user text to a dedicated `content` field of a user-role message, apply structural allow-lists (schema-validated tool arguments, JSON-mode with fixed schema), and reject or escape control tokens for the target model. When the response drives tool execution or code eval, gate on output validation before acting.',
+    cvssScore: '7.5',
+    severityLevel: 'high',
+    cwe: 'CWE-1427',
+  },
 };
 
 // =============================================================================

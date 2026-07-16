@@ -290,6 +290,14 @@ export type SinkType =
   | "weak_crypto"
   | "insecure_cookie"
   | "trust_boundary"
+  // Prompt injection (CWE-1427): tainted data reaches a generative-model
+  // prompt-construction API (chat completion, message create, invoke).
+  // Attacker-controlled text merged into a prompt/messages payload can
+  // override system instructions, exfiltrate context, or trigger unintended
+  // tool calls when the response is consumed by an agent. Downstream trust
+  // layers consume these flows to detect prompt-injection classes of
+  // finding. cognium-dev #248.
+  | "prompt_injection"
   // Inter-procedural: tainted data passed to external method call
   | "external_taint_escape";
 

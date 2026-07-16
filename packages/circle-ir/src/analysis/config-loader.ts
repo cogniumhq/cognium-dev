@@ -2323,6 +2323,98 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // they iterate after net/http entries and don't hijack `http.Get`.
   { method: 'Do',         class: 'Client',   type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['go'] },   // *fasthttp.Client.Do(req)
   { method: 'DoTimeout',  class: 'Client',   type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['go'] },
+
+  // =========================================================================
+  // cognium-dev #248 — prompt-injection sinks (CWE-1427)
+  //
+  // Tainted data reaching a generative-model prompt-construction API is
+  // classified as `prompt_injection`. v1 uses broad positional matching
+  // (arg_positions [0..3]) because these APIs are kwarg-heavy: Python
+  // `openai.chat.completions.create(model=..., messages=...)` may pass the
+  // messages arg at position 0 or 1 depending on caller order, and JS/TS
+  // object-literal `{ messages: [...], model: '...' }` is a single
+  // positional arg whose taint is inherited from any tainted property.
+  // Argname-precise matching (messages=/prompt=/content=) and
+  // sanitizer credit for prompt-template libraries (PromptTemplate,
+  // ChatPromptTemplate) are follow-ups.
+  //
+  // Class-qualified entries prevent bare `create()` / `generate()` calls
+  // with no receiver from matching (per taint-matcher.ts:1696 guard).
+  // =========================================================================
+
+  // --- Python: openai (v1 SDK) --------------------------------------------
+  { method: 'create',  class: 'Completions', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'create',  class: 'Responses',   type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  // openai <1.0 legacy top-level API — `openai.ChatCompletion.create(...)` / `openai.Completion.create(...)`
+  { method: 'create',  class: 'ChatCompletion', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'create',  class: 'Completion',     type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+
+  // --- Python: anthropic ---------------------------------------------------
+  { method: 'create',  class: 'Messages',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'stream',  class: 'Messages',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+
+  // --- Python: litellm (bare functions from the litellm module) -----------
+  { method: 'completion',  class: 'litellm',  type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'acompletion', class: 'litellm',  type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+
+  // --- Python: langchain chat/llm models ----------------------------------
+  // Common concrete classes; matching the class name catches typical usage
+  // `ChatOpenAI().invoke(prompt)` where the receiver-type resolver identifies
+  // the class from the constructor.
+  { method: 'invoke',   class: 'ChatOpenAI',              type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'predict',  class: 'ChatOpenAI',              type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'stream',   class: 'ChatOpenAI',              type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'generate', class: 'ChatOpenAI',              type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'invoke',   class: 'ChatAnthropic',           type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'invoke',   class: 'ChatGoogleGenerativeAI',  type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'run',      class: 'LLMChain',                type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+  { method: 'invoke',   class: 'LLMChain',                type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['python'] },
+
+  // --- JS/TS: openai node SDK ---------------------------------------------
+  { method: 'create',  class: 'Completions', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'create',  class: 'Responses',   type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+
+  // --- JS/TS: @anthropic-ai/sdk -------------------------------------------
+  { method: 'create',  class: 'Messages',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'stream',  class: 'Messages',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+
+  // --- JS/TS: Vercel AI SDK (bare functions from the `ai` package) --------
+  // generateText/streamText/generateObject take a single options object;
+  // taint reaches the sink when a tainted variable flows into any property.
+  { method: 'generateText',   type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'streamText',     type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'generateObject', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'streamObject',   type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // --- JS/TS: langchain.js ------------------------------------------------
+  { method: 'invoke', class: 'ChatOpenAI',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'invoke', class: 'ChatAnthropic', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+  { method: 'stream', class: 'ChatOpenAI',    type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['javascript', 'typescript'] },
+
+  // --- Java: LangChain4j --------------------------------------------------
+  { method: 'generate', class: 'ChatLanguageModel',          type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'chat',     class: 'ChatLanguageModel',          type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'generate', class: 'StreamingChatLanguageModel', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'chat',     class: 'StreamingChatLanguageModel', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+
+  // --- Java: Spring AI ----------------------------------------------------
+  { method: 'prompt', class: 'ChatClient', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'call',   class: 'ChatClient', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'call',   class: 'ChatModel',  type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+
+  // --- Java: OpenAI Java SDK (theokanning) --------------------------------
+  { method: 'createChatCompletion', class: 'OpenAiService', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+  { method: 'createCompletion',     class: 'OpenAiService', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['java'] },
+
+  // --- Go: go-openai (sashabaranov/go-openai) -----------------------------
+  { method: 'CreateChatCompletion', class: 'Client', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+  { method: 'CreateCompletion',     class: 'Client', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+  { method: 'CreateChatCompletionStream', class: 'Client', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+
+  // --- Go: langchaingo ----------------------------------------------------
+  { method: 'Call',     class: 'LLM', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+  { method: 'Generate', class: 'LLM', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+  { method: 'GenerateContent', class: 'Model', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
