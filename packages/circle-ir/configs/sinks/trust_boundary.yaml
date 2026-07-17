@@ -1,0 +1,18 @@
+{
+  "$comment": "Reference-only. Runtime uses TRUST_BOUNDARY_FRAMEWORK_SINKS plus existing HttpSession/ServletContext/HttpServletRequest setAttribute entries in src/analysis/config-loader.ts. See cognium-dev#240 (extends #117).",
+  "sinks": [
+    { "method": "set",      "class": "cache", "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["python"] },
+    { "method": "set_many", "class": "cache", "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [0], "languages": ["python"] },
+
+    { "method": "setItem", "class": "Storage",  "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["javascript", "typescript"] },
+    { "method": "cookie",  "class": "Response", "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["javascript", "typescript"] },
+
+    { "method": "Cookie",             "class": "Cookie",          "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["java"] },
+    { "method": "setValue",           "class": "Cookie",          "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [0], "languages": ["java"] },
+    { "method": "setAuthentication",  "class": "SecurityContext", "type": "trust_boundary", "cwe": "CWE-501", "severity": "high",   "arg_positions": [0], "languages": ["java"] },
+    { "method": "setProperty",        "class": "System",          "type": "trust_boundary", "cwe": "CWE-501", "severity": "high",   "arg_positions": [1], "languages": ["java"] },
+
+    { "method": "SetCookie", "class": "http",    "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["go"] },
+    { "method": "SetCookie", "class": "Context", "type": "trust_boundary", "cwe": "CWE-501", "severity": "medium", "arg_positions": [1], "languages": ["go"] }
+  ]
+}

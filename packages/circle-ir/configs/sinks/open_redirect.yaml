@@ -1,0 +1,21 @@
+{
+  "$comment": "Reference-only. Runtime uses OPEN_REDIRECT_FRAMEWORK_SINKS + classless `redirect` + net/http.Redirect + Java sendRedirect in src/analysis/config-loader.ts. See cognium-dev#240.",
+  "sinks": [
+    { "method": "HttpResponseRedirect",          "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["python"] },
+    { "method": "HttpResponsePermanentRedirect", "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["python"] },
+    { "method": "RedirectResponse",              "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["python"] },
+
+    { "method": "redirect", "class": "Context",      "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["javascript", "typescript"] },
+    { "method": "redirect", "class": "FastifyReply", "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["javascript", "typescript"] },
+    { "method": "location", "class": "Response",     "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["javascript", "typescript"] },
+    { "method": "redirect", "class": "NextResponse", "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["javascript", "typescript"] },
+
+    { "method": "RedirectView",      "class": "RedirectView", "type": "open_redirect", "cwe": "CWE-601", "severity": "high", "arg_positions": [0], "languages": ["java"] },
+    { "method": "setUrl",            "class": "RedirectView", "type": "open_redirect", "cwe": "CWE-601", "severity": "high", "arg_positions": [0], "languages": ["java"] },
+    { "method": "seeOther",          "class": "Response",     "type": "open_redirect", "cwe": "CWE-601", "severity": "high", "arg_positions": [0], "languages": ["java"] },
+    { "method": "temporaryRedirect", "class": "Response",     "type": "open_redirect", "cwe": "CWE-601", "severity": "high", "arg_positions": [0], "languages": ["java"] },
+
+    { "method": "Redirect", "class": "Context", "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [1], "languages": ["go"] },
+    { "method": "Redirect", "class": "Ctx",     "type": "open_redirect", "cwe": "CWE-601", "severity": "medium", "arg_positions": [0], "languages": ["go"] }
+  ]
+}

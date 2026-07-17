@@ -658,6 +658,103 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'ParseUnverified', class: 'jwt', type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
 ];
 
+// =========================================================================
+// cognium-dev #240 ship 1 — extend open_redirect (CWE-601) framework coverage
+//
+// Extracted from DEFAULT_SINKS to keep the main-array literal within the
+// TypeScript union-type inference complexity limit (TS2590). Spread into
+// DEFAULT_SINKS below.
+//
+// Baseline (variant-coverage.md): 11 probes, 1 fires, 10 FN. Existing
+// coverage: Java HttpServletResponse.sendRedirect, Node classless
+// `redirect`, Go net/http.Redirect, Rust actix Redirect/HttpResponse.
+// Adds Python (django/starlette/fastapi), JS/TS (koa/fastify/express
+// location + next.js), Java (RedirectView + JAX-RS Response), Go
+// (gin/echo/fiber).
+// =========================================================================
+const OPEN_REDIRECT_FRAMEWORK_SINKS: SinkPattern[] = [
+  // --- Python: django / starlette / fastapi -------------------------------
+  { method: 'HttpResponseRedirect',          type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['python'] },
+  { method: 'HttpResponsePermanentRedirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['python'] },
+  { method: 'RedirectResponse',              type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['python'] },
+
+  // --- JS/TS: koa / fastify / express / next.js ---------------------------
+  { method: 'redirect', class: 'Context',       type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'redirect', class: 'FastifyReply',  type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Express: res.location(url) sets Location header without redirect status,
+  // still an open-redirect vector when combined with a downstream redirect.
+  { method: 'location', class: 'Response',      type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Next.js App Router: NextResponse.redirect(url) — static method matched
+  // by receiver-class name.
+  { method: 'redirect', class: 'NextResponse',  type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
+  // --- Java: Spring MVC RedirectView + JAX-RS Response --------------------
+  { method: 'RedirectView',      class: 'RedirectView', type: 'open_redirect', cwe: 'CWE-601', severity: 'high',   arg_positions: [0], languages: ['java'] },
+  { method: 'setUrl',            class: 'RedirectView', type: 'open_redirect', cwe: 'CWE-601', severity: 'high',   arg_positions: [0], languages: ['java'] },
+  // JAX-RS Response builder — static factory methods that take a target URI.
+  { method: 'seeOther',          class: 'Response',     type: 'open_redirect', cwe: 'CWE-601', severity: 'high',   arg_positions: [0], languages: ['java'] },
+  { method: 'temporaryRedirect', class: 'Response',     type: 'open_redirect', cwe: 'CWE-601', severity: 'high',   arg_positions: [0], languages: ['java'] },
+
+  // --- Go: gin / echo / fiber ---------------------------------------------
+  // gin/echo: c.Redirect(302, url) — status at arg[0], url at arg[1].
+  // fiber:   c.Redirect(url)         — url at arg[0].
+  // These entries fire once Go local-receiver type resolution lands
+  // (see taint-matcher.ts:2137 receiverMightBeClass — currently returns
+  // false for `c` against 'Context'/'Ctx'). Until then, the
+  // external_taint_escape fallback preserves recall on these call sites.
+  // net/http.Redirect (class 'http') is unaffected — declares class 'http'
+  // and matches via package receiver.
+  { method: 'Redirect', class: 'Context', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [1], languages: ['go'] },
+  { method: 'Redirect', class: 'Ctx',     type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['go'] },
+];
+
+// =========================================================================
+// cognium-dev #240 ship 1 — extend trust_boundary (CWE-501) framework coverage
+//
+// Extracted from DEFAULT_SINKS (see note above). Spread into DEFAULT_SINKS
+// below.
+//
+// Baseline (variant-coverage.md): 16 probes, 0 fires, 16 FN. Existing
+// coverage: Java HttpSession / ServletContext / HttpServletRequest
+// setAttribute (issue #117), Python session.__setitem__. Adds Django
+// cache, JS Storage.setItem, Express res.cookie, Java Cookie /
+// SecurityContext / System.setProperty, Go http.SetCookie / gin.SetCookie.
+//
+// Severity `medium` unless the sink pollutes a process-wide store
+// (System.setProperty → high).
+// =========================================================================
+const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
+  // --- Python: Django cache write -----------------------------------------
+  { method: 'set',      class: 'cache', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['python'] },
+  { method: 'set_many', class: 'cache', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0], languages: ['python'] },
+
+  // --- JS/TS: client-side Storage + Express cookie ------------------------
+  // localStorage / sessionStorage — browser Storage.setItem(key, value).
+  { method: 'setItem', class: 'Storage',  type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  // Express: res.cookie(name, value, opts) — cookie-jar write.
+  { method: 'cookie',  class: 'Response', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
+
+  // --- Java: Cookie / SecurityContext / System.setProperty ----------------
+  // `new Cookie(name, value)` — constructor with tainted value crosses the
+  // client-server trust boundary via Set-Cookie.
+  { method: 'Cookie',            class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['java'] },
+  { method: 'setValue',          class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  // Spring Security: SecurityContext.setAuthentication(userSuppliedAuth) —
+  // installs an untrusted principal into the request-scoped security
+  // context; downstream authz decisions become attacker-controlled.
+  { method: 'setAuthentication', class: 'SecurityContext', type: 'trust_boundary', cwe: 'CWE-501', severity: 'high',   arg_positions: [0], languages: ['java'] },
+  // JVM-wide System property write with tainted value pollutes process
+  // state observable to every thread.
+  { method: 'setProperty',       class: 'System',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'high',   arg_positions: [1], languages: ['java'] },
+
+  // --- Go: http.SetCookie / gin.SetCookie ---------------------------------
+  // Package-level `http.SetCookie(w, &http.Cookie{Value: tainted})` — sink
+  // on arg[1] (the *Cookie) catches struct-literal composite tainting.
+  { method: 'SetCookie', class: 'http',    type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['go'] },
+  // gin: c.SetCookie(name, value, maxAge, path, domain, secure, httpOnly).
+  { method: 'SetCookie', class: 'Context', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['go'] },
+];
+
 export const DEFAULT_SINKS: SinkPattern[] = [
   // SQL Injection (CWE-89)
   { method: 'executeQuery', class: 'Statement', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
@@ -2100,7 +2197,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
 
   // Rust Open Redirect
   { method: 'redirect', class: 'HttpResponse', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0] },
-  { method: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0] },
+  // Actix/warp `Redirect::to(url)` — scoped to Rust to avoid collision with
+  // Go's `c.Redirect(status, url)` on gin/echo, which lives further down in
+  // the OPEN_REDIRECT_FRAMEWORK_SINKS block with `arg_positions: [0, 1]`.
+  { method: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['rust'] },
   { method: 'see_other', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
   { method: 'to', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
   { method: 'temporary', class: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'high', arg_positions: [0] },
@@ -2415,6 +2515,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Call',     class: 'LLM', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
   { method: 'Generate', class: 'LLM', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
   { method: 'GenerateContent', class: 'Model', type: 'prompt_injection', cwe: 'CWE-1427', severity: 'high', arg_positions: [0, 1, 2, 3], languages: ['go'] },
+
+  // cognium-dev #240 ship 1 — extended framework sinks for open_redirect
+  // (CWE-601) and trust_boundary (CWE-501). Definitions extracted above
+  // as OPEN_REDIRECT_FRAMEWORK_SINKS / TRUST_BOUNDARY_FRAMEWORK_SINKS to
+  // keep the DEFAULT_SINKS literal within TypeScript's union-type
+  // inference complexity limit (TS2590). See ~lines 661-752.
+  ...OPEN_REDIRECT_FRAMEWORK_SINKS,
+  ...TRUST_BOUNDARY_FRAMEWORK_SINKS,
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [

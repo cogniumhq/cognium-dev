@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.175.0] - 2026-07-17
+
+Adopts [`circle-ir@3.175.0`](https://www.npmjs.com/package/circle-ir),
+which extends framework-sink coverage for two previously zero-recall
+vulnerability categories from the variant-coverage matrix:
+`open_redirect` (CWE-601) and `trust_boundary` (CWE-501).
+Cognium-dev#240 ship 1.
+
+- **CLI formatters.** No changes required — `open_redirect` and
+  `trust_boundary` sink categories were already wired in
+  `SINK_SEVERITY`, `SINK_CWE`, and `VULNERABILITY_HELP`. The
+  additional framework sinks flow through existing text / JSON /
+  SARIF output paths automatically.
+- **New sink surface (engine).** ~24 new entries added to the
+  runtime DEFAULT_SINKS table — Python (Django/FastAPI/Starlette
+  redirects, Django cache), JS/TS (Koa/Fastify/Express/Next.js
+  redirects, Storage.setItem, Express res.cookie), Java
+  (RedirectView/setUrl, Response.seeOther/temporaryRedirect,
+  javax.servlet Cookie/setValue, SecurityContext.setAuthentication,
+  System.setProperty) and Go (net/http.Redirect + catalog entries
+  for gin/fiber gated on Go local-receiver typing).
+- **Bug fix (engine).** Classless Rust `Redirect` sink entry was
+  hijacking Go `c.Redirect(status, url)` calls with the wrong
+  argument position; now scoped to `languages: ['rust']`.
+- **Naming — Pillar I.** Categories remain `open_redirect` and
+  `trust_boundary` — no LLM/AI wording in CLI source, help text,
+  or CHANGELOG.
+
 ## [3.174.0] - 2026-07-16
 
 Adopts [`circle-ir@3.174.0`](https://www.npmjs.com/package/circle-ir),

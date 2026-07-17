@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.175.0] - 2026-07-17
+
+Extended framework-sink coverage for two zero-recall categories from
+the variant-coverage matrix: `open_redirect` (CWE-601) and
+`trust_boundary` (CWE-501). Cognium-dev#240 ship 1.
+
+- **`open_redirect` framework coverage.** Baseline (variant-coverage
+  matrix): 11 probes / 1 fires / 10 FN. New entries live in
+  `OPEN_REDIRECT_FRAMEWORK_SINKS` in `src/analysis/config-loader.ts`
+  and are mirrored (reference-only) in
+  `configs/sinks/open_redirect.yaml`:
+  - **Python.** `django.HttpResponseRedirect`,
+    `HttpResponsePermanentRedirect`, `starlette/fastapi.RedirectResponse`.
+  - **JS/TS.** `koa.Context.redirect`, `FastifyReply.redirect`,
+    `express.Response.location`, `NextResponse.redirect` (App Router).
+  - **Java.** Spring MVC `new RedirectView(url)` + `RedirectView.setUrl`,
+    JAX-RS `Response.seeOther` + `Response.temporaryRedirect`.
+  - **Go.** `gin/echo.Context.Redirect` (arg[1]),
+    `fiber.Ctx.Redirect` (arg[0]).
+- **`trust_boundary` framework coverage.** Baseline (variant-coverage
+  matrix): 16 probes / 0 fires / 16 FN. New entries live in
+  `TRUST_BOUNDARY_FRAMEWORK_SINKS` in `src/analysis/config-loader.ts`
+  and are mirrored in `configs/sinks/trust_boundary.yaml`. Extends
+  issue #117 (Java `HttpSession.setAttribute` / `ServletContext.setAttribute`
+  / `HttpServletRequest.setAttribute`) with:
+  - **Python.** `django.core.cache.cache.set` / `set_many`.
+  - **JS/TS.** browser `Storage.setItem`
+    (localStorage/sessionStorage), Express `res.cookie`.
+  - **Java.** `new Cookie(name, value)` + `Cookie.setValue`, Spring
+    Security `SecurityContext.setAuthentication` (severity: high),
+    `System.setProperty` (severity: high, JVM-wide state pollution).
+  - **Go.** `http.SetCookie` (arg[1] — catches struct-literal
+    tainting of `&http.Cookie{Value: tainted}`). Gin
+    `c.SetCookie` is catalogued but does not currently reach flow
+    detection without Go local-receiver type resolution.
+- **Bug fix — Rust sink hijack.** The classless `Redirect` entry
+  in the Rust open_redirect block (`src/analysis/config-loader.ts`
+  line ~2200) previously matched any receiver in any language
+  because it lacked a `languages` scope. This caused Go
+  `c.Redirect(status, url)` calls to match the Rust `arg_positions:
+  [0]` first, sinking the status literal instead of the tainted
+  URL. Now scoped to `languages: ['rust']`.
+- **Known limitation — Go local-receiver typing.** The new
+  gin/fiber/echo `Redirect` and gin `SetCookie` entries require
+  local-receiver type resolution (`c *gin.Context` → 'Context') to
+  fire as typed sinks. `receiverMightBeClass('c', 'Context')` at
+  `taint-matcher.ts:2137` currently returns false for Go locals.
+  Until a Go receiver-type resolver lands, these call sites are
+  covered by the `external_taint_escape` fallback (CWE-668) so
+  recall is preserved — only the sink-type label is generic.
+  Pinning tests marked `.skip()` with follow-up note. Documented
+  as a v2 follow-up on #240.
+- **Tests.** `tests/analysis/passes/open-redirect-frameworks.test.ts`
+  (15 tests: 11 must-fire + 2 must-not-fire, 2 skipped) and
+  `tests/analysis/passes/trust-boundary-frameworks.test.ts` (9
+  tests: 6 must-fire + 2 must-not-fire, 1 skipped) pin the new
+  entries per language.
+- **No engine changes required.** `SinkType`, `RULE_DEFINITIONS`,
+  and severity/CWE plumbing already recognize both categories
+  (issue #117 shipped the Java `trust_boundary` runtime; #189
+  Sprint 82 shipped the `open_redirect` runtime).
+- **Verified.** All 4062 circle-ir tests pass; 5 skipped (2
+  pre-existing + 3 new Go-receiver-typing follow-ups).
+
 ## [3.174.0] - 2026-07-16
 
 New sink category — `prompt_injection` (CWE-1427). Tainted input
