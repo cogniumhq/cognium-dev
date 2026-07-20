@@ -125,3 +125,142 @@ public class Serializer {
     expect(countByRule(r.findings, 'xml-entity-expansion')).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// cognium-dev #256 (3.176.0) — Sink-shape gate indirection resolution.
+//
+// Both #22 (`safe_if_class_literal_at`) and #179 (`PROCESS_BUILDER_ARGV_FORM_RE`)
+// only match the DIRECT/LITERAL arg form. #256 extends both gates with a
+// same-file type resolver so a bare identifier (param/field) or a same-file
+// method call whose return type resolves to `Class<...>` (Gate 1) or
+// `List<String>` / `String[]` (Gate 2) is also suppressed.
+//
+// Recall locks below verify that indirection targets which are NOT in the
+// same-file `ir.types` (e.g. `Class.forName(x)`, `getClass()`) OR whose
+// resolved type is not container-shaped (bare `String` for ProcessBuilder)
+// continue to fire as sinks.
+// ---------------------------------------------------------------------------
+
+describe('cognium-dev #256 — indirection resolution for #22/#179 gates', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  // Gate 1 — CWE-502 typed deserialization via variable Class<T> / return type.
+
+  it('Gate 1 — readValue(json, templateClass) where templateClass: Class<T extends X> param (jib repro): no deserialization sink', async () => {
+    const code = `import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.InputStream;
+
+public class JsonTemplateMapper {
+  private static final ObjectMapper mapper = new ObjectMapper();
+  public static <T extends JsonTemplate> T readJsonFromFile(InputStream fileIn, Class<T> templateClass) throws Exception {
+    return mapper.readValue(fileIn, templateClass);
+  }
+}
+`;
+    const r = await analyze(code, 'JsonTemplateMapper.java', 'java');
+    expect(countByType(r.taint?.sinks, 'deserialization')).toBe(0);
+  });
+
+  it('Gate 1 — readValue(json, fieldClass) where fieldClass: Class<Foo> field: no deserialization sink', async () => {
+    const code = `import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class Svc {
+  private static final Class<Object> fieldClass = Object.class;
+  private final ObjectMapper mapper = new ObjectMapper();
+  public Object run(String json) throws Exception {
+    return mapper.readValue(json, fieldClass);
+  }
+}
+`;
+    const r = await analyze(code, 'Svc.java', 'java');
+    expect(countByType(r.taint?.sinks, 'deserialization')).toBe(0);
+  });
+
+  it('Gate 1 — readValue(json, getTargetClass()) where getTargetClass returns Class<Foo>: no deserialization sink', async () => {
+    const code = `import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class Svc {
+  private final ObjectMapper mapper = new ObjectMapper();
+  private static Class<Object> getTargetClass() { return Object.class; }
+  public Object run(String json) throws Exception {
+    return mapper.readValue(json, getTargetClass());
+  }
+}
+`;
+    const r = await analyze(code, 'Svc.java', 'java');
+    expect(countByType(r.taint?.sinks, 'deserialization')).toBe(0);
+  });
+
+  it('Gate 1 recall lock — readValue(json, Class.forName(userType)): deserialization sink still fires', async () => {
+    const code = `import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class Svc {
+  private final ObjectMapper mapper = new ObjectMapper();
+  public Object run(String json, String userType) throws Exception {
+    return mapper.readValue(json, Class.forName(userType));
+  }
+}
+`;
+    const r = await analyze(code, 'Svc.java', 'java');
+    expect(countByType(r.taint?.sinks, 'deserialization')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Gate 1 recall lock — readValue(json, other.getClass()): deserialization sink still fires', async () => {
+    const code = `import com.fasterxml.jackson.databind.ObjectMapper;
+
+public class Svc {
+  private final ObjectMapper mapper = new ObjectMapper();
+  public Object run(String json, Object other) throws Exception {
+    return mapper.readValue(json, other.getClass());
+  }
+}
+`;
+    const r = await analyze(code, 'Svc.java', 'java');
+    expect(countByType(r.taint?.sinks, 'deserialization')).toBeGreaterThanOrEqual(1);
+  });
+
+  // Gate 2 — CWE-78 ProcessBuilder argv form via method-call return type / variable.
+
+  it('Gate 2 — new ProcessBuilder(buildCommand(bin)) where buildCommand returns List<String> (flyingsaucer repro): no command_injection sink', async () => {
+    const code = `import java.util.List;
+import java.util.Arrays;
+
+public class DevToolsSession {
+  private static List<String> buildCommand(String binary) {
+    return Arrays.asList(binary, "--remote-debugging-port=0");
+  }
+  public Process launch(String binary) throws Exception {
+    return new ProcessBuilder(buildCommand(binary)).redirectErrorStream(false).start();
+  }
+}
+`;
+    const r = await analyze(code, 'DevToolsSession.java', 'java');
+    expect(countByType(r.taint?.sinks, 'command_injection')).toBe(0);
+  });
+
+  it('Gate 2 — new ProcessBuilder(args) where args is List<String> param: no command_injection sink', async () => {
+    const code = `import java.util.List;
+
+public class Launcher {
+  public Process launch(List<String> args) throws Exception {
+    return new ProcessBuilder(args).start();
+  }
+}
+`;
+    const r = await analyze(code, 'Launcher.java', 'java');
+    expect(countByType(r.taint?.sinks, 'command_injection')).toBe(0);
+  });
+
+  it('Gate 2 recall lock — new ProcessBuilder(userCmd) where userCmd is String: command_injection sink still fires', async () => {
+    const code = `public class Launcher {
+  public Process launch(String userCmd) throws Exception {
+    return new ProcessBuilder(userCmd).start();
+  }
+}
+`;
+    const r = await analyze(code, 'Launcher.java', 'java');
+    expect(countByType(r.taint?.sinks, 'command_injection')).toBeGreaterThanOrEqual(1);
+  });
+});

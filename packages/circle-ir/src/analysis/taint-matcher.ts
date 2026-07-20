@@ -8,6 +8,11 @@ import type { ArgumentInfo, CallInfo, TypeInfo, TaintSource, TaintSink, TaintSan
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
+import {
+  resolveIdentifierType,
+  resolveCallReturnType,
+  isBoundedClassType,
+} from './arg-type-resolver.js';
 
 /**
  * Python tainted access patterns (regex-based).
@@ -53,7 +58,7 @@ export function analyzeTaint(
   const sources = findSources(calls, types, config.sources, sourceLines, language);
   let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
   sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
-  const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines);
+  const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
 
   return { sources, sinks, sanitizers };
@@ -1011,8 +1016,21 @@ const CLASS_LITERAL_RE = /^(?:[A-Za-z_][\w]*\.)*[A-Z][\w]*(?:\[\])*\.class$/;
  * literal (e.g. `User.class`). Used by SinkPattern.safe_if_class_literal_at to
  * suppress typed deserialization overloads. The untyped 1-arg form and the
  * dynamic-class form (`Class.forName(x)`) never match.
+ *
+ * When `types` is provided, also recognises indirected shapes whose declared
+ * type resolves to `Class<...>` in the same file (cognium-dev #256):
+ *   - a bare-identifier arg (param or field) typed as `Class<T>` /
+ *     `Class<? extends Foo>` etc.
+ *   - a same-file method-call arg whose return type is `Class<...>`.
+ * `Class.forName(x)` / `getClass()` remain dangerous — those callees are
+ * not in `ir.types` (JDK reflection), so the resolver returns null and
+ * we fall through to the default-dangerous behavior.
  */
-function argIsClassLiteral(call: CallInfo, position: number): boolean {
+function argIsClassLiteral(
+  call: CallInfo,
+  position: number,
+  types?: TypeInfo[],
+): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
   const expr = (arg.literal ?? arg.expression ?? '').trim();
@@ -1024,7 +1042,32 @@ function argIsClassLiteral(call: CallInfo, position: number): boolean {
   // does for the raw type. Only the empty-body form matches; bodied
   // subclasses (`new TypeReference<...>() { @Override … }`) are treated
   // as dynamic to preserve recall on suspicious overrides.
-  return TYPE_TOKEN_RE.test(expr);
+  if (TYPE_TOKEN_RE.test(expr)) return true;
+  // Added 3.176.0 (cognium-dev #256): indirection resolution — same-file
+  // param/field/local-method-return-type lookup. Callers that don't have
+  // TypeInfo (unit tests, minimal invocations) get the original behavior.
+  if (!types || types.length === 0) return false;
+  const argExpr = (arg.expression ?? '').trim();
+  const varName = arg.variable ?? '';
+  const isBareIdentifier =
+    varName !== '' && argExpr === varName && !/[(.]/.test(argExpr);
+  if (isBareIdentifier) {
+    const t = resolveIdentifierType(varName, call.in_method, types);
+    if (isBoundedClassType(t)) return true;
+  }
+  // Method-call arg: `variable` holds the callee name, `expression` has
+  // parens. Match `<name>(` at the start of the expression.
+  const isCallExpr = varName !== '' && new RegExp(`^${escapeRe(varName)}\\s*\\(`).test(argExpr);
+  if (isCallExpr) {
+    const t = resolveCallReturnType(varName, call.in_method, types);
+    if (isBoundedClassType(t)) return true;
+  }
+  return false;
+}
+
+/** Escape regex metacharacters in a bare identifier for safe pattern building. */
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -1489,6 +1532,7 @@ function findSinks(
   typeHierarchy?: TypeHierarchyResolver,
   language?: SupportedLanguage,
   sourceLines?: string[],
+  types?: TypeInfo[],
 ): TaintSink[] {
   // Use a map to deduplicate by location+line+cwe
   const sinkMap = new Map<string, TaintSink>();
@@ -1542,7 +1586,7 @@ function findSinks(
         // 1-arg form or a dynamic-class second arg (`Class.forName(x)`).
         if (
           pattern.safe_if_class_literal_at !== undefined &&
-          argIsClassLiteral(call, pattern.safe_if_class_literal_at)
+          argIsClassLiteral(call, pattern.safe_if_class_literal_at, types)
         ) {
           continue;
         }

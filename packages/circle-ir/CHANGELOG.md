@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.176.0] - 2026-07-20
+
+Sink-shape gate indirection resolution. Cognium-dev#256 closes two
+CRITICAL Java FPs where the sink-shape gates from #22
+(`safe_if_class_literal_at`) and #179 (`PROCESS_BUILDER_ARGV_FORM_RE`)
+matched only the direct/literal argument form and missed argument
+indirection. Both FPs share the same root cause: the gates now resolve
+the argument's effective declared type (from same-file `ir.types`)
+before emitting, not just the literal expression text.
+
+- **New helper — `src/analysis/arg-type-resolver.ts`.** Same-file,
+  `TypeInfo[]`-based resolvers:
+  - `resolveIdentifierType(name, in_method, types)` — locates
+    `name` as a parameter of the enclosing method, or as a field on
+    the enclosing type, and returns its declared type string.
+  - `resolveCallReturnType(calleeName, in_method, types)` — locates
+    a same-file method matching `calleeName` and returns its
+    declared return type.
+  - Predicates: `isBoundedClassType(raw)` matches `Class`,
+    `Class<T>`, `Class<? extends X>`, `Class<Foo>` (any generic
+    bound, `java.lang.` prefix tolerated); `isArgvContainerType(raw)`
+    matches `List<String>`, `ArrayList<String>`, `Collection<String>`,
+    `Iterable<String>`, `Deque<String>`, `Queue<String>`, `String[]`,
+    `String...` and their `java.util.` / `java.lang.` FQN variants
+    (bare `List` / `List<Object>` / `Collection<?>` excluded).
+  - Both resolvers return null liberally — a null result flows to
+    the existing gate's default-dangerous behavior, so any resolver
+    bug regresses gracefully to current (over-firing) behavior,
+    never to false-negative.
+- **Gate 1 extension — `safe_if_class_literal_at` (CWE-502
+  typed-safe deserialization).** `argIsClassLiteral` in
+  `src/analysis/taint-matcher.ts` now falls through, after the
+  existing `CLASS_LITERAL_RE` and `TYPE_TOKEN_RE` regex checks, to:
+  - Bare-identifier path: `resolveIdentifierType(arg.variable, …)`
+    → suppress if `isBoundedClassType(rawType)`. Closes the jib
+    repro `readValue(fileIn, templateClass)` where `templateClass`
+    is a `Class<T extends JsonTemplate>` parameter.
+  - Method-call path: `resolveCallReturnType(callee, …)` →
+    suppress if `isBoundedClassType(rawType)`. Closes
+    `readValue(json, getTargetClass())` where `getTargetClass()`
+    returns `Class<Foo>`.
+  - `findSinks(...)` signature extended with optional
+    `types?: TypeInfo[]` at position 6 (backward compatible);
+    `analyzeTaint` plumbs `ir.types` through.
+- **Gate 2 extension — Stage 11 ProcessBuilder argv form (CWE-78).**
+  `src/analysis/passes/sink-filter-pass.ts` Stage 11 now falls
+  through, after the existing `PROCESS_BUILDER_ARGV_FORM_RE` regex
+  miss, to look up the actual constructor call in `ctx.graph.ir.calls`
+  (matched by `method_name === 'ProcessBuilder'`, line, and null
+  receiver) and:
+  - Bare-identifier arg: `resolveIdentifierType(arg.variable, …)`
+    → suppress if `isArgvContainerType(rawType)`. Handles
+    `new ProcessBuilder(args)` where `args` is a `List<String>`
+    parameter.
+  - Method-call arg: `resolveCallReturnType(callee, …)` →
+    suppress if `isArgvContainerType(rawType)`. Closes the
+    flyingsaucer repro `new ProcessBuilder(buildCommand(binary))`
+    where `buildCommand` returns `List<String>`.
+- **Recall locks (must not regress).**
+  - Gate 1: `readValue(json, Class.forName(userType))` and
+    `readValue(json, other.getClass())` still fire —
+    `Class.forName` / `getClass` are call expressions not in
+    `ir.types`, resolver returns null, gate defaults dangerous.
+  - Gate 2: `new ProcessBuilder(userCmd)` where `userCmd` is a
+    `String` still fires — resolver returns `"String"`,
+    `isArgvContainerType` false, gate defaults dangerous.
+- **Tests.** 8 new regression tests in
+  `tests/analysis/passes/java-sink-shape-regression.test.ts`
+  (Gate 1: 3 suppressions + 2 recall locks; Gate 2: 2 suppressions
+  + 1 recall lock) verbatim from the #256 ticket bodies. 4070 tests
+  pass, 5 skipped (0 regressions from 3.175.0).
+- **Scope.** Same-file only; locals declared inside method bodies
+  and cross-file resolution deferred (both #256 repros are
+  same-method-parameter / same-class-static-callee). Java-only in
+  effect — the `Class<T>` bounded-generic and `List<String>`
+  argv-container shapes are Java-idiomatic and won't match other
+  languages' types.
+
 ## [3.175.0] - 2026-07-17
 
 Extended framework-sink coverage for two zero-recall categories from

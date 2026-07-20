@@ -25,6 +25,16 @@ import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import {
+  resolveIdentifierType,
+  resolveCallReturnType,
+  isArgvContainerType,
+} from '../arg-type-resolver.js';
+
+/** Escape regex metacharacters for safe pattern building. */
+function escapeReSf(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Common XSS sanitizer patterns for JavaScript/TypeScript.
@@ -1086,12 +1096,44 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // the exec is non-injectable and the `start` sink is dropped too.
     if (language === 'java') {
       const sourceLines = ctx.code.split('\n');
+      const irCalls = ctx.graph.ir.calls;
+      const irTypes = ctx.graph.ir.types;
       filtered = filtered.filter(sink => {
         if (sink.type !== 'command_injection') return true;
         if (sink.method !== 'ProcessBuilder' && sink.method !== 'start') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
         if (PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;
+        // cognium-dev #256 (3.176.0): resolver fallback for method-call and
+        // variable arguments whose declared type is `List<String>` /
+        // `String[]` / etc. The regex above catches literal shapes
+        // (Arrays.asList, List.of, new String[]{}, varargs); this branch
+        // covers `new ProcessBuilder(buildCommand(binary, opts))` where
+        // `buildCommand` returns `List<String>` (flyingsaucer repro), and
+        // `new ProcessBuilder(argv)` where `argv` is a `List<String>`
+        // parameter. Recall-preserving: on any resolver miss, sink survives.
+        const ctorCall = irCalls.find(
+          c =>
+            c.method_name === 'ProcessBuilder' &&
+            c.location.line === sink.line &&
+            (c.receiver === null || c.receiver === undefined),
+        );
+        if (!ctorCall || ctorCall.arguments.length === 0) return true;
+        const arg0 = ctorCall.arguments[0];
+        if (!arg0) return true;
+        const argExpr = (arg0.expression ?? '').trim();
+        const varName = arg0.variable ?? '';
+        // Bare identifier — parameter/field lookup.
+        if (varName !== '' && argExpr === varName && !/[(.]/.test(argExpr)) {
+          const t = resolveIdentifierType(varName, ctorCall.in_method, irTypes);
+          if (isArgvContainerType(t)) return false;
+        }
+        // Method call — return-type lookup. `variable` field carries the
+        // callee name for call-expression args.
+        if (varName !== '' && new RegExp(`^${escapeReSf(varName)}\\s*\\(`).test(argExpr)) {
+          const t = resolveCallReturnType(varName, ctorCall.in_method, irTypes);
+          if (isArgvContainerType(t)) return false;
+        }
         return true;
       });
     }

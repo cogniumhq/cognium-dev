@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.176.0] - 2026-07-20
+
+Adopts [`circle-ir@3.176.0`](https://www.npmjs.com/package/circle-ir),
+which closes two CRITICAL Java false positives (cognium-dev#256) by
+extending the sink-shape gates from #22 (`safe_if_class_literal_at`)
+and #179 (`PROCESS_BUILDER_ARGV_FORM_RE`) with a same-file
+argument-type resolver. Both gates previously matched only the direct
+literal argument form and now recognize bare-identifier (parameter,
+field) and same-file method-call return-type indirection:
+
+- `readValue(json, templateClass)` where `templateClass: Class<T>` →
+  no longer fires CWE-502 (jib repro).
+- `new ProcessBuilder(buildCommand(binary))` where `buildCommand`
+  returns `List<String>` → no longer fires CWE-78 (flyingsaucer
+  repro).
+
+Recall preserved: `Class.forName(x)`, `getClass()`, and bare
+`String`-typed `ProcessBuilder(userCmd)` arguments still fire.
+
+- **CLI.** No CLI-surface changes. The gate refinement flows
+  through existing text / JSON / SARIF paths automatically.
+- **Naming — Pillar I.** No LLM/AI wording in the CLI, help
+  text, or CHANGELOG.
+
 ## [3.175.0] - 2026-07-17
 
 Adopts [`circle-ir@3.175.0`](https://www.npmjs.com/package/circle-ir),
