@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Root uses npm (package-lock.json); bun.lock is only valid inside packages/cli/
+/bun.lock
+
 # Build outputs
 dist/
 coverage/
