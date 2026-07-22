@@ -111,27 +111,27 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-22)
+### GitHub issue ledger (as of 2026-07-22, post-close batch)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
 | #143 | precision | Coalesce findings by (source, sink) with vuln-class array | Not started | Design proposal needed |
 | #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | Not started | Rust/TS branches of the #67/#82 work |
-| #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger | Append as new TPs discovered |
+| #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
 | #240 | FN | Zero-recall categories (trust_boundary / deser / open_redirect / format_string / nosql) | Ship 1 landed 3.175.0 — `open_redirect` + `trust_boundary` frameworks + fixes | Ship 2: `deserialization` / `format_string` / `nosql`; + Go local-receiver type resolver (3 skipped tests) |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
 | #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | T1 H1+H7+H8 (3.171.0), T2 nodeCache reuse T2-A+C (3.172.0), T2-D Java `buildResolutionContext` cache (3.173.0) all landed | Remaining T1 items 2+5 (constant-prop tree-walk fusion, `receiverMightBeClass` cache); T2 items 6–10; check in `perf/harness.mjs` |
-| #256 | FP | Sink-shape gates miss indirect arg forms (jib CWE-502, flyingsaucer CWE-78) | **Landed 3.176.0** (e085094) — bare-identifier + same-file return-type resolver via `arg-type-resolver.ts` | Verify no regression on Java benchmarks, then close on GH |
 | #257 | FP | Java code_injection over-matches domain `ExpressionParser.parse()` (residual gap in #155) | Not started | Move parser allowlist → semantic gate |
 | #258 | FP | Fastjson `parseObject` on `1.2.83_noneautotype` build fires CWE-502 critical | Not started | Dependency-version-aware sink gating (new capability) |
-| #259 | needs-decision | Java langchain4j `ShellCommandRunner` — LLM tool-call → `sh -c` (TP candidate) | Verified TP; documented-intentional upstream | Team cross-check, then promote to #172 (do not file upstream) |
 
 ### #1 detail (kept from prior version)
 
 **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
 
 ### Recently closed
+- #256 closed 2026-07-22 (sink-shape indirection resolver landed 3.176.0 · e085094 · 4070/4075 tests pass · harness verification deferred)
+- #259 closed 2026-07-22 (langchain4j ShellCommandRunner TP → promoted to #172 pending-decision table; no upstream filing)
 - #248 closed 3.174.0 (prompt-injection sink category / CWE-1427)
 - #255 closed 3.174-window (OSS hygiene files)
 - #251 closed (CWE-Bench-Rust F1 drift bisect + pin) → surfaced work in 3.169.0
