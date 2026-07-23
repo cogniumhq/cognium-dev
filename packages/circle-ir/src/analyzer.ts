@@ -376,6 +376,14 @@ export interface DependencyContext {
   java?: {
     /** Raw `pom.xml` content (Maven). Parsed by the gate on demand. */
     pomXml?: string;
+    /**
+     * Raw `build.gradle` (Groovy DSL) or `build.gradle.kts` (Kotlin DSL)
+     * content. Parsed by the gate on demand. When both `pomXml` and
+     * `buildGradle` are supplied, the gate consults `pomXml` first and
+     * falls back to `buildGradle` if `pomXml` does not resolve the
+     * dependency. Added by cognium-dev #261 (Gradle-first slice).
+     */
+    buildGradle?: string;
   };
 }
 

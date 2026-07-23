@@ -45,6 +45,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { DependencyContext } from '../../analyzer.js';
 import {
   resolveFastjsonFromPom,
+  resolveFastjsonFromGradle,
   fileReenablesFastjsonAutotype,
   fileEnablesJacksonPolymorphism,
   fileConfiguresSnakeYamlSafely,
@@ -95,8 +96,15 @@ export class DeserializationSafetyGatePass
       : graph.ir.taint.sinks;
 
     // --- Gate A: Fastjson _noneautotype ------------------------------------
+    // Consult pom.xml first; fall back to build.gradle when pom does
+    // not resolve. Both manifests may be supplied by a caller that
+    // scans a multi-build project; either one indicating the hardened
+    // classifier is sufficient to drop the sink.
     const pomXml = this.dependencyContext?.java?.pomXml;
-    const fastjson = pomXml ? resolveFastjsonFromPom(pomXml) : null;
+    const buildGradle = this.dependencyContext?.java?.buildGradle;
+    const fastjson =
+      (pomXml ? resolveFastjsonFromPom(pomXml) : null) ??
+      (buildGradle ? resolveFastjsonFromGradle(buildGradle) : null);
     const fastjsonHardened =
       fastjson?.noneAutotype === true &&
       !fileReenablesFastjsonAutotype(code);

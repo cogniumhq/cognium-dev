@@ -78,6 +78,81 @@ export function resolveFastjsonFromPom(pomXml: string): FastjsonPomResolution | 
 }
 
 /**
+ * Extract the effective Fastjson version from a Gradle build script
+ * (`build.gradle` Groovy DSL or `build.gradle.kts` Kotlin DSL).
+ *
+ * cognium-dev #261 (Gradle-first slice extending #258's pom.xml gate).
+ *
+ * Recognises three declaration shapes:
+ *
+ *   1. Direct literal — the classic Groovy / Kotlin single-string form:
+ *        implementation 'com.alibaba:fastjson:1.2.83_noneautotype'
+ *        implementation "com.alibaba:fastjson:1.2.83_noneautotype"
+ *        implementation("com.alibaba:fastjson:1.2.83_noneautotype")
+ *      Also `api`, `compile`, `runtimeOnly`, `testImplementation`, … — the
+ *      configuration keyword is not part of the regex; only the
+ *      `group:artifact:version` triple is matched, so any dependency-
+ *      configuration prefix works.
+ *
+ *   2. Groovy interpolation — `implementation "com.alibaba:fastjson:${fastjsonVersion}"`
+ *      with the property defined via `ext { fastjsonVersion = '1.2.83_noneautotype' }`,
+ *      `def fastjsonVersion = '1.2.83_noneautotype'`, or top-level `fastjsonVersion = '…'`.
+ *
+ *   3. Kotlin interpolation — `implementation("com.alibaba:fastjson:$fastjsonVersion")`
+ *      with the property defined via `val fastjsonVersion = "1.2.83_noneautotype"`
+ *      or `const val fastjsonVersion = "…"`.
+ *
+ * Returns `null` on miss (no direct declaration AND no resolvable
+ * property reference). The `DeserializationSafetyGatePass` then falls
+ * through to its default "do not drop" behaviour on the sink.
+ *
+ * NOT recognised in this MVP (deferred, follow-ups on #261):
+ *   - `platform(...)` / `enforcedPlatform(...)` BOM version imports
+ *   - Version-catalog `libs.versions.toml` references (`libs.fastjson`)
+ *   - `constraints { }` block versions
+ *   - `subprojects { }` / `allprojects { }` conditional declarations
+ */
+export function resolveFastjsonFromGradle(buildGradle: string): FastjsonPomResolution | null {
+  if (!buildGradle) return null;
+
+  // Shape 1 — direct literal declaration. Accepts single-quoted,
+  // double-quoted, or paren-wrapped ("Kotlin") forms. The version is
+  // any non-quote / non-`$` / non-`)` / non-whitespace run.
+  const directRe = /['"(]\s*com\.alibaba:fastjson:([^'"$\s)]+)\s*['")]/;
+  const direct = buildGradle.match(directRe);
+  if (direct) {
+    const version = direct[1];
+    return { version, noneAutotype: /_noneautotype/i.test(version) };
+  }
+
+  // Shapes 2 + 3 — property reference. Capture the property name (either
+  // `${name}` Groovy form or `$name` bare form; Kotlin uses the same
+  // string-template syntax as Groovy for this case).
+  const propRefRe =
+    /['"(]\s*com\.alibaba:fastjson:\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\s*['")]/;
+  const propRef = buildGradle.match(propRefRe);
+  if (!propRef) return null;
+
+  const propName = propRef[1];
+  // Property definition — accept:
+  //   `fastjsonVersion = 'X'`                (Groovy top-level or ext)
+  //   `fastjsonVersion = "X"`                (Groovy interpolated)
+  //   `def fastjsonVersion = 'X'`            (Groovy local)
+  //   `val fastjsonVersion = "X"`            (Kotlin)
+  //   `const val fastjsonVersion = "X"`      (Kotlin)
+  //   `fastjsonVersion: 'X'`                 (Groovy map-syntax, rare)
+  // Any leading whitespace / newlines / `=` / `:` before the quote.
+  const defRe = new RegExp(
+    `\\b${propName}\\s*[=:]\\s*['"]([^'"\\s]+)['"]`,
+  );
+  const def = buildGradle.match(defRe);
+  if (!def) return null;
+
+  const version = def[1];
+  return { version, noneAutotype: /_noneautotype/i.test(version) };
+}
+
+/**
  * Return true when the given source text contains an in-file call that
  * re-enables Fastjson autotype. Even a `_noneautotype` build does not
  * protect against code that programmatically re-enables the feature
