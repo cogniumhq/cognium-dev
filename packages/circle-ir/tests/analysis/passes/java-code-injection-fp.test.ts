@@ -252,4 +252,72 @@ public class DangerousGroovy {
     const r = await analyze(code, 'DangerousGroovy.java', 'java');
     expect(countCodeInjectionSinks(r.taint?.sinks)).toBeGreaterThanOrEqual(1);
   });
+
+  // -------------------------------------------------------------------------
+  // 9a — #257: `*Parser` semantic gate (inverse-denylist model).
+  // Any receiver type ending in `Parser` that is NOT in
+  // `JAVA_EVAL_PARSER_DENYLIST` (GroovyShell / GroovyClassLoader /
+  // ScriptEngine / CronParser) is a domain-specific DSL parser.
+  // -------------------------------------------------------------------------
+
+  it('FP #257 — Elide ExpressionParser.parse(query, column): no code_injection sink', async () => {
+    // Verbatim shape from the ticket: yahoo/elide
+    // metadatastore/…/QueryPlanTranslator.java:170 —
+    // ExpressionParser builds a column-reference graph, not eval.
+    const code = `import com.yahoo.elide.datastores.aggregation.query.Query;
+import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
+import com.yahoo.elide.datastores.aggregation.metadata.models.Column;
+
+public class QueryPlanTranslator {
+  private final MetaDataStore metaDataStore;
+
+  public QueryPlanTranslator(MetaDataStore metaDataStore) {
+    this.metaDataStore = metaDataStore;
+  }
+
+  public Object translate(Query query, Column column) {
+    ExpressionParser parser = new ExpressionParser(metaDataStore);
+    return parser.parse(query.getSource(), column);
+  }
+}
+`;
+    const r = await analyze(code, 'QueryPlanTranslator.java', 'java');
+    expect(countCodeInjectionSinks(r.taint?.sinks)).toBe(0);
+  });
+
+  it('FP #257 — in-house QueryParser.parse(userInput): no code_injection sink', async () => {
+    // Any user-defined `*Parser` naming domain-parser DSLs (config,
+    // template, query) is now suppressed by the semantic gate.
+    const code = `import javax.servlet.http.HttpServletRequest;
+
+public class DomainQueryService {
+  public Object run(HttpServletRequest req) {
+    String q = req.getParameter("q");
+    QueryParser parser = new QueryParser();
+    return parser.parse(q);
+  }
+}
+`;
+    const r = await analyze(code, 'DomainQueryService.java', 'java');
+    expect(countCodeInjectionSinks(r.taint?.sinks)).toBe(0);
+  });
+
+  it('Recall lock #257 — CronParser.parse(userInput) still fires (denylist preserves existing sink)', async () => {
+    // CronParser is in JAVA_EVAL_PARSER_DENYLIST specifically to
+    // preserve the explicit code_injection sink pattern defined in
+    // config-loader.ts:1383. Not adding it to the denylist would
+    // regress that sink's recall.
+    const code = `import com.cronutils.parser.CronParser;
+import javax.servlet.http.HttpServletRequest;
+
+public class CronService {
+  public Object run(HttpServletRequest req, CronParser cp) {
+    String cron = req.getParameter("cron");
+    return cp.parse(cron);
+  }
+}
+`;
+    const r = await analyze(code, 'CronService.java', 'java');
+    expect(countCodeInjectionSinks(r.taint?.sinks)).toBeGreaterThanOrEqual(1);
+  });
 });

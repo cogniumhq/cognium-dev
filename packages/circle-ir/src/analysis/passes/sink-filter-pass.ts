@@ -142,6 +142,29 @@ const DATA_PARSER_TYPES = new Set<string>([
   'OptionParser', 'CmdLineParser',
 ]);
 
+// #257 — semantic gate promoting #155's name-based allowlist to an
+// inverse-denylist model. Any Java receiver type name ending in
+// `Parser` that is NOT in the eval denylist below is treated as a
+// domain-specific DSL / query / config parser (its `.parse()` result
+// flows into a data structure, not a script engine). The denylist
+// enumerates the receiver types whose `.parse()` is a real
+// code-evaluation sink and must continue to fire:
+//   - GroovyShell / GroovyClassLoader — Groovy runtime eval
+//   - ScriptEngine — JSR-223 script eval
+//   - CronParser — preserved from the explicit `code_injection` sink
+//     pattern in `config-loader.ts:1383` (schedule DSL parsing that
+//     was previously flagged as CWE-94 by design).
+// (Spring SpelExpressionParser / Thymeleaf StandardExpressionParser
+// end in `Parser` too, but their sinks use `method: 'parseExpression'`,
+// not `parse`, so stage 9a's `method === 'parse'` guard never touches
+// them regardless of what is in this set.)
+const JAVA_EVAL_PARSER_DENYLIST = new Set<string>([
+  'GroovyShell',
+  'GroovyClassLoader',
+  'ScriptEngine',
+  'CronParser',
+]);
+
 // #156 — compiled-template classes; risk lives at the compile step,
 // not the render step.
 const COMPILED_TEMPLATE_TYPES = new Set<string>([
@@ -884,9 +907,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
 
         // 9a — #155: non-script data parsers (commonmark, hutool, zxing,
         // CLI arg parsers, SimpleDateFormat, DecimalFormat, …).
+        // #257: generalize to any `*Parser` type not in the eval
+        // denylist — Elide's `ExpressionParser`, in-house query DSLs,
+        // config-language parsers, etc. all follow this naming.
         if (method === 'parse' && receiver) {
           const recvType = resolveJavaReceiverType(receiver, sink.line, sourceLines);
-          if (recvType && DATA_PARSER_TYPES.has(recvType)) return false;
+          if (recvType) {
+            if (DATA_PARSER_TYPES.has(recvType)) return false;
+            if (
+              recvType.endsWith('Parser') &&
+              !JAVA_EVAL_PARSER_DENYLIST.has(recvType)
+            ) {
+              return false;
+            }
+          }
         }
 
         // 9b — #156: compiled-template render/process. Risk lives at the
