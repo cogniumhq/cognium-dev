@@ -116,7 +116,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-3.181.0 release)
+### GitHub issue ledger (as of 2026-07-23, post-#261 + #264 close)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -124,9 +124,7 @@
 | #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | **First slice released 3.181.0 (ecfdabb):** AWS Lambda / API Gateway `event.*` sources (10 property patterns + 6 JS_TAINTED_PATTERNS regex entries; JS/TS + Python). 5 integration tests. | External harness verification deferred (needs `sast-validation` corpora + `score-corpus.py` rerun). Remaining channels: nested-property access taint (`event.pathParameters.id`), 502 more cells across go/ts/bash + sanitizer_kind grid |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
-| #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | **Released 3.179.0:** Gradle direct-form (a22c261) + Python PyYAML (ade4a3f). **Released 3.180.0:** Rust plumbing (354b25c), Gradle catalog (e9640b1), Gradle `constraints{strictly}` (0e21732). **Released 3.181.0:** npm `package.json` plumbing (8921d19, `DependencyContext.js.packageJson` + `resolveDepFromPackageJson` helper, 17 unit tests, no gate consumer — no clean JS version-safety story). | Deferred: gate consumers for Rust + npm plumbing (pending FP-driving evidence); `platform(...)` BOM (deliberate no-op); `subprojects{}` (already covered by direct-form regex) |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
-| #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | **Released 3.179.0:** 8 Java+Go sink additions (a76af04). **Released 3.180.0:** Logger CWE-117 vs CWE-134 decision (f351687); `PythonReceiverTaintFormatPass` for `taintedFmt.format(...)` (eae3391 — later discovered dead-code, see below). **Released 3.181.0:** `.format_map` extended in Sprint 86 regex + PythonReceiverTaintFormatPass rewired from empty `constant-propagation.tainted` to `graph.ir.taint.sources[].variable` so it actually fires as a fallback to Sprint 86 (053e4af). **`%`-operator LHS-taint work CANCELLED** — Sprint 86 (#189) already handles it in `language-sources-pass.ts:7156`. | Deferred: variant-coverage matrix rerun (external corpora, same as #262) |
 
 ### #1 detail (kept from prior version)
 
