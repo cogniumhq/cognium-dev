@@ -203,7 +203,7 @@ describe('#240 ship 1 — open_redirect framework sinks (CWE-601)', () => {
   // then the external_taint_escape fallback fires on these call sites,
   // so recall is not lost — only the sink-type label is generic. See
   // taint-matcher.ts:2137 receiverMightBeClass.
-  it.skip('TP — gin c.Redirect(302, user_url) fires (arg[1]) [gated on Go receiver-type resolution]', async () => {
+  it('TP — gin c.Redirect(302, user_url) fires (arg[1]) [Go receiver-type resolution]', async () => {
     const code = [
       'package main',
       '',
@@ -221,7 +221,14 @@ describe('#240 ship 1 — open_redirect framework sinks (CWE-601)', () => {
     expect(hasOpenRedirectSignal(r)).toBe(true);
   });
 
-  it.skip('TP — fiber c.Redirect(user_url) fires (arg[0]) [gated on Go receiver-type resolution]', async () => {
+  // Ship 2 (#240): Go local-receiver resolver lands `c` → `"Ctx"` and the
+  // fiber `Redirect` sink is detected (`sinks: 1`), but the taint flow
+  // from `next` to arg[0] is not populated — a distinct Go arg[0]
+  // taint-tracking gap unrelated to receiver resolution. External
+  // taint-escape continues to fire on this call site so recall is not
+  // lost; only the fine-grained `open_redirect` label is missing.
+  // Keeping the test skipped until the arg[0] flow gap is closed.
+  it.skip('TP — fiber c.Redirect(user_url) fires (arg[0]) [Go arg[0] flow gap]', async () => {
     const code = [
       'package main',
       '',

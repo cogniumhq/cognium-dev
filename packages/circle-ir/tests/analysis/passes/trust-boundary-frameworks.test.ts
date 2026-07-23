@@ -138,7 +138,7 @@ describe('#240 ship 1 — trust_boundary framework sinks (CWE-501)', () => {
   // sink entry is catalogued so it will fire once the resolver lands.
   // External_taint_escape currently reports the same call site so
   // recall is not lost. See taint-matcher.ts:2137.
-  it.skip('TP — gin c.SetCookie("name", user_value, ...) fires (arg[1]) [gated on Go receiver-type resolution]', async () => {
+  it('TP — gin c.SetCookie("name", user_value, ...) fires (arg[1]) [Go receiver-type resolution]', async () => {
     const code = [
       'package main',
       '',

@@ -313,7 +313,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
       const result = await analyze(code, 'handler.go', 'go');
       const formCall = result.calls.find(c => c.method_name === 'FormValue');
       expect(formCall).toBeDefined();
-      expect(formCall!.receiver).toBe('r');
+      // #240 ship 2: Go local-receiver resolver rewrites bare-identifier
+      // operands that name a function parameter to their declared type's
+      // last identifier segment (`r` with declared `*http.Request` → 'Request').
+      // Prior to ship 2 this returned the operand text 'r'.
+      expect(formCall!.receiver).toBe('Request');
     });
 
     it('extracts plain function calls without receiver', async () => {

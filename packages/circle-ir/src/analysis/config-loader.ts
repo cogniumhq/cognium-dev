@@ -709,6 +709,82 @@ const OPEN_REDIRECT_FRAMEWORK_SINKS: SinkPattern[] = [
 ];
 
 // =========================================================================
+// cognium-dev #240 ship 2 — extend deserialization (CWE-502) framework
+// coverage across Python (pickle / marshal / dill / jsonpickle) and Go
+// (encoding/gob, gopkg.in/yaml). Java coverage (readObject / XStream /
+// ObjectMapper / Yaml SnakeYAML / Kryo / XMLDecoder) is already extensive
+// via DEFAULT_SINKS below; JS/TS `node-serialize.unserialize` added here.
+//
+// Spread into DEFAULT_SINKS below (per the ship-1 pattern).
+// =========================================================================
+const DESERIALIZATION_FRAMEWORK_SINKS: SinkPattern[] = [
+  // --- Python: stdlib + popular third-party --------------------------------
+  // pickle: known-dangerous, any unpickle on untrusted bytes is RCE.
+  { method: 'loads',  class: 'pickle',    type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load',   class: 'pickle',    type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // cPickle alias (Python 2 name, still around in older codebases).
+  { method: 'loads',  class: 'cPickle',   type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load',   class: 'cPickle',   type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // marshal: stdlib code-object deserializer. Loading a tainted bytestring
+  // as a code object followed by `exec` is arbitrary-code execution.
+  { method: 'loads',  class: 'marshal',   type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load',   class: 'marshal',   type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // dill: pickle superset — same RCE profile.
+  { method: 'loads',  class: 'dill',      type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  { method: 'load',   class: 'dill',      type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+  // jsonpickle: JSON wrapper around pickle — trusts `py/object` marker.
+  { method: 'decode', class: 'jsonpickle', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['python'] },
+
+  // --- Go: encoding/gob + yaml.Unmarshal -----------------------------------
+  // gob.NewDecoder(r).Decode(&v): tainted io.Reader → arbitrary Go values.
+  { method: 'Decode', class: 'Decoder', type: 'deserialization', cwe: 'CWE-502', severity: 'high',     arg_positions: [0], languages: ['go'] },
+  // gopkg.in/yaml.v2 + v3 top-level function; interface{} target is unsafe.
+  { method: 'Unmarshal', class: 'yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'high',     arg_positions: [0], languages: ['go'] },
+
+  // --- JS/TS: node-serialize ------------------------------------------------
+  // Known-dangerous — accepts embedded IIFE that runs during deserialize.
+  { method: 'unserialize', class: 'nodeSerialize', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
+];
+
+// =========================================================================
+// cognium-dev #240 ship 2 — extend nosql_injection (CWE-943) framework
+// coverage. JS/TS MongoDB Collection + Mongoose Model are already covered
+// at line 1776+. This ship adds Python (pymongo), Java (Spring Data
+// MongoTemplate + native MongoCollection), and Go (mongo-driver Collection).
+//
+// Spread into DEFAULT_SINKS below.
+// =========================================================================
+const NOSQL_FRAMEWORK_SINKS: SinkPattern[] = [
+  // --- Python: pymongo Collection ------------------------------------------
+  // Every filter-taking Collection method; filter arg[0] is the query dict.
+  { method: 'find',           class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'find_one',       class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'aggregate',      class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'update_one',     class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'update_many',    class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'delete_one',     class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'delete_many',    class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'count_documents',class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['python'] },
+
+  // --- Java: Spring Data MongoTemplate + native MongoCollection ------------
+  { method: 'find',    class: 'MongoTemplate',    type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'findOne', class: 'MongoTemplate',    type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'findAll', class: 'MongoTemplate',    type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'find',    class: 'MongoCollection',  type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'aggregate', class: 'MongoCollection',type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['java'] },
+
+  // --- Go: go.mongodb.org/mongo-driver Collection --------------------------
+  // These fire once Go local-receiver type resolution lands (see
+  // taint-matcher.ts + #240 ship 2 Go receiver work). Same gate as the
+  // gin/fiber Ctx sinks in ship 1.
+  { method: 'Find',       class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [1], languages: ['go'] },
+  { method: 'FindOne',    class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [1], languages: ['go'] },
+  { method: 'UpdateOne',  class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [1, 2], languages: ['go'] },
+  { method: 'UpdateMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [1, 2], languages: ['go'] },
+  { method: 'DeleteOne',  class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [1], languages: ['go'] },
+];
+
+// =========================================================================
 // cognium-dev #240 ship 1 — extend trust_boundary (CWE-501) framework coverage
 //
 // Extracted from DEFAULT_SINKS (see note above). Spread into DEFAULT_SINKS
@@ -2523,6 +2599,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // inference complexity limit (TS2590). See ~lines 661-752.
   ...OPEN_REDIRECT_FRAMEWORK_SINKS,
   ...TRUST_BOUNDARY_FRAMEWORK_SINKS,
+  // cognium-dev #240 ship 2 — extended framework sinks for
+  // deserialization (CWE-502) and nosql_injection (CWE-943). Same
+  // pattern: constants defined near the ship-1 blocks and spread here.
+  ...DESERIALIZATION_FRAMEWORK_SINKS,
+  ...NOSQL_FRAMEWORK_SINKS,
 ];
 
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [

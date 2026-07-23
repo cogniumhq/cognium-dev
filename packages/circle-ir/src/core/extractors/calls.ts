@@ -2401,8 +2401,27 @@ function extractGoCallInfo(node: Node): CallInfo | null {
     // pkg.Function() or obj.Method()
     const operand = funcNode.childForFieldName('operand');
     const field = funcNode.childForFieldName('field');
-    receiver = operand ? getNodeText(operand) : null;
     methodName = field ? getNodeText(field) : getNodeText(funcNode);
+
+    // cognium-dev #240 ship 2 — Go local-receiver type resolution.
+    // When the operand is a bare identifier and matches a method
+    // receiver or function parameter in the enclosing declaration,
+    // rewrite receiver to the type's last identifier segment. This
+    // unblocks sinks defined with `class: 'Context'` (gin/echo/fiber),
+    // `class: 'Ctx'` (fiber), and `class: 'Collection'` (mongo-driver)
+    // when the source shape is `c.Redirect(...)` / `c.SetCookie(...)` /
+    // `col.Find(...)`. Package-qualified calls like `fmt.Sprintf(...)`
+    // fall through to the original operand text (fmt is not a
+    // parameter / receiver, resolver returns null).
+    if (operand) {
+      const opText = getNodeText(operand);
+      if (operand.type === 'identifier') {
+        const resolved = resolveGoLocalReceiverType(opText, node);
+        receiver = resolved !== null ? resolved : opText;
+      } else {
+        receiver = opText;
+      }
+    }
   } else if (funcNode.type === 'identifier') {
     // Plain function call: funcName()
     methodName = getNodeText(funcNode);
@@ -2506,6 +2525,114 @@ function findGoEnclosingFunction(node: Node): string | null {
       return nameNode ? getNodeText(nameNode) : null;
     }
     current = current.parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve a Go local-variable operand (bare identifier receiver in a
+ * `selector_expression`) to its declared type's last identifier segment.
+ *
+ * Handles three enclosing-declaration shapes:
+ *   1. Method receiver:   `func (c *gin.Context) H() { c.Redirect(...) }`
+ *   2. Function param:    `func H(c *gin.Context, url string) { c.Redirect(...) }`
+ *   3. Multi-name param:  `func H(a, b *Foo) { a.Bar() }`  (identifier_list)
+ *
+ * Returns `null` when the operand does not match any receiver or
+ * parameter in the nearest enclosing `method_declaration` /
+ * `function_declaration` / `func_literal` — the caller then falls back
+ * to the operand text so package-qualified calls like `fmt.Sprintf(...)`
+ * continue to work.
+ *
+ * cognium-dev #240 ship 2.
+ */
+function resolveGoLocalReceiverType(operandName: string, callNode: Node): string | null {
+  let cur: Node | null = callNode.parent;
+  while (cur) {
+    if (cur.type === 'method_declaration') {
+      const receiver = cur.childForFieldName('receiver');
+      if (receiver) {
+        const t = extractGoParamTypeForName(receiver, operandName);
+        if (t !== null) return t;
+      }
+      const params = cur.childForFieldName('parameters');
+      if (params) {
+        const t = extractGoParamTypeForName(params, operandName);
+        if (t !== null) return t;
+      }
+      return null;
+    }
+    if (cur.type === 'function_declaration' || cur.type === 'func_literal') {
+      const params = cur.childForFieldName('parameters');
+      if (params) {
+        const t = extractGoParamTypeForName(params, operandName);
+        if (t !== null) return t;
+      }
+      return null;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Scan a Go `parameter_list` for a `parameter_declaration` naming
+ * `operandName` (directly or inside an `identifier_list`) and return
+ * its type's last identifier segment. Returns `null` on miss.
+ */
+function extractGoParamTypeForName(list: Node, operandName: string): string | null {
+  for (let i = 0; i < list.namedChildCount; i++) {
+    const child = list.namedChild(i);
+    if (!child || child.type !== 'parameter_declaration') continue;
+
+    const typeNode = child.childForFieldName('type');
+    if (!typeNode) continue;
+
+    let matched = false;
+    for (let j = 0; j < child.namedChildCount; j++) {
+      const c = child.namedChild(j);
+      if (!c) continue;
+      if (c.type === 'identifier' && getNodeText(c) === operandName) {
+        matched = true;
+        break;
+      }
+      if (c.type === 'identifier_list') {
+        for (let k = 0; k < c.namedChildCount; k++) {
+          const id = c.namedChild(k);
+          if (id && id.type === 'identifier' && getNodeText(id) === operandName) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+    }
+    if (!matched) continue;
+
+    return extractGoTypeLastSegment(typeNode);
+  }
+  return null;
+}
+
+/**
+ * Return the last identifier segment of a Go type expression:
+ *   `*gin.Context` → `"Context"`;  `gin.Context` → `"Context"`;
+ *   `*Context`     → `"Context"`;  `Context`     → `"Context"`;
+ *   `[]byte`       → `null`  (structured types not yet handled).
+ */
+function extractGoTypeLastSegment(typeNode: Node): string | null {
+  if (typeNode.type === 'pointer_type') {
+    const inner = typeNode.namedChild(0);
+    return inner ? extractGoTypeLastSegment(inner) : null;
+  }
+  if (typeNode.type === 'qualified_type') {
+    const name = typeNode.childForFieldName('name');
+    if (name) return getNodeText(name);
+    const last = typeNode.namedChild(typeNode.namedChildCount - 1);
+    return last ? getNodeText(last) : null;
+  }
+  if (typeNode.type === 'type_identifier' || typeNode.type === 'identifier') {
+    return getNodeText(typeNode);
   }
   return null;
 }
