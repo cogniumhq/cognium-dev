@@ -152,6 +152,106 @@ export function resolveFastjsonFromGradle(buildGradle: string): FastjsonPomResol
   return { version, noneAutotype: /_noneautotype/i.test(version) };
 }
 
+/**
+ * Extract the effective Fastjson version from a Gradle version-catalog
+ * (`gradle/libs.versions.toml`) combined with the `build.gradle` script
+ * that references it via a `libs.<alias>` accessor.
+ *
+ * cognium-dev #261 (Gradle catalog slice, extending the direct-Gradle
+ * shape landed in the first Gradle slice).
+ *
+ * Recognises the two common `[libraries]` entry shapes:
+ *
+ *   fastjson = { module = "com.alibaba:fastjson", version.ref = "fastjson" }
+ *   fastjson = { group = "com.alibaba", name = "fastjson", version.ref = "fastjson" }
+ *
+ * The version can be either a `version.ref` pointer into the
+ * `[versions]` section, or an inline `version = "…"` on the library
+ * entry itself. Both forms are handled.
+ *
+ * The build.gradle must reference the resolved alias via a
+ * `libs.<alias>` accessor (or `libs.<dashed>` — Gradle normalises
+ * dashes to dots for accessor names, but at the toml level the key
+ * uses the original form; we match the toml alias here). If the alias
+ * isn't referenced anywhere in the build.gradle, returns null — an
+ * unreferenced catalog entry is not an active dependency.
+ *
+ * Returns null when no fastjson library entry exists, when the version
+ * cannot be resolved, or when the alias is defined but unreferenced.
+ * The `DeserializationSafetyGatePass` then falls through to its
+ * default "do not drop" behaviour.
+ */
+export function resolveFastjsonFromGradleCatalog(
+  buildGradle: string,
+  libsVersionsToml: string,
+): FastjsonPomResolution | null {
+  if (!buildGradle || !libsVersionsToml) return null;
+
+  // 1. Locate the [libraries] block. Non-greedy to next `[section]` or EOF.
+  const librariesMatch = libsVersionsToml.match(
+    /\[libraries\]([\s\S]*?)(?=\n\[|$)/,
+  );
+  if (!librariesMatch) return null;
+  const librariesBlock = librariesMatch[1];
+
+  // 2. Find the alias whose entry maps to com.alibaba:fastjson. Try
+  //    both `module = "com.alibaba:fastjson"` and split
+  //    `group = "com.alibaba"` + `name = "fastjson"` forms.
+  const moduleForm = librariesBlock.match(
+    /^\s*([\w.-]+)\s*=\s*\{[^}]*\bmodule\s*=\s*"com\.alibaba:fastjson"[^}]*\}/m,
+  );
+  const groupNameForm = librariesBlock.match(
+    /^\s*([\w.-]+)\s*=\s*\{[^}]*\bgroup\s*=\s*"com\.alibaba"[^}]*\bname\s*=\s*"fastjson"[^}]*\}/m,
+  );
+  const entry = moduleForm ?? groupNameForm;
+  if (!entry) return null;
+
+  const alias = entry[1];
+  const entryBody = entry[0];
+
+  // 3. The build script must actually consume this alias — an unused
+  //    catalog entry is not an active dep. The Gradle accessor form is
+  //    `libs.<alias>` (or `libs.<pathified>` for dot-separated aliases;
+  //    for the MVP we match the alias verbatim).
+  const aliasEsc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const aliasRefRe = new RegExp(`\\blibs\\s*\\.\\s*${aliasEsc}\\b`);
+  if (!aliasRefRe.test(buildGradle)) return null;
+
+  // 4. Extract version. Inline `version = "..."` on the library entry
+  //    beats `version.ref` if both are present (matches Gradle's own
+  //    resolution).
+  const inlineVersionM = entryBody.match(
+    /\bversion\s*=\s*"([^"$][^"]*)"/,
+  );
+  if (inlineVersionM) {
+    const version = inlineVersionM[1];
+    return { version, noneAutotype: /_noneautotype/i.test(version) };
+  }
+
+  const versionRefM = entryBody.match(/\bversion\.ref\s*=\s*"([^"]+)"/);
+  if (!versionRefM) return null;
+
+  const versionAlias = versionRefM[1];
+
+  // 5. Look up the version-alias in the [versions] block.
+  const versionsMatch = libsVersionsToml.match(
+    /\[versions\]([\s\S]*?)(?=\n\[|$)/,
+  );
+  if (!versionsMatch) return null;
+  const versionsBlock = versionsMatch[1];
+
+  const versionAliasEsc = versionAlias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const versionLineRe = new RegExp(
+    `^\\s*${versionAliasEsc}\\s*=\\s*"([^"]+)"`,
+    'm',
+  );
+  const versionLine = versionsBlock.match(versionLineRe);
+  if (!versionLine) return null;
+
+  const version = versionLine[1];
+  return { version, noneAutotype: /_noneautotype/i.test(version) };
+}
+
 // ---------------------------------------------------------------------------
 // Python — PyYAML version detection (cognium-dev #261 Python slice)
 // ---------------------------------------------------------------------------

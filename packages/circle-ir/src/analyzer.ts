@@ -384,6 +384,15 @@ export interface DependencyContext {
      * dependency. Added by cognium-dev #261 (Gradle-first slice).
      */
     buildGradle?: string;
+    /**
+     * Raw `gradle/libs.versions.toml` content (Gradle version-catalog).
+     * When present alongside `buildGradle`, the gate follows any
+     * `libs.<alias>` reference in the build script through the
+     * `[libraries]` and `[versions]` sections of the catalog to resolve
+     * the effective declared version. Added by cognium-dev #261
+     * (Gradle catalog slice).
+     */
+    libsVersionsToml?: string;
   };
   /**
    * Python project manifests (added cognium-dev #261 Python slice). Both

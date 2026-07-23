@@ -46,6 +46,7 @@ import type { DependencyContext } from '../../analyzer.js';
 import {
   resolveFastjsonFromPom,
   resolveFastjsonFromGradle,
+  resolveFastjsonFromGradleCatalog,
   resolvePyYamlFromRequirements,
   resolvePyYamlFromPyproject,
   fileHasUnsafePyYamlLoader,
@@ -111,9 +112,13 @@ export class DeserializationSafetyGatePass
     // classifier is sufficient to drop the sink.
     const pomXml = this.dependencyContext?.java?.pomXml;
     const buildGradle = this.dependencyContext?.java?.buildGradle;
+    const libsVersionsToml = this.dependencyContext?.java?.libsVersionsToml;
     const fastjson =
       (pomXml ? resolveFastjsonFromPom(pomXml) : null) ??
-      (buildGradle ? resolveFastjsonFromGradle(buildGradle) : null);
+      (buildGradle ? resolveFastjsonFromGradle(buildGradle) : null) ??
+      (buildGradle && libsVersionsToml
+        ? resolveFastjsonFromGradleCatalog(buildGradle, libsVersionsToml)
+        : null);
     const fastjsonHardened =
       fastjson?.noneAutotype === true &&
       !fileReenablesFastjsonAutotype(code);
