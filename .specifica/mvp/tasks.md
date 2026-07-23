@@ -113,18 +113,18 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-#260 + #263 unreleased on main)
+### GitHub issue ledger (as of 2026-07-23, post-#240 close / #264 filed)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
 | #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | Not started | Rust/TS branches of the #67/#82 work |
 | #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
-| #240 | FN | Zero-recall categories (trust_boundary / deser / open_redirect / format_string / nosql) | **Ship 2 landed 3.177.0 (2026-07-23):** `deserialization` (11 patterns: Python pickle/marshal/dill/jsonpickle + Go gob/yaml + JS node-serialize) and `nosql_injection` (18 patterns: Python pymongo + Java Spring Data + Go mongo-driver) framework sinks; Go local-receiver type resolver (`c *gin.Context` → `"Context"`, `c *fiber.Ctx` → `"Ctx"`) via `resolveGoLocalReceiverType` in `extractors/calls.ts`. Ship 1 landed 3.175.0 (`open_redirect` + `trust_boundary`). | `format_string` (existing coverage already adequate — deferred). Fiber `c.Redirect` still shows a fine-grained-label gap (Go arg[0] taint-flow); external_taint_escape preserves recall, tracked as a follow-up on this ticket |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
-| #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; check in `perf/harness.mjs` for wall-clock validation of the T1#5/T1#2/T2#7/T2#9/T2#10 bundle |
+| #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; perf harness landed 2026-07-23 (#263, `packages/circle-ir/perf/`) — use it to validate the T2#8 ROI before shipping |
 | #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
+| #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | Not started | Rerun variant-coverage matrix to baseline current FN count; add MessageFormat / PrintWriter / log.Printf / slog sink patterns; scope `str.format` / `%`-operator LHS-taint separately as engine-level work |
 
 ### Unreleased on main (2026-07-23)
 
@@ -138,6 +138,7 @@ Both held pending the next release cut.
 **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
 
 ### Recently closed
+- #240 closed 2026-07-23 (zero-recall category coverage — ship 1 (3.175.0 `open_redirect` + `trust_boundary`), ship 2 (3.177.0 `deserialization` + `nosql_injection` + Go local-receiver resolver), fiber-flow residual fixed via #260 6d28db3, `format_string` split out to #264)
 - #263 closed 2026-07-23 (perf harness + baseline checked in — `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`; deterministic synthetic Java fixtures; commit 0104f72; unreleased on main pending next release cut)
 - #260 closed 2026-07-23 (Go fiber `c.Redirect` arg[0] flow gap — root cause was sink-dedup ordering, fix is a +0.05 exact-class-match confidence tiebreaker in `calculateSinkConfidence`; commit 6d28db3; unreleased on main pending next release cut)
 - #258 closed 2026-07-23 (deserialization-safety gate — Fastjson `*_noneautotype` manifest gate + Jackson polymorphism in-file gate + SnakeYAML SafeConstructor in-file gate; released as circle-ir 3.178.0 / commit de134a5)
