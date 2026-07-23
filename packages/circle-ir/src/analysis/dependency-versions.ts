@@ -322,6 +322,82 @@ export function fileHasUnsafePyYamlLoader(
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Rust — Cargo.toml dep resolution (cognium-dev #261 Rust slice, plumbing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generic result: the declared version string + the parsed feature list
+ * (for `[dependencies] pkg = { version = "…", features = ["safe"] }`
+ * shapes). Returns null when the dep is absent, or when the version is
+ * a `{ git = "…" }` / `{ path = "…" }` non-registry source (no version
+ * string to compare against). Feature-set matching is left to the
+ * caller; this helper only parses.
+ */
+export interface CargoDepResolution {
+  version: string;
+  features: string[];
+}
+
+/**
+ * Extract the declared version + feature list for a named crate from a
+ * `Cargo.toml`. Recognises the standard `[dependencies]` (and
+ * `[dev-dependencies]` / `[build-dependencies]`) shapes:
+ *
+ *   pkg = "1.2.3"                              — bare string
+ *   pkg = { version = "1.2.3" }                — table with version
+ *   pkg = { version = "1.2.3", features = ["a", "b"] }
+ *   pkg = { git = "…" }                        — git source (no version)
+ *   pkg = { path = "…" }                       — path source (no version)
+ *
+ * Cross-table dependency declarations (`[dependencies.pkg]`) are not
+ * yet recognised; those are less common and can be added when needed.
+ * Regex-based rather than a full TOML parser to keep the runtime-dep
+ * list minimal (Pillar I).
+ */
+export function resolveDepFromCargoToml(
+  cargoToml: string,
+  crateName: string,
+): CargoDepResolution | null {
+  if (!cargoToml || !crateName) return null;
+
+  const nameEsc = crateName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Shape 1: bare string — `pkg = "1.2.3"`.
+  const bareRe = new RegExp(
+    `^\\s*${nameEsc}\\s*=\\s*"([\\d.]+[^"\\s]*)"`,
+    'm',
+  );
+  const bare = cargoToml.match(bareRe);
+  if (bare) {
+    return { version: bare[1], features: [] };
+  }
+
+  // Shape 2: inline table — `pkg = { version = "1.2.3", features = [...] }`.
+  // Match the table body then extract version + optional features.
+  const tableRe = new RegExp(`^\\s*${nameEsc}\\s*=\\s*\\{([^}]*)\\}`, 'm');
+  const table = cargoToml.match(tableRe);
+  if (!table) return null;
+
+  const body = table[1];
+  const versionM = body.match(/\bversion\s*=\s*"([\d.]+[^"\s]*)"/);
+  if (!versionM) return null;
+  const version = versionM[1];
+
+  const featuresM = body.match(/\bfeatures\s*=\s*\[([^\]]*)\]/);
+  const features: string[] = [];
+  if (featuresM) {
+    const featureStr = featuresM[1];
+    const re = /"([^"]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(featureStr)) !== null) {
+      features.push(m[1]);
+    }
+  }
+
+  return { version, features };
+}
+
 /**
  * Return true when the given source text contains an in-file call that
  * re-enables Fastjson autotype. Even a `_noneautotype` build does not

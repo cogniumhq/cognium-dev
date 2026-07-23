@@ -399,6 +399,21 @@ export interface DependencyContext {
     /** Raw `pyproject.toml` content (Poetry / PEP 621). */
     pyprojectToml?: string;
   };
+  /**
+   * Rust project manifest (added cognium-dev #261 Rust slice).
+   *
+   * **Plumbing shipped ahead of gate integration.** Currently no gate
+   * consumes `cargoToml`: `serde_yaml` is deprecated (no safe successor
+   * to gate on), `bincode` has no safe-mode feature, and no other Rust
+   * deserialization sink in `DEFAULT_SINKS` has a clean version-safety
+   * story. The field + `resolveDepFromCargoToml` helper are shipped so
+   * future work can attach a gate without another round of API-surface
+   * additions when a real Rust FP-driving case appears.
+   */
+  rust?: {
+    /** Raw `Cargo.toml` content. */
+    cargoToml?: string;
+  };
 }
 
 /**
