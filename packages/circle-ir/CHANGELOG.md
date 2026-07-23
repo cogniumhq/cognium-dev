@@ -5,6 +5,151 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.181.0] - 2026-07-23
+
+Three engine commits since 3.180.0. Continues the incremental
+burn-down on #261 and #264, plus first slice on #213.
+4204 pass, 2 skipped, 0 regressions vs 3.180.0.
+
+### #264 — `.format_map` extension + PythonReceiverTaintFormatPass rewire (053e4af)
+
+Two related fixes discovered together while implementing the
+`.format_map` extension.
+
+- **`.format_map` extension** — `language-sources-pass.ts:7149`
+  Sprint 86 (#189) regex extended from `.format\s*\(` to
+  `(?:format|format_map)\s*\(`. Both share the same receiver-taint
+  risk shape; `.format_map` accepts a mapping instead of `*args`
+  but the attribute-leak / DoS surface is identical.
+
+- **PythonReceiverTaintFormatPass rewired to a working taint
+  signal.** The pass shipped in 3.180.0 was dead code:
+  `ConstantPropagatorResult.tainted` is empty for the Python cases
+  the pass was designed to detect (diagnostic showed `tainted.size = 0`
+  on every test). Findings were entirely produced by the parallel
+  Sprint 86 (#189) codepath in `language-sources-pass.ts` — the
+  3.180.0 tests passed by accident because they only checked
+  `count >= 1` and Sprint 86 was co-firing.
+
+  Rewired to consume `graph.ir.taint.sources[].variable` (the
+  identifier names the taint-matcher recognises as sources), which
+  IS populated for Python cases regardless of constant-propagation's
+  Python coverage. The pass now genuinely acts as a fallback to
+  Sprint 86 for cases that path misses:
+  - Files without a Flask / Django / FastAPI request extractor
+    (Sprint 86 short-circuits and never runs).
+  - Non-framework taint sources (`os.environ`, `sys.stdin`) that
+    the plugin's `getBuiltinSources()` catches but Sprint 86's
+    framework gate excludes.
+
+  Added a dedup `seen` set so the pass does not emit a second
+  finding when Sprint 86 fires on the same call site.
+
+- **Cancelled**: the planned Python `%`-operator LHS-taint pass.
+  Investigating format_map surfaced that Sprint 86 already handles
+  the `<name> % <rhs>` shape at `language-sources-pass.ts:7156`.
+  Would have been duplicate work.
+
+### #261 — npm `package.json` plumbing (8921d19)
+
+Same shape as the 3.180.0 Rust `Cargo.toml` plumbing.
+
+- New `DependencyContext.js.packageJson?: string`.
+- New `resolveDepFromPackageJson(packageJson, depName)` generic
+  helper. Uses `JSON.parse` (no regex — package.json is real JSON).
+  Searches sections in npm-precedence order: `dependencies` →
+  `devDependencies` → `peerDependencies` → `optionalDependencies`.
+  Returns first match with `{ version, section }`.
+- Returns null for non-registry sources (`git+`, `github:`,
+  `file:`, `workspace:`, HTTP URLs, `npm:` aliases without a
+  version).
+- Handles scoped packages (`@types/node`).
+
+**Plumbing-only ship.** No JS deserializer has a clean
+version-safety story analogous to Fastjson `*_noneautotype` /
+PyYAML ≥ 6.0 (`node-serialize` is inherently dangerous regardless
+of version; `serialize-javascript` variants don't ship safe-fork
+classifiers). Same assessment as the Rust slice — field + resolver
+ship so future gate work doesn't need another round of
+API-surface additions when a real JS FP-driving case appears.
+
+17 parser-only unit tests.
+
+### #213 — AWS Lambda / API Gateway event sources (ecfdabb)
+
+First slice of the transport-channel matrix. Existing coverage
+already handles most channels (Express / Vercel / Cloudflare
+`req.X`; gRPC metadata; GraphQL resolver args). The `event`-shaped
+Lambda / API Gateway convention was the material gap.
+
+- 10 property patterns in `config-loader.ts:DEFAULT_SOURCES`
+  (`event.body`, `event.queryStringParameters`,
+  `event.multiValueQueryStringParameters`, `event.pathParameters`,
+  `event.headers`, `event.multiValueHeaders` — full set for
+  JS/TS, subset for Python).
+- 6 regex entries in `language-sources-pass.ts:JS_TAINTED_PATTERNS`.
+  Forward-taint tracking through `const q = event.body;
+  sink(q)` needs the regex entry in addition to the property
+  pattern (discovered during test failure — the property pattern
+  alone only fires on direct call-argument access; forward-
+  propagation through variable assignments is driven by the regex
+  list).
+
+Scope caveats (deferred):
+- **1-level access only.** `event.pathParameters.id` (nested access)
+  falls through the current JS taint-argument matcher — deeper
+  chains aren't propagated by the property-source pattern. Tests
+  lock in the 1-level shape.
+- **External harness verification deferred.** Per the #213 ticket,
+  success is measured by `sast-validation/research/zero-fp-corpus/
+  status.md` via `score-corpus.py`. That corpus isn't in this
+  repo; running the harness against 3.181.0 is a separate
+  follow-up.
+
+5 integration tests + 1 FP-guard.
+
+### API surface additions
+
+- `AnalyzerOptions.dependencyContext.js?: { packageJson?: string }`
+
+Existing consumers unchanged.
+
+### Scope
+
+- No new runtime dependencies (still `web-tree-sitter` + `yaml`).
+- No Node.js APIs in library code.
+- No LLM / AI wording anywhere.
+
+### Tests
+
+- Baseline (3.180.0): 4181 pass, 2 skipped, 303 files.
+- This release: **4204 pass, 2 skipped, 305 files** (+23 tests
+  across 3 new test files + 1 touched).
+
+### Discovered but NOT shipped this release
+
+- **#243 diagnostic** posted to the ticket. Go closure taint
+  capture already works — the ticket's assumption was wrong.
+  Loop-carried range / package-global store-read / JSON-roundtrip
+  are genuine gaps but need deeper taint-propagator work (not
+  DFG changes). Split into scoped follow-ups on #243.
+
+### Still open
+
+- **#264** — variant-coverage matrix rerun (external corpora,
+  same as #262). Python receiver-taint `%`-operator work
+  cancelled — already in Sprint 86.
+- **#261** — no clean version-safety stories for npm/Rust JS/Rust
+  deserializers; plumbing shipped, gate integration deferred
+  pending FP-driving evidence.
+- **#213** — external harness verification; nested-property access
+  taint propagation deferred.
+- **#243** — deeper taint-propagator work per the diagnostic
+  comment.
+- **#146** (Rust + TS cross-file), **#213** aggregate (512-cell
+  burn-down), **#172** (living umbrella), **#262** (external
+  corpora) — untouched.
+
 ## [3.180.0] - 2026-07-23
 
 Five engine commits landing together since 3.179.0. Continues the

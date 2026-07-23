@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.181.0] - 2026-07-23
+
+Adopts [`circle-ir@3.181.0`](https://www.npmjs.com/package/circle-ir),
+which bundles three engine commits since 3.180.0: `#264` `.format_map`
+extension + PythonReceiverTaintFormatPass rewire to a working taint
+signal (the pass shipped in 3.180.0 was dead code; now genuinely
+functions as a fallback to Sprint 86 for cases outside the
+Flask/Django/FastAPI framework gate), `#261` npm `package.json`
+plumbing (mirrors the 3.180.0 Rust plumbing; plumbing-only ship —
+no JS deserializer has a clean version-safety story), `#213` first
+transport-channel slice (AWS Lambda / API Gateway `event.X` sources
+for JS/TS + Python).
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4204 pass, 2 skipped, 0 regressions vs 3.180.0.
+
+### API surface additions (for consumers of `analyze()`)
+
+- `AnalyzerOptions.dependencyContext.js?: { packageJson?: string }`
+
+Existing consumers unchanged. See the [circle-ir 3.181.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.181.0) for full engine detail.
+
 ## [3.180.0] - 2026-07-23
 
 Adopts [`circle-ir@3.180.0`](https://www.npmjs.com/package/circle-ir),
