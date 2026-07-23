@@ -30,17 +30,29 @@ describe('#264 Python receiver-taint — PythonReceiverTaintFormatPass', () => {
     expect(countFormatStringFindings(r)).toBeGreaterThanOrEqual(1);
   });
 
-  it('TP — tainted format template with .format_map is NOT flagged by this pass (only .format is scoped)', async () => {
-    // Explicit non-coverage note. format_map has the same
-    // receiver-taint risk but this MVP only targets .format.
-    // If format_map becomes a common problem, extend the method-name
-    // check to include it.
+  it('TP — tainted `fmt.format_map({...})` also fires (extended in 3.181.0)', async () => {
+    // format_map has the same receiver-taint risk as format. The
+    // ORIGINAL 3.180.0 MVP scoped only to `.format`; this test locks
+    // in the extension that added `.format_map` to the method-name
+    // check.
     const code = [
       'from flask import request',
       '',
       'def handler():',
       '    fmt = request.args.get("fmt")',
       '    return fmt.format_map({"x": 1})',
+    ].join('\n');
+    const r = await analyze(code, 'v.py', 'python');
+    expect(countFormatStringFindings(r)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('FP-guard — literal-template `.format_map({...})` at call site: no finding', async () => {
+    const code = [
+      'from flask import request',
+      '',
+      'def handler():',
+      '    user = request.args.get("k")',
+      '    return "Hello, {k}!".format_map({"k": user})',
     ].join('\n');
     const r = await analyze(code, 'v.py', 'python');
     expect(countFormatStringFindings(r)).toBe(0);

@@ -7145,8 +7145,12 @@ export function findPythonTaintedFormatStringFindings(
   // string literal. Avoid false-fire on `2 % x` etc. by gating on
   // taintedVar appearing as the LHS of `%`.
   const percentRe = /\b(\w+)\s*%\s*[\(\[\{"'\w]/;
-  // str.format(...): `<name>.format(`
-  const dotFormatRe = /\b(\w+)\s*\.\s*format\s*\(/;
+  // str.format(...) or str.format_map({...}): `<name>.format(` /
+  // `<name>.format_map(`. Both are the same receiver-taint risk shape;
+  // format_map accepts a mapping instead of *args, but the attribute-
+  // leak / DoS surface is identical. cognium-dev #264 (.format_map
+  // extension, 3.181.0).
+  const dotFormatRe = /\b(\w+)\s*\.\s*(?:format|format_map)\s*\(/;
   const seen = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
