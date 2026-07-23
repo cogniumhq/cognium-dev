@@ -1729,6 +1729,20 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'onNewInstance', class: 'SandboxInterceptor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
 
   // Java Log Injection (slf4j / logback / java.util.logging) — CWE-117
+  //
+  // Classification decision — cognium-dev #264: Logger receivers stay
+  // as log_injection (CWE-117), NOT format_string (CWE-134). The real
+  // vulnerability with tainted data flowing into Logger.log(fmt, ...)
+  // is log-forgery via CRLF injection, not format-string exploitation.
+  // A genuine format_string vulnerability requires the FORMAT STRING
+  // itself to be attacker-controlled, which is virtually never the
+  // case in Logger APIs (the format string is a literal at the call
+  // site). Adding format_string sinks for these same receivers would
+  // duplicate the existing log_injection findings on every call site
+  // without adding real signal. The rare edge case where a caller
+  // passes `taintedFmt` at arg[0] is still caught by these entries
+  // (via arg_positions[0] on the SLF4J-family methods), classified as
+  // log_injection.
   // Issue #44: log.info/warn/error/debug emit the message argument and any
   // {} format arguments to the log stream. Untrusted input forwarded into
   // these calls allows log forging (newline injection) and downstream log
