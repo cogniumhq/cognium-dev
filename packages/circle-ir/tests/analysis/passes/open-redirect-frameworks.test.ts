@@ -221,14 +221,18 @@ describe('#240 ship 1 — open_redirect framework sinks (CWE-601)', () => {
     expect(hasOpenRedirectSignal(r)).toBe(true);
   });
 
-  // Ship 2 (#240): Go local-receiver resolver lands `c` → `"Ctx"` and the
-  // fiber `Redirect` sink is detected (`sinks: 1`), but the taint flow
-  // from `next` to arg[0] is not populated — a distinct Go arg[0]
-  // taint-tracking gap unrelated to receiver resolution. External
-  // taint-escape continues to fire on this call site so recall is not
-  // lost; only the fine-grained `open_redirect` label is missing.
-  // Keeping the test skipped until the arg[0] flow gap is closed.
-  it.skip('TP — fiber c.Redirect(user_url) fires (arg[0]) [Go arg[0] flow gap]', async () => {
+  // cognium-dev #260 fix (3.179.0): the "Go arg[0] flow gap" turned out
+  // to be a sink-dedup ordering bug — the fiber `class: 'Ctx'` pattern
+  // was losing the sinkMap slot to the gin `class: 'Context'` pattern
+  // via `receiverMightBeClass`'s fuzzy "'ctx' is contained in 'context'
+  // and covers ≥ 40 % of it" heuristic. Both patterns had equal
+  // confidence, so iteration order (gin defined first at config-loader
+  // line 707, fiber at line 708) picked the wrong one, emitting the
+  // sink with `argPositions: [1]` and dropping the tainted arg[0] flow.
+  // `calculateSinkConfidence` now boosts exact class matches by an
+  // extra 0.05, guaranteeing the fiber pattern wins when the receiver
+  // is exactly 'Ctx'.
+  it('TP — fiber c.Redirect(user_url) fires (arg[0]) [#260]', async () => {
     const code = [
       'package main',
       '',

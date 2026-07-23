@@ -2615,6 +2615,24 @@ function calculateSinkConfidence(call: CallInfo, pattern: SinkPattern): number {
   if (pattern.class && call.receiver) {
     if (receiverMightBeClass(call.receiver, pattern.class)) {
       confidence += 0.1;
+      // cognium-dev #260 — EXACT-match tiebreaker. When two patterns
+      // for the same `(method, cwe)` both accept the receiver — one
+      // exactly (e.g. class: 'Ctx' vs receiver 'Ctx') and one via
+      // `receiverMightBeClass` fuzzy heuristics (e.g. class: 'Context'
+      // vs receiver 'Ctx' via the includes/40%-length rule at
+      // taint-matcher.ts:2366) — the fuzzy match used to win the
+      // `sinkMap` dedup slot when it iterated first (both had the same
+      // 0.9 confidence). The extra boost here guarantees the exact-
+      // match pattern's `arg_positions` are the ones emitted on the
+      // final sink. Fixes the fiber `c.Redirect(next)` shape whose
+      // sink was emitted with the gin `class: 'Context'` pattern's
+      // `arg_positions: [1]` instead of fiber `class: 'Ctx'`'s
+      // `arg_positions: [0]`, dropping the taint flow silently.
+      const receiverLc = call.receiver.toLowerCase();
+      const classLc = pattern.class.toLowerCase();
+      if (call.receiver === pattern.class || receiverLc === classLc) {
+        confidence += 0.05;
+      }
     }
   }
 
