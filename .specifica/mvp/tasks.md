@@ -76,6 +76,7 @@
 
 ## Completed
 
+- [x] **Release 3.178.0** — Bundled `#258` deserialization-safety gate (new `AnalyzerOptions.dependencyContext` capability — Fastjson `*_noneautotype` manifest gate + Jackson polymorphism in-file gate + SnakeYAML SafeConstructor in-file gate; Java-only MVP with Pillar I preserved) and `#143` note-level finding coalescer (additive `labels[]` on `SastFinding`; MVP of the 2026-07-03 reopen, scoped to `level === 'note'` only). 4112 pass, 3 skipped, 0 regressions vs 3.177.0. Both large-group tickets landed as one minor. (f647d0d, 2026-07-23)
 - [x] **Release 3.177.0** — Bundled `#254` perf partials (T1#5 `receiverMightBeClass` memo, T2#7 language-filter hoist, T2#10 `walkBackwardDefs` memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache reuse), `#257` Java `code_injection` `*Parser` semantic gate (closes Elide FP), and `#240` ship 2 zero-recall coverage (`deserialization` + `nosql_injection` framework sinks + Go local-receiver type resolver). IR semantic change: Go `CallInfo.receiver` now holds resolved type name for local-variable operands (documented in CLI changelog). 4087 pass, 3 skipped, 0 regressions vs 3.176.0. (86852ec, 2026-07-23)
 - [x] **Release 3.34.0** — Runtime-registration extractor Phase 3 (Rust trait dispatch, #15). New `RuntimeRegistration.kind = 'trait_impl'` covers (a) `impl Trait for Type` blocks emitting one registration per method with stdlib / actix / axum / rocket / tokio / serde / unknown classification via last-segment + prefix matching, (b) `inventory::submit! { Plugin::new(...) }` macros as `framework: 'inventory'` with handler from token tree, (c) `#[linkme::distributed_slice]` / `#[distributed_slice]` attributes as `framework: 'linkme'` walking parent siblings to next `static_item` / `function_item`. Rust node cache extended with `attribute_item` + `static_item`. 11 new tests; suite 1895 passing. Closes #15 (Phase 3 of 3 — full runtime-registration roadmap complete). (bbb59c1, 2026-06-10)
 - [x] **Release 3.33.0** — Runtime-registration extractor Phase 2 (Python decorators, #15). Records every `@decorator` on `def`/`async def`: Flask/FastAPI routes as `http_route`, `@app.before_request`/`@app.after_request` as `middleware`, `@app.errorhandler` as `event_listener`, `@pytest.fixture`/`@click.command()`/`@property` etc. as `decorator` with framework tags (`pytest`, `click`, `stdlib`, `numba`, `celery`, `django`, `unknown`). Chained decorators emit one registration each. 10 new tests; suite 1884 passing. (a6c74ed, 2026-06-10)
@@ -112,7 +113,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-3.177.0 release)
+### GitHub issue ledger (as of 2026-07-23, post-3.178.0 release)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -123,13 +124,14 @@
 | #240 | FN | Zero-recall categories (trust_boundary / deser / open_redirect / format_string / nosql) | **Ship 2 landed 3.177.0 (2026-07-23):** `deserialization` (11 patterns: Python pickle/marshal/dill/jsonpickle + Go gob/yaml + JS node-serialize) and `nosql_injection` (18 patterns: Python pymongo + Java Spring Data + Go mongo-driver) framework sinks; Go local-receiver type resolver (`c *gin.Context` → `"Context"`, `c *fiber.Ctx` → `"Ctx"`) via `resolveGoLocalReceiverType` in `extractors/calls.ts`. Ship 1 landed 3.175.0 (`open_redirect` + `trust_boundary`). | `format_string` (existing coverage already adequate — deferred). Fiber `c.Redirect` still shows a fine-grained-label gap (Go arg[0] taint-flow); external_taint_escape preserves recall, tracked as a follow-up on this ticket |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
 | #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; check in `perf/harness.mjs` for wall-clock validation of the T1#5/T1#2/T2#7/T2#9/T2#10 bundle |
-| #258 | FP | Fastjson `parseObject` on `1.2.83_noneautotype` build fires CWE-502 critical | Not started | Dependency-version-aware sink gating (new capability) |
 
 ### #1 detail (kept from prior version)
 
 **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
 
 ### Recently closed
+- #258 closed 2026-07-23 (deserialization-safety gate — Fastjson `*_noneautotype` manifest gate + Jackson polymorphism in-file gate + SnakeYAML SafeConstructor in-file gate; released as circle-ir 3.178.0 / commit de134a5)
+- #143 closed 2026-07-23 (note-level finding coalescer — additive `labels[]` on `SastFinding` folds level==='note' groups at same (file, line); MVP of 2026-07-03 reopen; released as circle-ir 3.178.0 / commit a4eb173)
 - #257 closed 2026-07-23 (Java code_injection `*Parser` semantic gate — inverse-denylist model; released as circle-ir 3.177.0 / commit fdfd0f7)
 - #256 closed 2026-07-22 (sink-shape indirection resolver landed 3.176.0 · e085094 · 4070/4075 tests pass · harness verification deferred)
 - #259 closed 2026-07-22 (langchain4j ShellCommandRunner TP → promoted to #172 pending-decision table; no upstream filing)
