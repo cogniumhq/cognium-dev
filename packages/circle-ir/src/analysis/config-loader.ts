@@ -642,6 +642,36 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'hget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
   { method: 'mget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
 
+  // --- Serverless transport channels (cognium-dev #213 first slice) ---
+  //
+  // AWS Lambda / API Gateway invocation-event properties. The Lambda
+  // handler signature `(event, context) => …` (JS/TS) or
+  // `def handler(event, context)` (Python) receives an `event` object
+  // whose properties carry the untrusted HTTP-request-shaped payload:
+  //
+  //   event.body                              — request body (string)
+  //   event.queryStringParameters             — `?a=b` params
+  //   event.multiValueQueryStringParameters   — `?a=1&a=2` params
+  //   event.pathParameters                    — path template captures
+  //   event.headers                           — request headers
+  //   event.multiValueHeaders                 — repeated headers
+  //   event.requestContext                    — API Gateway request context
+  //
+  // Vercel Serverless Functions and Cloudflare Workers both use `req`
+  // / `request` receivers that are already covered by the Express-
+  // style patterns above (line ~398). This block specifically covers
+  // the `event`-shaped API Gateway convention that those don't reach.
+  { property: 'body',                            object: 'event', type: 'http_body',   severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'queryStringParameters',           object: 'event', type: 'http_query',  severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'multiValueQueryStringParameters', object: 'event', type: 'http_query',  severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'pathParameters',                  object: 'event', type: 'http_path',   severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'headers',                         object: 'event', type: 'http_header', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'multiValueHeaders',               object: 'event', type: 'http_header', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'body',                            object: 'event', type: 'http_body',   severity: 'high', property_tainted: true, languages: ['python'] },
+  { property: 'queryStringParameters',           object: 'event', type: 'http_query',  severity: 'high', property_tainted: true, languages: ['python'] },
+  { property: 'pathParameters',                  object: 'event', type: 'http_path',   severity: 'high', property_tainted: true, languages: ['python'] },
+  { property: 'headers',                         object: 'event', type: 'http_header', severity: 'high', property_tainted: true, languages: ['python'] },
+
   // --- JWT claims (unverified decode — PyJWT / jose / jsonwebtoken / auth0 java-jwt / golang-jwt) ---
   // A JWT's payload is *always* attacker-authored. Even after verification
   // the *contents* of the claims (username, role, custom fields) are not

@@ -78,6 +78,18 @@ export const JS_TAINTED_PATTERNS = [
   { pattern: /\bhistory\.state\b/, type: 'dom_input' as const },
   { pattern: /\blocalStorage\.getItem\b/, type: 'dom_input' as const },
   { pattern: /\bsessionStorage\.getItem\b/, type: 'dom_input' as const },
+  // AWS Lambda / API Gateway event-shape sources (cognium-dev #213
+  // transport-channel first slice). The `event` parameter of a
+  // Lambda handler carries the untrusted HTTP payload; forward-taint
+  // tracking through `const q = event.body; sink(q)` needs the
+  // regex here in addition to the property patterns in
+  // config-loader.ts:DEFAULT_SOURCES.
+  { pattern: /\bevent\.body\b/, type: 'http_body' as const },
+  { pattern: /\bevent\.queryStringParameters\b/, type: 'http_param' as const },
+  { pattern: /\bevent\.multiValueQueryStringParameters\b/, type: 'http_param' as const },
+  { pattern: /\bevent\.pathParameters\b/, type: 'http_path' as const },
+  { pattern: /\bevent\.headers\b/, type: 'http_header' as const },
+  { pattern: /\bevent\.multiValueHeaders\b/, type: 'http_header' as const },
 ];
 
 const PYTHON_TAINTED_PATTERNS = [
