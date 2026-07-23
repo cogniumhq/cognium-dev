@@ -152,6 +152,7 @@ import { GodClassPass } from './analysis/passes/god-class-pass.js';
 import { NamingConventionPass, type NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 import { SecurityHeadersPass, type SecurityHeadersOptions, checkInheritedCorsHeaders } from './analysis/passes/security-headers-pass.js';
 import { ScanSecretsPass } from './analysis/passes/scan-secrets-pass.js';
+import { PythonReceiverTaintFormatPass } from './analysis/passes/python-receiver-taint-format-pass.js';
 import { Spring4ShellPass } from './analysis/passes/spring4shell-pass.js';
 import { InsecureCookiePass } from './analysis/passes/insecure-cookie-pass.js';
 import { WeakHashPass } from './analysis/passes/weak-hash-pass.js';
@@ -890,6 +891,15 @@ export async function analyze(
   // Secret scanner runs after LanguageSourcesPass so the legacy Bash
   // `hardcoded-credential` findings are already in the dedup buffer.
   if (!disabledPasses.has('scan-secrets'))          pipeline.add(new ScanSecretsPass());
+
+  // cognium-dev #264 Python receiver-taint: emits format_string
+  // (CWE-134) findings for Python `.format(...)` calls whose
+  // receiver appears in the constant-propagation tainted set.
+  // Direct-finding emission (not sink emission) — no downstream flow
+  // generation needed since the tainted set implicitly encodes the
+  // source-to-receiver trace. Python-only; no-op on other languages.
+  if (!disabledPasses.has('python-receiver-taint-format'))
+    pipeline.add(new PythonReceiverTaintFormatPass());
 
   // Optional passes — can be disabled via disabledPasses
   if (!disabledPasses.has('dead-code'))             pipeline.add(new DeadCodePass());
