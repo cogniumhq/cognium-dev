@@ -121,9 +121,16 @@
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
 | #240 | FN | Zero-recall categories (trust_boundary / deser / open_redirect / format_string / nosql) | Ship 1 landed 3.175.0 — `open_redirect` + `trust_boundary` frameworks + fixes | Ship 2: `deserialization` / `format_string` / `nosql`; + Go local-receiver type resolver (3 skipped tests) |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
-| #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | T1 H1+H7+H8 (3.171.0), T2 nodeCache reuse T2-A+C (3.172.0), T2-D Java `buildResolutionContext` cache (3.173.0) all landed | Remaining T1 items 2+5 (constant-prop tree-walk fusion, `receiverMightBeClass` cache); T2 items 6–10; check in `perf/harness.mjs` |
-| #257 | FP | Java code_injection over-matches domain `ExpressionParser.parse()` (residual gap in #155) | Not started | Move parser allowlist → semantic gate |
+| #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | Released: T1 H1+H7+H8 (3.171.0), T2 nodeCache reuse T2-A+C (3.172.0), T2-D Java `buildResolutionContext` cache (3.173.0). **Committed unreleased 095f043 (2026-07-22):** T1#5 `receiverMightBeClass` memo, T2#7 language-filter hoist, T2#10 `walkBackwardDefs` memo. T2#6 sub-phase timers silently bundled into 3.171.0 — done. | Cut release for 095f043 + fdfd0f7 bundle. Remaining T1#2 (constant-prop tree-walk fusion) and T2 items 8/9 pending wall-clock validation; check in `perf/harness.mjs` |
+| #257 | FP | Java code_injection over-matches domain `ExpressionParser.parse()` (residual gap in #155) | **Committed unreleased fdfd0f7 (2026-07-22)** — inverse-denylist semantic gate: any `*Parser` receiver type not in `JAVA_EVAL_PARSER_DENYLIST` (`GroovyShell`, `GroovyClassLoader`, `ScriptEngine`, `CronParser`) suppresses `code_injection` at sink-filter stage 9a. 3 tests added, 4073 pass, 0 regressions. | Cut release, then close on GH with landing comment |
 | #258 | FP | Fastjson `parseObject` on `1.2.83_noneautotype` build fires CWE-502 critical | Not started | Dependency-version-aware sink gating (new capability) |
+
+### Unreleased on main (2026-07-22)
+
+- **095f043** — perf: Small-group #254 partials (T1#5 + T2#7 + T2#10). Zero API change.
+- **fdfd0f7** — fix: Java code_injection `*Parser` semantic gate (#257). Zero API change.
+
+Both held pending a release cut (single 3.177.0 combined, or split 3.177.0 perf + 3.178.0 FP fix — per session decision to hold Bundle A). Combined CHANGELOG draft available in scratchpad.
 
 ### #1 detail (kept from prior version)
 
