@@ -125,6 +125,28 @@ export function resolveFastjsonFromGradle(buildGradle: string): FastjsonPomResol
     return { version, noneAutotype: /_noneautotype/i.test(version) };
   }
 
+  // Shape 4 — `constraints { }` block with a `version { strictly/
+  // require/prefer 'X' }` sub-block. cognium-dev #261 (extended forms).
+  //
+  //   constraints {
+  //     implementation('com.alibaba:fastjson') {
+  //       version {
+  //         strictly '1.2.83_noneautotype'
+  //       }
+  //     }
+  //   }
+  //
+  // Non-greedy `[\s\S]*?` across the outer + inner braces so we don't
+  // fuse sibling constraint entries. Accepts strictly / require /
+  // prefer — all three specify a concrete version.
+  const constraintsBlockRe =
+    /['"(]\s*com\.alibaba:fastjson\s*['")]\s*\)?\s*\{[\s\S]*?\bversion\s*\{[\s\S]*?\b(?:strictly|require|prefer)\s+['"]([^'"\s]+)['"]/;
+  const constraintsBlock = buildGradle.match(constraintsBlockRe);
+  if (constraintsBlock) {
+    const version = constraintsBlock[1];
+    return { version, noneAutotype: /_noneautotype/i.test(version) };
+  }
+
   // Shapes 2 + 3 — property reference. Capture the property name (either
   // `${name}` Groovy form or `$name` bare form; Kotlin uses the same
   // string-template syntax as Groovy for this case).
