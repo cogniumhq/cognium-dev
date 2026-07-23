@@ -86,6 +86,7 @@ import {
 } from './analysis/per-file-finding-cap.js';
 import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
+import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
@@ -980,13 +981,22 @@ export async function analyze(
     makeProfileResolver(options.projectProfile),
   );
 
+  // cognium-dev #143 — note-level coalescer. Folds groups of ≥ 2
+  // `level === 'note'` findings at the same (file, line) into a single
+  // record, exposing the co-located rule_ids via `labels[]`. Mixed-
+  // level groups (any warning/error present) pass through un-coalesced
+  // so higher-severity visibility is never diminished. Idempotent when
+  // rerun. Runs before the per-file finding cap so the cap sees the
+  // coalesced count (not the pre-fold advisory-noise cardinality).
+  const coalescedFindings = coalesceNoteLevelFindings(profiledFindings);
+
   // #142 defensive per-file finding cap. If a file produces more than
   // `cap` findings, drop the individual results and emit a single
   // `saturated-file` advisory in their place. Default cap = 1000;
   // `perFileFindingCap: 0` disables.
   const cappedFindings = applyPerFileFindingCap(
     filePath,
-    profiledFindings,
+    coalescedFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
 

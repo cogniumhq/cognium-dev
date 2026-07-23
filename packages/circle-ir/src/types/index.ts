@@ -684,6 +684,30 @@ export interface SastFinding {
    * kept and never dropped by the require-entry-path gate.
    */
   entryPathTier?: 'tier1-entry-point' | 'tier2-reachable' | 'tier3-library-api' | 'unknown';
+  /**
+   * Additional rule identifiers that were coalesced into this finding at
+   * the same `(file, line)` location (added 3.178.0, cognium-dev #143).
+   *
+   * Present only when the note-level coalescer folded two or more
+   * `level === 'note'` findings sharing the same `(file, line)` into
+   * a single record. The primary `rule_id` is kept as-is; the additional
+   * co-located rule_ids appear here.
+   *
+   * Consumers that key on `rule_id` continue to work unchanged. Consumers
+   * that want to surface every co-located rule (SARIF `properties`,
+   * text-formatter badges, dashboards) should read both `rule_id` and
+   * `labels` and union them.
+   *
+   * Empirical basis: the OWASP-Benchmark instrumentation capture on
+   * cognium-dev#145 recorded 5,481 `(file, line)` locations (31.3% of
+   * files) hit by ≥ 2 distinct advisory rules — most commonly
+   * `missing-public-doc + naming-convention` and
+   * `missing-csp-frame-ancestors + missing-x-frame-options`. Coalescing
+   * cuts advisory-bucket cardinality by ~30% without losing any
+   * rule-hit information. HIGH-severity findings are never coalesced
+   * (measured 0 co-locations at HIGH in the same capture).
+   */
+  labels?: string[];
 }
 
 // =============================================================================
