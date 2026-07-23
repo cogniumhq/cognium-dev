@@ -46,6 +46,9 @@ import type { DependencyContext } from '../../analyzer.js';
 import {
   resolveFastjsonFromPom,
   resolveFastjsonFromGradle,
+  resolvePyYamlFromRequirements,
+  resolvePyYamlFromPyproject,
+  fileHasUnsafePyYamlLoader,
   fileReenablesFastjsonAutotype,
   fileEnablesJacksonPolymorphism,
   fileConfiguresSnakeYamlSafely,
@@ -58,6 +61,8 @@ export interface DeserializationSafetyGateResult {
   droppedJackson: number;
   /** Sinks dropped by Gate C (SnakeYAML SafeConstructor). */
   droppedSnakeYaml: number;
+  /** Sinks dropped by Gate D (Python PyYAML ≥ 6.0 default-safe). */
+  droppedPyYaml: number;
 }
 
 const FASTJSON_METHODS = new Set(['parseObject', 'parse']);
@@ -68,6 +73,10 @@ const JACKSON_CLASSES = new Set(['ObjectMapper', 'ObjectReader']);
 
 const SNAKEYAML_METHODS = new Set(['load', 'loadAs', 'loadAll']);
 const SNAKEYAML_CLASSES = new Set(['Yaml']);
+
+// Python PyYAML gate (Gate D — cognium-dev #261 Python slice).
+const PYYAML_METHODS = new Set(['load']);
+const PYYAML_CLASSES = new Set(['yaml']);
 
 export class DeserializationSafetyGatePass
   implements AnalysisPass<DeserializationSafetyGateResult>
@@ -80,11 +89,11 @@ export class DeserializationSafetyGatePass
   run(ctx: PassContext): DeserializationSafetyGateResult {
     const { graph, language, code } = ctx;
 
-    // Java-only for the MVP. Other languages (Python pyyaml, JS
-    // Deserialize, Rust bincode) can extend the gate on their own
-    // manifests in follow-up scopes.
-    if (language !== 'java') {
-      return { droppedFastjson: 0, droppedJackson: 0, droppedSnakeYaml: 0 };
+    // Java + Python for the MVP. Other languages (JS Deserialize,
+    // Rust bincode) can extend the gate on their own manifests in
+    // follow-up scopes.
+    if (language !== 'java' && language !== 'python') {
+      return { droppedFastjson: 0, droppedJackson: 0, droppedSnakeYaml: 0, droppedPyYaml: 0 };
     }
 
     // Same sink-source discovery as SinkSemanticsPass: prefer
@@ -115,9 +124,31 @@ export class DeserializationSafetyGatePass
     // --- Gate C: SnakeYAML SafeConstructor ----------------------------------
     const snakeYamlSafe = fileConfiguresSnakeYamlSafely(code);
 
+    // --- Gate D: PyYAML ≥ 6.0 (Python) --------------------------------------
+    // Under pyyaml ≥ 6.0, `yaml.load(x)` without an explicit `Loader=`
+    // keyword arg raises TypeError (safe-by-default); callers that pass
+    // `Loader=SafeLoader` are safe; callers that pass an unsafe Loader
+    // (`Loader=Loader` / `UnsafeLoader` / `FullLoader`) are still
+    // dangerous regardless of the version pin — those need per-call
+    // inspection to preserve.
+    const requirementsTxt = this.dependencyContext?.python?.requirementsTxt;
+    const pyprojectToml = this.dependencyContext?.python?.pyprojectToml;
+    const pyYaml =
+      (requirementsTxt ? resolvePyYamlFromRequirements(requirementsTxt) : null) ??
+      (pyprojectToml ? resolvePyYamlFromPyproject(pyprojectToml) : null);
+    const pyYamlSafeByDefault = pyYaml?.safeByDefault === true;
+    // Lazy: only split source lines when we actually need per-call
+    // inspection (i.e. gate D is active and could fire).
+    let sourceLines: string[] | null = null;
+    const getSourceLines = (): string[] => {
+      if (sourceLines === null) sourceLines = code.split('\n');
+      return sourceLines;
+    };
+
     let droppedFastjson = 0;
     let droppedJackson = 0;
     let droppedSnakeYaml = 0;
+    let droppedPyYaml = 0;
 
     const kept = sinks.filter((sink) => {
       if (sink.type !== 'deserialization') return true;
@@ -155,10 +186,26 @@ export class DeserializationSafetyGatePass
         return false;
       }
 
+      // Gate D — PyYAML (Python). `sink.class` may be `undefined` for
+      // Python: unlike Java, Python calls do not carry receiver-type
+      // resolution into the CallInfo, so the taint-matcher's sinkMap
+      // assigns undefined for the class field. Accept undefined OR
+      // exact-`'yaml'` (mirrors Gate A's Fastjson check).
+      if (
+        language === 'python' &&
+        pyYamlSafeByDefault &&
+        PYYAML_METHODS.has(sink.method) &&
+        (sink.class === undefined || PYYAML_CLASSES.has(sink.class)) &&
+        !fileHasUnsafePyYamlLoader(getSourceLines(), sink.line)
+      ) {
+        droppedPyYaml++;
+        return false;
+      }
+
       return true;
     });
 
-    const totalDropped = droppedFastjson + droppedJackson + droppedSnakeYaml;
+    const totalDropped = droppedFastjson + droppedJackson + droppedSnakeYaml + droppedPyYaml;
     if (totalDropped > 0) {
       // Mutate in place so downstream passes see the reduced sink set.
       // Matches SinkSemanticsPass's contract.
@@ -166,6 +213,6 @@ export class DeserializationSafetyGatePass
       sinks.push(...kept);
     }
 
-    return { droppedFastjson, droppedJackson, droppedSnakeYaml };
+    return { droppedFastjson, droppedJackson, droppedSnakeYaml, droppedPyYaml };
   }
 }

@@ -152,6 +152,176 @@ export function resolveFastjsonFromGradle(buildGradle: string): FastjsonPomResol
   return { version, noneAutotype: /_noneautotype/i.test(version) };
 }
 
+// ---------------------------------------------------------------------------
+// Python — PyYAML version detection (cognium-dev #261 Python slice)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of extracting the effective PyYAML version. `safeByDefault` is
+ * true when the parsed version is ≥ 6.0; at that point pyyaml.load()
+ * without an explicit `Loader=` keyword argument raises TypeError
+ * instead of silently invoking the unsafe default Loader.
+ *
+ * See https://github.com/yaml/pyyaml/blob/master/CHANGES for the full
+ * 6.0 breakage story. The gate consumer must ALSO check the call site
+ * for an explicit `Loader=` keyword (fileHasUnsafePyYamlLoader below)
+ * — a caller under pyyaml ≥ 6.0 that explicitly passes
+ * `Loader=yaml.Loader` or `Loader=yaml.UnsafeLoader` is still
+ * dangerous regardless of the version pin.
+ */
+export interface PyYamlResolution {
+  version: string;
+  safeByDefault: boolean;
+}
+
+/**
+ * Extract the effective PyYAML version from a `requirements.txt` file.
+ * Recognises the standard PEP 508 shapes (`==`, `>=`, `~=`, `>`,
+ * exact pins with trailing modifiers). Package name matched
+ * case-insensitively (both `PyYAML` and `pyyaml` are common in the
+ * wild).
+ *
+ * Returns null when no pyyaml line is found or the version string
+ * cannot be parsed as `M.m[.p]`. Non-strict on trailing environment
+ * markers (` ; python_version >= '3.6'`), which are common on
+ * requirements.txt lines.
+ */
+export function resolvePyYamlFromRequirements(
+  requirementsTxt: string,
+): PyYamlResolution | null {
+  if (!requirementsTxt) return null;
+
+  // Iterate line-by-line so a fatal parse error on one line doesn't
+  // sink the whole file. Comment lines and `-r other.txt` includes are
+  // ignored (we don't recurse into included files here — the caller
+  // controls what manifest string is passed).
+  for (const rawLine of requirementsTxt.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    if (line.startsWith('-')) continue;
+
+    // Match: `PyYAML==6.0`, `pyyaml>=6.0.1`, `PyYAML ~= 6.0`,
+    // `pyyaml>6`, `PyYAML==6.0 ; python_version>='3.6'`
+    const m = line.match(
+      /^(pyyaml)\s*(==|>=|~=|>|===)\s*(\d+(?:\.\d+)*)/i,
+    );
+    if (!m) continue;
+    const version = m[3];
+    return { version, safeByDefault: isPyYamlVersionSafeByDefault(version) };
+  }
+
+  return null;
+}
+
+/**
+ * Extract the effective PyYAML version from a `pyproject.toml`.
+ * Recognises the common Poetry and PEP 621 shapes:
+ *
+ *   Poetry — under `[tool.poetry.dependencies]`:
+ *     PyYAML = "6.0"
+ *     pyyaml = "^6.0.1"
+ *     pyyaml = { version = "6.0", extras = ["..."] }
+ *
+ *   PEP 621 — under `[project]` `dependencies` array:
+ *     dependencies = [ "PyYAML>=6.0", ... ]
+ *
+ * As with the requirements.txt resolver, non-strict on markers /
+ * modifiers; regex-based rather than a full TOML parser to keep the
+ * runtime-dep list minimal (Pillar I minimal-dependencies principle).
+ */
+export function resolvePyYamlFromPyproject(
+  pyprojectToml: string,
+): PyYamlResolution | null {
+  if (!pyprojectToml) return null;
+
+  // Poetry key = string form.
+  //   PyYAML = "6.0"     PyYAML = "^6.0"     pyyaml = "~=6.0"
+  const poetryLine = pyprojectToml.match(
+    /^\s*(pyyaml)\s*=\s*"([\^~=<>]*)(\d+(?:\.\d+)*)"/im,
+  );
+  if (poetryLine) {
+    const version = poetryLine[3];
+    return { version, safeByDefault: isPyYamlVersionSafeByDefault(version) };
+  }
+
+  // Poetry table form: `pyyaml = { version = "6.0", … }`
+  const poetryTable = pyprojectToml.match(
+    /^\s*(pyyaml)\s*=\s*\{[^}]*\bversion\s*=\s*"([\^~=<>]*)(\d+(?:\.\d+)*)"/im,
+  );
+  if (poetryTable) {
+    const version = poetryTable[3];
+    return { version, safeByDefault: isPyYamlVersionSafeByDefault(version) };
+  }
+
+  // PEP 621 array element: within a `dependencies = [ ... ]` block, a
+  // string literal like `"PyYAML>=6.0"` or `"pyyaml==6.0.1"`.
+  const pep621 = pyprojectToml.match(
+    /"(pyyaml)\s*(==|>=|~=|>|===)\s*(\d+(?:\.\d+)*)/i,
+  );
+  if (pep621) {
+    const version = pep621[3];
+    return { version, safeByDefault: isPyYamlVersionSafeByDefault(version) };
+  }
+
+  return null;
+}
+
+/**
+ * True when `version` (as `M.m[.p]`) is ≥ 6.0. Handles bare `6`,
+ * `6.0`, `6.0.1`, `7`, `10.0`, etc. Returns false on malformed input
+ * (defensive — the gate defaults to *do not drop* on missing signal).
+ */
+export function isPyYamlVersionSafeByDefault(version: string): boolean {
+  const parts = version.split('.').map((s) => Number.parseInt(s, 10));
+  if (parts.length === 0 || !Number.isFinite(parts[0])) return false;
+  return parts[0] >= 6;
+}
+
+/**
+ * Return true when the file contains an explicit unsafe `Loader=`
+ * keyword argument on a `yaml.load(...)` call at or shortly after
+ * `sinkLine`. Recognises the well-known unsafe loaders and their
+ * qualified forms:
+ *
+ *   Loader=Loader         Loader=yaml.Loader
+ *   Loader=UnsafeLoader   Loader=yaml.UnsafeLoader
+ *   Loader=FullLoader     Loader=yaml.FullLoader   (technically safer
+ *                                                   than Loader; still
+ *                                                   permits arbitrary
+ *                                                   Python object types)
+ *
+ * SafeLoader / CSafeLoader / BaseLoader / CBaseLoader are all safe and
+ * are NOT matched here.
+ *
+ * Scans `sinkLine` through the next 9 lines to catch multi-line call
+ * shapes; if the closing `)` appears before the window ends the scan
+ * stops there. Regex-based (no AST inspection) to stay consistent with
+ * the sink-filter-pass conventions and avoid pulling parse state into
+ * the gate.
+ */
+export function fileHasUnsafePyYamlLoader(
+  sourceLines: string[],
+  sinkLine: number,
+): boolean {
+  const start = Math.max(0, sinkLine - 1);
+  const end = Math.min(sourceLines.length, start + 10);
+  const unsafeRe = /\bLoader\s*=\s*(?:yaml\s*\.\s*)?(?:Loader|UnsafeLoader|FullLoader)\b/;
+  for (let i = start; i < end; i++) {
+    const ln = sourceLines[i] ?? '';
+    if (unsafeRe.test(ln)) return true;
+    // Stop once the call closes — the `)` at the top-level. Fine
+    // approximation: any bare `)` at the START of a stripped line, or
+    // trailing `)` at end of a stripped line, signals close.
+    const stripped = ln.trim();
+    if (i > start && (stripped === ')' || stripped.endsWith(')'))) {
+      // Also test the current line before we stop, in case Loader= is
+      // on the same line as the closing paren.
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Return true when the given source text contains an in-file call that
  * re-enables Fastjson autotype. Even a `_noneautotype` build does not

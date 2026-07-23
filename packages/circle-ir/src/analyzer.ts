@@ -385,6 +385,20 @@ export interface DependencyContext {
      */
     buildGradle?: string;
   };
+  /**
+   * Python project manifests (added cognium-dev #261 Python slice). Both
+   * are consulted by the deserialization-safety gate; `requirementsTxt`
+   * takes precedence and `pyprojectToml` is a fallback. Currently used
+   * for PyYAML version detection (drops `yaml.load(...)` sinks under
+   * pyyaml ≥ 6.0 unless the call explicitly passes an unsafe `Loader=`
+   * keyword argument).
+   */
+  python?: {
+    /** Raw `requirements.txt` content (pip). */
+    requirementsTxt?: string;
+    /** Raw `pyproject.toml` content (Poetry / PEP 621). */
+    pyprojectToml?: string;
+  };
 }
 
 /**
