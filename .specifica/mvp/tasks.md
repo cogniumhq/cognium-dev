@@ -117,13 +117,16 @@
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
-| #143 | precision | Coalesce findings by (source, sink) with vuln-class array | Not started | Design proposal needed |
 | #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | Not started | Rust/TS branches of the #67/#82 work |
 | #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
 | #240 | FN | Zero-recall categories (trust_boundary / deser / open_redirect / format_string / nosql) | **Ship 2 landed 3.177.0 (2026-07-23):** `deserialization` (11 patterns: Python pickle/marshal/dill/jsonpickle + Go gob/yaml + JS node-serialize) and `nosql_injection` (18 patterns: Python pymongo + Java Spring Data + Go mongo-driver) framework sinks; Go local-receiver type resolver (`c *gin.Context` → `"Context"`, `c *fiber.Ctx` → `"Ctx"`) via `resolveGoLocalReceiverType` in `extractors/calls.ts`. Ship 1 landed 3.175.0 (`open_redirect` + `trust_boundary`). | `format_string` (existing coverage already adequate — deferred). Fiber `c.Redirect` still shows a fine-grained-label gap (Go arg[0] taint-flow); external_taint_escape preserves recall, tracked as a follow-up on this ticket |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
 | #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; check in `perf/harness.mjs` for wall-clock validation of the T1#5/T1#2/T2#7/T2#9/T2#10 bundle |
+| #260 | FN | Go fiber `c.Redirect` arg[0] taint flow gap (extends #240 ship 2) | Not started | Instrument `TaintPropagationPass` for the fiber shape; suspect receiver-vs-arg[0] bookkeeping in `extractGoArguments` / flow-generator arg-index |
+| #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
+| #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
+| #263 | infra | Check in perf harness + baseline (closes open item on #254) | Not started | Curate 3-tier fixture corpus, land `packages/circle-ir/perf/harness.mjs`, produce 3.178.0 baseline; stretch: CI perf gate |
 
 ### #1 detail (kept from prior version)
 
