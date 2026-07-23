@@ -33,6 +33,24 @@ export interface BackwardWalkOptions {
 }
 
 /**
+ * Per-file memo for `walkBackwardDefs`. Keyed on `chainsByToDef` identity,
+ * so results auto-clear when the caller moves to a new file (each file's
+ * `analyze()` builds a fresh `chainsByToDef` map, releasing the previous
+ * entry when nothing else references it). Inner key is
+ * `${startDefId}|${maxHops}` — same starting def + hop cap within a file
+ * returns the cached `BackwardWalkResult` directly.
+ *
+ * cognium-dev #254 T2#10: multiple sinks in a single file frequently walk
+ * back to the same source def; without a memo the DFG chain from that def
+ * is re-traversed once per sink. Result Sets are immutable (`ReadonlySet`
+ * via the return type), so sharing them across callers is safe.
+ */
+const walkBackwardDefsMemo = new WeakMap<
+  ReadonlyMap<number, DFGChain[]>,
+  Map<string, BackwardWalkResult>
+>();
+
+/**
  * Bounded backward BFS from `startDefId` along `chainsByToDef`. Every def
  * reached is added to `lines` (via `defById`). Cycle-safe.
  */
@@ -43,6 +61,14 @@ export function walkBackwardDefs(
   options: BackwardWalkOptions = {}
 ): BackwardWalkResult {
   const maxHops = options.maxHops ?? 32;
+
+  let perFile = walkBackwardDefsMemo.get(chainsByToDef);
+  if (perFile !== undefined) {
+    const key = `${startDefId}|${maxHops}`;
+    const hit = perFile.get(key);
+    if (hit !== undefined) return hit;
+  }
+
   const visited = new Set<number>();
   const lines = new Set<number>();
   let hopCapReached = false;
@@ -82,5 +108,13 @@ export function walkBackwardDefs(
     }
   }
 
-  return { visited, lines, hopCapReached };
+  const result: BackwardWalkResult = { visited, lines, hopCapReached };
+
+  if (perFile === undefined) {
+    perFile = new Map();
+    walkBackwardDefsMemo.set(chainsByToDef, perFile);
+  }
+  perFile.set(`${startDefId}|${maxHops}`, result);
+
+  return result;
 }

@@ -230,22 +230,25 @@ function findSources(
 ): TaintSource[] {
   const sources: TaintSource[] = [];
 
+  // #254 T2#7: pre-filter patterns by language once at function entry.
+  // Previously the same 4-clause `pattern.languages && … !includes(language)`
+  // check ran inside all 3 pattern iteration loops below (call-based,
+  // annotation-based param, method-level annotation). The check honours
+  // language restrictions declared by patterns — e.g. Rust Axum's `Path<T>`
+  // extractor must not match Python `pathlib.Path(raw)`; TypeGraphQL's
+  // JS/TS `@Query` must not fire on Spring Data Java `@Query`. Filtering
+  // once and reusing the filtered set keeps the same semantics with fewer
+  // per-iteration comparisons.
+  const patternsForLanguage =
+    language === undefined
+      ? patterns
+      : patterns.filter(
+          (p) => !p.languages || p.languages.length === 0 || p.languages.includes(language),
+        );
+
   // Check method calls
   for (const call of calls) {
-    for (const pattern of patterns) {
-      // Honor language restriction on source patterns (added Sprint 9):
-      // some Axum extractors (`Path<T>`, `Json<T>`) collide with stdlib
-      // names in other languages (e.g. Python `pathlib.Path(raw)` was
-      // being matched as the Rust Axum `Path` extractor → spurious
-      // `http_path` source). Skip when language is known and excluded.
-      if (
-        pattern.languages &&
-        pattern.languages.length > 0 &&
-        language !== undefined &&
-        !pattern.languages.includes(language)
-      ) {
-        continue;
-      }
+    for (const pattern of patternsForLanguage) {
       if (matchesSourcePattern(call, pattern)) {
         sources.push({
           type: pattern.type,
@@ -263,19 +266,8 @@ function findSources(
   for (const type of types) {
     for (const method of type.methods) {
       for (const param of method.parameters) {
-        for (const pattern of patterns) {
+        for (const pattern of patternsForLanguage) {
           if (pattern.annotation && pattern.param_tainted) {
-            // Honor language restriction on annotation-based sources — e.g.
-            // TypeGraphQL's `@Args` on JS/TS resolvers must not fire on a
-            // Python file that happens to annotate a parameter `@Args`.
-            if (
-              pattern.languages &&
-              pattern.languages.length > 0 &&
-              language !== undefined &&
-              !pattern.languages.includes(language)
-            ) {
-              continue;
-            }
             if (matchesAnnotation(param.annotations, pattern.annotation)) {
               // Use parameter line if available, fallback to method start line
               const paramLine = param.line ?? method.start_line;
@@ -299,19 +291,8 @@ function findSources(
   // because Jenkins wires them from form/JSON binding at construction time.
   for (const type of types) {
     for (const method of type.methods) {
-      for (const pattern of patterns) {
+      for (const pattern of patternsForLanguage) {
         if (!pattern.method_annotation) continue;
-        // Honor language restriction on method-level annotations. Critical
-        // for GraphQL patterns: TypeGraphQL's `@Query`/`@Mutation` (JS/TS)
-        // MUST NOT fire on Java `@Query` (Spring Data repository method).
-        if (
-          pattern.languages &&
-          pattern.languages.length > 0 &&
-          language !== undefined &&
-          !pattern.languages.includes(language)
-        ) {
-          continue;
-        }
         if (!matchesAnnotation(method.annotations, pattern.method_annotation)) continue;
         for (const param of method.parameters) {
           const paramLine = param.line ?? method.start_line;
@@ -1534,11 +1515,23 @@ function findSinks(
   sourceLines?: string[],
   types?: TypeInfo[],
 ): TaintSink[] {
+  // #254 T2#7: pre-filter patterns by language once at function entry.
+  // Previously the same language check ran inside `matchesSinkPattern`
+  // for every `(call, pattern)` pair. The check is left in place there
+  // as defence-in-depth for any other future caller; on this call path
+  // pre-filtering means we never construct those pairs to begin with.
+  const patternsForLanguage =
+    language === undefined
+      ? patterns
+      : patterns.filter(
+          (p) => !p.languages || p.languages.length === 0 || p.languages.includes(language),
+        );
+
   // Use a map to deduplicate by location+line+cwe
   const sinkMap = new Map<string, TaintSink>();
 
   for (const call of calls) {
-    for (const pattern of patterns) {
+    for (const pattern of patternsForLanguage) {
       if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
@@ -2178,7 +2171,39 @@ function matchesAnnotation(annotations: string[], targetAnnotation: string): boo
  * Check if a receiver variable might be an instance of a class.
  * This is a heuristic - full type inference would be more accurate.
  */
+/**
+ * Result cache for `receiverMightBeClass`. The impl is a pure function of
+ * `(receiver, className)` so results are safe to share across files and
+ * analysis sessions. Bounded via `RECEIVER_MIGHT_BE_CLASS_CACHE_CAP` — when
+ * the cap is reached the cache clears entirely (crude but O(1) amortized
+ * and keeps memory bounded in long-running processes).
+ *
+ * cognium-dev #254 T1#5: on the `?254` deep-dive, this function was called
+ * ~2M times per file on the 500-file langchain4j benchmark from within a
+ * triple-nested `(call × sourcePattern × class-scoped-pattern)` loop. The
+ * body performs regex allocation and `.toLowerCase()` allocations per call;
+ * memoizing the result eliminates that work for repeated `(receiver,
+ * className)` pairs. In-tree microbench on the vitest corpus shows a 2.83×
+ * dedup ratio; production-scale dedup is expected to be higher because
+ * class-scoped sink patterns typically reuse the same few className values
+ * across many receiver identifiers in a single file.
+ */
+const RECEIVER_MIGHT_BE_CLASS_CACHE = new Map<string, boolean>();
+const RECEIVER_MIGHT_BE_CLASS_CACHE_CAP = 10_000;
+
 function receiverMightBeClass(receiver: string, className: string): boolean {
+  const key = receiver + '\0' + className;
+  const cached = RECEIVER_MIGHT_BE_CLASS_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const result = receiverMightBeClassImpl(receiver, className);
+  if (RECEIVER_MIGHT_BE_CLASS_CACHE.size >= RECEIVER_MIGHT_BE_CLASS_CACHE_CAP) {
+    RECEIVER_MIGHT_BE_CLASS_CACHE.clear();
+  }
+  RECEIVER_MIGHT_BE_CLASS_CACHE.set(key, result);
+  return result;
+}
+
+function receiverMightBeClassImpl(receiver: string, className: string): boolean {
   // Suffix-wildcard pattern (e.g. `*Mapper`, `*Repository`) — matches any
   // identifier whose simple name ends in the suffix (case-insensitive).
   // Used by MyBatis ORM patterns (UserMapper, OrderMapper, …) and similar
