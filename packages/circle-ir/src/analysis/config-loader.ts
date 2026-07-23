@@ -2384,6 +2384,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'format',  class: 'String',    type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'format',  class: 'Formatter', type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'printf',  class: 'System.out',type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  // cognium-dev #264 — extend the Java format-string surface.
+  // MessageFormat.format(pattern, args) — same receiver-family as String.format
+  // but on the java.text side. PrintStream/PrintWriter.{printf,format} —
+  // arbitrary streams (not just System.out) also honour format-string
+  // specifiers, so a tainted first arg is a genuine CWE-134 sink.
+  { method: 'format',  class: 'MessageFormat', type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'printf',  class: 'PrintStream',   type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'format',  class: 'PrintStream',   type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'printf',  class: 'PrintWriter',   type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'format',  class: 'PrintWriter',   type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['java'] },
   // NOTE: Python `userFmt.format(...)` and `userFmt % args` require
   // receiver-taint or operator-LHS-taint tracking — the format string is the
   // receiver, not an argument. Deferred to Sprint 6 (#86 follow-up).
@@ -2395,6 +2405,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Printf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Errorf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Fprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [1], languages: ['go'] },
+  // cognium-dev #264 — Go stdlib `log` package format-string entry points.
+  // log.Printf / Fatalf / Panicf take the format string at arg[0]; tainted
+  // format string reaches the same fmt.Sprintf machinery internally.
+  { method: 'Printf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Fatalf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  { method: 'Panicf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
 
   // CRLF / HTTP response splitting (CWE-113) — Sprint 6, #86.
   // Node.js / Express response header / cookie sinks. The header *name* (arg 0)
