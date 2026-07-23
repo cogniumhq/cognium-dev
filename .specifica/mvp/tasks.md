@@ -113,7 +113,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-#254 close (T2#8 subsumed))
+### GitHub issue ledger (as of 2026-07-23, post-#261 Gradle slice unreleased on main)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -121,7 +121,7 @@
 | #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
-| #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
+| #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | **Gradle slice landed unreleased a22c261 (2026-07-23):** `DependencyContext.java.buildGradle`, `resolveFastjsonFromGradle` helper (direct literal + Groovy `ext {}` interpolation + Kotlin `val` interpolation). 9 pinning tests. | Remaining ecosystems: npm `package.json`, Python `requirements`/`pyproject`, Rust `Cargo.toml`. Also deferred within Gradle: `platform(...)` BOMs, `libs.versions.toml` catalog, `constraints {}` block, `subprojects {}` |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
 | #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | **Partial landed unreleased a76af04 (2026-07-23):** 5 Java patterns (MessageFormat.format, PrintStream/PrintWriter.{printf,format}) + 3 Go patterns (log.{Printf,Fatalf,Panicf}). 8 pinning tests. | Still deferred: Python `str.format` / `%`-operator LHS-taint (engine-level tracking gap); SLF4J/JUL/log4j Logger classification policy; variant-coverage matrix rerun to baseline FN-count delta |
 
@@ -131,8 +131,9 @@
 - **0104f72** — perf: land perf harness + baseline (#263). Deterministic synthetic-Java fixtures at runtime (no external corpora), 3 tiers, median-of-N iterations, per-tier wall-clock + throughput + RSS delta. Baseline captured on `main` (3.178.0 + #260). Zero engine-code change. `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`. Follow-ups documented in README: large-tier baseline, CI perf gate, `--corpus <dir>` flag, per-pass timing aggregation.
 
 - **a76af04** — feat: format_string sink additions (partial #264). 5 Java patterns (MessageFormat / PrintStream / PrintWriter) + 3 Go patterns (log.{Printf,Fatalf,Panicf}). 8 pinning tests. 4121 pass, 2 skipped. Receiver-taint tracking + Logger classification + variant-rerun still deferred on the parent ticket.
+- **a22c261** — feat: Gradle Fastjson gate (partial #261 first slice). Extends `DependencyContext.java` with `buildGradle`; `resolveFastjsonFromGradle` helper handles direct literal + Groovy `ext {}` interpolation + Kotlin `val` interpolation. Falls back to Gradle only when pom.xml doesn't resolve fastjson. 9 pinning tests. 4130 pass. npm / Python / Cargo ecosystems and Gradle BOM/catalog forms still deferred on the parent ticket.
 
-All three commits held pending the next release cut.
+All four commits held pending the next release cut.
 
 ### #1 detail (kept from prior version)
 
