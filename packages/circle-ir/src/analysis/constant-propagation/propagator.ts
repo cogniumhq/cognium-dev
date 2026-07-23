@@ -132,8 +132,12 @@ export class ConstantPropagator {
     this.safePatternFieldsCache = null;
     this.isTaintedExpressionCache = null;
 
-    // Pre-pass: identify class fields
-    this.collectClassFields(tree.rootNode);
+    // Pre-pass: single tree walk that collects class fields (previously
+    // `collectClassFields`) AND method nodes (previously `findAllMethods`,
+    // called from `analyzeMethodReturns`). Both prior walks did a full
+    // iterative DFS over `tree.rootNode`; fusing halves the file-level
+    // pre-pass walk cost. cognium-dev #254 T1#2.
+    const prePassMethods = this.collectClassFieldsAndMethods(tree.rootNode);
 
     // Pre-populate methodReturnsSanitized with methods marked with @sanitizer annotation
     for (const methodName of sanitizerMethods) {
@@ -147,7 +151,7 @@ export class ConstantPropagator {
     );
 
     // Pre-pass: identify methods that always return constants or sanitized values
-    this.analyzeMethodReturns(tree.rootNode);
+    this.analyzeMethodReturns(prePassMethods);
 
     // Sprint 9 #55 — Pre-pass: fold Python module-level constant assignments
     // (`DEBUG = False`, `FOO = "bar"`) into the symbol table so dead-code
@@ -244,9 +248,7 @@ export class ConstantPropagator {
   /**
    * Pre-pass: Analyze all methods to detect those that always return constants or sanitized values.
    */
-  private analyzeMethodReturns(root: Node): void {
-    const methods = this.findAllMethods(root);
-
+  private analyzeMethodReturns(methods: Node[]): void {
     for (const method of methods) {
       const methodName = this.getMethodName(method);
       if (!methodName) continue;
@@ -559,16 +561,27 @@ export class ConstantPropagator {
    * Collect all class field names (instance/static variables declared at class level).
    * These are variables declared directly in the class body, not inside methods.
    */
-  private collectClassFields(root: Node): void {
-    // Iterative DFS — guards against stack overflow on deeply nested AST
+  private collectClassFieldsAndMethods(root: Node): Node[] {
+    // Single iterative DFS that fuses the prior `collectClassFields` +
+    // `findAllMethods` walks. Both previously did a full traversal from
+    // `tree.rootNode`; walking once populates `this.classFields` AND
+    // returns the method-declaration array. cognium-dev #254 T1#2.
+    //
+    // Iterative to guard against stack overflow on deeply nested AST
     // shapes such as `"a" + "b" + "c" + ...` chains in generated Java
-    // sources (cognium-ai#88). Only class_body direct children qualify
+    // sources (cognium-ai#88). Only `class_body` direct children qualify
     // as class fields; nested classes are still walked because their
-    // bodies are pushed onto the stack.
+    // bodies are pushed onto the stack. `method_declaration` /
+    // `function_declaration` nodes are collected wherever they appear
+    // (top-level, inside class body, or nested).
+    const methods: Node[] = [];
     const stack: Node[] = [root];
     while (stack.length > 0) {
       const n = stack.pop();
       if (!n) continue;
+      if (n.type === 'method_declaration' || n.type === 'function_declaration') {
+        methods.push(n);
+      }
       if (n.type === 'class_body') {
         for (const child of n.children) {
           if (child.type === 'field_declaration') {
@@ -582,14 +595,15 @@ export class ConstantPropagator {
               }
             }
           }
-          stack.push(child);
+          if (child) stack.push(child);
         }
         continue;
       }
       for (const child of n.children) {
-        stack.push(child);
+        if (child) stack.push(child);
       }
     }
+    return methods;
   }
 
   /**
@@ -764,24 +778,6 @@ export class ConstantPropagator {
       if (!isKnown(value)) continue;
       this.symbols.set(name, value);
     }
-  }
-
-  private findAllMethods(node: Node): Node[] {
-    // Iterative DFS — guards against stack overflow on deeply nested AST
-    // shapes (cognium-ai#88).
-    const methods: Node[] = [];
-    const stack: Node[] = [node];
-    while (stack.length > 0) {
-      const n = stack.pop();
-      if (!n) continue;
-      if (n.type === 'method_declaration' || n.type === 'function_declaration') {
-        methods.push(n);
-      }
-      for (const child of n.children) {
-        if (child) stack.push(child);
-      }
-    }
-    return methods;
   }
 
   private getMethodName(method: Node): string | null {
