@@ -410,6 +410,24 @@ export interface DependencyContext {
     pyprojectToml?: string;
   };
   /**
+   * JavaScript / TypeScript project manifest (added cognium-dev #261
+   * npm slice, 3.181.0).
+   *
+   * **Plumbing shipped ahead of gate integration.** Currently no gate
+   * consumes `packageJson`. Same assessment as the Rust slice: no
+   * widely-known JS deserializer has a clean version-safety story
+   * analogous to Fastjson `*_noneautotype` / PyYAML ≥ 6.0.
+   * `node-serialize` is inherently unsafe regardless of version;
+   * `serialize-javascript` variants don't ship a safe-fork
+   * classifier. The field + `resolveDepFromPackageJson` helper are
+   * shipped so future gate work doesn't need another round of
+   * API-surface additions when a real JS FP-driving case appears.
+   */
+  js?: {
+    /** Raw `package.json` content (npm / pnpm / yarn). */
+    packageJson?: string;
+  };
+  /**
    * Rust project manifest (added cognium-dev #261 Rust slice).
    *
    * **Plumbing shipped ahead of gate integration.** Currently no gate

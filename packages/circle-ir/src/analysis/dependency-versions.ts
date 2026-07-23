@@ -445,6 +445,106 @@ export function fileHasUnsafePyYamlLoader(
 }
 
 // ---------------------------------------------------------------------------
+// JS/TS — package.json dep resolution (cognium-dev #261 npm slice, plumbing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracted npm dep info. `version` is the raw range/spec as declared
+ * in the manifest (may be `"^1.2.3"`, `"~1.0"`, `">=2 <3"`, exact
+ * `"1.2.3"`, dist-tag `"latest"`, etc.). Semver-range parsing is left
+ * to callers that need it — this helper does not pull in a semver
+ * library.
+ */
+export interface PackageJsonDepResolution {
+  version: string;
+  /**
+   * Which top-level manifest section the dep was resolved from.
+   * `'dependencies' | 'devDependencies' | 'peerDependencies' |
+   * 'optionalDependencies'`. Callers can use this to weight runtime
+   * deps over dev-only deps in gate decisions.
+   */
+  section:
+    | 'dependencies'
+    | 'devDependencies'
+    | 'peerDependencies'
+    | 'optionalDependencies';
+}
+
+/**
+ * Extract the declared version + manifest section for a named npm
+ * dependency from a `package.json`. Searches `dependencies` first,
+ * then `devDependencies`, then `peerDependencies`, then
+ * `optionalDependencies`. Returns the FIRST match — matching npm's
+ * own precedence when a name appears in multiple sections (rare, but
+ * npm resolves against `dependencies` for the installed tree).
+ *
+ * Returns null when:
+ *   - The manifest text isn't parseable JSON (defensive; the gate
+ *     defaults to fire on missing signal).
+ *   - The named dep isn't declared in any section.
+ *   - The value is a non-string (unusual — npm accepts strings) or
+ *     starts with a well-known non-registry source prefix (`git+`,
+ *     `github:`, `file:`, `link:`, `workspace:`, `npm:` alias-style
+ *     without a version). No version to compare against for those.
+ *
+ * cognium-dev #261 (npm slice, plumbing-only).
+ */
+export function resolveDepFromPackageJson(
+  packageJson: string,
+  depName: string,
+): PackageJsonDepResolution | null {
+  if (!packageJson || !depName) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(packageJson);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const manifest = parsed as Record<string, unknown>;
+
+  const sections: PackageJsonDepResolution['section'][] = [
+    'dependencies',
+    'devDependencies',
+    'peerDependencies',
+    'optionalDependencies',
+  ];
+
+  for (const section of sections) {
+    const deps = manifest[section];
+    if (typeof deps !== 'object' || deps === null) continue;
+    const depsRecord = deps as Record<string, unknown>;
+    const raw = depsRecord[depName];
+    if (typeof raw !== 'string') continue;
+    // Filter non-registry sources — they have no version we can
+    // meaningfully compare. `npm:` alias-style is special: `npm:
+    // <realpkg>@<version>` — the version is after the `@` at the end.
+    // Not handled here; callers wanting alias support should extend.
+    if (
+      raw.startsWith('git+') ||
+      raw.startsWith('git://') ||
+      raw.startsWith('git@') ||
+      raw.startsWith('github:') ||
+      raw.startsWith('gitlab:') ||
+      raw.startsWith('bitbucket:') ||
+      raw.startsWith('file:') ||
+      raw.startsWith('link:') ||
+      raw.startsWith('workspace:') ||
+      raw.startsWith('http://') ||
+      raw.startsWith('https://')
+    ) {
+      return null;
+    }
+    // `npm:` alias without a version → no version.
+    if (raw.startsWith('npm:') && !/@\d/.test(raw)) return null;
+    return { version: raw, section };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Rust — Cargo.toml dep resolution (cognium-dev #261 Rust slice, plumbing)
 // ---------------------------------------------------------------------------
 
