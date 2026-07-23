@@ -113,7 +113,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-#240 close / #264 filed)
+### GitHub issue ledger (as of 2026-07-23, post-#264 partial landing unreleased on main)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -124,14 +124,16 @@
 | #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; perf harness landed 2026-07-23 (#263, `packages/circle-ir/perf/`) — use it to validate the T2#8 ROI before shipping |
 | #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
-| #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | Not started | Rerun variant-coverage matrix to baseline current FN count; add MessageFormat / PrintWriter / log.Printf / slog sink patterns; scope `str.format` / `%`-operator LHS-taint separately as engine-level work |
+| #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | **Partial landed unreleased a76af04 (2026-07-23):** 5 Java patterns (MessageFormat.format, PrintStream/PrintWriter.{printf,format}) + 3 Go patterns (log.{Printf,Fatalf,Panicf}). 8 pinning tests. | Still deferred: Python `str.format` / `%`-operator LHS-taint (engine-level tracking gap); SLF4J/JUL/log4j Logger classification policy; variant-coverage matrix rerun to baseline FN-count delta |
 
 ### Unreleased on main (2026-07-23)
 
 - **6d28db3** — fix: exact-class-match tiebreaker in sink-dedup (#260). Root cause was NOT the Go-side taint-propagation bug the ticket suspected; it was a shared-taint-matcher sinkMap-dedup ordering bug where the fuzzy `receiverMightBeClass('Ctx', 'Context')` match beat the exact fiber pattern on iteration-order. 30/-8 lines. 4113 pass, 2 skipped (was 3 — fiber test unskipped).
 - **0104f72** — perf: land perf harness + baseline (#263). Deterministic synthetic-Java fixtures at runtime (no external corpora), 3 tiers, median-of-N iterations, per-tier wall-clock + throughput + RSS delta. Baseline captured on `main` (3.178.0 + #260). Zero engine-code change. `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`. Follow-ups documented in README: large-tier baseline, CI perf gate, `--corpus <dir>` flag, per-pass timing aggregation.
 
-Both held pending the next release cut.
+- **a76af04** — feat: format_string sink additions (partial #264). 5 Java patterns (MessageFormat / PrintStream / PrintWriter) + 3 Go patterns (log.{Printf,Fatalf,Panicf}). 8 pinning tests. 4121 pass, 2 skipped. Receiver-taint tracking + Logger classification + variant-rerun still deferred on the parent ticket.
+
+All three commits held pending the next release cut.
 
 ### #1 detail (kept from prior version)
 
