@@ -5,6 +5,169 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.179.0] - 2026-07-23
+
+Five engine commits landing together since 3.178.0. Bugfix + infra
++ two partial feature ships from open Large-group tickets.
+4146 pass, 2 skipped, 0 regressions vs 3.178.0.
+
+### #260 — Go fiber `c.Redirect` arg[0] flow gap (fix)
+
+The "Go arg[0] flow gap" that the #240 ship-2 skip attributed to a
+Go-side taint-propagation bug turned out to be a shared-taint-matcher
+`sinkMap`-dedup ordering bug. `receiverMightBeClass('Ctx', 'Context')`
+returns true via the fuzzy "lowerClass.includes(lowerReceiver)" +
+40 %-length heuristic ('ctx' is contained in 'context', 3 / 7 ≥ 0.4).
+Both the fiber `class: 'Ctx'` and gin `class: 'Context'` sink
+patterns matched a fiber `c.Redirect(next)` call with identical
+confidence 0.9. Iteration order (gin defined first at
+`config-loader.ts:707`) picked the wrong winner, emitting the sink
+with the gin pattern's `arg_positions: [1]` and silently dropping the
+tainted arg[0] flow.
+
+Fix: EXACT-class-match tiebreaker in `calculateSinkConfidence`
+(+0.05 when `pattern.class === call.receiver`, case-insensitive).
+Guarantees the exact-match pattern wins the sinkMap slot over any
+fuzzy competitor. Only breaks ties; does not override the +0.1
+severity boost. Strict precision improvement — same-quality matches
+are unchanged.
+
+Unskips `TP — fiber c.Redirect(user_url) fires (arg[0])` in
+`tests/analysis/passes/open-redirect-frameworks.test.ts` (was
+`it.skip` since ship 1, 3.175.0). Also closes the residual note on
+#240 ship 2.
+
+### #263 — perf harness + baseline (infra)
+
+Checks in the harness the #254 deep-dive originally ran against
+(`/tmp/perf-run/harness.mjs`, never committed). Every perf commit
+since 3.170.0 shipped with the "not independently measured" hedge
+because there was no in-tree harness. This closes that gap.
+
+New files under `packages/circle-ir/perf/`:
+- `harness.mjs` — 3 tiers (small / medium / large), deterministic
+  synthetic Java fixtures generated at runtime, median-of-N
+  iterations, per-tier wall-clock + throughput + RSS delta. Imports
+  from `dist/` (also smoke-tests the ship shape). CLI flags:
+  `--json`, `--large`, `--tier=<name>`, `--iters=<n>`.
+- `README.md` — how-to-run, rationale for the synthetic-corpus choice,
+  deferred follow-ups.
+- `BASELINE.md` — 3.178.0 + #260 numbers on `main` (small ~6 K LOC/s
+  ~4.5 ms; medium ~14.5 K LOC/s @ 30 files / 1456 LOC / ~100 ms).
+
+Deferred follow-ups (still on #263 / #254 residual): large-tier
+baseline capture, CI perf gate policy, `--corpus <dir>` flag for
+real-repo comparison against the historical langchain4j / auth0-jwt
+numbers, per-pass timing aggregation.
+
+### #264 — `format_string` (CWE-134) sink additions (partial)
+
+Adds 8 receiver-taint-free sink patterns extending the pre-3.179.0
+format-string surface (previously: `String.format`, `Formatter.format`,
+`System.out.printf`, `fmt.Sprintf/Printf/Errorf/Fprintf`):
+
+- Java (5) — `MessageFormat.format`, `PrintStream.printf`/`format`
+  on arbitrary streams (not just `System.out`),
+  `PrintWriter.printf`/`format`.
+- Go (3) — `log.Printf`, `log.Fatalf`, `log.Panicf`.
+
+All arg[0] format-string sinks, same shape as the existing entries.
+
+Explicitly NOT in this ship (still deferred on #264):
+- Python `str.format` receiver-taint / `%`-operator LHS-taint —
+  engine-level tracking gap; a receiver / operator-LHS is neither an
+  argument nor a call return, so no sink pattern can catch it.
+- SLF4J / JUL / log4j `Logger.log(fmt, ...)` patterns — pending an
+  explicit policy decision on `log_injection` (CWE-117) vs
+  `format_string` (CWE-134) classification for logger receivers.
+- Variant-coverage matrix rerun to baseline the FN-count delta.
+
+### #261 first slice — Gradle Fastjson gate
+
+Extends the `DeserializationSafetyGatePass` Gate A (from #258 for
+Maven pom.xml) to also consult Gradle build scripts.
+
+- `DependencyContext.java.buildGradle?: string`. When both `pomXml`
+  and `buildGradle` are supplied, `pomXml` takes precedence and
+  `buildGradle` is a fallback.
+- New helper `resolveFastjsonFromGradle` recognises three shapes:
+  Groovy / Kotlin direct literal (`implementation
+  'com.alibaba:fastjson:1.2.83_noneautotype'` and variants);
+  Groovy interpolation via `ext { fastjsonVersion = 'X' }` /
+  `def fastjsonVersion = 'X'` / top-level; Kotlin interpolation via
+  `val fastjsonVersion = "X"` / `const val`.
+
+Deferred within Gradle: `platform(...)` / `enforcedPlatform(...)`
+BOM version imports; version-catalog `libs.versions.toml`;
+`constraints { }` block; `subprojects { }` / `allprojects { }`
+conditional declarations.
+
+### #261 second slice — Python PyYAML gate
+
+New Gate D on the same pass:
+
+- `DependencyContext.python?: { requirementsTxt?: string; pyprojectToml?: string }`.
+  Requirements takes precedence.
+- New helpers in `dependency-versions.ts`:
+  - `resolvePyYamlFromRequirements` — PEP 508 (`==`, `>=`, `~=`,
+    `>`, `===`); case-insensitive on package name.
+  - `resolvePyYamlFromPyproject` — Poetry `key = "string"`, Poetry
+    table (`{ version = "..." }`), PEP 621 dependencies array.
+  - `isPyYamlVersionSafeByDefault` — parses `M.m[.p]`, true when
+    major ≥ 6.
+  - `fileHasUnsafePyYamlLoader` — scans sink line + up to 9
+    following lines for explicit `Loader=(yaml.)?
+    (Loader|UnsafeLoader|FullLoader)`. `SafeLoader` / `CSafeLoader` /
+    `BaseLoader` / `CBaseLoader` are safe and NOT matched.
+- **Gate D fires when** language === 'python' AND pyyaml
+  safe-by-default AND the sink is `yaml.load` (or bare `load` with
+  class undefined — Python calls don't carry receiver-type
+  resolution) AND no explicit unsafe Loader in the file at / after
+  the sink line. Explicit `Loader=yaml.Loader` / `UnsafeLoader` /
+  `FullLoader` is preserved: those are still exploitable under
+  pyyaml ≥ 6.0 regardless of the version pin.
+
+The pass's language guard extended from `if (language !== 'java')`
+to `if (language !== 'java' && language !== 'python')`. Result
+type gains `droppedPyYaml: number`.
+
+`DeserializationSafetyGatePass` interface `DeserializationSafetyGateResult`
+gained the `droppedPyYaml: number` field; existing consumers reading
+`droppedFastjson` / `droppedJackson` / `droppedSnakeYaml` are
+unchanged.
+
+### Scope
+
+- No new runtime dependencies (still `web-tree-sitter` + `yaml`).
+- No Node.js APIs in library code (browser + Cloudflare Workers
+  compatibility preserved).
+- No LLM / AI wording anywhere in engine, CLI, configs, or tests.
+- IR semantic changes: none in this release. The only public-type
+  change is the additive `droppedPyYaml` field on the
+  DeserializationSafetyGate result.
+
+### Tests
+
+- Baseline (3.178.0): 4112 pass, 3 skipped, 293 files.
+- This release: **4146 pass, 2 skipped, 299 files** (+34 tests
+  across 6 new / touched test files, 1 fewer skip from the fiber
+  unskip).
+
+### Not in this ship
+
+- Rust `Cargo.toml` extension of `dependencyContext` (open on #261).
+- npm `package.json` extension of `dependencyContext` — assessed
+  during the Python slice; no clean Fastjson-`_noneautotype`-style
+  version-safety story for JS deserializers, likely to stay
+  deferred pending real-world FP signal.
+- Python `str.format` / `%`-operator LHS-taint engine-level
+  tracking work (open on #264).
+- Logger `log_injection` vs `format_string` classification policy
+  (open on #264).
+- Multi-severity coalesce data capture (open on #262).
+- The Large-group tickets #146 (Rust + TS cross-file taint), #213
+  (512-cell coverage matrix), #243 (Go propagation shapes).
+
 ## [3.178.0] - 2026-07-23
 
 Two Large-group tickets landing together as a single minor: the new

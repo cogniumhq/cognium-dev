@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.179.0] - 2026-07-23
+
+Adopts [`circle-ir@3.179.0`](https://www.npmjs.com/package/circle-ir),
+which bundles five engine commits since 3.178.0: the #260 Go fiber
+`c.Redirect` arg[0] flow-gap fix (root cause was a shared-taint-matcher
+sinkMap-dedup ordering bug; exact-class-match tiebreaker in
+`calculateSinkConfidence` restores the fiber pattern's precedence
+over the fuzzy gin `Context` match), the #263 perf harness +
+baseline check-in (`packages/circle-ir/perf/`), the #264
+`format_string` sink additions (5 Java `MessageFormat` /
+`PrintStream` / `PrintWriter` + 3 Go `log.{Printf,Fatalf,Panicf}`),
+and two #261 slices extending `dependencyContext`: Gradle
+`build.gradle` (Groovy + Kotlin DSL, direct + interpolated forms)
+and Python `requirements.txt` / `pyproject.toml` for the new PyYAML
+≥ 6.0 default-safe Gate D.
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4146 pass, 2 skipped, 0 regressions vs 3.178.0.
+
+### API surface additions (for consumers of `analyze()`)
+
+- `AnalyzerOptions.dependencyContext.java.buildGradle?: string`
+- `AnalyzerOptions.dependencyContext.python?: { requirementsTxt?: string; pyprojectToml?: string }`
+- `DeserializationSafetyGatePass` result gains `droppedPyYaml: number`
+
+Existing consumers unchanged. See the [circle-ir 3.179.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.179.0) for full engine detail.
+
 ## [3.178.0] - 2026-07-23
 
 Adopts [`circle-ir@3.178.0`](https://www.npmjs.com/package/circle-ir),
