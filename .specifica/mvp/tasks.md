@@ -113,7 +113,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-#264 partial landing unreleased on main)
+### GitHub issue ledger (as of 2026-07-23, post-#254 close (T2#8 subsumed))
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -121,7 +121,6 @@
 | #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | Not started | Cell-by-cell burn-down |
 | #243 | FN | Taint lost through Go closures/globals/roundtrip, loop-carried, xss | Not started | Propagation-shape audit |
-| #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; perf harness landed 2026-07-23 (#263, `packages/circle-ir/perf/`) — use it to validate the T2#8 ROI before shipping |
 | #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
 | #264 | FN | `format_string` (CWE-134) coverage audit + additions (spun out of #240) | **Partial landed unreleased a76af04 (2026-07-23):** 5 Java patterns (MessageFormat.format, PrintStream/PrintWriter.{printf,format}) + 3 Go patterns (log.{Printf,Fatalf,Panicf}). 8 pinning tests. | Still deferred: Python `str.format` / `%`-operator LHS-taint (engine-level tracking gap); SLF4J/JUL/log4j Logger classification policy; variant-coverage matrix rerun to baseline FN-count delta |
@@ -140,6 +139,7 @@ All three commits held pending the next release cut.
 **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
 
 ### Recently closed
+- #254 closed 2026-07-23 (perf deep-dive umbrella — 9 releases shipped 3.171.0–3.177.0 (T1 H1+H7+H8, T2-A+C, T2-D, T1#5, T2#7, T2#10, T1#2, T2#9, T2#6 bundled); T2#8 subsumed by T2-A/C/D post-shared-nodeCache (measurement showed target phases at ~5% of `analyze()`, refactor cost thousands of LOC across 6+ languages for < 5% savings); perf harness spun out and closed as #263)
 - #240 closed 2026-07-23 (zero-recall category coverage — ship 1 (3.175.0 `open_redirect` + `trust_boundary`), ship 2 (3.177.0 `deserialization` + `nosql_injection` + Go local-receiver resolver), fiber-flow residual fixed via #260 6d28db3, `format_string` split out to #264)
 - #263 closed 2026-07-23 (perf harness + baseline checked in — `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`; deterministic synthetic Java fixtures; commit 0104f72; unreleased on main pending next release cut)
 - #260 closed 2026-07-23 (Go fiber `c.Redirect` arg[0] flow gap — root cause was sink-dedup ordering, fix is a +0.05 exact-class-match confidence tiebreaker in `calculateSinkConfidence`; commit 6d28db3; unreleased on main pending next release cut)
