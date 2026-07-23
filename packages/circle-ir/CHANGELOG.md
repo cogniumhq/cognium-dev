@@ -5,6 +5,177 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.177.0] - 2026-07-23
+
+Small-group + Medium-group bundle from the #254 perf deep-dive, the
+#257 Java code_injection FP fix, and the #240 zero-recall ship 2. Five
+engine commits landed unreleased on main between 3.176.0 and this
+release; bundled as a single minor. 4087 pass, 3 skipped, 0 regressions
+vs 3.176.0.
+
+### Perf — #254 Small + Medium partials (095f043, 6ea9523, 59ef283)
+
+- **T1#5** — `receiverMightBeClass` result memoization
+  (`src/analysis/taint-matcher.ts`). Existing impl renamed to
+  `receiverMightBeClassImpl`; a thin wrapper looks up results in a
+  module-scope `Map<string, boolean>` keyed on `${receiver}\0${className}`.
+  Size-capped at 10 000 entries with full clear on cap-hit (memory
+  bounded in long-running MCP-style processes). In-tree microbench across
+  15 vitest workers observed a 2.83× dedup ratio on `(receiver,
+  className)` inputs.
+
+- **T2#7** — Language-filter hoist in `findSources` / `findSinks`.
+  Previously the same 4-clause `pattern.languages && … !includes(language)`
+  check ran inside every inner loop in `findSources` (3 sites) and
+  inside `matchesSinkPattern` on every `(call, pattern)` pair
+  `findSinks` produced. Each entry point now filters `patterns` once
+  up-front into `patternsForLanguage` and iterates that. Defensive
+  check inside `matchesSinkPattern` left in place.
+
+- **T2#10** — `walkBackwardDefs` per-file memoization
+  (`src/analysis/dfg-walk.ts`). Cached in a
+  `WeakMap<chainsByToDef, Map<'${startDefId}|${maxHops}', BackwardWalkResult>>`
+  so per-file entries auto-release when a new file's `analyze()` builds
+  a fresh chains map. Result Sets are already `ReadonlySet` in the
+  return type, safe to share across callers.
+
+- **T1#2** — Constant-propagation pre-pass tree-walk fusion
+  (`src/analysis/constant-propagation/propagator.ts`). Fuses the two
+  file-level DFS walks (`collectClassFields` + `findAllMethods`) into
+  a single `collectClassFieldsAndMethods` that populates
+  `this.classFields` and returns the methods array in one traversal.
+  `analyzeMethodReturns` now accepts `Node[]` directly instead of
+  re-walking. Preserves the deep-nesting stack-safety guarantee
+  (iterative DFS, not recursion). `seedPythonModuleConstants` unchanged
+  — it walks only root's direct children.
+
+- **T2#9** — `buildCFG` Bash + Go nodeCache reuse
+  (`src/core/extractors/cfg.ts`). `buildCFG`'s dispatch to
+  `buildBashCFG` and `buildGoCFG` dropped the `nodeCache` parameter
+  already threaded through the JS/Java paths (3.172.0 T2-A). Both
+  helpers now take `cache?: NodeCache` and route lookups through
+  `getNodesFromCache` for `function_definition` (Bash) and
+  `function_declaration` + `method_declaration` (Go) — all three
+  are already in their respective language cache sets.
+
+Wall-clock impact for the perf partials is not independently measured
+in this release — the perf harness is not yet checked in (a separate
+#254 follow-up). All five changes are structurally sound.
+
+### FP fix — #257 Java code_injection `*Parser` semantic gate (fdfd0f7)
+
+Extends the #155 stage-9a data-parser allowlist in
+`src/analysis/passes/sink-filter-pass.ts` with an inverse-denylist
+semantic gate over receiver type names:
+
+  if receiver type ends in `Parser` AND is NOT in
+  `JAVA_EVAL_PARSER_DENYLIST` → suppress the `code_injection` sink.
+
+Denylist enumerates receivers whose `.parse()` genuinely evaluates
+untrusted input and must continue to fire: `GroovyShell`,
+`GroovyClassLoader`, `ScriptEngine`, `CronParser` (preserved from the
+explicit `config-loader.ts:1383` sink pattern). `SpelExpressionParser`
+and `StandardExpressionParser` end in `Parser` too but their sinks use
+`method: 'parseExpression'`, which stage 9a's `method === 'parse'`
+guard never reaches, so they are unaffected.
+
+Closes the yahoo/elide `QueryPlanTranslator.java:170`
+`ExpressionParser.parse()` FP from the ticket. Generalizes the fix
+beyond #155's per-name allowlist so future domain-specific `*Parser`
+DSLs (query / config / template parsers) don't re-trigger.
+
+3 pinning tests added in
+`tests/analysis/passes/java-code-injection-fp.test.ts` (Elide-shape
+suppression + in-house `QueryParser` suppression + CronParser recall
+lock).
+
+### Coverage — #240 ship 2 (412ac98)
+
+Adds `DESERIALIZATION_FRAMEWORK_SINKS` (11 patterns) and
+`NOSQL_FRAMEWORK_SINKS` (18 patterns) to `config-loader.ts`, spread
+into `DEFAULT_SINKS` next to ship 1's `OPEN_REDIRECT_FRAMEWORK_SINKS`
+and `TRUST_BOUNDARY_FRAMEWORK_SINKS`.
+
+- **Deserialization (CWE-502).** Python `pickle` / `cPickle` /
+  `marshal` / `dill` / `jsonpickle`; Go `encoding/gob` Decoder.Decode
+  and `gopkg.in/yaml` Unmarshal; JS/TS `node-serialize` unserialize.
+  Java coverage in `DEFAULT_SINKS` unchanged.
+- **NoSQL injection (CWE-943).** Python pymongo `Collection.{find,
+  find_one, aggregate, update_*, delete_*, count_documents}`; Java
+  Spring Data `MongoTemplate.{find, findOne, findAll}` + native
+  `MongoCollection.{find, aggregate}`; Go mongo-driver
+  `Collection.{Find, FindOne, UpdateOne, UpdateMany, DeleteOne}`.
+  JS/TS coverage in `DEFAULT_SINKS` unchanged.
+
+### Go local-receiver type resolver — ship 2's unblocker
+
+Ship 1 (3.175.0) documented the gap: `c *gin.Context` gave
+`CallInfo.receiver === "c"` and `class: 'Context'` sink patterns
+never matched. Three tests were skipped pending resolution.
+
+New helpers in `src/core/extractors/calls.ts`:
+
+- `resolveGoLocalReceiverType(operandName, callNode)` — walks up
+  from the call to the nearest `method_declaration` /
+  `function_declaration` / `func_literal`; checks `receiver` field
+  first (methods only), then `parameters`.
+- `extractGoParamTypeForName(list, operandName)` — scans a
+  `parameter_list` for a `parameter_declaration` whose name matches
+  (directly or inside an `identifier_list`) and returns its type node.
+- `extractGoTypeLastSegment(typeNode)` — returns the last identifier
+  segment of a Go type: `*gin.Context` → `"Context"`,
+  `gin.Context` → `"Context"`, `*Context` → `"Context"`,
+  `Context` → `"Context"`; returns `null` for structured types.
+
+`extractGoCallInfo` integrates the resolver: when a
+`selector_expression` operand is a bare identifier, attempts
+resolution and stores the resolved type as `CallInfo.receiver`; on
+miss falls back to operand text so package-qualified calls
+(`fmt.Sprintf`, `os.Getenv`) continue to match package-keyed sink
+patterns.
+
+**IR semantic change:** `CallInfo.receiver` for a Go call whose
+operand names a resolvable local variable now holds the type's last
+segment instead of the operand text. Documented in the updated
+`go-coverage.test.ts:extracts-method-calls-with-variable-receiver`
+expectation (`'r'` → `'Request'`).
+
+- Ship 1's gin `c.Redirect` and gin `c.SetCookie` skips unblocked —
+  both fire fine-grained `open_redirect` / `trust_boundary` now.
+- Ship 1's fiber `c.Redirect` skip **preserved** with a targeted
+  note: resolver correctly returns `"Ctx"` and the sink is detected,
+  but a distinct Go `arg[0]` taint-flow gap prevents fine-grained
+  `open_redirect` emission. `external_taint_escape` continues to
+  fire on the call site, preserving recall — only the fine-grained
+  label is missing. Tracked as a follow-up on #240.
+
+12 new pinning tests in
+`tests/analysis/passes/deserialization-nosql-frameworks.test.ts`
+(4 deser + 4 nosql + 4 Go resolver shape tests).
+
+### Scope
+
+- No API additions or breaking changes beyond the Go `CallInfo.receiver`
+  IR semantic noted above.
+- No new plugin runtime dependencies.
+- No LLM / AI wording anywhere in the engine, CLI, configs, or tests.
+
+### Tests
+
+- Baseline (3.176.0): 4070 pass, 5 skipped, 293 files.
+- This release: **4087 pass, 3 skipped, 294 files** (+17 tests: 14
+  new pinning tests + 3 ship-1 skips resolved into 2 passing + 1
+  re-skipped with fresh reason).
+
+### Not in this ship
+
+- **#254 T2#8** (fuse `extractTypes` + `extractCalls` + `buildDFG`)
+  — deferred pending wall-clock validation.
+- **#143** coalesce findings by `(source, sink)` — schema change,
+  own release.
+- **Go `arg[0]` taint flow gap** noted above — follow-up on #240.
+- **Fiber `c.Redirect` fine-grained label** — same follow-up.
+
 ## [3.176.0] - 2026-07-20
 
 Sink-shape gate indirection resolution. Cognium-dev#256 closes two

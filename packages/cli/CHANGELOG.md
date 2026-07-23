@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.177.0] - 2026-07-23
+
+Adopts [`circle-ir@3.177.0`](https://www.npmjs.com/package/circle-ir),
+which bundles the #254 perf partials (T1#5 `receiverMightBeClass`
+memo, T2#7 language-filter hoist, T2#10 `walkBackwardDefs` memo, T1#2
+constant-prop tree-walk fusion, T2#9 `buildCFG` Bash + Go nodeCache
+reuse), the #257 Java `code_injection` `*Parser` semantic gate (closes
+yahoo/elide `ExpressionParser.parse()` FP), and the #240 ship 2
+zero-recall framework sink coverage (Python pickle / marshal / dill /
+jsonpickle + JS node-serialize deserialization; Python pymongo + Java
+Spring Data MongoTemplate + Go mongo-driver `Collection` NoSQL
+injection) plus the Go local-receiver type resolver that ship 1
+(3.175.0) documented as gated.
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4087 pass, 3 skipped, 0 regressions vs 3.176.0.
+
+### IR semantic change (downstream consumers)
+
+`CallInfo.receiver` for Go calls whose operand names a resolvable
+local variable now holds the type's last identifier segment instead
+of the operand text (e.g. `c` with declared `*gin.Context` →
+`"Context"`). Package-qualified operands (`fmt.Sprintf(...)`) keep
+the package name as before. Consumers that read
+`ProjectAnalysis.files[].taint.sinks[].receiver` or
+`FileAnalysis.calls[].receiver` for Go should treat the field as
+"resolved type when known, operand text otherwise."
+
+See the [circle-ir 3.177.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.177.0)
+for full engine detail.
+
 ## [3.176.0] - 2026-07-20
 
 Adopts [`circle-ir@3.176.0`](https://www.npmjs.com/package/circle-ir),
