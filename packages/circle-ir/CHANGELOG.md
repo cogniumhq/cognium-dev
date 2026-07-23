@@ -5,6 +5,159 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.178.0] - 2026-07-23
+
+Two Large-group tickets landing together as a single minor: the new
+`deserialization-safety-gate` engine capability (#258) and the
+note-level finding coalescer (#143). Two engine commits (`de134a5`,
+`a4eb173`) since 3.177.0; 4112 pass, 3 skipped, 0 regressions.
+
+### #258 — Deserialization safety gate
+
+New engine capability: dependency-manifest **and** file-local config
+awareness for Java deserialization sinks. Java-only in MVP. Runs
+after `SinkSemanticsPass` and before `TaintPropagationPass` so flow
+generators never see the dropped sinks. Three sub-gates in the new
+`DeserializationSafetyGatePass`:
+
+- **Gate A — Fastjson `*_noneautotype` build (manifest-based).**
+  Reads `AnalyzerOptions.dependencyContext.java.pomXml`, resolves the
+  effective Fastjson coordinate via the new
+  `src/analysis/dependency-versions.ts::resolveFastjsonFromPom`
+  helper (regex over `<properties>/<fastjson.version>` and any
+  `com.alibaba:fastjson` `<dependency>` block). When the version
+  matches the hardened `_noneautotype` classifier, drops
+  `JSON.parseObject` / `JSON.parse` deserialization sinks — UNLESS
+  the file itself re-enables autotype via
+  `setAutoTypeSupport(true)` (defence-in-depth: the classifier is a
+  build-time strip, not a runtime lock).
+  Closes the alibaba/Sentinel `ClusterConfigController.java:76` FP
+  verbatim from the ticket (pom pins `1.2.83_noneautotype`;
+  `JSON.parseObject(payload)` returns a plain `JSONObject`).
+
+- **Gate B — Jackson polymorphism not enabled (in-file scan).**
+  `ObjectMapper.readValue(json, targetType)` is safe on Jackson
+  ≥ 2.10 unless the file enables polymorphic type handling via
+  `enableDefaultTyping` / `activateDefaultTyping` or applies
+  `@JsonTypeInfo` somewhere. When none of those signals appear, drops
+  `readValue` / `convertValue` / `treeToValue` sinks on
+  `ObjectMapper` / `ObjectReader`.
+
+- **Gate C — SnakeYAML `SafeConstructor` (in-file scan).**
+  `new Yaml(new SafeConstructor())` gives a Yaml instance whose
+  `.load(...)` cannot instantiate arbitrary classes. When the file
+  builds any Yaml with `SafeConstructor`, drops `Yaml.load` /
+  `loadAs` / `loadAll` sinks.
+
+#### New API surface
+
+- `AnalyzerOptions.dependencyContext?: DependencyContext`
+- Exported `DependencyContext` type — currently
+  `{ java?: { pomXml?: string } }`, extensible to Gradle
+  `build.gradle`, npm `package.json`, Python `pyproject.toml` /
+  `requirements.txt`, Rust `Cargo.toml` in follow-up scopes.
+- Pillar I preserved: circle-ir does not touch the filesystem to
+  obtain any manifest. The caller (cognium-dev CLI or a downstream
+  consumer) reads the file once and passes raw text per invocation.
+
+#### Recall invariants (locked by tests)
+
+Every sub-gate defaults to *do not drop* on missing signal, so a
+resolver bug can only ever regress toward the current over-firing
+behaviour, never toward a false negative. Cross-gate isolation:
+Fastjson pom does not affect Jackson sinks; non-Java files are
+untouched even when `dependencyContext.java` is supplied.
+
+#### Interaction with #256
+
+Gate B correctly recognises Jackson 2.10+ default-safe behaviour, so
+`mapper.readValue(json, Class.forName(x))` in a file with no
+polymorphism enablement is dropped — more accurate than the pre-#258
+always-fire behaviour but changes the semantic the #256 Gate 1
+recall locks were asserting. The two `Class.forName` / `getClass`
+recall locks in `java-sink-shape-regression.test.ts` now add
+`mapper.enableDefaultTyping()` so they exercise the actually-unsafe
+Jackson path and continue to lock the arg-type resolver's behaviour
+under the new dual-gate reality.
+
+#### Opt-out
+
+Disable the entire gate via
+`AnalyzerOptions.disabledPasses: ['deserialization-safety-gate']`.
+
+#### Tests
+
+11 new pinning tests in
+`tests/analysis/passes/deserialization-safety-gate.test.ts`
+(4 Gate A + 3 Gate B + 2 Gate C + 2 cross-gate isolation). 2 #256
+recall locks updated with `enableDefaultTyping()`.
+
+### #143 — Note-level finding coalescer
+
+Folds groups of ≥ 2 `level === 'note'` findings at the same
+`(file, line)` into a single record. Additive optional
+`labels?: string[]` field on `SastFinding` carries the co-located
+rule_ids. Higher-level findings (warning / error) are never
+coalesced and remain fully visible.
+
+MVP of the #143 reopen (2026-07-03), which narrowed the original
+ticket's scope to the low-severity advisory bucket that the empirical
+capture identified — 5,481 `(file, line)` locations on OWASP
+Benchmark (31.3% of files) hit by ≥ 2 distinct advisory rules,
+dominated by:
+
+    missing-public-doc + naming-convention                × 2,740
+    missing-csp-frame-ancestors + missing-x-frame-options × 2,740
+    unused-variable + variable-shadowing                  (co-located)
+
+HIGH-severity: 0 co-locations in the same capture — coalesce is
+intentionally scoped to `level === 'note'` only.
+
+#### Invariants (locked by 14 unit tests)
+
+- **Additive schema**: consumers keying on `rule_id` continue to work
+  unchanged. Consumers surfacing every co-located rule union
+  `rule_id` + `labels`.
+- **Level-gated**: any warning or error in the group → pass-through
+  UN-coalesced. Never diminishes visibility of higher severities.
+- **Deterministic**: sort by `rule_id` inside a group before picking
+  the primary (test-friendly, diff-friendly, cache-friendly).
+- **Idempotent**: re-running the coalescer over its own output is a
+  fixed point; pre-existing `labels[]` are unioned in (dedup'd,
+  primary excluded).
+- **Per-(file, line)**: different lines / different files stay
+  separate groups.
+- **Duplicate rule_ids at the same location do NOT coalesce** —
+  that is dedup (handled by taint-matcher's sinkMap); coalescer is
+  scoped to multi-rule folding only.
+
+#### Pipeline placement
+
+Runs between `applyProjectProfileTransform` and
+`applyPerFileFindingCap` in `analyzer.ts` so the cap sees the
+coalesced count — a ~30 % reduction on advisory-heavy Java corpora
+before the 1000-per-file cap trips.
+
+### Scope
+
+- No breaking changes. `labels[]` is optional and additive.
+- No new runtime dependencies (still `web-tree-sitter` + `yaml`).
+- No Node.js APIs in library code (browser + Cloudflare Workers
+  compatibility preserved).
+- No LLM / AI wording anywhere in the engine, CLI, configs, or
+  tests.
+
+### Not in this ship
+
+- **#258 follow-ups**: Gradle `build.gradle` / SBT / Ivy support;
+  non-Java manifests (Python / npm / Cargo); XStream permissive
+  allowlist; informational-severity downgrade (currently
+  drop-entirely); cross-file `@JsonTypeInfo` scan (file-local only).
+- **#143 follow-ups**: full instrumentation rerun on multi-severity
+  data (the reopen's step 1); medium-severity coalesce policy;
+  SARIF `properties.additionalLabels` convention (CLI-side); the
+  rule-pair overlap catalog.
+
 ## [3.177.0] - 2026-07-23
 
 Small-group + Medium-group bundle from the #254 perf deep-dive, the

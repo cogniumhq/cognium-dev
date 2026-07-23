@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.178.0] - 2026-07-23
+
+Adopts [`circle-ir@3.178.0`](https://www.npmjs.com/package/circle-ir),
+which lands two Large-group tickets: the new deserialization safety
+gate (#258) and the note-level finding coalescer (#143). No CLI-side
+code changes; version-bump-only propagation.
+
+### New engine API surface
+
+- `AnalyzerOptions.dependencyContext?: DependencyContext` —
+  optional dep-manifest context (currently
+  `{ java?: { pomXml?: string } }`). When supplied, the new
+  `deserialization-safety-gate` pass drops Fastjson
+  `*_noneautotype`-defused sinks. Pillar I: circle-ir never reads
+  the filesystem; caller passes raw manifest text.
+- Optional `labels?: string[]` on `SastFinding` — carries co-located
+  rule_ids when the note-level coalescer folded a group. Consumers
+  keying on `rule_id` continue to work unchanged; consumers that
+  want every co-located rule union `rule_id` + `labels`.
+
+### CLI consumers to consider
+
+- Reading `dependencyContext.java.pomXml` from the scanned project
+  root and passing it through to `analyze()` / `analyzeProject()`
+  would unlock the Fastjson FP suppression on real projects. Not
+  wired in this ship — separate CLI work.
+- Text / JSON / SARIF formatters could surface `finding.labels[]`
+  when present (rendering `[rule_id + labels…]`, adding
+  `properties.additionalLabels` on SARIF results). Additive; the
+  existing single-`rule_id` output stays valid.
+
+See the [circle-ir 3.178.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.178.0)
+for full engine detail.
+
 ## [3.177.0] - 2026-07-23
 
 Adopts [`circle-ir@3.177.0`](https://www.npmjs.com/package/circle-ir),
