@@ -194,10 +194,18 @@ public class Svc {
   });
 
   it('Gate 1 recall lock — readValue(json, Class.forName(userType)): deserialization sink still fires', async () => {
+    // enableDefaultTyping() added 3.178.x: with cognium-dev #258 Gate B
+    // in the pipeline, a Jackson file that does NOT enable polymorphism
+    // is treated as safe under the Jackson 2.10+ default. The #256
+    // recall lock is specifically about the arg-type resolver NOT
+    // over-suppressing on dynamic class args; to isolate that, the
+    // file must also fail the #258 Gate B (polymorphism enabled) so
+    // the arg-shape signal is the one making the call.
     const code = `import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class Svc {
-  private final ObjectMapper mapper = new ObjectMapper();
+  private final ObjectMapper mapper;
+  public Svc() { this.mapper = new ObjectMapper(); this.mapper.enableDefaultTyping(); }
   public Object run(String json, String userType) throws Exception {
     return mapper.readValue(json, Class.forName(userType));
   }
@@ -208,10 +216,12 @@ public class Svc {
   });
 
   it('Gate 1 recall lock — readValue(json, other.getClass()): deserialization sink still fires', async () => {
+    // See sibling test above for the #258 Gate B interaction.
     const code = `import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class Svc {
-  private final ObjectMapper mapper = new ObjectMapper();
+  private final ObjectMapper mapper;
+  public Svc() { this.mapper = new ObjectMapper(); this.mapper.enableDefaultTyping(); }
   public Object run(String json, Object other) throws Exception {
     return mapper.readValue(json, other.getClass());
   }

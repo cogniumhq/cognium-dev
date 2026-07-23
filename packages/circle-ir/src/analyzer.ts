@@ -109,6 +109,7 @@ import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-
 import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotation-sql-sink-pass.js';
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
+import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
@@ -339,6 +340,42 @@ export interface AnalyzerOptions {
    * Added in circle-ir 3.106.0 (#169).
    */
   projectProfile?: ProjectProfile | Map<string, ProjectProfile>;
+
+  /**
+   * Optional dependency-manifest context for the project.
+   *
+   * When supplied, the `deserialization-safety-gate` pass consults it to
+   * drop or downgrade deserialization sinks whose surrounding library
+   * configuration renders them non-exploitable. Currently supported
+   * shapes (cognium-dev #258):
+   *
+   *  - `java.pomXml` — raw `pom.xml` string. The gate parses the
+   *    `<fastjson.version>` property and any `com.alibaba:fastjson`
+   *    `<dependency>` block; when the effective version is a
+   *    `*_noneautotype` classifier, autotype is stripped from Fastjson
+   *    and `JSON.parseObject` / `JSON.parse` sinks are dropped for that
+   *    file. Other manifests (Gradle build.gradle, Python
+   *    requirements.txt / pyproject, npm package.json, Cargo.toml) are
+   *    accepted here in future scopes.
+   *
+   * Pillar I: circle-ir does not read the filesystem to obtain this
+   * context. The caller (cognium-dev CLI or `analyzeProject`) reads the
+   * manifest once and passes the raw string per file. Absent field →
+   * gate no-ops silently and every sink emits at its default severity.
+   */
+  dependencyContext?: DependencyContext;
+}
+
+/**
+ * Dependency-manifest context accepted by `AnalyzerOptions.dependencyContext`.
+ * cognium-dev #258.
+ */
+export interface DependencyContext {
+  /** Java project manifests. */
+  java?: {
+    /** Raw `pom.xml` content (Maven). Parsed by the gate on demand. */
+    pomXml?: string;
+  };
 }
 
 /**
@@ -746,6 +783,16 @@ export async function analyze(
   // Runs after SinkFilterPass so upstream FP suppressions have already fired,
   // and before TaintPropagationPass so flow generators never see dropped sinks.
   if (!disabledPasses.has('sink-semantics')) pipeline.add(new SinkSemanticsPass());
+  // cognium-dev #258: drops `deserialization` sinks defused by library
+  // configuration — Fastjson `*_noneautotype` build (from
+  // AnalyzerOptions.dependencyContext.java.pomXml), Jackson polymorphism
+  // not enabled in-file, SnakeYAML SafeConstructor in-file. Java-only.
+  // Runs after SinkSemanticsPass so its curated drops fire first, and
+  // before TaintPropagationPass so flow generators never see the
+  // dropped sinks. Each sub-gate is defensive: on missing signal it
+  // defaults to *do not drop* (the sink continues to fire).
+  if (!disabledPasses.has('deserialization-safety-gate'))
+    pipeline.add(new DeserializationSafetyGatePass(options.dependencyContext));
   // cognium-dev #162 Option B: drops Java reflection `code_injection`
   // sinks in files that declare `main(String[])` AND carry no
   // web-framework Tier-1 signal (annotation OR supertype OR method
