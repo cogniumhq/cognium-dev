@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.180.0] - 2026-07-23
+
+Adopts [`circle-ir@3.180.0`](https://www.npmjs.com/package/circle-ir),
+which bundles five engine commits since 3.179.0: three more `#261`
+`dependencyContext` slices (Rust `Cargo.toml` plumbing, Gradle
+version-catalog `libs.versions.toml`, Gradle `constraints { version {
+strictly } }` sub-block form) and two more `#264` `format_string`
+bites (SLF4J / JUL / log4j Logger classification decision documented,
+Python receiver-taint pass for `taintedFmt.format(...)` shapes).
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4181 pass, 2 skipped, 0 regressions vs 3.179.0.
+
+### API surface additions (for consumers of `analyze()`)
+
+- `AnalyzerOptions.dependencyContext.rust?: { cargoToml?: string }`
+- `AnalyzerOptions.dependencyContext.java.libsVersionsToml?: string`
+
+Existing consumers unchanged. See the [circle-ir 3.180.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.180.0) for full engine detail.
+
 ## [3.179.0] - 2026-07-23
 
 Adopts [`circle-ir@3.179.0`](https://www.npmjs.com/package/circle-ir),

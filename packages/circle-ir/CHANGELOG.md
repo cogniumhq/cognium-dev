@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.180.0] - 2026-07-23
+
+Five engine commits landing together since 3.179.0. Continues the
+Large-group burn-down: two more `#261` `dependencyContext` slices
+(Rust + Gradle catalog + Gradle extended forms), and two more `#264`
+`format_string` bites (Logger classification decision + Python
+receiver-taint). 4181 pass, 2 skipped, 0 regressions vs 3.179.0.
+
+### #261 — `dependencyContext` extensions (three more slices)
+
+- **Rust `Cargo.toml` plumbing.** New
+  `DependencyContext.rust.cargoToml?: string` + generic
+  `resolveDepFromCargoToml(cargoToml, crateName)` helper. Recognises
+  bare-string (`pkg = "1.2.3"`), inline-table with version, inline-
+  table with version + features, and correctly returns null for
+  git-source / path-source declarations. **Ships plumbing only —
+  no gate consumes it yet.** Assessed the existing Rust
+  deserialization sinks (`serde_yaml`, `bincode`, …) against clean
+  version-safety stories analogous to Fastjson `*_noneautotype` /
+  PyYAML ≥ 6.0. None exist today (`serde_yaml` deprecated in 2024
+  with no safe successor; `bincode` has no safe-mode feature). The
+  field + resolver ship so future gate work doesn't need another
+  round of API-surface additions when a real Rust FP-driving case
+  appears. Same finding as npm from the previous release. 12 unit
+  tests on the parser.
+
+- **Gradle version-catalog** (`gradle/libs.versions.toml`). New
+  `DependencyContext.java.libsVersionsToml?: string` + new resolver
+  `resolveFastjsonFromGradleCatalog(buildGradle, libsVersionsToml)`.
+  Third fallback in the Gate A chain, after `pomXml` and the
+  direct-form `buildGradle`. Recognises both `module = "com.alibaba:
+  fastjson"` and split `group = "com.alibaba"` + `name = "fastjson"`
+  entry forms in the `[libraries]` block; follows `version.ref`
+  into `[versions]`, or takes an inline `version = "…"` when
+  present. Requires the build.gradle to actually reference the
+  alias via `libs.<alias>` — unreferenced catalog entries do NOT
+  suppress. 8 integration tests.
+
+- **Gradle extended forms.** Extended `resolveFastjsonFromGradle`
+  with the `constraints { }` + `version { strictly 'X' }` /
+  `require 'X'` / `prefer 'X'` sub-block form. Reality-check
+  measurement before writing code showed the previously-listed
+  extended forms (`subprojects { }`, `allprojects { }`,
+  `constraints { }` direct declarations, `enforcedPlatform()` when
+  the arg IS fastjson) were already matched by the direct-form
+  regex; the version-constraint sub-block was the only genuine
+  gap. `platform('com.alibaba:fastjson-bom:X')` deliberately
+  remains a no-op — Gradle BOMs recommend versions for OTHER
+  artifacts; the BOM's own version does not tell us the fastjson
+  version. 8 integration tests (2 new-form FP suppressions +
+  5 recall locks for the already-working shapes + 1 deliberate-
+  no-op lock for the BOM case).
+
+### #264 — `format_string` (CWE-134) — two more slices
+
+- **Logger classification decision.** SLF4J / JUL / log4j
+  `Logger.log(fmt, ...)` receivers stay as `log_injection`
+  (CWE-117) and are NOT reclassified as `format_string` (CWE-134).
+  Rationale: real Logger vulnerability is log-forgery via CRLF
+  injection in tainted arg positions, not format-string
+  exploitation. Format-string vulnerability requires attacker-
+  controlled FORMAT STRING — in Logger APIs the format is
+  virtually always a literal at the call site. Adding
+  `format_string` sinks for the same receivers would emit
+  duplicate findings on every call site without adding real
+  signal. The rare edge case where a caller genuinely passes
+  a tainted format string to Logger is already flagged by the
+  existing log_injection sinks at arg[0] on the SLF4J family.
+  Decision recorded as an in-code note anchoring the reasoning
+  at the Java `log_injection` section header in
+  `config-loader.ts`. No new sink patterns.
+
+- **Python receiver-taint pass.** New
+  `PythonReceiverTaintFormatPass` emits `format_string` (CWE-134)
+  findings for Python `.format(...)` calls whose receiver is
+  tainted (traces back to a source per the constant-propagation
+  `tainted` set). Direct-finding emission (via `ctx.addFinding`)
+  sidesteps the sink → flow → finding chain — sink patterns key
+  on `arg_positions` which cannot represent taint that lives on
+  the call's receiver (`str.format(*args)` puts the format
+  template AS the receiver, not as an argument). Python-only.
+  Bare-identifier receivers only (complex `obj.attr.format(...)`
+  and literal `"...".format(...)` deliberately skipped).
+  Opt-outable via `disabledPasses:
+  ['python-receiver-taint-format']`. 7 pinning tests.
+
+### API surface additions
+
+- `AnalyzerOptions.dependencyContext.rust?: { cargoToml?: string }`
+- `AnalyzerOptions.dependencyContext.java.libsVersionsToml?: string`
+
+Existing consumers unchanged.
+
+### Scope
+
+- No new runtime dependencies (still `web-tree-sitter` + `yaml`).
+- No Node.js APIs in library code (browser + Cloudflare Workers
+  compatibility preserved).
+- No LLM / AI wording anywhere in engine, CLI, configs, or tests.
+- One IR-adjacent change: `format_string` findings can now come
+  from a new pass (`python-receiver-taint-format`) rather than
+  only from the sink-pattern → flow chain. Consumers keying on
+  `rule_id` continue to work; consumers filtering by `pass` should
+  add the new pass name if they were doing a positive-list filter.
+
+### Tests
+
+- Baseline (3.179.0): 4146 pass, 2 skipped, 299 files.
+- This release: **4181 pass, 2 skipped, 303 files** (+35 tests
+  across 4 new test files + 1 comment-only touched file).
+
+### Still open
+
+- `#261` still open — the two remaining slices (npm `package.json`
+  gate integration, Python `str.format_map`) are deferred pending
+  concrete FP-driving evidence.
+- `#264` still open — Python `%`-operator LHS-taint (requires a
+  new AST scan over `binary_operator` nodes, genuinely bigger
+  than this pass) and the variant-coverage matrix rerun (same
+  corpora requirement as #262).
+- `#172` (living ledger), `#213` (512-cell burn-down),
+  `#243` (Go propagation shapes), `#146` (Rust + TS cross-file
+  taint), `#262` (multi-severity data capture) — untouched this
+  release.
+
 ## [3.179.0] - 2026-07-23
 
 Five engine commits landing together since 3.178.0. Bugfix + infra
