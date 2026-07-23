@@ -113,7 +113,7 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-23, post-#260 fix unreleased on main)
+### GitHub issue ledger (as of 2026-07-23, post-#260 + #263 unreleased on main)
 
 | # | Kind | Title | Engine status | Next step |
 |---|------|-------|---------------|-----------|
@@ -125,17 +125,20 @@
 | #254 | perf | Deep-dive baseline + ranked hotspots (3.170.0) | **Released 3.177.0 (2026-07-23):** T1#5 memo, T2#7 language-filter hoist, T2#10 memo, T1#2 constant-prop tree-walk fusion, T2#9 `buildCFG` Bash+Go nodeCache. Prior releases 3.171/3.172/3.173 shipped H1+H7+H8, T2-A+C, T2-D. T2#6 sub-phase timers silently bundled into 3.171.0. | Remaining T2#8 (extract-pass fusion) pending; check in `perf/harness.mjs` for wall-clock validation of the T1#5/T1#2/T2#7/T2#9/T2#10 bundle |
 | #261 | capability | Extend `dependencyContext` to Gradle / npm / Python / Cargo (extends #258) | Not started | Multi-ship — one ecosystem at a time; each is a copy-and-adapt of the Fastjson-pom pattern |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
-| #263 | infra | Check in perf harness + baseline (closes open item on #254) | Not started | Curate 3-tier fixture corpus, land `packages/circle-ir/perf/harness.mjs`, produce 3.178.0 baseline; stretch: CI perf gate |
 
 ### Unreleased on main (2026-07-23)
 
-- **6d28db3** — fix: exact-class-match tiebreaker in sink-dedup (#260). Root cause was NOT the Go-side taint-propagation bug the ticket suspected; it was a shared-taint-matcher sinkMap-dedup ordering bug where the fuzzy `receiverMightBeClass('Ctx', 'Context')` match beat the exact fiber pattern on iteration-order. 30/-8 lines. 4113 pass, 2 skipped (was 3 — fiber test unskipped). Held for bundling with next feature.
+- **6d28db3** — fix: exact-class-match tiebreaker in sink-dedup (#260). Root cause was NOT the Go-side taint-propagation bug the ticket suspected; it was a shared-taint-matcher sinkMap-dedup ordering bug where the fuzzy `receiverMightBeClass('Ctx', 'Context')` match beat the exact fiber pattern on iteration-order. 30/-8 lines. 4113 pass, 2 skipped (was 3 — fiber test unskipped).
+- **0104f72** — perf: land perf harness + baseline (#263). Deterministic synthetic-Java fixtures at runtime (no external corpora), 3 tiers, median-of-N iterations, per-tier wall-clock + throughput + RSS delta. Baseline captured on `main` (3.178.0 + #260). Zero engine-code change. `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`. Follow-ups documented in README: large-tier baseline, CI perf gate, `--corpus <dir>` flag, per-pass timing aggregation.
+
+Both held pending the next release cut.
 
 ### #1 detail (kept from prior version)
 
 **#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
 
 ### Recently closed
+- #263 closed 2026-07-23 (perf harness + baseline checked in — `packages/circle-ir/perf/{harness.mjs, README.md, BASELINE.md}`; deterministic synthetic Java fixtures; commit 0104f72; unreleased on main pending next release cut)
 - #260 closed 2026-07-23 (Go fiber `c.Redirect` arg[0] flow gap — root cause was sink-dedup ordering, fix is a +0.05 exact-class-match confidence tiebreaker in `calculateSinkConfidence`; commit 6d28db3; unreleased on main pending next release cut)
 - #258 closed 2026-07-23 (deserialization-safety gate — Fastjson `*_noneautotype` manifest gate + Jackson polymorphism in-file gate + SnakeYAML SafeConstructor in-file gate; released as circle-ir 3.178.0 / commit de134a5)
 - #143 closed 2026-07-23 (note-level finding coalescer — additive `labels[]` on `SastFinding` folds level==='note' groups at same (file, line); MVP of 2026-07-03 reopen; released as circle-ir 3.178.0 / commit a4eb173)
