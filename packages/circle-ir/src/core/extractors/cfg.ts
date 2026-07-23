@@ -4,7 +4,7 @@
 
 import type { Node, Tree } from 'web-tree-sitter';
 import type { CFG, CFGBlock, CFGEdge, SupportedLanguage } from '../../types/index.js';
-import { findNodes, getNodesFromCache, type NodeCache } from '../parser.js';
+import { getNodesFromCache, type NodeCache } from '../parser.js';
 
 /**
  * Detect language from tree structure.
@@ -59,11 +59,11 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeC
   let blockIdCounter = 0;
 
   if (effectiveLanguage === 'bash') {
-    return buildBashCFG(tree, blockIdCounter);
+    return buildBashCFG(tree, blockIdCounter, cache);
   }
 
   if (effectiveLanguage === 'go') {
-    return buildGoCFG(tree, blockIdCounter);
+    return buildGoCFG(tree, blockIdCounter, cache);
   }
 
   if (isJavaScript) {
@@ -635,13 +635,17 @@ function processSwitchStatement(
  * Processes function_definition bodies and the top-level program body
  * as a synthetic "main" function.
  */
-function buildBashCFG(tree: Tree, startId: number): CFG {
+function buildBashCFG(tree: Tree, startId: number, cache?: NodeCache): CFG {
   const allBlocks: CFGBlock[] = [];
   const allEdges: CFGEdge[] = [];
   let blockIdCounter = startId;
 
-  // Process function_definition nodes
-  const functions = findNodes(tree.rootNode, 'function_definition');
+  // Process function_definition nodes. `getNodesFromCache` reuses the
+  // per-file node cache populated by `collectAllNodes` at analyzer entry
+  // (`function_definition` is in the Bash cache set); falls back to a
+  // fresh `findNodes` walk when the cache is absent (library callers).
+  // cognium-dev #254 T2#9.
+  const functions = getNodesFromCache(tree.rootNode, 'function_definition', cache);
   for (const func of functions) {
     const body = func.childForFieldName('body');
     if (!body) continue;
@@ -793,13 +797,17 @@ function isStatement(node: Node, isJavaScript: boolean): boolean {
  * Processes function_declaration and method_declaration bodies.
  * Top-level source_file statements are treated as a synthetic main.
  */
-function buildGoCFG(tree: Tree, blockIdCounter: number): CFG {
+function buildGoCFG(tree: Tree, blockIdCounter: number, cache?: NodeCache): CFG {
   const allBlocks: CFGBlock[] = [];
   const allEdges: CFGEdge[] = [];
 
+  // Both `function_declaration` and `method_declaration` are in the Go
+  // cache set (see getNodeTypesForLanguage 'go' in analyzer.ts). Cache
+  // lookup is O(1); falls back to `findNodes` when absent.
+  // cognium-dev #254 T2#9.
   const functions = [
-    ...findNodes(tree.rootNode, 'function_declaration'),
-    ...findNodes(tree.rootNode, 'method_declaration'),
+    ...getNodesFromCache(tree.rootNode, 'function_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'method_declaration', cache),
   ];
 
   for (const func of functions) {
