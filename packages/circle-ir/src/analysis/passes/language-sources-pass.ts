@@ -90,6 +90,28 @@ export const JS_TAINTED_PATTERNS = [
   { pattern: /\bevent\.pathParameters\b/, type: 'http_path' as const },
   { pattern: /\bevent\.headers\b/, type: 'http_header' as const },
   { pattern: /\bevent\.multiValueHeaders\b/, type: 'http_header' as const },
+  // Modern JS/TS framework request-URL / route-args (cognium-dev #213
+  // tenth slice). Scoped enough to avoid unrelated code:
+  //
+  //   NextJS App Router:  req.nextUrl.searchParams
+  //                       req.nextUrl.pathname
+  //   Remix:              params.<id> from ({ params, request })
+  //                       new URL(request.url).searchParams
+  //   SvelteKit:          event.params.<id>
+  //                       event.url.searchParams
+  //                       event.request.formData()
+  //   Angular:            route.snapshot.params
+  //                       route.snapshot.queryParams
+  //                       route.paramMap.get(...)
+  { pattern: /\breq(?:uest)?\.nextUrl\b/, type: 'http_body' as const },
+  { pattern: /\.searchParams\s*\.\s*get\b/, type: 'http_param' as const },
+  { pattern: /\bevent\.params\b/, type: 'http_path' as const },
+  { pattern: /\bevent\.url\b/, type: 'http_body' as const },
+  { pattern: /\bevent\.request\b/, type: 'http_body' as const },
+  { pattern: /\broute\.snapshot\.params\b/, type: 'http_path' as const },
+  { pattern: /\broute\.snapshot\.queryParams\b/, type: 'http_param' as const },
+  { pattern: /\broute\.paramMap\b/, type: 'http_path' as const },
+  { pattern: /\broute\.queryParamMap\b/, type: 'http_param' as const },
 ];
 
 const PYTHON_TAINTED_PATTERNS = [

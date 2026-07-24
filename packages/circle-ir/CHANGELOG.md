@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.190.0] - 2026-07-24
+
+Tenth slice of #213 — modern JS/TS framework request sources.
+Additive-only. 4269 pass, 2 skipped, 0 regressions vs 3.189.0.
+
+### #213 — Modern JS/TS framework sources
+
+Prior coverage was Express / Fastify / Koa / vanilla Node
+(`req.query` / `req.body` etc.). This slice adds the four major
+modern frameworks whose request-URL / route-args shapes were
+previously invisible:
+
+- **NextJS App Router** — `req.nextUrl` registered as `property_tainted`
+  on both `req` and `request` receivers, so
+  `req.nextUrl.searchParams.get('id')` and `.pathname` fire correctly
+  in Route Handlers.
+- **Angular** — `route.snapshot`, `route.paramMap`, `route.queryParamMap`
+  as `property_tainted` on `route` — covers
+  `this.route.snapshot.params['id']` and paramMap.get(id) shapes.
+- **Remix / SvelteKit / Astro / Bun / Deno** — regex-based coverage
+  in `JS_TAINTED_PATTERNS` for `event.params`, `event.url`,
+  `event.request`, `route.snapshot.params/queryParams`,
+  `route.paramMap` / `queryParamMap`, and a generic
+  `.searchParams.get(...)` catch-all so `new URL(request.url)
+  .searchParams.get('q')` chains taint correctly.
+
+`.searchParams.get(...)` regex is intentionally broad — WHATWG URL is
+used outside request handlers too. Watch FP reports; if problematic,
+scope to `event.url` / `request.url` / `req.nextUrl` chains only.
+
+The generic `params` / `url` unqualified property names were
+deliberately NOT registered as property sources — that would over-fire
+on any variable named `params` or `url`. The regex layer keys on the
+`event.params` / `params.<id>` handler-args destructure shape which
+matches only when the surrounding context looks like a framework
+handler.
+
 ## [3.189.0] - 2026-07-24
 
 Ninth slice of #213 — Go web framework sources. Rounds out the Go

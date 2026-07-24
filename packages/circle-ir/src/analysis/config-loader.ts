@@ -777,6 +777,30 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'hget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
   { method: 'mget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
 
+  // --- Modern JS/TS framework sources (cognium-dev #213 tenth slice) ---
+  //
+  // NextJS App Router: `req.nextUrl` is a NextURL instance whose
+  // `.searchParams`, `.pathname`, `.hash` carry attacker-controlled
+  // request state.
+  //   req.nextUrl.searchParams.get('id')
+  //   req.nextUrl.pathname
+  { property: 'nextUrl',      object: 'req', type: 'http_body', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'nextUrl',      object: 'request', type: 'http_body', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+
+  // Angular ActivatedRoute: `route.snapshot.params` / `queryParams` /
+  // `data`, and `route.paramMap` (Observable-based) are the two
+  // idioms for reading URL params.
+  { property: 'snapshot',     object: 'route', type: 'http_path', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'paramMap',     object: 'route', type: 'http_path', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+  { property: 'queryParamMap', object: 'route', type: 'http_param', severity: 'high', property_tainted: true, languages: ['javascript', 'typescript'] },
+
+  // Remix / SvelteKit / Astro / Bun / Deno all destructure `{ params, request, url }`
+  // from a handler-args object. Registering `params` / `url` /
+  // `searchParams` as unqualified properties would over-fire; instead
+  // add regex-based coverage in language-sources-pass.ts so the
+  // taint enters only through the specific request-URL chain
+  // (`url.searchParams.get(...)`, `event.url.pathname`).
+
   // --- Serverless transport channels (cognium-dev #213 first slice) ---
   //
   // AWS Lambda / API Gateway invocation-event properties. The Lambda
