@@ -623,6 +623,52 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   // returns caller-supplied header values.
   { method: 'get', class: 'Metadata', type: 'http_header', severity: 'high', return_tainted: true, languages: ['java'] },
 
+  // --- WebSocket transport channels (cognium-dev #213 second slice) ---
+  //
+  // Server-side WebSocket handlers receive attacker-authored frames on
+  // every call to a receive-shaped method. Untrusted the moment they
+  // return, regardless of any application-level auth on the socket.
+  //
+  // Python — FastAPI / Starlette (`from fastapi import WebSocket`):
+  //   data = await websocket.receive_text()
+  //   data = await websocket.receive_bytes()
+  //   data = await websocket.receive_json()   # parsed dict/list
+  //   data = await websocket.receive()        # {'type', 'text'|'bytes'}
+  { method: 'receive_text',  class: 'WebSocket', type: 'network_input', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'receive_bytes', class: 'WebSocket', type: 'network_input', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'receive_json',  class: 'WebSocket', type: 'http_body',     severity: 'high', return_tainted: true, languages: ['python'] },
+  //
+  // `receive` intentionally class-scoped to WebSocket (Starlette pattern).
+  // Broadening to unqualified would collide with queue/signal `.receive()`.
+  { method: 'receive',       class: 'WebSocket', type: 'network_input', severity: 'high', return_tainted: true, languages: ['python'] },
+  // Django Channels `AsyncJsonWebsocketConsumer` / `WebsocketConsumer`
+  // expose the same receive_* names on `self`; the class filter matches
+  // `WebSocket` only, so add unqualified fallbacks for the receive_json /
+  // receive_text convention (broad — no class filter possible without
+  // hardcoding Django's consumer names).
+  { method: 'receive_json',  type: 'http_body',     severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'receive_text',  type: 'network_input', severity: 'high', return_tainted: true, languages: ['python'] },
+  { method: 'receive_bytes', type: 'network_input', severity: 'high', return_tainted: true, languages: ['python'] },
+
+  // Go — gorilla/websocket (`github.com/gorilla/websocket`):
+  //   messageType, message, err := conn.ReadMessage()
+  //   _, r, err := conn.NextReader()
+  { method: 'ReadMessage', class: 'Conn', type: 'network_input', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'NextReader',  class: 'Conn', type: 'network_input', severity: 'high', return_tainted: true, languages: ['go'] },
+  // nhooyr.io/websocket exposes a `Read` method on `*websocket.Conn`;
+  // signature is `func (c *Conn) Read(ctx) (MessageType, []byte, error)`.
+  { method: 'Read',        class: 'Conn', type: 'network_input', severity: 'high', return_tainted: true, languages: ['go'] },
+
+  // Java — Jakarta / Java WebSocket API (`javax.websocket` / `jakarta.websocket`):
+  //   session.getBasicRemote().sendText(input);      // OUT (not a source)
+  //   @OnMessage public void onMessage(String msg) — `msg` is a callback
+  //   param, not a return; handled via param_tainted when annotation is set.
+  { annotation: 'OnMessage', type: 'network_input', severity: 'high', param_tainted: true, languages: ['java'] },
+  // Spring `@MessageMapping` STOMP-over-WebSocket handlers receive
+  // untrusted payloads on every dispatched frame.
+  { annotation: 'MessageMapping', type: 'http_body', severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'SubscribeMapping', type: 'http_body', severity: 'high', param_tainted: true, languages: ['java'] },
+
   // --- Cache reads (second-order taint — Redis / Memcached / Django cache) ---
   // The cache round-trip is a canonical second-order sink: whatever was
   // written previously (potentially attacker-controlled) resurfaces on read.

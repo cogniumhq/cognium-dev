@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.183.0] - 2026-07-23
+
+Second slice of #213 transport-channel matrix — WebSocket handler payload
+sources across Python, Go, and Java. Additive-only; no reach-map,
+DFG, or propagator changes. 4219 pass, 2 skipped, 0 regressions vs 3.182.0.
+
+### #213 — WebSocket transport-channel sources
+
+`config-loader.ts:DEFAULT_SOURCES` — 10 new return-tainted / annotated-param
+patterns covering the common server-side WebSocket receive shapes.
+
+- **Python** — FastAPI / Starlette (`WebSocket.receive_text` /
+  `receive_bytes` / `receive_json` / `receive`) as class-scoped
+  return-tainted sources, plus unqualified `receive_json` /
+  `receive_text` / `receive_bytes` fallbacks for Django Channels
+  consumers where the class filter is not `WebSocket`.
+- **Go** — gorilla/websocket + nhooyr.io/websocket `Conn.ReadMessage` /
+  `Conn.NextReader` / `Conn.Read` as class-scoped return-tainted sources.
+- **Java** — Jakarta WebSocket `@OnMessage` and Spring STOMP
+  `@MessageMapping` / `@SubscribeMapping` as `param_tainted` annotated-
+  parameter sources.
+
+`language-sources-pass.ts:PYTHON_TAINTED_PATTERNS` — 3 new regex entries
+(`\.receive_text\s*\(` / `\.receive_bytes\s*\(` / `\.receive_json\s*\(`)
+so `data = await websocket.receive_text()` adds `data` to
+`pyTaintedVars`. Deliberately did not add a bare `.receive\s*\(` regex
+— it would collide with queue / signal / stream `receive()` idioms in
+the wild and produce spurious sources.
+
+JS/TS callback-parameter WebSocket handlers (`ws.on('message',
+(data) => …)`) are not covered in this slice — the callback-parameter
+shape doesn't map to the current property-source / return-tainted-method
+/ annotated-param pattern format. Deferred.
+
+Test suite: `tests/analysis/passes/websocket-transport-sources.test.ts`
+— 6 TP cases across the three languages, 1 FP-guard case verifying
+`queue.receive()` doesn't fire (bare `.receive(...)` intentionally not
+in the regex list).
+
 ## [3.182.0] - 2026-07-23
 
 Four engine changes to close the #243 Go taint-propagation ticket end to end.

@@ -117,6 +117,21 @@ const PYTHON_TAINTED_PATTERNS = [
   // registry, so `name = input()` was not added to pyTaintedVars. Closes
   // the deferred `getattr(obj, input())()` reflection-invocation shape.
   { pattern: /\binput\s*\(/,                   type: 'io_input'    as SourceType },
+  // WebSocket transport channels (cognium-dev #213 second slice).
+  // FastAPI / Starlette (`from fastapi import WebSocket`) and Django
+  // Channels consumers both expose `receive_*` methods that return
+  // untrusted frame payloads on every call. Registered in
+  // config-loader.ts as return-tainted; the forward-taint regex here
+  // enables `data = await websocket.receive_text()` → `data` tainted,
+  // which the DFG-less Python path needs so downstream sinks that
+  // consume `data` are flagged.
+  //
+  // Deliberately not adding a bare `.receive\s*\(` here — that would
+  // match too many unrelated APIs (queue receive, signal receive, etc.)
+  // and produce spurious sources on every `x = q.receive()` in the wild.
+  { pattern: /\.receive_text\s*\(/,            type: 'network_input' as SourceType },
+  { pattern: /\.receive_bytes\s*\(/,           type: 'network_input' as SourceType },
+  { pattern: /\.receive_json\s*\(/,            type: 'http_body'     as SourceType },
 ];
 
 // ---------------------------------------------------------------------------
