@@ -547,6 +547,25 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'text', class: 'Request', type: 'http_body', severity: 'high', return_tainted: true },
   { property: 'query', object: 'request', type: 'http_param', severity: 'high', property_tainted: true },
   { property: 'match_info', object: 'request', type: 'http_path', severity: 'high', property_tainted: true },
+  //
+  // Extended aiohttp coverage (cognium-dev #213 eleventh slice):
+  //   request.rel_url          — parsed URL; rel_url.query.get('q') is
+  //                              the modern idiom for query params
+  //   request.remote           — client IP (untrusted; can be spoofed
+  //                              via X-Forwarded-For without proxy)
+  //   request.raw_headers      — raw byte-tuple header pairs
+  //   request.transport        — connection metadata (peer_name)
+  { property: 'rel_url',      object: 'request', type: 'http_body',   severity: 'high', property_tainted: true },
+  { property: 'remote',       object: 'request', type: 'network_input', severity: 'high', property_tainted: true },
+  { property: 'raw_headers',  object: 'request', type: 'http_header', severity: 'high', property_tainted: true },
+  { property: 'transport',    object: 'request', type: 'network_input', severity: 'medium', property_tainted: true },
+
+  // Quart (async Flask) — shares Flask idioms (request.args/form/json)
+  // covered above, plus these method-based accessors:
+  { method: 'get_json', class: 'Request', type: 'http_body', severity: 'high', return_tainted: true },
+  { method: 'get_data', class: 'Request', type: 'http_body', severity: 'high', return_tainted: true },
+  { method: 'form',     class: 'Request', type: 'http_param', severity: 'high', return_tainted: true },
+  { method: 'files',    class: 'Request', type: 'file_input', severity: 'high', return_tainted: true },
 
   // =========================================================================
   // Rust Sources (Actix-web, Rocket, Axum)

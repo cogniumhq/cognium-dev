@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.191.0] - 2026-07-24
+
+Eleventh slice of #213 — async Python framework source parity.
+Additive-only. 4274 pass, 2 skipped, 0 regressions vs 3.190.0.
+
+### #213 — Extended aiohttp coverage
+
+Prior aiohttp coverage was `.json/.post/.text` methods and
+`request.query / match_info` properties. Extended with:
+
+- `request.rel_url` — parsed URL. The modern query-param idiom is
+  `request.rel_url.query.get('q')`; prior coverage only reached
+  `request.query`.
+- `request.remote` — client IP (spoofable via X-Forwarded-For without
+  a trusted proxy; treat as `network_input`).
+- `request.raw_headers` — raw byte-tuple header pairs.
+- `request.transport` — connection metadata (peer_name).
+
+### #213 — Quart (async Flask) coverage
+
+Quart shares Flask's `request.args / form / json / files / headers /
+cookies` property idioms (already covered) but its async body
+accessors are method-based:
+
+- `Request.get_json` / `get_data` / `form` / `files` as
+  return-tainted method sources.
+
+`JS_TAINTED_PATTERNS` regex extended with `.get_json(` / `.get_data(`
++ `request.rel_url` / `request.remote` / `request.match_info` so
+`data = await request.get_json()` adds `data` to `pyTaintedVars`
+for downstream sink detection.
+
 ## [3.190.0] - 2026-07-24
 
 Tenth slice of #213 — modern JS/TS framework request sources.

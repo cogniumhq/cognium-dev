@@ -154,6 +154,14 @@ const PYTHON_TAINTED_PATTERNS = [
   { pattern: /\.receive_text\s*\(/,            type: 'network_input' as SourceType },
   { pattern: /\.receive_bytes\s*\(/,           type: 'network_input' as SourceType },
   { pattern: /\.receive_json\s*\(/,            type: 'http_body'     as SourceType },
+  // Async Python framework request-URL / async body accessors
+  // (cognium-dev #213 eleventh slice). Regex layer so
+  // `data = await request.get_json()` adds `data` to pyTaintedVars.
+  { pattern: /\brequest\.rel_url\b/,           type: 'http_body'     as SourceType },
+  { pattern: /\brequest\.remote\b/,            type: 'network_input' as SourceType },
+  { pattern: /\brequest\.match_info\b/,        type: 'http_path'     as SourceType },
+  { pattern: /\.get_json\s*\(/,                type: 'http_body'     as SourceType },
+  { pattern: /\.get_data\s*\(/,                type: 'http_body'     as SourceType },
 ];
 
 // ---------------------------------------------------------------------------
