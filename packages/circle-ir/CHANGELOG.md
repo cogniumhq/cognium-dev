@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.187.0] - 2026-07-24
+
+Seventh slice of #213 — Java sanitizer parity. Rounds out the
+sanitizer_kind grid across Java after the Python (3.185.0) and
+JS/Go (3.186.0) slices.
+
+Additive-only. 4253 pass, 2 skipped, 0 regressions vs 3.186.0.
+
+### #213 — Java PreparedStatement setter parity
+
+Prior coverage was `setString` / `setInt` / `setLong`. Extended to
+the full JDBC 4.x setter surface so real Java apps binding date /
+decimal / binary / object parameters credit as sanitized:
+
+- Numeric: `setBoolean`, `setByte`, `setShort`, `setDouble`,
+  `setFloat`, `setBigDecimal`
+- String: `setNString` (national character strings)
+- Date/time: `setDate`, `setTime`, `setTimestamp`
+- Binary: `setBytes`, `setBlob`, `setClob`, `setNClob`, `setArray`,
+  `setRef`, `setRowId`, `setSQLXML`, `setURL`
+- Streams: `setBinaryStream`, `setCharacterStream`,
+  `setAsciiStream`, `setNCharacterStream`
+- Generic: `setObject`, `setNull`
+- JPA: `Query.setParameter` (already) + `TypedQuery.setParameter`
+- Spring: `MapSqlParameterSource.addValue`
+
+### #213 — Additional Java XSS / SQL sanitizers
+
+- Apache Commons Text `StringEscapeUtils.escapeJson` /
+  `escapeEcmaScript` / `escapeXml11` / `escapeXml10` / `escapeCsv` /
+  `escapeXsi` / `escapeJava`, plus bare aliases for the commonly
+  static-imported subset (`escapeJson` / `escapeEcmaScript` /
+  `escapeCsv`).
+- Guava `HtmlEscapers.htmlEscaper().escape(x)` — explicit `Escaper`
+  and `HtmlEscapers` class-scoped entries.
+- OWASP HTML sanitizer `PolicyFactory.sanitize(html)`.
+
+### #213 — Java Base64 / Hex / MessageDigest as taint barriers
+
+- `Base64.Encoder.encodeToString` / `encode` — encoded output is
+  restricted to `[A-Za-z0-9+/=]` and cannot carry shell / SQL / HTML
+  metacharacters. Broad removes (sql / command / xss / path / code).
+- `Hex.encodeHexString` — analogous, output is `[0-9a-f]`.
+- `MessageDigest.digest` — hash bytes are opaque; typically
+  toHex/toBase64-encoded downstream.
+
+Bare aliases for `encodeToString` and `encodeHexString` also
+registered — the receiver of `Base64.getEncoder().encodeToString(x)`
+is a call-expression that the Java IR rarely resolves back to
+`Encoder`, so class-scoped matching alone would miss the dominant
+chain shape. FP risk is low: those method names are dominated by
+their encoder use in practice.
+
 ## [3.186.0] - 2026-07-24
 
 Sixth slice of #213 — JS/Node and Go sanitizer coverage. Parallel to

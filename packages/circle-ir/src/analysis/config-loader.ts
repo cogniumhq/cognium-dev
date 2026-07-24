@@ -2715,10 +2715,49 @@ export const DEFAULT_SINKS: SinkPattern[] = [
 export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // SQL Injection - proper parameter binding sanitizes input
   // Note: prepareStatement alone is NOT a sanitizer - it's a sink when used with concatenation
-  { method: 'setString', class: 'PreparedStatement', removes: ['sql_injection'] },
-  { method: 'setInt', class: 'PreparedStatement', removes: ['sql_injection'] },
-  { method: 'setLong', class: 'PreparedStatement', removes: ['sql_injection'] },
+  //
+  // Full PreparedStatement setter coverage (cognium-dev #213 seventh slice).
+  // Every JDBC PreparedStatement.setXxx binds a parameter placeholder via
+  // the driver wire protocol — the SQL text is fixed, only the value slot
+  // varies. Prior coverage was setString/setInt/setLong only; extending
+  // to the full JDBC 4.x setter surface so real Java apps using date/
+  // decimal/object/binary bindings credit as sanitized.
+  { method: 'setString',      class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setNString',     class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setInt',         class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setLong',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setShort',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setByte',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setBoolean',     class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setDouble',      class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setFloat',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setBigDecimal',  class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setBytes',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setDate',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setTime',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setTimestamp',   class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setObject',      class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setNull',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setArray',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setBlob',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setClob',        class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setNClob',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setRef',         class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setRowId',       class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setSQLXML',      class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setURL',         class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setBinaryStream',    class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setCharacterStream', class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setAsciiStream',     class: 'PreparedStatement', removes: ['sql_injection'] },
+  { method: 'setNCharacterStream',class: 'PreparedStatement', removes: ['sql_injection'] },
+  // JPA / Hibernate Query.setParameter — covered above; add TypedQuery
+  // (same interface but distinct type name).
   { method: 'setParameter', class: 'Query', removes: ['sql_injection'] },
+  { method: 'setParameter', class: 'TypedQuery', removes: ['sql_injection'] },
+  // Spring JdbcTemplate `NamedParameterJdbcTemplate.update / queryForObject`
+  // parameterized shapes use SqlParameterSource.addValue — the addValue
+  // call binds the parameter safely.
+  { method: 'addValue',     class: 'MapSqlParameterSource', removes: ['sql_injection'] },
   { annotation: 'Param', removes: ['sql_injection'] },
 
   // XSS
@@ -2738,6 +2777,50 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'render', class: 'Template', removes: ['xss'] },  // Rust askama auto-escapes
   { method: 'encodeForJavaScript', removes: ['xss'] },
   { method: 'encodeForCSS', removes: ['xss'] },
+
+  // Additional Java XSS sanitizers (cognium-dev #213 seventh slice).
+  //
+  //   Guava `HtmlEscapers.htmlEscaper().escape(x)` — the `.escape` call
+  //     on the returned Escaper is caught by the generic `escape` rule
+  //     above, but explicit registration makes intent clear.
+  //   Spring `HtmlUtils.htmlEscape(x)` — htmlEscape already covered
+  //     above (bare method name).
+  //   Apache Commons Text `StringEscapeUtils.escapeJson / escapeXml11 /
+  //     escapeEcmaScript / escapeCsv / escapeXsi`.
+  //   OWASP HTML Sanitizer `PolicyFactory.sanitize(html)`.
+  { method: 'escape',           class: 'Escaper', removes: ['xss'] },
+  { method: 'escape',           class: 'HtmlEscapers', removes: ['xss'] },
+  { method: 'escapeJson',       class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeEcmaScript', class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeXml11',      class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeXml10',      class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeCsv',        class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeXsi',        class: 'StringEscapeUtils', removes: ['xss'] },
+  { method: 'escapeJava',       class: 'StringEscapeUtils', removes: ['xss'] },
+  // Bare escapeJson / escapeEcmaScript / escapeCsv aliases — common
+  // when statically imported.
+  { method: 'escapeJson',       removes: ['xss'] },
+  { method: 'escapeEcmaScript', removes: ['xss'] },
+  { method: 'escapeCsv',        removes: ['xss'] },
+  // OWASP HTML sanitizer (`com.googlecode.owasp-java-html-sanitizer`).
+  { method: 'sanitize',         class: 'PolicyFactory', removes: ['xss'] },
+
+  // Java Base64 / Hex / MessageDigest — encoded output is binary-safe
+  // (cognium-dev #213 seventh slice). None of these carry attacker
+  // shell/SQL/HTML metacharacters through the encoding — Base64 emits
+  // [A-Za-z0-9+/=], Hex emits [0-9a-f], MessageDigest.digest returns
+  // opaque bytes usually toHex/toBase64-encoded downstream.
+  { method: 'encodeToString',   class: 'Encoder', removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
+  { method: 'encode',           class: 'Encoder', removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
+  { method: 'encodeHexString',  class: 'Hex', removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
+  { method: 'digest',           class: 'MessageDigest', removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
+  // Bare aliases for encoder chains — `Base64.getEncoder().encodeToString(x)`
+  // has a call-expression receiver (`Base64.getEncoder()`) that the Java IR
+  // rarely resolves to `Encoder`. Same story for `Hex.encodeHexString(x)`
+  // when Hex is imported. These bare-method names are dominated by their
+  // encoding use in practice; false-positive risk is low.
+  { method: 'encodeToString',   removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
+  { method: 'encodeHexString',  removes: ['sql_injection', 'command_injection', 'xss', 'path_traversal', 'code_injection'] },
   // cognium-dev #249 3.162.0: `open_redirect` restored to the URL-encoder
   // sanitizer cluster. Sprint 82 (#189) reclassified `sendRedirect` from
   // `ssrf` → `open_redirect` (config-loader.ts:1296-1299) without updating
