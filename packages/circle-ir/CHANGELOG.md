@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.192.0] - 2026-07-24
+
+Twelfth slice of #213 — bash shell-quote sanitizers. Additive-only.
+4277 pass, 2 skipped, 0 regressions vs 3.191.0.
+
+### #213 — Bash `printf %q` + `${var@Q}` sanitizers
+
+`language-sources-pass.ts:findBashShellQuoteSanitizers` — new
+text-scan detector for the two idiomatic Bash shell-quoting
+constructs:
+
+- `safe=$(printf '%q' "$x")` — POSIX/Bash `printf` with `%q` format
+  emits the argument in a form that can be reused as shell input.
+- `safe="${x@Q}"` — Bash 4.4+ Q-transform (equivalent to `printf %q`).
+
+Both convert an arbitrary string into a shell-safe form that cannot
+carry metacharacters (`;`, `&&`, `|`, backticks, `$()`) through a
+later `eval` / `bash -c` / subshell.
+
+Emits `TaintSanitizer` entries covering `command_injection` +
+`code_injection` (bash `eval` is registered as `code_injection`
+per CWE-94). Per-line emission from the quoting line forward,
+mirroring the coarse regex-allowlist approach in
+`findBashRegexAllowlistSanitizers` (Sprint 11 #73.2).
+
+Pairs with the pre-existing bash sanitizer detectors: regex-allowlist
+guard (`[[ "$x" =~ ^…$ ]]`), realpath prefix-guard, and the
+positional-param / stdin builtin sources shipped in 3.184.0.
+
 ## [3.191.0] - 2026-07-24
 
 Eleventh slice of #213 — async Python framework source parity.

@@ -316,6 +316,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
       additionalSanitizers.push(...findBashRegexAllowlistSanitizers(code));
       additionalSanitizers.push(...findBashRealpathPrefixGuardSanitizers(code));
+      // #213 twelfth slice: printf '%q' + ${var@Q} shell-quote helpers.
+      additionalSanitizers.push(...findBashShellQuoteSanitizers(code));
     }
 
     // -- Go: safe-handler sanitizer detectors (cognium-dev #102 Sprint 24) --
@@ -2422,6 +2424,61 @@ function hasIntegrityVerifierAnywhere(lines: string[]): boolean {
  * Safe-regex predicate rejects anything that isn't anchored, contains
  * `.*` / `.+`, contains alternation, or contains backrefs.
  */
+/**
+ * cognium-dev #213 twelfth slice — Bash shell-quote sanitizers.
+ *
+ * Recognizes the two idiomatic Bash shell-quoting constructs:
+ *
+ *   safe=$(printf '%q' "$x")   — POSIX/Bash `printf` with `%q` format;
+ *                                emits the argument in a form that can
+ *                                be reused as shell input.
+ *   safe="${x@Q}"              — Bash 4.4+ Q-transform; equivalent to
+ *                                `printf %q`.
+ *
+ * Both convert an arbitrary string into a shell-safe form that cannot
+ * carry metacharacters (`;`, `&&`, `|`, backticks, `$()`) through a
+ * later `eval` / `bash -c` / subshell. Emit a `TaintSanitizer` at the
+ * line where the quoting happens; the DFG-side sanitizer check credits
+ * downstream sink lines via the def-use chain of the quoted var.
+ *
+ * The pattern is line-local (`$(printf %q ...)` in an assignment RHS
+ * or `${var@Q}` in string interpolation). Emit sanitizer at the exact
+ * line + the immediately following lines up to end-of-file, mirroring
+ * the regex-allowlist coarse per-line approach — real projects
+ * downstream lookups find the sanitizer without needing DFG-block
+ * scoping.
+ */
+function findBashShellQuoteSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `printf '%q' "$x"` inside a command substitution `$(...)` or `` `...` ``.
+  const PRINTF_Q_RE = /\$\(\s*printf\s+['"]%q['"]\s+["']?\$/;
+  // `${var@Q}` — Bash 4.4+ quote-transform.
+  const AT_Q_RE = /\$\{[A-Za-z_][A-Za-z0-9_]*@Q\}/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trimStart().startsWith('#')) continue;
+    if (!PRINTF_Q_RE.test(line) && !AT_Q_RE.test(line)) continue;
+    // Per-line emission from the current line forward — mirrors the
+    // regex-allowlist implementation above. Confined to the current
+    // line only when the interpolation is inline in an `eval` / `bash
+    // -c` call; extended forward when it's captured into a variable
+    // that gets reused. Simpler to emit forward-to-EOF and let the
+    // sink-line lookup find it.
+    for (let l = i + 1; l <= lines.length; l++) {
+      sanitizers.push({
+        type: 'shell_quote',
+        method: PRINTF_Q_RE.test(line) ? "printf '%q'" : '${var@Q}',
+        line: l,
+        sanitizes: ['command_injection', 'code_injection'],
+      });
+    }
+  }
+  return sanitizers;
+}
+
 function findBashRegexAllowlistSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');

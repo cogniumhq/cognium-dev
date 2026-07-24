@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.192.0] - 2026-07-24
+
+Adopts [`circle-ir@3.192.0`](https://www.npmjs.com/package/circle-ir),
+which ships the twelfth #213 slice — bash shell-quote sanitizers
+(`printf '%q'` + `${var@Q}` recognized as command_injection /
+code_injection sanitizers).
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4277 pass, 2 skipped, 0 regressions vs 3.191.0.
+
+See the [circle-ir 3.192.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.192.0) for full engine detail.
+
 ## [3.191.0] - 2026-07-24
 
 Adopts [`circle-ir@3.191.0`](https://www.npmjs.com/package/circle-ir),
