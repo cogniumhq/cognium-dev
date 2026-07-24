@@ -855,6 +855,23 @@ export class CrossFileResolver {
         // worst a false positive when the value is sanitized in between.
         const sourceVar = source.variable ?? this.getLocalDefVarAt(ir, source.line);
 
+        // Expand the source variable to the set of locals DFG-derived from
+        // it (cognium-dev #146). The variable-connectivity gate below then
+        // accepts a call arg that references the source var OR any variable
+        // rebound from it. Without this, a source whose value is passed
+        // through an intermediate binding before the cross-file call is
+        // dropped — e.g. Rust actix `handle(q: web::Query<…>)` where the
+        // source variable is the param `q` but the call passes
+        // `cmd` from `let cmd = q.get("cmd").unwrap()`. Java/TS already
+        // pass because their property-source detection records the LHS of
+        // the assignment as `source.variable`; Rust's param-based source
+        // records the extractor param, so the derivation must be followed
+        // via `dfg.chains`. Computed once per source (independent of the
+        // call being tested).
+        const reachableVars = sourceVar
+          ? this.collectTaintReachableVars(ir, sourceVar, filePath)
+          : undefined;
+
         // Find calls at or after the source line
         for (const call of ir.calls) {
           if (call.location.line < source.line) continue;
@@ -863,11 +880,16 @@ export class CrossFileResolver {
           if (!resolved || resolved.targetFile === filePath) continue;
 
           // Variable-connectivity gate: when we know the source variable, the
-          // call's arguments must reference it (directly or by expression).
-          if (sourceVar) {
+          // call's arguments must reference it — or a variable DFG-derived
+          // from it (see `reachableVars` above) — directly or by expression.
+          if (reachableVars) {
             const argMentions = call.arguments.some(arg => {
-              if (arg.variable === sourceVar) return true;
-              if (arg.expression && new RegExp(`\\b${sourceVar}\\b`).test(arg.expression)) return true;
+              if (arg.variable && reachableVars.has(arg.variable)) return true;
+              if (arg.expression) {
+                for (const v of reachableVars) {
+                  if (new RegExp(`\\b${v}\\b`).test(arg.expression)) return true;
+                }
+              }
               return false;
             });
             if (!argMentions) continue;
@@ -1456,6 +1478,83 @@ export class CrossFileResolver {
       if (def.line === line && def.kind === 'local' && def.variable) return def.variable;
     }
     return undefined;
+  }
+
+  /**
+   * Collect the set of variable names DFG-reachable from `sourceVar` within
+   * a single file — the source variable itself plus every local whose
+   * definition transitively consumes it via def-use chains (cognium-dev
+   * #146). Bounded forward BFS over `dfg.chains`.
+   *
+   * Used by the cross-file variable-connectivity gate so a tainted value
+   * that is rebound before the cross-file call still connects. Example
+   * (Rust actix): the source variable is the extractor param `q`, but the
+   * call passes `cmd` from `let cmd = q.get("cmd").unwrap()`; the chain
+   * `q → cmd` makes `cmd` reachable.
+   *
+   * Soundness guard: the walk does NOT follow a derivation whose def is
+   * produced on a line carrying a *cross-file-resolvable call*. Such a
+   * value crossed a file boundary and may have been transformed or
+   * sanitized (e.g. `String safe = sanitizer.sanitizeUrl(raw)` — the
+   * wrapper-sanitizer negative control). Verifying whether that call
+   * preserves taint is the job of `findInterproceduralTaintPaths`, which
+   * is sanitizer-aware; this coarse pass must stay conservative and stop
+   * at the boundary. Same-file / stdlib accessor calls (`q.get(...)`,
+   * `.unwrap()`) do not resolve cross-file, so genuine taint derivatives
+   * are still followed.
+   */
+  private collectTaintReachableVars(
+    ir: CircleIR,
+    sourceVar: string,
+    filePath: string,
+  ): Set<string> {
+    const reachable = new Set<string>([sourceVar]);
+    const chains = ir.dfg.chains;
+    if (!chains || chains.length === 0) return reachable;
+
+    const varByDefId = new Map<number, string>();
+    const lineByDefId = new Map<number, number>();
+    for (const d of ir.dfg.defs) {
+      if (d.variable) varByDefId.set(d.id, d.variable);
+      lineByDefId.set(d.id, d.line);
+    }
+
+    // Lines whose value is produced by a call that resolves to another
+    // file — a potential transform/sanitizer boundary the walk must not
+    // cross (see soundness guard above).
+    const crossFileCallLines = new Set<number>();
+    for (const call of ir.calls) {
+      const resolved = this.resolveCall(call, filePath);
+      if (resolved && resolved.targetFile !== filePath) {
+        crossFileCallLines.add(call.location.line);
+      }
+    }
+
+    // Seed the frontier with every def whose variable is the source var
+    // (params + any same-named rebinding).
+    const frontier: number[] = [];
+    const visited = new Set<number>();
+    for (const d of ir.dfg.defs) {
+      if (d.variable === sourceVar && !visited.has(d.id)) {
+        visited.add(d.id);
+        frontier.push(d.id);
+      }
+    }
+
+    while (frontier.length > 0) {
+      const cur = frontier.shift()!;
+      for (const ch of chains) {
+        if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
+        visited.add(ch.to_def);
+        // Stop at cross-file-call-derived defs — do not add or traverse.
+        const toLine = lineByDefId.get(ch.to_def);
+        if (toLine !== undefined && crossFileCallLines.has(toLine)) continue;
+        const v = varByDefId.get(ch.to_def);
+        if (v) reachable.add(v);
+        frontier.push(ch.to_def);
+      }
+    }
+    return reachable;
   }
 
   private findRealSourceLineInMethod(ir: CircleIR, method: MethodInfo): number | undefined {
