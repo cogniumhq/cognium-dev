@@ -489,6 +489,29 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { annotation: 'Cookie', type: 'http_cookie', severity: 'high', param_tainted: true },
   { annotation: 'Form', type: 'http_param', severity: 'high', param_tainted: true },
   { annotation: 'File', type: 'file_input', severity: 'high', param_tainted: true },
+  // NestJS controller param decorators (cognium-dev #213 eighth slice).
+  //
+  // NestJS shares @Body/@Query/@Headers/@Body decorator names with FastAPI
+  // and Spring (covered above) but adds a few unique ones:
+  //   @Param('id') id: string             — route path parameter
+  //   @Req() / @Request() req: Request     — the whole request object
+  //   @Session() session: Session          — session data
+  //   @Ip() ip: string                      — client IP
+  //   @HostParam('subdomain') sub: string  — subdomain of `host` config
+  //   @UploadedFile() file: any             — multer-uploaded file
+  //   @UploadedFiles() files: any[]         — multer multi-file
+  //   @Next()                               — not a source (Express next-fn)
+  // Registered without a `languages:` filter so they also credit the shared
+  // decorator names in TypeScript (nestjs is TS-first) and any JS project
+  // adopting the convention.
+  { annotation: 'Param',        type: 'http_path',    severity: 'high', param_tainted: true },
+  { annotation: 'Req',          type: 'http_body',    severity: 'high', param_tainted: true },
+  { annotation: 'Request',      type: 'http_body',    severity: 'high', param_tainted: true },
+  { annotation: 'Session',      type: 'http_cookie',  severity: 'high', param_tainted: true },
+  { annotation: 'Ip',           type: 'network_input', severity: 'high', param_tainted: true },
+  { annotation: 'HostParam',    type: 'http_path',    severity: 'high', param_tainted: true },
+  { annotation: 'UploadedFile', type: 'file_input',   severity: 'high', param_tainted: true },
+  { annotation: 'UploadedFiles', type: 'file_input',  severity: 'high', param_tainted: true },
   // FastAPI Request object
   { method: 'json', class: 'Request', type: 'http_body', severity: 'high', return_tainted: true },
   { method: 'form', class: 'Request', type: 'http_param', severity: 'high', return_tainted: true },

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.188.0] - 2026-07-24
+
+Eighth slice of #213 — NestJS controller decorator sources.
+Additive-only. 4258 pass, 2 skipped, 0 regressions vs 3.187.0.
+
+### #213 — NestJS param decorator sources
+
+`config-loader.ts:DEFAULT_SOURCES` — 8 new annotated-parameter entries
+for NestJS-specific decorators that shared FastAPI/Spring names
+(@Body / @Query / @Header / @Cookie / @Form / @File / @Path) did
+not cover:
+
+- `@Param('id') id: string` — route path parameter → `http_path`
+- `@Req()` / `@Request()` req → `http_body` (whole request object)
+- `@Session() session` → `http_cookie` (session data)
+- `@Ip() ip` → `network_input` (client IP)
+- `@HostParam('sub') sub` → `http_path` (subdomain of `host` config)
+- `@UploadedFile() file` / `@UploadedFiles() files` → `file_input`
+  (multer-uploaded files)
+
+Registered without a `languages:` filter so they cover both TypeScript
+(NestJS is TS-first) and any JS project adopting the convention. The
+Java `@Param` sanitizer registration at line 2761 does not collide —
+sanitizer and source pattern lists are checked in separate loops.
+
 ## [3.187.0] - 2026-07-24
 
 Seventh slice of #213 — Java sanitizer parity. Rounds out the
