@@ -2941,6 +2941,64 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'int', removes: ['sql_injection', 'command_injection', 'xss'] },
   { method: 'float', removes: ['sql_injection', 'command_injection'] },
 
+  // Python URL encoding (cognium-dev #213 fifth slice).
+  //
+  //   urllib.parse.quote(x)      — RFC-3986 percent-encode; safe for URL path
+  //   urllib.parse.quote_plus(x) — same + space→+; safe for query string
+  //   urllib.parse.urlencode(d)  — encode a dict of pairs
+  //
+  // Bounded to URL-context sinks. Class-scoped to the specific
+  // `urllib.parse` receiver to avoid colliding with unrelated bare
+  // `quote(...)` calls in other libraries.
+  { method: 'quote',      class: 'urllib.parse', removes: ['ssrf', 'open_redirect', 'xss', 'path_traversal'] },
+  { method: 'quote_plus', class: 'urllib.parse', removes: ['ssrf', 'open_redirect', 'xss', 'path_traversal'] },
+  { method: 'urlencode',  class: 'urllib.parse', removes: ['ssrf', 'open_redirect', 'xss'] },
+  // Bare aliases — `from urllib.parse import quote` then unqualified.
+  { method: 'quote_plus', removes: ['ssrf', 'open_redirect', 'xss', 'path_traversal'] },
+  { method: 'urlencode',  removes: ['ssrf', 'open_redirect', 'xss'] },
+  // `quote` bare is intentionally NOT registered — it collides with
+  // shlex.quote (bare-imported) which is a command_injection sanitizer,
+  // not a URL sanitizer. The class-scoped variant above catches the
+  // qualified `urllib.parse.quote(...)` shape; unqualified callers who
+  // want URL-context credit should use `quote_plus` (which does not
+  // collide with any command_injection sanitizer).
+
+  // Python XSS — additional common sanitizers.
+  //
+  //   bleach.clean(...)   — already covered above (line 2898)
+  //   bleach.linkify(...) — turns URLs into anchor tags; sanitizes as well
+  //   django.utils.html.escape / strip_tags — Django's XSS escape helpers
+  //   jinja2.escape       — Jinja2's Markup escape (aliased from markupsafe)
+  //   flask.escape        — Flask re-export of markupsafe.escape
+  //   saxutils.escape     — stdlib xml.sax.saxutils.escape for XML docs
+  { method: 'linkify',    class: 'bleach', removes: ['xss'] },
+  // Bare `linkify(...)` alias — `from bleach import linkify`.
+  { method: 'linkify',    removes: ['xss'] },
+  { method: 'escape',     class: 'django.utils.html', removes: ['xss'] },
+  { method: 'strip_tags', class: 'django.utils.html', removes: ['xss'] },
+  { method: 'escape',     class: 'jinja2', removes: ['xss'] },
+  { method: 'escape',     class: 'flask', removes: ['xss'] },
+  { method: 'escape',     class: 'saxutils', removes: ['xss'] },
+  { method: 'escape',     class: 'xml.sax.saxutils', removes: ['xss'] },
+  { method: 'quoteattr',  class: 'saxutils', removes: ['xss'] },
+  { method: 'quoteattr',  class: 'xml.sax.saxutils', removes: ['xss'] },
+
+  // Python ReDoS — `re.escape(user)` when building a regex from user input
+  // strips regex metacharacters. Downstream `re.compile / re.match` cannot
+  // interpret user-supplied alternations or quantifiers. Also covers the
+  // `code_injection` categorization that `re.compile` currently emits
+  // (a re.escape-wrapped pattern cannot execute anything, so both are safe).
+  { method: 'escape', class: 're', removes: ['redos', 'code_injection'] },
+
+  // Python SQLAlchemy — `text(...).bindparams(...)` binds params safely.
+  // The `bindparams` call is the sanitizer; the parent `text` wraps the
+  // template. Also add `expression.literal` for explicit SQL literals.
+  { method: 'bindparams', removes: ['sql_injection'] },
+  // psycopg2 sql-composition helpers
+  { method: 'Identifier', class: 'sql', removes: ['sql_injection'] },
+  { method: 'Literal',    class: 'sql', removes: ['sql_injection'] },
+  { method: 'Placeholder', class: 'sql', removes: ['sql_injection'] },
+
   // =========================================================================
   // Rust Sanitizers
   // =========================================================================

@@ -2813,7 +2813,31 @@ function matchesSanitizerPattern(call: CallInfo, pattern: SanitizerPattern): boo
 
     // If class is specified, check receiver
     if (pattern.class) {
-      if (!call.receiver || !receiverMightBeClass(call.receiver, pattern.class)) {
+      if (!call.receiver) {
+        // Bare function call: accept when import resolution produced a
+        // fully-qualified target whose tail is `<pattern.class>.<method>`.
+        // Mirrors the source-side bare-call handling in
+        // matchesSourcePattern (line ~1719). Without this, Python
+        // `from urllib.parse import quote; quote(x)` never matches the
+        // class-scoped `urllib.parse` sanitizer even though the resolver
+        // has already tied the call to the correct import.
+        //
+        // Deliberately narrower than the source-side change: only the
+        // bare-call branch is added here. Widening to `receiver_type` /
+        // `receiver_type_fqn` matches would activate previously-dormant
+        // Java sanitizer entries (e.g. `Path.normalize`) whose semantic
+        // scope is not what their `removes:['path_traversal']` claims
+        // (`.normalize()` alone does not stop `/etc/passwd`-style
+        // absolute-path bypass — the load-bearing check is `startsWith`,
+        // asserted by tests/issue-216-pattern-b-java.test.ts).
+        const target = call.resolution?.target;
+        const expectedTail = `${pattern.class}.${pattern.method}`;
+        if (target && (target === expectedTail || target.endsWith('.' + expectedTail))) {
+          // resolved bare-import alias matches — accept
+        } else {
+          return false;
+        }
+      } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         return false;
       }
     }

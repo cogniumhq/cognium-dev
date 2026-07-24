@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.185.0] - 2026-07-23
+
+Fifth slice of #213 — Python sanitizer coverage. Adds high-value
+sanitizers that were missing from `DEFAULT_SANITIZERS` and fixes a
+narrow symmetry gap in `matchesSanitizerPattern` so bare-imported
+sanitizer calls credit their class-qualified patterns.
+
+Additive on the sanitizer registry side; the matcher change is scoped
+to a single new branch (bare-call resolution) that mirrors the
+source-side path — deliberately narrower than a full symmetry fix so
+previously-dormant Java sanitizer entries (e.g. `Path.normalize`)
+whose semantic scope is broader than their `removes` claims do not
+activate silently.
+
+4238 pass, 2 skipped, 0 regressions vs 3.184.0.
+
+### #213 — Python sanitizer additions
+
+`config-loader.ts:DEFAULT_SANITIZERS`:
+
+- **URL encoding** — `urllib.parse.quote` / `quote_plus` / `urlencode`
+  (class-scoped) + bare `quote_plus` / `urlencode` for
+  `from urllib.parse import …` idiom. Removes:
+  `ssrf` / `open_redirect` / `xss` / `path_traversal` (URL-context
+  sinks). Bare `quote` intentionally NOT registered — it collides with
+  `shlex.quote` which is a command_injection sanitizer, not URL.
+- **XSS** — `bleach.linkify` (+ bare alias),
+  `django.utils.html.escape` / `strip_tags`, `jinja2.escape`,
+  `flask.escape`, `xml.sax.saxutils.escape` / `quoteattr`
+  (both `saxutils` and full `xml.sax.saxutils` receiver forms).
+- **ReDoS + code_injection** — `re.escape` removes both. The engine
+  currently categorizes `re.compile(user)` as `code_injection`
+  (CWE-94); `re.escape` neutralizes both interpretations by stripping
+  all regex metacharacters.
+- **SQL** — bare `bindparams` (SQLAlchemy `text(...).bindparams(...)`),
+  psycopg2 `sql.Identifier` / `sql.Literal` / `sql.Placeholder`.
+
+### #213 — Bare-import sanitizer matching fix
+
+`taint-matcher.ts:matchesSanitizerPattern` — when a sanitizer pattern
+specifies `class:` and the call has no receiver (bare import), accept
+if `call.resolution.target` tail-matches `<class>.<method>`. Mirrors
+the source-side handling in `matchesSourcePattern` (line ~1719).
+
+Previously, `from urllib.parse import quote; quote(x)` never matched
+the `class:'urllib.parse'` sanitizer even though the import resolver
+had already tied the call to `urllib.parse.quote` — the sanitizer
+matcher's `class:` gate required a literal receiver identifier. That
+gap made class-scoped Python sanitizers effectively invisible for the
+extremely common `from X import y` idiom.
+
+Deliberately narrower than the source-side change: only the
+bare-call branch is added. Widening to `receiver_type` /
+`receiver_type_fqn` matches would activate previously-dormant Java
+sanitizer entries whose semantic scope is broader than their
+`removes` claims (verified via
+`tests/issue-216-pattern-b-java.test.ts` — `.normalize()` alone must
+not credit `path_traversal` sanitization; the load-bearing check is
+a `startsWith` guard).
+
 ## [3.184.0] - 2026-07-23
 
 Third and fourth slices of the #213 transport-channel matrix — closes

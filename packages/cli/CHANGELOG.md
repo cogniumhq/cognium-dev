@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.185.0] - 2026-07-23
+
+Adopts [`circle-ir@3.185.0`](https://www.npmjs.com/package/circle-ir),
+which ships the fifth slice of #213 — Python sanitizer coverage:
+adds urllib.parse URL encoders, bleach.linkify, Django `html.escape`
+/ `strip_tags`, jinja2/flask escape, xml.sax.saxutils, `re.escape`
+(ReDoS + code_injection), and SQLAlchemy/psycopg2 SQL helpers, plus
+a narrow bare-import call-resolution fix in the sanitizer matcher.
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4238 pass, 2 skipped, 0 regressions vs 3.184.0.
+
+See the [circle-ir 3.185.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.185.0) for full engine detail.
+
 ## [3.184.0] - 2026-07-23
 
 Adopts [`circle-ir@3.184.0`](https://www.npmjs.com/package/circle-ir),
