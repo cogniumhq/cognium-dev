@@ -191,19 +191,38 @@ export function propagateTaint(
     // Check if any argument to the sink call is tainted
     for (const call of callsAtSink) {
       for (const arg of call.arguments) {
-        if (arg.variable) {
-          // If the sink defines dangerous argument positions, skip safe positions.
-          // For example, execSync(cmd, opts) has arg_positions: [0] — only arg 0
-          // (the command string) is a sink; arg 1 (options with cwd) is safe.
-          if (sink.argPositions && sink.argPositions.length > 0) {
-            if (!sink.argPositions.includes(arg.position)) {
-              continue;
-            }
+        // Skip safe argument positions when the sink specifies dangerous ones.
+        // execSync(cmd, opts) has arg_positions: [0] — only arg 0 (the
+        // command string) is a sink; arg 1 (options with cwd) is safe.
+        if (sink.argPositions && sink.argPositions.length > 0) {
+          if (!sink.argPositions.includes(arg.position)) {
+            continue;
           }
+        }
+        // Match set:
+        //   - bare identifier args → arg.variable
+        //   - compound expressions (e.g. `"..." + v`, `fmt.Sprintf(t, v)`) →
+        //     any use at the sink line whose reaching def is tainted, since
+        //     the compound expression cannot be reduced to a single variable
+        //     name but its constituent identifiers appear in usesAtSink.
+        //     (cognium-dev #243 — Go loop-carried range / helper-var shapes.)
+        const candidateUses = arg.variable
+          ? usesAtSink.filter(u => u.variable === arg.variable)
+          : usesAtSink;
+        {
           // Find if this variable use is tainted
-          for (const use of usesAtSink) {
-            if (use.variable === arg.variable && use.def_id !== null) {
+          for (const use of candidateUses) {
+            if (use.def_id !== null) {
               if (allTaintedDefIds.has(use.def_id)) {
+                // For compound expressions, require the identifier to appear
+                // in this arg's expression text (word-boundary) so we don't
+                // credit uses that belong to sibling args or unrelated call
+                // parts on the same line.
+                if (!arg.variable) {
+                  if (typeof arg.expression !== 'string' || arg.expression.length === 0) continue;
+                  const re = new RegExp(`(?:^|[^A-Za-z0-9_$])${use.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`);
+                  if (!re.test(arg.expression)) continue;
+                }
                 const taintInfo = taintByDefId.get(use.def_id);
                 if (taintInfo) {
                   // Check if sanitized.
@@ -254,7 +273,22 @@ export function propagateTaint(
     }
   }
 
-  return { taintedVars, flows, reachableSinks };
+  // Dedup: multiple uses of the same tainted variable at the same sink line
+  // (e.g. `x = f(x)` or repeated identifier occurrences in a concat
+  // expression) can emit duplicate flows with the same (source_line,
+  // sink_line, path). Collapse on the source/sink/path key so downstream
+  // dedup on (source_line, sink_line, sink_type) still sees a single record
+  // and reachableSinks reflects unique source→sink pairs.
+  const seen = new Set<string>();
+  const deduped: TaintFlow[] = [];
+  for (const f of flows) {
+    const key = `${f.source.line}|${f.sink.line}|${f.sink.type}|${f.path.map(p => p.variable).join('>')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(f);
+  }
+
+  return { taintedVars, flows: deduped, reachableSinks };
 }
 
 /**

@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.182.0] - 2026-07-23
+
+Four engine changes to close the #243 Go taint-propagation ticket end to end.
+All four benchmark shapes now produce flows; the previously-passing shapes
+(closure) are pinned by test so future refactors cannot silently regress
+them. 4212 pass, 2 skipped, 0 regressions vs 3.181.0.
+
+### #243 — Go taint-propagation shapes
+
+Ticket tracked four Go-specific propagation gaps surfaced by benchmark
+regressions. Fixed in order of tractability across a single release.
+
+- **Shape 1: closure capture — pinning tests.** Verified the existing
+  scope-stack path already carries taint from an outer var into a
+  `func literal` (both bare and `go func()` goroutine variants). Added
+  `go-taint-shapes-243.test.ts` so a future DFG-scope refactor cannot
+  silently regress it.
+
+- **Shape 2: range-clause loop-carried taint.**
+  `dfg.ts` — `for _, v := range tainted` previously recorded defs for
+  the loop vars but not uses for the range source. `computeChains`
+  therefore had no way to link `tainted` → `v`. Added the missing
+  `extractGoUses(right, ...)` call on the same line as the loop-var
+  defs so a chain is created and the propagator carries taint into the
+  loop body.
+
+- **Shape 3: opaque-codec roundtrip.**
+  `dfg.ts` — `json.Unmarshal(bytes, &dest)` (and `xml`/`yaml`/`gob`
+  variants, plus Decoder-style `NewDecoder(r).Decode(&dest)`) populate
+  `dest` via reflection. Modeled as a re-definition of `dest` on the
+  call line so `computeChains` links the source-arg use to a fresh
+  `dest` def. Extends to `UnmarshalJSON` / `UnmarshalText` /
+  `UnmarshalBinary` / `UnmarshalYAML` addressable-only receivers.
+
+- **Shape 3 (companion): compound-expression sink match.**
+  `taint-propagation.ts` — previous DFG-based sink check only fired
+  when `arg.variable` was a bare identifier. Extended to fall back to
+  any use at the sink line whose reaching def is tainted, gated by
+  an identifier-boundary match against the arg's expression text. This
+  covers the common `sink("..." + v)` / `sink(fmt.Sprintf(t, v))`
+  shape where taint reaches the sink through a compound expression.
+  Added a source/sink/path dedup so the widened match doesn't emit
+  duplicates for multi-use expressions.
+
+- **Shape 4: package-global store/read across functions.**
+  `taint-propagation-pass.ts` — new `detectGoPackageGlobalFlows`
+  supplement covers cross-function taint through package-level state
+  that the per-function DFG cannot see. Text-scans for column-0 var
+  declarations (`var X ...` and `var ( ... )` blocks), assignments
+  where the RHS is tainted (source pattern or already-tainted
+  derivative), and sinks that reference the var name at word
+  boundary. Preserves local shadowing: short-var-decl
+  (`X := ...`) does not fire, keeping the local scope intact.
+
+### #243 residuals
+
+None. Ticket closes with all four shapes shipped.
+
 ## [3.181.0] - 2026-07-23
 
 Three engine commits since 3.180.0. Continues the incremental

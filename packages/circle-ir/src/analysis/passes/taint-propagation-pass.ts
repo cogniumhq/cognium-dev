@@ -180,6 +180,28 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       pushIfNew(f);
     }
 
+    // Supplement: Go package-scope var flows (cognium-dev #243).
+    //
+    // Cross-function taint through package-level state that the per-function
+    // DFG cannot see. Text-scans the file for:
+    //   - Package-scope var declarations at the top level
+    //   - Assignments to those vars where the RHS is tainted (source or
+    //     already-tainted derivative)
+    //   - Sink calls anywhere that reference the same var name
+    // Emits one flow per (write-line, sink-line) pair. Language-gated to Go.
+    if (ctx.language === 'go' && typeof ctx.code === 'string') {
+      const goGlobalFlows = detectGoPackageGlobalFlows(
+        ctx.code,
+        calls,
+        sources,
+        sinks,
+        constProp.unreachableLines,
+      ) ?? [];
+      for (const f of goGlobalFlows) {
+        pushIfNew(f);
+      }
+    }
+
     // Sprint 9 #58.1 — final pass: drop any flow whose source variable was
     // explicitly marked sanitized by a guard (e.g. regex-allowlist).
     // Applied to ALL flow generators (DFG-built and the four supplements)
@@ -563,6 +585,147 @@ function isInJavaSanitizedMethod(
 // ---------------------------------------------------------------------------
 // Helpers (moved verbatim from analyzer.ts)
 // ---------------------------------------------------------------------------
+
+/**
+ * cognium-dev #243 — Go package-scope var flows.
+ *
+ * Detects the store-then-read shape where taint enters a package-level var
+ * in one function and is consumed by a sink in another function. The
+ * per-function DFG cannot link these because each function scope is
+ * independent; this text-scan supplement covers the common case.
+ *
+ * Heuristic (Go-specific):
+ *   - Package-scope defs: top-level `var X ...` / `X = ...` at column 0.
+ *   - Write: any `X = ...` (or `X = expr` inside a function) whose RHS
+ *     contains an identifier that is either a taint source's variable or
+ *     matches a direct source pattern (r.URL.Query()..., r.Header.Get..., …).
+ *   - Read: any sink whose arg expression references `X` at word boundary.
+ *
+ * Bounded conservatism: does not fire when the local scope shadows the
+ * package var (short-var-decl `X := ...`) — that path stays local.
+ */
+function detectGoPackageGlobalFlows(
+  code: string,
+  _calls: CircleIR['calls'],
+  sources: CircleIR['taint']['sources'],
+  sinks: CircleIR['taint']['sinks'],
+  unreachableLines: Set<number>,
+): CircleIR['taint']['flows'] {
+  const flows: CircleIR['taint']['flows'] = [];
+  if (!code || sinks.length === 0) return flows;
+
+  const lines = code.split('\n');
+  const packageVars = new Set<string>();
+
+  // Step 1: collect package-scope var names. Recognize:
+  //   var X type
+  //   var X = ...
+  //   var ( X ...  Y ... )
+  let inVarBlock = false;
+  for (const line of lines) {
+    const stripped = line.replace(/\s+$/, '');
+    if (!stripped) continue;
+    // Only consider column-0 lines (package scope). Function bodies indent.
+    if (/^[ \t]/.test(line)) {
+      // Multi-line var block runs continue even indented, but the `var (`
+      // opener is at column 0 and we already flagged inVarBlock.
+      if (inVarBlock) {
+        const m = stripped.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s+/);
+        if (m) packageVars.add(m[1]);
+        if (/^\s*\)/.test(stripped)) inVarBlock = false;
+      }
+      continue;
+    }
+    if (/^var\s*\(/.test(stripped)) { inVarBlock = true; continue; }
+    if (inVarBlock && /^\)/.test(stripped)) { inVarBlock = false; continue; }
+    const varOne = stripped.match(/^var\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
+    if (varOne) packageVars.add(varOne[1]);
+  }
+  if (packageVars.size === 0) return flows;
+
+  // Step 2: for each package var, find writes with tainted RHS.
+  // A write is `X = ...` (assignment) — NOT `X := ...` (short-var-decl,
+  // which shadows the package var with a local).
+  const sourceVarNames = new Set<string>();
+  for (const s of sources) {
+    if (typeof s.variable === 'string' && s.variable.length > 0) {
+      sourceVarNames.add(s.variable);
+    }
+  }
+  // Recognize a small set of direct Go source patterns on the RHS.
+  const GO_SOURCE_RE = /\b(r\.(?:URL\.Query|Form|PostForm|Header|Cookie|Body)|mux\.Vars|c\.(?:Query|Param|PostForm|GetHeader|Cookie)|ctx\.(?:Query|Param|PostForm|GetHeader|Cookie))\b/;
+
+  interface PackageWrite {
+    varName: string;
+    line: number;
+    sourceLine: number;
+    sourceType: string;
+  }
+  const writes: PackageWrite[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (unreachableLines.has(i + 1)) continue;
+    // Skip short-var-decl to preserve local shadowing.
+    if (/:=/.test(line)) continue;
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    if (!packageVars.has(lhs)) continue;
+
+    // RHS tainted if it references a source var or matches a direct pattern.
+    let taintedBy: { line: number; type: string } | null = null;
+    if (GO_SOURCE_RE.test(rhs)) {
+      const src = sources.find(s => s.line === i + 1);
+      taintedBy = src
+        ? { line: src.line, type: src.type }
+        : { line: i + 1, type: 'http_param' };
+    } else {
+      for (const v of sourceVarNames) {
+        const re = new RegExp(`(?<![A-Za-z0-9_$])${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`);
+        if (re.test(rhs)) {
+          const src = sources.find(s => s.variable === v);
+          if (src) {
+            taintedBy = { line: src.line, type: src.type };
+            break;
+          }
+        }
+      }
+    }
+    if (!taintedBy) continue;
+    writes.push({ varName: lhs, line: i + 1, sourceLine: taintedBy.line, sourceType: taintedBy.type });
+  }
+  if (writes.length === 0) return flows;
+
+  // Step 3: for each sink, if any arg expression references a written var,
+  // emit a flow from the source through the write to the sink.
+  for (const sink of sinks) {
+    if (unreachableLines.has(sink.line)) continue;
+    // Look at the sink line's text for identifier-boundary matches.
+    const sinkLineText = lines[sink.line - 1] ?? '';
+    if (!sinkLineText) continue;
+    for (const w of writes) {
+      if (w.line >= sink.line) continue; // write must precede sink lexically
+      const re = new RegExp(`(?<![A-Za-z0-9_$])${w.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`);
+      if (!re.test(sinkLineText)) continue;
+      flows.push({
+        source_line: w.sourceLine,
+        sink_line: sink.line,
+        source_type: w.sourceType as CircleIR['taint']['sources'][number]['type'],
+        sink_type: sink.type,
+        path: [
+          { variable: w.varName, line: w.sourceLine, type: 'source' },
+          { variable: w.varName, line: w.line, type: 'assignment' },
+          { variable: w.varName, line: sink.line, type: 'sink' },
+        ],
+        confidence: 0.9,
+        sanitized: false,
+      });
+    }
+  }
+
+  return flows;
+}
 
 function detectCollectionFlows(
   calls: CircleIR['calls'],

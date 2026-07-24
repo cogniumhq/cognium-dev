@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.182.0] - 2026-07-23
+
+Adopts [`circle-ir@3.182.0`](https://www.npmjs.com/package/circle-ir),
+which closes the `#243` Go taint-propagation ticket by shipping all
+four benchmark shapes: closure capture (test lock), range-clause
+loop-carried taint, opaque-codec roundtrip (json/xml/yaml/gob
+Unmarshal + Decoder.Decode), and package-global store/read across
+functions. A companion compound-expression sink-match fix in
+`taint-propagation.ts` catches `sink("..." + v)` shapes where the
+sink arg is a concat expression rather than a bare identifier.
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4212 pass, 2 skipped, 0 regressions vs 3.181.0.
+
+See the [circle-ir 3.182.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.182.0) for full engine detail.
+
 ## [3.181.0] - 2026-07-23
 
 Adopts [`circle-ir@3.181.0`](https://www.npmjs.com/package/circle-ir),

@@ -1533,6 +1533,14 @@ function processGoBlock(
       // range clause: for k, v := range expr
       const rangeClause = findChildByTypeGo(child, 'range_clause');
       if (rangeClause) {
+        const right = rangeClause.childForFieldName('right');
+        // Record uses of the range source on the same line as the loop-var
+        // defs, so `computeChains` links the source def → loop-var def, which
+        // is what carries taint into the loop body. Emit before defs so RHS
+        // uses see the outer binding, not the new loop var. (Issue #243.)
+        if (right) {
+          extractGoUses(right, uses, scopeStack);
+        }
         const left = rangeClause.childForFieldName('left');
         if (left) {
           extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
@@ -1541,6 +1549,14 @@ function processGoBlock(
     } else if (child.type === 'call_expression') {
       // Extract uses from call arguments
       extractGoUses(child, uses, scopeStack);
+      // Opaque-codec destination re-def (cognium-dev #243).
+      //
+      // Calls like `json.Unmarshal(bytes, &dest)`, `xml.Unmarshal(...)`,
+      // `gob.NewDecoder(r).Decode(&dest)`, `yaml.Unmarshal(...)` populate
+      // `dest` via reflection. Model that as a re-definition of `dest` on
+      // this line so `computeChains` links the source-arg use to a fresh
+      // `dest` def and taint propagates through the codec.
+      recordGoOpaqueCodecDestDef(child, defs, scopeStack);
     } else if (child.type === 'return_statement') {
       // Extract uses from return expressions
       for (let i = 0; i < child.childCount; i++) {
@@ -1670,6 +1686,90 @@ function findChildByTypeGo(node: Node, type: string): Node | null {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (child?.type === type) return child;
+  }
+  return null;
+}
+
+/**
+ * cognium-dev #243 — opaque codec destination re-defs for Go.
+ *
+ * Package/method pairs whose second (or only) arg is a destination that the
+ * call populates via reflection. Modelling them as re-defs of the dest lets
+ * `computeChains` link source-arg → dest and taint propagates through the
+ * codec.
+ */
+const GO_OPAQUE_CODEC_METHODS = new Set<string>([
+  'Unmarshal',       // json/xml/yaml/toml/gob
+  'Decode',          // json.NewDecoder(r).Decode(&dest), gob.Decoder.Decode
+  'NewDecoder',      // wrapper; handled via chained Decode above
+  'UnmarshalYAML',
+  'UnmarshalJSON',
+  'UnmarshalText',
+  'UnmarshalBinary',
+]);
+
+function recordGoOpaqueCodecDestDef(
+  call: Node,
+  defs: DFGDef[],
+  scopeStack: Map<string, number>[]
+): void {
+  // Only handle direct selector calls: `pkg.Method(...)` or `receiver.Decode(...)`.
+  const fn = call.childForFieldName('function');
+  if (!fn || fn.type !== 'selector_expression') return;
+  const fieldNode = fn.childForFieldName('field');
+  if (!fieldNode) return;
+  const method = getNodeText(fieldNode);
+  if (!GO_OPAQUE_CODEC_METHODS.has(method)) return;
+
+  const argsNode = call.childForFieldName('arguments');
+  if (!argsNode) return;
+
+  // Positional args (skip commas / parens).
+  const args: Node[] = [];
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const c = argsNode.child(i);
+    if (!c) continue;
+    if (c.type === ',' || c.type === '(' || c.type === ')') continue;
+    args.push(c);
+  }
+  if (args.length === 0) return;
+
+  // Destination convention:
+  //   - Unmarshal(bytes, &dest) → args[1]
+  //   - Decode(&dest)           → args[0]
+  const destArg = args.length >= 2 ? args[1] : args[0];
+  const destName = extractGoAddressableVarName(destArg);
+  if (!destName || destName === '_') return;
+
+  const line = call.startPosition.row + 1;
+  const def: DFGDef = {
+    id: defs.length + 1,
+    variable: destName,
+    kind: 'local',
+    line,
+  };
+  defs.push(def);
+  currentScope(scopeStack).set(destName, def.id);
+}
+
+/**
+ * Return the addressed variable name for an opaque-codec destination arg.
+ * Handles `&x`, bare `x`, and `&pkg.Y`-style receivers (returns `Y` — the
+ * codec still populates that concrete addressable location).
+ */
+function extractGoAddressableVarName(node: Node): string | null {
+  if (node.type === 'unary_expression') {
+    // &x — operand carries the identifier
+    const operand = node.childForFieldName('operand') ?? node.child(1) ?? null;
+    if (operand) return extractGoAddressableVarName(operand);
+    return null;
+  }
+  if (node.type === 'identifier') {
+    return getNodeText(node);
+  }
+  if (node.type === 'selector_expression') {
+    const field = node.childForFieldName('field');
+    if (field) return getNodeText(field);
   }
   return null;
 }
