@@ -1191,6 +1191,71 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
     }
   }
 
+  // WebSocket / EventEmitter callback-parameter sources (cognium-dev #213).
+  //
+  // ws / Socket.IO / Node.js EventEmitter idiomatic pattern:
+  //   ws.on('message', (data) => sink(data))
+  //   socket.on('message', function(payload) { sink(payload) })
+  //   ws.on('message', async (data) => sink(data))
+  //
+  // The FIRST parameter of the callback is the attacker-authored frame
+  // payload for the 'message' / 'text' / 'binary' events. Scoped by
+  // event-name allowlist to avoid firing on unrelated `.on('drain', cb)`
+  // / `.on('close', cb)` etc. that carry non-user-input.
+  sources.push(...findJavaScriptCallbackParamSources(sourceCode));
+
+  return sources;
+}
+
+/**
+ * cognium-dev #213 — JS/TS WebSocket callback-parameter sources.
+ *
+ * Scans for `<receiver>.on('<event>', <callback>)` where <event> is one
+ * of the WebSocket message events, and extracts the callback's first
+ * parameter name. Registers a `network_input` source anchored at the
+ * callback's declaration line with `variable: <param-name>` so
+ * downstream sinks that consume that variable are flagged.
+ *
+ * Event names allowlisted: `message`, `text`, `binary`. These are
+ * unambiguously frame-payload events across ws / Socket.IO / uWS /
+ * @fastify/websocket. Deliberately does NOT include `data`
+ * (Node.js streams reuse this name for legit non-attacker sources)
+ * or `connection` (payload is a socket handle, not user input).
+ *
+ * Note: `close` / `open` / `error` / `drain` etc. are intentionally
+ * out of scope — their callback params are lifecycle metadata, not
+ * user input, and firing on them would swamp legit event-driven code
+ * with FPs.
+ */
+function findJavaScriptCallbackParamSources(sourceCode: string): TaintSource[] {
+  const sources: TaintSource[] = [];
+  // Match `.on('message', <callback-first-arg>)` where callback is either:
+  //   - arrow function:   `(name)` / `(name,` / `name =>` / `async (name)`
+  //   - function expr:    `function (name)` / `function name(name)` /
+  //                       `async function (name)` / `function* (name)`
+  const CB_EVENT_RE = /\.on\s*\(\s*['"](?:message|text|binary)['"]\s*,\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*(\w+)|\(\s*(\w+)\s*(?:[,):]|$)|(\w+)\s*=>)/;
+  const lines = sourceCode.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const m = line.match(CB_EVENT_RE);
+    if (!m) continue;
+    const paramName = m[1] ?? m[2] ?? m[3];
+    if (!paramName) continue;
+    // Skip conventional lifecycle-arg names that would poison downstream
+    // scans with FPs if treated as tainted. `err` / `error` are almost
+    // never actual frame payloads; keep them out even inside 'message'.
+    if (paramName === 'err' || paramName === 'error') continue;
+    sources.push({
+      type: 'network_input',
+      location: `WebSocket .on(...) callback param '${paramName}' at line ${i + 1}`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.95,
+      variable: paramName,
+    });
+  }
   return sources;
 }
 
@@ -1593,6 +1658,17 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   const tainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
 
+  // Seed with WebSocket `.on('message', cb)` callback-param names (#213
+  // second slice). Same event allowlist as findJavaScriptCallbackParamSources.
+  const CB_EVENT_RE = /\.on\s*\(\s*['"](?:message|text|binary)['"]\s*,\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*(\w+)|\(\s*(\w+)\s*(?:[,):]|$)|(\w+)\s*=>)/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(CB_EVENT_RE);
+    if (!m) continue;
+    const paramName = m[1] ?? m[2] ?? m[3];
+    if (!paramName || paramName === 'err' || paramName === 'error') continue;
+    tainted.set(paramName, i + 1);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trimStart();
@@ -1876,6 +1952,109 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
           line: lineNumber,
           confidence: 0.7,
           variable: varName,
+        });
+      }
+    }
+
+    // 2b. `read` builtin — stdin sources (cognium-dev #213 third slice).
+    //
+    //   read x                 → $x is tainted (stdin)
+    //   read -r x              → $x is tainted (raw mode)
+    //   read -p "prompt" x     → $x is tainted (prompted read)
+    //   read x y z             → $x, $y, $z are all tainted
+    //   read                   → $REPLY is tainted
+    //   read -a arr            → $arr array tainted
+    //   mapfile -t arr / readarray arr → $arr array tainted
+    //   getopts "abc" flag     → $flag is tainted, and $OPTARG carries values
+    //
+    // All are stdin/CLI-driven and untrusted the moment they land. Treat
+    // as `io_input` (same bucket as positional params for reach-map).
+    // Exclude `read()` function definitions and anything containing `(`
+    // to avoid firing on `read() {` / `read () {` etc.
+    const readMatch = /^read\s*\(/.test(trimmed) ? null : trimmed.match(/^read\b([^#(]*)$/);
+    if (readMatch) {
+      const argStr = readMatch[1].trim();
+      // Strip trailing redirect (`read x < file` — the file case is still stdin-shaped)
+      const noRedirect = argStr.replace(/\s*<[^<].*$/, '').trim();
+      // Extract identifier operands (skip -flags and their string args).
+      const tokens = noRedirect.split(/\s+/);
+      const varNames: string[] = [];
+      for (let ti = 0; ti < tokens.length; ti++) {
+        const tok = tokens[ti];
+        if (!tok) continue;
+        if (tok.startsWith('-')) {
+          // Flags that take an argument consume the next token
+          // (a=array-name, n/N=nchars, p=prompt, t=timeout, i=text,
+          // d=delim, u=fd). `-r` / `-s` / `-e` take no argument.
+          if (/^-[antpidu]$|^-N$/.test(tok)) ti++;
+          continue;
+        }
+        if (/^[A-Za-z_][\w]*$/.test(tok)) varNames.push(tok);
+      }
+      // No explicit vars → $REPLY holds the line.
+      if (varNames.length === 0) varNames.push('REPLY');
+      for (const v of varNames) {
+        const already = sources.some(s => s.line === lineNumber && s.variable === v);
+        if (already) continue;
+        sources.push({
+          type: 'io_input',
+          location: `read → $${v} (stdin)`,
+          severity: 'high',
+          line: lineNumber,
+          confidence: 0.9,
+          variable: v,
+        });
+      }
+    }
+    // mapfile / readarray → whole array from stdin
+    const mapfileMatch = /^(?:mapfile|readarray)\s*\(/.test(trimmed)
+      ? null
+      : trimmed.match(/^(?:mapfile|readarray)\b([^#(]*)$/);
+    if (mapfileMatch) {
+      const argStr = mapfileMatch[1].trim();
+      const tokens = argStr.split(/\s+/);
+      const varNames: string[] = [];
+      for (let ti = 0; ti < tokens.length; ti++) {
+        const tok = tokens[ti];
+        if (!tok) continue;
+        if (tok.startsWith('-')) {
+          // Arg-taking flags: c=chunk, C=callback, n=max, O=origin,
+          // s=skip, u=fd, d=delim. `-t` takes no argument.
+          if (/^-[cCnOsud]$/.test(tok)) ti++;
+          continue;
+        }
+        if (/^[A-Za-z_][\w]*$/.test(tok)) varNames.push(tok);
+      }
+      if (varNames.length === 0) varNames.push('MAPFILE');
+      for (const v of varNames) {
+        const already = sources.some(s => s.line === lineNumber && s.variable === v);
+        if (already) continue;
+        sources.push({
+          type: 'io_input',
+          location: `mapfile → $${v} (stdin array)`,
+          severity: 'high',
+          line: lineNumber,
+          confidence: 0.9,
+          variable: v,
+        });
+      }
+    }
+    // getopts option-parsing loop: `while getopts "abc" flag; do ...`
+    //   → $flag holds the current option letter (attacker-chosen CLI arg)
+    //   → $OPTARG holds the option's value on `:` flags
+    const getoptsMatch = trimmed.match(/\bgetopts\s+["'][^"']+["']\s+(\w+)/);
+    if (getoptsMatch) {
+      const flagVar = getoptsMatch[1];
+      for (const v of [flagVar, 'OPTARG']) {
+        const already = sources.some(s => s.line === lineNumber && s.variable === v);
+        if (already) continue;
+        sources.push({
+          type: 'io_input',
+          location: `getopts → $${v} (CLI arg)`,
+          severity: 'high',
+          line: lineNumber,
+          confidence: 0.9,
+          variable: v,
         });
       }
     }

@@ -10,10 +10,10 @@
  *   - Java   — Jakarta WebSocket + Spring STOMP: `@OnMessage`,
  *              `@MessageMapping`, `@SubscribeMapping`
  *
- * JS/TS WebSocket handlers (`ws.on('message', (data) => ...)`) use a
- * callback-parameter shape that the current pattern format (property
- * source / return-tainted method / annotated param) doesn't express.
- * Deferred for a follow-up slice.
+ *   - JS/TS  — ws / Socket.IO callback-param shape: `.on('message', cb)`
+ *              extracts the callback's first parameter name and treats
+ *              it as `network_input`. Event allowlist: message / text /
+ *              binary.
  */
 
 import { describe, it, beforeAll, expect } from 'vitest';
@@ -118,6 +118,91 @@ public class Ws {
 `;
     const r = await analyze(code, 'Ws.java', 'java');
     expect(hasFlow(r)).toBe(true);
+  });
+
+  // ── JavaScript / TypeScript ──────────────────────────────────────────
+
+  it('TP — Node ws `.on("message", (data) => …)` arrow callback flows', async () => {
+    const code = `const WebSocket = require('ws');
+const wss = new WebSocket.Server({ port: 8080 });
+const { exec } = require('child_process');
+wss.on('connection', (ws) => {
+  ws.on('message', (data) => {
+    exec('echo ' + data);
+  });
+});`;
+    const r = await analyze(code, 'ws-arrow.js', 'javascript');
+    expect(hasFlow(r)).toBe(true);
+  });
+
+  it('TP — Node ws `.on("message", function(data){…})` function-expr callback flows', async () => {
+    const code = `const WebSocket = require('ws');
+const wss = new WebSocket.Server({ port: 8080 });
+const { exec } = require('child_process');
+wss.on('connection', function (ws) {
+  ws.on('message', function (data) {
+    exec('echo ' + data);
+  });
+});`;
+    const r = await analyze(code, 'ws-fn.js', 'javascript');
+    expect(hasFlow(r)).toBe(true);
+  });
+
+  it('TP — Socket.IO `socket.on("message", (payload) => …)` flows', async () => {
+    const code = `const io = require('socket.io')(3000);
+const { exec } = require('child_process');
+io.on('connection', (socket) => {
+  socket.on('message', (payload) => {
+    exec('echo ' + payload);
+  });
+});`;
+    const r = await analyze(code, 'socketio.js', 'javascript');
+    expect(hasFlow(r)).toBe(true);
+  });
+
+  it('TP — TypeScript typed callback param flows', async () => {
+    const code = `import WebSocket from 'ws';
+const wss = new WebSocket.Server({ port: 8080 });
+const { exec } = require('child_process');
+wss.on('connection', (ws: WebSocket) => {
+  ws.on('message', (data: string) => {
+    exec('echo ' + data);
+  });
+});`;
+    const r = await analyze(code, 'ws.ts', 'typescript');
+    expect(hasFlow(r)).toBe(true);
+  });
+
+  it('FP-guard — `.on("drain", cb)` and other lifecycle events do NOT fire', async () => {
+    // Only the message-payload events (message / text / binary) are on
+    // the allowlist. Lifecycle events (drain, close, error, connection)
+    // carry non-user-input args (metadata, socket handles).
+    const code = `const q = new Queue();
+const { exec } = require('child_process');
+q.on('drain', (info) => {
+  exec('echo ' + info);
+});
+q.on('close', (code) => {
+  console.log(code);
+});`;
+    const r = await analyze(code, 'queue.js', 'javascript');
+    const wsSources = r.taint.sources.filter(
+      s => s.type === 'network_input' && (s.variable === 'info' || s.variable === 'code'),
+    );
+    expect(wsSources.length).toBe(0);
+  });
+
+  it('FP-guard — `err` / `error` callback param is excluded even on message events', async () => {
+    // Rare shape: `.on('message', (err, data) => ...)` where the first
+    // arg is Node-style error. We currently take the first param only;
+    // if it's named `err` or `error` we skip to avoid poisoning
+    // downstream scans. Real WS APIs place data first anyway.
+    const code = `ws.on('message', (err) => {
+  console.log(err);
+});`;
+    const r = await analyze(code, 'err.js', 'javascript');
+    const errSources = r.taint.sources.filter(s => s.variable === 'err');
+    expect(errSources.length).toBe(0);
   });
 
   it('TP — Spring STOMP `@MessageMapping` param flows to SQL sink', async () => {

@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.184.0] - 2026-07-23
+
+Third and fourth slices of the #213 transport-channel matrix — closes
+the JS/TS deferral from 3.183.0 and extends bash source coverage with
+stdin/CLI builtin recognition. Additive-only; no reach-map or DFG
+changes. 4232 pass, 2 skipped, 0 regressions vs 3.183.0.
+
+### #213 — JS/TS WebSocket callback-parameter sources
+
+`language-sources-pass.ts:findJavaScriptCallbackParamSources` — new
+text-scan supplement that recognizes
+`<receiver>.on('<event>', <callback>)` and extracts the callback's
+first parameter name as a `network_input` source.
+
+Event allowlist: `message`, `text`, `binary`. Deliberately not
+including `data` (Node.js streams reuse this name for legit non-
+attacker sources) or `connection` / `close` / `error` / `drain` etc.
+(lifecycle metadata, not user input).
+
+Callback shapes recognized:
+  - Arrow function `(name) => …` / `name => …` / `async (name) => …`
+  - Function expression `function (name) { … }` / named
+    `function foo(name) { … }` / generator `function* (name) { … }`
+  - Typed parameter `(name: T) => …` (TypeScript)
+
+FP-guard: callback param named `err` / `error` is excluded even on
+allowlisted events, since a Node-style `(err, data) => …` shape
+places the error first and treating it as tainted would poison
+downstream scans.
+
+Seed extended into `buildJavaScriptTaintedVars` so the callback param
+is available for forward-taint propagation through subsequent
+`const x = data.toString()` assignments.
+
+Closes the JS/TS callback-parameter WebSocket deferral called out in
+the 3.183.0 changelog.
+
+### #213 — Bash stdin/CLI builtin sources
+
+`language-sources-pass.ts:findBashTaintSources` — new sections 2b, 2c,
+2d covering the four common stdin/CLI-arg builtins:
+
+  - `read [-r|-s|-e] [-a|-n|-N|-p|-t|-i|-d|-u ARG] name…` — each named
+    var is `io_input`-tainted. `read` with no args → `$REPLY` tainted.
+  - `mapfile / readarray [-c|-C|-n|-O|-s|-u|-d ARG] [-t] name` — the
+    named array var is `io_input`-tainted. No name → `$MAPFILE`.
+  - `getopts "OPTS" flag` — `$flag` (option letter chosen by user) and
+    `$OPTARG` (option value) both `io_input`-tainted.
+
+Flag arg-consumption is enumerated per builtin (e.g. `read -r` takes
+no arg; `read -p PROMPT` takes one; `mapfile -t` takes none).
+
+FP-guard: function definitions like `read() { … }` / `mapfile() …` /
+`getopts() …` are excluded — the recognizer skips lines containing `(`.
+The function's *body* can still contain real `read x` / `mapfile arr`
+calls and those are recognized normally.
+
 ## [3.183.0] - 2026-07-23
 
 Second slice of #213 transport-channel matrix — WebSocket handler payload
