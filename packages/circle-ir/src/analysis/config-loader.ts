@@ -627,6 +627,72 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { annotation: 'InputArgument', type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
   { annotation: 'GraphQLArgument', type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
 
+  // --- Go web framework sources (cognium-dev #213 ninth slice) ---
+  //
+  // Gin `c.Query("id")` / `c.Param("id")` / `c.PostForm("k")` /
+  //     `c.GetHeader("H")` / `c.Cookie("c")` / `c.FormFile("f")`.
+  //     Also body binders: `c.BindJSON(&d)` / `c.ShouldBindJSON(&d)` /
+  //     `c.Bind(&d)`. Class-scoped to `Context` — the Go local-receiver
+  //     resolver from #240 3.177.0 puts the resolved type into the
+  //     `receiver` field so class-matching works for `func h(c *gin.Context)`.
+  //
+  // Echo `c.QueryParam("id")` / `c.QueryParams()` / `c.Param("id")` /
+  //     `c.FormValue("k")` / `c.FormParams()` / `c.Request().Header` /
+  //     `c.Cookie("c")` / `c.Bind(&d)`.
+  //
+  // Fiber `c.Query("id")` / `c.Params("id")` / `c.FormValue("k")` /
+  //     `c.Cookies("c")` / `c.Get("H")` / `c.Body()` / `c.BodyParser(&d)`.
+  //     Distinct receiver type `*fiber.Ctx` — separate class entries.
+  //
+  // Chi `chi.URLParam(r, "id")` — package-level call, matched via
+  //     bare-import resolution in matchesSourcePattern.
+  //
+  // Beego `ctx.Input.Query(...)` — `Input` is a struct, so `.Query`
+  //     matches on `Input` class.
+  //
+  // Gorilla mux `mux.Vars(r)` — returns map of path vars.
+  { method: 'Query',           class: 'Context', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Param',           class: 'Context', type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'PostForm',        class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'GetHeader',       class: 'Context', type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Cookie',          class: 'Context', type: 'http_cookie', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormFile',        class: 'Context', type: 'file_input',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'BindJSON',        class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'ShouldBindJSON',  class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Bind',            class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'BindQuery',       class: 'Context', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'ShouldBindQuery', class: 'Context', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'BindUri',         class: 'Context', type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'ShouldBindUri',   class: 'Context', type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'MultipartForm',   class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  // Echo — QueryParam/QueryParams are Echo-distinctive.
+  { method: 'QueryParam',      class: 'Context', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'QueryParams',     class: 'Context', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormValue',       class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormParams',      class: 'Context', type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormFile',        class: 'Context', type: 'file_input',  severity: 'high', return_tainted: true, languages: ['go'] },
+  // Fiber — receiver type is `*fiber.Ctx`, distinct class name.
+  { method: 'Query',           class: 'Ctx',     type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Params',          class: 'Ctx',     type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormValue',       class: 'Ctx',     type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'FormFile',        class: 'Ctx',     type: 'file_input',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Cookies',         class: 'Ctx',     type: 'http_cookie', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Get',             class: 'Ctx',     type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Body',            class: 'Ctx',     type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'BodyParser',      class: 'Ctx',     type: 'http_body',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'QueryParser',     class: 'Ctx',     type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'ParamsParser',    class: 'Ctx',     type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  // Chi package-level path param.
+  { method: 'URLParam',        class: 'chi', type: 'http_path', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'URLParamFromCtx', class: 'chi', type: 'http_path', severity: 'high', return_tainted: true, languages: ['go'] },
+  // Gorilla mux path vars.
+  { method: 'Vars',            class: 'mux', type: 'http_path', severity: 'high', return_tainted: true, languages: ['go'] },
+  // Beego — `ctx.Input.Query(...)` etc. `Input` is a struct field on Context.
+  { method: 'Query',           class: 'Input', type: 'http_param',  severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Param',           class: 'Input', type: 'http_path',   severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Header',          class: 'Input', type: 'http_header', severity: 'high', return_tainted: true, languages: ['go'] },
+  { method: 'Cookie',          class: 'Input', type: 'http_cookie', severity: 'high', return_tainted: true, languages: ['go'] },
+
   // --- gRPC request metadata (Python — grpcio) ---
   // `context.invocation_metadata()` returns the caller-supplied metadata tuple.
   // No `class` filter — receiver names vary (`context`, `ctx`, `servicer_context`).

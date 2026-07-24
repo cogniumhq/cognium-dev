@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.189.0] - 2026-07-24
+
+Ninth slice of #213 — Go web framework sources. Rounds out the Go
+source-parity gap now that the sanitizer_kind grid (3.185–3.187)
+is complete.
+
+Additive-only. 4264 pass, 2 skipped, 0 regressions vs 3.188.0.
+
+### #213 — Go web framework source coverage
+
+Prior coverage was `net/http` standard-library (`r.URL.Query()`) and
+gRPC metadata. This slice adds source patterns for the four major Go
+web frameworks:
+
+- **Gin** — `c.Query` / `Param` / `PostForm` / `GetHeader` / `Cookie`
+  / `FormFile` / `MultipartForm` + body binders `BindJSON` /
+  `ShouldBindJSON` / `Bind` / `BindQuery` / `ShouldBindQuery` /
+  `BindUri` / `ShouldBindUri`. Class-scoped to `Context`.
+- **Echo** — `c.QueryParam` / `QueryParams` / `Param` / `FormValue` /
+  `FormParams` / `FormFile`. Also class-scoped to `Context` (Echo
+  uses the same class name as Gin; the source signatures are what
+  distinguish them).
+- **Fiber** — `c.Query` / `Params` / `FormValue` / `FormFile` /
+  `Cookies` / `Get` / `Body` / `BodyParser` / `QueryParser` /
+  `ParamsParser`. Class-scoped to `Ctx` (distinct receiver type
+  `*fiber.Ctx`).
+- **Chi** — `chi.URLParam(r, "id")` / `chi.URLParamFromCtx` as
+  package-level calls, matched via bare-import resolution in
+  `matchesSourcePattern`.
+- **Beego** — `ctx.Input.Query / Param / Header / Cookie` via
+  class-scoped `Input`.
+- **Gorilla mux** — `mux.Vars(r)`.
+
+Class-matching relies on the Go local-receiver resolver shipped in
+`#240` 3.177.0 which puts the resolved type into `call.receiver` for
+`func h(c *gin.Context)` shapes so `receiverMightBeClass` sees
+`Context` for the `c` variable.
+
+### #213 — Go body-binder DFG hooks
+
+`dfg.ts:GO_OPAQUE_CODEC_METHODS` — extended the opaque-codec
+destination re-def set (originally shipped in 3.182.0 for
+json.Unmarshal per #243 shape 3) with all Go web framework body
+binders: `BindJSON` / `ShouldBindJSON` / `Bind` / `ShouldBind` /
+`BindQuery` / `BindUri` / `BindXML` / `BindYAML` / `BindHeader` +
+`ShouldBind*` variants + Fiber's `BodyParser` / `QueryParser` /
+`ParamsParser`.
+
+`c.BodyParser(&q)` / `c.BindJSON(&q)` populate `q` via reflection
+from the HTTP request body — same shape as `json.Unmarshal(bytes,
+&q)`. Modelling as a DFG re-def of the destination lets
+`computeChains` link the source-arg (implicit HTTP body) to the dest
+so downstream sinks that consume `q.Field` fire correctly.
+
 ## [3.188.0] - 2026-07-24
 
 Eighth slice of #213 — NestJS controller decorator sources.

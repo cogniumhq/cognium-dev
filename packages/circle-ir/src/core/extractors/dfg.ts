@@ -1706,6 +1706,30 @@ const GO_OPAQUE_CODEC_METHODS = new Set<string>([
   'UnmarshalJSON',
   'UnmarshalText',
   'UnmarshalBinary',
+  // Go web framework body binders (cognium-dev #213 ninth slice).
+  // `c.BindJSON(&q)` / `c.BodyParser(&q)` / `c.Bind(&q)` /
+  // `c.ShouldBindJSON(&q)` / `c.BindQuery(&q)` etc. populate `q` via
+  // reflection from the HTTP request body — same shape as
+  // json.Unmarshal so we model them as a dest re-def on the call line.
+  // Same source-side entries in DEFAULT_SOURCES flag the return, but
+  // the destination-through-pointer shape needs this DFG hook.
+  'BindJSON',
+  'ShouldBindJSON',
+  'Bind',
+  'ShouldBind',
+  'BindQuery',
+  'ShouldBindQuery',
+  'BindUri',
+  'ShouldBindUri',
+  'BindXML',
+  'ShouldBindXML',
+  'BindYAML',
+  'ShouldBindYAML',
+  'BindHeader',
+  'ShouldBindHeader',
+  'BodyParser',       // Fiber
+  'QueryParser',      // Fiber
+  'ParamsParser',     // Fiber
 ]);
 
 function recordGoOpaqueCodecDestDef(
