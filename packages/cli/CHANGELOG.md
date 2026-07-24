@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.186.0] - 2026-07-24
+
+Adopts [`circle-ir@3.186.0`](https://www.npmjs.com/package/circle-ir),
+which ships the sixth #213 slice — JS/Node and Go sanitizer coverage.
+Parallel to the 3.185.0 Python slice.
+
+**No CLI-side code changes** — this release only propagates the
+engine improvements from the pinned `circle-ir` dependency. Suite
+4246 pass, 2 skipped, 0 regressions vs 3.185.0.
+
+See the [circle-ir 3.186.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.186.0) for full engine detail.
+
 ## [3.185.0] - 2026-07-23
 
 Adopts [`circle-ir@3.185.0`](https://www.npmjs.com/package/circle-ir),

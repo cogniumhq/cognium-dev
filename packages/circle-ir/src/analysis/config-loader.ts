@@ -2886,6 +2886,96 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'quote', class: 'shell', removes: ['command_injection'] },
   { method: 'escape', class: 'shell-escape', removes: ['command_injection'] },
 
+  // JS/Node — additional XSS/HTML encoders (cognium-dev #213 sixth slice).
+  //
+  //   he.encode(x) / he.escape(x)               — `he` npm package
+  //   sanitizeHtml(x)                            — `sanitize-html` npm
+  //   xss(x) / filterXSS(x)                      — `xss` npm (Yahoo)
+  //   escapeHtml(x) / escapeHTML(x)              — common bare helpers
+  //   entities.encode(x) / entities.escape(x)    — `entities` npm
+  //   xssFilters.inHTMLData(x) / inHTMLComment(x) / uriInHTMLData(x)
+  //                                              — `xss-filters` npm (Yahoo)
+  //
+  // `external_taint_escape` is included alongside `xss` — the CWE-668
+  // fallback fires on any call receiving tainted data that the engine
+  // does not otherwise recognize. Since these functions are explicitly
+  // registered as sanitizers (they PURIFY input), they should also
+  // suppress the fallback so a `res.send(sanitizeHtml(x))` flow does
+  // not report an external-taint-escape at the sanitizer call itself.
+  { method: 'encode',        class: 'he', removes: ['xss', 'external_taint_escape'] },
+  { method: 'escape',        class: 'he', removes: ['xss', 'external_taint_escape'] },
+  { method: 'sanitizeHtml',  removes: ['xss', 'external_taint_escape'] },
+  { method: 'xss',           removes: ['xss', 'external_taint_escape'] },
+  { method: 'filterXSS',     removes: ['xss', 'external_taint_escape'] },
+  { method: 'escapeHtml',    removes: ['xss', 'external_taint_escape'] },
+  { method: 'escapeHTML',    removes: ['xss', 'external_taint_escape'] },
+  { method: 'encode',        class: 'entities', removes: ['xss', 'external_taint_escape'] },
+  { method: 'escape',        class: 'entities', removes: ['xss', 'external_taint_escape'] },
+  // xss-filters: context-specific helpers, all XSS-safe by construction.
+  { method: 'inHTMLData',    class: 'xssFilters', removes: ['xss', 'external_taint_escape'] },
+  { method: 'inHTMLComment', class: 'xssFilters', removes: ['xss', 'external_taint_escape'] },
+  { method: 'uriInHTMLData', class: 'xssFilters', removes: ['xss', 'external_taint_escape'] },
+
+  // JS/Node — SQL escaping (in addition to the mysql class above).
+  //
+  //   SqlString.escape / .escapeId               — `sqlstring` npm (raw
+  //                                                escape used by mysql /
+  //                                                node-mysql2 drivers)
+  //   pgFormat(sql, ...args) / format(bare)      — `pg-format` npm
+  //   SQL.raw / SQL(bare)                        — `sql-template-strings`
+  //
+  // Bare `format` is intentionally NOT registered — it collides with
+  // string.format-style helpers unrelated to SQL. Callers should use the
+  // qualified form.
+  { method: 'escape',   class: 'SqlString', removes: ['sql_injection', 'external_taint_escape'] },
+  { method: 'escapeId', class: 'SqlString', removes: ['sql_injection', 'external_taint_escape'] },
+  { method: 'format',   class: 'SqlString', removes: ['sql_injection', 'external_taint_escape'] },
+  { method: 'format',   class: 'pgFormat',  removes: ['sql_injection', 'external_taint_escape'] },
+  { method: 'ident',    class: 'pgFormat',  removes: ['sql_injection', 'external_taint_escape'] },
+  { method: 'literal',  class: 'pgFormat',  removes: ['sql_injection', 'external_taint_escape'] },
+
+  // JS/Node — crypto.randomUUID() and Node's crypto.randomBytes(...)toString()
+  // produce cryptographically-secure typed strings that cannot carry
+  // attacker-injected payload. Registered as type coercion.
+  { method: 'randomUUID',  class: 'crypto', removes: ['sql_injection', 'nosql_injection', 'command_injection', 'path_traversal', 'code_injection', 'xss'] },
+  // Bare `randomUUID()` alias — `import { randomUUID } from 'crypto'`.
+  { method: 'randomUUID',  removes: ['sql_injection', 'nosql_injection', 'command_injection', 'path_traversal', 'code_injection', 'xss'] },
+
+  // JS/Node — URL construction. `new URL(x, base)` (constructor-call
+  // matched by method_name === 'URL') and `URLSearchParams.toString()`
+  // safely encode components for URL context.
+  { method: 'toString',  class: 'URLSearchParams', removes: ['ssrf', 'open_redirect', 'xss'] },
+
+  // Go — additional sanitizers (cognium-dev #213 sixth slice).
+  //
+  //   regexp.QuoteMeta(x)  — mirror of Python re.escape; strips regex
+  //                          metacharacters so downstream compile/match
+  //                          cannot execute attacker-crafted patterns.
+  //   bluemonday.Sanitize  — dominant Go HTML sanitizer library
+  //                          (`microcosm-cc/bluemonday`). Called on a
+  //                          Policy value returned by UGCPolicy() /
+  //                          StrictPolicy() / etc. Match by method name
+  //                          alone — Policy is the receiver type.
+  //   net.ParseIP(x)        — validates the input is a well-formed IP;
+  //                          returns nil for bad input (developer must
+  //                          check, but the sanitizer only applies when
+  //                          the parsed IP flows onward).
+  //   sql.Named(name, val) — parameterized query binding.
+  { method: 'QuoteMeta', class: 'regexp', removes: ['redos', 'code_injection', 'external_taint_escape'] },
+  { method: 'Sanitize',  class: 'bluemonday', removes: ['xss', 'external_taint_escape'] },
+  { method: 'Sanitize',  class: 'Policy',     removes: ['xss', 'external_taint_escape'] },
+  // Bare `Sanitize` — the receiver is a Policy variable (`p := bluemonday.UGCPolicy(); p.Sanitize(x)`).
+  // `Policy` class-matching only fires when the IR resolves the receiver type;
+  // since Go DFG rarely propagates the type of a locally-assigned variable
+  // from a package factory call, we also register the bare method name.
+  // Narrow FP risk: `Sanitize` bare is uncommon outside bluemonday context.
+  { method: 'Sanitize',  removes: ['xss', 'external_taint_escape'] },
+  { method: 'SanitizeBytes', class: 'bluemonday', removes: ['xss', 'external_taint_escape'] },
+  { method: 'SanitizeBytes', class: 'Policy',     removes: ['xss', 'external_taint_escape'] },
+  { method: 'SanitizeBytes', removes: ['xss', 'external_taint_escape'] },
+  { method: 'ParseIP',   class: 'net', removes: ['ssrf', 'command_injection', 'path_traversal', 'external_taint_escape'] },
+  { method: 'Named',     class: 'sql', removes: ['sql_injection', 'external_taint_escape'] },
+
   // =========================================================================
   // Python Sanitizers
   // =========================================================================

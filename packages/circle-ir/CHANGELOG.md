@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.186.0] - 2026-07-24
+
+Sixth slice of #213 — JS/Node and Go sanitizer coverage. Parallel to
+the 3.185.0 Python slice: adds the common third-party sanitizer
+libraries that the DEFAULT_SANITIZERS registry was missing.
+
+Additive-only. 4246 pass, 2 skipped, 0 regressions vs 3.185.0.
+
+### #213 — JS/Node sanitizer additions
+
+`config-loader.ts:DEFAULT_SANITIZERS`:
+
+- **XSS / HTML encoding**
+  - `he.encode` / `he.escape` — the `he` npm package (dominant HTML
+    entity encoder)
+  - `sanitizeHtml(x)` — `sanitize-html` npm
+  - `xss(x)` / `filterXSS(x)` — `xss` npm (Yahoo)
+  - `escapeHtml` / `escapeHTML` — common bare helper names
+  - `entities.encode` / `entities.escape` — `entities` npm
+  - `xssFilters.inHTMLData` / `inHTMLComment` / `uriInHTMLData` —
+    Yahoo `xss-filters` npm (context-specific helpers)
+
+- **SQL escaping / composition**
+  - `SqlString.escape` / `escapeId` / `format` — `sqlstring` npm (the
+    raw escape used by `mysql` / `node-mysql2` drivers)
+  - `pgFormat.format` / `ident` / `literal` — `pg-format` npm
+    (postgres composition). Bare `format` intentionally not
+    registered — collides with unrelated string-format helpers.
+
+- **Cryptographic UUID / safe factories**
+  - `crypto.randomUUID` + bare alias — Node built-in that returns a
+    typed UUID string; cannot carry attacker payload. Broad removes
+    (sql/nosql/command/path/code/xss).
+  - `URLSearchParams.toString()` — safely encoded query string.
+
+All XSS/SQL/URL entries include `external_taint_escape` in `removes`
+so a `res.send(sanitizer(x))` shape does not report a spurious
+CWE-668 external-taint-escape at the sanitizer call site itself.
+
+### #213 — Go sanitizer additions
+
+- `regexp.QuoteMeta` — mirror of Python `re.escape` shipped in
+  3.185.0. Strips regex metacharacters so downstream `Compile` /
+  `Match` cannot execute attacker-crafted patterns. Removes:
+  `redos` + `code_injection` + `external_taint_escape`.
+- `bluemonday.Sanitize` / `SanitizeBytes` (class-scoped + `Policy`
+  receiver + bare alias) — dominant Go HTML sanitizer library
+  (`microcosm-cc/bluemonday`). Bare form registered because the
+  common shape `p := bluemonday.UGCPolicy(); p.Sanitize(x)` uses a
+  locally-assigned variable receiver whose type the Go DFG rarely
+  propagates.
+- `net.ParseIP` — validates the input is a well-formed IP; returns
+  nil for bad input. Removes: `ssrf` / `command_injection` /
+  `path_traversal`.
+- `sql.Named(name, val)` — parameterized query binding.
+
 ## [3.185.0] - 2026-07-23
 
 Fifth slice of #213 — Python sanitizer coverage. Adds high-value
