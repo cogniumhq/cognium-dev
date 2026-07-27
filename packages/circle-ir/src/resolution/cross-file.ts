@@ -868,8 +868,8 @@ export class CrossFileResolver {
         // records the extractor param, so the derivation must be followed
         // via `dfg.chains`. Computed once per source (independent of the
         // call being tested).
-        const reachableVars = sourceVar
-          ? this.collectTaintReachableVars(ir, sourceVar, filePath)
+        const reachable = sourceVar
+          ? this.collectTaintReachable(ir, sourceVar, source.line, filePath)
           : undefined;
 
         // Find calls at or after the source line
@@ -881,18 +881,41 @@ export class CrossFileResolver {
 
           // Variable-connectivity gate: when we know the source variable, the
           // call's arguments must reference it — or a variable DFG-derived
-          // from it (see `reachableVars` above) — directly or by expression.
-          if (reachableVars) {
-            const argMentions = call.arguments.some(arg => {
-              if (arg.variable && reachableVars.has(arg.variable)) return true;
-              if (arg.expression) {
-                for (const v of reachableVars) {
-                  if (new RegExp(`\\b${v}\\b`).test(arg.expression)) return true;
-                }
+          // from it (#146) — directly or by expression.
+          if (reachable) {
+            // Name-based acceptance (#146): find which reachable variable
+            // name the call carries (bare arg or inside an expression like
+            // `&a` / `"p" + a`), so the #266 clobber check can key on it.
+            let matchedName: string | undefined;
+            for (const arg of call.arguments) {
+              if (arg.variable && reachable.names.has(arg.variable)) {
+                matchedName = arg.variable;
+                break;
               }
-              return false;
-            });
-            if (!argMentions) continue;
+              if (arg.expression) {
+                for (const v of reachable.names) {
+                  if (new RegExp(`\\b${v}\\b`).test(arg.expression)) {
+                    matchedName = v;
+                    break;
+                  }
+                }
+                if (matchedName) break;
+              }
+            }
+            if (!matchedName) continue;
+
+            // Redefinition override (cognium-dev #266): the name-based gate
+            // cannot distinguish a source-named variable from a later
+            // same-named redefinition to an untainted value
+            // (`a = req.getParameter(); a = "safe"; helper.run(a)`). When
+            // the DFG *positively* proves the matched variable's reaching
+            // def at the call line is such a redefinition — a known def_id
+            // NOT in the source's reachable def set — reject the flow.
+            // Fires only when the DFG can prove it; empty/imprecise DFG
+            // (e.g. Python) → no rejection, #146 name decision stands.
+            if (this.taintClobbered(ir, call.location.line, matchedName, reachable.defIds)) {
+              continue;
+            }
           }
 
           // Only proceed if the target file has any YAML-matched sinks at all.
@@ -971,6 +994,13 @@ export class CrossFileResolver {
       line: number;
       type: string;
       hopChain: InterproceduralTaintPath['hops'];
+      /**
+       * Caller-side def ids that carry this taint (source def + DFG-derived
+       * defs). Used by the #266 reassignment-clobber check. Undefined when
+       * the caller DFG can't provide it (e.g. Python's empty DFG) — the
+       * check then no-ops and taint stands.
+       */
+      defIds?: Set<number>;
     };
 
     // Cache: method FQN → { ir, method }
@@ -991,6 +1021,7 @@ export class CrossFileResolver {
               line: src.line,
               type: src.type,
               hopChain: [{ file: callerFile, line: src.line, method: method.name, kind: 'source' }],
+              defIds: this.collectTaintReachable(callerIR, src.variable, src.line, callerFile).defIds,
             });
           }
 
@@ -1028,6 +1059,7 @@ export class CrossFileResolver {
                   line: sourceLine,
                   type: sourceType,
                   hopChain: baseChain,
+                  defIds: this.forwardReachableDefs(callerIR, [def.id], callerFile),
                 });
               }
             }
@@ -1042,6 +1074,13 @@ export class CrossFileResolver {
               const arg = call.arguments[argIdx];
               const matched = this.matchTaintedArg(arg, tainted);
               if (!matched) continue;
+
+              // #266: skip when the matched var's value was reassigned away
+              // from the source before this call (DFG-proven clobber). Keyed
+              // on the matched name so it covers expression args too.
+              if (this.taintClobbered(callerIR, call.location.line, matched.var, matched.origin.defIds)) {
+                continue;
+              }
 
               const calleeNode = methodIndex.get(resolved.targetMethod);
               if (!calleeNode) continue;
@@ -1435,8 +1474,8 @@ export class CrossFileResolver {
    */
   private matchTaintedArg(
     arg: { variable?: string | null; expression?: string },
-    tainted: Map<string, { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops'] }>,
-  ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops'] } } | null {
+    tainted: Map<string, { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> }>,
+  ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> } } | null {
     if (tainted.size === 0) return null;
 
     // Direct variable reference
@@ -1503,25 +1542,53 @@ export class CrossFileResolver {
    * `.unwrap()`) do not resolve cross-file, so genuine taint derivatives
    * are still followed.
    */
-  private collectTaintReachableVars(
+  private collectTaintReachable(
     ir: CircleIR,
     sourceVar: string,
+    sourceLine: number,
     filePath: string,
-  ): Set<string> {
-    const reachable = new Set<string>([sourceVar]);
-    const chains = ir.dfg.chains;
-    if (!chains || chains.length === 0) return reachable;
-
-    const varByDefId = new Map<number, string>();
-    const lineByDefId = new Map<number, number>();
-    for (const d of ir.dfg.defs) {
-      if (d.variable) varByDefId.set(d.id, d.variable);
-      lineByDefId.set(d.id, d.line);
+  ): { names: Set<string>; defIds: Set<number> } {
+    // Seed with the source's OWN def — line-anchored so a later same-named
+    // redefinition is not treated as the source (cognium-dev #266). Prefer
+    // the def named sourceVar at the source line; fall back to the earliest
+    // def with that name (still the source in the reassign-to-untainted
+    // shape, since the redefinition comes later).
+    const defs = ir.dfg.defs;
+    let seedDefs = defs.filter(d => d.variable === sourceVar && d.line === sourceLine);
+    if (seedDefs.length === 0) {
+      const named = defs
+        .filter(d => d.variable === sourceVar)
+        .sort((a, b) => a.line - b.line);
+      if (named.length > 0) seedDefs = [named[0]];
     }
 
-    // Lines whose value is produced by a call that resolves to another
-    // file — a potential transform/sanitizer boundary the walk must not
-    // cross (see soundness guard above).
+    const defIds = this.forwardReachableDefs(ir, seedDefs.map(d => d.id), filePath);
+    const names = new Set<string>([sourceVar]);
+    for (const d of defs) {
+      if (d.variable && defIds.has(d.id)) names.add(d.variable);
+    }
+    return { names, defIds };
+  }
+
+  /**
+   * Forward-reachable def set from a seed set of def ids, following
+   * `dfg.chains` (cognium-dev #146/#266). Stops at any def produced on a
+   * line carrying a cross-file-resolvable call (potential sanitizer
+   * boundary — the #146 soundness guard). Returns the seed ∪ all
+   * transitively derived def ids. Empty/absent DFG → just the seed.
+   */
+  private forwardReachableDefs(
+    ir: CircleIR,
+    seedDefIds: number[],
+    filePath: string,
+  ): Set<number> {
+    const defIds = new Set<number>(seedDefIds);
+    const chains = ir.dfg.chains;
+    if (!chains || chains.length === 0 || seedDefIds.length === 0) return defIds;
+
+    const lineByDefId = new Map<number, number>();
+    for (const d of ir.dfg.defs) lineByDefId.set(d.id, d.line);
+
     const crossFileCallLines = new Set<number>();
     for (const call of ir.calls) {
       const resolved = this.resolveCall(call, filePath);
@@ -1530,31 +1597,65 @@ export class CrossFileResolver {
       }
     }
 
-    // Seed the frontier with every def whose variable is the source var
-    // (params + any same-named rebinding).
-    const frontier: number[] = [];
-    const visited = new Set<number>();
-    for (const d of ir.dfg.defs) {
-      if (d.variable === sourceVar && !visited.has(d.id)) {
-        visited.add(d.id);
-        frontier.push(d.id);
-      }
-    }
-
+    const frontier = [...seedDefIds];
+    const visited = new Set<number>(frontier);
     while (frontier.length > 0) {
       const cur = frontier.shift()!;
       for (const ch of chains) {
         if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
         visited.add(ch.to_def);
-        // Stop at cross-file-call-derived defs — do not add or traverse.
         const toLine = lineByDefId.get(ch.to_def);
         if (toLine !== undefined && crossFileCallLines.has(toLine)) continue;
-        const v = varByDefId.get(ch.to_def);
-        if (v) reachable.add(v);
+        defIds.add(ch.to_def);
         frontier.push(ch.to_def);
       }
     }
-    return reachable;
+    return defIds;
+  }
+
+  /**
+   * Def-precise clobber check for the interprocedural walker (cognium-dev
+   * #266). Given a bare-variable call arg matched to a tainted var whose
+   * caller-side taint reaches `taintDefIds`, returns true when the DFG
+   * proves the arg's reaching def at the call line is NOT one of those
+   * defs — i.e. the variable was reassigned to a non-tainted value between
+   * the taint point and the call (`a = source(); a = "safe"; run(a)`).
+   *
+   * Conservative: returns false whenever the proof is unavailable (no bare
+   * variable, no precise reaching def, empty def set / DFG), so it only
+   * removes flows the DFG positively disproves — recall risk stays minimal
+   * for the shared interprocedural pass, and empty-DFG languages (Python)
+   * are unaffected.
+   */
+  /**
+   * Def-precise clobber check for the cross-file gates (cognium-dev #266).
+   * Given the matched taint variable `varName` carried by a call at
+   * `callLine` and the source's reachable def set `taintDefIds`, returns
+   * true when the DFG proves `varName`'s reaching def at the call is NOT
+   * one of those defs — i.e. the variable was reassigned to a non-tainted
+   * value between the taint point and the call
+   * (`a = source(); a = "safe"; run(a)` / `run(&a)`). Keyed on the variable
+   * name (not `arg.variable`) so it also covers expression args
+   * (Rust `&a`, `"p" + a`, …).
+   *
+   * Conservative: returns false whenever the proof is unavailable (no
+   * precise reaching def, empty def set / DFG), so it only removes flows
+   * the DFG positively disproves — recall risk stays minimal for the
+   * shared cross-file passes, and empty-DFG languages (Python) are
+   * unaffected.
+   */
+  private taintClobbered(
+    ir: CircleIR,
+    callLine: number,
+    varName: string,
+    taintDefIds: Set<number> | undefined,
+  ): boolean {
+    if (!taintDefIds || taintDefIds.size === 0) return false;
+    const use = ir.dfg.uses.find(
+      u => u.line === callLine && u.variable === varName && u.def_id !== null,
+    );
+    if (!use || use.def_id === null) return false;
+    return !taintDefIds.has(use.def_id);
   }
 
   private findRealSourceLineInMethod(ir: CircleIR, method: MethodInfo): number | undefined {
