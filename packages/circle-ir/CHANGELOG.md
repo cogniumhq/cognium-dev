@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.193.0] - 2026-07-27
+
+Cross-file taint: extends recall to Rust (closing the #146 gap) and adds
+def-precise reassignment handling (#266), plus a #265 precision lock.
+Touches shared cross-file infrastructure used by all six languages —
+benchmark verification (OWASP/Juliet/SecuriBench + Python/JS/Go) is the
+authoritative regression signal for the connectivity changes. 4295 pass,
+2 skipped, 1 todo, 0 internal regressions vs 3.192.0.
+
+### #146 — Rust cross-file taint (+ multi-hop recall)
+
+`resolution/cross-file.ts` — the cross-file connectivity gate required a
+call arg to reference the *literal* source variable. Rust's actix source
+variable is the extractor param `q`, but the cross-file call passes `cmd`
+from `let cmd = q.get("cmd").unwrap()` — a DFG-derived rebinding the gate
+did not follow (Java/TS already passed because their property-source
+detection records the assignment LHS as `source.variable`).
+
+New `collectTaintReachable` / `forwardReachableDefs` expand the accepted
+set to variables/defs **DFG-derived** from the source (forward BFS over
+`dfg.chains`), with a soundness guard that stops at any def produced on a
+line carrying a cross-file-resolvable call (a potential sanitizer
+boundary — that determination belongs to the sanitizer-aware
+`findInterproceduralTaintPaths`).
+
+Result: Rust controller→helper taint now fires for `command_injection`,
+`path_traversal`, `sql_injection`. TypeScript already worked at HEAD and
+is now locked by tests. Bonus: the widening also fixes a pre-existing
+**multi-hop false-negative** (`a→b→c` then cross-file) across all
+languages.
+
+### #266 — def-precise cross-file reassignment clobber
+
+The name-based gates (both `findCrossFileTaintFlows` and the
+interprocedural walker) could not distinguish a source-named variable
+from a later same-named redefinition to an untainted value:
+
+```
+String a = req.getParameter("x");  // tainted
+a = "safe";                         // reassigned to a constant
+helper.run(a);                      // was a false positive
+```
+
+New `taintClobbered` rejects a flow only when the DFG *positively proves*
+the matched variable's reaching def at the call is not in the source's
+reachable def set (line-anchored seed so the redefinition is not treated
+as the source). Keyed on the matched variable **name**, so it also covers
+expression args (Rust `&a`, `"p" + a`). Conservative by construction — it
+only removes flows the DFG disproves; genuine derived flows are preserved.
+
+Fixed for the four DFG-backed languages (Java, JavaScript, Rust, Go).
+**Python residual**: Python's per-file DFG is empty, so the def-precise
+check cannot fire; the Python reassign FP is deferred to a Python
+taint-model integration (tracked as `it.todo`, cognium-dev #266).
+
+### #265 — JSON.parse precision lock (test-only)
+
+`JSON.parse(userInput)` is the safe alternative to `eval` and is a
+sanitizer in circle-ir — no code_injection sink, flow, or CWE-94 finding.
+A benchmark FP reported against it was root-caused to the circle-ir-ai
+HTML runner's source+sink co-occurrence heuristic (not a circle-ir
+defect). Added a regression lock (`json-parse-not-code-injection-265`)
+with an `eval` positive control so a future change can't regress
+`JSON.parse` into an eval-class sink. No engine change.
+
 ## [3.192.0] - 2026-07-24
 
 Twelfth slice of #213 — bash shell-quote sanitizers. Additive-only.

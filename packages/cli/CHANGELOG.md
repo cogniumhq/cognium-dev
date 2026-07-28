@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.193.0] - 2026-07-27
+
+Adopts [`circle-ir@3.193.0`](https://www.npmjs.com/package/circle-ir):
+Rust cross-file taint (#146) + multi-hop recall, def-precise cross-file
+reassignment clobber for Java/JS/Rust/Go (#266), and a #265 JSON.parse
+precision lock.
+
+**No CLI-side code changes** — this release only propagates the engine
+improvements from the pinned `circle-ir` dependency. Suite 4295 pass,
+2 skipped, 1 todo, 0 regressions vs 3.192.0. The cross-file changes touch
+shared infrastructure across all six languages; benchmark verification is
+the authoritative regression signal — see the circle-ir 3.193.0 changelog.
+
+See the [circle-ir 3.193.0 changelog](https://www.npmjs.com/package/circle-ir/v/3.193.0) for full engine detail.
+
 ## [3.192.0] - 2026-07-24
 
 Adopts [`circle-ir@3.192.0`](https://www.npmjs.com/package/circle-ir),
