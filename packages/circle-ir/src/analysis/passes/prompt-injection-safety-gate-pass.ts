@@ -2,24 +2,32 @@
  * PromptInjectionSafetyGatePass — cognium-dev #267
  *
  * Drops `prompt_injection` (CWE-1427) sinks whose untrusted content is
- * placed *safely* — delimited data or role-separated user input, not mixed
- * into the instruction channel. Removes the false positive on the "safe
- * mirror" of the OWASP-LLM LLM01 probe pairs while leaving genuine
- * prompt-injection flows (untrusted concatenated/interpolated into
- * instructions, or placed in a system/assistant role) untouched.
+ * *delimiter-wrapped* — enclosed in matched boundary markers
+ * (`<user_question>…</user_question>`, fences) that keep it as data rather
+ * than instructions. Removes the false positive on the delimiter-wrapped
+ * "safe mirror" of the OWASP-LLM LLM01 probe pairs while leaving genuine
+ * prompt-injection flows untouched.
  *
  * The engine already fires `prompt_injection` when tainted input reaches an
- * LLM-client call (#248); the gap this closes is precision — the same call
- * is flagged whether the untrusted value is folded into the system prompt
- * (a true positive) or passed as a standalone role-separated / delimiter-
- * wrapped user message (the recommended mitigation — a false positive).
+ * LLM-client call (#248); the gap this closes is precision on the wrapped
+ * safe-mitigation shape.
+ *
+ * Scope decision — *role separation alone is NOT treated as a sanitizer*
+ * here: `{"role":"user","content":untrusted}` continues to fire, matching
+ * #248's must-fire contract (untrusted reaching an LLM prompt is a finding
+ * even in the user channel). Only affirmative delimiter-wrapping suppresses.
  *
  * Conservative by construction: a sink is dropped ONLY when EVERY dynamic
- * content placement is affirmatively safe (standalone role-separated value
- * or delimiter-wrapped) and none lands in the instruction channel. Any
- * ambiguity — unparsed value, dynamic+dynamic concat, unknown shape — keeps
- * the sink (no recall loss). Runs after SinkFilterPass and before
+ * content placement is delimiter-wrapped and none lands in the instruction
+ * channel (system/assistant role, or instruction concat/interpolation). Any
+ * ambiguity — unparsed value, standalone value, dynamic+dynamic concat —
+ * keeps the sink (no recall loss). Runs after SinkFilterPass and before
  * TaintPropagationPass so flow generators never see a dropped sink.
+ *
+ * Builder-pattern aware: when the request is constructed in a prior
+ * statement (Go/Java `req := ChatCompletionRequest{Messages: …}`) and passed
+ * as a bare arg, the gate traces the builder var(s) to see the message
+ * structure.
  *
  * Pillar I note: `prompt_injection` / CWE-1427 is a deterministic taint
  * category (#248). This gate is pure structural analysis of the call site —
@@ -133,15 +141,21 @@ function isMixedTemplate(v: string): boolean {
   return false;
 }
 
+/**
+ * Assignment-operator matcher for `<var> := …` / `<var> = …`, excluding the
+ * comparisons `==` / `<=` / `>=` / `!=`. `:=` is matched directly; a plain
+ * `=` must not be preceded by `=<>!` nor followed by `=`.
+ */
+function assignmentRe(varName: string, flags = ''): RegExp {
+  return new RegExp(`\\b${varName}\\s*(?::=|(?<![=<>!])=(?!=))\\s*`, flags);
+}
+
 /** Resolve a bare-identifier content value one hop back to its assignment RHS. */
 function resolveAssignmentRHS(varName: string, codeLines: string[]): string | undefined {
-  const assignRe = new RegExp(`\\b${varName}\\s*:?=\\s*`);
+  const re = assignmentRe(varName);
   for (const line of codeLines) {
-    const m = line.match(assignRe);
+    const m = line.match(re);
     if (m && m.index !== undefined) {
-      // Skip `==` / `<=` / `>=` / `!=` comparisons.
-      const before = line[m.index + m[0].length - 2];
-      if (before && '=<>!'.includes(before)) continue;
       return scanValue(line, m.index + m[0].length);
     }
   }
@@ -162,9 +176,12 @@ function classifyExpr(v: string): 'safe' | 'unsafe' | 'unknown' {
     if (lits.length > 0 && lits.every(isDelimiterLiteral) && hasIdentifier(v)) return 'safe';
     return 'unknown'; // dynamic+dynamic / complex — never claim safe
   }
-  // No '+', no instruction-mixing template: a standalone value (identifier,
-  // member access, call) placed as the whole content is role-separated.
-  return 'safe';
+  // No '+', no instruction-mixing template: a standalone value placed as
+  // the whole content. Whether this is "safe" (role-separation as the
+  // mitigation) is a security-semantics choice that conflicts with #248's
+  // must-fire contract — left as 'unknown' (kept) pending that decision;
+  // only delimiter-wrapping is treated as an affirmative sanitizer.
+  return 'unknown';
 }
 
 /**
@@ -176,7 +193,10 @@ function classifyContentPlacement(val: string, codeLines: string[]): 'safe' | 'u
   const v = val.trim();
   if (/^[A-Za-z_$][\w$]*$/.test(v)) {
     const rhs = resolveAssignmentRHS(v, codeLines);
-    if (rhs === undefined) return 'safe'; // param / unresolved local — standalone
+    // Unresolved bare identifier (param, source var, or local whose
+    // construction we can't see) — standalone/role-separated placement,
+    // which is NOT an affirmative sanitizer (kept; see scope note).
+    if (rhs === undefined) return 'unknown';
     return classifyExpr(rhs);
   }
   return classifyExpr(v);
@@ -217,6 +237,82 @@ export function classifyPromptCall(
   return allSafe ? 'safe' : 'unknown';
 }
 
+/**
+ * Scan a statement RHS across lines, stopping at a top-level newline (Go/
+ * builder style) or a closing bracket that ends the expression — so a
+ * multi-line composite literal `T{ … }` is captured whole. Tracks bracket
+ * depth and string state.
+ */
+function scanRhsAcrossLines(text: string, start: number): string {
+  let depth = 0;
+  let str: string | null = null;
+  let out = '';
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (str) {
+      out += c;
+      if (c === str && text[i - 1] !== '\\') str = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { str = c; out += c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; out += c; continue; }
+    if (c === ')' || c === ']' || c === '}') { if (depth === 0) break; depth--; out += c; continue; }
+    if (c === '\n' && depth === 0) break;
+    out += c;
+  }
+  return out.trim();
+}
+
+/** Full multi-line RHS of `var := …` / `var = …`. */
+function resolveBuilderRhs(varName: string, joined: string): string | undefined {
+  const re = assignmentRe(varName, 'g');
+  const m = re.exec(joined);
+  if (m) return scanRhsAcrossLines(joined, m.index + m[0].length);
+  return undefined;
+}
+
+/**
+ * Builder-pattern support (Go/Java): when the request is built in a prior
+ * statement (`req := ChatCompletionRequest{Messages: …}`) and passed as a
+ * bare arg to the client call, the role/content structure is not on the
+ * sink line. Gather the builder text for each identifier arg of the call,
+ * recursively inlining referenced builder vars (bounded), so the classifier
+ * can see the message structure. Returns the concatenated builder region.
+ */
+function collectBuilderRegion(callCode: string, joined: string): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const stack = [...callCode.matchAll(/[A-Za-z_$][\w$]*/g)].map(x => x[0]);
+  let budget = 40;
+  while (stack.length > 0 && budget-- > 0) {
+    const v = stack.pop()!;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    const rhs = resolveBuilderRhs(v, joined);
+    if (rhs) {
+      parts.push(rhs);
+      for (const mm of rhs.matchAll(/[A-Za-z_$][\w$]*/g)) stack.push(mm[0]);
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Classify a prompt-injection sink, first on the call line (Python/JS inline
+ * message shape) and — when that is inconclusive — over the builder region
+ * for the call's arg vars (Go/Java builder shape).
+ */
+export function classifyPromptSink(
+  callCode: string,
+  codeLines: string[],
+): 'unsafe' | 'safe' | 'unknown' {
+  const direct = classifyPromptCall(callCode, codeLines);
+  if (direct !== 'unknown') return direct;
+  const region = collectBuilderRegion(callCode, codeLines.join('\n'));
+  if (!region) return 'unknown';
+  return classifyPromptCall(region, codeLines);
+}
+
 export class PromptInjectionSafetyGatePass
   implements AnalysisPass<PromptInjectionSafetyGateResult>
 {
@@ -238,7 +334,7 @@ export class PromptInjectionSafetyGatePass
       if (sink.type !== 'prompt_injection') return true;
       const callCode = sink.code ?? codeLines[sink.line - 1] ?? '';
       if (!callCode) return true;
-      if (classifyPromptCall(callCode, codeLines) === 'safe') {
+      if (classifyPromptSink(callCode, codeLines) === 'safe') {
         droppedSafe++;
         return false;
       }

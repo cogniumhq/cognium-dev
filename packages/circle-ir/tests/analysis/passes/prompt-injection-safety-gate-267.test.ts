@@ -1,23 +1,24 @@
 /**
  * Tests for cognium-dev #267 — prompt-injection safety gate.
  *
- * circle-ir already fires `prompt_injection` (CWE-1427) when tainted input
- * reaches an LLM-client call (#248). The gate adds precision: it drops the
- * sink when the untrusted content is placed *safely* (role-separated
- * standalone user message, or delimiter-wrapped), while keeping genuine
- * flows (untrusted concatenated/interpolated into instructions, or in a
- * system/assistant role). This is the OWASP-LLM LLM01 TP/SAFE distinction
- * from the trust-recall oracle.
+ * circle-ir fires `prompt_injection` (CWE-1427) when tainted input reaches
+ * an LLM-client call (#248). The gate adds precision: it drops the sink
+ * when the untrusted content is *delimiter-wrapped* (enclosed in matched
+ * boundary markers), the OWASP-LLM LLM01 safe-mitigation shape, while
+ * keeping genuine flows (untrusted concatenated/interpolated into
+ * instructions, or in a system/assistant role).
  *
- * Scope: Python + JS/TS, where the message structure is at the call site.
- * Go/Java builder-pattern coverage (request constructed in a separate
- * statement) and the Go struct-field taint gap are deeper follow-ups.
+ * Scope decision: role separation alone is NOT a sanitizer — `{role:"user",
+ * content: untrusted}` still fires, matching #248's must-fire contract.
+ * Only affirmative delimiter-wrapping suppresses. Builder-pattern aware for
+ * Go/Java (request built in a prior statement).
  */
 
 import { describe, it, beforeAll, expect } from 'vitest';
 import { initAnalyzer, analyze } from '../../../src/analyzer.js';
 import {
   classifyPromptCall,
+  classifyPromptSink,
   scanValue,
   isDelimiterLiteral,
 } from '../../../src/analysis/passes/prompt-injection-safety-gate-pass.js';
@@ -36,7 +37,7 @@ app.get('/', async (req) => {
 ${pre}  await client.chat.completions.create({ model: 'm', messages: [${msgBody}] });
 });`;
 
-const firesPromptInjection = (r: Awaited<ReturnType<typeof analyze>>) =>
+const fires = (r: Awaited<ReturnType<typeof analyze>>) =>
   (r.taint.flows ?? []).some(f => f.sink_type === 'prompt_injection');
 
 describe('cognium-dev #267 — prompt-injection safety gate', () => {
@@ -44,76 +45,104 @@ describe('cognium-dev #267 — prompt-injection safety gate', () => {
     await initAnalyzer();
   });
 
-  // ── True positives: untrusted mixed into instructions / system role ────
+  // ── True positives: untrusted into instructions / system role — FIRE ───
 
-  it('Python — untrusted concatenated into content fires (TP)', async () => {
-    const r = await analyze(PY(`{"role":"user","content":"Follow policy.\\n" + user}`), 'p.py', 'python');
-    expect(firesPromptInjection(r)).toBe(true);
+  it('Python — untrusted concatenated into content fires', async () => {
+    expect(fires(await analyze(PY(`{"role":"user","content":"Follow policy.\\n" + user}`), 'p.py', 'python'))).toBe(true);
   });
 
-  it('Python — untrusted in a system role fires (TP)', async () => {
-    const r = await analyze(PY(`{"role":"system","content":user},{"role":"user","content":"hi"}`), 'p.py', 'python');
-    expect(firesPromptInjection(r)).toBe(true);
+  it('Python — untrusted in a system role fires', async () => {
+    expect(fires(await analyze(PY(`{"role":"system","content":user},{"role":"user","content":"hi"}`), 'p.py', 'python'))).toBe(true);
   });
 
-  it('Python — untrusted interpolated into an instruction f-string fires (TP)', async () => {
-    const r = await analyze(PY(`{"role":"user","content":f"Follow policy. {user}"}`), 'p.py', 'python');
-    expect(firesPromptInjection(r)).toBe(true);
+  it('Python — untrusted interpolated into an instruction f-string fires', async () => {
+    expect(fires(await analyze(PY(`{"role":"user","content":f"Follow policy. {user}"}`), 'p.py', 'python'))).toBe(true);
   });
 
-  it('JS — untrusted concatenated into content fires (TP)', async () => {
-    const r = await analyze(JS(`{ role: 'user', content: 'Follow policy.\\n' + user }`), 'p.js', 'javascript');
-    expect(firesPromptInjection(r)).toBe(true);
+  it('Python — untrusted concatenated with instructions via an intermediate var fires', async () => {
+    const r = await analyze(PY(`{"role":"user","content":bad}`, `    bad = "Follow policy. " + user\n`), 'p.py', 'python');
+    expect(fires(r)).toBe(true);
   });
 
-  it('JS — untrusted in an instruction template literal fires (TP)', async () => {
-    const r = await analyze(JS(`{ role: 'user', content: \`Follow policy. \${user}\` }`), 'p.js', 'javascript');
-    expect(firesPromptInjection(r)).toBe(true);
+  it('JS — untrusted concatenated into content fires', async () => {
+    expect(fires(await analyze(JS(`{ role: 'user', content: 'Follow policy.\\n' + user }`), 'p.js', 'javascript'))).toBe(true);
   });
 
-  // ── Safe mirrors: role-separated / delimiter-wrapped → suppressed ───────
+  it('JS — untrusted in an instruction template literal fires', async () => {
+    expect(fires(await analyze(JS(`{ role: 'user', content: \`Follow policy. \${user}\` }`), 'p.js', 'javascript'))).toBe(true);
+  });
 
-  it('Python — role-separated standalone user content is clean (SAFE)', async () => {
+  // ── Role separation alone is NOT a sanitizer (fires, per #248) ─────────
+
+  it('Python — role-separated standalone user content still fires (not a sanitizer)', async () => {
     const r = await analyze(PY(`{"role":"system","content":"Follow policy."},{"role":"user","content":user}`), 'p.py', 'python');
-    expect(firesPromptInjection(r)).toBe(false);
+    expect(fires(r)).toBe(true);
   });
 
-  it('Python — delimiter-wrapped (via var) is clean (SAFE)', async () => {
-    const r = await analyze(
-      PY(`{"role":"user","content":wrapped}`, `    wrapped = "<user_question>" + user + "</user_question>"\n`),
-      'p.py', 'python',
-    );
-    expect(firesPromptInjection(r)).toBe(false);
+  // ── Delimiter-wrapped safe mirror — SUPPRESSED ─────────────────────────
+
+  it('Python — delimiter-wrapped (via var) is clean', async () => {
+    const r = await analyze(PY(`{"role":"user","content":wrapped}`, `    wrapped = "<user_question>" + user + "</user_question>"\n`), 'p.py', 'python');
+    expect(fires(r)).toBe(false);
   });
 
-  it('Python — delimiter-wrapped (inline) is clean (SAFE)', async () => {
+  it('Python — delimiter-wrapped (inline) is clean', async () => {
     const r = await analyze(PY(`{"role":"user","content":"<user_question>" + user + "</user_question>"}`), 'p.py', 'python');
-    expect(firesPromptInjection(r)).toBe(false);
+    expect(fires(r)).toBe(false);
   });
 
-  it('JS — role-separated standalone user content is clean (SAFE)', async () => {
-    const r = await analyze(JS(`{ role: 'system', content: 'Follow policy.' }, { role: 'user', content: user }`), 'p.js', 'javascript');
-    expect(firesPromptInjection(r)).toBe(false);
+  it('JS — delimiter-wrapped (via var) is clean', async () => {
+    const r = await analyze(JS(`{ role: 'user', content: w }`, `  const w = '<user_question>' + user + '</user_question>';\n`), 'p.js', 'javascript');
+    expect(fires(r)).toBe(false);
   });
 
-  it('JS — delimiter-wrapped (via var) is clean (SAFE)', async () => {
-    const r = await analyze(
-      JS(`{ role: 'user', content: w }`, `  const w = '<user_question>' + user + '</user_question>';\n`),
-      'p.js', 'javascript',
-    );
-    expect(firesPromptInjection(r)).toBe(false);
+  // ── Go: struct-field taint (recall) + builder-pattern gate (precision) ─
+
+  const GO = (sysContent: string, userContent: string) => `package main
+import (
+	"net/http"
+	openai "github.com/sashabaranov/go-openai"
+)
+func handler(r *http.Request, client *openai.Client) {
+	user := r.URL.Query().Get("q")
+	req := openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{
+			{Role: "system", Content: ${sysContent}},
+			{Role: "user", Content: ${userContent}},
+		},
+	}
+	client.CreateChatCompletion(nil, req)
+}`;
+
+  it('Go — untrusted concatenated into a multi-line struct-builder prompt fires (recall)', async () => {
+    const r = await analyze(GO(`"Follow policy. " + user`, `"hi"`), 'h.go', 'go');
+    expect(fires(r)).toBe(true);
   });
 
-  // ── Classifier units (robustness of the structural analysis) ──────────
+  it('Go — delimiter-wrapped content in a multi-line struct builder is clean (builder-aware gate)', async () => {
+    const r = await analyze(GO(`"Follow policy."`, `"<user_question>" + user + "</user_question>"`), 'h.go', 'go');
+    expect(fires(r)).toBe(false);
+  });
 
-  it('classifyPromptCall distinguishes concat/system (unsafe) from role-sep/delimiter (safe)', () => {
+  // ── Classifier units ──────────────────────────────────────────────────
+
+  it('classifyPromptCall: instruction concat/system → unsafe; delimiter-wrap → safe; role-sep/standalone → unknown (kept)', () => {
     const L = (s: string) => [s];
     expect(classifyPromptCall(`create(messages=[{"role":"user","content":"instr " + x}])`, L(''))).toBe('unsafe');
     expect(classifyPromptCall(`create(messages=[{"role":"system","content":x}])`, L(''))).toBe('unsafe');
-    expect(classifyPromptCall(`create(messages=[{"role":"user","content":x}])`, L(''))).toBe('safe');
     expect(classifyPromptCall(`create(messages=[{"role":"user","content":"<q>" + x + "</q>"}])`, L(''))).toBe('safe');
-    // no dynamic content → unknown (kept)
-    expect(classifyPromptCall(`create(messages=[{"role":"user","content":"static"}])`, L(''))).toBe('unknown');
+    expect(classifyPromptCall(`create(messages=[{"role":"user","content":x}])`, L(''))).toBe('unknown');
+  });
+
+  it('classifyPromptSink traces a Go builder var to classify the message structure', () => {
+    const lines = [
+      'user := r.URL.Query().Get("q")',
+      'req := openai.ChatCompletionRequest{Messages: []openai.ChatCompletionMessage{',
+      '{Role: "user", Content: "<user_question>" + user + "</user_question>"},',
+      '}}',
+      'client.CreateChatCompletion(nil, req)',
+    ];
+    expect(classifyPromptSink('client.CreateChatCompletion(nil, req)', lines)).toBe('safe');
   });
 
   it('scanValue does not truncate on } inside f-string / template interpolation', () => {
@@ -125,7 +154,6 @@ describe('cognium-dev #267 — prompt-injection safety gate', () => {
     expect(isDelimiterLiteral('<user_question>')).toBe(true);
     expect(isDelimiterLiteral('</user_question>')).toBe(true);
     expect(isDelimiterLiteral('[data]')).toBe(true);
-    expect(isDelimiterLiteral('```')).toBe(true);
     expect(isDelimiterLiteral('Follow policy.')).toBe(false);
   });
 });

@@ -1401,6 +1401,11 @@ const GO_KEYWORDS = new Set([
 function buildGoDFG(tree: Tree): DFG {
   const defs: DFGDef[] = [];
   const uses: DFGUse[] = [];
+  // Explicit chains for multi-line composite-literal assignments (#267) —
+  // `computeChains` only links same-line use→def, so a struct/slice literal
+  // that spans lines (`req := T{ … tainted … }`) would not propagate taint
+  // from the tainted field to the assigned var.
+  const extraChains: DFGChain[] = [];
   let defIdCounter = 1;
   let useIdCounter = 1;
 
@@ -1432,7 +1437,7 @@ function buildGoDFG(tree: Tree): DFG {
     // Process function body
     const body = func.childForFieldName('body');
     if (body) {
-      processGoBlock(body, defs, uses, scopeStack, { defId: defIdCounter, useId: useIdCounter });
+      processGoBlock(body, defs, uses, scopeStack, { defId: defIdCounter, useId: useIdCounter }, extraChains);
       defIdCounter = defs.length + 1;
       useIdCounter = uses.length + 1;
     }
@@ -1450,7 +1455,15 @@ function buildGoDFG(tree: Tree): DFG {
     }
   }
 
+  // Merge same-line chains with the explicit multi-line composite-literal
+  // chains (cognium-dev #267), deduplicating on (from_def, to_def, via).
   const chains = computeChains(defs, uses);
+  const seen = new Set(chains.map(c => `${c.from_def}|${c.to_def}|${c.via}`));
+  for (const ch of extraChains) {
+    const key = `${ch.from_def}|${ch.to_def}|${ch.via}`;
+    if (!seen.has(key)) { seen.add(key); chains.push(ch); }
+  }
+  chains.sort((a, b) => a.from_def - b.from_def || a.to_def - b.to_def);
   return { defs, uses, chains };
 }
 
@@ -1497,8 +1510,34 @@ function processGoBlock(
   defs: DFGDef[],
   uses: DFGUse[],
   scopeStack: Map<string, number>[],
-  counters: { defId: number; useId: number }
+  counters: { defId: number; useId: number },
+  extraChains: DFGChain[] = []
 ): void {
+  // cognium-dev #267 — link resolved RHS uses to LHS local defs when the
+  // RHS spans multiple lines (a struct/slice composite literal in gofmt
+  // style). `computeChains` only links same-line use→def, so without this a
+  // tainted value used deep inside a multi-line literal never reaches the
+  // assigned variable. Single-line RHS is already covered by computeChains.
+  const linkMultiLineRhs = (
+    right: Node,
+    useStart: number,
+    useEnd: number,
+    defStart: number,
+    defEnd: number,
+  ): void => {
+    if (right.endPosition.row <= right.startPosition.row) return; // single line
+    for (let ui = useStart; ui < useEnd; ui++) {
+      const u = uses[ui];
+      if (!u || u.def_id === null) continue;
+      for (let di = defStart; di < defEnd; di++) {
+        const d = defs[di];
+        if (d && d.kind === 'local' && d.id !== u.def_id) {
+          extraChains.push({ from_def: u.def_id, to_def: d.id, via: u.variable });
+        }
+      }
+    }
+  };
+
   walkTree(node, (child) => {
     if (child.type === 'short_var_declaration') {
       // x, y := expr
@@ -1506,14 +1545,17 @@ function processGoBlock(
       const right = child.childForFieldName('right');
 
       // Extract uses from right side first
+      const usesBefore = uses.length;
       if (right) {
         extractGoUses(right, uses, scopeStack);
       }
 
       // Then create defs for left side
+      const defsBefore = defs.length;
       if (left) {
         extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
       }
+      if (right) linkMultiLineRhs(right, usesBefore, uses.length, defsBefore, defs.length);
     } else if (child.type === 'var_declaration') {
       processGoVarDecl(child, defs, scopeStack, counters);
     } else if (child.type === 'assignment_statement') {
@@ -1521,14 +1563,17 @@ function processGoBlock(
       const right = child.childForFieldName('right');
 
       // Uses from right side
+      const usesBefore = uses.length;
       if (right) {
         extractGoUses(right, uses, scopeStack);
       }
 
       // Defs for left side (reassignment)
+      const defsBefore = defs.length;
       if (left) {
         extractGoLhsDefs(left, defs, scopeStack, child.startPosition.row + 1);
       }
+      if (right) linkMultiLineRhs(right, usesBefore, uses.length, defsBefore, defs.length);
     } else if (child.type === 'for_statement') {
       // range clause: for k, v := range expr
       const rangeClause = findChildByTypeGo(child, 'range_clause');
