@@ -111,6 +111,7 @@ import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotati
 import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
+import { PromptInjectionSafetyGatePass } from './analysis/passes/prompt-injection-safety-gate-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
@@ -859,6 +860,14 @@ export async function analyze(
   // defaults to *do not drop* (the sink continues to fire).
   if (!disabledPasses.has('deserialization-safety-gate'))
     pipeline.add(new DeserializationSafetyGatePass(options.dependencyContext));
+  // cognium-dev #267: drops `prompt_injection` (CWE-1427) sinks whose
+  // untrusted content is placed safely — delimited or role-separated user
+  // input, not mixed into the instruction channel. Removes the safe-mirror
+  // FP on OWASP-LLM LLM01 probe pairs while keeping genuine flows
+  // (untrusted concatenated into instructions / in a system role). Runs
+  // before TaintPropagationPass so flow generators never see a dropped sink.
+  if (!disabledPasses.has('prompt-injection-safety-gate'))
+    pipeline.add(new PromptInjectionSafetyGatePass());
   // cognium-dev #162 Option B: drops Java reflection `code_injection`
   // sinks in files that declare `main(String[])` AND carry no
   // web-framework Tier-1 signal (annotation OR supertype OR method
