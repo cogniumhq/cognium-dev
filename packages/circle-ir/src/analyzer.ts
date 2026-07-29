@@ -112,6 +112,7 @@ import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from '
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
 import { PromptInjectionSafetyGatePass } from './analysis/passes/prompt-injection-safety-gate-pass.js';
+import { SpeculativePromptParamSourcePass } from './analysis/passes/speculative-prompt-param-source-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
@@ -295,6 +296,26 @@ export interface AnalyzerOptions {
    * Added in circle-ir 3.94.0 as the pre-req infrastructure for #153.
    */
   includeSpeculative?: boolean;
+
+  /**
+   * Opt into treating function parameters as untrusted sources within
+   * functions that already contain a prompt-construction sink (CWE-1427).
+   *
+   * Default `false` — OFF the default analysis path. This is a deliberately
+   * speculative, higher-FP heuristic for library / agent / SDK code whose
+   * untrusted entry point is a bare parameter (e.g. `func Ask(user string,
+   * client *LLM)`), where no in-file request source exists to seed taint.
+   * Precision-sensitive benchmarks (OWASP / Juliet / SecuriBench) MUST run
+   * with this unset so the 0%-FPR moat is never affected; a downstream
+   * consumer (e.g. an agent-security scan) enables it explicitly.
+   *
+   * Scope is intentionally narrow: only parameters of functions that
+   * contain a `prompt_injection` sink are seeded, so the FP surface is
+   * bounded to prompt-relevant code rather than every function parameter.
+   *
+   * Added in circle-ir for cognium-dev #267.
+   */
+  speculativeParamSources?: boolean;
 
   /**
    * Enable the Tier 1/2/3 entry-point classifier gate that suppresses
@@ -868,6 +889,12 @@ export async function analyze(
   // before TaintPropagationPass so flow generators never see a dropped sink.
   if (!disabledPasses.has('prompt-injection-safety-gate'))
     pipeline.add(new PromptInjectionSafetyGatePass());
+  // cognium-dev #267: OPT-IN, off-by-default. Seeds function parameters as
+  // untrusted sources inside functions with a prompt_injection sink, for
+  // library/agent code whose untrusted entry is a bare param. Gated by
+  // `options.speculativeParamSources` (unset on the precision benchmarks).
+  // Runs after the prompt gate (final sink set) and before flow generation.
+  pipeline.add(new SpeculativePromptParamSourcePass(options.speculativeParamSources === true));
   // cognium-dev #162 Option B: drops Java reflection `code_injection`
   // sinks in files that declare `main(String[])` AND carry no
   // web-framework Tier-1 signal (annotation OR supertype OR method
