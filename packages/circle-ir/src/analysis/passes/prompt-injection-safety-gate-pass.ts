@@ -114,7 +114,7 @@ function isPureLiteral(valueExpr: string): boolean {
 }
 
 /** `+`-concat mixing a dynamic value with a NON-delimiter string literal. */
-function isInstructionConcat(valueExpr: string): boolean {
+export function isInstructionConcat(valueExpr: string): boolean {
   if (!valueExpr.includes('+')) return false;
   if (!hasIdentifier(valueExpr)) return false;
   const lits = stringLiterals(valueExpr);

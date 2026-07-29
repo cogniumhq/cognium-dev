@@ -25,7 +25,100 @@
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
-import type { TaintSource, TaintSink } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintFlowInfo, TypeInfo } from '../../types/index.js';
+import { isInstructionConcat } from './prompt-injection-safety-gate-pass.js';
+
+/**
+ * Extract the RHS expression of a `return …` or `<var> = …` / `<var> := …`
+ * statement, so it can be checked for prompt-construction. Returns undefined
+ * when the line is neither.
+ */
+function returnOrAssignRhs(text: string): string | undefined {
+  const t = text.trim();
+  const ret = t.match(/^return\s+(.+?);?$/);
+  if (ret) return ret[1];
+  const asg = t.match(/^[A-Za-z_$][\w$.]*\s*(?::=|(?<![=<>!])=(?!=))\s*(.+?);?$/);
+  if (asg) return asg[1];
+  return undefined;
+}
+
+/**
+ * Heuristic: does a string literal read like LLM *prompt / instruction*
+ * text rather than an incidental separator or short token? Used to keep the
+ * client-less construction detector off ordinary string concatenation
+ * (`"/" + name`, `"Hello, " + name`) that structurally looks identical but
+ * is not a prompt. Fires on instruction phrasing or a full sentence.
+ */
+export function looksLikePromptText(lit: string): boolean {
+  const s = lit.trim();
+  if (
+    /\b(you are|you're|assistant|system prompt|follow (the )?(policy|instructions|rules)|act as|your task|instructions?\s*:|ignore (all )?previous|do not reveal|respond (to|with|as)|answer the (question|user)|you (must|should|will)|helpful (ai|assistant))\b/i.test(s)
+  ) {
+    return true;
+  }
+  const words = s.split(/\s+/).filter(Boolean);
+  return words.length >= 4 && s.length >= 20;
+}
+
+/** String-literal operands of an expression. */
+function literalsOf(expr: string): string[] {
+  return [...expr.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)].map(m => m[1] ?? m[2] ?? m[3] ?? '');
+}
+
+/**
+ * Detect *client-less* prompt-construction flows (cognium-dev #267,
+ * speculative). A function that returns or assigns an instruction-literal
+ * concatenated with one of its own parameters builds a prompt from
+ * untrusted input even without an LLM-client call
+ * (`func BuildPrompt(user string) string { return "You are a bot. " + user }`).
+ * Emitted directly as `prompt_injection` (CWE-1427) flows — there is no
+ * call sink for the flow generators to match. Delimiter-wrapped concats are
+ * NOT instruction-concat, so the safe mirror produces no flow.
+ *
+ * Off-default: only invoked when `speculativeParamSources` is set (the
+ * benchmarks never enable it).
+ */
+export function detectPromptConstructionFlows(
+  codeLines: string[],
+  types: TypeInfo[],
+): TaintFlowInfo[] {
+  const flows: TaintFlowInfo[] = [];
+  const seen = new Set<string>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      const params = (method.parameters ?? [])
+        .map(p => ({ name: p.name, line: p.line ?? method.start_line }))
+        .filter(p => p.name && p.name !== '_');
+      if (params.length === 0) continue;
+      for (let line = method.start_line; line <= method.end_line; line++) {
+        const text = codeLines[line - 1] ?? '';
+        const rhs = returnOrAssignRhs(text);
+        if (!rhs || !isInstructionConcat(rhs)) continue;
+        // Require an actual prompt/instruction-looking literal — not just any
+        // non-delimiter string — so ordinary concatenation is not flagged.
+        if (!literalsOf(rhs).some(looksLikePromptText)) continue;
+        const param = params.find(p => new RegExp(`\\b${p.name}\\b`).test(rhs));
+        if (!param) continue;
+        const key = `${param.line}|${line}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        flows.push({
+          source_line: param.line,
+          sink_line: line,
+          source_type: 'http_body',
+          sink_type: 'prompt_injection',
+          path: [
+            { variable: param.name, line: param.line, type: 'source' },
+            { variable: param.name, line, type: 'sink' },
+          ],
+          confidence: 1.0,
+          sanitized: false,
+        });
+      }
+    }
+  }
+  return flows;
+}
 
 export interface SpeculativePromptParamSourceResult {
   added: number;
@@ -63,12 +156,12 @@ export class SpeculativePromptParamSourcePass
     if (!ctx.hasResult('sink-filter')) return { added: 0 };
 
     const sinkFilter = ctx.getResult<SinkFilterResult>('sink-filter');
+    const { types } = ctx.graph.ir;
+
     const promptSinks: TaintSink[] = sinkFilter.sinks.filter(
       s => s.type === 'prompt_injection',
     );
     if (promptSinks.length === 0) return { added: 0 };
-
-    const { types } = ctx.graph.ir;
     const existing = new Set(
       sinkFilter.sources
         .filter(s => typeof s.variable === 'string')

@@ -112,7 +112,7 @@ import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from '
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
 import { PromptInjectionSafetyGatePass } from './analysis/passes/prompt-injection-safety-gate-pass.js';
-import { SpeculativePromptParamSourcePass } from './analysis/passes/speculative-prompt-param-source-pass.js';
+import { SpeculativePromptParamSourcePass, detectPromptConstructionFlows } from './analysis/passes/speculative-prompt-param-source-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
@@ -1024,6 +1024,25 @@ export async function analyze(
     flows:      interProc.additionalFlows,
     interprocedural: interProc.interprocedural,
   };
+
+  // cognium-dev #267 (speculative, OFF by default): client-less
+  // prompt-construction flows — a function that returns/assigns an
+  // instruction-literal concatenated with one of its own parameters builds
+  // a prompt from untrusted input even with no LLM-client call. Emitted
+  // directly (no call sink for the flow generators to match), deduped
+  // against existing flows. Gated by `speculativeParamSources` so the
+  // precision benchmarks never see it.
+  if (options.speculativeParamSources === true) {
+    const existingFlowKeys = new Set(
+      (taint.flows ?? []).map(f => `${f.source_line}|${f.sink_line}|${f.sink_type}`),
+    );
+    const constructionFlows = detectPromptConstructionFlows(code.split('\n'), types).filter(
+      f => !existingFlowKeys.has(`${f.source_line}|${f.sink_line}|${f.sink_type}`),
+    );
+    if (constructionFlows.length > 0) {
+      taint.flows = [...(taint.flows ?? []), ...constructionFlows];
+    }
+  }
 
   // 3.105.0 — propagate tags from `TaintSink.tags` onto every emitted
   // `TaintFlowInfo.tags` so downstream consumers (CLI, SARIF) can apply

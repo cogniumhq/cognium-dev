@@ -12,7 +12,10 @@
 
 import { describe, it, beforeAll, expect } from 'vitest';
 import { initAnalyzer, analyze } from '../../../src/analyzer.js';
-import { looksLikeTextParam } from '../../../src/analysis/passes/speculative-prompt-param-source-pass.js';
+import {
+  looksLikeTextParam,
+  looksLikePromptText,
+} from '../../../src/analysis/passes/speculative-prompt-param-source-pass.js';
 
 const GO_PARAM = (content: string) => `package main
 import (
@@ -75,6 +78,48 @@ func Helper(user string) string {
     const r = await analyze(code, 'h.go', 'go', { speculativeParamSources: true });
     // No prompt_injection sink in this function → no speculative seeding.
     expect(r.taint.sources.some(s => s.variable === 'user')).toBe(false);
+  });
+
+  // ── Client-less prompt-construction (no LLM-client call) ──────────────
+
+  it('DEFAULT — a bare prompt-builder does NOT fire (moat)', async () => {
+    const code = `package main
+func BuildPrompt(user string) string {
+	return "You are a support bot. Follow policy. " + user
+}`;
+    expect(fires(await analyze(code, 'b.go', 'go'))).toBe(false);
+  });
+
+  it('Go — flag on: bare prompt-builder (return instruction + param) fires', async () => {
+    const code = `package main
+func BuildPrompt(user string) string {
+	return "You are a support bot. Follow policy. " + user
+}`;
+    expect(fires(await analyze(code, 'b.go', 'go', { speculativeParamSources: true }))).toBe(true);
+  });
+
+  it('Python — flag on: bare prompt-builder fires; delimiter-wrapped mirror clean', async () => {
+    const tp = 'def build_prompt(user):\n    return "You are a bot. Follow policy. " + user';
+    const safe = 'def build_prompt(user):\n    return "<user_question>" + user + "</user_question>"';
+    expect(fires(await analyze(tp, 'b.py', 'python', { speculativeParamSources: true }))).toBe(true);
+    expect(fires(await analyze(safe, 'b.py', 'python', { speculativeParamSources: true }))).toBe(false);
+  });
+
+  it('flag on — ordinary / path / SQL string concat is NOT flagged as prompt construction', async () => {
+    const path = 'def route(name):\n    return "/" + name';
+    const greet = 'def greet(name):\n    return "Hello, " + name';
+    const sql = 'def q(uid):\n    return "WHERE id = " + uid';
+    for (const c of [path, greet, sql]) {
+      expect(fires(await analyze(c, 'b.py', 'python', { speculativeParamSources: true }))).toBe(false);
+    }
+  });
+
+  it('looksLikePromptText fires on instruction phrasing / sentences, not short tokens', () => {
+    expect(looksLikePromptText('You are a support bot. Follow policy.')).toBe(true);
+    expect(looksLikePromptText('Answer the question truthfully and concisely.')).toBe(true);
+    expect(looksLikePromptText('/')).toBe(false);
+    expect(looksLikePromptText('Hello, ')).toBe(false);
+    expect(looksLikePromptText('WHERE id = ')).toBe(false);
   });
 
   it('looksLikeTextParam keeps text/untyped params, skips handle/dependency params', () => {
