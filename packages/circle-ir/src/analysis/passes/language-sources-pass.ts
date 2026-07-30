@@ -390,6 +390,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // recognition.
       additionalSanitizers.push(...findPythonRegexAllowlistWrapperSanitizers(code));
       additionalSanitizers.push(...findPythonSetMembershipXssGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonTraversalRejectGuardSanitizers(code));
       additionalSanitizers.push(...findPythonDefusedXmlSanitizers(code));
       // Sprint 77a (#216 Pattern X): Jinja2 Environment(autoescape=...) +
       // .render(...) sanitizer.
@@ -3157,6 +3158,107 @@ function findPythonSetMembershipXssGuardSanitizers(code: string): TaintSanitizer
         method: 'if',
         line: l,
         sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect the Python "reject-then-return" traversal guard (cognium-dev #4
+ * residual-FP audit):
+ *
+ *   if '../' in name:
+ *       return "File name must not include '../'"
+ *   path = f'{BASE_DIR}/{name}'
+ *   fd = open(path, 'rb')
+ *
+ * A guard that rejects the traversal token and leaves the function cannot be
+ * followed by a traversal payload in that variable, so downstream `open()` /
+ * `os.path.join()` uses of it are not CWE-22. This is the single largest FP
+ * shape on OWASP BenchmarkPython (18 of 72 flow-level FPs, all pathtraver).
+ *
+ * Deliberately narrow, because an over-broad rule here erases real findings:
+ *  - only the *reject* polarity (`if '<..>' in v:` + terminator). The inverse
+ *    (`if '..' not in v:`) puts the safe path inside the block, which this
+ *    line-keyed emission cannot express.
+ *  - only `path_traversal` is sanitized. The guard says nothing about the
+ *    value reaching a shell, a query, or a template.
+ *  - the token must be a traversal token (`..`, `../`, `..\\`). A guard on
+ *    some other substring is a different check with different guarantees.
+ *
+ * Known gap (accepted): a guard on the decoded string does not stop an
+ * encoded payload (`..%2f`) if decoding happens *after* the check. The
+ * benchmark shape decodes first, and the alternative — never crediting the
+ * guard — is the status quo that produces the FPs.
+ */
+function findPythonTraversalRejectGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `if '../' in <ident>:` — quote style, and the `..` / `../` / `..\` token.
+  const guardOpen =
+    /^(\s*)if\s+(['"])(\.\.[/\\]?)\2\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*$/;
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const guardIndent = m[1].length;
+    const guardedVar = m[4];
+
+    // Walk the guard body: it must leave the function on this path.
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    // Var-aware emission from the first line after the guard block, following
+    // one-hop derivations: `path = f'{BASE}/{name}'` makes `path` guarded too,
+    // because the traversal token cannot be in `name`. Without this the credit
+    // stops at the assignment line while the sink sits on the next one
+    // (`open(path)`), which is precisely the benchmark shape.
+    //
+    // A later assignment that does NOT mention a guarded name clobbers it —
+    // `path = request.args['p']` must not stay credited.
+    const guarded = new Set<string>([guardedVar]);
+    const assignRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.*)$/;
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) {
+        if (new RegExp(`\\b${name}\\b`).test(text)) return true;
+      }
+      return false;
+    };
+
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      const lineText = lines[l - 1];
+
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        const target = assign[1];
+        const rhs = assign[2];
+        if (mentionsGuarded(rhs)) guarded.add(target);
+        else if (target !== guardedVar) guarded.delete(target);
+      }
+
+      if (!mentionsGuarded(lineText)) continue;
+      sanitizers.push({
+        type: 'python_traversal_reject_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['path_traversal'],
       });
     }
   }
