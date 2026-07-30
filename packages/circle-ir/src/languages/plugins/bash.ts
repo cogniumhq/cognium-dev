@@ -75,14 +75,13 @@ export class BashPlugin extends BaseLanguagePlugin {
    */
   getBuiltinSources(): TaintSourcePattern[] {
     return [
-      // read built-in reads user input from stdin.
-      {
-        method: 'read',
-        type: 'io_input',
-        severity: 'high',
-        confidence: 0.9,
-        returnTainted: true,
-      },
+      // NOTE: no `read` entry here. The `read` builtin is covered precisely by
+      // `findBashTaintSources` (language-sources-pass, #213 slice 3), which
+      // emits `io_input` *with the bound variable name* for `read x`,
+      // `read -p "…" x`, `read -a arr`, bare `read` → `$REPLY`, etc. This
+      // pattern-based duplicate added a second, variable-less source on the
+      // same line, and typed it differently from the classless `read`
+      // (file_input) entry in DEFAULT_SOURCES that it collided with.
       // curl/wget output as taint sources for supply-chain attack patterns
       // (e.g., curl ... | sh, $(curl ...) piped to eval/bash).
       {

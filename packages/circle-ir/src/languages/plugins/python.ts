@@ -212,13 +212,15 @@ export class PythonPlugin extends BaseLanguagePlugin {
       },
 
       // Standard library sources
-      {
-        method: 'input',
-        type: 'user_input',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
+      //
+      // `input()` and `os.getenv()` are registered in DEFAULT_SOURCES as
+      // `io_input` / `env_input`. The duplicates that used to sit here typed
+      // them `user_input` / `env_var` — strings outside the published
+      // `SourceType` union, which reach consumers only because the merge in
+      // TaintMatcherPass casts `TaintSourcePattern.type` (a bare `string`) to
+      // `SourceType`. Both entries fired, so one call emitted two sources with
+      // two different type strings. Removed in favour of the canonical
+      // registry (ADR-004).
       {
         method: 'argv',
         class: 'sys',
@@ -229,14 +231,6 @@ export class PythonPlugin extends BaseLanguagePlugin {
       },
       {
         method: 'environ',
-        class: 'os',
-        type: 'env_var',
-        severity: 'medium',
-        confidence: 0.85,
-        returnTainted: true,
-      },
-      {
-        method: 'getenv',
         class: 'os',
         type: 'env_var',
         severity: 'medium',

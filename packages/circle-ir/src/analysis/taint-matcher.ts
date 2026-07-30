@@ -65,6 +65,27 @@ export function analyzeTaint(
 }
 
 /**
+ * Language scoping for a sink pattern: `languages` is an allowlist,
+ * `exclude_languages` a denylist applied on top. Used by every site that
+ * pre-filters patterns for the file under analysis, so the two fields cannot
+ * drift apart. When `language` is undefined (language-agnostic call path) the
+ * pattern always applies — matching the pre-existing `languages` behaviour.
+ */
+function sinkPatternAppliesTo(
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+): boolean {
+  if (language === undefined) return true;
+  if (pattern.languages && pattern.languages.length > 0 && !pattern.languages.includes(language)) {
+    return false;
+  }
+  if (pattern.exclude_languages && pattern.exclude_languages.includes(language)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * cognium-dev #187 Sprint 54 — JS/TS only: detect `util.promisify(<sink>)`
  * aliases and synthesize sink patterns for the resulting alias name.
  *
@@ -92,12 +113,12 @@ function expandPromisifyAliases(
   // since the promisified alias loses any class context).
   const innerToPattern = new Map<string, SinkPattern>();
   for (const p of patterns) {
-    if (p.languages && !p.languages.includes(language)) continue;
+    if (!sinkPatternAppliesTo(p, language)) continue;
     if (p.class !== undefined) continue;
     if (!innerToPattern.has(p.method)) innerToPattern.set(p.method, p);
   }
   for (const p of patterns) {
-    if (p.languages && !p.languages.includes(language)) continue;
+    if (!sinkPatternAppliesTo(p, language)) continue;
     if (innerToPattern.has(p.method)) continue;
     innerToPattern.set(p.method, p);
   }
@@ -163,7 +184,7 @@ function expandIndirectEvalAliases(
   // both `eval` and `Function` are registered classless in nodejs.json).
   const innerToPattern = new Map<string, SinkPattern>();
   for (const p of patterns) {
-    if (p.languages && !p.languages.includes(language)) continue;
+    if (!sinkPatternAppliesTo(p, language)) continue;
     if (p.class !== undefined) continue;
     if (p.method !== 'eval' && p.method !== 'Function') continue;
     if (!innerToPattern.has(p.method)) innerToPattern.set(p.method, p);
@@ -1523,9 +1544,7 @@ function findSinks(
   const patternsForLanguage =
     language === undefined
       ? patterns
-      : patterns.filter(
-          (p) => !p.languages || p.languages.length === 0 || p.languages.includes(language),
-        );
+      : patterns.filter((p) => sinkPatternAppliesTo(p, language));
 
   // Use a map to deduplicate by location+line+cwe
   const sinkMap = new Map<string, TaintSink>();
@@ -1985,10 +2004,8 @@ function matchesSinkPattern(
   // Language scoping: when the pattern declares a language list, only match
   // calls from a file in that language. Prevents cross-language name collisions
   // (e.g. Python/Rust `cursor.execute(sql)` matching Java `Executor.execute(Runnable)`).
-  if (pattern.languages && pattern.languages.length > 0 && language !== undefined) {
-    if (!pattern.languages.includes(language)) {
-      return false;
-    }
+  if (!sinkPatternAppliesTo(pattern, language)) {
+    return false;
   }
 
   // Method name must match

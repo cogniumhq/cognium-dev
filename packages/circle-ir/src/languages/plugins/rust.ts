@@ -132,14 +132,11 @@ export class RustPlugin extends BaseLanguagePlugin {
       // (`findSources` has no dedup). Removed in the #4 follow-up
       // consolidation — DEFAULT_SOURCES is the canonical registry (ADR-004).
       // `Form` stays because the two surfaces disagree on its type
-      // (http_param vs http_body).
-      {
-        method: 'Form',
-        type: 'http_body',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
+      // `Form` is registered in DEFAULT_SOURCES, retyped there to `http_body`
+      // to match this entry (actix/axum `Form<T>` decodes the urlencoded
+      // request body, not the query string — `Query<T>` is the query one).
+      // The duplicate that used to sit here made every extractor emit two
+      // sources with different types.
 
       // Standard library sources
       {

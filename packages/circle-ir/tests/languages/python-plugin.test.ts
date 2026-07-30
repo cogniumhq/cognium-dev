@@ -194,11 +194,13 @@ describe('PythonPlugin.getBuiltinSources()', () => {
     expect(s!.type).toBe('http_header');
   });
 
-  it('includes input() as user_input', () => {
-    const s = sources.find(x => x.method === 'input');
-    expect(s!.type).toBe('user_input');
+  // `input()` is registered in DEFAULT_SOURCES as `io_input` — a member of
+  // the published SourceType union, unlike the `user_input` string the plugin
+  // duplicate used to emit. Assert against the effective python registry.
+  it('includes input() as io_input', () => {
+    const s = runtimeSources('python').find(x => x.method === 'input');
+    expect(s!.type).toBe('io_input');
     expect(s!.severity).toBe('high');
-    expect(s!.confidence).toBeGreaterThanOrEqual(0.9);
   });
 
   it('includes sys.argv as cli_arg', () => {
@@ -212,9 +214,9 @@ describe('PythonPlugin.getBuiltinSources()', () => {
     expect(s!.type).toBe('env_var');
   });
 
-  it('includes os.getenv as env_var', () => {
-    const s = sources.find(x => x.method === 'getenv' && x.class === 'os');
-    expect(s!.type).toBe('env_var');
+  it('includes os.getenv as env_input', () => {
+    const s = runtimeSources('python').find(x => x.method === 'getenv' && x.class === 'os');
+    expect(s!.type).toBe('env_input');
   });
 
   // `read`/`readline`/`readlines` are registered in DEFAULT_SOURCES

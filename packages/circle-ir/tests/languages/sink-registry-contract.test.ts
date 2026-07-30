@@ -31,8 +31,17 @@ const LANGUAGES: SupportedLanguage[] = [
   'bash',
 ];
 
-const key = (cls: string | undefined, method: string, cwe: string) =>
-  `${cls ?? '*'}.${method} [${cwe}]`;
+const c_label = (
+  cls: string | undefined,
+  method: string,
+  pluginCwe: string,
+  configCwe: string,
+  configType: string,
+  pluginType: string,
+) =>
+  pluginCwe === configCwe
+    ? `${cls ?? '*'}.${method} [${pluginCwe}] — same CWE in both surfaces`
+    : `${cls ?? '*'}.${method} — config=${configType}/${configCwe} vs plugin=${pluginType}/${pluginCwe} (both fire)`;
 
 describe('sink registry — plugin builtins do not duplicate DEFAULT_SINKS', () => {
   registerBuiltinPlugins();
@@ -46,15 +55,32 @@ describe('sink registry — plugin builtins do not duplicate DEFAULT_SINKS', () 
         p => !p.languages || p.languages.length === 0 || p.languages.includes(language),
       );
 
+      // Deliberate, documented dual classifications — each carries a note on
+      // its DEFAULT_SINKS entry and a test that locks both halves:
+      //   fmt.Fprintf  — CWE-134 (any writer) + CWE-79 (ResponseWriter shape)
+      //   log.Printf/Fatalf/Panicf — CWE-134 (tainted Go format string, #264)
+      //                              + CWE-117 (forged log line)
+      const ALLOWED_OVERLAP = new Set([
+        'fmt.Fprintf',
+        'log.Printf',
+        'log.Fatalf',
+        'log.Panicf',
+      ]);
+
       const duplicates: string[] = [];
       for (const pluginSink of plugin.getBuiltinSinks()) {
+        if (ALLOWED_OVERLAP.has(`${pluginSink.class ?? '*'}.${pluginSink.method}`)) continue;
         const clash = configForLanguage.find(
           c =>
             (c.class ?? undefined) === (pluginSink.class ?? undefined) &&
             c.method === pluginSink.method &&
-            c.cwe === pluginSink.cwe,
+            (c.cwe === pluginSink.cwe || c.type !== pluginSink.type),
         );
-        if (clash) duplicates.push(key(pluginSink.class, pluginSink.method, pluginSink.cwe));
+        if (clash) {
+          duplicates.push(
+            c_label(pluginSink.class, pluginSink.method, pluginSink.cwe, clash.cwe, clash.type, pluginSink.type),
+          );
+        }
       }
 
       expect(
@@ -80,21 +106,22 @@ describe('source registry — plugin builtins do not duplicate DEFAULT_SOURCES',
       );
 
       // `findSources` pushes one TaintSource per matching pattern with no
-      // dedup, so an identical duplicate emits the same source twice at every
-      // call site. Pairs that *disagree* on `type` are a separate (semantic)
-      // problem and are deliberately not asserted here.
+      // dedup, so any overlap emits two sources for one call site — identical
+      // ones are pure noise, and ones that disagree on `type` are worse: the
+      // same read is reported under two different SourceType values.
       const duplicates: string[] = [];
       for (const pluginSource of plugin.getBuiltinSources()) {
         if (!pluginSource.method) continue;
         const clash = configForLanguage.find(
           c =>
             (c.class ?? undefined) === (pluginSource.class ?? undefined) &&
-            c.method === pluginSource.method &&
-            c.type === pluginSource.type &&
-            c.severity === pluginSource.severity,
+            c.method === pluginSource.method,
         );
         if (clash) {
-          duplicates.push(`${pluginSource.class ?? '*'}.${pluginSource.method} [${pluginSource.type}]`);
+          duplicates.push(
+            `${pluginSource.class ?? '*'}.${pluginSource.method} ` +
+              `[config=${clash.type}, plugin=${pluginSource.type}]`,
+          );
         }
       }
 

@@ -592,7 +592,11 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'Json', type: 'http_body', severity: 'high', return_tainted: true, languages: ['rust'] },
   { method: 'Query', type: 'http_param', severity: 'high', return_tainted: true, languages: ['rust'] },
   { method: 'Path', type: 'http_path', severity: 'high', return_tainted: true, languages: ['rust'] },
-  { method: 'Form', type: 'http_param', severity: 'high', return_tainted: true, languages: ['rust'] },
+  // `Form<T>` decodes the urlencoded request *body* (`Query<T>` above is the
+  // query-string extractor), so it is http_body — retyped from http_param
+  // when the RustPlugin's http_body duplicate was removed, so the two
+  // surfaces no longer disagree. Matches Gin's `Context.PostForm`.
+  { method: 'Form', type: 'http_body', severity: 'high', return_tainted: true, languages: ['rust'] },
 
   // Rust std library
   { method: 'var', class: 'env', type: 'env_input', severity: 'medium', return_tainted: true },
@@ -1983,7 +1987,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Also match without receiver (destructured imports: const { exec } = require('child_process'))
   // `exec` is intentionally classless: catches Node.js child_process.exec AND
   // Java Runtime.exec (via `r.exec()` where heuristic can't resolve r → Runtime).
-  { method: 'exec', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0] },
+  // Excluded from Python: there, bare `exec(code)` is the code-execution
+  // builtin, registered below as code_injection / CWE-94. Before the exclusion
+  // a Python `exec(user_code)` matched both patterns and emitted two findings
+  // for one call — CWE-78 (wrong: no shell is involved) and CWE-94 (right).
+  { method: 'exec', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], exclude_languages: ['python'] },
   // `execSync`/`spawn`/`spawnSync`/`execFile` are Node-specific — language-scope them.
   { method: 'execSync', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'spawn', type: 'command_injection', cwe: 'CWE-78', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
@@ -2630,10 +2638,30 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Sprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Printf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Errorf',  class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
+  // `fmt.Fprintf` is deliberately dual-classified: this CWE-134 entry and the
+  // Go plugin's xss (CWE-79) entry both cover arg[1], so a tainted format
+  // string emits two findings. Unlike the logger case above, neither is
+  // redundant — CWE-134 holds for any writer, while CWE-79 is the actionable
+  // finding when the writer is an http.ResponseWriter (`fmt.Fprintf(w, taint)`
+  // is the standard Go reflected-XSS shape). Collapsing it requires deciding
+  // by the *type of arg[0]*, which sink patterns cannot express today: the
+  // options are a Go-specific gate (mirroring isSafeGoJsonUnmarshalCall) that
+  // emits xss only for a resolved ResponseWriter, or dropping one CWE and
+  // accepting either lost XSS recall or a mis-classified stderr write.
+  // Left as-is pending the Go corpus run — see tasks.md.
   { method: 'Fprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [1], languages: ['go'] },
   // cognium-dev #264 — Go stdlib `log` package format-string entry points.
   // log.Printf / Fatalf / Panicf take the format string at arg[0]; tainted
   // format string reaches the same fmt.Sprintf machinery internally.
+  //
+  // These deliberately coexist with the Go plugin's log_injection (CWE-117)
+  // entries for the same methods, so such a call emits both. The Logger
+  // decision note in the Java log_injection section above does NOT apply
+  // here: it reasons about SLF4J-style APIs where the format string is a
+  // literal with `{}` placeholders, whereas Go's `log.Printf(fmt, ...)` takes
+  // a real format string that an attacker can control. CWE-117 covers the
+  // forged log line, CWE-134 the format string itself. Locked by
+  // tests/analysis/passes/format-string-additions.test.ts.
   { method: 'Printf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Fatalf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
   { method: 'Panicf',  class: 'log', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
@@ -2648,6 +2676,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'cookie',    type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
   // Express: res.location(url) and res.redirect(url) — Location header.
   { method: 'location',  type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // `redirect` is deliberately dual-classified: this crlf (CWE-113) entry
+  // coexists with the open_redirect (CWE-601) entry for js/ts, so a tainted
+  // redirect target emits two flows. That is intentional, not duplication —
+  // #189 Sprint 82 shipped a sink-type-aware flow dedup specifically so both
+  // survive ("res.redirect is both open_redirect AND crlf"), and #132 added a
+  // crlf recall test for the bare `res.redirect(req.query.url)` shape. Locked
+  // by issue-189-sprint82-open-redirect-cluster.test.ts and
+  // crlf-stage8-fp.test.ts — do not collapse without revisiting both tickets.
   { method: 'redirect',  type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // Go net/http: w.Header().Set(k, v) / Add(k, v) — first arg is the value
   // (Header is a map; the actual `value` is arg 1 of the call). We flag the

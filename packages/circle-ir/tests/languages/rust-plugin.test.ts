@@ -168,8 +168,10 @@ describe('RustPlugin.getBuiltinSources()', () => {
     expect(s!.type).toBe('http_path');
   });
 
+  // `Form<T>` decodes the urlencoded body; registered in DEFAULT_SOURCES as
+  // http_body (retyped there when the plugin duplicate was removed).
   it('includes Form extractor as http_body', () => {
-    const s = sources.find(x => x.method === 'Form');
+    const s = runtimeSources('rust').find(x => x.method === 'Form');
     expect(s!.type).toBe('http_body');
   });
 

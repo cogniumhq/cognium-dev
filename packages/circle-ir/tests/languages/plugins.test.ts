@@ -210,10 +210,10 @@ describe('Language Plugins', () => {
       expect(args).toBeDefined();
       expect(args?.type).toBe('http_param');
 
-      // Check for input()
-      const input = sources.find(s => s.method === 'input');
+      // Check for input() — canonical registry types it `io_input`.
+      const input = runtimeSources('python').find(s => s.method === 'input');
       expect(input).toBeDefined();
-      expect(input?.type).toBe('user_input');
+      expect(input?.type).toBe('io_input');
     });
 
     it('should have builtin sinks', () => {
@@ -341,10 +341,13 @@ describe('Language Plugins', () => {
       const sources = plugin.getBuiltinSources();
       expect(sources.length).toBeGreaterThan(0);
 
-      // 'read' is a source for stdin input
-      const readSource = sources.find(s => s.method === 'read');
+      // 'read' is a source for stdin input. The stdin-precise, variable-bound
+      // entry lives in findBashTaintSources (io_input, per-variable); the
+      // pattern-level classless entry in DEFAULT_SOURCES types it file_input
+      // and also serves other languages' `x.read()` file reads.
+      const readSource = runtimeSources('bash').find(s => s.method === 'read');
       expect(readSource).toBeDefined();
-      expect(readSource?.type).toBe('io_input');
+      expect(readSource?.type).toBe('file_input');
 
       // curl/wget output as taint sources for supply-chain attack patterns
       const curlSource = sources.find(s => s.method === 'curl');

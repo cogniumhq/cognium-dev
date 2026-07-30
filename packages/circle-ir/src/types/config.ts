@@ -72,6 +72,21 @@ export interface SinkPattern {
    */
   languages?: SupportedLanguage[];
   /**
+   * Exclude the pattern from specific source languages, keeping it active
+   * everywhere else. The inverse of `languages`, for the case where a broad
+   * classless pattern is correct in most ecosystems but *wrong* in one —
+   * e.g. classless `exec` is command_injection (CWE-78) for Node's
+   * destructured `child_process.exec` and Java's unresolved `r.exec()`, but
+   * in Python `exec(code)` is the code-execution builtin (CWE-94, registered
+   * separately). Without this, both sinks fire on the same Python call and
+   * emit two findings with different CWEs.
+   *
+   * Prefer `languages` when a pattern belongs to one ecosystem; reach for
+   * this only to carve a single language out of a genuinely broad pattern.
+   * When both are present `languages` is applied first.
+   */
+  exclude_languages?: SupportedLanguage[];
+  /**
    * Suppress the sink when the argument at the given 0-indexed position is a
    * class literal (e.g. `Foo.class`, `com.example.Bar.class`). Used by
    * deserialization sinks whose typed overload — `ObjectMapper.readValue(json,

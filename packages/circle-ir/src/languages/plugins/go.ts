@@ -173,15 +173,10 @@ export class GoPlugin extends BaseLanguagePlugin {
       // a second, byte-identical source at every call site (`findSources` has
       // no dedup). Removed in the #4 follow-up consolidation — DEFAULT_SOURCES
       // is the canonical registry (ADR-004). `PostForm` stays because the two
-      // surfaces disagree on its type (http_body vs http_param).
-      {
-        method: 'PostForm',
-        class: 'Context',
-        type: 'http_param',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
+      // `Context.PostForm` is registered in DEFAULT_SOURCES as `http_body`,
+      // which is the accurate type — Gin reads it from the POST body, not the
+      // query string. The duplicate that used to sit here typed it
+      // `http_param`, so one call emitted two sources with different types.
       {
         method: 'GetRawData',
         class: 'Context',
