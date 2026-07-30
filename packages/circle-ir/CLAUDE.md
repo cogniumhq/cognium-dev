@@ -85,12 +85,15 @@ Current passes (all `category = 'security'`):
 `TaintMatcherPass` → `ConstantPropagationPass` → `LanguageSourcesPass` → `SinkFilterPass` → `TaintPropagationPass` → `InterproceduralPass`
 
 **Configuration-driven analysis:**
-The `configs/` directory contains YAML definitions for taint sources and sinks:
+Taint patterns are defined in TypeScript, not YAML — the library must run in the browser, so it never reads files:
 
-- `configs/sources/` - Taint sources (HTTP params, headers, cookies, env vars, DB results, file I/O)
-- `configs/sinks/` - Dangerous operations (SQL injection, command execution, XSS, path traversal, deserialization, LDAP/XPath injection)
+- `DEFAULT_SOURCES` / `DEFAULT_SINKS` / `DEFAULT_SANITIZERS` in `src/analysis/config-loader.ts` — **canonical registry.** Scope a pattern with `languages: ['python']` when its method name collides across ecosystems
+- `LanguagePlugin.getBuiltinSources()` / `getBuiltinSinks()` in `src/languages/plugins/<lang>.ts` — supplement for language-specific patterns that have **no** counterpart in the canonical registry; `TaintMatcherPass` merges them after it
+- `configs/**` — documentation + export surface only, **not loaded at runtime** (see `configs/README.md`; `npm run config:drift` reports how far it has drifted)
 
-Each config entry specifies: method/class/annotation, vulnerability type, CWE mapping, severity level, and which argument positions are tainted.
+Each entry specifies: method/class/annotation, vulnerability type, CWE mapping, severity level, and which argument positions are tainted.
+
+Never register the same `(class, method, cwe)` in both runtime surfaces — `findSinks` dedupes by `location:line:cwe` and keeps the higher-confidence match, so the losing copy silently absorbs edits. Locked by `tests/languages/sink-registry-contract.test.ts`.
 
 **Key design patterns:**
 - Taint tracking from sources to sinks with sanitizer support
@@ -176,7 +179,7 @@ When reviewing or modifying circle-ir, verify these requirements:
 ### Language Abstraction
 - [ ] **Plugin-based architecture** - All language-specific code in `src/languages/plugins/`
 - [ ] **No hardcoded language checks** in core analysis (except necessary AST handling)
-- [ ] **Configuration-driven** - Source/sink patterns in `configs/`, not hardcoded
+- [ ] **Configuration-driven** - Source/sink patterns declared in the `DEFAULT_*` registries (or a plugin builtin when language-specific), not inlined into pass logic
 
 ### Code Quality
 - [ ] **No dead code** - Remove unused exports, commented code blocks, unused files
@@ -210,16 +213,19 @@ For detailed status, benchmark scores, and pending improvements, see [TODO.md](T
 ## Common Tasks
 
 ### Adding a New Taint Source
-1. Add pattern to `configs/sources/<framework>.yaml` or create new file
-2. Include: method/class, taint type, severity, CWE mapping
-3. Add test case in `tests/` directory
-4. Update TODO.md if part of a larger effort
+1. Add the pattern to `DEFAULT_SOURCES` in `src/analysis/config-loader.ts` — the canonical registry. Add `languages: [...]` if the method name collides across ecosystems
+2. Include: method/class/annotation, taint type, severity, confidence
+3. Check it is not already registered in the language plugin's `getBuiltinSources()` — duplicates emit the same source twice
+4. Add test case in `tests/` directory
+5. Update TODO.md if part of a larger effort
 
 ### Adding a New Taint Sink
-1. Add pattern to `configs/sinks/<category>.yaml` (sql, command, xss, path, etc.)
+1. Add the pattern to `DEFAULT_SINKS` in `src/analysis/config-loader.ts` — the canonical registry (`languages: [...]` to scope it). Use a plugin `getBuiltinSinks()` only for patterns with no place there
 2. Include: method signature, CWE, severity, vulnerable argument positions
-3. Add test case in `tests/` directory
-4. Update CHANGELOG.md
+3. Do NOT duplicate an existing `(class, method, cwe)` across both surfaces — `tests/languages/sink-registry-contract.test.ts` fails on it
+4. `configs/sinks/*.yaml|json` is documentation only; update it if you want the published export to stay accurate (`npm run config:drift`)
+5. Add test case in `tests/` directory
+6. Update CHANGELOG.md
 
 ### Adding a New Analysis Pass
 
@@ -254,7 +260,7 @@ context.addFinding({
 ### Adding Language Support
 1. Create plugin in `src/languages/plugins/<language>.ts` extending `BaseLanguagePlugin`
 2. Add Tree-sitter WASM grammar to `wasm/` directory
-3. Create source configs in `configs/sources/<language>.json`
-4. Create sink configs in `configs/sinks/<language>.json`
+3. Register the language's sources/sinks in `DEFAULT_SOURCES` / `DEFAULT_SINKS` (`src/analysis/config-loader.ts`) with `languages: ['<language>']`; use the plugin's `getBuiltinSources()` / `getBuiltinSinks()` only for shapes the canonical registry cannot express
+4. Optionally mirror them into `configs/sources|sinks/<language>.json` for the published documentation export
 5. Add comprehensive tests
 6. Update TODO.md with completion status

@@ -17,7 +17,7 @@ cognium-dev/
 ├── packages/
 │   ├── circle-ir/          # Core SAST library
 │   │   ├── src/            # 36K LOC TypeScript
-│   │   ├── configs/        # YAML source/sink definitions
+│   │   ├── configs/        # Source/sink docs + export (not runtime)
 │   │   ├── docs/           # SPEC.md, PASSES.md, ARCHITECTURE.md
 │   │   └── wasm/           # Tree-sitter grammars
 │   │
@@ -100,9 +100,10 @@ cd packages/cli && bun test
 
 ## Configuration
 
-**Taint sources/sinks** are defined in YAML:
-- `packages/circle-ir/configs/sources/` — HTTP params, cookies, env vars, DB results
-- `packages/circle-ir/configs/sinks/` — SQL, command exec, XSS, path traversal
+**Taint sources/sinks** are defined in TypeScript (the library never reads files — browser compatibility):
+- `packages/circle-ir/src/analysis/config-loader.ts` — `DEFAULT_SOURCES` / `DEFAULT_SINKS`, the canonical registry (`languages: [...]` scopes a pattern to one ecosystem)
+- `packages/circle-ir/src/languages/plugins/<lang>.ts` — `getBuiltinSources()` / `getBuiltinSinks()`, for language-specific patterns with no canonical counterpart
+- `packages/circle-ir/configs/` — documentation + published export only, **not loaded at runtime** (`npm run config:drift` reports divergence)
 
 **Per-project config** via `cognium.config.json`:
 ```json
