@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.194.0] - 2026-07-30
+
+OWASP-LLM01 prompt-injection precision + recall (#267). The
+`prompt_injection` (CWE-1427) category shipped in #248; this release adds
+a delimiter-wrap safety gate, Go struct-field recall, and an opt-in
+(off-by-default) speculative mode for library/agent code. 4323 pass,
+2 skipped, 1 todo, 0 default-path regressions vs 3.193.0. External
+verification via `sast-validation/scripts/trust-regression` is the
+authoritative signal for the prompt-injection heuristics.
+
+### #267 — prompt-injection safety gate (precision, all languages)
+
+`PromptInjectionSafetyGatePass` drops a `prompt_injection` sink when the
+untrusted content is **delimiter-wrapped** (`<user_question>…
+</user_question>`, fences), the OWASP-LLM LLM01 safe-mitigation shape,
+while keeping genuine flows (untrusted concatenated/interpolated into
+instructions, or in a system/assistant role). Balanced-expression scanner
+handles f-string `{user}` / template `${user}`. Builder-pattern aware: for
+Go/Java the request is often built in a prior statement, so the gate
+traces the builder var to see the message structure.
+
+**Semantics decision** — role separation alone is NOT treated as a
+sanitizer: `{"role":"user","content":untrusted}` continues to fire,
+preserving #248's must-fire contract. Only affirmative delimiter-wrapping
+suppresses. Conservative: any ambiguity keeps the sink (no recall loss).
+
+### #267 — Go struct-field recall
+
+`buildGoDFG` — `computeChains` only links same-line use→def, so a tainted
+value inside a gofmt **multi-line** struct/slice composite literal
+(`req := ChatCompletionRequest{ Messages: []…{ {Content: "…" + user} } }`)
+never propagated to the assigned var, and the client-call prompt sink
+never fired. Explicit chains from resolved RHS uses to the LHS local def
+are now emitted for multi-line composite-literal assignments
+(`short_var_declaration` + `assignment_statement`). Single-line literals
+were already covered.
+
+### #267 — speculative param-source (opt-in, OFF by default)
+
+New `AnalyzerOptions.speculativeParamSources` (default `false`). When set,
+seeds function parameters as untrusted sources inside functions that
+contain a `prompt_injection` sink — for library / agent / SDK code whose
+untrusted entry is a bare parameter (`func Ask(user string, client *LLM)`),
+with no in-file request source to seed taint. `looksLikeTextParam` skips
+handle/dependency params (client, context, DB, writer, …). Additionally,
+`detectPromptConstructionFlows` emits a client-less construction flow when
+a function returns/assigns an instruction-literal concatenated with one of
+its own parameters (`return "You are a bot. " + user`); `looksLikePromptText`
+gates it to real prompt phrasing so ordinary/path/SQL concatenation is not
+flagged.
+
+**Precision moat:** the flag defaults OFF, so the precision benchmarks
+(OWASP / Juliet / SecuriBench) never enable it and the 0%-FPR contract is
+untouched — locked by a default-path test. A downstream agent-security
+scan enables it explicitly.
+
+All prompt-injection additions are Pillar-I clean: `prompt_injection` /
+CWE-1427 is the established deterministic taint category (#248); no model
+invocation, no LLM identifiers in any API surface.
+
 ## [3.193.0] - 2026-07-27
 
 Cross-file taint: extends recall to Rust (closing the #146 gap) and adds
