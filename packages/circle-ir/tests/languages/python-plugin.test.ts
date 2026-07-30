@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { PythonPlugin } from '../../src/languages/plugins/python.js';
+import { runtimeSinks, runtimeSources } from './runtime-sinks.js';
 import type { Node as SyntaxNode } from 'web-tree-sitter';
 import type { ImportInfo } from '../../src/types/index.js';
 import type { ExtractionContext } from '../../src/languages/types.js';
@@ -216,18 +217,20 @@ describe('PythonPlugin.getBuiltinSources()', () => {
     expect(s!.type).toBe('env_var');
   });
 
+  // `read`/`readline`/`readlines` are registered in DEFAULT_SOURCES
+  // (canonical per ADR-004) — assert against the effective python registry.
   it('includes file read() as file_input', () => {
-    const s = sources.find(x => x.method === 'read' && !x.class);
+    const s = runtimeSources('python').find(x => x.method === 'read' && !x.class);
     expect(s!.type).toBe('file_input');
   });
 
   it('includes readline() as file_input', () => {
-    const s = sources.find(x => x.method === 'readline');
+    const s = runtimeSources('python').find(x => x.method === 'readline');
     expect(s!.type).toBe('file_input');
   });
 
   it('includes readlines() as file_input', () => {
-    const s = sources.find(x => x.method === 'readlines');
+    const s = runtimeSources('python').find(x => x.method === 'readlines');
     expect(s!.type).toBe('file_input');
   });
 });
@@ -237,10 +240,16 @@ describe('PythonPlugin.getBuiltinSources()', () => {
 // ---------------------------------------------------------------------------
 
 describe('PythonPlugin.getBuiltinSinks()', () => {
-  const sinks = plugin.getBuiltinSinks();
+  // The plugin holds only the Python patterns that have no DEFAULT_SINKS
+  // counterpart (ADR-004 — DEFAULT_SINKS is canonical). Coverage assertions
+  // below therefore run against the *effective* registry for `python`
+  // (config + plugin, merged the way TaintMatcherPass merges them) so that
+  // relocating an entry between the two surfaces does not fail a test that
+  // is really about "Python detects this sink".
+  const sinks = runtimeSinks('python');
 
   it('returns a non-empty array', () => {
-    expect(sinks.length).toBeGreaterThan(0);
+    expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
   });
 
   it('includes os.system as command_injection (CWE-78)', () => {
@@ -278,15 +287,19 @@ describe('PythonPlugin.getBuiltinSinks()', () => {
     expect(s!.severity).toBe('critical');
   });
 
+  // `exec` and `compile` also match sink entries of other types that are not
+  // language-scoped (`exec` as command_injection, `compile` as xss), so these
+  // assert the (method, type) pair rather than "first match wins".
   it('includes exec() as code_injection', () => {
-    const s = sinks.find(x => x.method === 'exec');
-    expect(s!.type).toBe('code_injection');
+    const s = sinks.find(x => x.method === 'exec' && x.type === 'code_injection');
+    expect(s).toBeDefined();
     expect(s!.cwe).toBe('CWE-94');
   });
 
   it('includes compile() as code_injection', () => {
-    const s = sinks.find(x => x.method === 'compile');
-    expect(s!.type).toBe('code_injection');
+    const s = sinks.find(x => x.method === 'compile' && x.type === 'code_injection');
+    expect(s).toBeDefined();
+    expect(s!.cwe).toBe('CWE-94');
   });
 
   it('includes execute() as sql_injection (CWE-89)', () => {

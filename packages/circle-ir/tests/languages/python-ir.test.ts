@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 import { PythonPlugin } from '../../src/languages/plugins/index.js';
+import { runtimeSinks } from './runtime-sinks.js';
 
 describe('Python plugin — IR fixtures', () => {
   beforeAll(async () => {
@@ -38,23 +39,23 @@ describe('Python plugin — IR fixtures', () => {
       expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
     });
 
+    // Sink coverage is asserted against the effective registry for `python`
+    // (DEFAULT_SINKS + plugin builtins) — the plugin carries only patterns
+    // with no DEFAULT_SINKS counterpart (ADR-004).
     it('sql_injection sink includes cursor.execute', () => {
-      const sinks = plugin.getBuiltinSinks();
-      const executeSink = sinks.find(s => s.method === 'execute');
+      const executeSink = runtimeSinks('python').find(s => s.method === 'execute');
       expect(executeSink).toBeDefined();
       expect(executeSink!.type).toBe('sql_injection');
     });
 
     it('command_injection sink includes os.system', () => {
-      const sinks = plugin.getBuiltinSinks();
-      const sysSink = sinks.find(s => s.method === 'system');
+      const sysSink = runtimeSinks('python').find(s => s.method === 'system');
       expect(sysSink).toBeDefined();
       expect(sysSink!.type).toBe('command_injection');
     });
 
     it('code_injection sink includes eval', () => {
-      const sinks = plugin.getBuiltinSinks();
-      const evalSink = sinks.find(s => s.method === 'eval');
+      const evalSink = runtimeSinks('python').find(s => s.method === 'eval');
       expect(evalSink).toBeDefined();
       expect(evalSink!.type).toBe('code_injection');
     });

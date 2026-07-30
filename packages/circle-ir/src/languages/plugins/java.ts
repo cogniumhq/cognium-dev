@@ -199,108 +199,30 @@ export class JavaPlugin extends BaseLanguagePlugin {
         returnTainted: true,
       },
 
-      // Servlet API
-      {
-        method: 'getParameter',
-        class: 'HttpServletRequest',
-        type: 'http_param',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
-      {
-        method: 'getParameterValues',
-        class: 'HttpServletRequest',
-        type: 'http_param',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
-      {
-        method: 'getHeader',
-        class: 'HttpServletRequest',
-        type: 'http_header',
-        severity: 'high',
-        confidence: 0.9,
-        returnTainted: true,
-      },
-      {
-        method: 'getCookies',
-        class: 'HttpServletRequest',
-        type: 'http_cookie',
-        severity: 'high',
-        confidence: 0.9,
-        returnTainted: true,
-      },
-      {
-        method: 'getInputStream',
-        class: 'HttpServletRequest',
-        type: 'http_body',
-        severity: 'high',
-        confidence: 0.85,
-        returnTainted: true,
-      },
-      {
-        method: 'getReader',
-        class: 'HttpServletRequest',
-        type: 'http_body',
-        severity: 'high',
-        confidence: 0.85,
-        returnTainted: true,
-      },
+      // NOTE: the Servlet API call sources (`HttpServletRequest.getParameter`,
+      // `getParameterValues`, `getHeader`, `getCookies`, `getInputStream`,
+      // `getReader`) are registered identically in DEFAULT_SOURCES. Because
+      // `findSources` pushes one TaintSource per matching pattern with no
+      // dedup, the duplicates emitted a second, byte-identical source at every
+      // call site. Removed in the #4 follow-up consolidation — DEFAULT_SOURCES
+      // is the canonical registry (ADR-004).
     ];
   }
 
   /**
    * Java-specific taint sink patterns.
-   * These supplement the YAML configuration.
+   *
+   * Only patterns that have NO counterpart in `DEFAULT_SINKS` belong here —
+   * `DEFAULT_SINKS` (`analysis/config-loader.ts`) is the canonical registry
+   * (ADR-004). Duplicated entries were dead weight: `TaintMatcherPass` merges
+   * plugin builtins *after* the config patterns, and `findSinks` dedupes by
+   * `location:line:cwe` keeping the higher-confidence match, so the config
+   * copy always won the slot. Removed in the #4 follow-up consolidation
+   * (`Statement.execute*`, `Runtime.exec`, `ProcessBuilder.start`,
+   * `PrintWriter.write/println`, `DirContext.search`, `XPath.evaluate`).
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
-      // SQL Injection
-      {
-        method: 'executeQuery',
-        class: 'Statement',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'executeUpdate',
-        class: 'Statement',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'execute',
-        class: 'Statement',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-
-      // Command Injection
-      {
-        method: 'exec',
-        class: 'Runtime',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'start',
-        class: 'ProcessBuilder',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [],  // Constructor args are dangerous
-      },
-
       // Path Traversal
       {
         method: 'FileInputStream',
@@ -313,44 +235,6 @@ export class JavaPlugin extends BaseLanguagePlugin {
         method: 'FileOutputStream',
         type: 'path_traversal',
         cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
-
-      // XSS
-      {
-        method: 'write',
-        class: 'PrintWriter',
-        type: 'xss',
-        cwe: 'CWE-79',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'println',
-        class: 'PrintWriter',
-        type: 'xss',
-        cwe: 'CWE-79',
-        severity: 'high',
-        argPositions: [0],
-      },
-
-      // LDAP Injection
-      {
-        method: 'search',
-        class: 'DirContext',
-        type: 'ldap_injection',
-        cwe: 'CWE-90',
-        severity: 'high',
-        argPositions: [0, 1],
-      },
-
-      // XPath Injection
-      {
-        method: 'evaluate',
-        class: 'XPath',
-        type: 'xpath_injection',
-        cwe: 'CWE-643',
         severity: 'high',
         argPositions: [0],
       },

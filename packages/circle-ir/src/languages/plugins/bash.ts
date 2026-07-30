@@ -109,14 +109,11 @@ export class BashPlugin extends BaseLanguagePlugin {
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
-      // Code / command injection via eval
-      {
-        method: 'eval',
-        type: 'code_injection',
-        cwe: 'CWE-94',
-        severity: 'critical',
-        argPositions: [0],
-      },
+      // NOTE: classless `eval` (CWE-94, critical) is registered unscoped in
+      // DEFAULT_SINKS and already covers Bash; the duplicate builtin that used
+      // to sit here never won the findSinks dedup slot (equal confidence, the
+      // config pattern iterates first). Removed in the #4 follow-up
+      // consolidation — DEFAULT_SINKS is the canonical registry (ADR-004).
 
       // Command injection: spawning a sub-shell with -c flag
       {

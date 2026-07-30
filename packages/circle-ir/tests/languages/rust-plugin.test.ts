@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { RustPlugin } from '../../src/languages/plugins/rust.js';
+import { runtimeSinks, runtimeSources } from './runtime-sinks.js';
 import type { Node as SyntaxNode } from 'web-tree-sitter';
 import type { ImportInfo } from '../../src/types/index.js';
 import type { ExtractionContext } from '../../src/languages/types.js';
@@ -151,19 +152,19 @@ describe('RustPlugin.getBuiltinSources()', () => {
   });
 
   it('includes Query extractor as http_param', () => {
-    const s = sources.find(x => x.method === 'Query');
+    const s = runtimeSources('rust').find(x => x.method === 'Query');
     expect(s!.type).toBe('http_param');
     expect(s!.severity).toBe('high');
     expect(s!.returnTainted).toBe(true);
   });
 
   it('includes Json extractor as http_body', () => {
-    const s = sources.find(x => x.method === 'Json');
+    const s = runtimeSources('rust').find(x => x.method === 'Json');
     expect(s!.type).toBe('http_body');
   });
 
   it('includes Path extractor as http_path', () => {
-    const s = sources.find(x => x.method === 'Path');
+    const s = runtimeSources('rust').find(x => x.method === 'Path');
     expect(s!.type).toBe('http_path');
   });
 
@@ -204,7 +205,7 @@ describe('RustPlugin.getBuiltinSources()', () => {
   });
 
   it('includes TcpStream::read as network_input', () => {
-    const s = sources.find(x => x.method === 'read' && x.class === 'TcpStream');
+    const s = runtimeSources('rust').find(x => x.method === 'read' && x.class === 'TcpStream');
     expect(s!.type).toBe('network_input');
     expect(s!.severity).toBe('high');
   });
@@ -215,10 +216,13 @@ describe('RustPlugin.getBuiltinSources()', () => {
 // ---------------------------------------------------------------------------
 
 describe('RustPlugin.getBuiltinSinks()', () => {
-  const sinks = plugin.getBuiltinSinks();
+  // Asserted against the effective registry for `rust` (DEFAULT_SINKS +
+  // plugin builtins) — the plugin holds only patterns with no DEFAULT_SINKS
+  // counterpart (ADR-004). See tests/languages/runtime-sinks.ts.
+  const sinks = runtimeSinks('rust');
 
   it('returns a non-empty array', () => {
-    expect(sinks.length).toBeGreaterThan(0);
+    expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
   });
 
   it('includes std::process::Command as command_injection (CWE-78)', () => {

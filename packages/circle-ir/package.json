@@ -41,7 +41,8 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build:all && npm test",
     "prepack": "npm run build:all",
-    "dogfood": "npx tsx scripts/dogfood.ts"
+    "dogfood": "npx tsx scripts/dogfood.ts",
+    "config:drift": "npx tsx scripts/config-drift.ts"
   },
   "keywords": [
     "sast",

@@ -244,132 +244,28 @@ export class PythonPlugin extends BaseLanguagePlugin {
         returnTainted: true,
       },
 
-      // File reading
-      {
-        method: 'read',
-        type: 'file_input',
-        severity: 'medium',
-        confidence: 0.8,
-        returnTainted: true,
-      },
-      {
-        method: 'readline',
-        type: 'file_input',
-        severity: 'medium',
-        confidence: 0.8,
-        returnTainted: true,
-      },
-      {
-        method: 'readlines',
-        type: 'file_input',
-        severity: 'medium',
-        confidence: 0.8,
-        returnTainted: true,
-      },
+      // NOTE: the file-reading sources (`read`, `readline`, `readlines` as
+      // file_input) are registered identically in DEFAULT_SOURCES. Since
+      // `findSources` pushes one TaintSource per matching pattern with no
+      // dedup, these duplicates emitted a second, byte-identical source at
+      // every call site. Removed in the #4 follow-up consolidation —
+      // DEFAULT_SOURCES is the canonical registry (ADR-004).
     ];
   }
 
   /**
    * Python taint sink patterns.
+   *
+   * Only patterns that have NO counterpart in `DEFAULT_SINKS` belong here —
+   * `DEFAULT_SINKS` (`analysis/config-loader.ts`) is the canonical registry
+   * (ADR-004). Duplicated entries were dead weight: `TaintMatcherPass` merges
+   * plugin builtins *after* the config patterns, and `findSinks` dedupes by
+   * `location:line:cwe` keeping the higher-confidence match, so the config
+   * copy always won the slot. Removed in the #4 follow-up consolidation.
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
-      // Command Injection
-      {
-        method: 'system',
-        class: 'os',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'popen',
-        class: 'os',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'run',
-        class: 'subprocess',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'call',
-        class: 'subprocess',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'Popen',
-        class: 'subprocess',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-
-      // Code Injection
-      {
-        method: 'eval',
-        type: 'code_injection',
-        cwe: 'CWE-94',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'exec',
-        type: 'code_injection',
-        cwe: 'CWE-94',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'compile',
-        type: 'code_injection',
-        cwe: 'CWE-94',
-        severity: 'high',
-        argPositions: [0],
-      },
-
-      // SQL Injection
-      {
-        method: 'execute',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'executemany',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'raw',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
-
       // Path Traversal
-      {
-        method: 'open',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
       {
         method: 'read',
         class: 'pathlib',
@@ -381,13 +277,6 @@ export class PythonPlugin extends BaseLanguagePlugin {
 
       // XSS (template injection)
       {
-        method: 'Markup',
-        type: 'xss',
-        cwe: 'CWE-79',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
         method: 'safe',
         type: 'xss',
         cwe: 'CWE-79',
@@ -396,22 +285,6 @@ export class PythonPlugin extends BaseLanguagePlugin {
       },
 
       // SSRF
-      {
-        method: 'get',
-        class: 'requests',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'post',
-        class: 'requests',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
       {
         method: 'urlopen',
         class: 'urllib',
@@ -440,34 +313,11 @@ export class PythonPlugin extends BaseLanguagePlugin {
       },
 
       // Deserialization
-      {
-        method: 'loads',
-        class: 'pickle',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'load',
-        class: 'pickle',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'critical',
-        argPositions: [0],
-      },
       // NOTE: yaml.safe_load / yaml.SafeLoader are intentionally NOT sinks.
       // safe_load constructs only standard scalar/list/dict types and cannot
       // instantiate arbitrary Python objects, so it is not a CWE-502 sink
-      // (unlike yaml.load / yaml.unsafe_load / yaml.full_load below).
-      {
-        method: 'load',
-        class: 'yaml',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'critical',
-        argPositions: [0],
-      },
+      // (unlike yaml.load — registered in DEFAULT_SINKS — and
+      // yaml.unsafe_load / yaml.full_load below).
       {
         method: 'unsafe_load',
         class: 'yaml',

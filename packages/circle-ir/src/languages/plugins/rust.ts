@@ -126,27 +126,13 @@ export class RustPlugin extends BaseLanguagePlugin {
   getBuiltinSources(): TaintSourcePattern[] {
     return [
       // Actix-web request extractors
-      {
-        method: 'Query',
-        type: 'http_param',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
-      {
-        method: 'Json',
-        type: 'http_body',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
-      {
-        method: 'Path',
-        type: 'http_path',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
+      // NOTE: `Query` (http_param), `Json` (http_body) and `Path` (http_path)
+      // are registered identically in DEFAULT_SOURCES; the duplicates here
+      // emitted a second, byte-identical source at every call site
+      // (`findSources` has no dedup). Removed in the #4 follow-up
+      // consolidation — DEFAULT_SOURCES is the canonical registry (ADR-004).
+      // `Form` stays because the two surfaces disagree on its type
+      // (http_param vs http_body).
       {
         method: 'Form',
         type: 'http_body',
@@ -207,20 +193,22 @@ export class RustPlugin extends BaseLanguagePlugin {
         returnTainted: true,
       },
 
-      // Network input
-      {
-        method: 'read',
-        class: 'TcpStream',
-        type: 'network_input',
-        severity: 'high',
-        confidence: 0.85,
-        returnTainted: true,
-      },
+      // NOTE: `TcpStream.read` (network_input) is registered identically in
+      // DEFAULT_SOURCES — duplicate removed in the #4 follow-up consolidation.
     ];
   }
 
   /**
    * Rust taint sink patterns.
+   *
+   * Only patterns that have NO counterpart in `DEFAULT_SINKS` belong here —
+   * `DEFAULT_SINKS` (`analysis/config-loader.ts`) is the canonical registry
+   * (ADR-004). Duplicated entries were dead weight: `TaintMatcherPass` merges
+   * plugin builtins *after* the config patterns, and `findSinks` dedupes by
+   * `location:line:cwe` keeping the higher-confidence match, so the config
+   * copy always won the slot. Removed in the #4 follow-up consolidation
+   * (`Command.arg/args`, classless `execute`, `File.open/create`,
+   * `serde_json.from_str/from_slice`, `reqwest.get/post`).
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
@@ -233,31 +221,8 @@ export class RustPlugin extends BaseLanguagePlugin {
         severity: 'critical',
         argPositions: [0],
       },
-      {
-        method: 'arg',
-        class: 'Command',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'args',
-        class: 'Command',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
 
       // SQL Injection
-      {
-        method: 'execute',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
       {
         method: 'query',
         type: 'sql_injection',
@@ -274,22 +239,6 @@ export class RustPlugin extends BaseLanguagePlugin {
       },
 
       // Path Traversal
-      {
-        method: 'open',
-        class: 'File',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'create',
-        class: 'File',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
       {
         method: 'read_to_string',
         class: 'std::fs',
@@ -329,42 +278,6 @@ export class RustPlugin extends BaseLanguagePlugin {
         type: 'unsafe_memory',
         cwe: 'CWE-119',
         severity: 'critical',
-        argPositions: [0],
-      },
-
-      // Deserialization (with serde)
-      {
-        method: 'from_str',
-        class: 'serde_json',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'medium',
-        argPositions: [0],
-      },
-      {
-        method: 'from_slice',
-        class: 'serde_json',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'medium',
-        argPositions: [0],
-      },
-
-      // SSRF
-      {
-        method: 'get',
-        class: 'reqwest',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'post',
-        class: 'reqwest',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
         argPositions: [0],
       },
 

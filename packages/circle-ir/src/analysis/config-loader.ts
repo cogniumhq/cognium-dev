@@ -2013,7 +2013,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Note: classless { method: 'query' } removed — too many FPs (UriComponentsBuilder.query(), etc.)
   // SQL query calls are covered by class-specific patterns above (Connection, Pool, Client, JdbcTemplate)
   // Note: `raw` is shared with Python (Django ORM) — scoped to JS+TS to avoid leaking.
-  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  // Severity `critical` (not `high`) preserves what the JS plugin's duplicate
+  // builtin emitted before the #4 follow-up consolidation removed it: the
+  // plugin copy carried `critical`, which won the `findSinks` dedup slot via
+  // the +0.1 critical-severity confidence boost.
+  { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'] },
 
   // sqlite3 (npm) — Database/Statement methods. The JS plugin resolves
   // `const db = new sqlite3.Database(...); db.all(sql)` to the resolution

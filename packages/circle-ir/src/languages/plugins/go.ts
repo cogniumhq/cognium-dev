@@ -168,22 +168,12 @@ export class GoPlugin extends BaseLanguagePlugin {
       },
 
       // Gin framework
-      {
-        method: 'Query',
-        class: 'Context',
-        type: 'http_param',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
-      {
-        method: 'Param',
-        class: 'Context',
-        type: 'http_path',
-        severity: 'high',
-        confidence: 0.95,
-        returnTainted: true,
-      },
+      // NOTE: `Context.Query` (http_param) and `Context.Param` (http_path) are
+      // registered identically in DEFAULT_SOURCES; the duplicates here emitted
+      // a second, byte-identical source at every call site (`findSources` has
+      // no dedup). Removed in the #4 follow-up consolidation — DEFAULT_SOURCES
+      // is the canonical registry (ADR-004). `PostForm` stays because the two
+      // surfaces disagree on its type (http_body vs http_param).
       {
         method: 'PostForm',
         class: 'Context',
@@ -239,6 +229,10 @@ export class GoPlugin extends BaseLanguagePlugin {
 
   /**
    * Go taint sink patterns.
+   *
+   * Only patterns that have NO counterpart in `DEFAULT_SINKS` belong here —
+   * `DEFAULT_SINKS` (`analysis/config-loader.ts`) is the canonical registry
+   * (ADR-004). See the #4 follow-up consolidation note on the other plugins.
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
@@ -421,14 +415,9 @@ export class GoPlugin extends BaseLanguagePlugin {
         severity: 'medium',
         argPositions: [0],
       },
-      {
-        method: 'Decode',
-        class: 'Decoder',
-        type: 'deserialization',
-        cwe: 'CWE-502',
-        severity: 'medium',
-        argPositions: [0],
-      },
+      // NOTE: `Decoder.Decode` (CWE-502) lives in DEFAULT_SINKS at severity
+      // `high`, which outranked this duplicate's `medium` in the findSinks
+      // dedup — removed in the #4 follow-up consolidation.
 
       // Log Injection — `log.Printf("event=%s", userInput)` allows
       // CRLF/log forging when the format string interpolates user data.

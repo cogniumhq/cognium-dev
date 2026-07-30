@@ -512,43 +512,17 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
 
   /**
    * JavaScript/TypeScript taint sink patterns.
+   *
+   * Only patterns that have NO counterpart in `DEFAULT_SINKS` belong here —
+   * `DEFAULT_SINKS` (`analysis/config-loader.ts`) is the canonical registry
+   * (ADR-004). Duplicated entries were dead weight: `TaintMatcherPass` merges
+   * plugin builtins *after* the config patterns, and `findSinks` dedupes by
+   * `location:line:cwe` keeping the higher-confidence match, so the config
+   * copy always won the slot. Removed in the #4 follow-up consolidation.
    */
   getBuiltinSinks(): TaintSinkPattern[] {
     return [
-      // Command Injection
-      {
-        method: 'exec',
-        class: 'child_process',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'execSync',
-        class: 'child_process',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0],
-      },
-      {
-        method: 'spawn',
-        class: 'child_process',
-        type: 'command_injection',
-        cwe: 'CWE-78',
-        severity: 'critical',
-        argPositions: [0, 1],
-      },
-
       // Code Injection
-      {
-        method: 'eval',
-        type: 'code_injection',
-        cwe: 'CWE-94',
-        severity: 'critical',
-        argPositions: [0],
-      },
       {
         method: 'Function',
         type: 'code_injection',
@@ -571,47 +545,7 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
         argPositions: [0],  // When first arg is string
       },
 
-      // Path Traversal
-      {
-        method: 'readFileSync',
-        class: 'fs',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'writeFileSync',
-        class: 'fs',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'createReadStream',
-        class: 'fs',
-        type: 'path_traversal',
-        cwe: 'CWE-22',
-        severity: 'high',
-        argPositions: [0],
-      },
-
       // XSS (DOM)
-      {
-        method: 'innerHTML',
-        type: 'xss',
-        cwe: 'CWE-79',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'outerHTML',
-        type: 'xss',
-        cwe: 'CWE-79',
-        severity: 'high',
-        argPositions: [0],
-      },
       {
         method: 'document.write',
         type: 'xss',
@@ -665,13 +599,6 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
         severity: 'critical',
         argPositions: [0],
       },
-      {
-        method: 'raw',
-        type: 'sql_injection',
-        cwe: 'CWE-89',
-        severity: 'critical',
-        argPositions: [0],
-      },
       // Prisma ORM - unsafe raw query methods ($executeRaw/$queryRaw with template literals are safe/parameterized)
       {
         method: '$executeRawUnsafe',
@@ -688,41 +615,9 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
         argPositions: [0],
       },
 
-      // SSRF
-      {
-        method: 'fetch',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'get',
-        class: 'axios',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'request',
-        class: 'http',
-        type: 'ssrf',
-        cwe: 'CWE-918',
-        severity: 'high',
-        argPositions: [0],
-      },
-
       // NoSQL Injection
       {
         method: 'find',
-        type: 'nosql_injection',
-        cwe: 'CWE-943',
-        severity: 'high',
-        argPositions: [0],
-      },
-      {
-        method: 'findOne',
         type: 'nosql_injection',
         cwe: 'CWE-943',
         severity: 'high',
@@ -823,14 +718,9 @@ export class JavaScriptPlugin extends BaseLanguagePlugin {
       // =========================================================
       // Next.js Sinks
       // =========================================================
-      {
-        // Server-side redirect
-        method: 'redirect',
-        type: 'open_redirect',
-        cwe: 'CWE-601',
-        severity: 'high',
-        argPositions: [0],
-      },
+      // NOTE: classless `redirect` (CWE-601) lives in DEFAULT_SINKS, scoped to
+      // javascript+typescript — the duplicate builtin here never won the dedup
+      // slot (equal confidence, config pattern iterates first).
       {
         // Router push with user-controlled URL
         method: 'push',

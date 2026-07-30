@@ -13,6 +13,7 @@ import {
 } from '../../src/languages/plugins/index.js';
 import { BaseLanguagePlugin } from '../../src/languages/plugins/base.js';
 import { getLanguageRegistry, getLanguagePlugin } from '../../src/languages/registry.js';
+import { runtimeSinks, runtimeSources } from './runtime-sinks.js';
 import { initParser, parse } from '../../src/core/parser.js';
 import type {
   ExtractionContext,
@@ -92,15 +93,19 @@ describe('Language Plugins', () => {
       expect(requestBody).toBeDefined();
       expect(requestBody?.type).toBe('http_body');
 
-      // Check for Servlet API
-      const getParameter = sources.find(s => s.method === 'getParameter');
+      // Check for Servlet API. Registered in DEFAULT_SOURCES (canonical per
+      // ADR-004), so assert against the effective registry for the language.
+      const getParameter = runtimeSources('java').find(s => s.method === 'getParameter');
       expect(getParameter).toBeDefined();
       expect(getParameter?.type).toBe('http_param');
     });
 
     it('should have builtin sinks', () => {
-      const sinks = plugin.getBuiltinSinks();
-      expect(sinks.length).toBeGreaterThan(0);
+      // Effective registry for the language (DEFAULT_SINKS + plugin
+      // builtins) — see tests/languages/runtime-sinks.ts. The plugin holds
+      // only patterns without a DEFAULT_SINKS counterpart (ADR-004).
+      const sinks = runtimeSinks('java');
+      expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
 
       // Check for SQL injection
       const executeQuery = sinks.find(s => s.method === 'executeQuery');
@@ -153,8 +158,11 @@ describe('Language Plugins', () => {
     });
 
     it('should have builtin sinks', () => {
-      const sinks = plugin.getBuiltinSinks();
-      expect(sinks.length).toBeGreaterThan(0);
+      // Effective registry for the language (DEFAULT_SINKS + plugin
+      // builtins) — see tests/languages/runtime-sinks.ts. The plugin holds
+      // only patterns without a DEFAULT_SINKS counterpart (ADR-004).
+      const sinks = runtimeSinks('javascript');
+      expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
 
       // Check for command injection
       const exec = sinks.find(s => s.method === 'exec');
@@ -166,8 +174,9 @@ describe('Language Plugins', () => {
       expect(evalSink).toBeDefined();
       expect(evalSink?.cwe).toBe('CWE-94');
 
-      // Check for prototype pollution
-      const merge = sinks.find(s => s.method === 'merge');
+      // Check for prototype pollution. `merge` also matches an xss entry, so
+      // key on the (method, type) pair rather than first-match.
+      const merge = sinks.find(s => s.method === 'merge' && s.type === 'prototype_pollution');
       expect(merge).toBeDefined();
       expect(merge?.cwe).toBe('CWE-1321');
     });
@@ -208,8 +217,11 @@ describe('Language Plugins', () => {
     });
 
     it('should have builtin sinks', () => {
-      const sinks = plugin.getBuiltinSinks();
-      expect(sinks.length).toBeGreaterThan(0);
+      // Effective registry for the language (DEFAULT_SINKS + plugin
+      // builtins) — see tests/languages/runtime-sinks.ts. The plugin holds
+      // only patterns without a DEFAULT_SINKS counterpart (ADR-004).
+      const sinks = runtimeSinks('python');
+      expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
 
       // Check for command injection
       const system = sinks.find(s => s.method === 'system');
@@ -251,8 +263,9 @@ describe('Language Plugins', () => {
       const sources = plugin.getBuiltinSources();
       expect(sources.length).toBeGreaterThan(0);
 
-      // Check for Actix-web patterns
-      const query = sources.find(s => s.method === 'Query');
+      // Check for Actix-web patterns. Registered in DEFAULT_SOURCES
+      // (canonical per ADR-004), so assert against the effective registry.
+      const query = runtimeSources('rust').find(s => s.method === 'Query');
       expect(query).toBeDefined();
       expect(query?.type).toBe('http_param');
 
@@ -263,8 +276,11 @@ describe('Language Plugins', () => {
     });
 
     it('should have builtin sinks', () => {
-      const sinks = plugin.getBuiltinSinks();
-      expect(sinks.length).toBeGreaterThan(0);
+      // Effective registry for the language (DEFAULT_SINKS + plugin
+      // builtins) — see tests/languages/runtime-sinks.ts. The plugin holds
+      // only patterns without a DEFAULT_SINKS counterpart (ADR-004).
+      const sinks = runtimeSinks('rust');
+      expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
 
       // Check for command injection
       const command = sinks.find(s => s.method === 'Command');
@@ -341,8 +357,11 @@ describe('Language Plugins', () => {
     });
 
     it('should have builtin sinks', () => {
-      const sinks = plugin.getBuiltinSinks();
-      expect(sinks.length).toBeGreaterThan(0);
+      // Effective registry for the language (DEFAULT_SINKS + plugin
+      // builtins) — see tests/languages/runtime-sinks.ts. The plugin holds
+      // only patterns without a DEFAULT_SINKS counterpart (ADR-004).
+      const sinks = runtimeSinks('bash');
+      expect(plugin.getBuiltinSinks().length).toBeGreaterThan(0);
 
       // Code injection via eval
       const evalSink = sinks.find(s => s.method === 'eval');
@@ -795,9 +814,10 @@ describe('Language Plugins', () => {
 
     describe('Next.js Sinks', () => {
       it('should have redirect sink', () => {
-        const sinks = plugin.getBuiltinSinks();
+        // Classless `redirect` lives in DEFAULT_SINKS scoped to js+ts.
+        const sinks = runtimeSinks('javascript');
 
-        const redirect = sinks.find(s => s.method === 'redirect');
+        const redirect = sinks.find(s => s.method === 'redirect' && !s.class);
         expect(redirect).toBeDefined();
         expect(redirect?.cwe).toBe('CWE-601');
         expect(redirect?.type).toBe('open_redirect');
