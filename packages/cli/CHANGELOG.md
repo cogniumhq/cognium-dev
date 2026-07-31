@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.195.0] - 2026-07-31
+
+Adopts [`circle-ir@3.195.0`](https://www.npmjs.com/package/circle-ir):
+taint-registry consolidation (#4 follow-up) — `DEFAULT_SINKS` /
+`DEFAULT_SOURCES` are now the canonical registries, 77 duplicate
+registrations removed, Python `exec` no longer double-reports as CWE-78,
+and a new Python traversal-guard sanitizer cuts BenchmarkPython pathtraver
+false positives from 28 to 10 with no true-positive loss.
+
+**No CLI-side code changes** — this release only propagates the engine
+improvements from the pinned `circle-ir` dependency. Suite 4354 pass,
+2 skipped, 1 todo, 0 regressions vs 3.194.0.
+
+**Output note:** `ir.taint.sources` no longer emits the `user_input` or
+`env_var` type strings (neither was a member of the published `SourceType`
+union); Python `input()` / `os.getenv()` now report `io_input` /
+`env_input`. JSON and SARIF consumers keying on those values should update.
+
 ## [3.194.0] - 2026-07-30
 
 Adopts [`circle-ir@3.194.0`](https://www.npmjs.com/package/circle-ir):

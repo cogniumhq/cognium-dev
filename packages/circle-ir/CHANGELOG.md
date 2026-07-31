@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.195.0] - 2026-07-31
+
+Taint-registry consolidation (#4 follow-up) plus the first slice of the
+BenchmarkPython residual-FP audit.
+
+### Changed
+
+- **`DEFAULT_SINKS` / `DEFAULT_SOURCES` are the canonical taint registries**
+  (ADR-004). `LanguagePlugin.getBuiltinSinks()` / `getBuiltinSources()` now
+  carry only patterns with no counterpart there. Removed 62 duplicate sink
+  registrations and 15 duplicate source registrations across the Python,
+  JS/TS, Go, Java, Rust and Bash plugins.
+
+  Behaviour-preserving by construction: `findSinks` dedupes by
+  `location:line:cwe` and replaces only on strictly-higher confidence, which
+  for an identical `(class, method)` pair differs only via the
+  critical-severity boost — 61 of 62 duplicates could never win their slot,
+  and the one that did (classless `raw`, CWE-89, `critical` in the JS plugin
+  vs `high` in the config) had its severity ported before removal.
+  `findSources` has no dedup at all, so each identical source duplicate had
+  been emitting a second, byte-identical `TaintSource` per call site.
+
+- **Python `exec(user_code)` is `code_injection` (CWE-94) only.** It
+  previously also matched the classless `command_injection` (CWE-78)
+  pattern — which exists for Node's destructured `child_process.exec` and
+  Java's unresolved `r.exec()` — and emitted two findings for one call. On
+  OWASP BenchmarkPython this removed 10 duplicate reported findings across
+  27 files with no change to any category verdict.
+
+- **Source types are single-valued per call.** `ir.taint.sources` no longer
+  emits `user_input` or `env_var`: both are strings outside the published
+  `SourceType` union, reaching consumers only through the cast in the plugin
+  merge. Python `input()` / `os.getenv()` now report the canonical
+  `io_input` / `env_input`. Go `Context.PostForm` and Rust `Form<T>` are both
+  urlencoded-body reads and now agree on `http_body` (the Rust entry was
+  retyped from `http_param`). **Downstream consumers that switch on
+  `SourceType` should note the removed values.**
+
+### Added
+
+- **`SinkPattern.exclude_languages`** — the inverse of `languages`, for
+  carving one ecosystem out of a genuinely broad classless pattern. All sink
+  language filtering now flows through a single `sinkPatternAppliesTo`
+  helper so the allowlist and denylist cannot drift apart.
+
+- **Python reject-then-return traversal guard** —
+  `findPythonTraversalRejectGuardSanitizers` recognises
+  `if '../' in name: return …` followed by filesystem use of `name`, and
+  emits `path_traversal` sanitizers after the guard block. Credit follows
+  one-hop derivations (`target = f'{BASE}/{name}'`); a later assignment that
+  does not mention a guarded name clobbers it. Narrow by design: reject
+  polarity only, traversal tokens only, `path_traversal` only. Measured on
+  BenchmarkPython: pathtraver flow-level FPs 28 → 10, overall flow-level FPR
+  9.3% → 6.9%, **zero true positives lost**.
+
+- **`npm run config:drift`** — reports how far the documentation-only
+  `configs/` tree has drifted from the runtime registries (currently 683
+  documented sinks, 253 absent at runtime, 55 typed differently). Never
+  fails a build. `configs/README.md` states the non-runtime status in the
+  published package.
+
+### Notes
+
+Three sink overlaps are deliberate and now documented in-code with the
+ticket that owns them, rather than being duplication: js/ts `res.redirect`
+(CWE-601 + CWE-113, per #189/#132), Go `log.Printf`/`Fatalf`/`Panicf`
+(CWE-117 + CWE-134, per #264), and `fmt.Fprintf` (CWE-134 + CWE-79, open
+pending Go corpus evidence).
+
+Verification: 4354 tests pass, 2 skipped, 1 todo. Corpus deltas measured
+locally against a 3.194.0 baseline — OWASP Java 2740 files, 0 changed;
+BenchmarkPython 1230 files, 45 changed, all FP removals, 0 TPs lost.
+
 ## [3.194.0] - 2026-07-30
 
 OWASP-LLM01 prompt-injection precision + recall (#267). The
