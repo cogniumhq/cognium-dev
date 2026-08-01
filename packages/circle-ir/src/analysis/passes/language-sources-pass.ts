@@ -1329,10 +1329,107 @@ function findPythonAssignmentSources(sourceCode: string, language: string): Tain
   return sources;
 }
 
+/**
+ * Evaluate an integer arithmetic / comparison expression built only from
+ * literals, known integer constants, `+ - * / // %`, parentheses and one
+ * comparison operator. Returns `undefined` for anything it cannot decide —
+ * an unknown name, a non-integer, a call, a string, division by zero.
+ *
+ * Deliberately hand-rolled rather than `eval`-ed: the input is untrusted
+ * source text, and the analyzer must stay browser-safe.
+ */
+function evaluatePythonConstExpression(
+  expr: string,
+  consts: Map<string, number>,
+): number | boolean | undefined {
+  const COMPARISON = /(<=|>=|==|!=|<|>)/;
+  const parts = expr.split(COMPARISON);
+  if (parts.length === 3) {
+    const left = evaluatePythonConstExpression(parts[0], consts);
+    const right = evaluatePythonConstExpression(parts[2], consts);
+    if (typeof left !== 'number' || typeof right !== 'number') return undefined;
+    switch (parts[1]) {
+      case '<': return left < right;
+      case '>': return left > right;
+      case '<=': return left <= right;
+      case '>=': return left >= right;
+      case '==': return left === right;
+      case '!=': return left !== right;
+      default: return undefined;
+    }
+  }
+  if (parts.length !== 1) return undefined;
+
+  const matched = expr.match(/\d+|[A-Za-z_][A-Za-z0-9_]*|\/\/|[-+*/%()]|\S/g);
+  if (!matched) return undefined;
+  // Explicit binding so the hoisted `parseSum` declaration keeps the
+  // non-null narrowing.
+  const tokens: string[] = matched;
+
+  let pos = 0;
+  const peek = (): string | undefined => tokens[pos];
+
+  // term := factor (('*' | '/' | '//' | '%') factor)*
+  // sum  := term (('+' | '-') term)*
+  const parseFactor = (): number | undefined => {
+    const tok = tokens[pos++];
+    if (tok === undefined) return undefined;
+    if (tok === '(') {
+      const inner = parseSum();
+      if (tokens[pos++] !== ')') return undefined;
+      return inner;
+    }
+    if (tok === '-') {
+      const operand = parseFactor();
+      return operand === undefined ? undefined : -operand;
+    }
+    if (/^\d+$/.test(tok)) return Number(tok);
+    if (/^[A-Za-z_]/.test(tok)) return consts.get(tok);
+    return undefined;
+  };
+
+  const parseTerm = (): number | undefined => {
+    let value = parseFactor();
+    if (value === undefined) return undefined;
+    while (peek() === '*' || peek() === '/' || peek() === '//' || peek() === '%') {
+      const op = tokens[pos++];
+      const rhs = parseFactor();
+      if (rhs === undefined) return undefined;
+      if ((op === '/' || op === '//' || op === '%') && rhs === 0) return undefined;
+      if (op === '*') value *= rhs;
+      else if (op === '/') value /= rhs;
+      else if (op === '//') value = Math.floor(value / rhs);
+      else value = ((value % rhs) + rhs) % rhs;
+    }
+    return value;
+  };
+
+  function parseSum(): number | undefined {
+    let value = parseTerm();
+    if (value === undefined) return undefined;
+    while (peek() === '+' || peek() === '-') {
+      const op = tokens[pos++];
+      const rhs = parseTerm();
+      if (rhs === undefined) return undefined;
+      value = op === '+' ? value + rhs : value - rhs;
+    }
+    return value;
+  }
+
+  const result = parseSum();
+  return pos === tokens.length ? result : undefined;
+}
+
 export function buildPythonTaintedVars(sourceCode: string): Map<string, number> {
   const tainted = new Map<string, number>();
   const containerTainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
+
+  // Integer constants in scope, for folding `X = A if <const cond> else B`.
+  // Only literal-valued and constant-derived integers are tracked; anything
+  // else (call result, string, tainted read) removes the name from the map so
+  // a later condition mentioning it stays undecided.
+  const intConsts = new Map<string, number>();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -1388,7 +1485,30 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
 
     const assignMatch = line.match(/^\s*([\p{L}\p{N}_]+)\s*=\s*(.+)$/u);
     if (!assignMatch) continue;
-    const [, lhs, rhs] = assignMatch;
+    const [, lhs, rhsRaw] = assignMatch;
+
+    // Maintain the integer-constant map used to fold conditional expressions.
+    const constValue = evaluatePythonConstExpression(rhsRaw.trim(), intConsts);
+    if (typeof constValue === 'number') intConsts.set(lhs, constValue);
+    else intConsts.delete(lhs);
+
+    // Fold `X = <then> if <condition> else <else>` when the condition is
+    // decidable from those constants. The dead branch cannot contribute taint,
+    // so scanning the whole RHS for tainted names — as the generic path below
+    // does — reports a flow that can never execute. This is the second-largest
+    // FP shape on OWASP BenchmarkPython (`bar = "safe" if 7 * 18 + num > 200
+    // else param`, where num is 106 and the safe literal always wins).
+    //
+    // Only the *condition* is folded, never the branches: `bar = a if c else b`
+    // keeps whichever branch is live, taint and all. An undecidable condition
+    // leaves the RHS untouched, so unknown values stay conservative.
+    let rhs = rhsRaw;
+    const ternary = rhsRaw.match(/^(.+?)\s+if\s+(.+?)\s+else\s+(.+)$/);
+    if (ternary) {
+      const decided = evaluatePythonConstExpression(ternary[2].trim(), intConsts);
+      if (decided === true) rhs = ternary[1].trim();
+      else if (decided === false) rhs = ternary[3].trim();
+    }
 
     const isDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
     let propagatedFrom: string | undefined;
