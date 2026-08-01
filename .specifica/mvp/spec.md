@@ -40,7 +40,7 @@ cognium-dev is the **pure-SAST product** for AppSec buyers. It implements **Pill
 - [x] OWASP Benchmark (Java): 100% TPR, 0% FPR ✓
 - [x] Juliet Test Suite (Java): 100% pass rate (156/156) ✓
 - [x] SecuriBench Micro (Java): 97.7% TPR ✓
-- [ ] OWASP BenchmarkPython: TPR ≥ 95%, FPR ≤ 2% — current on 3.23.5: TPR 81.2%, **FPR 12.6%** (Issue #4 source-side closed; 91 residual FPs tracked in tasks.md)
+- [ ] OWASP BenchmarkPython: TPR ≥ 95%, FPR ≤ 2% — **criterion is not measurable as stated.** The official runner scores file-level source/sink co-occurrence without consulting `taint.flows`, so a file with a correctly sanitized sink still counts as a positive and no engine change can clear it. Engine-side flow-level FPR is **0.0%** as of 88284d9 (72 → 0, zero TP loss); the official co-occurrence figure will read ~11%. Re-express against flow-based scoring, or close after the circle-ir-ai runner is fixed (tracked in tasks.md, same root cause as #265)
 - [ ] GitHub Action `cognium-dev/scan@v1` available
 - [x] npm packages published: `circle-ir`, `cognium-dev` ✓ (current 3.23.5)
 - [x] Monorepo structure established ✓
