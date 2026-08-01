@@ -723,9 +723,15 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'xpath_injection') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        const taintedVarOnLine = [...pyTaintedVars.keys()].find(v =>
-          new RegExp(`\\b${v}\\b`).test(sinkLineText)
+        // Tainted names that appear on the line as a *value*. A name in
+        // keyword-argument position (`xpath(q, name=bar)` — `name` is the
+        // XPath variable being bound, not data) is not an occurrence of that
+        // variable's value, and treating it as one used to pick the wrong
+        // name below and defeat the parameterised-XPath check.
+        const taintedValueVars = [...pyTaintedVars.keys()].filter(v =>
+          new RegExp(`(?<![\\w.])${v}\\b(?!\\s*=(?!=))`).test(sinkLineText),
         );
+        const taintedVarOnLine = taintedValueVars[0];
         // OOP escape — if the sink line references `self.<field>` for one
         // of the constructor-injected OOP sources, accept it (#104).
         const oopVarOnLine = [...oopFieldVars].find(v =>
@@ -733,6 +739,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         );
         if (oopVarOnLine) return true;
         if (!taintedVarOnLine) return false;
+        // Every tainted value on the line must be neutralised for the sink to
+        // be dropped — checking only the first one let a second, unbound
+        // variable through. Bound-as-XPath-parameter counts as neutralised:
+        // `root.xpath(query, name=bar)` passes `bar` to lxml as a variable
+        // binding, the XPath equivalent of a prepared statement.
+        const neutralised = (v: string): boolean =>
+          pySanitizedVars.has(v) ||
+          new RegExp(`\\.xpath\\s*\\([^)]*\\b\\w+\\s*=\\s*\\b${v}\\b`).test(sinkLineText) ||
+          isXPathQuoteEscapedOnLine(sinkLineText, v);
+        if (taintedValueVars.every(neutralised)) return false;
         if (pySanitizedVars.has(taintedVarOnLine)) return false;
         // Inline quote-escape at the sink itself:
         //   select(root, f"...[@id='{bar.replace('\'', '&apos;')}']")

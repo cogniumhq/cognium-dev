@@ -391,6 +391,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findPythonRegexAllowlistWrapperSanitizers(code));
       additionalSanitizers.push(...findPythonSetMembershipXssGuardSanitizers(code));
       additionalSanitizers.push(...findPythonTraversalRejectGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonStringLiteralGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonDefaultSaxParserXxeSanitizers(code));
+      additionalSanitizers.push(...findPythonUrlAllowlistRedirectSanitizers(code));
       additionalSanitizers.push(...findPythonDefusedXmlSanitizers(code));
       // Sprint 77a (#216 Pattern X): Jinja2 Environment(autoescape=...) +
       // .render(...) sanitizer.
@@ -1421,6 +1424,16 @@ function evaluatePythonConstExpression(
 }
 
 /**
+ * Resolve a Python list index (which may be negative) against a known length.
+ * Returns `undefined` when it falls outside the list, in which case the caller
+ * stops tracking that list rather than guessing.
+ */
+function normalizeListIndex(index: number, length: number): number | undefined {
+  const resolved = index < 0 ? length + index : index;
+  return resolved >= 0 && resolved < length ? resolved : undefined;
+}
+
+/**
  * Line indices (0-based) belonging to a branch that cannot execute, because
  * its `if` condition is decidable from tracked integer constants:
  *
@@ -1494,6 +1507,11 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
   const containerTainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
   const deadBranchLines = computeDeadPythonBranchLines(lines);
+  // Per-element taint for lists followed since construction (`x = []` or a
+  // literal). Only append / insert / pop / del are modelled; any other
+  // mutation removes the list from the map and the coarse
+  // whole-container behaviour takes over.
+  const listElems = new Map<string, boolean[]>();
 
   // Integer constants in scope, for folding `X = A if <const cond> else B`.
   // Only literal-valued and constant-derived integers are tracked; anything
@@ -1532,10 +1550,61 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
     // word-boundary scan below.
     const containerAppendMatch = line.match(/^\s*([\p{L}\p{N}_]+)\.(append|extend|insert|add|push|put|appendleft)\s*\(\s*(.+?)\s*\)\s*$/u);
     if (containerAppendMatch) {
-      const [, receiver, , argExpr] = containerAppendMatch;
+      const [, receiver, method, argExpr] = containerAppendMatch;
       const argIsTainted = [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(argExpr));
       const argIsDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(argExpr));
       if (argIsTainted || argIsDirectSource) tainted.set(receiver, tainted.get(receiver) ?? (i + 1));
+
+      // Per-element tracking for lists we have followed since construction.
+      // `append` pushes; `insert(i, x)` splices at a literal index; anything
+      // else (extend, an unparsable index) makes the element map unreliable,
+      // so the list drops back to the coarse whole-container behaviour above.
+      const elems = listElems.get(receiver);
+      if (elems) {
+        if (method === 'append') {
+          elems.push(argIsTainted || argIsDirectSource);
+        } else if (method === 'insert') {
+          const insertAt = argExpr.match(/^(-?\d+)\s*,\s*(.+)$/);
+          if (insertAt) {
+            const idx = normalizeListIndex(Number(insertAt[1]), elems.length);
+            const valueExpr = insertAt[2];
+            const valueTainted =
+              [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(valueExpr)) ||
+              PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(valueExpr));
+            if (idx !== undefined) elems.splice(idx, 0, valueTainted);
+            else listElems.delete(receiver);
+          } else {
+            listElems.delete(receiver);
+          }
+        } else {
+          listElems.delete(receiver);
+        }
+      }
+      continue;
+    }
+
+    // `lst.pop(i)` / `lst.pop()` / `del lst[i]` — removal shifts every later
+    // element down one, which is exactly what makes `lst[1]` safe in
+    //   lst.append('safe'); lst.append(param); lst.append('moresafe')
+    //   lst.pop(0); bar = lst[1]        # 'moresafe', not param
+    const popMatch = line.match(/^\s*(?:([\p{L}\p{N}_]+)\s*=\s*)?([\p{L}\p{N}_]+)\.pop\s*\(\s*(-?\d+)?\s*\)\s*$/u);
+    const delMatch = line.match(/^\s*del\s+([\p{L}\p{N}_]+)\s*\[\s*(-?\d+)\s*\]\s*$/u);
+    if (popMatch || delMatch) {
+      const receiver = popMatch ? popMatch[2] : delMatch![1];
+      const rawIndex = popMatch ? (popMatch[3] !== undefined ? Number(popMatch[3]) : -1) : Number(delMatch![2]);
+      const elems = listElems.get(receiver);
+      if (elems) {
+        const idx = normalizeListIndex(rawIndex, elems.length);
+        if (idx === undefined) listElems.delete(receiver);
+        else {
+          const [removed] = elems.splice(idx, 1);
+          // `x = lst.pop(i)` binds the removed element's taint to x.
+          if (popMatch && popMatch[1]) {
+            if (removed) tainted.set(popMatch[1], i + 1);
+            else tainted.delete(popMatch[1]);
+          }
+        }
+      }
       continue;
     }
 
@@ -1581,6 +1650,46 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
       const decided = evaluatePythonConstExpression(ternary[2].trim(), intConsts);
       if (decided === true) rhs = ternary[1].trim();
       else if (decided === false) rhs = ternary[3].trim();
+    }
+
+    // Track list construction so the element map has a starting point, and
+    // invalidate it whenever the name is rebound to something else.
+    const listLiteral = rhs.trim().match(/^\[\s*(.*?)\s*\]$/);
+    if (listLiteral) {
+      const inner = listLiteral[1];
+      if (inner === '') {
+        listElems.set(lhs, []);
+      } else if (!inner.includes('[') && !inner.includes('(')) {
+        listElems.set(
+          lhs,
+          inner.split(',').map(part => {
+            const expr = part.trim();
+            return (
+              [...tainted.keys()].some(v => new RegExp(`(?<![\\p{L}\\p{N}_])${v}(?![\\p{L}\\p{N}_])`, 'u').test(expr)) ||
+              PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(expr))
+            );
+          }),
+        );
+      } else {
+        listElems.delete(lhs);
+      }
+    } else {
+      listElems.delete(lhs);
+    }
+
+    // Indexed read of a tracked list: `bar = lst[1]` takes that element's
+    // taint precisely instead of inheriting the whole container's.
+    const indexRead = rhs.trim().match(/^([\p{L}\p{N}_]+)\s*\[\s*(-?\d+)\s*\]$/u);
+    if (indexRead) {
+      const elems = listElems.get(indexRead[1]);
+      if (elems) {
+        const idx = normalizeListIndex(Number(indexRead[2]), elems.length);
+        if (idx !== undefined) {
+          if (elems[idx]) tainted.set(lhs, i + 1);
+          else tainted.delete(lhs);
+          continue;
+        }
+      }
     }
 
     const isDirectSource = PYTHON_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
@@ -3452,6 +3561,220 @@ function findPythonTraversalRejectGuardSanitizers(code: string): TaintSanitizer[
         method: 'if',
         line: l,
         sanitizes: ['path_traversal'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect the Python "must be a plain string literal" validation guard
+ * (cognium-dev #4 residual-FP audit):
+ *
+ *   if not bar.startswith("'") or not bar.endswith("'") or "'" in bar[1:-1]:
+ *       return "Exec argument must be a plain string literal."
+ *   exec(bar)
+ *
+ * Past that guard `bar` is a quoted literal whose interior contains no quote,
+ * so `exec`/`eval` sees a string-literal expression and cannot be steered into
+ * executing attacker code — there is no way to close the quote and append a
+ * statement. This is the whole codeinj FP bucket on OWASP BenchmarkPython.
+ *
+ * All three clauses are required. Any two of them leave an escape: without the
+ * interior check, `'a' + evil() + '` satisfies startswith/endswith while still
+ * breaking out of the literal. Only `code_injection` is sanitized — proving a
+ * value is a quoted literal says nothing about SQL, a path, or HTML, where the
+ * quote characters themselves are the payload.
+ */
+function findPythonStringLiteralGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+  // Quote literal in Python source: '\'' , "'" , '"' , "\"".
+  const Q = `(?:'(?:\\\\')'|"'"|'"'|"(?:\\\\")")`;
+
+  for (let i = 0; i < lines.length; i++) {
+    const guard = lines[i].match(
+      new RegExp(
+        `^(\\s*)if\\s+not\\s+([A-Za-z_][A-Za-z0-9_]*)\\.startswith\\(\\s*${Q}\\s*\\)` +
+          `\\s+or\\s+not\\s+\\2\\.endswith\\(\\s*${Q}\\s*\\)` +
+          `\\s+or\\s+${Q}\\s+in\\s+\\2\\[1:-1\\]\\s*:\\s*$`,
+      ),
+    );
+    if (!guard) continue;
+    const guardIndent = guard[1].length;
+    const guardedVar = guard[2];
+
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    const varRe = new RegExp(`\\b${guardedVar}\\b`);
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      if (!varRe.test(lines[l - 1])) continue;
+      sanitizers.push({
+        type: 'python_string_literal_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['code_injection'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect a default-configured `xml.sax` parser being used to parse untrusted
+ * XML (cognium-dev #4 residual-FP audit):
+ *
+ *   parser = xml.sax.make_parser()
+ *   doc = xml.dom.minidom.parseString(bar, parser)     # NOT XXE
+ *
+ * versus the vulnerable form, which differs by one line:
+ *
+ *   parser = xml.sax.make_parser()
+ *   parser.setFeature(xml.sax.handler.feature_external_ges, True)
+ *   doc = xml.dom.minidom.parseString(bar, parser)     # XXE
+ *
+ * Since Python 3.7.1 (bpo-17239) `xml.sax` and `xml.dom.minidom` do not
+ * process external entities unless `feature_external_ges` is switched on or a
+ * custom `EntityResolver` is installed. Without one of those, untrusted XML
+ * cannot pull in an external entity, so CWE-611 does not apply. Residual DoS
+ * risk (billion laughs / quadratic blowup) is a different weakness, CWE-776,
+ * and is unaffected by this gate.
+ *
+ * The check is per-parser-variable and file-scoped: if the parser is enabled
+ * anywhere, reassigned, or passed somewhere this scan cannot follow, no
+ * sanitizer is emitted and the sink stands. In the OWASP BenchmarkPython
+ * corpus this separates all 8 XXE true positives (which set the feature) from
+ * the 3 false positives (which do not) — both groups call the same API.
+ */
+function findPythonDefaultSaxParserXxeSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const parserVars = new Set<string>();
+  for (const line of lines) {
+    const made = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:xml\.)?sax\.make_parser\s*\(/);
+    if (made) parserVars.add(made[1]);
+  }
+  if (parserVars.size === 0) return sanitizers;
+
+  // Drop any parser that has entity processing switched on, gets a custom
+  // resolver, or is rebound to something else.
+  for (const line of lines) {
+    for (const parser of [...parserVars]) {
+      const enabled = new RegExp(
+        `\\b${parser}\\.setFeature\\s*\\([^,]*external_(?:ges|pes)[^,]*,\\s*True\\s*\\)`,
+      );
+      const resolver = new RegExp(`\\b${parser}\\.setEntityResolver\\s*\\(`);
+      const rebound = new RegExp(`^\\s*${parser}\\s*=(?!=)`);
+      if (enabled.test(line) || resolver.test(line)) parserVars.delete(parser);
+      else if (rebound.test(line) && !/make_parser\s*\(/.test(line)) parserVars.delete(parser);
+    }
+  }
+  if (parserVars.size === 0) return sanitizers;
+
+  // Emit on parse calls that hand the XML to one of those parsers.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const parseCall = /\b(?:minidom\.)?parseString\s*\(|\b(?:minidom\.)?parse\s*\(|\bsax\.parse(?:String)?\s*\(/;
+    if (!parseCall.test(line)) continue;
+    const usesDefaultParser = [...parserVars].some(p => new RegExp(`\\b${p}\\b`).test(line));
+    if (!usesDefaultParser) continue;
+    sanitizers.push({
+      type: 'python_default_sax_parser',
+      method: 'make_parser',
+      line: i + 1,
+      sanitizes: ['xxe'],
+    });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Detect the parse-and-allowlist open-redirect guard (cognium-dev #4
+ * residual-FP audit):
+ *
+ *   url = urllib.parse.urlparse(bar)
+ *   if url.netloc not in ['google.com'] or url.scheme != 'https':
+ *       return "Invalid URL."
+ *   return flask.redirect(bar)
+ *
+ * Past the guard the target's host is one of a fixed set, which is the
+ * canonical CWE-601 mitigation — an attacker cannot steer the redirect
+ * off-site. Requires the reject polarity with a terminator, a `netloc`
+ * membership test against a literal collection, and a `urlparse` whose
+ * argument is the value later redirected to.
+ *
+ * Only `open_redirect` is sanitized: knowing the host is allow-listed says
+ * nothing about the path or query, so SSRF and injection sinks are untouched.
+ */
+function findPythonUrlAllowlistRedirectSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // `url = urlparse(bar)` → parsed name maps back to the raw URL variable.
+  const parsedFrom = new Map<string, string>();
+  for (const line of lines) {
+    const m = line.match(
+      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:urllib\.parse\.)?urlparse\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/,
+    );
+    if (m) parsedFrom.set(m[1], m[2]);
+  }
+  if (parsedFrom.size === 0) return sanitizers;
+
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const guard = lines[i].match(
+      /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\.netloc\s+not\s+in\s+[[({]/,
+    );
+    if (!guard) continue;
+    const guardIndent = guard[1].length;
+    const rawVar = parsedFrom.get(guard[2]);
+    if (!rawVar) continue;
+
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    const varRe = new RegExp(`\\b${rawVar}\\b`);
+    for (let l = blockEnd + 2; l <= lines.length; l++) {
+      if (!varRe.test(lines[l - 1])) continue;
+      sanitizers.push({
+        type: 'python_url_allowlist_guard',
+        method: 'if',
+        line: l,
+        sanitizes: ['open_redirect'],
       });
     }
   }
