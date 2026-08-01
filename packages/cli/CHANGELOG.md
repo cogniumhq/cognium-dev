@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.196.0] - 2026-07-31
+
+Adopts [`circle-ir@3.196.0`](https://www.npmjs.com/package/circle-ir): the
+OWASP BenchmarkPython false-positive audit — flow-level false positives on
+that corpus go **72 → 0** (9.3% → 0.0% FPR) with every true positive
+preserved, via per-element list taint, constant-branch folding, four narrow
+Python guard sanitizers, inline XPath quote-escape recognition, and a fix to
+the Python XPath filter stage.
+
+**No CLI-side code changes** — this release only propagates the engine
+improvements from the pinned `circle-ir` dependency. Suite 4391 pass,
+2 skipped, 1 todo, 0 regressions vs 3.195.0.
+
+**Reading the numbers:** these are flow-level results. A scorer that flags a
+file whenever it contains both a source and a sink, without consulting
+`taint.flows`, cannot observe a sanitized flow and will show far less
+movement.
+
 ## [3.195.0] - 2026-07-31
 
 Adopts [`circle-ir@3.195.0`](https://www.npmjs.com/package/circle-ir):

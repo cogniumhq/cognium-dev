@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.196.0] - 2026-07-31
+
+OWASP BenchmarkPython false-positive audit (#4 follow-up). Flow-level false
+positives on that corpus go **72 → 0** (9.3% → 0.0% FPR) with **every true
+positive preserved** — per-category TP counts are identical to 3.194.0, and
+0 of 2740 OWASP Java files change.
+
+All six causes were Python gaps in analyses that already existed for Java;
+none was a sink-model error.
+
+### Added
+
+- **Per-element list taint.** Lists followed since construction carry
+  per-element taint through `append` / `insert` / `pop` / `del` with index
+  shifting, so `lst.append('safe'); lst.append(param); lst.pop(0);
+  bar = lst[1]` reads the shifted element rather than inheriting whole-
+  container taint. Any unmodelled mutation or a rebind falls back to the
+  previous coarse behaviour. (13 FPs across 5 categories.)
+
+- **Constant-branch folding**, both syntactic forms — `x = a if <const cond>
+  else b` and the statement-level `if <const cond>: … else: …`. Integer
+  constants are tracked and the condition evaluated by a hand-rolled
+  evaluator (literals, tracked constants, `+ - * / // %`, parentheses, one
+  comparison — no `eval`, browser-safe). Undecidable conditions leave
+  behaviour unchanged; only the condition folds, never the branches; `elif`
+  chains are skipped. (16 FPs across 7 categories.)
+
+- **Python guard sanitizers**, each narrow and each with negative tests:
+  - `'../'` reject-then-return → `path_traversal` (18 FPs)
+  - string-literal validation (`startswith` + `endswith` + no interior quote)
+    → `code_injection` (7 FPs). All three clauses required: without the
+    interior check, `'a' + evil() + '` passes the other two
+  - `urlparse` + `netloc not in [...]` reject → `open_redirect` (3 FPs)
+  - default-configured `xml.sax` parser → `xxe` (3 FPs). Since Python 3.7.1
+    neither `xml.sax` nor `xml.dom.minidom` processes external entities
+    unless `feature_external_ges` is enabled or a custom EntityResolver is
+    installed. Per-parser-variable and file-scoped: enabling the feature,
+    installing a resolver, or rebinding the name all keep the sink
+
+- **Inline XPath quote-escape** at the sink call
+  (`select(root, f"…[@id='{bar.replace(\"'\", '&apos;')}']")`). The
+  assignment form was already credited; the inline form was not. All-or-
+  nothing per line — a line that also interpolates the raw value keeps its
+  finding, and SQL-style `.replace("'", "''")` still fires. (8 FPs.)
+
+### Fixed
+
+- **SinkFilterPass Python XPath stage** considered only the *first* tainted
+  name on the sink line. On `root.xpath(query, name=bar)` that name was
+  `name`, matched in keyword-argument position where it is the XPath variable
+  being bound rather than data — which defeated the parameterised-XPath check
+  entirely. It now requires every tainted name appearing as a *value* to be
+  neutralised.
+
+### Notes
+
+**These gains are not visible to a co-occurrence-based benchmark runner.** A
+scorer that flags a file whenever it contains both a source and a sink,
+without consulting `taint.flows`, cannot see a sanitized flow: on the same
+corpus, co-occurrence false positives moved only 204 → 174, entirely from the
+two categories where a *sink* was removed rather than sanitized. Judge this
+release on flows.
+
+Verification: 4391 tests pass, 2 skipped, 1 todo. Corpus deltas measured
+locally against a 3.194.0 baseline.
+
 ## [3.195.0] - 2026-07-31
 
 Taint-registry consolidation (#4 follow-up) plus the first slice of the
