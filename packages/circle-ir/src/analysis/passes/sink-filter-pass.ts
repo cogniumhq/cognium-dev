@@ -734,6 +734,14 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (oopVarOnLine) return true;
         if (!taintedVarOnLine) return false;
         if (pySanitizedVars.has(taintedVarOnLine)) return false;
+        // Inline quote-escape at the sink itself:
+        //   select(root, f"...[@id='{bar.replace('\'', '&apos;')}']")
+        // `buildPythonSanitizedVars` only credits the *assignment* form
+        // (`query = f"...{bar.replace(...)}..."; select(root, query)`), so the
+        // inline shape reached here unsanitized. An XPath predicate is a
+        // quoted string literal — a value that cannot contain the quote
+        // cannot escape it, which is the whole injection vector.
+        if (isXPathQuoteEscapedOnLine(sinkLineText, taintedVarOnLine)) return false;
         if (new RegExp(`\\.xpath\\s*\\([^)]*\\b\\w+\\s*=\\s*\\b${taintedVarOnLine}\\b`).test(sinkLineText)) return false;
         return true;
       });
@@ -2171,4 +2179,52 @@ export function filterSanitizedSinks(
     }
     return true;
   });
+}
+
+/**
+ * True when EVERY occurrence of `varName` on `lineText` is wrapped in a
+ * quote-escaping `.replace(...)` call — the shape that makes a tainted value
+ * safe inside an XPath predicate:
+ *
+ *   f"/Employees/Employee[@emplid='{bar.replace('\'', '&apos;')}']"
+ *
+ * An XPath predicate delimits its operand with a quote, so a value that
+ * cannot contain that quote cannot break out of it and alter the expression.
+ * The check is deliberately all-or-nothing: a line that also interpolates the
+ * raw variable (`{bar}` alongside `{bar.replace(...)}`) is still vulnerable
+ * and keeps its finding.
+ *
+ * Scoped to xpath_injection by its only caller. The same escape says nothing
+ * about a value reaching a shell, a SQL statement or HTML — quoting rules and
+ * dangerous characters differ in every one of those contexts.
+ */
+function isXPathQuoteEscapedOnLine(lineText: string, varName: string): boolean {
+  const STRING_LITERAL = `'(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"`;
+  const replaceCall = new RegExp(
+    `^${varName}\\.replace\\s*\\(\\s*(${STRING_LITERAL})\\s*,\\s*(${STRING_LITERAL})\\s*\\)`,
+  );
+
+  /** Strip the surrounding quotes and undo backslash escapes. */
+  const decode = (literal: string): string =>
+    literal.slice(1, -1).replace(/\\(.)/g, '$1');
+
+  const occurrence = new RegExp(`(?<![\\w.])${varName}\\b`, 'g');
+  let match: RegExpExecArray | null;
+  let seen = 0;
+
+  while ((match = occurrence.exec(lineText)) !== null) {
+    seen++;
+    const rest = lineText.slice(match.index);
+    const call = replaceCall.exec(rest);
+    if (!call) return false;
+
+    const searched = decode(call[1]);
+    const replacement = decode(call[2]);
+    // The replaced token must be the quote character itself, and the
+    // replacement must not reintroduce one.
+    if (searched !== "'" && searched !== '"') return false;
+    if (replacement.includes("'") || replacement.includes('"')) return false;
+  }
+
+  return seen > 0;
 }

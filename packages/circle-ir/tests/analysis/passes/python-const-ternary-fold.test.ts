@@ -83,3 +83,85 @@ describe('python constant-folded conditional expressions', () => {
     expect(tainted.has('bar')).toBe(true);
   });
 });
+
+describe('python constant-folded if/else statements', () => {
+  it('drops taint assigned in a dead else-branch', () => {
+    const tainted = buildPythonTaintedVars(
+      src(
+        '    num = 86',
+        '    if 7 * 42 - num > 200:',   // 208 > 200 → then-branch lives
+        "        bar = 'safe'",
+        '    else:',
+        '        bar = param',
+      ),
+    );
+    expect(tainted.has('bar')).toBe(false);
+  });
+
+  it('drops taint assigned in a dead then-branch', () => {
+    const tainted = buildPythonTaintedVars(
+      src(
+        '    num = 300',
+        '    if 7 * 42 - num > 200:',   // -6 > 200 → then-branch dead
+        '        bar = param',
+        '    else:',
+        "        bar = 'safe'",
+      ),
+    );
+    expect(tainted.has('bar')).toBe(false);
+  });
+
+  it('keeps taint from the live branch', () => {
+    const tainted = buildPythonTaintedVars(
+      src(
+        '    num = 300',
+        '    if 7 * 42 - num > 200:',   // dead
+        "        bar = 'safe'",
+        '    else:',
+        '        bar = param',          // live
+      ),
+    );
+    expect(tainted.has('bar')).toBe(true);
+  });
+
+  // NOTE on fixture ordering: this scan is linear, so the LAST textual
+  // assignment to a name wins regardless of branching. These fixtures put the
+  // tainted assignment in the else-branch, which means the expectation flips
+  // only if the else-branch is (wrongly) marked dead — i.e. they discriminate
+  // the folding rather than the pre-existing last-write behaviour.
+  it('keeps taint when the condition is undecidable', () => {
+    const tainted = buildPythonTaintedVars(
+      src('    if request.args.get("x"):', "        bar = 'safe'", '    else:', '        bar = param'),
+    );
+    expect(tainted.has('bar')).toBe(true);
+  });
+
+  it('leaves elif chains alone', () => {
+    const tainted = buildPythonTaintedVars(
+      src(
+        '    num = 86',
+        '    if 7 * 42 - num > 200:',
+        "        bar = 'safe'",
+        '    elif num > 1:',
+        "        bar = 'other'",
+        '    else:',
+        '        bar = param',
+      ),
+    );
+    expect(tainted.has('bar')).toBe(true);
+  });
+
+  it('does not clobber taint from a dead branch reassignment', () => {
+    // `bar` is tainted before the if; the dead branch reassigns it to a
+    // constant. Skipping the dead line must not delete the live taint.
+    const tainted = buildPythonTaintedVars(
+      src(
+        '    bar = param',
+        '    num = 300',
+        '    if 7 * 42 - num > 200:',   // dead
+        "        bar = 'safe'",
+      ),
+    );
+    expect(tainted.has('bar')).toBe(true);
+  });
+});

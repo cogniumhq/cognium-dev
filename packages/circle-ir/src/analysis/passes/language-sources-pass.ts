@@ -1420,10 +1420,80 @@ function evaluatePythonConstExpression(
   return pos === tokens.length ? result : undefined;
 }
 
+/**
+ * Line indices (0-based) belonging to a branch that cannot execute, because
+ * its `if` condition is decidable from tracked integer constants:
+ *
+ *   num = 86
+ *   if 7 * 42 - num > 200:      # 208 > 200 → always true
+ *       bar = 'safe'
+ *   else:
+ *       bar = param             # dead — must not seed taint
+ *
+ * The statement-level sibling of the conditional-expression folding in
+ * `buildPythonTaintedVars`. Same evaluator, same conservatism: an undecidable
+ * condition marks nothing dead.
+ *
+ * `elif` chains are skipped entirely — deciding one arm says nothing about the
+ * rest without evaluating every preceding condition, and the corpus shapes
+ * this targets are plain if/else.
+ */
+function computeDeadPythonBranchLines(lines: string[]): Set<number> {
+  const dead = new Set<number>();
+  const consts = new Map<string, number>();
+  const indentOf = (line: string): number => line.length - line.trimStart().length;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const assign = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.+)$/);
+    if (assign) {
+      const value = evaluatePythonConstExpression(assign[2].trim(), consts);
+      if (typeof value === 'number') consts.set(assign[1], value);
+      else consts.delete(assign[1]);
+    }
+
+    const ifMatch = line.match(/^(\s*)if\s+(.+?)\s*:\s*$/);
+    if (!ifMatch) continue;
+    const indent = ifMatch[1].length;
+    const decided = evaluatePythonConstExpression(ifMatch[2].trim(), consts);
+    if (decided !== true && decided !== false) continue;
+
+    // Then-block: everything more deeply indented than the `if`.
+    const thenStart = i + 1;
+    let cursor = thenStart;
+    while (cursor < lines.length && (lines[cursor].trim() === '' || indentOf(lines[cursor]) > indent)) {
+      cursor++;
+    }
+    const thenEnd = cursor - 1;
+
+    let elseStart = -1;
+    let elseEnd = -1;
+    if (cursor < lines.length && indentOf(lines[cursor]) === indent) {
+      if (/^\s*elif\b/.test(lines[cursor])) continue;
+      if (/^\s*else\s*:\s*$/.test(lines[cursor])) {
+        elseStart = cursor + 1;
+        let k = elseStart;
+        while (k < lines.length && (lines[k].trim() === '' || indentOf(lines[k]) > indent)) k++;
+        elseEnd = k - 1;
+      }
+    }
+
+    if (decided === true) {
+      for (let l = elseStart; l >= 0 && l <= elseEnd; l++) dead.add(l);
+    } else {
+      for (let l = thenStart; l <= thenEnd; l++) dead.add(l);
+    }
+  }
+
+  return dead;
+}
+
 export function buildPythonTaintedVars(sourceCode: string): Map<string, number> {
   const tainted = new Map<string, number>();
   const containerTainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
+  const deadBranchLines = computeDeadPythonBranchLines(lines);
 
   // Integer constants in scope, for folding `X = A if <const cond> else B`.
   // Only literal-valued and constant-derived integers are tracked; anything
@@ -1434,6 +1504,9 @@ export function buildPythonTaintedVars(sourceCode: string): Map<string, number> 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.trimStart().startsWith('#')) continue;
+    // A branch whose `if` condition is decidably false cannot assign anything,
+    // so its lines must not seed or clobber taint.
+    if (deadBranchLines.has(i)) continue;
 
     const subscriptAssign = line.match(/^\s*([\p{L}\p{N}_]+)\[(['"])([^'"]+)\2\]\s*=\s*(.+)$/u);
     if (subscriptAssign) {
