@@ -286,6 +286,48 @@ export const RULE_DEFINITIONS: Record<SinkType, RuleInfo> = {
     severityLevel: 'high',
     cwe: 'CWE-1427',
   },
+  // These four have been emitted by language-plugin builtins for some time but
+  // had no rule metadata, because the plugin `type` field was a bare `string`
+  // cast to `SinkType` on merge — so `Record<SinkType, RuleInfo>` never
+  // required them and consumers rendering these findings got nothing to show.
+  // Typing the plugin patterns against the union (cognium-dev #4 follow-up)
+  // surfaced the gap at compile time.
+  insecure_storage: {
+    name: 'Insecure Storage',
+    shortDescription: 'Sensitive value written to unencrypted client-side storage',
+    fullDescription: 'The application writes user or credential data to a client-side store that offers no encryption or access control (React Native AsyncStorage, browser localStorage). Any code running in the same context — including injected script or another app with device access — can read it back.',
+    remediation: 'Store credentials and tokens in the platform keychain/keystore (expo-secure-store, react-native-keychain). Keep only non-sensitive display state in AsyncStorage/localStorage, and prefer short-lived tokens held in memory.',
+    cvssScore: '5.5',
+    severityLevel: 'medium',
+    cwe: 'CWE-922',
+  },
+  prototype_pollution: {
+    name: 'Prototype Pollution',
+    shortDescription: 'Untrusted object merged into a target without key filtering',
+    fullDescription: 'The application deep-merges or extends an object with attacker-controlled keys. A `__proto__`, `constructor` or `prototype` key reaches Object.prototype and changes behaviour for every object in the process, which can escalate to privilege bypass or remote code execution depending on what later reads the polluted property.',
+    remediation: 'Reject `__proto__` / `constructor` / `prototype` keys before merging, use a null-prototype target (`Object.create(null)`), or use a merge helper that filters them (lodash >= 4.17.21, and still validate).',
+    cvssScore: '8.1',
+    severityLevel: 'high',
+    cwe: 'CWE-1321',
+  },
+  regex_dos: {
+    name: 'Regular Expression Denial of Service',
+    shortDescription: 'Untrusted pattern compiled into a regular expression',
+    fullDescription: 'The application compiles a user-controlled string as a regular expression. A pattern with nested quantifiers can take exponential time against a short input, hanging the worker that evaluates it.',
+    remediation: 'Do not compile user-supplied patterns. If unavoidable, run them under a linear-time engine (RE2), bound the pattern length and nesting, and enforce a match timeout on a separate thread or process.',
+    cvssScore: '7.5',
+    severityLevel: 'high',
+    cwe: 'CWE-1333',
+  },
+  unsafe_memory: {
+    name: 'Unsafe Memory Operation',
+    shortDescription: 'Tainted value reaches a raw-memory or transmute call',
+    fullDescription: 'The application passes user-controlled data into an operation that bypasses the type and bounds guarantees of safe Rust (`slice::from_raw_parts`, `mem::transmute`). An attacker-influenced length or layout can read or write out of bounds, or reinterpret memory as an incompatible type.',
+    remediation: 'Keep untrusted values out of `unsafe` blocks. Derive lengths from the owning container rather than from input, prefer safe conversions (`TryFrom`, `bytemuck`) over `transmute`, and assert invariants before the unsafe call.',
+    cvssScore: '8.1',
+    severityLevel: 'high',
+    cwe: 'CWE-119',
+  },
 };
 
 // =============================================================================

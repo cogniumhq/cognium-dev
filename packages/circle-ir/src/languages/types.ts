@@ -13,6 +13,8 @@ import type {
   ImportInfo,
   TaintSource,
   TaintSink,
+  SourceType,
+  SinkType,
 } from '../types/index.js';
 
 /**
@@ -186,8 +188,9 @@ export interface TaintSourcePattern {
   // Match by parameter pattern
   parameterPattern?: RegExp;
 
-  // Source metadata
-  type: string;                    // e.g., "http_param", "http_body"
+  // Source metadata. Typed against the published union for the reason given
+  // on `TaintSinkPattern.type`.
+  type: SourceType;
   severity: 'critical' | 'high' | 'medium' | 'low';
   confidence: number;
 
@@ -204,8 +207,17 @@ export interface TaintSinkPattern {
   method: string;
   class?: string;
 
-  // Sink metadata
-  type: string;                    // e.g., "sql_injection", "command_injection"
+  // Sink metadata.
+  //
+  // `type` is the published `SinkType` union, NOT a bare string. It was a
+  // string until the #4 follow-up, and `TaintMatcherPass` cast it with
+  // `as SinkType` when merging plugin builtins into the config — so a typo or
+  // an unlisted category compiled cleanly and shipped to consumers as a value
+  // the exported type said was impossible. Consumers that switch on it fail
+  // silently in that case (no throw, no log — an unmatched type falls through
+  // to a default branch, which for a severity gate means a quiet demotion).
+  // Keep this typed so the compiler catches it instead.
+  type: SinkType;
   cwe: string;                     // e.g., "CWE-89"
   severity: 'critical' | 'high' | 'medium' | 'low';
 

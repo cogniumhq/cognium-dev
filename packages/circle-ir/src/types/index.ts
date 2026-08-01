@@ -227,23 +227,46 @@ export interface TaintFlowStep {
   type: 'source' | 'assignment' | 'use' | 'return' | 'field' | 'sink';
 }
 
-export type SourceType =
-  | "http_param"
-  | "http_body"
-  | "http_header"
-  | "http_cookie"
-  | "http_path"
-  | "http_query"
-  | "io_input"
-  | "env_input"
-  | "db_input"
-  | "network_input"
-  | "file_input"
-  | "dom_input"
-  | "config_param"
-  | "interprocedural_param"
-  | "plugin_param"
-  | "constructor_field";
+/**
+ * Every taint-source category the engine can emit.
+ *
+ * Exported as a runtime array, not just a type, for two reasons: the
+ * conformance test needs to check emitted values against it, and consumers
+ * switching on `TaintSource.type` can build an exhaustive map from it instead
+ * of hand-copying the list. An unmatched source type is a *silent* failure
+ * downstream — it falls through to a default branch rather than throwing —
+ * so having the set available at runtime is what makes that checkable.
+ */
+export const SOURCE_TYPES = [
+  "http_param",
+  "http_body",
+  "http_header",
+  "http_cookie",
+  "http_path",
+  "http_query",
+  "io_input",
+  "env_input",
+  "db_input",
+  "network_input",
+  "file_input",
+  "dom_input",
+  "config_param",
+  "interprocedural_param",
+  "plugin_param",
+  "constructor_field",
+  "cli_arg",
+  "file_upload",
+  "http_response",
+  "message_input",
+  "navigation_param",
+  "storage_input",
+  "url_param",
+  "user_input",
+  "env_var",
+] as const;
+
+export type SourceType = (typeof SOURCE_TYPES)[number];
+
 
 export type SinkType =
   | "sql_injection"
@@ -298,6 +321,14 @@ export type SinkType =
   // layers consume these flows to detect prompt-injection classes of
   // finding. cognium-dev #248.
   | "prompt_injection"
+  // Emitted by language-plugin builtins, previously reaching consumers only
+  // through the `as SinkType` cast in the TaintMatcherPass merge. Admitted to
+  // the union for the same reason as the source-side additions above.
+  // cognium-dev #4 follow-up.
+  | "insecure_storage"     // React Native AsyncStorage.setItem of secrets
+  | "prototype_pollution"  // CWE-1321: merge/extend into Object.prototype
+  | "regex_dos"            // Rust Regex::new on untrusted pattern
+  | "unsafe_memory"        // CWE-119: from_raw_parts / transmute
   // Inter-procedural: tainted data passed to external method call
   | "external_taint_escape";
 

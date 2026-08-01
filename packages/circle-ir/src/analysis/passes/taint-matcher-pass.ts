@@ -6,7 +6,7 @@
  * extracts @sanitizer-annotated method names from type declarations.
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, SourceType, SinkType } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer } from '../../types/index.js';
 import type { TaintConfig } from '../../types/config.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import { analyzeTaint } from '../taint-matcher.js';
@@ -48,7 +48,7 @@ export class TaintMatcherPass implements AnalysisPass<TaintMatcherResult> {
               method: s.method,
               class: s.class,
               annotation: s.annotation,
-              type: s.type as SourceType,
+              type: s.type,
               severity: s.severity,
               return_tainted: s.returnTainted ?? false,
             })),
@@ -58,7 +58,7 @@ export class TaintMatcherPass implements AnalysisPass<TaintMatcherResult> {
             ...pluginSinks.map(s => ({
               method: s.method,
               class: s.class,
-              type: s.type as SinkType,
+              type: s.type,
               cwe: s.cwe,
               severity: s.severity,
               arg_positions: s.argPositions,
