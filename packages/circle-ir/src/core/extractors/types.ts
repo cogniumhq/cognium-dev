@@ -115,6 +115,13 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
     types.push(extractJSClassInfo(cls));
   }
 
+  // Extract TypeScript interfaces. Only the TS/TSX grammars produce
+  // `interface_declaration`, so this is a no-op for plain JavaScript.
+  const interfaces = getNodesFromCache(tree.rootNode, 'interface_declaration', cache);
+  for (const iface of interfaces) {
+    types.push(extractTSInterfaceInfo(iface));
+  }
+
   // Extract standalone functions as a module-like type
   const functions = getNodesFromCache(tree.rootNode, 'function_declaration', cache);
   if (functions.length > 0) {
@@ -561,6 +568,99 @@ function extractSelfAssignments(body: Node, fields: FieldInfo[], fieldNames: Set
 /**
  * Extract JavaScript class information.
  */
+/**
+ * Extract a TypeScript `interface_declaration` as a `TypeInfo`.
+ *
+ * The TS grammar produces `interface_declaration` → `interface_body`, whose
+ * members are `property_signature` (fields, including function-typed ones
+ * such as `onEvent: (e: string) => void`) and `method_signature` (methods).
+ * Java interfaces are handled separately by `extractInterfaceInfo`, whose body
+ * shape is different — the two cannot share an implementation.
+ *
+ * Needed because a type contract declared as an interface was previously
+ * dropped entirely: `interface UserRepo` alongside
+ * `class SqlUserRepo implements UserRepo` yielded one `TypeInfo`, the class.
+ * Cross-instance taint analysis (Issue #1) needs the declared contract to
+ * resolve a field's type when the declaration site is an interface.
+ */
+function extractTSInterfaceInfo(node: Node): TypeInfo {
+  const name = getIdentifier(node, 'name') ?? 'Anonymous';
+
+  // `interface A extends B, C` — tree-sitter-typescript wraps these in an
+  // `extends_type_clause`. `TypeInfo.extends` is a single string, so the first
+  // parent goes there and the rest land in `implements`, which mirrors how a
+  // consumer reads "the contracts this type carries".
+  const parents: string[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child || child.type !== 'extends_type_clause') continue;
+    for (let j = 0; j < child.childCount; j++) {
+      const gc = child.child(j);
+      if (!gc) continue;
+      if (gc.type === 'type_identifier' || gc.type === 'generic_type' || gc.type === 'nested_type_identifier') {
+        parents.push(getNodeText(gc));
+      }
+    }
+  }
+
+  const body = node.childForFieldName('body');
+  const methods: MethodInfo[] = [];
+  const fields: FieldInfo[] = [];
+
+  if (body) {
+    for (let i = 0; i < body.childCount; i++) {
+      const member = body.child(i);
+      if (!member) continue;
+
+      if (member.type === 'method_signature') {
+        const methodName = getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member);
+        const params = member.childForFieldName('parameters');
+        const returnType = member.childForFieldName('return_type');
+        methods.push({
+          name: methodName,
+          return_type: returnType ? getNodeText(returnType).replace(/^:\s*/, '') : null,
+          parameters: params ? extractJSParameters(params) : [],
+          annotations: [],
+          // An interface member has no body and therefore no modifiers in the
+          // class sense; `readonly` / `?` live on property signatures.
+          modifiers: [],
+          start_line: member.startPosition.row + 1,
+          end_line: member.endPosition.row + 1,
+        });
+        continue;
+      }
+
+      if (member.type === 'property_signature') {
+        const fieldName = getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member);
+        const typeNode = member.childForFieldName('type');
+        const modifiers: string[] = [];
+        const text = getNodeText(member);
+        if (/^\s*readonly\b/.test(text)) modifiers.push('readonly');
+        if (/\?\s*:/.test(text)) modifiers.push('optional');
+        fields.push({
+          name: fieldName,
+          type: typeNode ? getNodeText(typeNode).replace(/^:\s*/, '') : null,
+          modifiers,
+          annotations: [],
+        });
+      }
+    }
+  }
+
+  return {
+    name,
+    kind: 'interface',
+    package: null,
+    extends: parents[0] ?? null,
+    implements: parents.slice(1),
+    annotations: [],
+    methods,
+    fields,
+    start_line: node.startPosition.row + 1,
+    end_line: node.endPosition.row + 1,
+  };
+}
+
 function extractJSClassInfo(node: Node): TypeInfo {
   const name = getIdentifier(node, 'name') ?? 'Anonymous';
 
