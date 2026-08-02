@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.197.0] - 2026-08-01
+
+Adopts [`circle-ir@3.197.0`](https://www.npmjs.com/package/circle-ir).
+
+### Consumer Impact
+
+- **Four sink types gained rule metadata** — `insecure_storage` (medium),
+  `prototype_pollution` (high), `regex_dos` (high), `unsafe_memory` (high).
+  They previously resolved to a CWE-20 placeholder. Consumers that skip
+  severity policy for placeholder types will now apply their ceiling to these
+  four; with a cap of one tier above `severityLevel`, only `insecure_storage`
+  can demote an existing finding. Expect this in a baseline diff — the
+  findings are unchanged, their permitted ceiling is not.
+- **Correcting 3.195.0:** `user_input` / `env_var` are still emitted by
+  JavaScript (and Go/Rust for `env_var`). Only the Python duplicates were
+  removed. Keep any fallback.
+- Nothing is removed in this release; all union changes are additive.
+
+**No CLI-side code changes** — this release propagates engine changes from the
+pinned `circle-ir` dependency. 4410 circle-ir tests pass, 133 CLI tests pass.
+
 ## [3.196.0] - 2026-07-31
 
 Adopts [`circle-ir@3.196.0`](https://www.npmjs.com/package/circle-ir): the

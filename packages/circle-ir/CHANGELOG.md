@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.197.0] - 2026-08-01
+
+Closes the type hole behind the 3.195.0 source-type incident, and registers
+four sink types that had been shipping without rule metadata.
+
+### Consumer Impact
+
+*First release under the `Consumer Impact` convention (principles.md): a
+change whose downstream failure mode is a silent fall-through rather than an
+error gets enumerated here.*
+
+**1. Severity ceilings now apply to four previously-unregistered sink types.**
+`RULE_DEFINITIONS` is `Record<SinkType, RuleInfo>`, but `insecure_storage`,
+`prototype_pollution`, `regex_dos` and `unsafe_memory` had no entry, so
+`getRuleInfo()` returned a CWE-20 placeholder for them. A consumer that skips
+policy for placeholder types — cognium-ai's `severity-policy.ts` does exactly
+this, deliberately, so unregistered types are never demoted — will now start
+applying its ceiling to these four. Registered baselines:
+
+| sink type | `severityLevel` | CVSS | CWE |
+|---|---|---|---|
+| `insecure_storage` | medium | 5.5 | CWE-922 |
+| `prototype_pollution` | high | 8.1 | CWE-1321 |
+| `regex_dos` | high | 7.5 | CWE-1333 |
+| `unsafe_memory` | high | 8.1 | CWE-119 |
+
+For a consumer capping at one tier above `severityLevel`, only
+`insecure_storage` can demote an existing finding (critical → high); the other
+three cap at critical and are unaffected. **This will read as a detection
+regression in a baseline diff** if it is not accounted for — the findings are
+unchanged, their permitted ceiling is not.
+
+**2. `user_input` / `env_var` are still emitted — correcting 3.195.0.** That
+release's notes said they are "no longer emitted". Only the *Python*
+duplicates were removed. JavaScript still emits `user_input`; JavaScript, Go
+and Rust still emit `env_var`. A fallback for those values is required for
+current engines, not only older ones. Both are now `@deprecated` members of
+the published union and will not be removed outside a release that says so.
+
+**3. Nothing is removed in this release.** All union changes are additive.
+
+### Added
+
+- **`SOURCE_TYPES`**, the `SourceType` union exported as a runtime `as const`
+  array. Consumers can import it and build an exhaustive map instead of
+  hand-copying the list, so an unmatched value becomes a test failure rather
+  than a silent default-branch fall-through. `SourceType` is now derived from
+  it.
+- Seven source categories admitted to `SourceType` — `cli_arg`,
+  `file_upload`, `http_response`, `message_input`, `navigation_param`,
+  `storage_input`, `url_param` — plus the two deprecated synonyms above. All
+  were already being emitted by language-plugin builtins.
+- Four sink categories admitted to `SinkType`: `insecure_storage`,
+  `prototype_pollution`, `regex_dos`, `unsafe_memory`, with full rule
+  metadata (name, description, remediation, CVSS, CWE).
+
+### Fixed
+
+- **`TaintSourcePattern.type` and `TaintSinkPattern.type` are typed against
+  the published unions.** They were bare `string`, and `TaintMatcherPass` cast
+  them with `as SourceType` / `as SinkType` when merging plugin builtins — so
+  an unlisted category or a typo compiled cleanly and reached consumers as a
+  value the exported type said was impossible. Nine off-union source types and
+  four off-union sink types were shipping. The casts are gone; an unlisted
+  category is now a compile error.
+- New `tests/languages/emitted-type-conformance.test.ts` is the runtime
+  backstop for third-party plugins registered at runtime, and asserts every
+  emitted sink type has rule metadata.
+
+No behaviour change: 1230 OWASP BenchmarkPython files produce identical
+results, 4410 tests pass.
+
 ## [3.196.0] - 2026-07-31
 
 OWASP BenchmarkPython false-positive audit (#4 follow-up). Flow-level false
