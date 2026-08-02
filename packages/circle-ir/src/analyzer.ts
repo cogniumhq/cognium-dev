@@ -735,7 +735,22 @@ export async function analyze(
   // `language` as 'javascript'/'typescript' so all downstream extractors
   // and passes treat the tree the same way; only the grammar used to
   // produce the tree differs. (cognium-dev #88.2)
+  //
+  // `'tsx'` is also a public `SupportedLanguage` value, so a caller doing its
+  // own extension detection can legally pass it — and that used to bypass this
+  // whole design. Every `languages: ['javascript', 'typescript']` scope (134
+  // sinks, 27 sources) and every `language === 'typescript'` pass gate omits
+  // `'tsx'`, so the file parsed cleanly and then reported almost nothing: on a
+  // handler with an exec, an innerHTML write and a redirect, `'typescript'`
+  // yields 4 flows and `'tsx'` yielded 0. It failed silently, which is the
+  // worst shape for it to fail in. Normalising here makes the value harmless
+  // instead of quietly destructive. The CLI already maps `.tsx` →
+  // `'typescript'`, so scans through it were never affected.
   let parseGrammar: SupportedLanguage = language;
+  if (language === 'tsx') {
+    parseGrammar = 'tsx';
+    language = 'typescript';
+  }
   if (language === 'javascript' || language === 'typescript') {
     const lower = filePath.toLowerCase();
     if (lower.endsWith('.tsx') || lower.endsWith('.jsx')) {
