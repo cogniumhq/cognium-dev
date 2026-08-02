@@ -100,6 +100,14 @@ BenchmarkPython residual-FP audit.
   OWASP BenchmarkPython this removed 10 duplicate reported findings across
   27 files with no change to any category verdict.
 
+> **Correction (2026-08-01).** The claim below that `user_input` / `env_var`
+> are "no longer emitted" is wrong: 3.195.0 removed only the *Python*
+> duplicates. JavaScript still emits `user_input`, and JavaScript, Go and Rust
+> still emit `env_var`. Consumers keeping a fallback for those values need it
+> for current engines, not only for older ones. Both are now `@deprecated`
+> members of the published `SourceType` union and will not be removed outside a
+> release that says so. See the next release's notes.
+
 - **Source types are single-valued per call.** `ir.taint.sources` no longer
   emits `user_input` or `env_var`: both are strings outside the published
   `SourceType` union, reaching consumers only through the cast in the plugin

@@ -39,3 +39,29 @@ Cross-cutting rules for the cognium-dev project.
 - Error messages include actionable fix suggestions.
 - CLI output is colored for terminal readability.
 - SARIF output enables GitHub/GitLab integration.
+
+- **Consumer Impact callout — required when a change fails silently downstream.**
+  The trigger is not "a type changed" or "output changed". It is narrower and
+  more useful: **does a consumer that does not adapt get an error, or a wrong
+  answer?** If the failure mode is a silent fall-through — an unmatched value
+  hitting a `default:` branch, a lookup returning `undefined`, a severity gate
+  capping an unrecognised category — the release notes and both CHANGELOGs
+  need a `Consumer Impact` section. If the consumer would get a type error, a
+  thrown exception, or a failed test, ordinary release notes are enough.
+
+  Applies regardless of whether the change is a "fix". Removing a value that
+  was never in the published union is a conformance improvement for us and a
+  silent behaviour change for anyone matching on it — that is precisely the
+  case that needs the callout, not the case that is exempt from it.
+
+  The callout states: the exact values or shapes affected, which languages or
+  code paths still emit the old form, what a non-adapting consumer will
+  observe (naming the silent symptom — "findings demoted to low", not "may
+  behave unexpectedly"), and the migration target.
+
+  Origin: circle-ir 3.195.0 removed two off-union `SourceType` values. The
+  note framed it as conformance cleanup, accurate for producers and misleading
+  for consumers: cognium-ai shipped Python `input()` findings demoted
+  critical→low with nothing in the logs. The same release's note also
+  overstated the scope — a second reason the callout must enumerate rather
+  than summarise.

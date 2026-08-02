@@ -36,6 +36,14 @@ false positives from 28 to 10 with no true-positive loss.
 improvements from the pinned `circle-ir` dependency. Suite 4354 pass,
 2 skipped, 1 todo, 0 regressions vs 3.194.0.
 
+> **Correction (2026-08-01).** The claim below that `user_input` / `env_var`
+> are "no longer emitted" is wrong: 3.195.0 removed only the *Python*
+> duplicates. JavaScript still emits `user_input`, and JavaScript, Go and Rust
+> still emit `env_var`. Consumers keeping a fallback for those values need it
+> for current engines, not only for older ones. Both are now `@deprecated`
+> members of the published `SourceType` union and will not be removed outside a
+> release that says so. See the next release's notes.
+
 **Output note:** `ir.taint.sources` no longer emits the `user_input` or
 `env_var` type strings (neither was a member of the published `SourceType`
 union); Python `input()` / `os.getenv()` now report `io_input` /
