@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.198.0] - 2026-08-02
+
+Exports the runtime type arrays that 3.197.0's notes claimed but did not ship.
+
+### Consumer Impact
+
+- **`SOURCE_TYPES` was not exported in 3.197.0.** `src/index.ts` re-exported
+  `SourceType` under `export type`, so the runtime array never reached the
+  built module — the 3.197.0 claim was verified against the source file rather
+  than against what the package exports. Both release notes and that
+  CHANGELOG entry now carry the correction.
+- **`SINK_TYPES` is new** and did not exist in any earlier release.
+
+### Added
+
+- **`SOURCE_TYPES` and `SINK_TYPES`** exported from the package entry as
+  runtime `as const` arrays (25 and 29 members). `SourceType` / `SinkType` are
+  derived from them, so the type and the array cannot drift. A consumer
+  switching on `TaintSource.type` or `TaintSink.type` can build an exhaustive
+  map from these instead of hand-copying the list, which turns an unmatched
+  value into a failing test rather than a silent default-branch fall-through.
+- `tests/public-entry-exports.test.ts` asserts these resolve to *values* at
+  the entry point — a `export type` regression fails it, since a type-only
+  export is `undefined` at runtime. It also pins `SINK_TYPES` against
+  `RULE_DEFINITIONS` keys so the two cannot describe different sets.
+
+### Fixed
+
+- `language: 'tsx'` passed to `analyze()` is normalized to `'typescript'`.
+  `'tsx'` is a parser-routing tag that is also a public `SupportedLanguage`,
+  and passing it bypassed the JSX routing design: every
+  `languages: ['javascript', 'typescript']` scope (134 sinks, 27 sources) and
+  every `language === 'typescript'` pass gate (30 sites) omits `'tsx'`, so the
+  file parsed cleanly and reported almost nothing — 4 flows became 0 on a
+  handler with an exec, an innerHTML write and a redirect. The CLI maps
+  `.tsx` → `'typescript'`, so scans through it were never affected; this is an
+  API-surface trap for programmatic callers. `ir.meta.language` now reads
+  `'typescript'` for such callers, and findings appear where there were none.
+
+4418 tests pass, 2 skipped, 1 todo. BenchmarkPython corpus unchanged.
+
 ## [3.197.0] - 2026-08-01
 
 Closes the type hole behind the 3.195.0 source-type incident, and registers
@@ -47,6 +88,11 @@ the published union and will not be removed outside a release that says so.
 **3. Nothing is removed in this release.** All union changes are additive.
 
 ### Added
+
+> **Correction (2026-08-02).** `SOURCE_TYPES` is **not** exported from the
+> package entry in this release — `src/index.ts` re-exports `SourceType` under
+> `export type`, so the runtime array never reached the built module. Fixed in
+> 3.198.0, which exports both `SOURCE_TYPES` and `SINK_TYPES` as values.
 
 - **`SOURCE_TYPES`**, the `SourceType` union exported as a runtime `as const`
   array. Consumers can import it and build an exhaustive map instead of

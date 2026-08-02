@@ -268,69 +268,49 @@ export const SOURCE_TYPES = [
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 
-export type SinkType =
-  | "sql_injection"
-  | "nosql_injection"
-  | "command_injection"
-  | "path_traversal"
-  | "xss"
-  | "xxe"
-  | "deserialization"
-  | "ldap_injection"
-  | "xpath_injection"
-  | "ssrf"
-  | "open_redirect"
-  | "code_injection"
-  | "log_injection"
-  // ReDoS (CWE-1333): tainted regex pattern reaches a regex compile/match
-  // call (e.g. Python `re.match`, Java `Pattern.compile`, JS `new RegExp`).
-  // Issue #86 — Sprint 5.
-  | "redos"
-  // Format-string injection (CWE-134): tainted format string reaches a
-  // format-string sink (e.g. Java `String.format`, Python `str.format`,
-  // C-style `printf`). Issue #86 — Sprint 5.
-  | "format_string"
-  // CRLF / HTTP response splitting (CWE-113): tainted value reaches a
-  // response-header / cookie / status-line sink that has not been validated
-  // against \r and \n. Distinct from xss because the attack vector is the
-  // response header (cache poisoning, session fixation, smuggling), not the
-  // response body. Issue #86 — Sprint 6.
-  | "crlf"
-  // Mass-assignment / over-posting (CWE-915): an untrusted bag of
-  // attributes (HTTP body / form / JSON) is splatted into a domain object
-  // constructor or assignment helper without an allow-list, letting
-  // attackers set privileged fields (`is_admin`, `role`, `owner_id`).
-  // Issue #86 — Sprint 6.
-  | "mass_assignment"
-  // MyBatis ORM mapper-interface call — the actual SQL lives in the mapper's
-  // XML/annotation binding, not at the call site. Distinct from sql_injection
-  // so consumers can route, downgrade, or require an interprocedural binding
-  // check (e.g. `${...}` interpolation) before reporting.
-  | "mybatis_mapper_call"
-  // Weak cryptography (no taint flow required)
-  | "weak_random"
-  | "weak_hash"
-  | "weak_crypto"
-  | "insecure_cookie"
-  | "trust_boundary"
-  // Prompt injection (CWE-1427): tainted data reaches a generative-model
-  // prompt-construction API (chat completion, message create, invoke).
-  // Attacker-controlled text merged into a prompt/messages payload can
-  // override system instructions, exfiltrate context, or trigger unintended
-  // tool calls when the response is consumed by an agent. Downstream trust
-  // layers consume these flows to detect prompt-injection classes of
-  // finding. cognium-dev #248.
-  | "prompt_injection"
-  // Emitted by language-plugin builtins, previously reaching consumers only
-  // through the `as SinkType` cast in the TaintMatcherPass merge. Admitted to
-  // the union for the same reason as the source-side additions above.
-  // cognium-dev #4 follow-up.
-  | "insecure_storage"     // React Native AsyncStorage.setItem of secrets
-  | "prototype_pollution"  // CWE-1321: merge/extend into Object.prototype
-  | "regex_dos"            // Rust Regex::new on untrusted pattern
-  | "unsafe_memory"        // CWE-119: from_raw_parts / transmute
-  // Inter-procedural: tainted data passed to external method call
-  | "external_taint_escape";
+/**
+ * Every sink category the engine can emit.
+ *
+ * Exported as a runtime array for the same reason as `SOURCE_TYPES`: a
+ * consumer switching on `TaintSink.type` can build an exhaustive map from it
+ * rather than hand-copying, and an unmatched sink type is a silent
+ * fall-through downstream (a severity gate that skips unknown types will
+ * quietly stop applying its ceiling) rather than an error.
+ */
+export const SINK_TYPES = [
+  "sql_injection",
+  "nosql_injection",
+  "command_injection",
+  "path_traversal",
+  "xss",
+  "xxe",
+  "deserialization",
+  "ldap_injection",
+  "xpath_injection",
+  "ssrf",
+  "open_redirect",
+  "code_injection",
+  "log_injection",
+  "redos",
+  "format_string",
+  "crlf",
+  "mass_assignment",
+  "mybatis_mapper_call",
+  "weak_random",
+  "weak_hash",
+  "weak_crypto",
+  "insecure_cookie",
+  "trust_boundary",
+  "prompt_injection",
+  "insecure_storage",
+  "prototype_pollution",
+  "regex_dos",
+  "unsafe_memory",
+  "external_taint_escape",
+] as const;
+
+export type SinkType = (typeof SINK_TYPES)[number];
+
 
 export type Severity = "critical" | "high" | "medium" | "low";
 

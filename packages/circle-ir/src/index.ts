@@ -86,6 +86,16 @@ export type {
   TaintPath,
 } from './types/index.js';
 
+// Runtime values, not just types. `SourceType` / `SinkType` above are
+// `export type`, so re-exporting the unions alone gives consumers nothing to
+// import at runtime — which is exactly what happened in 3.197.0, where the
+// release note claimed `SOURCE_TYPES` was available and the built module did
+// not carry it. A consumer switching on `TaintSource.type` / `TaintSink.type`
+// can build an exhaustive map from these instead of hand-copying the list, so
+// an unmatched value fails a test on their side rather than falling through
+// to a default branch. Locked by tests/public-entry-exports.test.ts.
+export { SOURCE_TYPES, SINK_TYPES } from './types/index.js';
+
 // Config types
 export type {
   SourceConfig,

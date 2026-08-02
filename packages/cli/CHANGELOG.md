@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.198.0] - 2026-08-02
+
+Adopts [`circle-ir@3.198.0`](https://www.npmjs.com/package/circle-ir).
+
+### Consumer Impact
+
+- **`SOURCE_TYPES` was not actually exported in 3.197.0** despite that
+  release's notes — fixed here, along with a new `SINK_TYPES`. Both are
+  runtime arrays importable from the package entry.
+- `language: 'tsx'` passed programmatically to `analyze()` is now normalized
+  to `'typescript'`; such callers previously got a clean parse with almost no
+  findings. CLI scans were never affected — `.tsx` has always mapped to
+  `'typescript'`.
+
+**No CLI-side code changes.** 4418 circle-ir tests pass, 133 CLI tests pass.
+
 ## [3.197.0] - 2026-08-01
 
 Adopts [`circle-ir@3.197.0`](https://www.npmjs.com/package/circle-ir).
