@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.202.0] - 2026-08-03
+
+Deterministic SBOM generation — the Pillar-I slice of dependency analysis.
+
+### Added
+
+- **`src/analysis/sbom.ts`** — parses raw project manifests into a normalized
+  `Dependency[]` (name, version, ecosystem, scope, Package-URL) and emits
+  **CycloneDX 1.5** (`toCycloneDx`) and **SPDX 2.3** (`toSpdx`) document
+  objects. Parsers: npm `package.json`, pip `requirements.txt`, Maven
+  `pom.xml`, Cargo `Cargo.toml`, and Go `go.mod` — five ecosystems. Regex /
+  `JSON.parse` only, no new runtime dependency. `collectDependencies` builds a
+  de-duplicated list from a `DependencyContext`.
+- Deterministic by construction: no clock, UUID, or randomness. Volatile
+  document metadata (timestamp, serialNumber, namespace) is caller-injected via
+  `SbomMetadata`, so identical input yields byte-identical output — SBOMs stay
+  diffable in CI.
+- Exported from the package entry (`parseNpmDependencies` / `parsePypiDependencies`
+  / `parseMavenDependencies` / `parseCargoDependencies` / `parseGoDependencies`
+  / `collectDependencies` / `toCycloneDx` / `toSpdx`), locked in
+  `public-entry-exports.test.ts`.
+
+CVE *matching* is intentionally out of scope for circle-ir — it needs an
+external vulnerability database, which a downstream consumer supplies.
+
 ## [3.201.0] - 2026-08-02
 
 Completes the DOM `.value` source coverage (the last thread of the

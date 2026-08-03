@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.202.0] - 2026-08-03
+
+Adopts [`circle-ir@3.202.0`](https://www.npmjs.com/package/circle-ir).
+
+### Added
+
+- **`cognium-dev sbom <path>`** — generate a Software Bill of Materials from a
+  project's manifests. Discovers `package.json` / `requirements.txt` /
+  `pom.xml` / `Cargo.toml` / `go.mod` (skipping `node_modules`, `vendor`,
+  `target`, `dist`, `build`, `out`), aggregates + de-dupes their dependencies,
+  and writes **CycloneDX 1.5** (`-f cyclonedx`, default) or **SPDX 2.3**
+  (`-f spdx`) to stdout or `--output <file>`.
+  - `--prod-only` excludes dev/test dependencies.
+  - `--deterministic` omits the timestamp / serialNumber / namespace for
+    reproducible output.
+  - Payload to stdout, status to stderr. CVE matching is out of scope
+    (deterministic SAST — no network).
+
+4464 circle-ir tests pass, 140 CLI tests pass.
+
 ## [3.201.0] - 2026-08-02
 
 Adopts [`circle-ir@3.201.0`](https://www.npmjs.com/package/circle-ir).
