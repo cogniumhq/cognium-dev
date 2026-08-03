@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.203.0] - 2026-08-03
+
+SBOM manifest coverage — `pyproject.toml` and `build.gradle`.
+
+### Added
+
+- **`parsePyprojectDependencies`** — PEP 621 (`[project] dependencies` array +
+  `[project.optional-dependencies]` groups) and Poetry
+  (`[tool.poetry.dependencies]` / dev / group tables, skipping the `python`
+  pin). Shares a PEP 508 helper with the `requirements.txt` parser.
+- **`parseGradleDependencies`** — Gradle Groovy + Kotlin DSL dependency
+  declarations (`implementation` / `api` / `compileOnly` / `test*` /
+  `annotationProcessor` / … in both `'g:a:v'` and `("g:a:v")` forms); `test*`
+  → dev scope; `platform(...)` BOM imports skipped. Maven-coordinate ecosystem.
+- Both wired into `collectDependencies` (the `DependencyContext` already
+  carries `pyprojectToml` and `buildGradle`). SBOM now spans seven manifest
+  forms across six ecosystems. Exported and entry-locked.
+
 ## [3.202.0] - 2026-08-03
 
 Deterministic SBOM generation — the Pillar-I slice of dependency analysis.
