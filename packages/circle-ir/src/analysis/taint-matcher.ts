@@ -1899,7 +1899,7 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
   ]),
 
   // query() is only a SQL sink when receiver is a database handle — not URL builders,
-  // DOM selectors, GraphQL clients, DNS resolvers, etc.
+  // DOM selectors, GraphQL clients, DNS resolvers, loggers, etc.
   query: new Set([
     'uri', 'url', 'builder', 'uribuilder', 'uricomponents', 'uricomponentsbuilder',
     'servleturicomponentsbuilder', 'httpurl', 'urlbuilder', 'webclient',
@@ -1907,6 +1907,10 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
     'parser', 'selector', 'jquery', 'dom', 'document', 'element',
     'xmlpath', 'xpath', 'dns', 'resolver',
     'graphql', 'apollo', 'querybuilder', 'criteria',
+    // Loggers — winston exposes a real `.query()` for querying log records;
+    // `logger.query(userInput)` is a log lookup, not SQL. Real SQL receivers
+    // (db/pool/client/connection/…) are absent here, so recall is untouched.
+    'logger', 'logging', 'winston', 'pino', 'bunyan', 'console',
   ]),
 
   // authenticate() — safe on auth framework objects (token verification, not code exec)
