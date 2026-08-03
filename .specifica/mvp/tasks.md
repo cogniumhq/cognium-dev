@@ -64,6 +64,9 @@
 - [ ] **Dependency analysis** — CVE matching, SBOM generation
   - Maps to: cognium-ai MCP `analyze_dependencies`
   - Formats: CycloneDX, SPDX
+  - **SBOM library core done** (fed523b, unreleased) — new browser-safe `src/analysis/sbom.ts`: parses the raw manifests already on `DependencyContext` (npm/pypi/maven/cargo) into a normalized `Dependency[]` with purls, and emits **CycloneDX 1.5** (`toCycloneDx`) + **SPDX 2.3** (`toSpdx`). Deterministic by construction (no clock/UUID; volatile metadata caller-injected via `SbomMetadata`). Regex/JSON parsing only — no new runtime dep. Exported from the entry, locked in `public-entry-exports.test.ts`. 10 tests.
+  - **Deterministic/consumer boundary:** CVE *matching* is deliberately NOT in circle-ir — it needs an external CVE DB (network/data), which violates browser-safety + minimal-deps. That's a consumer concern (cognium-ai `analyze_dependencies`). circle-ir emits the SBOM; the consumer matches it against a vuln DB.
+  - **Next slices:** (1) CLI `cognium-dev sbom <path>` command — read manifests, invoke the library, write CycloneDX/SPDX to stdout/file; (2) more ecosystems if needed (go.mod, pyproject.toml deps, Gradle `build.gradle` dep list — currently only its Fastjson signal is parsed).
 
 - [ ] **Supply chain risk** — Slopsquatting detection, package trust
   - Maps to: cognium-ai MCP `find_supply_chain_risk`
