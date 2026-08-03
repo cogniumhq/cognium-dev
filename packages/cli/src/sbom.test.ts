@@ -147,6 +147,35 @@ test('sbom: Cargo.lock supersedes Cargo.toml (exact + transitive crate graph)', 
   }
 });
 
+test('sbom: root license (package.json) + per-dep license (package-lock) surface', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-lic-'));
+  try {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'licproj', license: 'Apache-2.0', dependencies: { lodash: '^4.0.0' } }),
+    );
+    writeFileSync(
+      join(dir, 'package-lock.json'),
+      JSON.stringify({
+        name: 'licproj',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'licproj', version: '1.0.0' },
+          'node_modules/lodash': { version: '4.17.21', license: 'MIT' },
+        },
+      }),
+    );
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const bom = JSON.parse(out);
+    expect(bom.metadata.component.licenses).toEqual([{ license: { name: 'Apache-2.0' } }]); // root
+    const lodash = bom.components.find((c: { name: string }) => c.name === 'lodash');
+    expect(lodash.licenses).toEqual([{ license: { name: 'MIT' } }]); // per-dep from lock
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('sbom: --prod-only drops dev dependencies', async () => {
   const full = JSON.parse((await runCli(['sbom', fixture, '--deterministic'])).out);
   const prod = JSON.parse((await runCli(['sbom', fixture, '--prod-only', '--deterministic'])).out);

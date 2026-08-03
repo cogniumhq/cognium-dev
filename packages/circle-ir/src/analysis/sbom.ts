@@ -39,6 +39,12 @@ export interface Dependency {
   scope: DependencyScope;
   /** Package URL (https://github.com/package-url/purl-spec). */
   purl: string;
+  /**
+   * Declared license as an SPDX license expression or name, when the source
+   * records it (e.g. `package-lock.json` carries a per-package `license`).
+   * Most manifests do not list dependency licenses, so this is usually absent.
+   */
+  license?: string;
 }
 
 /**
@@ -59,6 +65,8 @@ export interface SbomMetadata {
   namespace?: string;
   /** Generating tool name recorded in the document. Defaults to `circle-ir`. */
   tool?: string;
+  /** SPDX license expression/name for the described project (its own license). */
+  license?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +202,9 @@ export function parseNpmLockDependencies(packageLock: string): Dependency[] {
       const name = idx >= 0 ? path.slice(idx + marker.length) : (typeof info.name === 'string' ? info.name : path);
       if (!name) continue;
       const version = typeof info.version === 'string' ? info.version : 'unknown';
-      out.push(dep('npm', name, version, scopeOf(info)));
+      const entry = dep('npm', name, version, scopeOf(info));
+      if (typeof info.license === 'string' && info.license) entry.license = info.license;
+      out.push(entry);
     }
   } else if (root.dependencies && typeof root.dependencies === 'object') {
     const walk = (deps: Record<string, unknown>): void => {
@@ -550,6 +560,7 @@ export function toCycloneDx(deps: Dependency[], meta: SbomMetadata = {}): Record
       type: 'application',
       name: meta.name,
       ...(meta.version ? { version: meta.version } : {}),
+      ...(meta.license ? { licenses: [{ license: { name: meta.license } }] } : {}),
     };
   }
   bom.metadata = metadata;
@@ -560,6 +571,7 @@ export function toCycloneDx(deps: Dependency[], meta: SbomMetadata = {}): Record
     version: d.version,
     purl: d.purl,
     scope: d.scope === 'dev' ? 'excluded' : d.scope === 'optional' ? 'optional' : 'required',
+    ...(d.license ? { licenses: [{ license: { name: d.license } }] } : {}),
     'bom-ref': d.purl,
   }));
   return bom;
@@ -579,6 +591,8 @@ export function toSpdx(deps: Dependency[], meta: SbomMetadata = {}): Record<stri
     versionInfo: d.version,
     downloadLocation: 'NOASSERTION',
     filesAnalyzed: false,
+    licenseConcluded: 'NOASSERTION',
+    licenseDeclared: d.license ?? 'NOASSERTION',
     externalRefs: [
       {
         referenceCategory: 'PACKAGE-MANAGER',

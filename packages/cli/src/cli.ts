@@ -1469,14 +1469,16 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   const effective = manifests.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
 
   let projectName = options.name;
-  // Project name from any package.json (even one superseded for deps).
-  if (!projectName) {
+  let projectLicense: string | undefined;
+  // Project name + license from any package.json (even one superseded for deps).
+  {
     const pkg = manifests.find((m) => basename(m) === 'package.json');
     if (pkg) {
       try {
-        const n = (JSON.parse(readFileSync(pkg, 'utf-8')) as { name?: unknown }).name;
-        if (typeof n === 'string' && n) projectName = n;
-      } catch { /* ignore malformed manifest name */ }
+        const parsed = JSON.parse(readFileSync(pkg, 'utf-8')) as { name?: unknown; license?: unknown };
+        if (!projectName && typeof parsed.name === 'string' && parsed.name) projectName = parsed.name;
+        if (typeof parsed.license === 'string' && parsed.license) projectLicense = parsed.license;
+      } catch { /* ignore malformed manifest */ }
     }
   }
 
@@ -1498,6 +1500,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   if (!projectName) projectName = basename(absPath) || 'project';
 
   const meta: SbomMetadata = { name: projectName, tool: 'cognium-dev' };
+  if (projectLicense) meta.license = projectLicense;
   if (!options.deterministic) {
     meta.timestamp = new Date().toISOString();
     const { randomUUID } = await import('crypto');

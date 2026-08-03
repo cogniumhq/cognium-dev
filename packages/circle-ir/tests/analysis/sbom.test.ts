@@ -302,6 +302,37 @@ describe('SBOM emitters', () => {
     expect(rels.every((r) => r.relationshipType === 'DESCRIBES')).toBe(true);
   });
 
+  it('carries per-package license (from package-lock) into CycloneDX + SPDX', () => {
+    const licensed: Dependency[] = [
+      { name: 'lodash', version: '4.17.21', ecosystem: 'npm', scope: 'required', purl: 'pkg:npm/lodash@4.17.21', license: 'MIT' },
+      { name: 'nolicense', version: '1.0.0', ecosystem: 'npm', scope: 'required', purl: 'pkg:npm/nolicense@1.0.0' },
+    ];
+    const bom = toCycloneDx(licensed, { name: 'demo', license: 'Apache-2.0' });
+    const comps = bom.components as Array<Record<string, unknown>>;
+    expect(comps[0].licenses).toEqual([{ license: { name: 'MIT' } }]);
+    expect(comps[1].licenses).toBeUndefined(); // absent when unknown
+    expect((bom.metadata as Record<string, unknown>).component).toMatchObject({
+      licenses: [{ license: { name: 'Apache-2.0' } }],
+    });
+
+    const spdx = toSpdx(licensed, { name: 'demo' });
+    const pkgs = spdx.packages as Array<Record<string, unknown>>;
+    expect(pkgs[0].licenseDeclared).toBe('MIT');
+    expect(pkgs[1].licenseDeclared).toBe('NOASSERTION'); // default when unknown
+  });
+
+  it('npm-lock parser extracts per-package license when present', () => {
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'root', version: '1.0.0' },
+        'node_modules/lodash': { version: '4.17.21', license: 'MIT' },
+      },
+    });
+    const deps = parseNpmLockDependencies(lock);
+    expect(deps[0].license).toBe('MIT');
+  });
+
   it('is deterministic: no injected metadata → byte-identical repeated output', () => {
     expect(JSON.stringify(toCycloneDx(deps))).toBe(JSON.stringify(toCycloneDx(deps)));
     expect(JSON.stringify(toSpdx(deps))).toBe(JSON.stringify(toSpdx(deps)));
