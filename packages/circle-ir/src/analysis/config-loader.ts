@@ -2038,6 +2038,26 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'get',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   { method: 'exec', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
 
+  // TypeORM QueryBuilder raw fragments (CWE-89). TypeORM's raw `.query(sql)`
+  // escape hatch is already covered by the classless `query` sink in the JS
+  // plugin (getBuiltinSinks), so it is NOT re-registered here — the dedup
+  // would discard the duplicate anyway. What was uncovered is the
+  // QueryBuilder fragment API: `andWhere`/`orWhere`/`andHaving`/`orHaving`
+  // take raw SQL strings. These names are TypeORM-idiomatic, so classless +
+  // language-scoped is safe and recovers the dominant chained-builder shape
+  // (`repo.createQueryBuilder('u').andWhere(raw)`) that class matching cannot
+  // reach — the receiver of `.andWhere(...)` is the factory call, not a
+  // class-named variable. Generic `where`/`having` are deliberately NOT added
+  // (too generic for classless; a `*QueryBuilder`-scoped entry would be
+  // near-dead since receivers are rarely named that). Precision is inherent
+  // to the flow: parameterised use (`:id` placeholders + a params object)
+  // keeps input out of the string literal, so a finding fires only on
+  // concatenation.
+  { method: 'andWhere',  type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'orWhere',   type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'andHaving', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'orHaving',  type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+
   // Browser DOM XSS sinks
   { method: 'setAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
 
