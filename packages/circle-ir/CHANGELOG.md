@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.201.0] - 2026-08-02
+
+Completes the DOM `.value` source coverage (the last thread of the
+framework-coverage audit). Additive and JS/TS-scoped — OWASP Java /
+BenchmarkPython unaffected.
+
+### Added
+
+- **DOM element-accessor `.value` sources** — a `.value` read off
+  `document.getElementsByName(...)` / `getElementsByClassName(...)` /
+  `getElementsByTagName(...)` / `querySelectorAll(...)` now registers a
+  `dom_input` source, matching the existing `getElementById` / `querySelector`
+  coverage. Kept narrow by requiring the `document.` receiver, so a bare
+  non-DOM `.value` (`result.value`, `node.value`) stays a non-source as before.
+
 ## [3.200.0] - 2026-08-02
 
 Framework taint-coverage expansion — TypeORM, Django, Micronaut, and Quarkus.

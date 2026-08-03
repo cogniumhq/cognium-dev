@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.201.0] - 2026-08-02
+
+Adopts [`circle-ir@3.201.0`](https://www.npmjs.com/package/circle-ir).
+
+Completes DOM `.value` source coverage — reads off `getElementsByName` /
+`getElementsByClassName` / `getElementsByTagName` / `querySelectorAll` now
+surface DOM-based XSS flows in browser-JS scans.
+
+**No CLI-side code changes.** 4452 circle-ir tests pass, 133 CLI tests pass.
+
 ## [3.200.0] - 2026-08-02
 
 Adopts [`circle-ir@3.200.0`](https://www.npmjs.com/package/circle-ir).
