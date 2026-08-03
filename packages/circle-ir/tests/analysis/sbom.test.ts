@@ -9,6 +9,8 @@ import {
   parseMavenDependencies,
   parseCargoDependencies,
   parseGoDependencies,
+  parsePyprojectDependencies,
+  parseGradleDependencies,
   collectDependencies,
   toCycloneDx,
   toSpdx,
@@ -107,6 +109,68 @@ describe('SBOM manifest parsing', () => {
     expect(byName['github.com/gin-gonic/gin'].version).toBe('v1.9.1'); // v-prefix kept
     expect(byName['github.com/stretchr/testify'].scope).toBe('optional'); // // indirect
     expect(byName['github.com/single/dep'].purl).toBe('pkg:golang/github.com/single/dep@v0.4.0');
+  });
+
+  it('parses pyproject.toml — PEP 621 multi-line array + optional groups', () => {
+    const toml = [
+      '[project]',
+      'name = "demo"',
+      'dependencies = [',
+      '  "flask>=2.0",',
+      '  "requests==2.28.1",',
+      ']',
+      '[project.optional-dependencies]',
+      'test = ["pytest>=7.0"]',
+    ].join('\n');
+    const deps = parsePyprojectDependencies(toml);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['flask'].purl).toBe('pkg:pypi/flask@2.0');
+    expect(byName['requests'].version).toBe('2.28.1');
+    expect(byName['pytest'].scope).toBe('optional');
+  });
+
+  it('parses pyproject.toml — Poetry tables, skipping the python pin, dev group', () => {
+    const toml = [
+      '[tool.poetry.dependencies]',
+      'python = "^3.11"',
+      'flask = "^2.3.0"',
+      'httpx = { version = "0.25.0", optional = true }',
+      '[tool.poetry.group.dev.dependencies]',
+      'pytest = "^7.4"',
+    ].join('\n');
+    const deps = parsePyprojectDependencies(toml);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['python']).toBeUndefined(); // python pin skipped
+    expect(byName['flask'].purl).toBe('pkg:pypi/flask@2.3.0'); // ^ stripped
+    expect(byName['httpx'].version).toBe('0.25.0'); // inline table
+    expect(byName['pytest'].scope).toBe('dev');
+  });
+
+  it('parses build.gradle deps (Groovy + Kotlin forms), test* → dev, platform skipped', () => {
+    const gradle = [
+      "implementation 'com.google.guava:guava:32.1.0'",
+      'api("org.slf4j:slf4j-api:2.0.9")',
+      "testImplementation 'junit:junit:4.13.2'",
+      "implementation platform('org.springframework.boot:spring-boot-dependencies:3.1.0')",
+    ].join('\n');
+    const deps = parseGradleDependencies(gradle);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['com.google.guava:guava'].purl).toBe('pkg:maven/com.google.guava/guava@32.1.0');
+    expect(byName['org.slf4j:slf4j-api'].version).toBe('2.0.9'); // Kotlin DSL
+    expect(byName['junit:junit'].scope).toBe('dev'); // testImplementation
+    // platform(...) BOM import declares no concrete artifact
+    expect(byName['org.springframework.boot:spring-boot-dependencies']).toBeUndefined();
+  });
+
+  it('collectDependencies now also reads pyproject.toml and build.gradle from the context', () => {
+    const deps = collectDependencies({
+      python: { pyprojectToml: '[project]\ndependencies = ["flask==2.3.0"]' },
+      java: { buildGradle: "implementation 'com.google.guava:guava:32.1.0'" },
+    });
+    expect(deps.map((d) => d.purl).sort()).toEqual([
+      'pkg:maven/com.google.guava/guava@32.1.0',
+      'pkg:pypi/flask@2.3.0',
+    ]);
   });
 
   it('collectDependencies aggregates across ecosystems and de-dupes', () => {

@@ -19,7 +19,9 @@ export {
 export {
   parseNpmDependencies,
   parsePypiDependencies,
+  parsePyprojectDependencies,
   parseMavenDependencies,
+  parseGradleDependencies,
   parseCargoDependencies,
   parseGoDependencies,
   collectDependencies,

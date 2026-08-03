@@ -29,6 +29,8 @@ beforeAll(() => {
   mkdirSync(join(fixture, 'sub'));
   writeFileSync(join(fixture, 'sub', 'Cargo.toml'), '[dependencies]\nserde = "1.0.188"\n');
   writeFileSync(join(fixture, 'go.mod'), 'module example.com/m\ngo 1.21\nrequire github.com/gin-gonic/gin v1.9.1\n');
+  writeFileSync(join(fixture, 'pyproject.toml'), '[project]\ndependencies = ["httpx==0.25.0"]\n');
+  writeFileSync(join(fixture, 'build.gradle'), "dependencies {\n  implementation 'com.google.guava:guava:32.1.0'\n}\n");
   // must be skipped by discovery
   mkdirSync(join(fixture, 'node_modules', 'x'), { recursive: true });
   writeFileSync(join(fixture, 'node_modules', 'x', 'package.json'), JSON.stringify({ dependencies: { evil: '1.0.0' } }));
@@ -59,6 +61,8 @@ test('sbom: CycloneDX aggregates manifests, encodes purls, skips node_modules', 
   expect(purls).toContain('pkg:pypi/Flask@2.3.0');
   expect(purls).toContain('pkg:cargo/serde@1.0.188'); // nested sub/Cargo.toml found
   expect(purls).toContain('pkg:golang/github.com/gin-gonic/gin@v1.9.1'); // go.mod, v-prefix kept
+  expect(purls).toContain('pkg:pypi/httpx@0.25.0'); // pyproject.toml
+  expect(purls).toContain('pkg:maven/com.google.guava/guava@32.1.0'); // build.gradle
   expect(purls.some((p: string) => p.includes('evil'))).toBe(false); // node_modules skipped
 });
 

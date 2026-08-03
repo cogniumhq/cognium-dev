@@ -15,8 +15,8 @@ import {
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
-  parseNpmDependencies, parsePypiDependencies,
-  parseMavenDependencies, parseCargoDependencies, parseGoDependencies,
+  parseNpmDependencies, parsePypiDependencies, parsePyprojectDependencies,
+  parseMavenDependencies, parseGradleDependencies, parseCargoDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
   type Dependency, type SbomMetadata,
 } from 'circle-ir';
@@ -1389,7 +1389,10 @@ function parseCrossFileBudgetMs(raw: unknown): number | undefined {
 const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'package.json': parseNpmDependencies,
   'requirements.txt': parsePypiDependencies,
+  'pyproject.toml': parsePyprojectDependencies,
   'pom.xml': parseMavenDependencies,
+  'build.gradle': parseGradleDependencies,
+  'build.gradle.kts': parseGradleDependencies,
   'Cargo.toml': parseCargoDependencies,
   'go.mod': parseGoDependencies,
 };
@@ -1436,7 +1439,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
-    console.error(colors.red('Error: no supported manifests found (package.json, requirements.txt, pom.xml, Cargo.toml, go.mod)'));
+    console.error(colors.red('Error: no supported manifests found (package.json, requirements.txt, pyproject.toml, pom.xml, build.gradle, Cargo.toml, go.mod)'));
     process.exit(1);
   }
 

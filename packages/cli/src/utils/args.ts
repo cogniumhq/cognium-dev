@@ -122,7 +122,8 @@ SBOM OPTIONS:
   --prod-only                Exclude dev/test dependencies
   --deterministic            Omit timestamp / serialNumber / namespace for reproducible output
   -o, --output <file>        Write the document to a file (default: stdout)
-                               Discovers package.json / requirements.txt / pom.xml / Cargo.toml / go.mod.
+                               Discovers package.json / requirements.txt / pyproject.toml /
+                               pom.xml / build.gradle(.kts) / Cargo.toml / go.mod.
                                CVE matching is out of scope (deterministic SAST — no network).
 
 EXAMPLES:

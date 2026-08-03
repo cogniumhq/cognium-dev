@@ -140,6 +140,24 @@ export function parseNpmDependencies(packageJson: string): Dependency[] {
 }
 
 /**
+ * Parse a single PEP 508 requirement string (`name[extras] (>=|==|~=…)ver ; marker`)
+ * into `{ name, version }`, or `null` when no name can be read. Shared by the
+ * `requirements.txt` and `pyproject.toml` parsers.
+ */
+function parsePep508(spec: string): { name: string; version: string } | null {
+  let s = spec.trim();
+  s = s.split(';')[0].trim(); // strip environment marker
+  if (!s) return null;
+  const m = s.match(/^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(.*)$/);
+  if (!m) return null;
+  const rest = m[2].trim();
+  // First comparator clause's version (drop `,` compound ranges and `(` groups).
+  const verMatch = rest.replace(/^\(/, '').match(/^(?:==|>=|<=|~=|!=|>|<|===)?\s*([^,\s)]+)/);
+  const version = verMatch && verMatch[1] ? verMatch[1] : 'unknown';
+  return { name: m[1], version };
+}
+
+/**
  * Parse a pip `requirements.txt`. Handles `name==1.2`, `name>=1.2`, `name~=1`,
  * bare `name`, extras (`name[x]`), and environment markers (`; marker`).
  * Skips comments, blank lines, and option lines (`-r`, `-e`, `--hash`, URLs).
@@ -152,16 +170,118 @@ export function parsePypiDependencies(requirementsTxt: string): Dependency[] {
     if (!line || line.startsWith('#')) continue;
     if (line.startsWith('-') || /^[a-z]+:\/\//i.test(line)) continue; // options / URLs
     line = line.split('#')[0].trim(); // strip trailing comment
-    line = line.split(';')[0].trim(); // strip environment marker
     if (!line) continue;
-    const m = line.match(/^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(.*)$/);
-    if (!m) continue;
-    const name = m[1];
-    const rest = m[2].trim();
-    // Take the first comparator clause's version (drop `,` compound ranges).
-    const verMatch = rest.match(/^(?:==|>=|<=|~=|!=|>|<|===)?\s*([^,\s]+)/);
-    const version = verMatch && verMatch[1] ? verMatch[1] : 'unknown';
-    out.push(dep('pypi', name, version, 'required'));
+    const parsed = parsePep508(line);
+    if (parsed) out.push(dep('pypi', parsed.name, parsed.version, 'required'));
+  }
+  return out;
+}
+
+/**
+ * Parse a `pyproject.toml`. Covers the two dominant layouts:
+ *
+ *   - **PEP 621** — `[project]` `dependencies = ["flask>=2.0", …]` (required)
+ *     and `[project.optional-dependencies]` group arrays (optional).
+ *   - **Poetry** — `[tool.poetry.dependencies]` (required, skipping the
+ *     `python` version pin) and any `dev`/`group.*` dependency table (dev).
+ *
+ * TOML is scanned with regex, not a full parser (minimal-deps guardrail).
+ */
+export function parsePyprojectDependencies(pyprojectToml: string): Dependency[] {
+  if (!pyprojectToml) return [];
+  const out: Dependency[] = [];
+
+  // Line-scan tracking the current TOML table so `dependencies = [...]` under
+  // `[project]` (required) and arrays under `[project.optional-dependencies]`
+  // (optional) are distinguished, and Poetry tables are read as key/value.
+  const lines = pyprojectToml.split(/\r?\n/);
+  let table = '';
+  let poetryScope: DependencyScope | null = null;
+  let inArray = false;
+  let arrayScope: DependencyScope = 'required';
+
+  const pushReq = (raw: string, scope: DependencyScope): void => {
+    const cleaned = raw.trim().replace(/^["']|["'],?$/g, '').replace(/,$/, '').trim();
+    if (!cleaned) return;
+    const parsed = parsePep508(cleaned);
+    if (parsed && parsed.name.toLowerCase() !== 'python') out.push(dep('pypi', parsed.name, parsed.version, scope));
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    if (inArray) {
+      if (line.startsWith(']')) { inArray = false; continue; }
+      pushReq(line, arrayScope);
+      continue;
+    }
+
+    const header = line.match(/^\[([^\]]+)\]$/);
+    if (header) {
+      table = header[1];
+      if (table === 'tool.poetry.dependencies') poetryScope = 'required';
+      else if (/^tool\.poetry\.(dev-dependencies|group\..+\.dependencies)$/.test(table)) poetryScope = 'dev';
+      else poetryScope = null;
+      continue;
+    }
+
+    // PEP 621 array openers.
+    const arrayOpen = line.match(/^(dependencies|[A-Za-z0-9._-]+)\s*=\s*\[(.*)$/);
+    if (arrayOpen && (arrayOpen[1] === 'dependencies' || table === 'project.optional-dependencies')) {
+      arrayScope = arrayOpen[1] === 'dependencies' ? 'required' : 'optional';
+      const inline = arrayOpen[2];
+      if (inline.includes(']')) {
+        // single-line array
+        for (const item of inline.slice(0, inline.indexOf(']')).split(',')) pushReq(item, arrayScope);
+      } else {
+        inArray = true;
+        if (inline.trim()) pushReq(inline, arrayScope);
+      }
+      continue;
+    }
+
+    // Poetry table entries: `name = "^1.0"` or `name = { version = "1.0" }`.
+    if (poetryScope) {
+      const kv = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+)$/);
+      if (!kv || kv[1].toLowerCase() === 'python') continue;
+      let version = 'unknown';
+      const strv = kv[2].match(/^["']([^"']+)["']/);
+      if (strv) version = strv[1];
+      else {
+        const inlinev = kv[2].match(/version\s*=\s*["']([^"']+)["']/);
+        if (inlinev) version = inlinev[1];
+      }
+      out.push(dep('pypi', kv[1], version, poetryScope));
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse a Gradle build script (`build.gradle` Groovy or `build.gradle.kts`
+ * Kotlin DSL) dependency block. Recognises the common configurations
+ * (`implementation` / `api` / `compileOnly` / `runtimeOnly` /
+ * `annotationProcessor` / `kapt` / `classpath` and their `test*` variants) in
+ * both `impl 'g:a:v'` and `impl("g:a:v")` forms. Coordinates are Maven, so the
+ * ecosystem is `maven` and the name is `groupId:artifactId`. `test*`
+ * configurations map to the `dev` scope. `platform(...)` BOM imports are
+ * skipped (they declare no concrete artifact).
+ */
+export function parseGradleDependencies(buildGradle: string): Dependency[] {
+  if (!buildGradle) return [];
+  const out: Dependency[] = [];
+  const re =
+    /\b(implementation|api|compileOnly|compileOnlyApi|runtimeOnly|testImplementation|testCompileOnly|testRuntimeOnly|annotationProcessor|kapt|classpath)\s*[(\s]\s*['"]([\w.-]+:[\w.-]+(?::[\w.\-+]+)?)['"]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buildGradle)) !== null) {
+    const config = m[1];
+    const coord = m[2].split(':');
+    if (coord.length < 2) continue;
+    const name = `${coord[0]}:${coord[1]}`;
+    const version = coord[2] ?? 'unknown';
+    const scope: DependencyScope = config.startsWith('test') ? 'dev' : 'required';
+    out.push(dep('maven', name, version, scope));
   }
   return out;
 }
@@ -279,7 +399,9 @@ export function collectDependencies(ctx: DependencyContext | undefined): Depende
   const all: Dependency[] = [];
   if (ctx.js?.packageJson) all.push(...parseNpmDependencies(ctx.js.packageJson));
   if (ctx.python?.requirementsTxt) all.push(...parsePypiDependencies(ctx.python.requirementsTxt));
+  if (ctx.python?.pyprojectToml) all.push(...parsePyprojectDependencies(ctx.python.pyprojectToml));
   if (ctx.java?.pomXml) all.push(...parseMavenDependencies(ctx.java.pomXml));
+  if (ctx.java?.buildGradle) all.push(...parseGradleDependencies(ctx.java.buildGradle));
   if (ctx.rust?.cargoToml) all.push(...parseCargoDependencies(ctx.rust.cargoToml));
 
   const seen = new Set<string>();
