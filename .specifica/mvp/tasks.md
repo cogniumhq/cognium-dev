@@ -56,11 +56,12 @@
   - Lower priority than the two above; defer until a pass actually needs structured TS type info
 
 - [ ] **Framework coverage expansion** (proposed 3.25.0+)
-  - JS/TS: Next.js API routes, TypeORM sinks, narrow `.value` dom_input source
+  - JS/TS: Next.js API routes, ~~TypeORM sinks~~ (**QueryBuilder fragments done**, unreleased on main — see below), narrow `.value` dom_input source
   - Python: Jinja2 XSS sinks; additional MyBatis/Django ORM raw query patterns
   - Java: Micronaut, Quarkus
   - Rust: Axum extractor refinement, SQLx, Reqwest
   - All YAML-only except dom_input narrowing
+  - **TypeORM QueryBuilder raw fragments** — unreleased on main (8609969, 2026-08-02). `andWhere`/`orWhere`/`andHaving`/`orHaving` registered as CWE-89, classless + JS/TS-scoped (TypeORM-idiomatic names; the chained `repo.createQueryBuilder('u').andWhere(raw)` receiver is a factory call, so class matching cannot reach it). Precision inherent to the flow — parameterised `:name` use keeps input out of the literal (negative test). **Raw `.query(sql)` was already covered** by the classless `query` sink in the JS plugin, so it was NOT re-registered (a class-scoped duplicate would be discarded by the `findSinks` dedup — principles.md canonical-registry rule). 4430 pass (+5); OWASP Java / BenchmarkPython unaffected by construction (JS/TS-scoped, additive).
 
 - [ ] **Dependency analysis** — CVE matching, SBOM generation
   - Maps to: cognium-ai MCP `analyze_dependencies`
@@ -73,6 +74,9 @@
 
 - [ ] **CI/CD pipeline** — GitHub Actions for monorepo builds
 - [ ] **Pre-commit hooks** — Lint, typecheck, test on commit
+- [ ] **Classless `query` sink in the JS plugin over-fires** (surfaced 2026-08-02 during the TypeORM slice)
+  - `javascript.ts` `getBuiltinSinks()` registers a **classless** `query` CWE-89 sink, so *any* `.query(tainted)` fires — including non-SQL receivers like `logger.query(...)`. This contradicts the `config-loader.ts` note (line ~2021) that the classless `query` was "removed … too many FPs": it was removed only from `DEFAULT_SINKS`; the plugin copy is still live.
+  - Tightening it (class-scope to Connection/Pool/Client/DataSource/EntityManager/`*Repository`/QueryRunner, or a known-safe-receiver denylist) is a precision win but **needs corpus evidence first** — the pg/mysql/sqlite reflected-SQLi shapes may depend on the broad sink for recall. Grep tests before touching it (the shared-sink lesson). Benchmark-gate: OWASP Java 100/100 TPR must hold; measure JS/TS FP delta on the harness.
 
 ## Completed
 
