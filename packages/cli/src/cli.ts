@@ -16,8 +16,9 @@ import {
   type PassOptions,
   type ProjectProfile,
   parseNpmDependencies, parseNpmLockDependencies,
-  parsePypiDependencies, parsePyprojectDependencies,
-  parseMavenDependencies, parseGradleDependencies, parseCargoDependencies, parseGoDependencies,
+  parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
+  parseMavenDependencies, parseGradleDependencies,
+  parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
   type Dependency, type SbomMetadata,
 } from 'circle-ir';
@@ -1393,11 +1394,21 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'npm-shrinkwrap.json': parseNpmLockDependencies,
   'requirements.txt': parsePypiDependencies,
   'pyproject.toml': parsePyprojectDependencies,
+  'poetry.lock': parsePoetryLockDependencies,
   'pom.xml': parseMavenDependencies,
   'build.gradle': parseGradleDependencies,
   'build.gradle.kts': parseGradleDependencies,
   'Cargo.toml': parseCargoDependencies,
+  'Cargo.lock': parseCargoLockDependencies,
   'go.mod': parseGoDependencies,
+};
+
+/** Lockfile basename → the manifest it supersedes (exact + transitive wins). */
+const SBOM_SUPERSEDES: Record<string, string> = {
+  'package-lock.json': 'package.json',
+  'npm-shrinkwrap.json': 'package.json',
+  'poetry.lock': 'pyproject.toml',
+  'Cargo.lock': 'Cargo.toml',
 };
 
 const SBOM_SKIP_DIRS = /^(node_modules|vendor|target|dist|build|out|coverage)$/;
@@ -1442,22 +1453,20 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
-    console.error(colors.red('Error: no supported manifests found (package.json, requirements.txt, pyproject.toml, pom.xml, build.gradle, Cargo.toml, go.mod)'));
+    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml, build.gradle, Cargo.toml/.lock, go.mod)'));
     process.exit(1);
   }
 
   // A lockfile supersedes its sibling manifest — it pins exact + transitive
   // versions, so parsing both would double-list every package (a range and an
-  // exact). Per directory: a package-lock.json / npm-shrinkwrap.json drops that
-  // directory's package.json.
-  const lockDirs = new Set(
-    manifests
-      .filter((m) => basename(m) === 'package-lock.json' || basename(m) === 'npm-shrinkwrap.json')
-      .map((m) => dirname(m)),
-  );
-  const effective = manifests.filter(
-    (m) => !(basename(m) === 'package.json' && lockDirs.has(dirname(m))),
-  );
+  // exact). Per directory: for each lockfile found, drop the manifest it
+  // supersedes from the same directory.
+  const supersededInDir = new Set<string>(); // `${dir}\0${manifestBasename}`
+  for (const m of manifests) {
+    const superseded = SBOM_SUPERSEDES[basename(m)];
+    if (superseded) supersededInDir.add(`${dirname(m)}\0${superseded}`);
+  }
+  const effective = manifests.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
 
   let projectName = options.name;
   // Project name from any package.json (even one superseded for deps).

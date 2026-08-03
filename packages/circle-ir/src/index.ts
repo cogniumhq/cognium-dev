@@ -24,6 +24,8 @@ export {
   parseMavenDependencies,
   parseGradleDependencies,
   parseCargoDependencies,
+  parseCargoLockDependencies,
+  parsePoetryLockDependencies,
   parseGoDependencies,
   collectDependencies,
   toCycloneDx,

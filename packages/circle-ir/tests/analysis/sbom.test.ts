@@ -12,6 +12,8 @@ import {
   parseGoDependencies,
   parsePyprojectDependencies,
   parseGradleDependencies,
+  parseCargoLockDependencies,
+  parsePoetryLockDependencies,
   collectDependencies,
   toCycloneDx,
   toSpdx,
@@ -213,6 +215,48 @@ describe('SBOM manifest parsing', () => {
       'pkg:maven/com.google.guava/guava@32.1.0',
       'pkg:pypi/flask@2.3.0',
     ]);
+  });
+
+  it('parses Cargo.lock [[package]] blocks into exact cargo deps', () => {
+    const lock = [
+      '# auto-generated',
+      'version = 3',
+      '',
+      '[[package]]',
+      'name = "serde"',
+      'version = "1.0.188"',
+      'dependencies = ["serde_derive"]',
+      '',
+      '[[package]]',
+      'name = "tokio"',
+      'version = "1.32.0"',
+      '',
+      '[metadata]',
+      'foo = "bar"',
+    ].join('\n');
+    const deps = parseCargoLockDependencies(lock);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['serde'].purl).toBe('pkg:cargo/serde@1.0.188');
+    expect(byName['tokio'].version).toBe('1.32.0');
+    expect(deps.every((d) => d.scope === 'required')).toBe(true);
+    expect(byName['bar']).toBeUndefined(); // [metadata] table not a package
+  });
+
+  it('parses poetry.lock [[package]] blocks into exact pypi deps', () => {
+    const lock = [
+      '[[package]]',
+      'name = "flask"',
+      'version = "2.3.0"',
+      'description = "..."',
+      '',
+      '[[package]]',
+      'name = "click"',
+      'version = "8.1.7"',
+    ].join('\n');
+    const deps = parsePoetryLockDependencies(lock);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['flask'].purl).toBe('pkg:pypi/flask@2.3.0');
+    expect(byName['click'].version).toBe('8.1.7');
   });
 
   it('collectDependencies aggregates across ecosystems and de-dupes', () => {

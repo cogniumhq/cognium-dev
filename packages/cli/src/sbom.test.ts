@@ -127,6 +127,26 @@ test('sbom: package-lock.json supersedes package.json (exact + transitive, no ra
   }
 });
 
+test('sbom: Cargo.lock supersedes Cargo.toml (exact + transitive crate graph)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-cargo-'));
+  try {
+    writeFileSync(join(dir, 'Cargo.toml'), '[dependencies]\nserde = "1"\n');
+    writeFileSync(
+      join(dir, 'Cargo.lock'),
+      ['[[package]]', 'name = "serde"', 'version = "1.0.188"', '', '[[package]]', 'name = "serde_derive"', 'version = "1.0.188"'].join('\n'),
+    );
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = JSON.parse(out).components.map((c: { purl: string }) => c.purl);
+    expect(purls).toContain('pkg:cargo/serde@1.0.188'); // exact from lock
+    expect(purls).toContain('pkg:cargo/serde_derive@1.0.188'); // transitive
+    expect(purls).not.toContain('pkg:cargo/serde@1'); // range form from Cargo.toml dropped
+    expect(purls.filter((p: string) => p === 'pkg:cargo/serde@1.0.188').length).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('sbom: --prod-only drops dev dependencies', async () => {
   const full = JSON.parse((await runCli(['sbom', fixture, '--deterministic'])).out);
   const prod = JSON.parse((await runCli(['sbom', fixture, '--prod-only', '--deterministic'])).out);

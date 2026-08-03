@@ -222,6 +222,56 @@ export function parseNpmLockDependencies(packageLock: string): Dependency[] {
 }
 
 /**
+ * Parse a TOML `[[package]]` array (the shared shape of `Cargo.lock` and
+ * `poetry.lock`): a sequence of blocks each carrying `name = "..."` and
+ * `version = "..."`. Every entry is the resolved dependency set, so all map to
+ * the `required` scope — a lockfile does not reliably separate dev packages
+ * (Cargo.lock has no such notion; poetry's group data varies by version).
+ */
+function parseTomlPackageArray(content: string, ecosystem: Ecosystem): Dependency[] {
+  const out: Dependency[] = [];
+  let name: string | null = null;
+  let version: string | null = null;
+  let inPackage = false;
+  const flush = (): void => {
+    if (inPackage && name && version) out.push(dep(ecosystem, name, version, 'required'));
+    name = null;
+    version = null;
+  };
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '[[package]]') {
+      flush();
+      inPackage = true;
+      continue;
+    }
+    if (line.startsWith('[')) {
+      // any other table header ends the current package block
+      flush();
+      inPackage = false;
+      continue;
+    }
+    if (!inPackage) continue;
+    const nm = line.match(/^name\s*=\s*"([^"]+)"/);
+    if (nm) name = nm[1];
+    const vm = line.match(/^version\s*=\s*"([^"]+)"/);
+    if (vm) version = vm[1];
+  }
+  flush();
+  return out;
+}
+
+/** Parse a Cargo `Cargo.lock` — exact resolved versions of the full crate graph. */
+export function parseCargoLockDependencies(cargoLock: string): Dependency[] {
+  return cargoLock ? parseTomlPackageArray(cargoLock, 'cargo') : [];
+}
+
+/** Parse a Poetry `poetry.lock` — exact resolved versions of the full dependency graph. */
+export function parsePoetryLockDependencies(poetryLock: string): Dependency[] {
+  return poetryLock ? parseTomlPackageArray(poetryLock, 'pypi') : [];
+}
+
+/**
  * Parse a pip `requirements.txt`. Handles `name==1.2`, `name>=1.2`, `name~=1`,
  * bare `name`, extras (`name[x]`), and environment markers (`; marker`).
  * Skips comments, blank lines, and option lines (`-r`, `-e`, `--hash`, URLs).

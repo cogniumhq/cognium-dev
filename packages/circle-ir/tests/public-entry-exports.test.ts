@@ -54,6 +54,8 @@ describe('package entry exports runtime values', () => {
       'parseMavenDependencies',
       'parseGradleDependencies',
       'parseCargoDependencies',
+      'parseCargoLockDependencies',
+      'parsePoetryLockDependencies',
       'parseGoDependencies',
       'toCycloneDx',
       'toSpdx',
