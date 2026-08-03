@@ -3,9 +3,9 @@
  * cognium CLI - AI-powered static analysis for security vulnerabilities
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { stat, readdir } from 'fs/promises';
-import { join, dirname, extname, resolve, relative } from 'path';
+import { join, dirname, extname, resolve, relative, basename } from 'path';
 import { createRequire } from 'module';
 import {
   initAnalyzer, analyze, analyzeProject,
@@ -15,6 +15,10 @@ import {
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
+  parseNpmDependencies, parsePypiDependencies,
+  parseMavenDependencies, parseCargoDependencies, parseGoDependencies,
+  toCycloneDx, toSpdx,
+  type Dependency, type SbomMetadata,
 } from 'circle-ir';
 import {
   detectProjectProfiles,
@@ -1379,6 +1383,110 @@ function parseCrossFileBudgetMs(raw: unknown): number | undefined {
   return n;
 }
 
+// ─── SBOM command ────────────────────────────────────────────────────────────
+
+/** Manifest basename → the circle-ir parser that turns its text into deps. */
+const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
+  'package.json': parseNpmDependencies,
+  'requirements.txt': parsePypiDependencies,
+  'pom.xml': parseMavenDependencies,
+  'Cargo.toml': parseCargoDependencies,
+  'go.mod': parseGoDependencies,
+};
+
+const SBOM_SKIP_DIRS = /^(node_modules|vendor|target|dist|build|out|coverage)$/;
+
+/** Recursively find recognised manifest files under a path (or the path itself if it is one). */
+async function collectManifestFiles(targetPath: string): Promise<string[]> {
+  const found: string[] = [];
+  const pathStat = await stat(targetPath);
+  if (pathStat.isFile()) {
+    if (SBOM_MANIFESTS[basename(targetPath)]) found.push(targetPath);
+    return found;
+  }
+  const walk = async (dir: string): Promise<void> => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.')) continue;
+      if (e.isDirectory()) {
+        if (SBOM_SKIP_DIRS.test(e.name)) continue;
+        await walk(join(dir, e.name));
+      } else if (SBOM_MANIFESTS[e.name]) {
+        found.push(join(dir, e.name));
+      }
+    }
+  };
+  await walk(targetPath);
+  return found;
+}
+
+interface SbomOptions {
+  format: 'cyclonedx' | 'spdx';
+  output?: string;
+  name?: string;
+  prodOnly?: boolean;
+  deterministic?: boolean;
+}
+
+async function runSbom(targetPath: string, options: SbomOptions): Promise<void> {
+  const absPath = resolve(targetPath);
+  if (!existsSync(absPath)) {
+    console.error(colors.red(`Error: path not found: ${targetPath}`));
+    process.exit(2);
+  }
+
+  const manifests = await collectManifestFiles(absPath);
+  if (manifests.length === 0) {
+    console.error(colors.red('Error: no supported manifests found (package.json, requirements.txt, pom.xml, Cargo.toml, go.mod)'));
+    process.exit(1);
+  }
+
+  let deps: Dependency[] = [];
+  let projectName = options.name;
+  for (const m of manifests) {
+    const content = readFileSync(m, 'utf-8');
+    deps.push(...SBOM_MANIFESTS[basename(m)](content));
+    if (!projectName && basename(m) === 'package.json') {
+      try {
+        const n = (JSON.parse(content) as { name?: unknown }).name;
+        if (typeof n === 'string' && n) projectName = n;
+      } catch { /* ignore malformed manifest name */ }
+    }
+  }
+
+  // De-dup across manifests (same key the library uses within one).
+  const seen = new Set<string>();
+  deps = deps.filter((d) => {
+    const key = `${d.ecosystem}|${d.name}|${d.version}|${d.scope}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (options.prodOnly) deps = deps.filter((d) => d.scope !== 'dev');
+
+  if (!projectName) projectName = basename(absPath) || 'project';
+
+  const meta: SbomMetadata = { name: projectName, tool: 'cognium-dev' };
+  if (!options.deterministic) {
+    meta.timestamp = new Date().toISOString();
+    const { randomUUID } = await import('crypto');
+    meta.serialNumber = `urn:uuid:${randomUUID()}`;
+    meta.namespace = `https://cognium.dev/spdxdocs/${projectName}-${randomUUID()}`;
+  }
+
+  const doc = options.format === 'spdx' ? toSpdx(deps, meta) : toCycloneDx(deps, meta);
+  const out = JSON.stringify(doc, null, 2);
+
+  if (options.output) {
+    writeFileSync(options.output, out);
+    // stdout is reserved for payload; status goes to stderr (3.89.2).
+    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${manifests.length} manifest(s)`));
+  } else {
+    console.log(out);
+    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${manifests.length} manifest(s)`));
+  }
+  process.exit(0);
+}
+
 async function main(): Promise<void> {
   const { command, args, options } = parseArgs(process.argv.slice(2));
 
@@ -1434,6 +1542,29 @@ async function main(): Promise<void> {
     };
 
     await runMetrics(targetPath, metricsOptions);
+    return;
+  }
+
+  // Handle sbom command
+  if (command === 'sbom') {
+    if (args.length === 0) {
+      console.error(colors.red('Error: sbom command requires a path argument'));
+      console.error('\nUsage: cognium-dev sbom <path> [--format cyclonedx|spdx] [--output <file>]');
+      process.exit(1);
+    }
+    const rawFormat = ((options.format || options.f || 'cyclonedx') as string).toLowerCase();
+    if (rawFormat !== 'cyclonedx' && rawFormat !== 'spdx') {
+      console.error(colors.red(`Error: unknown SBOM format '${rawFormat}' (expected 'cyclonedx' or 'spdx')`));
+      process.exit(1);
+    }
+    const sbomOptions: SbomOptions = {
+      format: rawFormat as 'cyclonedx' | 'spdx',
+      output: (options.output || options.o) as string | undefined,
+      name: options.name as string | undefined,
+      prodOnly: options['prod-only'] === true || options.prod === true,
+      deterministic: options.deterministic === true,
+    };
+    await runSbom(args[0], sbomOptions);
     return;
   }
 

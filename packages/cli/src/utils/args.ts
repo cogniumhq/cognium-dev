@@ -65,6 +65,7 @@ USAGE:
 COMMANDS:
   scan <path>          Scan files or directories for security vulnerabilities
   metrics <path>       Report software quality metrics for files or directories
+  sbom <path>          Generate a Software Bill of Materials from project manifests
   list-passes [cat]    List all analysis passes (optionally filter by category)
   init                 Initialize a configuration file in your project
   version              Display version information
@@ -113,6 +114,17 @@ METRICS OPTIONS:
   -o, --output <file>        Write results to file
   -q, --quiet                Suppress progress output
 
+SBOM OPTIONS:
+  -f, --format <format>      SBOM format (cyclonedx|spdx) [default: cyclonedx]
+                               - cyclonedx: CycloneDX 1.5 JSON (OWASP)
+                               - spdx:      SPDX 2.3 JSON (Linux Foundation)
+  --name <name>              Project name in the document [default: package.json name or dir]
+  --prod-only                Exclude dev/test dependencies
+  --deterministic            Omit timestamp / serialNumber / namespace for reproducible output
+  -o, --output <file>        Write the document to a file (default: stdout)
+                               Discovers package.json / requirements.txt / pom.xml / Cargo.toml / go.mod.
+                               CVE matching is out of scope (deterministic SAST — no network).
+
 EXAMPLES:
   cognium-dev scan src/
   cognium-dev scan app.java -f json -o results.json
@@ -130,6 +142,9 @@ EXAMPLES:
   cognium-dev metrics src/
   cognium-dev metrics src/ --category complexity
   cognium-dev metrics src/ --format json --profile custom-config.json
+  cognium-dev sbom .                                 # CycloneDX 1.5 to stdout
+  cognium-dev sbom . -f spdx -o sbom.spdx.json       # SPDX 2.3 to a file
+  cognium-dev sbom . --prod-only --deterministic     # reproducible, no dev deps
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init

@@ -24,7 +24,7 @@
 import type { DependencyContext } from '../analyzer.js';
 
 /** Package ecosystem, aligned with Package-URL (purl) `pkg:<type>` names. */
-export type Ecosystem = 'npm' | 'pypi' | 'maven' | 'cargo';
+export type Ecosystem = 'npm' | 'pypi' | 'maven' | 'cargo' | 'golang';
 
 /** How a dependency is used, mapped from the manifest's declaration site. */
 export type DependencyScope = 'required' | 'optional' | 'dev';
@@ -71,10 +71,12 @@ export interface SbomMetadata {
  * without a version is valid, so omitting is preferable to guessing.
  */
 function purlVersion(spec: string): string | undefined {
-  const stripped = spec.trim().replace(/^[\s^~=<>v]+/, '');
-  // Accept only a single concrete version token — reject residual ranges
-  // (`1.0 <2.0`), commas, or unresolved `${...}` / `*` wildcards.
-  if (/^[0-9][\w.\-+]*$/.test(stripped)) return stripped;
+  // Strip range operators/whitespace but NOT a leading `v` — Go module
+  // versions (`v1.2.3`) keep it as part of the canonical version.
+  const stripped = spec.trim().replace(/^[\s^~=<>]+/, '');
+  // Accept a single concrete version token (optional Go `v` prefix); reject
+  // residual ranges (`1.0 <2.0`), commas, or unresolved `${...}` / `*`.
+  if (/^v?[0-9][\w.\-+]*$/.test(stripped)) return stripped;
   return undefined;
 }
 
@@ -224,6 +226,40 @@ export function parseCargoDependencies(cargoToml: string): Dependency[] {
       if (inline) version = inline[1];
     }
     out.push(dep('cargo', name, version, scope));
+  }
+  return out;
+}
+
+/**
+ * Parse a Go `go.mod`. Collects `require` directives in both the grouped
+ * `require ( ... )` block and single-line `require path v1.2.3` forms.
+ * A `// indirect` marker maps to the `optional` scope. The module path is
+ * the purl name (`pkg:golang/github.com/foo/bar@v1.2.3`).
+ */
+export function parseGoDependencies(goMod: string): Dependency[] {
+  if (!goMod) return [];
+  const out: Dependency[] = [];
+  let inBlock = false;
+  for (const raw of goMod.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('//')) continue;
+    if (!inBlock && /^require\s*\($/.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && line === ')') {
+      inBlock = false;
+      continue;
+    }
+    let spec: string;
+    if (inBlock) spec = line;
+    else if (/^require\s+/.test(line)) spec = line.replace(/^require\s+/, '');
+    else continue;
+    const indirect = /\/\/\s*indirect/.test(spec);
+    spec = spec.replace(/\/\/.*$/, '').trim();
+    const m = spec.match(/^(\S+)\s+(\S+)$/);
+    if (!m) continue;
+    out.push(dep('golang', m[1], m[2], indirect ? 'optional' : 'required'));
   }
   return out;
 }

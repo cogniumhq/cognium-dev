@@ -21,6 +21,7 @@ export {
   parsePypiDependencies,
   parseMavenDependencies,
   parseCargoDependencies,
+  parseGoDependencies,
   collectDependencies,
   toCycloneDx,
   toSpdx,

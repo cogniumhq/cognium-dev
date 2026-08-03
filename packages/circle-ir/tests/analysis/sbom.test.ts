@@ -8,6 +8,7 @@ import {
   parsePypiDependencies,
   parseMavenDependencies,
   parseCargoDependencies,
+  parseGoDependencies,
   collectDependencies,
   toCycloneDx,
   toSpdx,
@@ -88,6 +89,24 @@ describe('SBOM manifest parsing', () => {
     expect(byName['tokio'].version).toBe('1.32');
     expect(byName['proptest'].scope).toBe('dev');
     expect(byName['name']).toBeUndefined(); // [package] table is not a dep table
+  });
+
+  it('parses go.mod grouped + single-line require, keeps the v-prefix, marks indirect', () => {
+    const goMod = [
+      'module example.com/m',
+      'go 1.21',
+      'require (',
+      '\tgithub.com/gin-gonic/gin v1.9.1',
+      '\tgithub.com/stretchr/testify v1.8.4 // indirect',
+      ')',
+      'require github.com/single/dep v0.4.0',
+    ].join('\n');
+    const deps = parseGoDependencies(goMod);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['github.com/gin-gonic/gin'].purl).toBe('pkg:golang/github.com/gin-gonic/gin@v1.9.1');
+    expect(byName['github.com/gin-gonic/gin'].version).toBe('v1.9.1'); // v-prefix kept
+    expect(byName['github.com/stretchr/testify'].scope).toBe('optional'); // // indirect
+    expect(byName['github.com/single/dep'].purl).toBe('pkg:golang/github.com/single/dep@v0.4.0');
   });
 
   it('collectDependencies aggregates across ecosystems and de-dupes', () => {

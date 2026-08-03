@@ -51,6 +51,7 @@ describe('package entry exports runtime values', () => {
       'parsePypiDependencies',
       'parseMavenDependencies',
       'parseCargoDependencies',
+      'parseGoDependencies',
       'toCycloneDx',
       'toSpdx',
     ] as const) {
