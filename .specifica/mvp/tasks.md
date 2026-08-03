@@ -56,12 +56,11 @@
   - Lower priority than the two above; defer until a pass actually needs structured TS type info
 
 - [ ] **Framework coverage expansion** (proposed 3.25.0+)
-  - JS/TS: Next.js API routes, ~~TypeORM sinks~~ (**QueryBuilder fragments done**, unreleased on main — see below), narrow `.value` dom_input source
-  - Python: Jinja2 XSS sinks; additional MyBatis/Django ORM raw query patterns
-  - Java: Micronaut, Quarkus
-  - Rust: Axum extractor refinement, SQLx, Reqwest
-  - All YAML-only except dom_input narrowing
-  - **TypeORM QueryBuilder raw fragments** — unreleased on main (8609969, 2026-08-02). `andWhere`/`orWhere`/`andHaving`/`orHaving` registered as CWE-89, classless + JS/TS-scoped (TypeORM-idiomatic names; the chained `repo.createQueryBuilder('u').andWhere(raw)` receiver is a factory call, so class matching cannot reach it). Precision inherent to the flow — parameterised `:name` use keeps input out of the literal (negative test). **Raw `.query(sql)` was already covered** by the classless `query` sink in the JS plugin, so it was NOT re-registered (a class-scoped duplicate would be discarded by the `findSinks` dedup — principles.md canonical-registry rule). 4430 pass (+5); OWASP Java / BenchmarkPython unaffected by construction (JS/TS-scoped, additive).
+  - **Audited 2026-08-02: this item is ~90% already shipped.** Most listed coverage exists in the runtime registries; the tracker predated it. Status per ecosystem below. Remaining genuinely-uncovered, non-FP-trap work: **Java Micronaut/Quarkus** (unaudited) and JS `.value` `dom_input` narrowing.
+  - **JS/TS** — TypeORM QueryBuilder fragments **done** (8609969, unreleased): `andWhere`/`orWhere`/`andHaving`/`orHaving` as CWE-89, classless + JS/TS-scoped. Raw `.query()` was already covered by the JS plugin's classless `query` sink (not re-registered — dedup would discard it). Next.js App-Router sources shipped 3.190.0. Remaining: `.value` `dom_input` narrowing.
+  - **Python** — Jinja2 XSS **already shipped**: `render_template_string`→SSTI/CWE-94 (#54), `Markup`/`mark_safe`→XSS, `jinja2.Template`, + markupsafe/jinja2/flask `escape` sanitizers. Django/Python SQL **already shipped**: `execute`/`executemany`/`raw`/`extra`, asyncpg `fetch_*`. **`RawSQL` was the one real gap — done** (e770d57, unreleased): classless + python-scoped CWE-89, corpus-verified zero impact (0 of 1230 BenchmarkPython files use it).
+  - **Rust** — **already shipped**: sqlx `query`/`query_as`/`query_scalar`/`execute`/`fetch_one`/`fetch_all`/`fetch_optional`, diesel `sql_query`, rusqlite; reqwest SSRF `get`/`post`/`put`/`delete`; Axum `Json`/`Query`/`Path`/`Form` sources. **Blocked, not missing:** reqwest via a `Client` instance (`client.get(url)`) can't be added cleanly — `.get()` is ubiquitous in Rust (map/cache lookups), an FP trap without type resolution.
+  - **Java** — Micronaut / Quarkus: **unaudited**, the most likely remaining real gap. Best candidate for the next slice.
 
 - [ ] **Dependency analysis** — CVE matching, SBOM generation
   - Maps to: cognium-ai MCP `analyze_dependencies`
