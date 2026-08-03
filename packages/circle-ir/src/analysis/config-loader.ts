@@ -2275,6 +2275,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'executemany', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
   { method: 'raw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
   { method: 'extra', type: 'sql_injection', cwe: 'CWE-89', severity: 'high', arg_positions: [0], languages: ['python'] },
+  // Django RawSQL expression (django.db.models.expressions.RawSQL) — the raw
+  // SQL fragment in arg[0] is embedded verbatim into the query when the
+  // annotate/filter/order_by containing it runs. Distinctive constructor name,
+  // so classless + python-scoped is safe. Parameterised use passes user input
+  // through arg[1] (`RawSQL("... %s", [uid])`), which keeps it out of arg[0].
+  { method: 'RawSQL', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['python'] },
 
   // Python Path Traversal
   // Language-scoped: classless `open` collides with Java I/O / JS DOM.
