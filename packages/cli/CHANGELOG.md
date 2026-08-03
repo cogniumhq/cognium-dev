@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.205.0] - 2026-08-03
+
+Adopts [`circle-ir@3.205.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- Fewer false positives — a `logger.query(...)` call no longer reports as SQL
+  injection (circle-ir classless-`query` safe-receiver fix).
+
+### Added
+
+- **`sbom` emits license fields** — the project's own license (from
+  package.json) and per-dependency licenses recorded in `package-lock.json`
+  now appear in CycloneDX (`licenses`) and SPDX (`licenseDeclared`) output.
+
+4485 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.204.0] - 2026-08-03
 
 Adopts [`circle-ir@3.204.0`](https://www.npmjs.com/package/circle-ir).

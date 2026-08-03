@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.205.0] - 2026-08-03
+
+A false-positive fix and SBOM license fields.
+
+### Fixed
+
+- **Classless `query()` sink no longer fires on logger receivers.** The JS
+  plugin's classless `query` CWE-89 sink matched any `.query(tainted)`,
+  including `logger.query(userInput)` — a false positive (winston exposes a
+  real `.query()` for querying log records, not SQL). Added logger / logging /
+  winston / pino / bunyan / console to the `query` safe-receiver set. Zero
+  recall cost — real database handles (db/pool/client/connection/…) still fire,
+  and the OWASP + SecuriBench Java corpora show 0 changed verdicts.
+
+### Added
+
+- **SBOM license fields.** `Dependency.license` and `SbomMetadata.license`.
+  `parseNpmLockDependencies` carries the per-package `license` recorded in
+  `package-lock.json`. CycloneDX emits `licenses` on components and the root
+  `metadata.component`; SPDX emits `licenseDeclared` (default `NOASSERTION`).
+  Absent when unknown, so license-less output stays byte-identical.
+
 ## [3.204.0] - 2026-08-03
 
 SBOM lockfile support — exact, transitive dependency versions.
