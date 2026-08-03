@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.200.0] - 2026-08-02
+
+Framework taint-coverage expansion — TypeORM, Django, Micronaut, and Quarkus.
+All additive and corpus-verified: 0 verdict changes across OWASP Benchmark,
+SecuriBench Micro, CWE-Bench-Java, and BenchmarkPython.
+
+### Added
+
+- **TypeORM QueryBuilder raw fragments** (CWE-89) — `andWhere` / `orWhere` /
+  `andHaving` / `orHaving` registered as SQL-injection sinks, classless and
+  JS/TS-scoped. These names are TypeORM-idiomatic, and the dominant shape
+  `repo.createQueryBuilder('u').andWhere(raw)` has a factory call as the
+  receiver, which class matching cannot reach. Raw `.query(sql)` was already
+  covered by the plugin's classless `query` sink and is intentionally not
+  re-registered. Parameterised use (`:name` placeholders) keeps input out of
+  the string literal, so a flow fires only on concatenation.
+- **Django `RawSQL` expression** (CWE-89) — `django.db.models.expressions.RawSQL(sql, params)`
+  embeds arg[0] verbatim into the query; registered classless + python-scoped.
+  Parameterised use passes input through arg[1], keeping it out of arg[0].
+- **Micronaut / Quarkus annotation sources** — java-scoped, param-tainted:
+  Micronaut `@QueryValue` (http_param), `@Part` / `@RequestBean` (http_body);
+  Quarkus / RESTEasy Reactive `@RestQuery` / `@RestForm` / `@RestMatrix`
+  (http_param), `@RestPath` (http_path), `@RestHeader` (http_header),
+  `@RestCookie` (http_cookie); and the standard JAX-RS `@CookieParam`
+  (http_cookie), `@MatrixParam` (http_param), `@BeanParam` (http_body) the
+  registry had lacked. `@Body` / `@Header` / `@CookieValue` / `@PathVariable`
+  were already covered by reused Spring/JAX-RS names.
+
 ## [3.199.0] - 2026-08-02
 
 Extracts TypeScript `interface` declarations as `TypeInfo`, closing a gap where
