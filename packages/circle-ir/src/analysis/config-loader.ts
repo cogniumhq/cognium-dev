@@ -192,6 +192,28 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { annotation: 'FormParam', type: 'http_param', severity: 'high', param_tainted: true },
   { annotation: 'PathParam', type: 'http_path', severity: 'medium', param_tainted: true },
   { annotation: 'HeaderParam', type: 'http_header', severity: 'high', param_tainted: true },
+  // JAX-RS params the block was missing (jakarta.ws.rs). Java-scoped — the
+  // JS decorator ecosystem has its own distinct names and should not match.
+  { annotation: 'CookieParam', type: 'http_cookie', severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'MatrixParam', type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'BeanParam', type: 'http_body', severity: 'high', param_tainted: true, languages: ['java'] },
+
+  // Micronaut (io.micronaut.http.annotation). @Body / @Header / @CookieValue /
+  // @PathVariable reuse Spring/JAX-RS names already covered above; these three
+  // are Micronaut-specific. Java-scoped.
+  { annotation: 'QueryValue',  type: 'http_param', severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'Part',        type: 'http_body',  severity: 'high', param_tainted: true, languages: ['java'] },
+  { annotation: 'RequestBean', type: 'http_body',  severity: 'high', param_tainted: true, languages: ['java'] },
+
+  // Quarkus / RESTEasy Reactive (org.jboss.resteasy.reactive) — the `@Rest*`
+  // shortcut annotations that infer the binding name from the parameter name.
+  // Java-scoped.
+  { annotation: 'RestQuery',  type: 'http_param',  severity: 'high',   param_tainted: true, languages: ['java'] },
+  { annotation: 'RestPath',   type: 'http_path',   severity: 'medium', param_tainted: true, languages: ['java'] },
+  { annotation: 'RestHeader', type: 'http_header', severity: 'high',   param_tainted: true, languages: ['java'] },
+  { annotation: 'RestForm',   type: 'http_param',  severity: 'high',   param_tainted: true, languages: ['java'] },
+  { annotation: 'RestCookie', type: 'http_cookie', severity: 'high',   param_tainted: true, languages: ['java'] },
+  { annotation: 'RestMatrix', type: 'http_param',  severity: 'high',   param_tainted: true, languages: ['java'] },
 
   // Jenkins data-binding: every parameter of an annotated constructor is wired
   // from form/JSON user input at construction time. Method-level annotation —
