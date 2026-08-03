@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.204.0] - 2026-08-03
+
+SBOM lockfile support — exact, transitive dependency versions.
+
+### Added
+
+- **`parseNpmLockDependencies`** — `package-lock.json` / `npm-shrinkwrap.json`
+  (lockfileVersion 2/3 `packages` map and legacy v1 `dependencies` tree),
+  yielding exact resolved versions of the full direct + transitive graph.
+- **`parseCargoLockDependencies`** / **`parsePoetryLockDependencies`** — a
+  shared `[[package]]` TOML-array reader for `Cargo.lock` and `poetry.lock`.
+- Lockfiles produce the resolved dependency set (exact versions, full
+  transitive closure) — a materially more complete SBOM than the declared
+  ranges in a manifest. All exported and entry-locked.
+
 ## [3.203.0] - 2026-08-03
 
 SBOM manifest coverage — `pyproject.toml` and `build.gradle`.

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.204.0] - 2026-08-03
+
+Adopts [`circle-ir@3.204.0`](https://www.npmjs.com/package/circle-ir).
+
+### Added
+
+- **`sbom` now reads lockfiles** — `package-lock.json` / `npm-shrinkwrap.json`,
+  `poetry.lock`, and `Cargo.lock` — for exact, transitive dependency versions.
+  A lockfile **supersedes** its sibling manifest (e.g. `package-lock.json`
+  drops `package.json`), so packages are listed once at their resolved version
+  rather than both as a range and an exact.
+
+4473 circle-ir tests pass, 142 CLI tests pass.
+
 ## [3.203.0] - 2026-08-03
 
 Adopts [`circle-ir@3.203.0`](https://www.npmjs.com/package/circle-ir).
