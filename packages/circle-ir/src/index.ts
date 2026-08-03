@@ -15,6 +15,23 @@ export {
   type AnalyzerOptions,
 } from './analyzer.js';
 
+// SBOM generation (deterministic — CycloneDX 1.5 / SPDX 2.3 from manifests)
+export {
+  parseNpmDependencies,
+  parsePypiDependencies,
+  parseMavenDependencies,
+  parseCargoDependencies,
+  collectDependencies,
+  toCycloneDx,
+  toSpdx,
+} from './analysis/sbom.js';
+export type {
+  Dependency,
+  Ecosystem,
+  DependencyScope,
+  SbomMetadata,
+} from './analysis/sbom.js';
+
 // Per-pass option types (exported so consumers can type passOptions without importing from deep paths)
 export type { NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 export type { DependencyFanOutOptions } from './analysis/passes/dependency-fan-out-pass.js';

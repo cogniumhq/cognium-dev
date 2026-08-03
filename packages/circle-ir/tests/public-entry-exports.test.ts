@@ -43,4 +43,18 @@ describe('package entry exports runtime values', () => {
     expect(new Set(SOURCE_TYPES).size).toBe(SOURCE_TYPES.length);
     expect(new Set(SINK_TYPES).size).toBe(SINK_TYPES.length);
   });
+
+  it('SBOM generators are callable functions at the entry point', () => {
+    for (const name of [
+      'collectDependencies',
+      'parseNpmDependencies',
+      'parsePypiDependencies',
+      'parseMavenDependencies',
+      'parseCargoDependencies',
+      'toCycloneDx',
+      'toSpdx',
+    ] as const) {
+      expect(typeof (publicApi as Record<string, unknown>)[name]).toBe('function');
+    }
+  });
 });
