@@ -60,6 +60,14 @@ export const JS_TAINTED_PATTERNS = [
   { pattern: /\blocation\.href\b/, type: 'http_path' as const },
   { pattern: /\bdocument\.getElementById\b/, type: 'dom_input' as const },
   { pattern: /\bdocument\.querySelector\b/, type: 'dom_input' as const },
+  // Remaining DOM element-accessor siblings — a `.value` read off any of these
+  // (`document.getElementsByName('q')[0].value`) is the same DOM-input source as
+  // getElementById/querySelector above. Kept narrow by requiring the `document.`
+  // receiver so they cannot match unrelated `.getElementsByTagName`-named helpers.
+  { pattern: /\bdocument\.getElementsByName\b/, type: 'dom_input' as const },
+  { pattern: /\bdocument\.getElementsByClassName\b/, type: 'dom_input' as const },
+  { pattern: /\bdocument\.getElementsByTagName\b/, type: 'dom_input' as const },
+  { pattern: /\bdocument\.querySelectorAll\b/, type: 'dom_input' as const },
   // Narrow to event-based DOM input reads: `e.target.value`, `event.target.value`.
   // The formerly broad `/\.value\b/` matched any `.value` property (e.g. `result.value`,
   // `node.value` in TypeScript) generating false positives in non-browser code.
