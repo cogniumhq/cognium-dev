@@ -158,6 +158,70 @@ function parsePep508(spec: string): { name: string; version: string } | null {
 }
 
 /**
+ * Parse an npm `package-lock.json` (or `npm-shrinkwrap.json`). Unlike
+ * `package.json`, a lockfile pins the *exact resolved* version of every direct
+ * and transitive dependency — a far more complete SBOM. Supports:
+ *
+ *   - **lockfileVersion 2/3** — the `packages` map keyed by install path
+ *     (`node_modules/foo`, `node_modules/a/node_modules/b`); the name is the
+ *     segment after the final `node_modules/`. The root entry (`""`) is skipped.
+ *   - **lockfileVersion 1** — the nested `dependencies` tree.
+ *
+ * `dev` / `optional` flags map to the scope.
+ */
+export function parseNpmLockDependencies(packageLock: string): Dependency[] {
+  if (!packageLock) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(packageLock);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object') return [];
+  const root = parsed as Record<string, unknown>;
+  const out: Dependency[] = [];
+
+  const scopeOf = (info: Record<string, unknown>): DependencyScope =>
+    info.dev === true ? 'dev' : info.optional === true ? 'optional' : 'required';
+
+  const packages = root.packages;
+  if (packages && typeof packages === 'object') {
+    for (const [path, raw] of Object.entries(packages as Record<string, unknown>)) {
+      if (!path || !raw || typeof raw !== 'object') continue; // skip root ""
+      const info = raw as Record<string, unknown>;
+      const marker = 'node_modules/';
+      const idx = path.lastIndexOf(marker);
+      const name = idx >= 0 ? path.slice(idx + marker.length) : (typeof info.name === 'string' ? info.name : path);
+      if (!name) continue;
+      const version = typeof info.version === 'string' ? info.version : 'unknown';
+      out.push(dep('npm', name, version, scopeOf(info)));
+    }
+  } else if (root.dependencies && typeof root.dependencies === 'object') {
+    const walk = (deps: Record<string, unknown>): void => {
+      for (const [name, raw] of Object.entries(deps)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const info = raw as Record<string, unknown>;
+        const version = typeof info.version === 'string' ? info.version : 'unknown';
+        out.push(dep('npm', name, version, scopeOf(info)));
+        if (info.dependencies && typeof info.dependencies === 'object') {
+          walk(info.dependencies as Record<string, unknown>);
+        }
+      }
+    };
+    walk(root.dependencies as Record<string, unknown>);
+  }
+
+  // A package can resolve at multiple install paths; keep one per name+version+scope.
+  const seen = new Set<string>();
+  return out.filter((d) => {
+    const key = `${d.name}|${d.version}|${d.scope}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
  * Parse a pip `requirements.txt`. Handles `name==1.2`, `name>=1.2`, `name~=1`,
  * bare `name`, extras (`name[x]`), and environment markers (`; marker`).
  * Skips comments, blank lines, and option lines (`-r`, `-e`, `--hash`, URLs).

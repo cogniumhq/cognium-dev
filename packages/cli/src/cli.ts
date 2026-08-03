@@ -15,7 +15,8 @@ import {
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
-  parseNpmDependencies, parsePypiDependencies, parsePyprojectDependencies,
+  parseNpmDependencies, parseNpmLockDependencies,
+  parsePypiDependencies, parsePyprojectDependencies,
   parseMavenDependencies, parseGradleDependencies, parseCargoDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
   type Dependency, type SbomMetadata,
@@ -1388,6 +1389,8 @@ function parseCrossFileBudgetMs(raw: unknown): number | undefined {
 /** Manifest basename → the circle-ir parser that turns its text into deps. */
 const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'package.json': parseNpmDependencies,
+  'package-lock.json': parseNpmLockDependencies,
+  'npm-shrinkwrap.json': parseNpmLockDependencies,
   'requirements.txt': parsePypiDependencies,
   'pyproject.toml': parsePyprojectDependencies,
   'pom.xml': parseMavenDependencies,
@@ -1443,17 +1446,34 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     process.exit(1);
   }
 
-  let deps: Dependency[] = [];
+  // A lockfile supersedes its sibling manifest — it pins exact + transitive
+  // versions, so parsing both would double-list every package (a range and an
+  // exact). Per directory: a package-lock.json / npm-shrinkwrap.json drops that
+  // directory's package.json.
+  const lockDirs = new Set(
+    manifests
+      .filter((m) => basename(m) === 'package-lock.json' || basename(m) === 'npm-shrinkwrap.json')
+      .map((m) => dirname(m)),
+  );
+  const effective = manifests.filter(
+    (m) => !(basename(m) === 'package.json' && lockDirs.has(dirname(m))),
+  );
+
   let projectName = options.name;
-  for (const m of manifests) {
-    const content = readFileSync(m, 'utf-8');
-    deps.push(...SBOM_MANIFESTS[basename(m)](content));
-    if (!projectName && basename(m) === 'package.json') {
+  // Project name from any package.json (even one superseded for deps).
+  if (!projectName) {
+    const pkg = manifests.find((m) => basename(m) === 'package.json');
+    if (pkg) {
       try {
-        const n = (JSON.parse(content) as { name?: unknown }).name;
+        const n = (JSON.parse(readFileSync(pkg, 'utf-8')) as { name?: unknown }).name;
         if (typeof n === 'string' && n) projectName = n;
       } catch { /* ignore malformed manifest name */ }
     }
+  }
+
+  let deps: Dependency[] = [];
+  for (const m of effective) {
+    deps.push(...SBOM_MANIFESTS[basename(m)](readFileSync(m, 'utf-8')));
   }
 
   // De-dup across manifests (same key the library uses within one).
@@ -1482,10 +1502,10 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   if (options.output) {
     writeFileSync(options.output, out);
     // stdout is reserved for payload; status goes to stderr (3.89.2).
-    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${manifests.length} manifest(s)`));
+    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s)`));
   } else {
     console.log(out);
-    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${manifests.length} manifest(s)`));
+    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s)`));
   }
   process.exit(0);
 }

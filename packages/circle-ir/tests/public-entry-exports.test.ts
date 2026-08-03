@@ -48,6 +48,7 @@ describe('package entry exports runtime values', () => {
     for (const name of [
       'collectDependencies',
       'parseNpmDependencies',
+      'parseNpmLockDependencies',
       'parsePypiDependencies',
       'parsePyprojectDependencies',
       'parseMavenDependencies',

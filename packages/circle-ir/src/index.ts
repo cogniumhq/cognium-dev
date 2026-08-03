@@ -18,6 +18,7 @@ export {
 // SBOM generation (deterministic — CycloneDX 1.5 / SPDX 2.3 from manifests)
 export {
   parseNpmDependencies,
+  parseNpmLockDependencies,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,

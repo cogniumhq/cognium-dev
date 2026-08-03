@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseNpmDependencies,
+  parseNpmLockDependencies,
   parsePypiDependencies,
   parseMavenDependencies,
   parseCargoDependencies,
@@ -37,6 +38,47 @@ describe('SBOM manifest parsing', () => {
 
   it('returns empty list (not throw) on malformed package.json', () => {
     expect(parseNpmDependencies('{ not valid json')).toEqual([]);
+  });
+
+  it('parses package-lock v3 packages map with exact versions + transitive deps', () => {
+    const lock = JSON.stringify({
+      name: 'demo',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'demo', version: '1.0.0' }, // root, skipped
+        'node_modules/lodash': { version: '4.17.21' },
+        'node_modules/@scope/pkg': { version: '2.1.0' },
+        'node_modules/vitest': { version: '4.1.7', dev: true },
+        'node_modules/lodash/node_modules/nested': { version: '0.1.0', optional: true },
+      },
+    });
+    const deps = parseNpmLockDependencies(lock);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['lodash'].purl).toBe('pkg:npm/lodash@4.17.21'); // exact, not a range
+    expect(byName['@scope/pkg'].purl).toBe('pkg:npm/%40scope/pkg@2.1.0');
+    expect(byName['vitest'].scope).toBe('dev');
+    expect(byName['nested'].scope).toBe('optional'); // deep transitive, name after final node_modules/
+    expect(byName['demo']).toBeUndefined(); // root "" skipped
+  });
+
+  it('parses legacy package-lock v1 nested dependencies tree', () => {
+    const lock = JSON.stringify({
+      name: 'demo',
+      lockfileVersion: 1,
+      dependencies: {
+        express: { version: '4.18.2', requires: { 'body-parser': '1.20.1' }, dependencies: { 'body-parser': { version: '1.20.1' } } },
+        mocha: { version: '10.2.0', dev: true },
+      },
+    });
+    const deps = parseNpmLockDependencies(lock);
+    const byName = Object.fromEntries(deps.map((d) => [d.name, d]));
+    expect(byName['express'].version).toBe('4.18.2');
+    expect(byName['body-parser'].version).toBe('1.20.1'); // nested transitive
+    expect(byName['mocha'].scope).toBe('dev');
+  });
+
+  it('malformed package-lock returns empty (no throw)', () => {
+    expect(parseNpmLockDependencies('not json')).toEqual([]);
   });
 
   it('parses requirements.txt with comparators, extras, markers, comments', () => {

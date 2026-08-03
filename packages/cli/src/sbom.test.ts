@@ -93,6 +93,40 @@ test('sbom: SPDX 2.3 has unique SPDXIDs and purl externalRefs', async () => {
   expect(doc.relationships.every((r: { relationshipType: string }) => r.relationshipType === 'DESCRIBES')).toBe(true);
 });
 
+test('sbom: package-lock.json supersedes package.json (exact + transitive, no range dupes)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-lock-'));
+  try {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'locked', dependencies: { lodash: '^4.0.0' } }),
+    );
+    writeFileSync(
+      join(dir, 'package-lock.json'),
+      JSON.stringify({
+        name: 'locked',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'locked', version: '1.0.0' },
+          'node_modules/lodash': { version: '4.17.21' },
+          'node_modules/ms': { version: '2.1.3' }, // transitive, not in package.json
+        },
+      }),
+    );
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = JSON.parse(out).components.map((c: { purl: string }) => c.purl);
+    expect(purls).toContain('pkg:npm/lodash@4.17.21'); // exact from lock
+    expect(purls).toContain('pkg:npm/ms@2.1.3'); // transitive included
+    expect(purls).not.toContain('pkg:npm/lodash@4.0.0'); // range form NOT double-listed
+    expect(purls.some((p: string) => p.startsWith('pkg:npm/lodash'))).toBe(true);
+    // exactly one lodash entry
+    expect(purls.filter((p: string) => p.startsWith('pkg:npm/lodash')).length).toBe(1);
+    expect(JSON.parse(out).metadata.component.name).toBe('locked'); // name still from package.json
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('sbom: --prod-only drops dev dependencies', async () => {
   const full = JSON.parse((await runCli(['sbom', fixture, '--deterministic'])).out);
   const prod = JSON.parse((await runCli(['sbom', fixture, '--prod-only', '--deterministic'])).out);
