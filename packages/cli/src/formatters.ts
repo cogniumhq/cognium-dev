@@ -125,6 +125,10 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   crlf: 'medium',
   mass_assignment: 'high',
   prompt_injection: 'high',
+  insecure_storage: 'medium',
+  prototype_pollution: 'high',
+  regex_dos: 'high',
+  unsafe_memory: 'high',
 };
 
 export const SINK_CWE: Record<SinkType, string> = {
@@ -153,6 +157,10 @@ export const SINK_CWE: Record<SinkType, string> = {
   crlf: 'CWE-113',
   mass_assignment: 'CWE-915',
   prompt_injection: 'CWE-1427',
+  insecure_storage: 'CWE-922',
+  prototype_pollution: 'CWE-1321',
+  regex_dos: 'CWE-1333',
+  unsafe_memory: 'CWE-119',
 };
 
 // Help text for each vulnerability type

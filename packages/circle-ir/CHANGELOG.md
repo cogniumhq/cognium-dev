@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.199.0] - 2026-08-02
+
+Extracts TypeScript `interface` declarations as `TypeInfo`, closing a gap where
+they produced no IR type at all.
+
+### Consumer Impact
+
+- **`ir.types` gains entries for TypeScript interfaces** where it previously had
+  none — two interfaces alongside an implementing class used to yield exactly
+  one type (the class), and now yield three. A consumer filtering on
+  `kind === 'class'` is unaffected; one that assumes every `TypeInfo` has a
+  class-shaped body, or that counts/iterates all types, will observe more.
+
+### Added
+
+- **`extractTSInterfaceInfo`** emits each `interface_declaration` as a `TypeInfo`
+  with `kind: 'interface'`: methods from `method_signature` (parameters and
+  return type included), fields from `property_signature` carrying `readonly`
+  and `optional` as modifiers. A function-typed property
+  (`onEvent: (e: string) => void`) stays a **field**, matching the grammar's
+  `property_signature` rather than being reinterpreted as a method — a consumer
+  looking for callable members must check field types too. Multiple parents are
+  split across `extends` (first) and `implements` (rest), since `TypeInfo.extends`
+  is a single string. No-op for plain JavaScript, whose grammar has no
+  `interface_declaration`. Java interfaces keep their own extractor — the TS
+  body shape (`property_signature` / `method_signature`) differs from Java's
+  (`method_declaration`), so the two do not share an implementation. Unblocks the
+  cross-instance field-binding work (Issue #1), which needs the declared contract
+  to resolve a field's type when the declaration site is an interface.
+
+### Verification
+
+- 4425 tests pass. Both corpora byte-identical against 3.198.0: 1230
+  BenchmarkPython files and 2740 OWASP Java files unchanged.
+
 ## [3.198.0] - 2026-08-02
 
 Exports the runtime type arrays that 3.197.0's notes claimed but did not ship.

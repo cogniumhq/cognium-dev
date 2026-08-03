@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.199.0] - 2026-08-02
+
+Adopts [`circle-ir@3.199.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **`SINK_SEVERITY` / `SINK_CWE` now cover all sink types.** Four sink types
+  in circle-ir's `SinkType` union — `insecure_storage` (medium, CWE-922),
+  `prototype_pollution` (high, CWE-1321), `regex_dos` (high, CWE-1333) and
+  `unsafe_memory` (high, CWE-119) — were absent from both maps. A cross-file
+  taint flow of one of these types rendered with a defaulted `high` severity
+  and an undefined CWE. Both maps are now exhaustive over `SinkType`.
+
+### Notes
+
+- **`ir.types` now includes TypeScript `interface` declarations** (new
+  `kind: 'interface'` entries) where earlier versions emitted none. Text/JSON/
+  SARIF scan output is unaffected — the CLI does not surface `ir.types`.
+
+4425 circle-ir tests pass, 133 CLI tests pass.
+
 ## [3.198.0] - 2026-08-02
 
 Adopts [`circle-ir@3.198.0`](https://www.npmjs.com/package/circle-ir).
