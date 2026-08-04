@@ -222,31 +222,39 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // dropped their inline-colocation flow. Typed-overload FPs are gated by
     // the sink pattern's `safe_if_class_literal_at` flag (Jackson readValue,
     // Yaml.loadAs, Gson.fromJson) so the wider reach does not regress.
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization'],
-    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'],
-    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary'],
+    // log_injection / format_string / nosql_injection added (cognium-ai#129):
+    // these families were absent from the whole reach map, so `generateFindings`
+    // (and the colocation flow detector that shares this predicate) dropped
+    // every `http_* → {log_injection,format_string,nosql_injection}` flow even
+    // though `taint.flows` already validated reachability — the two paths
+    // disagreed. log_injection (CWE-117) and format_string (CWE-134) are
+    // reachable from any user-controlled value that is logged / used as a
+    // format string; nosql_injection (CWE-943) mirrors sql_injection's sources.
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection'],
+    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
     // xss added cognium-dev 3.163.0: URL path components (getRequestURI,
     // getRequestURL, getPathInfo, getServletPath) reflected back into HTML
     // output are a classic reflected-XSS vector — cf. Basic35 in
     // SecuriBench Micro where `writer.println(req.getRequestURL())` is
     // annotated `/* BAD */`. Prior to 3.163.0 the reach map omitted xss
     // so http_path → xss inline-colocation flows were silently dropped.
-    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization'],
+    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss', 'log_injection', 'format_string'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
     // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF
     // (CVE-2022-41040 ProxyShell-class). Cross-language: `socket.urlopen(input())`
     // (Python), `axios.get(readline())` (JS) etc. also benefit.
-    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss', 'ssrf'],
+    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss', 'ssrf', 'log_injection', 'format_string'],
     env_input: ['command_injection', 'path_traversal'],
-    db_input: ['xss', 'sql_injection'], // Second-order injection
+    db_input: ['xss', 'sql_injection', 'log_injection'], // Second-order injection
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
-    network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf'],
-    config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf'], // Servlet init params
-    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary'], // Cross-method taint; Sprint 82 (#189) — open_redirect added; Sprint 91 (#117) — trust_boundary added
-    plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection'], // Plugin/config parameters
+    network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'log_injection', 'format_string', 'nosql_injection'],
+    config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf', 'log_injection', 'format_string'], // Servlet init params
+    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'], // Cross-method taint; Sprint 82 (#189) — open_redirect added; Sprint 91 (#117) — trust_boundary added; cognium-ai#129 — log_injection/format_string/nosql_injection added
+    plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection', 'log_injection', 'format_string'], // Plugin/config parameters
   };
 
   const validSinks = sourceToSinkMapping[sourceType];
