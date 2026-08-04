@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.206.0] - 2026-08-04
+
+Finding-layer fix — `generateFindings` was dropping three sink families.
+
+### Fixed
+
+- **`generateFindings` now emits `log_injection` (CWE-117), `format_string`
+  (CWE-134), and `nosql_injection` (CWE-943) findings** (cognium-ai#129). All
+  three were missing from the `canSourceReachSink` reach map, so
+  `generateFindings` skipped every `http_* →` those flows even though
+  `taint.sinks` and `taint.flows` already reported a valid, unsanitized
+  source→sink flow — the taint layer and the finding layer disagreed, and
+  consumers building reports from `generateFindings` (the standard path) missed
+  all such detections in every language. The Go/JS `log.Printf(userInput)` /
+  `console.log(userInput)` repros now each produce one finding.
+- Zero benchmark impact: 0 changed `taint.flows` verdicts across OWASP
+  Benchmark, SecuriBench Micro, and BenchmarkPython (the fix adds emission
+  without altering corpus flows). Findings surface at their natural severity;
+  downstream severity policy (e.g. CWE-117 capping) is a consumer concern.
+
 ## [3.205.0] - 2026-08-03
 
 A false-positive fix and SBOM license fields.

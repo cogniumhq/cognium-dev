@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.206.0] - 2026-08-04
+
+Adopts [`circle-ir@3.206.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **`log_injection` / `format_string` / `nosql_injection` findings now surface**
+  through the `generateFindings` path (circle-ir cognium-ai#129) — previously
+  the taint engine produced the flow but the finding layer dropped it.
+
+4489 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.205.0] - 2026-08-03
 
 Adopts [`circle-ir@3.205.0`](https://www.npmjs.com/package/circle-ir).
