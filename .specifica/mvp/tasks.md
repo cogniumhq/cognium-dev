@@ -156,23 +156,32 @@
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-07-31, post-3.195.0 — #4 follow-up released; 3.193/3.194 verification still pending)
+### GitHub issue ledger (as of 2026-08-04 — `latest` circle-ir/cognium-dev **3.206.0**; verified against GitHub)
 
-| # | Kind | Title | Engine status | Next step |
-|---|------|-------|---------------|-----------|
-| #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | **Fixed, released 3.193.0 (da952ad), benchmark-pending.** TypeScript already worked at HEAD (locked by tests). Rust fixed via DFG-derived connectivity gate (`collectTaintReachable`/`forwardReachableDefs`) with cross-file-call soundness guard; fires for cmdi/path-trav/sqli. Bonus: fixed a pre-existing multi-hop FN (a→b→c) across all languages. | **Local Java delta (2026-08-02):** 0 changed verdicts across OWASP 2740 + SecuriBench 125 (per-file `analyze()`) and 0 cross-file-path delta on SecuriBench `analyzeProject()`, 3.192.0→3.193.0 — no Java regression. The Rust FN fix (the actual #146 change) + Juliet + py/js/go still need the official gate (no Rust/Juliet corpus local). Then close. |
-| #266 | FP | Cross-file connectivity gate name-based — reassign-to-constant still flows | **Fixed for 4 DFG langs, released 3.193.0 (da952ad), benchmark-pending.** Def-precise `taintClobbered` across both cross-file mechanisms; reassign-to-const FP fixed for Java/JS/Rust/Go, all derived TPs preserved. **Python residual** (empty per-file DFG → check can't fire) deferred to Python taint-model integration (`it.todo`). | **Local Java delta (2026-08-02) with #146:** 0 changed verdicts (per-file) and 0 cross-file-path delta (SecuriBench `analyzeProject()`), 3.192.0→3.193.0 — the reassign-clobber FP fix caused no Java regression and removed no Java TPs. js/go still need the official gate; then resolve/defer Python residual. |
-| #265 | FP | CWE-94 on JSON.parse(userInput) (HTML/JS benchmark) | **Not a circle-ir defect** — JSON.parse is a sanitizer (no code_injection sink/flow/CWE-94). FP is a circle-ir-ai harness co-occurrence artifact (`run-html.ts:664`). Engine locked by regression test (56c9a45). Open as cross-repo pointer, handed to circle-ir-ai. | circle-ir-ai runner fix (judge on flows, not co-occurrence); then close. |
-| #267 | enhancement | OWASP-LLM01 prompt-injection (untrusted → LLM-prompt sink) | **circle-ir side done, released 3.194.0 (d8986e7), verification-pending.** LLM01 sink category pre-existed (#248). Added: delimiter-wrap safety gate (precision, all langs; role-sep NOT a sanitizer per #248 reconciliation); Go struct-field recall (multi-line composite-literal DFG chains); speculative param-source + client-less construction (opt-in `speculativeParamSources`, OFF by default — moat intact). 4323 pass. | Verify via sast-validation trust-regression. LLM06 + provenance → recommend cognium-ai trust layer (not taint patterns); close circle-ir side when confirmed. |
-| #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`, pending-decision) | Append as new TPs discovered |
-| #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | **Twelve slices shipped.** Slices 1-4: source coverage (Lambda, WebSocket, bash builtins). Slices 5-7: sanitizer_kind grid complete across Python/JS/Go/Java. Slice 8: NestJS decorators. Slice 9: Go web framework sources. Slice 10: modern JS/TS frameworks. Slice 11: async Python (aiohttp + Quart). Slice 12 (3.192.0, 8b58aaf): Bash shell-quote sanitizers — `printf '%q'` + `${var@Q}` recognized as command_injection + code_injection sanitizers via new findBashShellQuoteSanitizers text-scan detector. Pairs with pre-existing bash regex-allowlist + realpath prefix-guard sanitizers. 65 tests total across all slices. | Remaining: external harness verification (blocked on sast-validation corpora rerun). |
-| #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + Python/JS/Go corpora with severity buckets; produce rule-pair overlap catalog + coalesce-policy recommendation |
+**cognium-dev open (4):**
 
-### #1 detail (kept from prior version)
+| # | Kind | Title | Status | Next step |
+|---|------|-------|--------|-----------|
+| #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | **Engine fixed, released 3.193.0.** TS already worked (locked); Rust via DFG-derived connectivity gate + multi-hop FN bonus. | **Local Java delta verified 2026-08-02** — 0 changed verdicts (OWASP 2740 + SecuriBench 125, per-file `analyze()` + `analyzeProject()`, 3.192→3.193). The Rust FN fix (the actual #146 change) + Juliet + py/js/go still need the **official gate** (no Rust/Juliet corpus local). Then close. |
+| #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | **Twelve slices shipped** (source coverage, sanitizer_kind grid across py/js/go/java, NestJS/Go/JS-TS/async-Python framework sources, bash shell-quote sanitizers). 65 tests. | External harness verification (blocked on sast-validation corpora rerun). |
+| #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + py/js/go with severity buckets → rule-pair overlap catalog + coalesce-policy rec. |
+| #172 | umbrella | Upstream TPs from top-100 Java testharness sweep | Living ledger; +1 row 2026-07-22 (langchain4j `ShellCommandRunner`) | Append new TPs as discovered. |
 
-**#1** (re-opened 2026-06-10) — Jenkins `@DataBoundConstructor` cross-instance field-binding taint. Sink (3.23.2) + source detection (3.23.3) both shipped; remaining is cross-instance DFG flow analysis (~420 LOC, 7/10 difficulty, moderate-to-high regression risk on OWASP/Juliet/SecuriBench 100/100/97.7% TPR benchmarks). **Deferred to cognium-ai triage** with explicit posted analysis — if LLM-discovery already covers this CVE, close as won't-fix; if not, prioritize with explicit benchmark-gate plan. Cross-instance field-binding propagation shipped 3.39.0 per `TODO.md` — verify closes the Jenkins path end-to-end and close.
+**cognium-ai issues with a circle-ir (cognium-dev) root cause — actionable here** (like the just-closed cognium-ai#129):
+
+| ai # | Kind | Title | Disposition |
+|---|------|-------|-------------|
+| cognium-ai#253 | FN | `ScanSecretsPass` misses creds in DB connection strings (`postgres://user:pass@host`) | Clean circle-ir detector fix. Not started. |
+| cognium-ai#247 | FP | 3 static-detector FP classes (sqli on parameterized PreparedStatement, xss on JSON API responses, path_traversal on route resolver) | Filed on 3.192.0 — **re-verify on 3.206.0 first** (many FP fixes shipped since), then fix what still reproduces. Corpus-gated. |
+| cognium-ai#123 | decision | fastjson `_noneautotype` hardening — engine FP or trust-pass downgrade | NEEDS DECISION (cross-layer, part circle-ir / part cognium-ai trust pass). Not actionable until called. |
 
 ### Recently closed
+- **cognium-ai#129** fixed 3.206.0 (7276f98, 2026-08-04) — `generateFindings` reach-map gap dropped log_injection/format_string/nosql_injection despite valid `taint.flows`; added the three families to `canSourceReachSink`, 0 corpus flow delta (OWASP/SecuriBench/BenchmarkPython). cognium-ai bumps fleet ≥3.206.0 + reruns static-parity to close it.
+- **#266** closed — cross-file reassign-to-constant FP fixed for 4 DFG langs (3.193.0); local Java delta 0-regression; Python residual was deferred (`it.todo`).
+- **#267** closed — OWASP-LLM01 prompt-injection, circle-ir side shipped 3.194.0; LLM06 + provenance routed to cognium-ai trust layer.
+- **#265** closed — CWE-94 on JSON.parse was a circle-ir-ai harness co-occurrence artifact, not a circle-ir defect (engine locked by regression test).
+- **#1** closed — Jenkins `@DataBoundConstructor` cross-instance field-binding; source (3.23.3) + sink (3.23.2) shipped, cross-instance propagation landed 3.39.0; deferred to cognium-ai triage and closed.
+- **#4** closed 3.23.5 — Python over-flagging. Residual-FP audit is **engine-complete** (flow FPs 72→0) but harness-blocked; see the High-Priority "Residual Python FPs" note above.
 - #243 closed 2026-07-23 (Go taint-propagation shapes — all 4 shipped in one release 3.182.0: closure capture test lock, range-clause loop-carried via `extractGoUses` on range subject, opaque-codec roundtrip via `dfg.ts` dest re-def for json/xml/yaml/gob Unmarshal + Decoder.Decode + companion compound-expression sink-match in `taint-propagation.ts`, package-global store/read via `detectGoPackageGlobalFlows` supplement; 4212 pass 0 regressions; commit c3bbb72)
 - #254 closed 2026-07-23 (perf deep-dive umbrella — 9 releases shipped 3.171.0–3.177.0 (T1 H1+H7+H8, T2-A+C, T2-D, T1#5, T2#7, T2#10, T1#2, T2#9, T2#6 bundled); T2#8 subsumed by T2-A/C/D post-shared-nodeCache (measurement showed target phases at ~5% of `analyze()`, refactor cost thousands of LOC across 6+ languages for < 5% savings); perf harness spun out and closed as #263)
 - #261 closed 2026-07-23 (dependencyContext extensions — all 4 ecosystems shipped: Gradle direct+catalog+strictly, Python PyYAML ≥ 6.0 gate, Rust plumbing, npm plumbing across 3.179.0/3.180.0/3.181.0; only speculative gate-consumer additions remain for npm+Rust with no clean version-safety stories, and Gradle `platform()` BOM is a deliberate no-op)
@@ -191,8 +200,8 @@
 - #250, #252, #253 closed 3.166.x window (source-line gating, JS entry-point extraction, sanitizer-credit gaps)
 - #16 closed 3.28.0 (WASM tree leak), #15 closed 3.34.0 (runtime-registration Phase 1+2+3), #14 + #12 closed 3.29.0, #11 + #10 closed 3.31.0, #8 closed 3.30.0
 - #7 / #9 / #13 shuttled to cognium-ai (cognium-ai#73 / #74 / #67) — semantic/harness scope, not deterministic SAST
-- #1, #2, #3 closed as of 3.23.3 (initial round); #4 + #6 closed 3.23.5; #5 closed 3.24.0
-- #1 later re-opened after cross-instance flow gap surfaced in CWE-Bench-Java retest
+- #1, #2, #3 closed as of 3.23.3 (initial round); #4 + #6 closed 3.23.5; #5 closed 3.24.0 (#1 was re-opened for the cross-instance flow gap, then re-closed — see the "#1 closed" entry above)
+- Note: bare `#nnn` here are **cognium-dev** issues; cross-tracker refs are always written `cognium-ai#nnn` (the two trackers' numbers collide — e.g. cognium-dev#253 closed long ago vs the open cognium-ai#253 secrets FN)
 
 ---
 
