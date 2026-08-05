@@ -11,7 +11,7 @@ XSS false-positive fix — `StringBuilder.append` is no longer a sink.
 
 ### Fixed
 
-- **`StringBuilder` / `StringBuffer.append` removed as XSS sinks** (cognium-ai#268).
+- **`StringBuilder` / `StringBuffer.append` removed as XSS sinks** (cognium-dev#268).
   They were registered as `xss` (CWE-79), so `generateFindings` reported CWE-79
   on every append — in-memory string construction, not an HTML-output context,
   firing even on constant arguments. It was the #1 crit/high FP bucket on the

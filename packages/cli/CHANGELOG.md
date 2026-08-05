@@ -12,7 +12,7 @@ Adopts [`circle-ir@3.208.0`](https://www.npmjs.com/package/circle-ir).
 ### Fixed
 
 - **Far fewer XSS false positives** — `StringBuilder.append` / `StringBuffer.append`
-  are no longer flagged as CWE-79 (circle-ir cognium-ai#268). String
+  are no longer flagged as CWE-79 (circle-ir cognium-dev#268). String
   construction isn't an HTML-output sink; a genuine reflected-XSS write still
   fires.
 
