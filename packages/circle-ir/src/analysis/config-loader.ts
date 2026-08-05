@@ -1442,8 +1442,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // node ClientRequest.write, etc.) as xss. Real HTML writers are covered
   // by class-scoped entries: PrintWriter.write (line 843), ServletOutputStream.write
   // (line 849), JspWriter.write (xss.yaml), Response.write (nodejs.json).
-  { method: 'append', class: 'StringBuilder', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
-  { method: 'append', class: 'StringBuffer', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
+  // NOTE (cognium-ai#268): `StringBuilder.append` / `StringBuffer.append` were
+  // registered here as xss sinks, but string construction is NOT an HTML-output
+  // context — the actual sink is wherever the built string is later written to
+  // a response / template (PrintWriter, ServletOutputStream, JspWriter, etc.,
+  // which taint propagation reaches via `sb.toString()`). This was the #1
+  // crit/high FP bucket on the top-100 Java sweep (fires on every append,
+  // incl. constant args). Removed globally: measured 0 OWASP xss true-positive
+  // loss (every xss TP has a real HTML-output sink), and the #244
+  // LibraryProfileXssGatePass already dropped them for `library/*`. Taint still
+  // flows source → StringBuilder → real write sink.
   // Wiki/CMS XSS sinks (JSPWiki, Confluence, etc.)
   { method: 'handleHyperlinks', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'handleDiv', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
