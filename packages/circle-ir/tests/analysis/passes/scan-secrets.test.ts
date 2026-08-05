@@ -792,3 +792,54 @@ describe('ScanSecretsPass — #130 value-shape gate on hardcoded-credential', ()
     expect(provider).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Layer 1c: connection-string credentials (cognium-ai#253)
+// ---------------------------------------------------------------------------
+
+describe('ScanSecretsPass — connection-string credentials (cognium-ai#253)', () => {
+  const csFindings = (out: SastFinding[]) =>
+    out.filter((f) => f.rule_id === 'hardcoded-credential' && f.evidence?.kind === 'connection-string');
+
+  it('flags the issue repro: postgres DATABASE_URL with %40-encoded password', () => {
+    const code = `export const DATABASE_URL = "postgres://admin:S3cr3tP%40ss@db.internal:5432/app";`;
+    const out = runPass('config.ts', code, 'typescript');
+    const cs = csFindings(out);
+    expect(cs).toHaveLength(1);
+    expect(cs[0].cwe).toBe('CWE-798');
+    expect(cs[0].severity).toBe('high');
+    expect(cs[0].evidence?.scheme).toBe('postgres');
+  });
+
+  it('flags mysql / mongodb+srv / amqp and an empty-username redis URL', () => {
+    for (const [code, lang] of [
+      ['const db = "mysql://root:hunter2@127.0.0.1:3306/prod";', 'javascript'],
+      ['DB = "mongodb+srv://user:P%40ssw0rd@cluster0.abc.mongodb.net/test"', 'python'],
+      ['url := "amqp://guest:s3kritGuest@rabbit:5672/"', 'go'],
+      ['const r = "redis://:mypass@redis.example.com:6379";', 'javascript'],
+    ] as const) {
+      expect(csFindings(runPass('a.' + (lang === 'python' ? 'py' : lang === 'go' ? 'go' : 'js'), code, lang))).toHaveLength(1);
+    }
+  });
+
+  it('does NOT flag a URL without a password (userinfo has no password)', () => {
+    expect(csFindings(runPass('a.js', 'const u = "postgres://readonly@db.internal:5432/app";', 'javascript'))).toHaveLength(0);
+  });
+
+  it('does NOT flag placeholder / interpolated / templated passwords', () => {
+    const cases: Array<[string, CircleIR['meta']['language']]> = [
+      ['const u = "postgres://user:password@localhost:5432/db";', 'javascript'], // placeholder word
+      ['const u = "postgres://user:${DB_PASSWORD}@localhost/db";', 'javascript'], // shell/JS interpolation
+      ['u = "postgres://user:%s@localhost/db"', 'python'], // printf template
+      ['const u = "postgres://user:<your-password>@localhost/db";', 'javascript'], // angle placeholder
+    ];
+    for (const [code, lang] of cases) {
+      expect(csFindings(runPass('a.' + (lang === 'python' ? 'py' : 'js'), code, lang))).toHaveLength(0);
+    }
+  });
+
+  it('does NOT flag a plain URL with no userinfo, or a host:port@ (numeric = port)', () => {
+    expect(csFindings(runPass('a.js', 'const api = "https://api.example.com:443/v1/users";', 'javascript'))).toHaveLength(0);
+    expect(csFindings(runPass('a.js', 'const x = "http://host:8080@cache";', 'javascript'))).toHaveLength(0);
+  });
+});

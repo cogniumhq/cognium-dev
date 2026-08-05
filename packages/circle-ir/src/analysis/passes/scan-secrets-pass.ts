@@ -389,6 +389,48 @@ function shannonEntropy(s: string): number {
 const CREDENTIAL_NAME_RE = /(?:key|secret|token|password|passwd|credential|api[_-]?key)/i;
 
 // ---------------------------------------------------------------------------
+// Connection-string credentials (layer 1c) — cognium-ai#253
+//
+// A URI with a password in its userinfo (scheme://user:SECRET@host) leaks a
+// live credential. This is the very common DATABASE_URL / broker-URL leak that
+// the provider-prefix layer (exact key formats) and the named-credential layer
+// (LHS keyword) both miss: the secret sits inside the value, has no provider
+// prefix, and the LHS name (`DATABASE_URL`) is not a credential keyword.
+//
+// The userinfo password is captured and gated. The username is optional
+// (empty-user `redis` URLs). `%XX` percent-encoding is allowed — the issue's own
+// examples encode `@` as `%40` inside a real password — but template /
+// interpolation forms and doc placeholders are dropped.
+const CONNECTION_STRING_RE =
+  /\b([a-z][a-z0-9+.-]{1,20}):\/\/([^\s:/@"'`]*):([^\s:/@"'`]{2,})@/i;
+
+/** Template / interpolation markers in a password → not a literal secret. */
+const PASSWORD_INTERPOLATION_RE = /\$\{|\$\(|\{\{|%\([^)]*\)[sd]|%[sdvfeg]\b|[{}<>]/i;
+
+const PLACEHOLDER_PASSWORD_WORDS = new Set([
+  'password', 'passwd', 'pass', 'pwd', 'secret', 'user', 'username',
+  'changeme', 'example', 'yourpassword', 'your_password', 'test', 'xxx', 'xxxx',
+]);
+
+/**
+ * Detect a `scheme://user:password@host` credential on a line, returning the
+ * scheme + a truncated match, or `null` when the password is a placeholder,
+ * an interpolation, or all-digits (a port, not a secret).
+ */
+function matchConnectionStringCredential(
+  lineText: string,
+): { scheme: string; match: string } | null {
+  const m = CONNECTION_STRING_RE.exec(lineText);
+  if (!m) return null;
+  const password = m[3];
+  if (/^\d+$/.test(password)) return null; // `host:8080@` — a port, not a password
+  if (PLACEHOLDER_PASSWORD_WORDS.has(password.toLowerCase())) return null;
+  if (PLACEHOLDER_RE.test(password)) return null;
+  if (PASSWORD_INTERPOLATION_RE.test(password)) return null;
+  return { scheme: m[1], match: m[0].substring(0, 60) };
+}
+
+// ---------------------------------------------------------------------------
 // Context-gate pre-scans (#125)
 //
 // The entropy layer alone fires on any high-entropy string. To kill the
@@ -704,6 +746,38 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         snippet: lineText.trim().substring(0, 120),
         fix: 'Move the credential to an environment variable or secrets manager; never commit live secrets to source control.',
         evidence: { kind: 'named-credential', name: hit.name },
+      });
+      providerFindings += 1;
+    }
+
+    // Layer 1c: connection-string credentials (cognium-ai#253). Line-by-line;
+    // a password embedded in URI userinfo (scheme://user:SECRET@host).
+    for (let i = 0; i < lines.length; i++) {
+      const lineText = lines[i];
+      const lineNum = i + 1;
+
+      const hit = matchConnectionStringCredential(lineText);
+      if (!hit) continue;
+
+      const key = `${lineNum}:hardcoded-credential`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const dg = applyDemoDowngrade(demoPath, 'high', 'error');
+      ctx.addFinding({
+        id: `hardcoded-credential-${file}-${lineNum}`,
+        pass: this.name,
+        category: this.category,
+        rule_id: 'hardcoded-credential',
+        cwe: 'CWE-798',
+        severity: dg.severity,
+        level: dg.level,
+        message: `Hardcoded credential: password embedded in a ${hit.scheme} connection string`,
+        file,
+        line: lineNum,
+        snippet: lineText.trim().substring(0, 120),
+        fix: 'Move the credential out of the connection string into an environment variable or secrets manager, and rotate the exposed password.',
+        evidence: { kind: 'connection-string', scheme: hit.scheme, match: hit.match },
       });
       providerFindings += 1;
     }
