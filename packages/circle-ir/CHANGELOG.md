@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.209.0] - 2026-08-04
+
+Two static-detector false-positive classes from the elide sweep (cognium-ai#247).
+
+### Fixed
+
+- **`sql_injection` no longer fires on a parameterized `PreparedStatement`.**
+  `conn.prepareStatement(q.replaceAll(PATTERN, "?"))` rewrites named params to
+  `?` bind placeholders — a parameterized query, not concatenated SQL. The sink
+  is dropped when its argument parameterizes via `.replaceAll(_, "?")` (the
+  replacement literal is placeholder-only). A concat or quote-escape replacement
+  does not match, so a genuine concatenated `prepareStatement` still fires.
+- **`xss` no longer fires on a JSON/GraphQL API response body.** A response
+  builder's `.body(x)` (Spring `ResponseEntity` / JAX-RS) is content-negotiated
+  — JSON by default for REST controllers — so it is an HTML XSS sink only when
+  the response is explicitly `text/html`. `body`-method xss sinks are dropped
+  when no `text/html` signal appears in the file; a real text/html body still
+  fires.
+- Corpus-verified: 0 OWASP `sql_injection` / `xss` true-positive loss, 0
+  changed-verdict files across OWASP Benchmark + SecuriBench Micro. (FP-3,
+  path_traversal on a URL route resolver, no longer reproduced — already fixed.)
+
 ## [3.208.0] - 2026-08-04
 
 XSS false-positive fix — `StringBuilder.append` is no longer a sink.
