@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.208.0] - 2026-08-04
+
+Adopts [`circle-ir@3.208.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **Far fewer XSS false positives** — `StringBuilder.append` / `StringBuffer.append`
+  are no longer flagged as CWE-79 (circle-ir cognium-ai#268). String
+  construction isn't an HTML-output sink; a genuine reflected-XSS write still
+  fires.
+
+4498 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.207.0] - 2026-08-04
 
 Adopts [`circle-ir@3.207.0`](https://www.npmjs.com/package/circle-ir).

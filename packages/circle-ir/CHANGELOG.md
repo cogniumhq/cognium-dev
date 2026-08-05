@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.208.0] - 2026-08-04
+
+XSS false-positive fix — `StringBuilder.append` is no longer a sink.
+
+### Fixed
+
+- **`StringBuilder` / `StringBuffer.append` removed as XSS sinks** (cognium-ai#268).
+  They were registered as `xss` (CWE-79), so `generateFindings` reported CWE-79
+  on every append — in-memory string construction, not an HTML-output context,
+  firing even on constant arguments. It was the #1 crit/high FP bucket on the
+  top-100 Java sweep. The real sink is wherever the built string is later
+  written to a response (PrintWriter / ServletOutputStream / JspWriter /
+  template), which taint propagation still reaches via `sb.toString()`.
+  Verified: 0 OWASP xss true-positive loss; a genuine HTML-output sink reached
+  by tainted input — including one built through a `StringBuilder` — still
+  fires. (2 SecuriBench Micro detections that were firing on the wrong line via
+  the over-broad sink are lost; the real vulns there are a separate recall
+  follow-up.)
+
 ## [3.207.0] - 2026-08-04
 
 Secrets detection — credentials embedded in connection strings.
