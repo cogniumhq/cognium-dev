@@ -166,10 +166,11 @@
 
 ### GitHub issue ledger (as of 2026-08-04 — `latest` circle-ir/cognium-dev **3.206.0**; verified against GitHub)
 
-**cognium-dev open (4):**
+**cognium-dev open (5):**
 
 | # | Kind | Title | Status | Next step |
 |---|------|-------|--------|-----------|
+| #269 | tracking | Top-100 Java sweep FP/FN fixes (3.206–3.208) — verify on fleet bump + watch for further flags | **Umbrella (filed 2026-08-04).** Tracks the shipped #129/#253/#268 fixes, the cognium-ai fleet-bump verification each needs (static-parity / top-100 sweep / secrets), and follow-ups: SecuriBench XSS FNs, cognium-ai#247 re-verify, path-traversal CWE-22 bucket review, cognium-ai#123 decision. | cognium-ai bumps fleet ≥3.208.0 + re-runs the three sweeps; open child tickets for residual flags. |
 | #146 | FN | Rust & TypeScript cross-file taint unresolved (extends closed #106) | **Engine fixed, released 3.193.0.** TS already worked (locked); Rust via DFG-derived connectivity gate + multi-hop FN bonus. | **Local Java delta verified 2026-08-02** — 0 changed verdicts (OWASP 2740 + SecuriBench 125, per-file `analyze()` + `analyzeProject()`, 3.192→3.193). The Rust FN fix (the actual #146 change) + Juliet + py/js/go still need the **official gate** (no Rust/Juliet corpus local). Then close. |
 | #213 | coverage | Taint coverage extension — 512 cells (go/ts/bash + channels + kinds) | **Twelve slices shipped** (source coverage, sanitizer_kind grid across py/js/go/java, NestJS/Go/JS-TS/async-Python framework sources, bash shell-quote sanitizers). 65 tests. | External harness verification (blocked on sast-validation corpora rerun). |
 | #262 | research | Multi-severity finding-collision data capture (unblocks broader coalesce from #143) | Not started | Rerun `CIRCLE_IR_INSTRUMENT_FINDINGS=1` across OWASP + top-25 Java + py/js/go with severity buckets → rule-pair overlap catalog + coalesce-policy rec. |
