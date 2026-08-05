@@ -185,7 +185,7 @@
 | cognium-ai#123 | decision | fastjson `_noneautotype` hardening — engine FP or trust-pass downgrade | NEEDS DECISION (cross-layer, part circle-ir / part cognium-ai trust pass). Not actionable until called. |
 
 ### Recently closed
-- **#268** (cognium-dev) fixed 3.208.0 (89b3b65, 2026-08-04) — over-broad `StringBuilder`/`StringBuffer.append` XSS sink removed; 0 OWASP xss TP loss, -2 SecuriBench wrong-line detections (real FNs filed as a follow-up). Originated from the cognium-ai top-100 sweep but filed in cognium-dev. Close on GitHub. *(Earlier entries mislabeled this `cognium-ai#268` — corrected 2026-08-05; it is a bare cognium-dev issue.)*
+- **#268** (cognium-dev) fixed 3.208.0 (89b3b65, 2026-08-04) — over-broad `StringBuilder`/`StringBuffer.append` XSS sink removed; 0 OWASP xss TP loss, -2 SecuriBench wrong-line detections (real FNs filed as a follow-up). Originated from the cognium-ai top-100 sweep but filed in cognium-dev. Closed on GitHub 2026-08-05. *(Earlier entries mislabeled this `cognium-ai#268` — corrected 2026-08-05; it is a bare cognium-dev issue.)*
 - **cognium-ai#129** fixed 3.206.0 (7276f98, 2026-08-04) — `generateFindings` reach-map gap dropped log_injection/format_string/nosql_injection despite valid `taint.flows`; added the three families to `canSourceReachSink`, 0 corpus flow delta (OWASP/SecuriBench/BenchmarkPython). cognium-ai bumps fleet ≥3.206.0 + reruns static-parity to close it.
 - **#266** closed — cross-file reassign-to-constant FP fixed for 4 DFG langs (3.193.0); local Java delta 0-regression; Python residual was deferred (`it.todo`).
 - **#267** closed — OWASP-LLM01 prompt-injection, circle-ir side shipped 3.194.0; LLM06 + provenance routed to cognium-ai trust layer.
