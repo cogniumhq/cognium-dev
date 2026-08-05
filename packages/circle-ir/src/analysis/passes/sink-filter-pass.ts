@@ -383,6 +383,19 @@ const SQL_EXEC_METHODS = new Set<string>([
 ]);
 const JAVA_SQL_ASSIGN_RE_TEMPLATE =
   '\\b(?:String|CharSequence|final\\s+String|var)\\s+SQLVAR\\b\\s*=\\s*(.+?);';
+// `.replaceAll(<anything>, "<placeholder-only>")` where the replacement string
+// is composed solely of bind-placeholder tokens (`?`, whitespace, commas) and
+// contains at least one `?` — the named-param→`?` rewrite that parameterizes a
+// query (cognium-ai#247 FP-1). Non-greedy first arg so a regex pattern with an
+// internal comma (`{1,3}`) or a `.pattern()` call is spanned.
+const REPLACE_ALL_TO_PLACEHOLDER_RE =
+  /\.replaceAll\s*\([\s\S]*?,\s*"[\s,?]*\?[\s,?]*"\s*\)/;
+// An explicit `text/html` content-type signal (cognium-ai#247 FP-2). A response
+// builder's `.body(x)` is content-negotiated (JSON by default for @RestController
+// / JAX-RS), so it is only an HTML XSS sink when the response is explicitly
+// text/html. Absent this signal anywhere in the file, `body(...)` is not an HTML
+// output context.
+const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
 const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
 
@@ -1480,6 +1493,36 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         }
         return true;
       });
+    }
+
+    // Stage 15b — Java sql_injection: `.replaceAll(<pattern>, "?")` parameterization.
+    // (cognium-ai#247 FP-1) The canonical named-param→placeholder rewrite
+    //   conn.prepareStatement(namedParamQuery.replaceAll(PATTERN.pattern(), "?"))
+    // converts every `:name` token to a `?` bind placeholder, so the query
+    // structure becomes static and values bind later — a parameterized query,
+    // not concatenated SQL. The replacement literal being placeholder-only
+    // (`?` / `?,?`) is the proof; a real concat replacement (`"'" + x + "'"`)
+    // is not a string literal and does not match.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection') return true;
+        if (!SQL_EXEC_METHODS.has(sink.method ?? '')) return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        return !REPLACE_ALL_TO_PLACEHOLDER_RE.test(sinkLineText);
+      });
+    }
+
+    // Stage 15c — Java xss: response-builder `.body(x)` on a non-HTML response.
+    // (cognium-ai#247 FP-2) Spring `ResponseEntity` / JAX-RS response builders'
+    // `.body(...)` is content-negotiated — JSON by default for REST controllers
+    // (`@RestController`, `produces=application/json`, `application/vnd.api+json`).
+    // XSS requires an HTML browser context, so `.body(...)` is a sink only when
+    // the response is explicitly text/html. If no `text/html` signal appears
+    // anywhere in the file, drop `body`-method xss sinks. Conservative: any
+    // text/html signal keeps them (avoids dropping a real HTML response).
+    if (language === 'java' && !HTML_CONTENT_TYPE_RE.test(ctx.code)) {
+      filtered = filtered.filter(sink => !(sink.type === 'xss' && sink.method === 'body'));
     }
 
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
