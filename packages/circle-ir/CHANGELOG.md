@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.207.0] - 2026-08-04
+
+Secrets detection — credentials embedded in connection strings.
+
+### Fixed
+
+- **`ScanSecretsPass` now flags a password in a URI's userinfo**
+  (`scheme://user:password@host`) — the common `DATABASE_URL` / message-broker
+  leak (cognium-ai#253). The provider-prefix layer matches exact key formats
+  and the named-credential layer keys on the LHS identifier; neither saw a
+  secret that sits inside the value with no prefix and a non-credential name.
+  New Layer 1c captures the userinfo password (username optional) and gates it:
+  template / interpolation (`${VAR}`, `%s`, `<placeholder>`), doc placeholders
+  (`password`, `changeme`, …), and all-digit values (a port) are dropped; `%XX`
+  percent-encoding is allowed. Emits `hardcoded-credential` (CWE-798, high).
+  Corpus-verified zero FP surface across OWASP Benchmark / BenchmarkPython /
+  SecuriBench Micro.
+
 ## [3.206.0] - 2026-08-04
 
 Finding-layer fix — `generateFindings` was dropping three sink families.

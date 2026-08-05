@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.207.0] - 2026-08-04
+
+Adopts [`circle-ir@3.207.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **Secrets scan now catches credentials in connection strings** — a hardcoded
+  password in a `postgres://` / `mysql://` / `mongodb://` / `redis://` / `amqp://`
+  URL is now reported (circle-ir cognium-ai#253).
+
+4494 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.206.0] - 2026-08-04
 
 Adopts [`circle-ir@3.206.0`](https://www.npmjs.com/package/circle-ir).
