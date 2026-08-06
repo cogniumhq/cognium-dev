@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.210.0] - 2026-08-06
+
+Adopts [`circle-ir@3.210.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **Fewer path-traversal false positives** — a user path rejected by an
+  `if (x.contains("..")) throw` guard before filesystem use is no longer
+  flagged as CWE-22 (circle-ir cognium-dev#269). A genuinely unguarded path
+  still fires.
+
+4506 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.209.0] - 2026-08-04
 
 Adopts [`circle-ir@3.209.0`](https://www.npmjs.com/package/circle-ir).

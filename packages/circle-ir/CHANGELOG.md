@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.210.0] - 2026-08-06
+
+Java path-traversal reject-guard suppression.
+
+### Fixed
+
+- **`if (x.contains("..")) throw/return` reject-guards suppress path_traversal**
+  (cognium-dev#269 CWE-22 review). A user path checked for a `..` traversal
+  token and rejected before any filesystem use is not exploitable. Applied as a
+  SinkFilter sink drop (Stage 15d) — reaching the `generateFindings` scan path,
+  not only `taint.flows` — covering the guarded variable and its one-hop
+  `new File(BASE, x)` / `BASE + x` derivations. Position-aware: a guard *after*
+  the sink does not retroactively sanitize. Recall preserved (a plain tainted
+  path still fires); OWASP pathtraver TP=116/FP=0 unchanged, 0 changed-verdict
+  files across OWASP Benchmark + SecuriBench Micro.
+- Note: this is a sink drop rather than a sanitizer because `generateFindings`
+  (the scan path) does its own DFG path-finding and is not sanitizer-aware — so
+  the existing `normalize()+startsWith()` / `getFileName()` path-traversal
+  sanitizers reach only `taint.flows`. Those two guard shapes remain
+  scan-visible; a broader generateFindings-sanitizer-awareness pass is tracked
+  as a follow-up.
+
 ## [3.209.0] - 2026-08-04
 
 Two static-detector false-positive classes from the elide sweep (cognium-ai#247).
