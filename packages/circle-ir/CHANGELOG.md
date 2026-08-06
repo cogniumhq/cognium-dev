@@ -42,9 +42,11 @@ XSS false-positive fix — `StringBuilder.append` is no longer a sink.
   template), which taint propagation still reaches via `sb.toString()`.
   Verified: 0 OWASP xss true-positive loss; a genuine HTML-output sink reached
   by tainted input — including one built through a `StringBuilder` — still
-  fires. (2 SecuriBench Micro detections that were firing on the wrong line via
-  the over-broad sink are lost; the real vulns there are a separate recall
-  follow-up.)
+  fires. (Correction to the original 3.208.0 note: SecuriBench Micro
+  `Aliasing5` and `Sanitizers4` continue to be detected at their real
+  `/* BAD */` sink lines — removing the sink dropped only the *spurious
+  duplicate* findings the over-broad append produced, not any real detection.
+  The originally-reported "2 lost detections" was a measurement artifact.)
 
 ## [3.207.0] - 2026-08-04
 
