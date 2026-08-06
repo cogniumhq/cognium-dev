@@ -2473,9 +2473,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'clean', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
   { method: 'getValidSafeHTML', class: 'ESAPI', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
 
-  // Request/session attribute reflection XSS (return value is tainted)
-  { method: 'getAttribute', class: 'HttpServletRequest', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [] },
-  { method: 'getAttribute', class: 'HttpSession', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [] },
+  // NOTE (cognium-dev#270): `HttpServletRequest`/`HttpSession.getAttribute()`
+  // were registered here as xss sinks to model "attribute reflection XSS", but
+  // getAttribute is a *read* — its return value is tainted (a SOURCE, already
+  // registered as `io_input` above), never an HTML-output context. With
+  // `arg_positions: []` the entry produced a degenerate source==sink self-flow
+  // (the same getAttribute call flagged as both), firing CWE-79 on route-helper
+  // reads that are never rendered (elide `getPath`). The real sink is wherever
+  // the read value is later written to a response (getWriter/JspWriter/template),
+  // which the io_input source reaches on its own. Same over-broad-sink family as
+  // #268 (StringBuilder.append). Removed.
 
   // =========================================================================
   // Rust Sinks
