@@ -396,6 +396,51 @@ const REPLACE_ALL_TO_PLACEHOLDER_RE =
 // text/html. Absent this signal anywhere in the file, `body(...)` is not an HTML
 // output context.
 const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
+
+/**
+ * Returns the 1-indexed line numbers that a Java `if (x.contains("..")) throw/
+ * return` reject-guard makes path-traversal-safe (cognium-dev#269). A line is
+ * guard-covered when it references a variable that was reject-guarded above,
+ * following one-hop derivations (`f = new File(BASE, x)`, `p = BASE + x`) — the
+ * traversal token cannot appear in a value derived only from the guarded name.
+ * Reject polarity only (`contains("..")` with a throwing/returning body).
+ */
+function javaTraversalRejectGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  const guardOpen = /\bif\s*\(\s*([A-Za-z_]\w*)\s*\.\s*contains\s*\(\s*"[^"]*\.\.[^"]*"\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*(?:[A-Za-z_][\w.<>[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    let hasTerminator = terminatorRe.test(lines[i]);
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
+        if (lines[j].includes('}')) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([m[1]]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) if (new RegExp(`\\b${name}\\b`).test(text)) return true;
+      return false;
+    };
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l];
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2])) guarded.add(assign[1]);
+        else if (assign[1] !== m[1]) guarded.delete(assign[1]);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
 const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
 
@@ -1523,6 +1568,23 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // text/html signal keeps them (avoids dropping a real HTML response).
     if (language === 'java' && !HTML_CONTENT_TYPE_RE.test(ctx.code)) {
       filtered = filtered.filter(sink => !(sink.type === 'xss' && sink.method === 'body'));
+    }
+
+    // Stage 15d — Java path_traversal: `if (x.contains("..")) throw/return`
+    // reject-guard. (cognium-dev#269 CWE-22 review) A user path checked for a
+    // `..` traversal token and rejected before any filesystem use cannot carry
+    // a traversal payload past the guard — the Java analog of the Python
+    // reject-guard sanitizer, but applied here as a sink drop so it reaches the
+    // `generateFindings` scan path too (which is not sanitizer-aware). Drops a
+    // path_traversal sink whose line references a variable reject-guarded
+    // above (following one-hop `new File(BASE, x)` / `BASE + x` derivations).
+    if (language === 'java') {
+      const guardedLines = javaTraversalRejectGuardedLines(ctx.code);
+      if (guardedLines.size > 0) {
+        filtered = filtered.filter(
+          sink => !(sink.type === 'path_traversal' && guardedLines.has(sink.line)),
+        );
+      }
     }
 
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
