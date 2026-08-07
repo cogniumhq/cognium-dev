@@ -8,7 +8,10 @@
 import type {
   TaintSource,
   TaintSink,
+  TaintSanitizer,
   DFG,
+  DFGDef,
+  DFGUse,
   DFGChain,
   Finding,
   TaintHop,
@@ -21,6 +24,8 @@ import {
   getSinkDescription,
 } from './rules.js';
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
+import { sanitizerCoversSink } from './sanitizer-index.js';
+import { walkBackwardDefs } from './dfg-walk.js';
 
 /**
  * Generate vulnerability findings from taint analysis results.
@@ -40,9 +45,73 @@ export function generateFindings(
   fileName: string,
   sourceCode?: string,
   language?: string,
+  sanitizers: TaintSanitizer[] = [],
 ): Finding[] {
   const findings: Finding[] = [];
   let findingId = 1;
+
+  // cognium-dev: sanitizer-awareness for the scan path. Historically
+  // `generateFindings` did its own source→sink DFG path-finding and ignored the
+  // pass-level `TaintSanitizer`s that `taint.flows` honors — so a guarded value
+  // that `taint.flows` correctly suppressed still surfaced here (the scan path
+  // downstream consumers build reports from). This mirrors the two
+  // `taint-propagation-pass` filter tiers. Backward-compatible: callers that
+  // pass no `sanitizers` get the pre-existing behavior.
+  const sanitizersByLine = new Map<number, TaintSanitizer[]>();
+  for (const san of sanitizers) {
+    const arr = sanitizersByLine.get(san.line) ?? [];
+    arr.push(san);
+    sanitizersByLine.set(san.line, arr);
+  }
+  // Reaching-def indexes for the DFG-walk tier, built from the `dfg` argument.
+  const defById = new Map<number, DFGDef>();
+  const chainsByToDef = new Map<number, DFGChain[]>();
+  const usesByLine = new Map<number, DFGUse[]>();
+  if (sanitizers.length > 0) {
+    for (const d of dfg.defs) defById.set(d.id, d);
+    for (const c of dfg.chains ?? []) {
+      const arr = chainsByToDef.get(c.to_def) ?? [];
+      arr.push(c);
+      chainsByToDef.set(c.to_def, arr);
+    }
+    for (const u of dfg.uses) {
+      const arr = usesByLine.get(u.line) ?? [];
+      arr.push(u);
+      usesByLine.set(u.line, arr);
+    }
+  }
+  const lineCoversSink = (line: number, sinkType: SinkType): boolean => {
+    const sans = sanitizersByLine.get(line);
+    if (!sans) return false;
+    for (const san of sans) if (sanitizerCoversSink(san, sinkType)) return true;
+    return false;
+  };
+  const isPairSanitized = (
+    source: TaintSource,
+    sink: TaintSink,
+    pathResult: PathResult,
+  ): boolean => {
+    if (sanitizers.length === 0) return false;
+    // Tier 1 — a sanitizer AT the sink line covering the sink type.
+    if (lineCoversSink(sink.line, sink.type)) return true;
+    // Tier 2 — DFG reaching-def walk: a sanitizer on a def line feeding the
+    // sink's tainted variable, bounded to `[source.line, sink.line)`. Mirrors
+    // the taint-propagation-pass DFG-walk credit (the `n = sanitize(x); sink(n)`
+    // shape where the sanitizer is on the assignment line, not the sink line).
+    const sinkVar = pathResult.hops.length > 0
+      ? pathResult.hops[pathResult.hops.length - 1].variable
+      : undefined;
+    for (const use of usesByLine.get(sink.line) ?? []) {
+      if (sinkVar && use.variable !== sinkVar) continue;
+      if (use.def_id === null || use.def_id === undefined) continue;
+      const walk = walkBackwardDefs(use.def_id, chainsByToDef, defById, { maxHops: 32 });
+      for (const line of walk.lines) {
+        if (line === sink.line || line < source.line) continue;
+        if (lineCoversSink(line, sink.type)) return true;
+      }
+    }
+    return false;
+  };
 
   // cognium-dev#250 — drop sources whose line is provably non-executable
   // (import, package, comment, annotation-only, const-with-literal).
@@ -63,6 +132,12 @@ export function generateFindings(
       const pathResult = findTaintPath(source, sink, dfg);
 
       if (pathResult.pathExists || isProximityVulnerability(source, sink)) {
+        // Drop the pair when a sanitizer covers the sink (at the sink line, or
+        // on a reaching-def line feeding the sink var) — aligns the scan path
+        // with taint.flows. No-op when the caller passed no sanitizers.
+        if (isPairSanitized(source, sink, pathResult)) {
+          continue;
+        }
         const severity = calcSeverity({
           sourceType: source.type,
           sinkType: sink.type,
