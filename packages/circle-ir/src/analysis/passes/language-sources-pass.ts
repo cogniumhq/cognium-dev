@@ -635,8 +635,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ...findJavaPathNormalizeStartsWithGuardSanitizers(code),
       );
       // #239 C4 residual (3.159.0): Path.getFileName() strips path
-      // components — canonical path-traversal sanitizer.
+      // components — canonical path-traversal sanitizer. #269: also covers
+      // `new File(x).getName()` (java.io.File basename strip).
       additionalSanitizers.push(...findJavaPathGetFileNameSanitizers(code));
+      // cognium-dev#269: `!file.getCanonicalPath().startsWith(base)` reject
+      // guard (the java.io.File OWASP-recommended containment defence).
+      additionalSanitizers.push(...findJavaCanonicalPathStartsWithGuardSanitizers(code));
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
       additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
@@ -4825,6 +4829,68 @@ function findJavaPathNormalizeStartsWithGuardSanitizers(
  * assignment line and on every subsequent line that references the
  * bound variable (mirrors the `normalize()+startsWith()` emitter shape).
  */
+/**
+ * Java: `if (!<file>.getCanonicalPath().startsWith(<base>)) throw/return`
+ * canonical-path containment guard (cognium-dev#269). The OWASP-recommended
+ * java.io.File defence: resolve the file to its canonical (symlink- and
+ * `..`-collapsed) path and reject anything that escapes the base directory
+ * before any filesystem use. The nio `resolve().normalize()+startsWith` form is
+ * handled by the sibling detector; this covers the java.io.File API.
+ *
+ * Reject polarity only (`!<file>.getCanonicalPath().startsWith(...)` with a
+ * throwing/returning body). Credits the guarded File variable and its one-hop
+ * derivations from the guard line forward.
+ */
+function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const guardRe =
+    /\bif\s*\(\s*!\s*([A-Za-z_]\w*)\s*\.\s*getCanonicalPath\s*\(\s*\)\s*\.\s*startsWith\s*\(/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*(?:[A-Za-z_][\w.<>[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardRe.exec(lines[i]);
+    if (!m) continue;
+    let hasTerminator = terminatorRe.test(lines[i]);
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
+        if (lines[j].includes('}')) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([m[1]]);
+    const mentions = (t: string): boolean => {
+      for (const n of guarded) if (new RegExp(`\\b${n}\\b`).test(t)) return true;
+      return false;
+    };
+    // Credit the guarded File across the whole scan, not just forward from the
+    // guard: a canonical-path containment check proves the File is contained
+    // regardless of where it was constructed, so the `new File(base, tainted)`
+    // construction sink (which precedes the guard) is safe too. Derivations are
+    // still tracked in source order.
+    for (let l = 0; l < lines.length; l++) {
+      const lt = lines[l];
+      const a = assignRe.exec(lt);
+      if (a) {
+        if (mentions(a[2])) guarded.add(a[1]);
+        else if (a[1] !== m[1]) guarded.delete(a[1]);
+      }
+      if (mentions(lt)) {
+        sanitizers.push({
+          type: 'java_canonical_startswith_guard',
+          method: 'getCanonicalPath',
+          line: l + 1,
+          sanitizes: ['path_traversal', 'external_taint_escape'],
+        });
+      }
+    }
+  }
+  return sanitizers;
+}
+
 function findJavaPathGetFileNameSanitizers(
   code: string,
 ): TaintSanitizer[] {
@@ -4840,14 +4906,22 @@ function findJavaPathGetFileNameSanitizers(
     /^\s*(?:(?:final\s+)?[A-Za-z_][\w.<>?,\s\[\]]*?\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
   const rhsHasGetFileNameRe = /\.\s*getFileName\s*\(\s*\)/;
   const rhsHasPathsChainRe = /\b(?:Paths\s*\.\s*get|Path\s*\.\s*of)\s*\(/;
+  // cognium-dev#269: `new File(<arg>).getName()` — java.io.File.getName()
+  // returns the last path segment (the leaf filename), stripping any directory
+  // prefix and `..` traversal, exactly like nio `Path.getFileName()`. The
+  // receiver must be an inline `new File(...)` to distinguish it from the
+  // *taint-source* `Part.getName()` / `MultipartFile.getName()` cases (the
+  // attacker-supplied upload filename), which have no `new File` receiver.
+  const rhsNewFileGetNameRe = /\bnew\s+File\s*\([\s\S]*\)\s*\.\s*getName\s*\(\s*\)/;
 
   const candidates: Array<{ line: number; boundVar: string }> = [];
   for (let i = 0; i < lines.length; i++) {
     const m = assignmentRe.exec(lines[i]);
     if (!m) continue;
     const rhs = m[2];
-    if (!rhsHasGetFileNameRe.test(rhs)) continue;
-    if (!rhsHasPathsChainRe.test(rhs)) continue;
+    const isNioGetFileName = rhsHasGetFileNameRe.test(rhs) && rhsHasPathsChainRe.test(rhs);
+    const isNewFileGetName = rhsNewFileGetNameRe.test(rhs);
+    if (!isNioGetFileName && !isNewFileGetName) continue;
     candidates.push({ line: i + 1, boundVar: m[1] });
   }
   if (candidates.length === 0) return sanitizers;
