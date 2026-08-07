@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.214.0] - 2026-08-07
+
+Language-scope the Rust web-framework extractor (cognium-ai#264 "Defect A").
+
+### Fixed
+
+- **Rust Axum/Actix/Rocket extractor regex no longer mis-tags non-Rust params.** The hardcoded extractor loop in `taint-matcher.ts` matched `RUST_EXTRACTOR_KIND` (bare `Json|Form|Query|Path|Extension|Multipart|Body|Bytes`) against **every** parameter of **every** language, with no `language === 'rust'` guard. A build-time Java `java.nio.file.Path outDir` constructor param — and bare Java types named `Form`/`Query`/`Json`/`Body` — were emitted as `http_param`/`http_body` taint sources. Downstream consumers promoted those to an uncapped trust boundary, flooding `path_traversal` Critical/High on plain POJOs with no HTTP entry point. The loop is now wrapped in `if (language === 'rust')`; genuine Rust `Path<T>` extractors still emit. Mirrors the language-scoping #254 applied to the config-pattern form of the same Axum-`Path` vs `pathlib.Path` collision. Verified: **0 changed `taint.flows` verdicts** across OWASP Java 2740 + SecuriBench 125 (source-level suppression only — zero TP loss). +3 regression cases in `repro-issue-71`.
+
 ## [3.213.0] - 2026-08-06
 
 java.io.File path-traversal guard sanitizers.
