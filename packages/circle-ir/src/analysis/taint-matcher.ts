@@ -340,32 +340,43 @@ function findSources(
   // so `Form`/`Query`/`Path` extractors are modelled as `http_param` (which
   // covers the full sink set the issue lists). `Json`/`Multipart`/`Body`/
   // `Bytes` remain `http_body` — they're typically deserialized payloads.
+  //
+  // MUST stay language-scoped (cognium-ai#264 "Defect A"). The regex matches
+  // the *bare* extractor name via `(?:<|$)`, so without the `language === 'rust'`
+  // guard every Java `java.nio.file.Path outDir` ctor param — plus bare Java
+  // types named `Form`/`Query`/`Json`/`Body` — is mis-emitted as `http_param`,
+  // which downstream promotes to an uncapped trust boundary and floods
+  // `path_traversal` C+H. #254 already language-filtered the *config-pattern*
+  // form of this Axum-`Path` vs `pathlib.Path` collision; this hardcoded
+  // extractor loop needs the equivalent guard.
   const RUST_EXTRACTOR_KIND = /(?:^|::)(Json|Form|Query|Path|Extension|Multipart|Body|Bytes)(?:<|$)/;
-  for (const type of types) {
-    for (const method of type.methods) {
-      for (const param of method.parameters) {
-        if (!param.type) continue;
-        const kindMatch = RUST_EXTRACTOR_KIND.exec(param.type);
-        if (!kindMatch) continue;
-        const kind = kindMatch[1];
-        // `Extension<T>` carries shared app state, not HTTP input — skip.
-        if (kind === 'Extension') continue;
-        const sourceType: 'http_param' | 'http_body' =
-          (kind === 'Form' || kind === 'Query' || kind === 'Path') ? 'http_param' : 'http_body';
-        const paramLine = param.line ?? method.start_line;
-        const alreadyExists = sources.some(
-          s => s.line === paramLine && s.variable === param.name,
-        );
-        if (alreadyExists) continue;
-        sources.push({
-          type: sourceType,
-          location: `${param.type} ${param.name} in ${method.name}`,
-          severity: 'high',
-          line: paramLine,
-          confidence: 1.0,
-          variable: param.name,
-          in_method: method.name,
-        });
+  if (language === 'rust') {
+    for (const type of types) {
+      for (const method of type.methods) {
+        for (const param of method.parameters) {
+          if (!param.type) continue;
+          const kindMatch = RUST_EXTRACTOR_KIND.exec(param.type);
+          if (!kindMatch) continue;
+          const kind = kindMatch[1];
+          // `Extension<T>` carries shared app state, not HTTP input — skip.
+          if (kind === 'Extension') continue;
+          const sourceType: 'http_param' | 'http_body' =
+            (kind === 'Form' || kind === 'Query' || kind === 'Path') ? 'http_param' : 'http_body';
+          const paramLine = param.line ?? method.start_line;
+          const alreadyExists = sources.some(
+            s => s.line === paramLine && s.variable === param.name,
+          );
+          if (alreadyExists) continue;
+          sources.push({
+            type: sourceType,
+            location: `${param.type} ${param.name} in ${method.name}`,
+            severity: 'high',
+            line: paramLine,
+            confidence: 1.0,
+            variable: param.name,
+            in_method: method.name,
+          });
+        }
       }
     }
   }

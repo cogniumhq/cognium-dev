@@ -171,3 +171,56 @@ async fn handler(Extension(state): Extension<Arc<AppState>>) -> String {
     expect(sources.some(s => s.variable === 'state' && s.type === 'http_param')).toBe(false);
   });
 });
+
+describe('repro cognium-ai#264 "Defect A": Rust extractor regex must not tag Java params', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('does NOT tag a build-time Java java.nio.file.Path ctor param as http_param', async () => {
+    // Quarkus CodeGenContext — a plain build-time POJO, no HTTP annotations.
+    // Before the language guard, `Path outDir` matched RUST_EXTRACTOR_KIND and
+    // was emitted as an http_param source, which downstream promoted to an
+    // uncapped TRUST_BOUNDARY and flooded path_traversal C+H.
+    const code = `
+import java.nio.file.Path;
+
+public class CodeGenContext {
+    private final Path outDir;
+    public CodeGenContext(Path outDir) {
+        this.outDir = outDir;
+    }
+}
+`;
+    const r = await analyze(code, 'CodeGenContext.java', 'java');
+    const sources = r.taint?.sources ?? [];
+    expect(sources.some(s => s.type === 'http_param' || s.type === 'http_body')).toBe(false);
+  });
+
+  it('does NOT tag bare Java params named Form/Query/Json/Body as HTTP sources', async () => {
+    const code = `
+public class Handler {
+    public void handle(Form form, Query query, Json json, Body body) {
+        form.toString();
+    }
+}
+`;
+    const r = await analyze(code, 'Handler.java', 'java');
+    const sources = r.taint?.sources ?? [];
+    expect(sources.some(s => s.type === 'http_param' || s.type === 'http_body')).toBe(false);
+  });
+
+  it('still emits http_param for a genuine Rust Path<T> handler (no regression)', async () => {
+    const code = `
+use actix_web::{web, HttpResponse};
+use std::fs;
+
+async fn h(p: web::Path<String>) -> HttpResponse {
+    let s = p.into_inner();
+    let _ = fs::read_to_string(&s);
+    HttpResponse::Ok().finish()
+}
+`;
+    const r = await analyze(code, 'ok.rs', 'rust');
+    const sources = r.taint?.sources ?? [];
+    expect(sources.some(s => s.variable === 'p' && s.type === 'http_param')).toBe(true);
+  });
+});
