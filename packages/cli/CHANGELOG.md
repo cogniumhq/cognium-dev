@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.212.0] - 2026-08-06
+
+Adopts [`circle-ir@3.212.0`](https://www.npmjs.com/package/circle-ir).
+
+Library-only change — `generateFindings` gains optional sanitizer-awareness for
+downstream scan consumers. No CLI-visible behavior change (the CLI reports from
+the pass pipeline, which was already sanitizer-aware).
+
+4515 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.211.0] - 2026-08-06
 
 Adopts [`circle-ir@3.211.0`](https://www.npmjs.com/package/circle-ir).

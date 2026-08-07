@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.212.0] - 2026-08-06
+
+`generateFindings` sanitizer-awareness — aligns the scan path with `taint.flows`.
+
+### Added
+
+- **`generateFindings` now accepts an optional `sanitizers` argument.** The
+  scan path (what downstream consumers build reports from) did its own
+  source→sink DFG path-finding and ignored the pass-level `TaintSanitizer`s
+  that `taint.flows` honors — so a guarded value `taint.flows` correctly
+  suppressed still surfaced in the scan. When `sanitizers` is supplied, a
+  finding is dropped when a sanitizer covers the sink, via the same two tiers
+  as the taint-propagation filter:
+  1. a sanitizer **at the sink line** covering the sink type;
+  2. a **DFG reaching-def walk** — a sanitizer on a def line feeding the sink's
+     tainted variable, bounded to `[source.line, sink.line)` (the
+     `x = sanitize(input); sink(x)` shape).
+  Backward-compatible: callers that pass no `sanitizers` get the exact prior
+  behavior, and `analyze()` does not call `generateFindings`, so `taint.flows`
+  and the benchmark gate are untouched.
+- Verified on the OWASP generateFindings output across all six injection
+  categories: **0 true-positive loss**; xss false positives **141 → 137** via
+  tier 2 (four `xss,false` safe cases where the escape ran on the assignment
+  line). Consumers activate this by passing `taint.sanitizers`.
+
 ## [3.211.0] - 2026-08-06
 
 XSS false-positive fix — `getAttribute` is not a sink.
