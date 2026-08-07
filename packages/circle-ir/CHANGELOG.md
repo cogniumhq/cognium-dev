@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.211.0] - 2026-08-06
+
+XSS false-positive fix — `getAttribute` is not a sink.
+
+### Fixed
+
+- **`HttpServletRequest`/`HttpSession.getAttribute()` removed as XSS sinks**
+  (cognium-dev#270). They were registered as `xss` (CWE-79) with empty
+  `arg_positions`, modelling "attribute reflection XSS" — but getAttribute is a
+  *read*: its return value is tainted (a SOURCE, already `io_input`), never an
+  HTML-output context. The empty-arg entry produced a degenerate source==sink
+  self-flow that flagged CWE-79 on route-helper reads and even
+  `.equals(getSession().getAttribute(...))` comparisons. Same over-broad-sink
+  family as #268 (`StringBuilder.append`). The real sink is wherever the read
+  value is later written to a response, which the `io_input` source reaches on
+  its own.
+- Corpus impact: 494 degenerate `xss@N->N` self-flows removed across OWASP
+  Benchmark, with the **OWASP xss classification byte-identical** (TP/FP/TN/FN
+  unchanged) — pure false-positive noise removal, 0 recall or verdict change.
+
 ## [3.210.0] - 2026-08-06
 
 Java path-traversal reject-guard suppression.
