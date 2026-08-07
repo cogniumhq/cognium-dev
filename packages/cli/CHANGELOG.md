@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.213.0] - 2026-08-06
+
+Adopts [`circle-ir@3.213.0`](https://www.npmjs.com/package/circle-ir).
+
+### Fixed
+
+- **Fewer path-traversal false positives** — `new File(x).getName()` (basename
+  strip) and `!file.getCanonicalPath().startsWith(base)` (containment guard) are
+  now recognized as safe (circle-ir cognium-dev#269). Unguarded paths still fire.
+
+4517 circle-ir tests pass, 143 CLI tests pass.
+
 ## [3.212.0] - 2026-08-06
 
 Adopts [`circle-ir@3.212.0`](https://www.npmjs.com/package/circle-ir).

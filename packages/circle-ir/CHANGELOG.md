@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.213.0] - 2026-08-06
+
+java.io.File path-traversal guard sanitizers.
+
+### Fixed
+
+- **`new File(x).getName()` and `!file.getCanonicalPath().startsWith(base)` now
+  sanitize path_traversal** (cognium-dev#269) — the two remaining guard shapes
+  from the CWE-22 review, both on the older java.io.File API (the existing
+  detectors covered only nio `Path`: `Paths.get().getFileName()`,
+  `resolve().normalize()+startsWith`). `File.getName()` returns the leaf
+  filename (strips directories + `..`); the canonical-path containment check is
+  the OWASP-recommended java.io.File defence. Both suppress in `taint.flows`
+  and, with 3.212.0's sanitizer-awareness, in the scan path. Recall preserved
+  (unguarded paths still fire); OWASP pathtraver TP=116/FP=0 unchanged, 0
+  changed-verdict files across OWASP + SecuriBench.
+
 ## [3.212.0] - 2026-08-06
 
 `generateFindings` sanitizer-awareness — aligns the scan path with `taint.flows`.
