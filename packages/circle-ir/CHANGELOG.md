@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.219.0] - 2026-08-10
+
+**C#/.NET language support (experimental / preview).**
+
+### Added
+
+- **C# is now an analyzed language** (the 8th), for downstream evaluation. Vendors the `tree-sitter-c-sharp` grammar and adds `'csharp'` to `SupportedLanguage`. Straight-line taint analysis across **10 CWE families** on ASP.NET Core / ADO.NET / EF Core / BCL:
+  - SQL injection (SqlCommand/Npgsql/MySql/Sqlite/Oracle, EF `ExecuteSqlRaw`/`FromSqlRaw`), command injection (`Process.Start`), path traversal (`File.*`, `FileStream`/`StreamReader`), SSRF (`HttpClient`/`WebClient`/`WebRequest`), code injection (`CSharpScript`), XSS (`Html.Raw`/`Response.Write`), insecure deserialization (`BinaryFormatter.Deserialize` via receiver-type resolution), LDAP (`DirectorySearcher`), XPath (`SelectSingleNode`), XXE (`XmlDocument.LoadXml`).
+  - Sources: ASP.NET model-binding params + direct `Request.Query`/`Form`/`Headers`/… reads. Sink-type-aware sanitizers (`HtmlEncode`, `Path.GetFileName`; multi-hop). `ir.dfg` populated via `buildCSharpDFG`.
+- **Handles concatenation and string interpolation** (`$"…{tainted}…"`); parameterized queries stay clean.
+
+### Notes / scope
+
+- **EXPERIMENTAL — not yet benchmark-verified.** Detection is proven on hand-written fixtures with per-CWE positive/negative controls (28 C# tests); it has **not** been scored against a C# corpus (TPR/FPR unknown — pending the Juliet-C# harness, cognium-ai#285). Expect gaps in branch/alias/field-flow precision (the DFG is built but taint still rides the text-scan path) and in detector breadth. **Filed for downstream to consume and test.**
+- **Package size:** the C# grammar wasm is ~5.35 MB. Existing languages are **unaffected** — every C# change is `languages: ['csharp']`-scoped, verified 0-delta across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
+
 ## [3.218.0] - 2026-08-10
 
 SSRF in a browser client component is not SSRF (cognium-ai#279 R-3).
