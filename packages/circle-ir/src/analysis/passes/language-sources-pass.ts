@@ -1256,6 +1256,19 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   const sources: TaintSource[] = [];
   const lines = sourceCode.split('\n');
 
+  // cognium-ai#277: Next.js App Router / Remix destructure the route-params
+  // object directly (`GET(req, { params })`, `loader({ params })`), so a bare
+  // `params.<seg>` read is an attacker-controlled path segment. A bare `params.`
+  // pattern would over-fire on any object named `params`, so gate it on a route
+  // handler: a route-method/loader/action export AND a destructured `params`
+  // binding. Route segments are `http_path` (reaches ssrf/path_traversal/etc.).
+  const isRouteHandler =
+    /export\s+(?:async\s+)?(?:function\s+(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action)\b|const\s+(?:GET|POST|PUT|PATCH|DELETE|loader|action)\b)/.test(sourceCode)
+    && /\{[^}]*\bparams\b[^}]*\}/.test(sourceCode);
+  const patterns = isRouteHandler
+    ? [...JS_TAINTED_PATTERNS, { pattern: /\bparams\s*[.[]/, type: 'http_path' as const }]
+    : JS_TAINTED_PATTERNS;
+
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
     const line = lines[lineNum];
     const lineNumber = lineNum + 1;
@@ -1263,7 +1276,7 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
     if (!assignmentMatch) continue;
     const [, varName, rhs] = assignmentMatch;
 
-    for (const { pattern, type } of JS_TAINTED_PATTERNS) {
+    for (const { pattern, type } of patterns) {
       if (pattern.test(rhs)) {
         const alreadyExists = sources.some(s => s.line === lineNumber && s.type === type);
         if (!alreadyExists) {
