@@ -15,12 +15,16 @@ import type {
   TaintSink,
   SourceType,
   SinkType,
+  SupportedLanguage,
 } from '../types/index.js';
 
 /**
  * Supported languages for analysis
  */
-export type SupportedLanguage = 'java' | 'c' | 'cpp' | 'csharp' | 'javascript' | 'typescript' | 'tsx' | 'python' | 'rust' | 'bash' | 'html' | 'vue' | 'go';
+// Single canonical union lives in src/types/index.ts; re-export it here so
+// existing `from '../languages/types'` importers keep working without a second,
+// drift-prone declaration.
+export type { SupportedLanguage };
 
 /**
  * AST node type mappings for a language

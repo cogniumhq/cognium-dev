@@ -5,6 +5,7 @@
  */
 
 import { Parser, Language, Tree, Node } from 'web-tree-sitter';
+import type { SupportedLanguage } from '../types/index.js';
 
 // Lazy-loaded Node.js modules for WASM path resolution
 // These are only used in Node.js environments, not in browsers
@@ -61,7 +62,11 @@ export type { Node };
 // Create type alias for backward compatibility
 export type SyntaxNode = Node;
 
-export type SupportedLanguage = 'java' | 'c' | 'cpp' | 'javascript' | 'typescript' | 'tsx' | 'python' | 'rust' | 'bash' | 'html' | 'vue' | 'go';
+// Re-export the single canonical SupportedLanguage (src/types/index.ts) rather
+// than redeclaring it. A local copy silently drifts from the canonical union —
+// which is exactly how `csharp` was missing from the root-exported type in
+// 4.3.0 while present internally (this module is what `index.ts` re-exports).
+export type { SupportedLanguage };
 
 interface ParserOptions {
   /**

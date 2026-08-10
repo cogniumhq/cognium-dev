@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.1] - 2026-08-10
+
+Fix: the root-exported `SupportedLanguage` was missing `'csharp'`.
+
+### Fixed
+
+- **`SupportedLanguage` is now a single canonical union.** It had been declared **three** times — `src/types/index.ts`, `src/languages/types.ts`, and `src/core/parser.ts` — and 4.0.0 added `'csharp'` to only the first two. The package **root** re-exports the `core/parser.ts` copy (`index.ts` → `core/index.ts` → `parser.ts`), so consumers importing `SupportedLanguage` from `circle-ir` got a union **without `'csharp'`** — a compile error when passing `'csharp'` or doing exhaustive `Record<SupportedLanguage, …>`/`switch` handling, even though the engine analyzed C# at runtime. `core/parser.ts` and `languages/types.ts` now **re-export** the single canonical declaration in `src/types/index.ts`; the redundant copies are gone, so the union can no longer drift. Type-only change — no runtime behavior change.
+
 ## [4.3.0] - 2026-08-10
 
 Fold the redundant clickjacking-header finding pair (cognium-dev#262).
