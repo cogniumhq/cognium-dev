@@ -397,6 +397,18 @@ const REPLACE_ALL_TO_PLACEHOLDER_RE =
 // output context.
 const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 
+// skillsregistry#49 — the classless `fetch` SSRF sink (config-loader) exists for
+// the global Web `fetch` API, but `method: 'fetch'` matches any `.fetch(` call —
+// including SDK/ORM entity lookups like discord.js `client.channels.fetch(id)` /
+// `guild.members.fetch(id)`, which take an id, not a URL, and reach no network
+// requester. The Web fetch is called bare (`fetch(url)`) or on a global
+// (`window`/`globalThis`/`self`/`global`); a non-global object receiver means an
+// SDK method, not the SSRF-relevant global. Real HTTP-client methods
+// (`axios.get`, `got`, `node-fetch` default, …) have their own class-scoped
+// entries, so dropping the member-receiver form loses no modelled SSRF sink.
+const FETCH_GLOBAL_RECEIVER_RE = /(?:^|[^.\w])(?:window|globalThis|self|global)\s*\.\s*fetch\s*\(/;
+const FETCH_MEMBER_RECEIVER_RE = /[\w$)\]]\s*\.\s*fetch\s*\(/;
+
 /**
  * Returns the 1-indexed line numbers that a Java `if (x.contains("..")) throw/
  * return` reject-guard makes path-traversal-safe (cognium-dev#269). A line is
@@ -1585,6 +1597,21 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           sink => !(sink.type === 'path_traversal' && guardedLines.has(sink.line)),
         );
       }
+    }
+
+    // Stage 15e — JS/TS ssrf: `.fetch(id)` SDK/ORM entity lookup, not the global
+    // Web fetch. (skillsregistry#49) Drop a `fetch`-method ssrf sink whose call
+    // has a non-global object receiver (`client.channels.fetch(id)`); keep bare
+    // `fetch(url)` and `window`/`globalThis`/`self`/`global`.fetch (the real SSRF
+    // shapes). Modelled HTTP clients keep firing via their class-scoped entries.
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'ssrf' || sink.method !== 'fetch') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        if (FETCH_GLOBAL_RECEIVER_RE.test(sinkLineText)) return true;
+        return !FETCH_MEMBER_RECEIVER_RE.test(sinkLineText);
+      });
     }
 
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.

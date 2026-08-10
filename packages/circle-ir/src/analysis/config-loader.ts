@@ -1433,9 +1433,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'addAttribute', class: 'Model', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
   { method: 'addAttribute', class: 'ModelMap', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
   { method: 'addObject', class: 'ModelAndView', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [1] },
-  // Class-less XSS patterns for cases where receiver type is inferred
-  { method: 'println', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
-  { method: 'print', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
+  // Class-less XSS patterns for cases where the receiver type is inferred.
+  // Scoped to Java (skillsregistry#51): these exist to catch servlet-output
+  // writers (`PrintWriter`/`JspWriter`) whose receiver type Tree-sitter did not
+  // resolve. Without the `languages` scope they leaked to other ecosystems —
+  // notably Python `print(user_input)`, which writes to stdout and is never an
+  // XSS sink. Java `PrintWriter.print`/`println` (class-scoped above) plus these
+  // inferred-receiver fallbacks keep real Java servlet XSS firing.
+  { method: 'println', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0], languages: ['java'] },
+  { method: 'print', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0], languages: ['java'] },
   // NOTE: the unscoped { method: 'write', type: 'xss' } entry was removed in
   // Sprint 28 (#110). It mistyped every non-XSS .write() across all languages
   // (fs.writeFile, open().write, bcrypt callbacks, credential file writes,
