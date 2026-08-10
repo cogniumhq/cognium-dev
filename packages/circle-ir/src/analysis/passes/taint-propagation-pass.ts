@@ -1497,7 +1497,7 @@ function detectExpressionScanFlows(
   // the array literal defeats the sink-arg colocation heuristic. Seeds
   // with real source variables (HTTP source `arg` or the now-populated
   // interprocedural_param parameter name) and iterates to a fixpoint.
-  if (language === 'java' && typeof code === 'string' && sourcesWithVar.length > 0) {
+  if ((language === 'java' || language === 'csharp') && typeof code === 'string' && sourcesWithVar.length > 0) {
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
     const derived = buildJavaTaintedVars(code, seedVars);
     if (derived.size > 0) {
