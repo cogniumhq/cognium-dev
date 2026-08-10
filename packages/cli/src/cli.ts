@@ -243,6 +243,7 @@ const LANG_MAP: Record<string, string> = {
   '.tsx': 'typescript',
   '.py': 'python',
   '.go': 'go',
+  '.cs': 'csharp',
   '.rs': 'rust',
   '.sh': 'bash',
   '.bash': 'bash',
@@ -1294,7 +1295,7 @@ async function handleInit(): Promise<void> {
 
   const config: CogniumConfig = {
     version: '1.0',
-    include: ['src/**/*.java', 'src/**/*.ts', 'src/**/*.js', 'src/**/*.py', 'src/**/*.go'],
+    include: ['src/**/*.java', 'src/**/*.ts', 'src/**/*.js', 'src/**/*.py', 'src/**/*.go', 'src/**/*.cs'],
     exclude: ['**/test/**', '**/tests/**', '**/node_modules/**', '**/dist/**'],
     passes: {
       'naming-convention': false,
