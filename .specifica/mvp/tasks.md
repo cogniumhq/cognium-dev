@@ -21,16 +21,44 @@ language carries its own builders + an accreted detector tail.
 benchmark-grade v1 ~12–20 wk (≈3–5 months). Ranges collapse after the Phase-0
 spike. Revised upward from the first pass after a critical review (see risks).
 
-### Phase 0 — Walking skeleton + DFG spike (MANDATORY first) — ~1.5–2.5 wk
-- [ ] Vendor/build `tree-sitter-c-sharp.wasm`; register grammar (browser+Node self-contained)
-- [ ] Add `'csharp'` to `SupportedLanguage` union, `LanguageRegistry`, extension map
-- [ ] `CSharpPlugin` scaffold: `nodeTypes` map + `extractCSharpTypes/Calls/Imports/Package`
-- [ ] **De-risk the load-bearing assumption:** confirm whether `buildJavaDFG`
-      (the default fallback) produces *any* usable def/use on C# nodes, or a
-      bespoke `buildCSharpDFG` is required near-from-scratch. This is the
-      single biggest swing factor — spike it before committing the full number.
-- [ ] Exit gate: C# files parse → types/calls/imports + quality metrics; a
-      hand-written SQLi fixture shows whether taint reaches the sink at all
+### Phase 0 — Walking skeleton + DFG spike (MANDATORY first) — ~1.5–2.5 wk (≈5 working days)
+
+**Spike goal:** answer one question with evidence — *does `buildJavaDFG` produce
+usable def/use on C# nodes, or is `buildCSharpDFG` near-from-scratch?* — plus get
+C# parsing end-to-end. "Succeeded" = **we know the true cost**, not "C# works".
+
+- [ ] **Day 1 — grammar + parse.** Build `tree-sitter-c-sharp` → vendor as
+      `wasm/tree-sitter-csharp.wasm` (loader resolves `tree-sitter-${language}.wasm`,
+      `parser.ts:486` — name must be `csharp`). Add `'csharp'` to the
+      `SupportedLanguage` union in **both** `src/types/index.ts:11` and
+      `src/languages/types.ts:23`. Minimal `CSharpPlugin`
+      (`src/languages/plugins/csharp.ts`: id/extensions=`.cs`/wasmPath/`nodeTypes`,
+      stub `extract*`+`getBuiltin*`) registered in `plugins/index.ts:30`. Gate: a
+      20-line ASP.NET controller parses; record actual C# node names
+      (`invocation_expression`, `local_declaration_statement`,
+      `interpolated_string_expression`, … which differ from Java's).
+- [ ] **Day 2 — IR extraction.** Add `csharp` branches to the core dispatchers
+      (`extractors/types.ts:58`, `calls.ts`, `imports.ts`), first delegating to
+      the Java extractor and noting mismatches. Gate: `analyze(cs,'C.cs','csharp')`
+      returns non-empty `ir.types`+`ir.calls`+`ir.metrics` (quality metrics should
+      mostly light up here — cheap early signal).
+- [ ] **Day 3 — THE EXPERIMENT (go/no-go) 🎯.** Feed a tainted C# method
+      (`string id` → `"…"+id` → `new SqlCommand(q)` → `ExecuteReader()`) through the
+      **unmodified `buildJavaDFG`** (the `dfg.ts:70` default) and measure which
+      def/use chains survive. `method_declaration` is shared with Java (found);
+      C# `local_declaration_statement`/`invocation_expression` differ (likely
+      break). **Output: a one-page table — "% of the SQLi chain the Java DFG
+      recovers as-is" → decides patch vs rewrite, collapsing the 12–20 wk range.**
+- [ ] **Day 4 — first real flow + interpolation probe.** Wire ~6 `languages:['csharp']`
+      source/sink entries (`config-loader.ts`: `[FromQuery]`/`Request.Query`,
+      `SqlCommand`/`ExecuteReader`+`Process.Start`, `SqlParameter` sanitizer). Get
+      one SQLi flow firing on the concat fixture. Probe `$"…{id}"` — does taint
+      reach inside `interpolated_string_expression`? (drives a Phase-1 must-do).
+- [ ] **Day 5 — write-up + estimate collapse.** Spike regression test
+      (`tests/analysis/repro-csharp-spike.test.ts`), `npm test` green, **0 delta**
+      on OWASP Java 2740 + BenchmarkPython 1230 (new language must not perturb
+      existing ones). Deliverable: DFG go/no-go verdict + a **point** Phase-1
+      estimate replacing the 3.5–5.5 wk range.
 
 ### Phase 1 — Taint MVP — ~3.5–5.5 wk
 - [ ] `buildCSharpDFG` covering C#-specific edges: properties (get/set), `var`,
