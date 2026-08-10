@@ -193,8 +193,25 @@ public class C {
   });
 });
 
-describe('C# Phase-1: known gaps (next slices)', () => {
-  // Deserialization (BinaryFormatter.Deserialize) needs receiver-type resolution
-  // — the receiver is an instance var, not the class name.
-  it.todo('BinaryFormatter.Deserialize should fire (needs receiver-type resolution)');
+describe('C# Phase-1: insecure deserialization (via receiver-type resolution)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('BinaryFormatter.Deserialize(stream) fires (receiver bf resolved to BinaryFormatter)', async () => {
+    const code = `
+public class C {
+  public object M(System.IO.Stream s) {
+    var bf = new BinaryFormatter();
+    return bf.Deserialize(s);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(true);
+  });
+
+  it('does NOT flag JsonSerializer.Deserialize (not a BinaryFormatter sink)', async () => {
+    const code = `
+public class C {
+  public object M(string json) { return JsonSerializer.Deserialize(json); }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(false);
+  });
 });

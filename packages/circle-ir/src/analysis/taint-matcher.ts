@@ -661,8 +661,12 @@ function isInterproceduralTaintableType(typeName: string, language?: SupportedLa
     const csharpTaintable = [
       'string', 'object', 'IEnumerable', 'ICollection', 'IList',
       'Dictionary', 'IDictionary', 'IReadOnlyList', 'IReadOnlyCollection',
+      // Byte/stream payloads carry deserialization / upload input.
+      'Stream', 'byte[]', 'Byte[]', 'MemoryStream',
     ];
-    if (csharpTaintable.includes(baseType)) return true;
+    // C# types are often fully qualified (`System.IO.Stream`); match the leaf.
+    const leaf = baseType.split('.').pop() ?? baseType;
+    if (csharpTaintable.includes(baseType) || csharpTaintable.includes(leaf)) return true;
   }
 
   // Check for array types
