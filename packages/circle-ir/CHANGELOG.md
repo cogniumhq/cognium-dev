@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.218.0] - 2026-08-10
+
+SSRF in a browser client component is not SSRF (cognium-ai#279 R-3).
+
+### Fixed
+
+- **`fetch`/`axios` in a browser-rendered client component no longer flagged as SSRF (cognium-ai#279 R-3).** SSRF requires a *server-side* requester; a request made from browser code is subject to CORS and is not server-side request forgery. New SinkFilter **Stage 15j** drops `ssrf` sinks only when **all three** hold, so real server-side fetches are never suppressed (zero false negatives): (a) the file is a component extension (`.jsx`/`.tsx`/`.vue`/`.svelte`), (b) it carries a positive **client** signal (`"use client"`, React hooks, browser globals, JSX event handlers), and (c) it carries **no server** signal (`"use server"`, `next/server`, `getServerSideProps`, `NextApiRequest`/`Response`, an API-route `handler`, or a Node server import like `fs`/`child_process`/`http`). A Next.js Server Component or API route doing `fetch(userUrl)` has no client signal (and usually a server one), so it keeps firing. Verified: **0 changed `taint.flows`** across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230. +4 regression cases (2 suppress, 2 zero-FN keep).
+
+This closes the in-boundary detector classes of cognium-ai#279 (R-1/R-2/R-3/R-6 fixed; R-4/R-7/R-8/R-9 already clean; R-5 is a context/threat-model concern).
+
 ## [3.217.0] - 2026-08-10
 
 JS/TS FP round 2 — three residual crit/high classes from cognium-ai#279.
