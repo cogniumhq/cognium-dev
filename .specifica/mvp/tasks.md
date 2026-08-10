@@ -91,10 +91,12 @@ plus get C# parsing end-to-end. Day-by-day record:
 ### Phase 3 — Benchmark-grade + hardening — ~5–9 wk (long tail)
 - [ ] **Define "done" first:** agreed TPR/FPR on an agreed corpus. There is NO
       OWASP-Benchmark C# — anchor on **Juliet C# (NIST)** + a curated corpus
-- [ ] Stand up C# scoring — **cross-repo dependency, HANDOFF FILED: cognium-ai#285**
-      (Juliet C#/.NET corpus + flow-aware runner). The benchmark harness lives in
-      circle-ir-ai; do not touch the sibling repo. Prereq: circle-ir ships real
-      C# support first, then circle-ir-ai bumps its bundled pin
+- [ ] Stand up C# scoring — **cross-repo, UMBRELLA FILED: cognium-ai#289**
+      (adopt C# across cognium-ai package/CLI/services + benchmarks; child **D**
+      = **#285** Juliet-C# corpus + flow-aware runner). circle-ir 4.0.0 published;
+      the umbrella's pin bump (`3.216.0→^4.0.0`) carries C# + the 3.214→3.218
+      precision arc. Harness lives in circle-ir-ai; do not touch the sibling
+      repo — cognium-ai owns #289. Baseline TPR/FPR feeds back here (child E)
 - [ ] FP/FN closure to the acceptance bar; precision passes per CWE (expect the
       Java-scale accretion — Java's 100 scoped sinks took many releases)
 
