@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.215.0] - 2026-08-09
+
+Two precision fixes from the skillsregistry published-skills audit (#49, #51).
+
+### Fixed
+
+- **XSS no longer fires on Python `print()` (skillsregistry#51).** The classless `print`/`println` XSS entries (`config-loader.ts`) — Java "inferred receiver" fallbacks for unresolved `PrintWriter`/`JspWriter` output — had no `languages` scope and leaked to Python `print(user_input)`, which writes to stdout and is never an HTML sink. Scoped both to `languages: ['java']`. Real Java servlet XSS (class-scoped `PrintWriter.print` + the inferred-receiver `println` fallback) still fires. This is the Python/stdout analogue of the Java-only content-negotiation fix in cognium-ai#247 (3.209.0).
+- **SSRF no longer fires on SDK/ORM entity lookups (skillsregistry#49).** The classless `fetch` SSRF sink (for the global Web `fetch` API) matched **any** `.fetch(` call — including discord.js `client.channels.fetch(id)` / `guild.members.fetch(id)`, which take an id, not a URL, and reach no requester. New SinkFilter **Stage 15e** (JS/TS) drops a `fetch`-method ssrf sink whose call has a **non-global object receiver**; bare `fetch(url)` and `window`/`globalThis`/`self`/`global`.fetch (the real SSRF shapes) still fire, as do modelled HTTP clients (axios/got/node-fetch) via their class-scoped entries. *(The allow-list-guarded `fetch(userUrl)` case — skillsregistry#49b — is deferred: it needs anchored-host reject-guard sanitizer recognition, scoped separately.)*
+
+Verified: **0 changed `taint.flows` verdicts** across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 (both fixes are surgical to shapes absent from the scored corpora). +6 regression cases in `repro-skreg-49-51`.
+
 ## [3.214.0] - 2026-08-07
 
 Language-scope the Rust web-framework extractor (cognium-ai#264 "Defect A").
