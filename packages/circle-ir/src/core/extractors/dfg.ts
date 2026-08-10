@@ -67,7 +67,98 @@ export function buildDFG(tree: Tree, cache?: NodeCache, language?: SupportedLang
   if (effectiveLanguage === 'go') {
     return buildGoDFG(tree);
   }
+  if (effectiveLanguage === 'csharp') {
+    return buildCSharpDFG(tree, cache);
+  }
   return buildJavaDFG(tree, cache);
+}
+
+/**
+ * Build DFG for C# (cognium-dev C#/.NET Phase-1, Slice 4).
+ *
+ * The spike found `buildJavaDFG` yields 0 defs on C# because the def-site node
+ * names diverge (`parameter` vs `formal_parameter`, `local_declaration_statement`
+ * vs `local_variable_declaration`). This is a self-contained C# builder — it
+ * reuses the shared `extractUses`/`computeChains`/`currentScope`/
+ * `extractParameterDefs` (the latter now recognises `parameter`) but does its own
+ * C#-node def collection, so the delicate Java/JS path is untouched.
+ *
+ * Defs: method parameters, local declarations (`variable_declarator`), and
+ * assignment targets (`assignment_expression.left` identifiers). Uses: every
+ * identifier reference in a method body, with reaching defs resolved from scope.
+ */
+function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
+  const defs: DFGDef[] = [];
+  const uses: DFGUse[] = [];
+  let defIdCounter = 1;
+  let useIdCounter = 1;
+  const scopeStack: Map<string, number>[] = [new Map()];
+
+  const methods = [
+    ...getNodesFromCache(tree.rootNode, 'method_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'constructor_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'local_function_statement', cache),
+  ];
+
+  for (const method of methods) {
+    scopeStack.push(new Map());
+
+    // Parameters (kind: param).
+    const params = method.childForFieldName('parameters');
+    if (params) {
+      for (const def of extractParameterDefs(params, defIdCounter)) {
+        defs.push(def);
+        currentScope(scopeStack).set(def.variable, def.id);
+        defIdCounter++;
+      }
+    }
+
+    const body = method.childForFieldName('body');
+    if (body) {
+      // Local declaration defs: `var q = …;` → variable_declarator.name.
+      for (const decl of findNodes(body, 'variable_declarator')) {
+        const nameNode = decl.childForFieldName('name');
+        if (nameNode?.type === 'identifier') {
+          const name = getNodeText(nameNode);
+          const def: DFGDef = { id: defIdCounter++, variable: name, line: decl.startPosition.row + 1, kind: 'local' };
+          defs.push(def);
+          currentScope(scopeStack).set(name, def.id);
+        }
+      }
+      // Assignment target defs: `x = …;` → assignment_expression.left.
+      for (const asn of findNodes(body, 'assignment_expression')) {
+        const left = asn.childForFieldName('left');
+        if (left?.type === 'identifier') {
+          const name = getNodeText(left);
+          const def: DFGDef = { id: defIdCounter++, variable: name, line: asn.startPosition.row + 1, kind: 'local' };
+          defs.push(def);
+          currentScope(scopeStack).set(name, def.id);
+        }
+      }
+      // Uses: all identifier references, reaching defs resolved from scope.
+      const bodyUses = extractUses(body, useIdCounter, scopeStack, false);
+      uses.push(...bodyUses.uses);
+      useIdCounter = bodyUses.nextId;
+    }
+
+    scopeStack.pop();
+  }
+
+  // Field defs.
+  const classes = getNodesFromCache(tree.rootNode, 'class_declaration', cache);
+  for (const cls of classes) {
+    const body = cls.childForFieldName('body');
+    if (body) {
+      for (const def of extractFieldDefs(body, defIdCounter)) {
+        defs.push(def);
+        currentScope(scopeStack).set(def.variable, def.id);
+        defIdCounter++;
+      }
+    }
+  }
+
+  const chains = computeChains(defs, uses);
+  return { defs, uses, chains };
 }
 
 /**
@@ -701,7 +792,9 @@ function extractParameterDefs(params: Node, startId: number): DFGDef[] {
     const param = params.child(i);
     if (!param) continue;
 
-    if (param.type === 'formal_parameter' || param.type === 'spread_parameter') {
+    // `formal_parameter`/`spread_parameter` = Java; `parameter` = C# (both
+    // expose a `name` field). C#-only node name, so this is safe for Java/JS.
+    if (param.type === 'formal_parameter' || param.type === 'spread_parameter' || param.type === 'parameter') {
       const nameNode = param.childForFieldName('name');
       if (nameNode) {
         defs.push({
