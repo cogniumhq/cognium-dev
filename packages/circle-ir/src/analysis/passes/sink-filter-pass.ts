@@ -429,6 +429,23 @@ const FUNCTION_FIRST_ARG_RE =
 // `key:` colon syntax and is unaffected.
 const ORM_BUILDER_KEY_RE = /[{,]\s*(?:where|select|populate|include|orderBy|relations|attributes)\s*:/;
 
+// cognium-ai#279 R-3 — SSRF requires a server-side requester; a `fetch`/`axios`
+// call in a browser-rendered client component cannot be SSRF (the browser makes
+// the request, subject to CORS, not the server). Suppress `ssrf` ONLY when all
+// three hold, so real server-side fetches are never touched:
+//   (a) the file is a component extension (.jsx/.tsx/.vue/.svelte), AND
+//   (b) it carries a positive CLIENT signal (`"use client"`, React hooks,
+//       browser globals, JSX event handlers), AND
+//   (c) it carries NO server signal (`"use server"`, next/server, SSR data
+//       hooks, API-route handler, Node server imports).
+// A Next.js Server Component or API route doing `fetch(userUrl)` has no client
+// signal (and usually a server one), so it keeps firing — zero false negatives.
+const BROWSER_COMPONENT_EXT_RE = /\.(?:jsx|tsx|vue|svelte)$/;
+const CLIENT_SIGNAL_RE =
+  /["']use client["']|\buse(?:State|Effect|Ref|Callback|Memo|Context|Reducer|LayoutEffect)\s*\(|\b(?:window|document|localStorage|sessionStorage|navigator)\s*\.|\son(?:Click|Change|Submit|Input|KeyDown|KeyUp|MouseOver|Focus|Blur)\s*=/;
+const SERVER_SIGNAL_RE =
+  /["']use server["']|\b(?:getServerSideProps|getStaticProps|getStaticPaths)\b|from\s+["']next\/server["']|\bNext(?:Api)?(?:Request|Response)\b|from\s+["'](?:node:)?(?:fs|child_process|http|https|net|dns|dgram)["']|\bexport\s+(?:default\s+)?(?:async\s+)?function\s+handler\s*\(/;
+
 // cognium-ai#279 R-6 — a template-literal URL whose host is a fixed literal
 // (`https://api.github.com/${path}`) is not SSRF: only the path is
 // interpolated, the destination host is not attacker-controlled. Matches a
@@ -1742,6 +1759,18 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         return !ORM_BUILDER_KEY_RE.test(sinkLineText);
       });
+    }
+
+    // Stage 15j — JS/TS ssrf: client-component file. (cognium-ai#279 R-3)
+    // A fetch/axios call in a browser-rendered client component is not SSRF.
+    // Gated on ext + positive client signal + no server signal (zero-FN).
+    if (['javascript', 'typescript', 'tsx'].includes(language)) {
+      const file = ctx.graph?.ir?.meta?.file ?? '';
+      if (BROWSER_COMPONENT_EXT_RE.test(file) &&
+          CLIENT_SIGNAL_RE.test(ctx.code) &&
+          !SERVER_SIGNAL_RE.test(ctx.code)) {
+        filtered = filtered.filter(sink => sink.type !== 'ssrf');
+      }
     }
 
     // Stage 15i — JS/TS ssrf: fixed-host URL template. (cognium-ai#279 R-6)

@@ -64,6 +64,57 @@ export async function f(client, req) {
   });
 });
 
+describe('cognium-ai#279 R-3: SSRF in a browser client component is a category error', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const ssrf = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some(f => f.sink_type === 'ssrf');
+
+  it('does NOT flag axios.post in a React client component (.jsx + hooks)', async () => {
+    const code = `
+import React, { useState } from 'react';
+import axios from 'axios';
+export function Comp(props) {
+  const [x, setX] = useState(0);
+  const url = props.url;
+  return axios.post(url, { data: x });
+}`;
+    expect(ssrf(await analyze(code, 'App.jsx', 'javascript'))).toBe(false);
+  });
+
+  it('does NOT flag fetch in a "use client" .tsx component', async () => {
+    const code = `
+"use client";
+import axios from 'axios';
+export function C(props) {
+  const u = props.url;
+  return axios.post(u, {});
+}`;
+    expect(ssrf(await analyze(code, 'C.tsx', 'tsx'))).toBe(false);
+  });
+
+  it('STILL flags fetch in a server-side .tsx (no client signal) — zero FN', async () => {
+    const code = `
+export default async function handler(req, res) {
+  const u = req.query.url;
+  const r = await fetch(u);
+  res.json(await r.json());
+}`;
+    expect(ssrf(await analyze(code, 'Page.tsx', 'tsx'))).toBe(true);
+  });
+
+  it('STILL flags fetch when a server signal is present alongside a client one', async () => {
+    const code = `
+"use client";
+import fs from 'fs';
+export function M(req) {
+  const u = req.query.url;
+  return fetch(u);
+}`;
+    expect(ssrf(await analyze(code, 'M.tsx', 'tsx'))).toBe(true);
+  });
+});
+
 describe('cognium-ai#279 R-6: fixed-host URL template is not SSRF', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
