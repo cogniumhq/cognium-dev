@@ -12,6 +12,7 @@ export { BashPlugin } from './bash.js';
 export { HtmlPlugin } from './html.js';
 export { VuePlugin } from './vue.js';
 export { GoPlugin } from './go.js';
+export { CSharpPlugin } from './csharp.js';
 
 import { registerLanguage } from '../registry.js';
 import { JavaPlugin } from './java.js';
@@ -22,6 +23,7 @@ import { BashPlugin } from './bash.js';
 import { HtmlPlugin } from './html.js';
 import { VuePlugin } from './vue.js';
 import { GoPlugin } from './go.js';
+import { CSharpPlugin } from './csharp.js';
 
 /**
  * Register all built-in language plugins with the global registry.
@@ -36,4 +38,5 @@ export function registerBuiltinPlugins(): void {
   registerLanguage(new HtmlPlugin());
   registerLanguage(new VuePlugin());
   registerLanguage(new GoPlugin());
+  registerLanguage(new CSharpPlugin());
 }
