@@ -193,6 +193,19 @@
 | ~~cognium-ai#247~~ | FP | 3 static-detector FP classes | **FIXED, released 3.209.0** (89a5153). Re-verified on 3.208.0: FP-3 (path_traversal on route resolver) already gone (`resolve` not a fs sink); FP-1 + FP-2 still reproduced → fixed. FP-1: Stage 15b drops sqli when the arg parameterizes via `.replaceAll(_, "?")`. FP-2: Stage 15c drops `body`-method xss when no `text/html` signal in the file (response builders are JSON-by-default). Recall preserved (concat SQL + text/html body still fire); **0 OWASP sqli/xss TP loss** (255/194), 0 corpus verdict change. cognium-ai bumps fleet ≥3.209.0. |
 | cognium-ai#123 | decision | fastjson `_noneautotype` hardening — engine FP or trust-pass downgrade | NEEDS DECISION (cross-layer, part circle-ir / part cognium-ai trust pass). Not actionable until called. |
 
+**skillsregistry FP cluster (#49–53) — triaged 2026-08-09 (comments posted on each).** The table author labeled these "sr#"; they live in `cogniumhq/skillsregistry`, audited on the mothership's **"Circle-IR local engine v1.36.0"** — NOT our `circle-ir` 3.214.0 (skillsregistry-local has no `circle-ir` dep). Ownership determined by running each FP class through our built 3.214.0 engine:
+
+| skreg # | Class | Our 3.214.0 | Disposition |
+|---|---|---|---|
+| #50 | CWE-78 argv-array exec (no shell) | does NOT flag | ✅ already handled (`isSafeRustCommandCall`) — **mothership bump, not a circle-ir fix** |
+| #53 | CWE-798 placeholder secrets / `process.env.X` | does NOT flag | ✅ already excluded by scan-secrets — **mothership bump** |
+| #51 | XSS on non-HTML sink (JSON/stdout) | **REPRODUCES** | ⚠️ **in-boundary OPEN** — ca#247 Stage 15c fix was Java-only; extend to Python `JSONResponse`/`print` + JS/stdout. Overlaps ca#279 R-3. |
+| #49 | SSRF on entity-lookup `.fetch(id)` (discord.js/SDK) | **REPRODUCES** (×2) | ⚠️ **in-boundary OPEN** — classless `.fetch(` sink over-fires; gate SDK entity-lookup receivers. Overlaps ca#279 R-3/R-6. |
+| #49b | SSRF despite anchored allow-list guard | **REPRODUCES** | ⚠️ in-boundary, harder — allow-list reject-guard → sanitizer recognition; scope separately. |
+| #52 | CWE-117 log-injection "over-weighted → VULNERABLE" | REPRODUCES at **medium** | 🔶 **mostly NOT ours** — emission already medium; the verdict-flip weighting is the mothership scoring layer. |
+
+**Next in-boundary slice if pursued:** #51 + #49(a) — extend non-HTML XSS suppression to py/js + gate `.fetch(id)` entity-lookups. Both corpus-verifiable (OWASP Java + BenchmarkPython), both extending shipped fixes. **Caveat: any fix reaches skillsregistry only when the mothership bundles a current `circle-ir` (audit ran on v1.36).**
+
 ### Recently closed
 - **#270** (cognium-dev) fixed 3.211.0 (eb2c397, 2026-08-06) — `getAttribute` over-broad xss sink (degenerate source==sink self-flow); 494 spurious OWASP xss flows dropped, classification byte-identical, 0 recall change. Same family as #268. Surfaced by the #247 fleet-bump elide re-scan.
 - **#268** (cognium-dev) fixed 3.208.0 (89b3b65, 2026-08-04) — over-broad `StringBuilder`/`StringBuffer.append` XSS sink removed; **0 OWASP xss TP loss and 0 SecuriBench detection loss** (the 2 flagged files still detect their real BAD lines; only spurious duplicate findings dropped — the earlier "-2" claim was a delta-scorer artifact, corrected 2026-08-06). Originated from the cognium-ai top-100 sweep but filed in cognium-dev. Closed on GitHub 2026-08-05. *(Earlier entries mislabeled this `cognium-ai#268` — corrected 2026-08-05; it is a bare cognium-dev issue.)*
