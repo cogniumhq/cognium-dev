@@ -2826,6 +2826,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'patch',   class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'head',    class: 'httpx', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
 
+  // C# SQLi (Phase-0 spike — ADO.NET). `new SqlCommand(sql, conn)` builds the
+  // command from a raw string; the tainted SQL is arg[0] of the constructor.
+  { method: 'SqlCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'FromSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+
   // Python SQLi — asyncpg Connection.*
   { method: 'execute',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'fetch',    class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },

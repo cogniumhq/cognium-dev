@@ -117,6 +117,10 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
     return extractJavaScriptCalls(tree, cache);
   }
 
+  if (detectedLanguage === 'csharp') {
+    return extractCSharpCalls(tree, cache);
+  }
+
   // Build resolution context for Java
   const context = buildResolutionContext(tree, cache);
 
@@ -141,6 +145,88 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
 /**
  * Extract all function/method calls from a JavaScript/TypeScript tree.
  */
+/**
+ * C# call extraction (Phase-0 spike — cognium-dev C#/.NET epic).
+ *
+ * Handles `invocation_expression` (`cmd.ExecuteReader()`) and
+ * `object_creation_expression` (`new SqlCommand(q, conn)`). C# node/field shapes
+ * differ from Java (invocation_expression.function → member_access_expression
+ * with `name`/`expression` fields; argument_list wraps each arg in an `argument`
+ * node), so this cannot reuse `extractCallInfo`. Resolution/type inference is
+ * left null for the spike — sink matching keys on method name + receiver text.
+ */
+function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
+  const calls: CallInfo[] = [];
+
+  const invocations = getNodesFromCache(tree.rootNode, 'invocation_expression', cache);
+  for (const inv of invocations) {
+    const fn = inv.childForFieldName('function');
+    let methodName = 'unknown';
+    let receiver: string | null = null;
+    if (fn?.type === 'member_access_expression') {
+      const nameNode = fn.childForFieldName('name');
+      const exprNode = fn.childForFieldName('expression');
+      methodName = nameNode ? getNodeText(nameNode) : 'unknown';
+      receiver = exprNode ? getNodeText(exprNode) : null;
+    } else if (fn) {
+      methodName = getNodeText(fn);
+    }
+    const argsNode = inv.childForFieldName('arguments');
+    calls.push({
+      method_name: methodName,
+      receiver,
+      receiver_type: null,
+      receiver_type_fqn: null,
+      arguments: argsNode ? extractCSharpArguments(argsNode) : [],
+      location: { line: inv.startPosition.row + 1, column: inv.startPosition.column },
+      in_method: findEnclosingMethod(inv),
+    });
+  }
+
+  const objectCreations = getNodesFromCache(tree.rootNode, 'object_creation_expression', cache);
+  for (const creation of objectCreations) {
+    const typeNode = creation.childForFieldName('type');
+    const argsNode = creation.childForFieldName('arguments');
+    calls.push({
+      method_name: typeNode ? getNodeText(typeNode) : 'unknown',
+      receiver: null,
+      receiver_type: null,
+      receiver_type_fqn: null,
+      arguments: argsNode ? extractCSharpArguments(argsNode) : [],
+      location: { line: creation.startPosition.row + 1, column: creation.startPosition.column },
+      in_method: findEnclosingMethod(creation),
+      is_constructor: true,
+    });
+  }
+
+  return calls;
+}
+
+/** Extract args from a C# `argument_list` (each child is an `argument` wrapper). */
+function extractCSharpArguments(argsNode: Node): ArgumentInfo[] {
+  const args: ArgumentInfo[] = [];
+  let position = 0;
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child || child.type !== 'argument') continue;
+    // The argument's payload is its last named child (skips `ref`/`out`/`in` kws).
+    let expr: Node | null = null;
+    for (let j = child.childCount - 1; j >= 0; j--) {
+      const c = child.child(j);
+      if (c && c.isNamed) { expr = c; break; }
+    }
+    const text = expr ? getNodeText(expr) : getNodeText(child);
+    args.push({
+      position: position++,
+      expression: text,
+      variable: expr?.type === 'identifier' ? text : null,
+      literal: expr?.type === 'string_literal' ? text : null,
+      value: null,
+    });
+  }
+  return args;
+}
+
 function extractJavaScriptCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
 

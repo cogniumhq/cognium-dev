@@ -73,7 +73,95 @@ export function extractTypes(tree: Tree, cache?: NodeCache, language?: Supported
   if (isJavaScript) {
     return extractJavaScriptTypes(tree, cache);
   }
+  if (effectiveLanguage === 'csharp') {
+    return extractCSharpTypes(tree, cache);
+  }
   return extractJavaTypes(tree, cache);
+}
+
+/**
+ * C# type extraction (Phase-0 spike — cognium-dev C#/.NET epic).
+ *
+ * Walks `class_declaration`/`record_declaration`/`struct_declaration` →
+ * `method_declaration` (nested under a `declaration_list` body, unlike Java's
+ * `class_body`) → `parameter_list`/`parameter`. Enough to seed method
+ * parameters as interprocedural taint sources; fields/inheritance/attributes
+ * are left minimal for the spike.
+ */
+function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
+  const types: TypeInfo[] = [];
+  const KINDS: Record<string, 'class' | 'interface' | 'enum'> = {
+    class_declaration: 'class',
+    record_declaration: 'class',
+    struct_declaration: 'class',
+    interface_declaration: 'interface',
+    enum_declaration: 'enum',
+  };
+  for (const kindNode of Object.keys(KINDS)) {
+    for (const node of getNodesFromCache(tree.rootNode, kindNode, cache)) {
+      const nameNode = node.childForFieldName('name');
+      const body = node.childForFieldName('body');
+      const methods: MethodInfo[] = [];
+      if (body) {
+        for (let i = 0; i < body.childCount; i++) {
+          const m = body.child(i);
+          if (!m || m.type !== 'method_declaration') continue;
+          const mName = m.childForFieldName('name');
+          const paramList = m.childForFieldName('parameters');
+          const parameters: ParameterInfo[] = [];
+          if (paramList) {
+            for (let j = 0; j < paramList.childCount; j++) {
+              const pnode = paramList.child(j);
+              if (!pnode || pnode.type !== 'parameter') continue;
+              const pName = pnode.childForFieldName('name');
+              const pType = pnode.childForFieldName('type');
+              if (pName) {
+                parameters.push({
+                  name: getNodeText(pName),
+                  type: pType ? getNodeText(pType) : null,
+                  annotations: [],
+                  line: pnode.startPosition.row + 1,
+                });
+              }
+            }
+          }
+          const returns = m.childForFieldName('returns');
+          methods.push({
+            name: mName ? getNodeText(mName) : 'unknown',
+            return_type: returns ? getNodeText(returns) : null,
+            parameters,
+            annotations: [],
+            modifiers: extractCSharpModifiers(m),
+            start_line: m.startPosition.row + 1,
+            end_line: m.endPosition.row + 1,
+          });
+        }
+      }
+      types.push({
+        name: nameNode ? getNodeText(nameNode) : 'anonymous',
+        kind: KINDS[kindNode],
+        package: null,
+        extends: null,
+        implements: [],
+        annotations: [],
+        methods,
+        fields: [],
+        start_line: node.startPosition.row + 1,
+        end_line: node.endPosition.row + 1,
+      });
+    }
+  }
+  return types;
+}
+
+/** Leading `modifier` tokens (public/static/…) of a C# declaration node. */
+function extractCSharpModifiers(node: Node): string[] {
+  const mods: string[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c && c.type === 'modifier') mods.push(getNodeText(c));
+  }
+  return mods;
 }
 
 /**
