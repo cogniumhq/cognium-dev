@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.216.0] - 2026-08-09
+
+Anchored host-allowlist reject-guard suppresses SSRF (skillsregistry#49b).
+
+### Fixed
+
+- **SSRF no longer fires when the URL is pinned to a fixed host by an anchored allow-list guard (skillsregistry#49b).** A `fetch`/HTTP call whose tainted URL is reject-guarded to a literal host set — `if (!/^https:\/\/(www\.)?host\.com\//.test(url)) throw …` or `if (!url.startsWith("https://api.github.com/")) return …` — cannot target an arbitrary host and is not SSRF. New SinkFilter **Stage 15f** (JS/TS) recognizes the reject-guard (throw/return polarity), credits the guarded variable and one-hop derivations across the safe path below it, and drops `ssrf` sinks on those lines (as a sink drop it reaches the `generateFindings` scan path too). **Precision-first:** the guard must name the scheme **and** a literal domain label — a scheme-only `^https?:\/\/` guard does not constrain the destination and is deliberately not credited; a guard on a different variable than the sink argument does not suppress. Verified: **0 changed `taint.flows` verdicts** across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230. +5 regression cases (3 suppress, 2 must-still-fire).
+
 ## [3.215.0] - 2026-08-09
 
 Two precision fixes from the skillsregistry published-skills audit (#49, #51).

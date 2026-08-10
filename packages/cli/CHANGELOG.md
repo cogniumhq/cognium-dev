@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.216.0] - 2026-08-09
+
+Adopts [`circle-ir@3.216.0`](https://www.npmjs.com/package/circle-ir) — SSRF no longer fires when the URL is pinned to a fixed host by an anchored allow-list reject-guard (skillsregistry#49b). No CLI surface change.
+
 ## [3.215.0] - 2026-08-09
 
 Adopts [`circle-ir@3.215.0`](https://www.npmjs.com/package/circle-ir) — two precision fixes from the skillsregistry audit: XSS no longer fires on Python `print()` (skillsregistry#51), and SSRF no longer fires on SDK entity lookups like `client.channels.fetch(id)` (skillsregistry#49). No CLI surface change.
