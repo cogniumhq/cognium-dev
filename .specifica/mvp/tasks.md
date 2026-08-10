@@ -17,15 +17,25 @@ through the whole engine, not a plugin file: every core stage
 (`buildDFG`/`extractTypes`/CFG/taint) dispatches by language and each mature
 language carries its own builders + an accreted detector tail.
 
-**Estimate (one engineer fluent in this codebase):** usable taint MVP ~6–8 wk;
-benchmark-grade v1 ~12–20 wk (≈3–5 months). Ranges collapse after the Phase-0
-spike. Revised upward from the first pass after a critical review (see risks).
+**Estimate (one engineer fluent in this codebase; post-spike):** usable taint
+MVP ~4–6 wk — **Slices 1–3 of Phase 1 already landed** on `feat/csharp`, so the
+straight-line MVP is largely in hand; the remaining MVP cost is Slice 4
+(`buildCSharpDFG`). Benchmark-grade v1 ~13–18 wk (≈3–4.5 months), gated on the
+DFG rewrite + the Juliet-C# harness (cognium-ai#285) + FP tuning.
 
-### Phase 0 — Walking skeleton + DFG spike (MANDATORY first) — ~1.5–2.5 wk (≈5 working days)
+### Phase 0 — Walking skeleton + DFG spike ✅ DONE (branch `spike/csharp-phase0`, 2026-08-10)
 
-**Spike goal:** answer one question with evidence — *does `buildJavaDFG` produce
-usable def/use on C# nodes, or is `buildCSharpDFG` near-from-scratch?* — plus get
-C# parsing end-to-end. "Succeeded" = **we know the true cost**, not "C# works".
+**Verdict:** grammar loads (prebuilt `tree-sitter-c-sharp` wasm, **5.35 MB** —
+size pass needed before shipping); `buildJavaDFG` yields **0 defs / 0 chains** on
+C# → `buildCSharpDFG` is a **REWRITE** of the node-recognition layer (walker
+skeleton reuses). **But** the text-scan path (`buildJavaTaintedVars`) carries
+straight-line taint — concat **and** `$"…{id}"` interpolation — without the DFG,
+so the MVP is cheaper than the DFG verdict alone implied. One SQLi flow fired
+end-to-end. 0 delta on OWASP Java 2740 + BenchmarkPython 1230.
+
+**Spike goal (met):** answer one question with evidence — *does `buildJavaDFG`
+produce usable def/use on C# nodes, or is `buildCSharpDFG` near-from-scratch?* —
+plus get C# parsing end-to-end. Day-by-day record:
 
 - [ ] **Day 1 — grammar + parse.** Build `tree-sitter-c-sharp` → vendor as
       `wasm/tree-sitter-csharp.wasm` (loader resolves `tree-sitter-${language}.wasm`,
@@ -60,17 +70,15 @@ C# parsing end-to-end. "Succeeded" = **we know the true cost**, not "C# works".
       existing ones). Deliverable: DFG go/no-go verdict + a **point** Phase-1
       estimate replacing the 3.5–5.5 wk range.
 
-### Phase 1 — Taint MVP — ~3.5–5.5 wk
-- [ ] `buildCSharpDFG` covering C#-specific edges: properties (get/set), `var`,
-      **string interpolation `$"…{tainted}…"`** (dominant C# SQLi shape — must,
-      not nicety), LINQ (query + method syntax), async/await, `out`/`ref`
-- [ ] `buildCSharpCFG` + `buildCSharpTaintedVars` propagator
-- [ ] Core source/sink/sanitizer set (`languages: ['csharp']`): ASP.NET Core
-      sources (`[FromQuery]`/`[FromBody]`/`Request.*`), sinks (`SqlCommand`/
-      `ExecuteReader`, `Process.Start`, `Response.Write`, `File.*`), sanitizers
-      (`SqlParameter`, `HtmlEncoder`, `Path.GetFullPath` guard)
-- [ ] Exit gate: SQLi/XSS/path-traversal/cmdi/SSRF flows fire on hand-written
-      ASP.NET fixtures; positive + negative controls per CWE
+### Phase 1 — Taint MVP — IN PROGRESS (branch `feat/csharp`, rebased on 3.218.0)
+- [x] **Slice 1** — 6 core CWE families fire (ADO.NET SqlCommand/EF ExecuteSqlRaw·FromSqlRaw, System.IO File.*, HttpClient/WebClient, Process.Start, CSharpScript, Razor Html.Raw/Response.Write). Class-matching works on receiver *text* for static calls, so no full type resolution needed there.
+- [x] **Slice 2** — sink-type-aware sanitizer suppression (SinkFilter Stage 15k, C#-scoped): `HtmlEncode`/`HtmlEncoder.Encode`/`JavaScriptStringEncode` → xss, `Path.GetFileName` → path_traversal; transitive multi-hop closure; correctly does NOT over-sanitize (HtmlEncode'd data still fires on a SQL sink).
+- [x] **Slice 3** — explicit ASP.NET request sources (`findCSharpRequestSources`): direct `Request.Query`/`Form`/`Headers`/`Cookies`/`QueryString`/`RouteValues`/`Body`/`Files` reads (incl. `HttpContext.`) seed `http_param`. Model binding already covered by param-seeding.
+- [ ] **Slice 4** — `buildCSharpDFG` covering C#-specific edges: properties (get/set), `var`, LINQ (query + method syntax), async/await, `out`/`ref`. The spike's identified **rewrite** — branch/alias/field-flow precision beyond straight-line text-scan; also unblocks deserialization receiver-type resolution (BinaryFormatter.Deserialize). `buildCSharpCFG` alongside.
+- [ ] **Slice 5** — breadth toward Juliet-C#: more sinks/sanitizers, `[FromX]` attribute confidence, LDAP/XPath/XXE families.
+- [x] Exit gate (straight-line): SQLi/XSS/path-traversal/cmdi/SSRF/code-injection fire on hand-written ASP.NET fixtures with per-CWE positive + negative controls (14 tests). Branch/alias precision pending Slice 4.
+
+**Slices 1–3 verified:** 4561 suite pass, **0 corpus delta** (OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230) on every slice — all changes `languages: ['csharp']`-scoped, zero collateral on other languages.
 
 ### Phase 2 — Cross-file + framework depth — ~2–3 wk
 - [ ] namespace / `using` resolution; cross-file taint via `analyzeProject`
