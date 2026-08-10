@@ -2882,6 +2882,21 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'HtmlString', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
+  // C# LDAP injection — System.DirectoryServices (CWE-90). The user-built
+  // filter is the constructor argument.
+  { method: 'DirectorySearcher', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DirectoryEntry', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // C# XPath injection — System.Xml.XPath (CWE-643). Distinctive selector methods.
+  { method: 'SelectSingleNode', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'SelectNodes', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Compile', class: 'XPathExpression', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // C# XXE — untrusted XML into a parser without DTD hardening (CWE-611).
+  { method: 'LoadXml', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Load', class: 'XmlDocument', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Load', class: 'XDocument', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
   // Python SQLi — asyncpg Connection.*
   { method: 'execute',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
   { method: 'fetch',    class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
