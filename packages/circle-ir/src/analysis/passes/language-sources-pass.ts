@@ -242,6 +242,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- JavaScript/TypeScript: assignment sources and DOM XSS sinks ---------
     additionalSources.push(...findJavaScriptAssignmentSources(code, language));
 
+    // -- C#: explicit ASP.NET request sources --------------------------------
+    additionalSources.push(...findCSharpRequestSources(code, language));
+
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
       const alreadyExists = additionalSinks.some(x => x.line === s.line && x.cwe === s.cwe);
@@ -1206,6 +1209,45 @@ function findSetterChainSources(
     }
   }
 
+  return sources;
+}
+
+/**
+ * Explicit ASP.NET Core request sources (cognium-dev C#/.NET Phase-1).
+ *
+ * Model binding (`Get([FromQuery] string id)`) is already covered by
+ * interprocedural-param seeding, but a direct read from the request object —
+ * `var id = Request.Query["id"]` — is an `element_access_expression`, not a
+ * call, so nothing seeded it. Recognise assignments whose RHS reads from the
+ * ASP.NET request surface (`Request.Query`/`Form`/`Headers`/`Cookies`/
+ * `QueryString`/`RouteValues`/`Body`/`Files`, optionally via `HttpContext.` /
+ * `context.`) and seed the LHS variable as an `http_param` source so the
+ * text-scan propagation bridges it to sinks.
+ */
+function findCSharpRequestSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'csharp') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+  const requestReadRe =
+    /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignRe.exec(lines[i]);
+    if (!m) continue;
+    const [, varName, rhs] = m;
+    if (!requestReadRe.test(rhs)) continue;
+    const lineNumber = i + 1;
+    if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
+    sources.push({
+      type: 'http_param',
+      location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+      severity: 'high',
+      line: lineNumber,
+      confidence: 1.0,
+      variable: varName,
+    });
+  }
   return sources;
 }
 
