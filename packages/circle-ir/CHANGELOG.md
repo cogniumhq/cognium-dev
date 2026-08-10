@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-08-10
+
+Emit `prompt_injection` from the scan path (cognium-ai#281).
+
+### Fixed
+
+- **`prompt_injection` (CWE-1427 / OWASP LLM01) is now emitted by `generateFindings`.** It was missing from the `canSourceReachSink` reach map, so the scan path — and the colocation flow detector that shares the predicate — dropped every `http_*`/`io_input`/`network_input`/`interprocedural_param` → LLM-prompt flow, even though `taint.sinks`/`taint.flows` and the trust pass already reported it. `scan` was structurally blind to LLM01 (the same "two paths disagree" shape as #129). Added `prompt_injection` to the attacker-controlled source rows. Verified: the Go repro (`r.URL.Query().Get(…)` → `CreateChatCompletion`) now emits a `prompt_injection` finding from the scan path; **0 delta** across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 (pre-LLM corpora, no prompt sinks).
+
 ## [4.0.0] - 2026-08-10
 
 **C#/.NET language support (experimental / preview).** Major bump for the

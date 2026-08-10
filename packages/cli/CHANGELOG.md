@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-08-10
+
+Adopts [`circle-ir@4.1.0`](https://www.npmjs.com/package/circle-ir) — `scan` now emits `prompt_injection` (CWE-1427 / OWASP LLM01) findings, which were previously only surfaced by the trust pass (cognium-ai#281). No CLI surface change.
+
 ## [4.0.0] - 2026-08-10
 
 Adopts [`circle-ir@4.0.0`](https://www.npmjs.com/package/circle-ir) — **experimental C#/.NET support**. The CLI now recognizes `.cs` files (`.cs` → `csharp`) and scans them for the 10 supported C# CWE families. Major bump tracks circle-ir 4.0.0 (`SupportedLanguage` widening + ~5.4 MB grammar). Experimental / not yet benchmark-verified (see the circle-ir 4.0.0 notes).
