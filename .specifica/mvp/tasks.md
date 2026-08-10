@@ -8,6 +8,79 @@
 
 (none)
 
+## Epic — C#/.NET language support (proposed 2026-08-09; not started)
+
+Add C# as the 8th analyzed language (ASP.NET Core / ADO.NET / EF Core taint +
+quality metrics). **Pillar-I only** — deterministic taint + metrics, no LLM
+surface (the AI layer is circle-ir-ai's concern). This is a vertical slice
+through the whole engine, not a plugin file: every core stage
+(`buildDFG`/`extractTypes`/CFG/taint) dispatches by language and each mature
+language carries its own builders + an accreted detector tail.
+
+**Estimate (one engineer fluent in this codebase):** usable taint MVP ~6–8 wk;
+benchmark-grade v1 ~12–20 wk (≈3–5 months). Ranges collapse after the Phase-0
+spike. Revised upward from the first pass after a critical review (see risks).
+
+### Phase 0 — Walking skeleton + DFG spike (MANDATORY first) — ~1.5–2.5 wk
+- [ ] Vendor/build `tree-sitter-c-sharp.wasm`; register grammar (browser+Node self-contained)
+- [ ] Add `'csharp'` to `SupportedLanguage` union, `LanguageRegistry`, extension map
+- [ ] `CSharpPlugin` scaffold: `nodeTypes` map + `extractCSharpTypes/Calls/Imports/Package`
+- [ ] **De-risk the load-bearing assumption:** confirm whether `buildJavaDFG`
+      (the default fallback) produces *any* usable def/use on C# nodes, or a
+      bespoke `buildCSharpDFG` is required near-from-scratch. This is the
+      single biggest swing factor — spike it before committing the full number.
+- [ ] Exit gate: C# files parse → types/calls/imports + quality metrics; a
+      hand-written SQLi fixture shows whether taint reaches the sink at all
+
+### Phase 1 — Taint MVP — ~3.5–5.5 wk
+- [ ] `buildCSharpDFG` covering C#-specific edges: properties (get/set), `var`,
+      **string interpolation `$"…{tainted}…"`** (dominant C# SQLi shape — must,
+      not nicety), LINQ (query + method syntax), async/await, `out`/`ref`
+- [ ] `buildCSharpCFG` + `buildCSharpTaintedVars` propagator
+- [ ] Core source/sink/sanitizer set (`languages: ['csharp']`): ASP.NET Core
+      sources (`[FromQuery]`/`[FromBody]`/`Request.*`), sinks (`SqlCommand`/
+      `ExecuteReader`, `Process.Start`, `Response.Write`, `File.*`), sanitizers
+      (`SqlParameter`, `HtmlEncoder`, `Path.GetFullPath` guard)
+- [ ] Exit gate: SQLi/XSS/path-traversal/cmdi/SSRF flows fire on hand-written
+      ASP.NET fixtures; positive + negative controls per CWE
+
+### Phase 2 — Cross-file + framework depth — ~2–3 wk
+- [ ] namespace / `using` resolution; cross-file taint via `analyzeProject`
+- [ ] EF Core, DI patterns, more ASP.NET source/sink coverage
+- [ ] Audit the ~48-branch `language === '…'` core for C# gaps / mis-fires
+      (quality passes need C# gating, not free reuse)
+
+### Phase 3 — Benchmark-grade + hardening — ~5–9 wk (long tail)
+- [ ] **Define "done" first:** agreed TPR/FPR on an agreed corpus. There is NO
+      OWASP-Benchmark C# — anchor on **Juliet C# (NIST)** + a curated corpus
+- [ ] Stand up C# scoring — **cross-repo dependency:** the benchmark harness
+      lives in circle-ir-ai; adding a C# corpus + runner is a handoff, not an
+      in-boundary task. Surface a spec; do not touch the sibling repo
+- [ ] FP/FN closure to the acceptance bar; precision passes per CWE (expect the
+      Java-scale accretion — Java's 100 scoped sinks took many releases)
+
+### Risks / swing factors
+- **DFG divergence (highest):** Java DFG default likely does NOT carry C#;
+  treat `buildCSharpDFG` as near-scratch until the Phase-0 spike says otherwise
+- **No C# corpus locally + no OWASP-C# anchor:** verification is itself a
+  project and partly cross-repo (harness in circle-ir-ai)
+- **Detector tail is open-ended:** v1 ships top ASP.NET/ADO.NET/EF patterns,
+  not Java-breadth parity
+- **Recurring carrying cost:** every future engine change must now consider an
+  8th language branch — a permanent maintenance tax, not a one-time spend
+- **Multi-repo delivery:** customer value requires circle-ir-ai to bundle the
+  new circle-ir, add C# to its harness, and tune the AI layer — spans teams
+
+### Dependencies / boundary notes
+- Pure Pillar-I; no `--llm-*` / LLM identifiers anywhere (repo guardrail)
+- Browser+Node constraint holds (no Node APIs; C# wasm ~1–2 MB is fine)
+- Consumer handoff: circle-ir-ai pin bump + harness C# corpus (cross-repo spec)
+
+### Recommendation
+Run the **Phase-0 spike (~1 wk) before committing** to the full estimate — it
+resolves the DFG assumption and grammar fidelity, turning the 12–20 wk range
+into a tight number.
+
 ## Open — High Priority
 
 - [ ] **NOTE — verify consumer-facing claims against the published artifact, not the source**
