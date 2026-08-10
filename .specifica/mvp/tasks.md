@@ -326,6 +326,11 @@ into a tight number.
 
 **Next in-boundary slice if pursued:** #51 + #49(a) — extend non-HTML XSS suppression to py/js + gate `.fetch(id)` entity-lookups. Both corpus-verifiable (OWASP Java + BenchmarkPython), both extending shipped fixes. **Caveat: any fix reaches skillsregistry only when the mothership bundles a current `circle-ir` (audit ran on v1.36).**
 
+### Recently triaged (cognium-ai, 2026-08-10) — dispositions recorded, no circle-ir change
+- **cognium-ai#280** — `CWE-unknown-prompt_injection at unknown:0` in VEX → **downstream, not circle-ir.** Verified circle-ir emits the finding with `cwe: "CWE-1427"` + full sink location (`sink.file`/`sink.line:4`/`code`). Fix is VEX-side: add `prompt_injection→CWE-1427` to the CWE map + read `finding.sink.*` for `sink_location`. Commented.
+- **cognium-ai#282** — memory leak / crash at ~650 scans → **not circle-ir core.** Profiled 4.1.0: 3000-scan loop plateaus (RSS flat 1500→3000 at 310MB, JS heap flat ~20MB) = tree-sitter WASM high-water mark, not a leak; `analyze()` already disposes trees in `finally`. Leak is circle-pack/server (result accumulation) or concurrent-peak WASM. Commented with evidence + guidance.
+- **cognium-ai#287** — intermittent analyze/repository `failed` on identical input (~370 LLM calls) → **not circle-ir** (deterministic engine can't be non-deterministic). LLM-verifier/queue-pressure (#244/#245) + `errors[]` propagation is circle-pack/cortex API. Commented.
+
 ### Recently closed
 - **#270** (cognium-dev) fixed 3.211.0 (eb2c397, 2026-08-06) — `getAttribute` over-broad xss sink (degenerate source==sink self-flow); 494 spurious OWASP xss flows dropped, classification byte-identical, 0 recall change. Same family as #268. Surfaced by the #247 fleet-bump elide re-scan.
 - **#268** (cognium-dev) fixed 3.208.0 (89b3b65, 2026-08-04) — over-broad `StringBuilder`/`StringBuffer.append` XSS sink removed; **0 OWASP xss TP loss and 0 SecuriBench detection loss** (the 2 flagged files still detect their real BAD lines; only spurious duplicate findings dropped — the earlier "-2" claim was a delta-scorer artifact, corrected 2026-08-06). Originated from the cognium-ai top-100 sweep but filed in cognium-dev. Closed on GitHub 2026-08-05. *(Earlier entries mislabeled this `cognium-ai#268` — corrected 2026-08-05; it is a bare cognium-dev issue.)*
