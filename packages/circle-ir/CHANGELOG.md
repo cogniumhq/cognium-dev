@@ -5,9 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.219.0] - 2026-08-10
+## [4.0.0] - 2026-08-10
 
-**C#/.NET language support (experimental / preview).**
+**C#/.NET language support (experimental / preview).** Major bump for the
+`SupportedLanguage` widening + package-size increase (see Breaking).
+
+### Breaking
+
+- **`SupportedLanguage` now includes `'csharp'`.** Purely additive at runtime, but a consumer with an exhaustive `switch` or `Record<SupportedLanguage, …>` will need to handle the new member (a TypeScript compile-time exhaustiveness error otherwise). No behavioral change for existing languages — graph/finding output is byte-identical (verified 0-delta across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230).
+- **Package size +~34%** (unpacked 16.3 → 21.8 MB) from the bundled `tree-sitter-c-sharp` grammar wasm (~5.4 MB). Consumers that vendor/bundle the wasm should account for it.
 
 ### Added
 
