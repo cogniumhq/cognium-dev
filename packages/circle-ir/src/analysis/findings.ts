@@ -305,30 +305,36 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // disagreed. log_injection (CWE-117) and format_string (CWE-134) are
     // reachable from any user-controlled value that is logged / used as a
     // format string; nosql_injection (CWE-943) mirrors sql_injection's sources.
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection'],
-    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
-    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'],
+    // prompt_injection (CWE-1427 / OWASP LLM01) added cognium-ai#281: an
+    // attacker-controlled value reaching an LLM prompt sink (CreateChatCompletion
+    // et al.) is prompt injection. The reach map omitted it entirely, so the
+    // scan path (`generateFindings`) dropped every `http_*/io/network/interproc →
+    // prompt_injection` flow even though `taint.flows` / the trust pass reported
+    // it — the same "two paths disagree" shape as #129. Now emitted from scan too.
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     // xss added cognium-dev 3.163.0: URL path components (getRequestURI,
     // getRequestURL, getPathInfo, getServletPath) reflected back into HTML
     // output are a classic reflected-XSS vector — cf. Basic35 in
     // SecuriBench Micro where `writer.println(req.getRequestURL())` is
     // annotated `/* BAD */`. Prior to 3.163.0 the reach map omitted xss
     // so http_path → xss inline-colocation flows were silently dropped.
-    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss', 'log_injection', 'format_string'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection'],
+    http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss', 'log_injection', 'format_string', 'prompt_injection'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
     // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF
     // (CVE-2022-41040 ProxyShell-class). Cross-language: `socket.urlopen(input())`
     // (Python), `axios.get(readline())` (JS) etc. also benefit.
-    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss', 'ssrf', 'log_injection', 'format_string'],
+    io_input: ['command_injection', 'path_traversal', 'deserialization', 'xxe', 'code_injection', 'xss', 'ssrf', 'log_injection', 'format_string', 'prompt_injection'],
     env_input: ['command_injection', 'path_traversal'],
     db_input: ['xss', 'sql_injection', 'log_injection'], // Second-order injection
     file_input: ['deserialization', 'xxe', 'path_traversal', 'command_injection', 'code_injection'],
-    network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'log_injection', 'format_string', 'nosql_injection'],
+    network_input: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     config_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'ssrf', 'log_injection', 'format_string'], // Servlet init params
-    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection'], // Cross-method taint; Sprint 82 (#189) — open_redirect added; Sprint 91 (#117) — trust_boundary added; cognium-ai#129 — log_injection/format_string/nosql_injection added
+    interprocedural_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'], // Cross-method taint; Sprint 82 (#189) — open_redirect added; Sprint 91 (#117) — trust_boundary added; cognium-ai#129 — log_injection/format_string/nosql_injection added; cognium-ai#281 — prompt_injection added
     plugin_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'code_injection', 'log_injection', 'format_string'], // Plugin/config parameters
   };
 
