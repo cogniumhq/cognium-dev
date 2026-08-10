@@ -572,6 +572,65 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
   }
   return covered;
 }
+// C# sanitizers (Phase-1) and the sink types each neutralises. A tainted value
+// that flows through one of these before reaching a sink of the matching type
+// is safe. Method names are C#-distinctive (see config-loader C# sanitizers).
+const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
+  { re: /\b(?:HtmlEncode|JavaScriptStringEncode)\s*\(/, type: 'xss' },
+  { re: /\bHtmlEncoder\s*\.\s*Encode\s*\(/, type: 'xss' },
+  { re: /\bPath\s*\.\s*GetFileName\s*\(/, type: 'path_traversal' },
+];
+
+/**
+ * Compute, per sink type, the set of C# variables whose value has passed through
+ * a sanitizer for that type (cognium-dev C#/.NET Phase-1). Seeds from
+ * `V = <sanitizer_T>(…)` assignments, then takes a transitive closure over
+ * `W = … V …` so downstream derivations (`s = "<div>" + safe`) stay sanitized.
+ * Over-approximates on mixed-source lines (`s = safe + evil`) — an accepted
+ * MVP recall trade for text-scan sanitizer awareness; C#-scoped, so no effect
+ * on other languages.
+ */
+function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
+  const lines = code.split('\n');
+  const byType = new Map<string, Set<string>>();
+  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+
+  for (const { type } of CSHARP_SANITIZER_RES) {
+    if (!byType.has(type)) byType.set(type, new Set());
+  }
+  // Seed: direct `V = sanitizer(...)`.
+  for (const line of lines) {
+    const m = assignRe.exec(line);
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    for (const { re, type } of CSHARP_SANITIZER_RES) {
+      if (re.test(rhs)) byType.get(type)!.add(lhs);
+    }
+  }
+  // Transitive closure: `W = … V …` where V is already sanitized-for-T.
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < lines.length + 2) {
+    changed = false;
+    guard++;
+    for (const line of lines) {
+      const m = assignRe.exec(line);
+      if (!m) continue;
+      const [, lhs, rhs] = m;
+      for (const [type, set] of byType) {
+        if (set.has(lhs)) continue;
+        const refsSanitized = [...set].some(v =>
+          new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(rhs),
+        );
+        // Only carry sanitized-ness when the RHS did not itself apply the
+        // sanitizer (already seeded) and references a sanitized var.
+        if (refsSanitized) { set.add(lhs); changed = true; }
+      }
+    }
+  }
+  return byType;
+}
+
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
 const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
 
@@ -1799,6 +1858,33 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           sink => !(sink.type === 'ssrf' && guardedLines.has(sink.line)),
         );
       }
+    }
+
+    // Stage 15k — C# sanitizer suppression (cognium-dev C#/.NET Phase-1).
+    // C# rides the text-scan propagation, which is not sanitizer-aware; apply
+    // sanitizers here (sink-type-aware, C#-scoped). Drop a sink when its line
+    // inline-applies a sanitizer for that type, or when a variable on the sink
+    // line has passed through a sanitizer for that type upstream.
+    if (language === 'csharp') {
+      const sourceLines = ctx.code.split('\n');
+      const sanitizedByType = csharpSanitizedVarsByType(ctx.code);
+      filtered = filtered.filter(sink => {
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // (a) inline sanitizer on the sink line, e.g. Html.Raw(HtmlEncode(x)).
+        for (const { re, type } of CSHARP_SANITIZER_RES) {
+          if (type === sink.type && re.test(sinkLineText)) return false;
+        }
+        // (b) a sink-line variable is sanitized-for-this-type upstream. Tested
+        // per-var (not via extractSourceIdentifiers, which skips single-char
+        // names) so `Html.Raw(s)` with a 1-letter var is covered.
+        const sanitizedVars = sanitizedByType.get(sink.type);
+        if (sanitizedVars && sanitizedVars.size > 0) {
+          for (const v of sanitizedVars) {
+            if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(sinkLineText)) return false;
+          }
+        }
+        return true;
+      });
     }
 
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
