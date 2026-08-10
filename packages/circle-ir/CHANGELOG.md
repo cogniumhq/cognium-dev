@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-08-10
+
+Recognize Next.js/Remix route params as taint sources (cognium-ai#277).
+
+### Fixed
+
+- **SSRF via a Next.js/Remix destructured route param is no longer a false negative (cognium-ai#277 — the strongest TP in the JS/TS study).** The JS source patterns recognized `req.params`/`event.params`/`.searchParams.get` but not the bare `params.<seg>` object that the Next.js App Router (`GET(req, { params })`) and Remix (`loader({ params })`) hand to a handler — so a multi-line flow (`const x = params.url; … fetch(x)`) was missed while the single-line colocation case fired. Added a `params.<seg>` source pattern **gated to route-handler files** (a route-method/`loader`/`action` export **and** a destructured `params` binding — a bare `params.` pattern would over-fire on any object named `params`), typed `http_path`. Verified 0-delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 (JS-only change); the route-handler gate bounds the FP surface (no local JS corpus — to be watched on the next JS/TS sweep). Part of the Verify-TP cluster triage: #268/#269/#278/#271 were already detected, #270 detects in the real-repo `promisify` shape, #277 was the one FN.
+
 ## [4.1.0] - 2026-08-10
 
 Emit `prompt_injection` from the scan path (cognium-ai#281).
