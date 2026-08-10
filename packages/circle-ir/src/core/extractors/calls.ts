@@ -155,8 +155,51 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
  * node), so this cannot reuse `extractCallInfo`. Resolution/type inference is
  * left null for the spike — sink matching keys on method name + receiver text.
  */
+/**
+ * Map local/field variable names → their simple type (cognium-dev C#/.NET
+ * Phase-1). Enables class-scoped C# sinks (`BinaryFormatter.Deserialize`) to
+ * match an instance receiver (`bf.Deserialize(s)`), which the receiver-text
+ * match only covers for static calls. Type comes from the declaration
+ * (`HttpClient c = …`) or, for `var`, from the `new T(…)` initializer.
+ */
+function buildCSharpReceiverTypeMap(tree: Tree, cache?: NodeCache): Map<string, string> {
+  const map = new Map<string, string>();
+  const simple = (t: string) => t.replace(/<[^>]*>/g, '').split('.').pop()?.trim() ?? t;
+  for (const vd of getNodesFromCache(tree.rootNode, 'variable_declaration', cache)) {
+    const typeNode = vd.childForFieldName('type');
+    const declaredType = typeNode ? getNodeText(typeNode) : null;
+    for (let i = 0; i < vd.childCount; i++) {
+      const decl = vd.child(i);
+      if (!decl || decl.type !== 'variable_declarator') continue;
+      const nameNode = decl.childForFieldName('name');
+      if (nameNode?.type !== 'identifier') continue;
+      let t = declaredType && declaredType !== 'var' ? declaredType : null;
+      if (!t) {
+        const oce = findFirstDescendant(decl, 'object_creation_expression');
+        const oceType = oce?.childForFieldName('type');
+        if (oceType) t = getNodeText(oceType);
+      }
+      if (t && t !== 'var') map.set(getNodeText(nameNode), simple(t));
+    }
+  }
+  return map;
+}
+
+/** First descendant of `node` with the given type (pre-order). */
+function findFirstDescendant(node: Node, type: string): Node | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (!c) continue;
+    if (c.type === type) return c;
+    const found = findFirstDescendant(c, type);
+    if (found) return found;
+  }
+  return null;
+}
+
 function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
+  const typeMap = buildCSharpReceiverTypeMap(tree, cache);
 
   const invocations = getNodesFromCache(tree.rootNode, 'invocation_expression', cache);
   for (const inv of invocations) {
@@ -175,7 +218,7 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     calls.push({
       method_name: methodName,
       receiver,
-      receiver_type: null,
+      receiver_type: receiver ? (typeMap.get(receiver) ?? null) : null,
       receiver_type_fqn: null,
       arguments: argsNode ? extractCSharpArguments(argsNode) : [],
       location: { line: inv.startPosition.row + 1, column: inv.startPosition.column },
