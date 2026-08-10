@@ -2829,8 +2829,58 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // C# SQLi (Phase-0 spike — ADO.NET). `new SqlCommand(sql, conn)` builds the
   // command from a raw string; the tainted SQL is arg[0] of the constructor.
   { method: 'SqlCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'NpgsqlCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'MySqlCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'SqliteCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'OracleCommand', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'ExecuteSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'FromSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'FromSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+
+  // C# command injection — Process.Start / ProcessStartInfo (CWE-78).
+  { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ProcessStartInfo', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
+
+  // C# path traversal — System.IO file APIs (CWE-22). Distinctive method names.
+  { method: 'ReadAllText', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ReadAllBytes', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ReadAllLines', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'WriteAllText', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'WriteAllBytes', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'AppendAllText', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'OpenRead', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'OpenWrite', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'FileStream', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // C# SSRF — HttpClient / WebClient / WebRequest (CWE-918).
+  { method: 'GetAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'PostAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'PutAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DeleteAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'GetStringAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'GetByteArrayAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'GetStreamAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'SendAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DownloadString', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DownloadData', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DownloadFile', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [1], languages: ['csharp'] },
+  { method: 'Create', class: 'WebRequest', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // C# code injection — dynamic script/assembly loading (CWE-94).
+  { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'RunAsync', class: 'CSharpScript', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+
+  // C# insecure deserialization — BinaryFormatter et al. (CWE-502).
+  { method: 'Deserialize', class: 'BinaryFormatter', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Deserialize', class: 'NetDataContractSerializer', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+
+  // C# XSS — raw HTML output (CWE-79).
+  { method: 'Raw', class: 'Html', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'HtmlString', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // Python SQLi — asyncpg Connection.*
   { method: 'execute',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },
@@ -3051,6 +3101,14 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   { method: 'escapeCsv',        removes: ['xss'] },
   // OWASP HTML sanitizer (`com.googlecode.owasp-java-html-sanitizer`).
   { method: 'sanitize',         class: 'PolicyFactory', removes: ['xss'] },
+
+  // C# sanitizers (Phase-1). HTML encoders neutralise XSS; Path.GetFileName
+  // strips any directory component (basename) so a traversal payload cannot
+  // escape the target directory. Method names are C#-distinctive.
+  { method: 'HtmlEncode',   removes: ['xss'] },                 // HttpUtility / WebUtility
+  { method: 'JavaScriptStringEncode', removes: ['xss'] },       // HttpUtility
+  { method: 'Encode',       class: 'HtmlEncoder', removes: ['xss'] },
+  { method: 'GetFileName',  class: 'Path', removes: ['path_traversal'] },
 
   // Java Base64 / Hex / MessageDigest — encoded output is binary-safe
   // (cognium-dev #213 seventh slice). None of these carry attacker
