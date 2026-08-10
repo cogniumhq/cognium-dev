@@ -409,6 +409,32 @@ const HTML_CONTENT_TYPE_RE = /text\/html|TEXT_HTML/;
 const FETCH_GLOBAL_RECEIVER_RE = /(?:^|[^.\w])(?:window|globalThis|self|global)\s*\.\s*fetch\s*\(/;
 const FETCH_MEMBER_RECEIVER_RE = /[\w$)\]]\s*\.\s*fetch\s*\(/;
 
+// cognium-ai#279 R-2 — `Array.prototype.find`/`filter`/… take a *function*
+// predicate; a `nosql_injection` sink only makes sense when the argument is a
+// query object. `user.accounts.find(a => a.providerId === x)` is an array scan,
+// not a Mongo query. A function first argument (arrow or `function`) proves it
+// is the Array method, mirroring the `setTimeout(fn)` "arg is a function ⇒ not a
+// sink" test. Real `collection.find({ ... })` passes an object literal and is
+// unaffected.
+const NOSQL_ARRAY_METHODS = new Set(['find', 'filter', 'some', 'every', 'findIndex', 'findLast']);
+const FUNCTION_FIRST_ARG_RE =
+  /\.\s*(?:find|filter|some|every|findIndex|findLast)\s*\(\s*(?:async\s+)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
+
+// cognium-ai#279 R-1 — an argument that is an object literal with an ORM
+// query-builder key (`where`/`select`/`populate`/…) is a *builder*, not a raw
+// query string: a value in a `{ field, value }` position binds as a parameter
+// and cannot carry an operator. `adapter.findOne({ where: [...] })` /
+// `repo.findMany({ where: {...} })` are the Node analogue of #247's
+// PreparedStatement class. A real `db.query("SELECT … WHERE …")` has no
+// `key:` colon syntax and is unaffected.
+const ORM_BUILDER_KEY_RE = /[{,]\s*(?:where|select|populate|include|orderBy|relations|attributes)\s*:/;
+
+// cognium-ai#279 R-6 — a template-literal URL whose host is a fixed literal
+// (`https://api.github.com/${path}`) is not SSRF: only the path is
+// interpolated, the destination host is not attacker-controlled. Matches a
+// backtick + scheme + a literal host run (no `${` before the first `/`).
+const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
+
 /**
  * Returns the 1-indexed line numbers that a Java `if (x.contains("..")) throw/
  * return` reject-guard makes path-traversal-safe (cognium-dev#269). A line is
@@ -1687,6 +1713,46 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         if (FETCH_GLOBAL_RECEIVER_RE.test(sinkLineText)) return true;
         return !FETCH_MEMBER_RECEIVER_RE.test(sinkLineText);
+      });
+    }
+
+    // Stage 15g — JS/TS nosql: `.find(fn)` etc. is Array.prototype iteration,
+    // not a Mongo query. (cognium-ai#279 R-2) Drop a `nosql_injection` sink on an
+    // array method whose first argument is a function (arrow / `function`);
+    // real `collection.find({query})` passes an object and is kept.
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'nosql_injection') return true;
+        if (!NOSQL_ARRAY_METHODS.has(sink.method ?? '')) return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        return !FUNCTION_FIRST_ARG_RE.test(sinkLineText);
+      });
+    }
+
+    // Stage 15h — JS/TS sql/nosql: ORM query-builder object argument.
+    // (cognium-ai#279 R-1) Drop a sql/nosql injection sink whose call passes an
+    // object literal with an ORM builder key (`where`/`select`/…) — a bound
+    // parameter, not a raw query. Raw `db.query("… WHERE …")` has no `key:`
+    // colon and is kept.
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection' && sink.type !== 'nosql_injection') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        return !ORM_BUILDER_KEY_RE.test(sinkLineText);
+      });
+    }
+
+    // Stage 15i — JS/TS ssrf: fixed-host URL template. (cognium-ai#279 R-6)
+    // Drop an ssrf sink whose line builds the URL from a template literal with a
+    // literal host (only the path is interpolated).
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'ssrf') return true;
+        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        return !FIXED_HOST_TEMPLATE_RE.test(sinkLineText);
       });
     }
 
