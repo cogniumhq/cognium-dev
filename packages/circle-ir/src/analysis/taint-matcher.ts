@@ -406,7 +406,7 @@ function findSources(
         // For typed languages (Java), check the type
         // For untyped languages (JavaScript), treat all params as potentially tainted
         const isTaintable = param.type
-          ? isInterproceduralTaintableType(param.type)
+          ? isInterproceduralTaintableType(param.type, language)
           : true; // JavaScript/Python - no type means any value
 
         if (isTaintable) {
@@ -431,7 +431,7 @@ function findSources(
             // interprocedural_param at the method decl line instead of the
             // real HTTP source, breaking downstream sink-type filters
             // (regressed #78, #92.1, #105 FP-31, #215 recall).
-            ...(language === 'java' ? { variable: param.name } : {}),
+            ...(language === 'java' || language === 'csharp' ? { variable: param.name } : {}),
           });
         }
       }
@@ -605,7 +605,7 @@ function findSources(
  * Check if a parameter type could carry tainted data in inter-procedural analysis.
  * These are types commonly used to pass user-controlled data between methods.
  */
-function isInterproceduralTaintableType(typeName: string): boolean {
+function isInterproceduralTaintableType(typeName: string, language?: SupportedLanguage): boolean {
   // Normalize type name (remove generics)
   const baseType = typeName.split('<')[0].trim();
 
@@ -652,6 +652,17 @@ function isInterproceduralTaintableType(typeName: string): boolean {
 
   if (taintableTypes.includes(baseType)) {
     return true;
+  }
+
+  // C# types (Phase-0 spike) — scoped to C# so the lowercase `string`/`object`
+  // aliases do NOT leak into Go (which also uses lowercase `string` and whose
+  // bare params must stay non-taintable-by-default — the #267 moat).
+  if (language === 'csharp') {
+    const csharpTaintable = [
+      'string', 'object', 'IEnumerable', 'ICollection', 'IList',
+      'Dictionary', 'IDictionary', 'IReadOnlyList', 'IReadOnlyCollection',
+    ];
+    if (csharpTaintable.includes(baseType)) return true;
   }
 
   // Check for array types
