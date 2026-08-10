@@ -88,3 +88,51 @@ async function lookup(client, id) {
     expect(flows).toContain('ssrf');
   });
 });
+
+describe('repro skillsregistry#49b: anchored host allow-list reject-guard suppresses SSRF', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const ssrfFires = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some(f => f.sink_type === 'ssrf');
+
+  it('SUPPRESSES fetch guarded by an anchored host-allowlist regex reject-guard', async () => {
+    const code = `async function proxy(userUrl) {
+  if (!/^https:\\/\\/(www\\.)?fidensa\\.(com|dev)\\//.test(userUrl)) throw new Error('bad');
+  return await fetch(userUrl);
+}`;
+    expect(ssrfFires(await analyze(code, 'p.js', 'javascript'))).toBe(false);
+  });
+
+  it('SUPPRESSES fetch guarded by a startsWith("https://host/") reject-guard', async () => {
+    const code = `async function proxy(userUrl) {
+  if (!userUrl.startsWith("https://api.github.com/")) return null;
+  return await fetch(userUrl);
+}`;
+    expect(ssrfFires(await analyze(code, 'q.js', 'javascript'))).toBe(false);
+  });
+
+  it('SUPPRESSES fetch of a var derived one-hop from the guarded URL', async () => {
+    const code = `async function proxy(userUrl) {
+  if (!/^https:\\/\\/ok\\.example\\.com\\//.test(userUrl)) throw new Error('bad');
+  const full = userUrl + "?x=1";
+  return await fetch(full);
+}`;
+    expect(ssrfFires(await analyze(code, 'r.js', 'javascript'))).toBe(false);
+  });
+
+  it('STILL fires for a scheme-only guard (host not constrained)', async () => {
+    const code = `async function proxy(userUrl) {
+  if (!/^https?:\\/\\//.test(userUrl)) throw new Error('bad');
+  return await fetch(userUrl);
+}`;
+    expect(ssrfFires(await analyze(code, 's.js', 'javascript'))).toBe(true);
+  });
+
+  it('STILL fires when the guard is on a different variable than the fetch arg', async () => {
+    const code = `async function proxy(a, b) {
+  if (!/^https:\\/\\/ok\\.com\\//.test(a)) throw new Error('bad');
+  return await fetch(b);
+}`;
+    expect(ssrfFires(await analyze(code, 't.js', 'javascript'))).toBe(true);
+  });
+});

@@ -453,6 +453,82 @@ function javaTraversalRejectGuardedLines(code: string): Set<number> {
   }
   return covered;
 }
+// skillsregistry#49b — a fetch/HTTP call whose URL is constrained by an anchored
+// host allow-list is not arbitrary-URL SSRF. Recognise reject-guards
+// (throw/return) that pin the tainted URL to a fixed host set:
+//   if (!/^https:\/\/(www\.)?host\.com\//.test(url)) throw ...
+//   if (!url.startsWith("https://api.github.com/")) return ...
+// The guard must name the scheme AND contain a literal domain label (a
+// letter-led run followed by a dot) — a bare `^https?:\/\/` with no host does
+// not constrain the destination and is deliberately NOT credited.
+
+/** True if a regex source (from `/…/.test(url)`) pins the host to a literal domain. */
+function isAnchoredHostAllowlistRegex(src: string): boolean {
+  if (!src.startsWith('^')) return false;            // must be anchored
+  if (!/https?/i.test(src)) return false;            // must name the scheme
+  return /[A-Za-z][A-Za-z0-9-]+\\?\./.test(src);     // literal host label + (escaped) dot
+}
+
+/** True if a `startsWith` prefix pins scheme + a literal host (implicitly anchored). */
+function isSchemeHostPrefix(prefix: string): boolean {
+  if (!/^https?:\/\//i.test(prefix)) return false;
+  const afterScheme = prefix.replace(/^https?:\/\//i, '');
+  return /[A-Za-z][A-Za-z0-9-]*\./.test(afterScheme); // has a host label + dot
+}
+
+/**
+ * Returns the 1-indexed line numbers made SSRF-safe by an anchored host
+ * allow-list reject-guard (skillsregistry#49b). Mirrors the Java traversal
+ * reject-guard: a line is covered when it references a variable that was
+ * host-guarded above (following one-hop derivations), and the guard has a
+ * throwing/returning body (reject polarity — the safe path is everything below).
+ */
+function jsSsrfHostGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  // `if ( ! /regex/flags .test( VAR ) )`
+  const rejectRegexTest = /\bif\s*\(\s*!\s*\/((?:[^/\\]|\\.)*)\/[a-z]*\s*\.\s*test\s*\(\s*([A-Za-z_]\w*)\s*\)/;
+  // `if ( ! VAR.startsWith( "prefix" ) )`
+  const rejectStartsWith = /\bif\s*\(\s*!\s*([A-Za-z_]\w*)\s*\.\s*startsWith\s*\(\s*["'`]([^"'`]+)["'`]/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*(?:const|let|var\s+)?\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    let guardedVar: string | null = null;
+    const rm = rejectRegexTest.exec(lines[i]);
+    if (rm && isAnchoredHostAllowlistRegex(rm[1])) guardedVar = rm[2];
+    if (!guardedVar) {
+      const sm = rejectStartsWith.exec(lines[i]);
+      if (sm && isSchemeHostPrefix(sm[2])) guardedVar = sm[1];
+    }
+    if (!guardedVar) continue;
+
+    let hasTerminator = terminatorRe.test(lines[i]);
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
+        if (lines[j].includes('}')) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([guardedVar]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) if (new RegExp(`\\b${name}\\b`).test(text)) return true;
+      return false;
+    };
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l];
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2])) guarded.add(assign[1]);
+        else if (assign[1] !== guardedVar) guarded.delete(assign[1]);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
 const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
 
@@ -1612,6 +1688,22 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (FETCH_GLOBAL_RECEIVER_RE.test(sinkLineText)) return true;
         return !FETCH_MEMBER_RECEIVER_RE.test(sinkLineText);
       });
+    }
+
+    // Stage 15f — JS/TS ssrf: anchored host allow-list reject-guard.
+    // (skillsregistry#49b) A URL pinned to a fixed host set by an anchored
+    // `^https://host/`.test(url) / url.startsWith("https://host/") reject-guard
+    // (throw/return) before the request cannot target an arbitrary host, so it
+    // is not SSRF. Applied as a sink drop (reaches the generateFindings scan path
+    // too). Scheme-only guards (`^https?://`) are not credited — they don't
+    // constrain the destination.
+    if (['javascript', 'typescript'].includes(language)) {
+      const guardedLines = jsSsrfHostGuardedLines(ctx.code);
+      if (guardedLines.size > 0) {
+        filtered = filtered.filter(
+          sink => !(sink.type === 'ssrf' && guardedLines.has(sink.line)),
+        );
+      }
     }
 
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
