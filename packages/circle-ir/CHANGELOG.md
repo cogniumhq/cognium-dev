@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.217.0] - 2026-08-10
+
+JS/TS FP round 2 — three residual crit/high classes from cognium-ai#279.
+
+### Fixed
+
+- **`.find(fn)` / `.filter(fn)` no longer flagged as NoSQL injection (cognium-ai#279 R-1... R-2).** The classless `find` NoSQL sink fired on `Array.prototype.find`/`filter`/`some`/`every` — `user.accounts.find(a => a.providerId === x)` is an array scan, not a Mongo query. New SinkFilter **Stage 15g** drops a `nosql_injection` sink on an array method whose first argument is a **function** (arrow or `function`); real `collection.find({ query })` (object argument) is kept. Mirrors the existing `setTimeout(fn)` "arg is a function ⇒ not a sink" test.
+- **ORM query-builder object arguments no longer flagged as injection (cognium-ai#279 R-1).** A call whose argument is an object literal with a query-builder key (`where`/`select`/`populate`/`include`/`orderBy`/`relations`/`attributes`) is a *builder* — a value in a `{ field, value }` position binds as a parameter and cannot carry an operator. New **Stage 15h** drops `sql_injection`/`nosql_injection` sinks on such calls (`adapter.findOne({ where: [...] })`, `repo.findMany({ where: {...} })`); raw `db.query("… WHERE …" + x)` has no `key:` colon and is kept. The Node analogue of #247's PreparedStatement class.
+- **Fixed-host URL templates no longer flagged as SSRF (cognium-ai#279 R-6).** `` fetch(`https://api.github.com/repos/${owner}/${repo}`) `` interpolates only the *path*; the host is a literal and not attacker-controlled. New **Stage 15i** drops `ssrf` sinks whose URL is a template literal with a fixed literal host. An interpolated *host* (`` `https://${host}/path` ``) still fires.
+
+Residual (medium) `external_taint_escape` may remain on the same call sites — that is CWE-668, not a crit/high injection FP. **0 changed `taint.flows` verdicts** across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 (all stages JS/TS-scoped). +6 regression cases. **#279 R-4/R-7/R-8/R-9 were already clean on the current engine** (measured on an older bundled circle-ir); **R-5 is a context/threat-model concern, not a detector bug.**
+
 ## [3.216.0] - 2026-08-09
 
 Anchored host-allowlist reject-guard suppresses SSRF (skillsregistry#49b).

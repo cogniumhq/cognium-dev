@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.217.0] - 2026-08-10
+
+Adopts [`circle-ir@3.217.0`](https://www.npmjs.com/package/circle-ir) — JS/TS FP round 2 (cognium-ai#279): `Array.find(fn)` and ORM query-builder objects no longer flagged as injection, and fixed-host URL templates no longer flagged as SSRF. No CLI surface change.
+
 ## [3.216.0] - 2026-08-09
 
 Adopts [`circle-ir@3.216.0`](https://www.npmjs.com/package/circle-ir) — SSRF no longer fires when the URL is pinned to a fixed host by an anchored allow-list reject-guard (skillsregistry#49b). No CLI surface change.
