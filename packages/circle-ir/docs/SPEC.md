@@ -90,7 +90,7 @@ File metadata and version information.
 interface Meta {
   circle_ir: "3.0";
   file: string;
-  language: "java" | "javascript" | "typescript" | "python" | "go" | "rust" | "bash" | "html";
+  language: "java" | "javascript" | "typescript" | "python" | "go" | "rust" | "bash" | "html" | "csharp";  // "csharp" experimental (4.0.0+)
   loc: number;
   hash: string;           // SHA256 prefix (16 chars)
   package?: string;       // PENDING: Add to implementation

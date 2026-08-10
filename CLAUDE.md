@@ -64,7 +64,7 @@ bun run dev scan <path>     # Run CLI in development mode
 
 Analysis passes (security, reliability, performance, maintainability, architecture) and software quality metrics are enumerated in the canonical registry: [`packages/circle-ir/docs/PASSES.md`](./packages/circle-ir/docs/PASSES.md). Do **not** duplicate pass or metric counts in this file — link to PASSES.md.
 
-**Languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML.
+**Languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML, C# (experimental).
 
 **Benchmark scores:**
 - OWASP Benchmark (Java): 100% TPR, 0% FPR

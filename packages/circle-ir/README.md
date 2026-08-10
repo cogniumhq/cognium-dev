@@ -8,7 +8,7 @@ A high-performance Static Application Security Testing (SAST) library for detect
 ## Features
 
 - **Taint Analysis**: Track data flow from sources (user input) to sinks (dangerous operations)
-- **Multi-language Support**: Java, JavaScript/TypeScript, Python, Go, Rust, Bash/Shell, HTML
+- **Multi-language Support**: Java, JavaScript/TypeScript, Python, Go, Rust, Bash/Shell, HTML, and **C#/.NET (experimental)**
 - **High Accuracy**: 100% on OWASP Benchmark, 100% on Juliet Test Suite, 97.7% TPR on SecuriBench Micro
 - **36-Pass Pipeline**: 19 security taint passes + 17 reliability/performance/maintainability/architecture quality passes
 - **Metrics Engine**: 24 software quality metrics (cyclomatic complexity, Halstead, CBO, RFC, LCOM, DIT, and 4 composite scores)
@@ -209,6 +209,17 @@ const response = await analyzeForAPI(code, 'File.java', 'java');
 | **Rust** | tree-sitter-rust | Actix-web, Rocket, Axum |
 | **Bash/Shell** | tree-sitter-bash | Shell scripts (.sh, .bash, .zsh, .ksh) |
 | **HTML** | tree-sitter-html | Web extraction preprocessor (.html, .htm, .xhtml) |
+| **C#/.NET** _(experimental)_ | tree-sitter-c-sharp | ASP.NET Core, ADO.NET, EF Core |
+
+**C#/.NET support is experimental / preview** (since 4.0.0). It performs
+straight-line taint analysis across 10 CWE families — SQL injection, command
+injection, path traversal, SSRF, code injection, XSS, insecure deserialization,
+LDAP, XPath, XXE — on ASP.NET Core / ADO.NET / EF Core / BCL, handling string
+concatenation and `$"…{tainted}…"` interpolation, with sink-type-aware
+sanitizer recognition (`HtmlEncode`, `Path.GetFileName`). It is **not yet
+benchmark-verified** (no published TPR/FPR); expect gaps in branch/alias
+precision and detector breadth. See `docs/PASSES.md` and the CHANGELOG for
+scope.
 
 HTML is handled as a preprocessor: `<script>` blocks are extracted and analyzed as JavaScript, inline event handlers are analyzed as JS snippets, and 8 attribute-level security checks (missing noopener, javascript: URIs, missing sandbox/SRI, mixed content, etc.) run directly on the HTML AST.
 
@@ -226,6 +237,9 @@ const goResult = await analyze(goCode, 'main.go', 'go');
 
 // Analyze Rust
 const rsResult = await analyze(rsCode, 'main.rs', 'rust');
+
+// Analyze C#/.NET (experimental)
+const csResult = await analyze(csCode, 'Controller.cs', 'csharp');
 
 // Analyze HTML (extracts scripts, checks attributes)
 const htmlResult = await analyze(htmlCode, 'index.html', 'html');

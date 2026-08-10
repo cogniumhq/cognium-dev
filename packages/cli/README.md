@@ -65,7 +65,7 @@ Scan files or directories for security vulnerabilities.
 cognium-dev scan <path> [options]
 
 Options:
-  -l, --language <lang>      Force language (java|javascript|typescript|python|go|rust|bash|html)
+  -l, --language <lang>      Force language (java|javascript|typescript|python|go|rust|bash|html|csharp)
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
   --severity <level>         Filter by severity:
@@ -307,6 +307,12 @@ Filter to security findings only: `cognium-dev scan ./src --category security`
 | Rust | `.rs` | Actix-web, Rocket, Axum |
 | Bash | `.sh`, `.bash` | Shell scripts |
 | HTML | `.html`, `.htm` | Web extraction preprocessor |
+| C#/.NET _(experimental)_ | `.cs` | ASP.NET Core, ADO.NET, EF Core |
+
+> **C#/.NET is experimental / preview** (since 4.0.0). Straight-line taint
+> analysis across 10 CWE families (SQLi, command injection, path traversal,
+> SSRF, code injection, XSS, deserialization, LDAP, XPath, XXE). Not yet
+> benchmark-verified — expect gaps in branch/alias precision and detector breadth.
 
 ## Configuration
 
