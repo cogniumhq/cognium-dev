@@ -104,11 +104,56 @@ public class C {
   });
 });
 
+describe('C# Phase-1: sanitizer awareness (sink-type-aware, text-scan path)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('HttpUtility.HtmlEncode(name) before Html.Raw suppresses XSS (2-hop chain)', async () => {
+    const code = `
+public class C {
+  public string M(string name) {
+    var safe = HttpUtility.HtmlEncode(name);
+    var s = "<div>" + safe + "</div>";
+    return Html.Raw(s);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xss')).toBe(false);
+  });
+
+  it('inline Html.Raw(HtmlEncode(name)) suppresses XSS', async () => {
+    const code = `
+public class C {
+  public string M(string name) { return Html.Raw(HttpUtility.HtmlEncode(name)); }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xss')).toBe(false);
+  });
+
+  it('Path.GetFileName(p) before File.ReadAllText suppresses path traversal', async () => {
+    const code = `
+public class C {
+  public void M(string p) {
+    var name = Path.GetFileName(p);
+    var full = "/data/" + name;
+    var txt = File.ReadAllText(full);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'path_traversal')).toBe(false);
+  });
+
+  it('is sink-type-aware: HtmlEncode does NOT sanitize SQL — SQLi still fires', async () => {
+    const code = `
+public class C {
+  public void M(string id) {
+    var safe = HttpUtility.HtmlEncode(id);
+    var q = "SELECT * FROM u WHERE id=" + safe;
+    var cmd = new SqlCommand(q, conn);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+});
+
 describe('C# Phase-1: known gaps (next slices)', () => {
-  // Sanitizer recognition on the text-scan path — HtmlEncode/GetFileName do not
-  // yet break the taint chain. Flip to real assertions when the sanitizer-aware
-  // propagation slice lands.
-  it.todo('HttpUtility.HtmlEncode before Html.Raw should suppress XSS');
-  it.todo('Path.GetFileName before File.ReadAllText should suppress path traversal');
+  // Deserialization (BinaryFormatter.Deserialize) needs receiver-type resolution
+  // — the receiver is an instance var, not the class name.
   it.todo('BinaryFormatter.Deserialize should fire (needs receiver-type resolution)');
 });
