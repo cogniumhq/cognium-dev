@@ -89,6 +89,43 @@ public class C {
   });
 });
 
+describe('C# Phase-1: additional families (LDAP / XPath / XXE)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('LDAP injection — new DirectorySearcher(filter)', async () => {
+    const code = `
+public class C {
+  public void M(string user) {
+    var filter = "(uid=" + user + ")";
+    var s = new DirectorySearcher(filter);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'ldap_injection')).toBe(true);
+  });
+
+  it('XPath injection — doc.SelectSingleNode(xpath)', async () => {
+    const code = `
+public class C {
+  public void M(System.Xml.XmlDocument doc, string u) {
+    var xp = "//user[name='" + u + "']";
+    var n = doc.SelectSingleNode(xp);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xpath_injection')).toBe(true);
+  });
+
+  it('XXE — XmlDocument.LoadXml(untrusted)', async () => {
+    const code = `
+public class C {
+  public void M(string xml) {
+    var doc = new XmlDocument();
+    doc.LoadXml(xml);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xxe')).toBe(true);
+  });
+});
+
 describe('C# Phase-1: precision that already holds', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
