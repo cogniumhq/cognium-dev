@@ -81,9 +81,10 @@ C# parsing end-to-end. "Succeeded" = **we know the true cost**, not "C# works".
 ### Phase 3 — Benchmark-grade + hardening — ~5–9 wk (long tail)
 - [ ] **Define "done" first:** agreed TPR/FPR on an agreed corpus. There is NO
       OWASP-Benchmark C# — anchor on **Juliet C# (NIST)** + a curated corpus
-- [ ] Stand up C# scoring — **cross-repo dependency:** the benchmark harness
-      lives in circle-ir-ai; adding a C# corpus + runner is a handoff, not an
-      in-boundary task. Surface a spec; do not touch the sibling repo
+- [ ] Stand up C# scoring — **cross-repo dependency, HANDOFF FILED: cognium-ai#285**
+      (Juliet C#/.NET corpus + flow-aware runner). The benchmark harness lives in
+      circle-ir-ai; do not touch the sibling repo. Prereq: circle-ir ships real
+      C# support first, then circle-ir-ai bumps its bundled pin
 - [ ] FP/FN closure to the acceptance bar; precision passes per CWE (expect the
       Java-scale accretion — Java's 100 scoped sinks took many releases)
 
