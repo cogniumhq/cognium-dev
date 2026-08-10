@@ -44,6 +44,14 @@ import type { SastFinding } from '../types/index.js';
  * Coalesce note-level findings at the same `(file, line)` location.
  * Returns a new array; the input is not mutated.
  */
+/** The two clickjacking-header rules that co-locate when both are absent. */
+const CLICKJACKING_PAIR = new Set(['missing-x-frame-options', 'missing-csp-frame-ancestors']);
+
+/** Visibility rank: lower = more visible (kept as the merged primary). */
+function levelRank(level: string): number {
+  return level === 'error' ? 0 : level === 'warning' ? 1 : 2;
+}
+
 export function coalesceNoteLevelFindings(
   findings: readonly SastFinding[],
 ): SastFinding[] {
@@ -67,10 +75,40 @@ export function coalesceNoteLevelFindings(
 
   const out: SastFinding[] = [];
   for (const key of order) {
-    const bucket = groups.get(key)!;
+    let bucket = groups.get(key)!;
     if (bucket.length === 1) {
       out.push(bucket[0]);
       continue;
+    }
+
+    // Clickjacking-pair fold (cognium-dev#262). A #262 capture across OWASP
+    // Java + SecuriBench + BenchmarkPython found 99.8% of ALL medium-severity
+    // `(file,line)` collisions are the single redundant pair
+    // `missing-x-frame-options` + `missing-csp-frame-ancestors` — the two
+    // clickjacking headers, which co-locate whenever both are absent (one
+    // issue, reported twice). The general note-coalescer skips them because the
+    // pair is mixed-level (note+warning). Fold them here specifically: keep the
+    // higher-visibility member as primary and attach the other's rule_id as a
+    // label. Only this exact pair; any other findings in the group fall through
+    // to the normal note-level logic below unchanged.
+    const cj = bucket.filter((f) => CLICKJACKING_PAIR.has(f.rule_id));
+    if (new Set(cj.map((f) => f.rule_id)).size === CLICKJACKING_PAIR.size) {
+      // Primary = highest visibility (warning > note) so the merged finding
+      // never demotes level; lexicographic rule_id as a deterministic tie-break
+      // (keeps the all-note pick stable — `missing-csp-frame-ancestors`).
+      const primary = [...cj].sort(
+        (a, b) => levelRank(a.level) - levelRank(b.level) || a.rule_id.localeCompare(b.rule_id),
+      )[0];
+      const labels = Array.from(
+        new Set([
+          ...(primary.labels ?? []),
+          ...cj.flatMap((f) => [f.rule_id, ...(f.labels ?? [])]),
+        ]),
+      ).filter((l) => l !== primary.rule_id);
+      out.push({ ...primary, labels });
+      bucket = bucket.filter((f) => !CLICKJACKING_PAIR.has(f.rule_id));
+      if (bucket.length === 0) continue;
+      if (bucket.length === 1) { out.push(bucket[0]); continue; }
     }
 
     // Split by level. Only same-key finding groups where EVERY entry

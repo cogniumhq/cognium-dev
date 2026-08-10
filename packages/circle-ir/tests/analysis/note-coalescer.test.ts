@@ -203,4 +203,40 @@ describe('#143 — coalesceNoteLevelFindings', () => {
       'unused-variable',
     ]);
   });
+
+  // cognium-dev#262 — the clickjacking pair folds even when MIXED-level
+  // (note+warning), which is how the security-headers pass actually emits it
+  // (99.8% of all medium collisions). It keeps the warning-level member as
+  // primary so the merged finding never demotes visibility.
+  describe('#262 — clickjacking pair folds across levels', () => {
+    it('folds missing-x-frame-options (warning) + missing-csp-frame-ancestors (note) into one', () => {
+      const out = coalesceNoteLevelFindings([
+        warning('missing-x-frame-options'),
+        note('missing-csp-frame-ancestors'),
+      ]);
+      expect(out).toHaveLength(1);
+      expect(out[0].rule_id).toBe('missing-x-frame-options'); // warning wins (visibility)
+      expect(out[0].level).toBe('warning');
+      expect(out[0].labels).toEqual(['missing-csp-frame-ancestors']);
+    });
+
+    it('leaves a non-clickjacking mixed-level pair un-coalesced (existing invariant)', () => {
+      const out = coalesceNoteLevelFindings([
+        warning('some-warning-rule'),
+        note('some-note-rule'),
+      ]);
+      expect(out).toHaveLength(2); // mixed-level, not the clickjacking pair → pass-through
+    });
+
+    it('folds the clickjacking pair but keeps other findings at the same line', () => {
+      const out = coalesceNoteLevelFindings([
+        warning('missing-x-frame-options'),
+        note('missing-csp-frame-ancestors'),
+        warning('unrelated-warning'),
+      ]);
+      // one merged clickjacking finding + the unrelated warning
+      expect(out).toHaveLength(2);
+      expect(out.map(f => f.rule_id).sort()).toEqual(['missing-x-frame-options', 'unrelated-warning']);
+    });
+  });
 });
