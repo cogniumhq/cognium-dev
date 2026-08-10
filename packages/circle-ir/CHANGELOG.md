@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-08-10
+
+Fold the redundant clickjacking-header finding pair (cognium-dev#262).
+
+### Changed
+
+- **`missing-x-frame-options` + `missing-csp-frame-ancestors` now emit as one finding.** A #262 collision-capture across OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 found that **99.8% of all medium-severity `(file,line)` finding collisions** are this single redundant pair — the two clickjacking headers, which co-locate whenever both are absent (one issue, reported twice). The coalescer now folds this specific pair regardless of level (it is `note`+`warning`, which the general note-coalescer skipped), keeping the higher-visibility member as primary and attaching the other's `rule_id` as a label — backward-compatible and additive. Verified: collision groups 3,978 → 7; 0 `taint.flows` delta; note-coalescer determinism / mixed-level pass-through invariants preserved.
+- **Docs:** experimental C#/.NET support is now documented (README, SPEC, CLI README).
+
 ## [4.2.0] - 2026-08-10
 
 Recognize Next.js/Remix route params as taint sources (cognium-ai#277).
