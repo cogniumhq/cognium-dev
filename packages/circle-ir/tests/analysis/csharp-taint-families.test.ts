@@ -152,6 +152,47 @@ public class C {
   });
 });
 
+describe('C# Phase-1: explicit ASP.NET request sources', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('direct Request.Query["id"] read reaches a SQL sink', async () => {
+    const code = `
+public class C {
+  public IActionResult Get() {
+    var id = Request.Query["id"];
+    var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + id, conn);
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('HttpContext.Request.Headers read reaches an SSRF sink', async () => {
+    const code = `
+public class C {
+  public async Task<IActionResult> Get() {
+    var u = HttpContext.Request.Headers["X-Url"];
+    var c = new HttpClient();
+    await c.GetAsync(u);
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'ssrf')).toBe(true);
+  });
+
+  it('does NOT seed a non-request read as a source', async () => {
+    const code = `
+public class C {
+  public IActionResult Get() {
+    var id = Config.Get("id");
+    var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + id, conn);
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-1: known gaps (next slices)', () => {
   // Deserialization (BinaryFormatter.Deserialize) needs receiver-type resolution
   // — the receiver is an instance var, not the class name.
