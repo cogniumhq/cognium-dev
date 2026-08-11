@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-08-11
+
+C#/.NET (experimental): detect the ADO.NET `CommandText` property SQL sink.
+
+### Added
+
+- **`cmd.CommandText = "…" + tainted` is now detected as SQL injection (CWE-89).** Reported via a circle-ir-ai integration (cognium-ai#289): ASP.NET `Request.Query → SqlCommand` SQLi was missed when the query is assembled through the `CommandText` property rather than the constructor — the tainted string never passes through `new SqlCommand(…)`. `extractCSharpCalls` now emits a synthetic call for a `<receiver>.CommandText = <rhs>` assignment (mirroring the JS DOM property-sink approach), and `CommandText` is registered as a C# `sql_injection` sink, so the tainted RHS variable connects through the standard flow scan. Fires on concatenation, `$"…{id}"` interpolation, and `[FromQuery]`-param shapes; stays clean on a static-literal `CommandText` and on parameterized queries (`AddWithValue`). C#-scoped — 0 delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
+
+C# remains **experimental / not benchmark-verified**. Dapper (`conn.Query`/`Execute`) is intentionally not yet registered (generic method names — an FP risk to be bounded by the Juliet-C# corpus, cognium-ai#285).
+
 ## [4.3.1] - 2026-08-10
 
 Fix: the root-exported `SupportedLanguage` was missing `'csharp'`.
