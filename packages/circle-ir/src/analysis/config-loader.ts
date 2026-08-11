@@ -2837,6 +2837,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'ExecuteSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'FromSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'FromSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // ADO.NET `cmd.CommandText = "…" + x` — emitted as a synthetic call by
+  // extractCSharpCalls (property-assignment sink; the ctor-arg sink misses it).
+  { method: 'CommandText', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# command injection — Process.Start / ProcessStartInfo (CWE-78).
   { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0], languages: ['csharp'] },

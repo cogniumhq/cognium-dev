@@ -189,6 +189,63 @@ public class C {
   });
 });
 
+describe('C# Phase-1: CommandText property-assignment SQL sink', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('fires on cmd.CommandText = "…" + taintedId (ADO.NET property sink)', async () => {
+    const code = `
+public class C {
+  public IActionResult Get() {
+    var id = Request.Query["id"];
+    var cmd = new SqlCommand();
+    cmd.CommandText = "SELECT * FROM u WHERE id=" + id;
+    cmd.ExecuteReader();
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('fires on interpolated CommandText from a [FromQuery] param', async () => {
+    const code = `
+using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  [HttpGet] public IActionResult Get([FromQuery] string id) {
+    var cmd = new SqlCommand();
+    cmd.CommandText = $"SELECT * FROM u WHERE id={id}";
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('does NOT fire on a static-literal CommandText', async () => {
+    const code = `
+public class C {
+  public IActionResult Get() {
+    var cmd = new SqlCommand();
+    cmd.CommandText = "SELECT * FROM u WHERE id=1";
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+
+  it('does NOT fire when parameterized (literal CommandText + AddWithValue)', async () => {
+    const code = `
+public class C {
+  public IActionResult Get() {
+    var id = Request.Query["id"];
+    var cmd = new SqlCommand();
+    cmd.CommandText = "SELECT * FROM u WHERE id=@id";
+    cmd.Parameters.AddWithValue("@id", id);
+    return Ok();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-1: explicit ASP.NET request sources', () => {
   beforeAll(async () => { await initAnalyzer(); });
 

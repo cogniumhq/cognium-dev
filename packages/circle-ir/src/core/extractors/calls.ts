@@ -242,6 +242,39 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     });
   }
 
+  // C# property-assignment sinks emitted as synthetic calls (mirrors the JS
+  // `extractDomPropertyAssignmentSink` approach). ADO.NET builds a query via
+  // `cmd.CommandText = "…" + tainted`, which the constructor-arg sink misses.
+  // Emit `{ method_name: 'CommandText', receiver: cmd, arguments: [rhs] }` so
+  // the registered `CommandText` sink matches and the taint var-scan connects a
+  // tainted variable in the RHS. Config-loader registers CommandText (csharp).
+  const assignments = getNodesFromCache(tree.rootNode, 'assignment_expression', cache);
+  for (const asn of assignments) {
+    const left = asn.childForFieldName('left');
+    if (left?.type !== 'member_access_expression') continue;
+    const nameNode = left.childForFieldName('name');
+    if (!nameNode || getNodeText(nameNode) !== 'CommandText') continue;
+    const right = asn.childForFieldName('right');
+    if (!right) continue;
+    const rhsText = getNodeText(right);
+    const exprNode = left.childForFieldName('expression');
+    calls.push({
+      method_name: 'CommandText',
+      receiver: exprNode ? getNodeText(exprNode) : null,
+      receiver_type: null,
+      receiver_type_fqn: null,
+      arguments: [{
+        position: 0,
+        expression: rhsText,
+        variable: right.type === 'identifier' ? rhsText : null,
+        literal: right.type === 'string_literal' ? rhsText : null,
+        value: null,
+      }],
+      location: { line: asn.startPosition.row + 1, column: asn.startPosition.column },
+      in_method: findEnclosingMethod(asn),
+    });
+  }
+
   return calls;
 }
 
