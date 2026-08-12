@@ -37,6 +37,35 @@ const WEAK_HASH_NAMES = new Set([
   'sha-1', 'sha1',
 ]);
 
+// C#/.NET (System.Security.Cryptography). The algorithm *class* used as a
+// static-factory receiver: `MD5.Create()`, `SHA1.HashData(x)`. SHA256/384/512
+// are strong and intentionally absent.
+const CSHARP_WEAK_HASH_CLASSES = new Set(['MD5', 'SHA1']);
+// Named-factory receivers: `HashAlgorithm.Create("MD5")`,
+// `CryptoConfig.CreateFromName("SHA1")`, `HMAC.Create("HMACSHA1")`. The weak
+// algorithm is the literal string argument.
+const CSHARP_HASH_FACTORY_RECEIVERS = new Set([
+  'HashAlgorithm', 'KeyedHashAlgorithm', 'HMAC', 'CryptoConfig',
+]);
+// Concrete weak-hash provider constructors: `new MD5CryptoServiceProvider()`,
+// `new SHA1Managed()`, `new HMACMD5(key)`. Value = normalized algorithm.
+const CSHARP_WEAK_HASH_CTORS: Record<string, string> = {
+  MD5CryptoServiceProvider: 'md5', MD5Cng: 'md5',
+  SHA1CryptoServiceProvider: 'sha1', SHA1Managed: 'sha1', SHA1Cng: 'sha1',
+  HMACMD5: 'md5', HMACSHA1: 'sha1',
+};
+
+// Normalize a .NET algorithm string to a WEAK_HASH_NAMES key, or null if
+// strong. Handles the `HMAC`-prefixed forms (`HMACSHA1` → `sha1`), the bare
+// `"SHA"` alias (= SHA-1), and fully-qualified type names
+// (`System.Security.Cryptography.MD5` → `md5`). Input is already lowercased.
+function csharpWeakHashAlgo(cleaned: string | null): string | null {
+  if (!cleaned) return null;
+  const base = (cleaned.split('.').pop() ?? cleaned).replace(/^hmac/, '');
+  if (base === 'sha') return 'sha1';
+  return WEAK_HASH_NAMES.has(base) ? base : null;
+}
+
 // Apache Commons Codec DigestUtils — method name encodes algorithm.
 const COMMONS_DIGEST_METHODS = new Set([
   'md2', 'md2Hex',
@@ -299,6 +328,23 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
       const isWeakPkg = receiver === 'md5' || receiver === 'sha1';
       if (isWeakPkg && (method === 'New' || method === 'Sum')) {
         return { algorithm: receiver, api: `${receiver}.${method}` };
+      }
+      return null;
+    }
+
+    if (language === 'csharp') {
+      // Static factory on the algorithm class: MD5.Create() / SHA1.HashData(x).
+      if ((method === 'Create' || method === 'HashData') && CSHARP_WEAK_HASH_CLASSES.has(receiver)) {
+        return { algorithm: receiver.toLowerCase(), api: `${receiver}.${method}` };
+      }
+      // Named factory: HashAlgorithm.Create("MD5") / CryptoConfig.CreateFromName("SHA1").
+      if ((method === 'Create' || method === 'CreateFromName') && CSHARP_HASH_FACTORY_RECEIVERS.has(receiver)) {
+        const algo = csharpWeakHashAlgo(literalAlgo(call, 0));
+        if (algo) return { algorithm: algo, api: `${receiver}.${method}` };
+      }
+      // Concrete provider constructor: new MD5CryptoServiceProvider() / new HMACSHA1(key).
+      if (call.is_constructor && CSHARP_WEAK_HASH_CTORS[method]) {
+        return { algorithm: CSHARP_WEAK_HASH_CTORS[method], api: `new ${method}()` };
       }
       return null;
     }

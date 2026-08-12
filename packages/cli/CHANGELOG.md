@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-08-12
+
+Adopts [`circle-ir@4.7.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental) `weak-hash` (CWE-328) now flags MD5/SHA-1 use via `System.Security.Cryptography` (`MD5.Create()`, `new SHA1Managed()`, `HashAlgorithm.Create("MD5")`, …). No CLI surface change.
+
 ## [4.6.0] - 2026-08-11
 
 Adopts [`circle-ir@4.6.0`](https://www.npmjs.com/package/circle-ir) — new Java pass `insecure-deserialization-config` (CWE-502) deterministically flags XStream configured with a grant-all `AnyTypePermission` (cognium-dev#225). No CLI surface change.

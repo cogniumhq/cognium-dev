@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-08-12
+
+C#/.NET (experimental): weak-hash coverage (Phase-2 C# core audit).
+
+### Added
+
+- **`weak-hash` (CWE-328) now covers C# `System.Security.Cryptography`.** Flags MD5/SHA-1 use across the three .NET shapes: static factory (`MD5.Create()`, `SHA1.HashData(x)`), weak provider constructors (`new MD5CryptoServiceProvider()`, `new SHA1Managed()`, `new SHA1Cng()`, `new HMACMD5(key)`, `new HMACSHA1(key)`), and named factories with a weak literal algorithm (`HashAlgorithm.Create("MD5")`, `CryptoConfig.CreateFromName("SHA1")`, incl. the `"SHA"` alias = SHA-1). Precise: SHA-256/384/512, `new HMACSHA256(...)`, non-crypto `*.Create()`, and non-literal factory arguments are **not** flagged. Constant-pattern match (no data flow), like the existing Java/Python/JS/Go weak-hash detection. C#-scoped — 0 flow delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
+
+### Notes
+
+- **Phase-2 C# core audit** (tasks.md): swept the ~48 `language === '…'` core branches for C# gaps and mis-fires. **No C#-specific mis-fires found** — un-gated passes (`todo-in-prod`, `unused-variable`) behave identically to Java, and the per-language security/quality passes cleanly exclude C# (no false positives). `weak-hash` was the highest-value, lowest-FP coverage gap and is wired here; remaining quality-pass coverage (weak-crypto, broad-catch, etc.) stays deliberately un-wired for C# pending the same canonical-shape + control-verified bar.
+
 ## [4.6.0] - 2026-08-11
 
 Java: deterministic detection of insecure XStream deserialization configuration.

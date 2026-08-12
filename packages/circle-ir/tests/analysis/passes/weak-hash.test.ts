@@ -167,4 +167,38 @@ func h(b []byte) [20]byte {
     const r = await analyze(code, 'b.go', 'go');
     expect(weakHash(r).length).toBeGreaterThanOrEqual(1);
   });
+
+  // C#/.NET (cognium-dev#: Phase-2 C# core audit) — System.Security.Cryptography
+  const cs = (snippet: string) => `public class C { void M(byte[] data, byte[] key) { ${snippet} } }`;
+  const csFlags = async (snippet: string) =>
+    weakHash(await analyze(cs(snippet), 'C.cs', 'csharp')).length > 0;
+
+  it('C#: MD5.Create() / SHA1.Create() / MD5.HashData() are flagged', async () => {
+    expect(await csFlags('var a = MD5.Create();')).toBe(true);
+    expect(await csFlags('var a = SHA1.Create();')).toBe(true);
+    expect(await csFlags('var a = MD5.HashData(data);')).toBe(true);
+  });
+
+  it('C#: weak provider constructors are flagged', async () => {
+    expect(await csFlags('var a = new MD5CryptoServiceProvider();')).toBe(true);
+    expect(await csFlags('var a = new SHA1Managed();')).toBe(true);
+    expect(await csFlags('var a = new HMACMD5(key);')).toBe(true);
+  });
+
+  it('C#: named factories with a weak literal algorithm are flagged', async () => {
+    expect(await csFlags('var a = HashAlgorithm.Create("MD5");')).toBe(true);
+    expect(await csFlags('var a = CryptoConfig.CreateFromName("SHA1");')).toBe(true);
+    expect(await csFlags('var a = HMAC.Create("HMACSHA1");')).toBe(true);
+    expect(await csFlags('var a = HashAlgorithm.Create("SHA");')).toBe(true); // "SHA" == SHA-1
+  });
+
+  it('C#: strong algorithms and non-crypto Create() are NOT flagged', async () => {
+    expect(await csFlags('var a = SHA256.Create();')).toBe(false);
+    expect(await csFlags('var a = SHA512.HashData(data);')).toBe(false);
+    expect(await csFlags('var a = new SHA256Managed();')).toBe(false);
+    expect(await csFlags('var a = new HMACSHA256(key);')).toBe(false);
+    expect(await csFlags('var a = HashAlgorithm.Create("SHA256");')).toBe(false);
+    expect(await csFlags('var a = builder.Create();')).toBe(false);
+    expect(await csFlags('var a = CryptoConfig.CreateFromName(algo);')).toBe(false); // non-literal
+  });
 });
