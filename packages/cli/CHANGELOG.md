@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.0] - 2026-08-12
 
-Adopts [`circle-ir@4.7.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental) `weak-hash` (CWE-328) and `weak-crypto` (CWE-327/326) now flag MD5/SHA-1, DES/3DES/RC2, and weak RSA key sizes via `System.Security.Cryptography` (`MD5.Create()`, `DES.Create()`, `new RSACryptoServiceProvider(1024)`, …). No CLI surface change.
+Adopts [`circle-ir@4.7.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): `weak-hash` (CWE-328) and `weak-crypto` (CWE-327/326) now flag MD5/SHA-1, DES/3DES/RC2, and weak RSA key sizes via `System.Security.Cryptography`; the `Process.Start(fileName, arguments)` argv overload now fires command-injection (cognium-dev#276); and `Environment.GetEnvironmentVariable` is now a taint source (cognium-dev#277). No CLI surface change.
 
 ## [4.6.0] - 2026-08-11
 

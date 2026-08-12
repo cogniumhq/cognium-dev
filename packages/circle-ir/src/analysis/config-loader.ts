@@ -2852,7 +2852,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'ExecuteNonQueryAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# command injection — Process.Start / ProcessStartInfo (CWE-78).
-  { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // Both the single-string overload `Process.Start("sh -c " + x)` and the
+  // `(fileName, arguments)` overload `Process.Start("/bin/sh", "-c " + x)` are
+  // injectable — the second is the argv path where taint rides arg[1] (#276).
+  { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
   { method: 'ProcessStartInfo', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
 
   // C# path traversal — System.IO file APIs (CWE-22). Distinctive method names.

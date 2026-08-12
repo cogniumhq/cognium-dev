@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.0] - 2026-08-12
 
-C#/.NET (experimental): weak-hash + weak-crypto coverage (Phase-2 C# core audit).
+C#/.NET (experimental): weak-hash + weak-crypto coverage (Phase-2 C# core audit) and two taint source/sink correctness fixes.
+
+### Fixed
+
+- **`Process.Start(fileName, arguments)` argv overload now fires `command_injection` (CWE-78)** (cognium-dev#276). The C# `Process.Start` sink covered only the single-string overload (`Process.Start("sh -c " + x)`); the `(fileName, arguments)` overload — `Process.Start("/bin/sh", "-c " + x)`, where the injectable payload rides `arg[1]` — matched no sink at all because the pattern only marked `arg[0]` as a taint position. `arg_positions` is now `[0, 1]`. Still clean when both args are literals.
+- **`Environment.GetEnvironmentVariable`/`GetEnvironmentVariables` is now a taint source (`env_input`)** (cognium-dev#277). Environment reads are attacker-influenced on many deployments (containers, CI, `.env` loaders), so `env → SqlCommand` and `env → Process.Start` flows were false negatives. Bound at the assignment site (`var x = Environment.GetEnvironmentVariable("…")`) like the ASP.NET request sources, so the value propagates to sinks; binding rather than a bare `return_tainted` source avoids the unbound-source over-fire class seen in #271. Stays clean when the value only reaches a literal-safe use.
 
 ### Added
 

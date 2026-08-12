@@ -308,6 +308,84 @@ public class C {
   });
 });
 
+// cognium-dev#276 — Process.Start(fileName, arguments) argv overload: taint in
+// the `arguments` string (arg[1]) must fire command_injection, not just the
+// single-string overload.
+describe('C# Phase-1: Process.Start(fileName, arguments) argv overload (#276)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t = 'command_injection') =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+
+  it('fires on Process.Start("/bin/sh", "-c " + arg)', async () => {
+    const code = `
+using System.Diagnostics;
+public class C { public void M(string arg) { Process.Start("/bin/sh", "-c " + arg); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'))).toBe(true);
+  });
+
+  it('still fires on the single-string overload', async () => {
+    const code = `
+using System.Diagnostics;
+public class C { public void M(string arg) { Process.Start("sh -c " + arg); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'))).toBe(true);
+  });
+
+  it('does NOT fire when both args are literals', async () => {
+    const code = `
+using System.Diagnostics;
+public class C { public void M() { Process.Start("/bin/ls", "-la"); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'))).toBe(false);
+  });
+});
+
+// cognium-dev#277 — Environment.GetEnvironmentVariable(s) is an attacker-
+// influenced source (containers / CI / .env loaders): env→shell and env→sql.
+describe('C# Phase-1: Environment.GetEnvironmentVariable source (#277)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+
+  it('fires on GetEnvironmentVariable -> Process.Start (env→shell)', async () => {
+    const code = `
+using System;
+using System.Diagnostics;
+public class C {
+  public void M() {
+    var cmd = Environment.GetEnvironmentVariable("START_CMD");
+    Process.Start(cmd);
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'command_injection')).toBe(true);
+  });
+
+  it('fires on GetEnvironmentVariable -> SqlCommand (env→sql)', async () => {
+    const code = `
+using System;
+using System.Data.SqlClient;
+public class C {
+  public void M(SqlConnection cn) {
+    var e = Environment.GetEnvironmentVariable("Q");
+    var cmd = new SqlCommand("SELECT * FROM u WHERE n='" + e + "'", cn);
+    cmd.ExecuteReader();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('does NOT fire when the env value only reaches a literal-safe use', async () => {
+    const code = `
+using System;
+public class C {
+  public void M() {
+    var e = Environment.GetEnvironmentVariable("Q");
+    System.Console.WriteLine("hello world");
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'command_injection')).toBe(false);
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-1: explicit ASP.NET request sources', () => {
   beforeAll(async () => { await initAnalyzer(); });
 

@@ -1235,6 +1235,11 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // Juliet C# corpus). Like `Request.*`, a bare `Console.ReadLine()` returns a
   // value that nothing else seeds a variable for, so bind it as `io_input`.
   const consoleReadRe = /\bConsole\s*\.\s*ReadLine\s*\(/;
+  // Environment reads are attacker-influenced on many deployments (containers,
+  // CI, .env loaders) — env→sql / env→shell FNs (#277). Bind the LHS as
+  // `env_input`. Binding here (not a bare return_tainted source) avoids the
+  // unbound-source over-fire seen in #271.
+  const envReadRe = /\bEnvironment\s*\.\s*GetEnvironmentVariables?\s*(?:\(|\[)/;
 
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
@@ -1244,7 +1249,9 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
       ? 'http_param'
       : consoleReadRe.test(rhs)
         ? 'io_input'
-        : null;
+        : envReadRe.test(rhs)
+          ? 'env_input'
+          : null;
     if (!type) continue;
     const lineNumber = i + 1;
     if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
