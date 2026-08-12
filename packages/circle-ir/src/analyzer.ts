@@ -165,6 +165,7 @@ import { WeakPasswordEncodingPass } from './analysis/passes/weak-password-encodi
 import { InfoDisclosureStacktracePass } from './analysis/passes/info-disclosure-stacktrace-pass.js';
 import { UnrestrictedFileUploadPass } from './analysis/passes/unrestricted-file-upload-pass.js';
 import { MissingSanitizerGatePass } from './analysis/passes/missing-sanitizer-gate-pass.js';
+import { InsecureDeserializationConfigPass } from './analysis/passes/insecure-deserialization-config-pass.js';
 import { PlaintextPasswordStoragePass } from './analysis/passes/plaintext-password-storage-pass.js';
 import { CleartextCredentialTransportPass } from './analysis/passes/cleartext-credential-transport-pass.js';
 import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pass.js';
@@ -1025,6 +1026,7 @@ export async function analyze(
   if (!disabledPasses.has('info-disclosure-stacktrace')) pipeline.add(new InfoDisclosureStacktracePass());
   if (!disabledPasses.has('unrestricted-file-upload')) pipeline.add(new UnrestrictedFileUploadPass());
   if (!disabledPasses.has('missing-sanitizer-gate')) pipeline.add(new MissingSanitizerGatePass());
+  if (!disabledPasses.has('insecure-deserialization-config')) pipeline.add(new InsecureDeserializationConfigPass());
 
   // Run the pipeline
   const { results, findings } = pipeline.run(graph, code, language, config);

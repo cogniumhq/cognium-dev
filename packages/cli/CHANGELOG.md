@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0] - 2026-08-11
+
+Adopts [`circle-ir@4.6.0`](https://www.npmjs.com/package/circle-ir) — new Java pass `insecure-deserialization-config` (CWE-502) deterministically flags XStream configured with a grant-all `AnyTypePermission` (cognium-dev#225). No CLI surface change.
+
 ## [4.5.0] - 2026-08-11
 
 Adopts [`circle-ir@4.5.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental) now detects object-carried SQL injection through ADO.NET command objects (`cmd.CommandText = tainted; … cmd.ExecuteScalar()`, the dominant Juliet C# shape; cognium-dev#271). No CLI surface change.

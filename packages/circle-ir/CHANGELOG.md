@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0] - 2026-08-11
+
+Java: deterministic detection of insecure XStream deserialization configuration.
+
+### Added
+
+- **New pass `insecure-deserialization-config` (CWE-502) — flags XStream configured with a grant-all type permission** (cognium-dev#225). `xstream.addPermission(AnyTypePermission.ANY)` (and `addPermission(new AnyTypePermission())`, incl. fully-qualified forms) re-enables XStream's pre-1.4.10 grant-everything default, so a later `fromXML(untrusted)` can instantiate arbitrary gadget types (CVE-2013-7285, CVE-2020-26217, CVE-2021-21345, …). Like `weak-crypto`, the vulnerability is the **constant argument, not a data flow** — so this is a call-shape match emitted as a `SastFinding` at the `addPermission` line, deterministic and independent of source→sink reachability. It complements the existing `fromXML`/`unmarshal` CWE-502 taint sink (which fires at the deserialization call site only with a reachable source). Precise: `AnyTypePermission` is unambiguously XStream's security class, so the secure shapes (`NoTypePermission.NONE`, `WildcardTypePermission(...)`, `allowTypes(...)`) do **not** match — **0 findings** across the 2865-file OWASP Java + SecuriBench corpus. Java-only; `taint.flows` unchanged (0 delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230). Guarded on `disabledPasses: ['insecure-deserialization-config']`.
+
 ## [4.5.0] - 2026-08-11
 
 C#/.NET (experimental): object-carried taint through ADO.NET command objects.
