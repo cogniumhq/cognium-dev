@@ -197,6 +197,12 @@ function findFirstDescendant(node: Node, type: string): Node | null {
   return null;
 }
 
+/** ADO.NET command-execution methods whose taint rides the receiver object. */
+const CSHARP_COMMAND_EXECUTE_METHODS = new Set([
+  'ExecuteScalar', 'ExecuteReader', 'ExecuteNonQuery',
+  'ExecuteScalarAsync', 'ExecuteReaderAsync', 'ExecuteNonQueryAsync',
+]);
+
 function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
   const typeMap = buildCSharpReceiverTypeMap(tree, cache);
@@ -215,12 +221,21 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       methodName = getNodeText(fn);
     }
     const argsNode = inv.childForFieldName('arguments');
+    let args = argsNode ? extractCSharpArguments(argsNode) : [];
+    // ADO.NET `Execute*()` carries taint via the RECEIVER (a SqlCommand whose
+    // CommandText was set from tainted data), not an argument. Surface the
+    // receiver as arg[0] so the arg-based flow scan can match a tainted command
+    // object (cognium-dev#271 — the canonical `cmd.CommandText=…; cmd.Execute*()`
+    // Juliet shape). The command-object taint is seeded in taint-propagation.
+    if (receiver && CSHARP_COMMAND_EXECUTE_METHODS.has(methodName)) {
+      args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }, ...args];
+    }
     calls.push({
       method_name: methodName,
       receiver,
       receiver_type: receiver ? (typeMap.get(receiver) ?? null) : null,
       receiver_type_fqn: null,
-      arguments: argsNode ? extractCSharpArguments(argsNode) : [],
+      arguments: args,
       location: { line: inv.startPosition.row + 1, column: inv.startPosition.column },
       in_method: findEnclosingMethod(inv),
     });

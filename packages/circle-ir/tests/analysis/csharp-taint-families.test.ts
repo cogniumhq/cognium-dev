@@ -246,6 +246,68 @@ public class C {
   });
 });
 
+// cognium-dev#271 — object-carried taint: `cmd.CommandText = tainted` taints the
+// SqlCommand object, and a later `cmd.ExecuteScalar()`/`ExecuteReader()`/
+// `ExecuteNonQuery()` (no-arg, tainted receiver) is the SQLi sink. This is the
+// dominant NIST Juliet C# shape (source is `Console.ReadLine()`).
+describe('C# Phase-1: object-carried taint (CommandText -> Execute* sink)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('fires on Console.ReadLine -> CommandText -> ExecuteScalar (Juliet shape)', async () => {
+    const code = `
+public class C {
+  public void M(SqlConnection db) {
+    string data = Console.ReadLine();
+    using (SqlCommand cmd = new SqlCommand(null, db)) {
+      cmd.CommandText = "select * from users where name='" + data + "'";
+      object x = cmd.ExecuteScalar();
+    }
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('fires on interpolated CommandText -> ExecuteReader', async () => {
+    const code = `
+public class C {
+  public void M() {
+    string data = Console.ReadLine();
+    var cmd = new SqlCommand();
+    cmd.CommandText = $"SELECT * FROM u WHERE n='{data}'";
+    cmd.ExecuteReader();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('does NOT fire when CommandText is a static literal (data unused)', async () => {
+    const code = `
+public class C {
+  public void M() {
+    string data = Console.ReadLine();
+    var cmd = new SqlCommand();
+    cmd.CommandText = "SELECT 1";
+    cmd.ExecuteScalar();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+
+  it('does NOT fire when parameterized (data only via AddWithValue)', async () => {
+    const code = `
+public class C {
+  public void M() {
+    string data = Console.ReadLine();
+    var cmd = new SqlCommand();
+    cmd.CommandText = "SELECT * FROM u WHERE id=@id";
+    cmd.Parameters.AddWithValue("@id", data);
+    cmd.ExecuteReader();
+  }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-1: explicit ASP.NET request sources', () => {
   beforeAll(async () => { await initAnalyzer(); });
 

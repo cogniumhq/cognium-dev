@@ -1517,6 +1517,46 @@ function detectExpressionScanFlows(
     }
   }
 
+  // cognium-dev#271: object-carried taint for ADO.NET commands. When
+  // `X.CommandText = <expr referencing a tainted var>`, the SqlCommand instance
+  // X carries the taint; a later `X.Execute*()` (its receiver surfaced as arg[0]
+  // by extractCSharpCalls, and Execute* registered as a sink) is the injection
+  // point. The canonical Juliet C# shape sets CommandText then executes on a
+  // later statement, so the taint must ride the command object. Seed X as a
+  // tainted var (at the CommandText line) so the arg-scan links the Execute sink.
+  if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0) {
+    const lines = code.split('\n');
+    const ctRe = /(\w+)\s*\.\s*CommandText\s*\+?=\s*(.+)/;
+    const anchor = sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+    let added = true;
+    let guard = 0;
+    while (added && guard < lines.length + 2) {
+      added = false;
+      guard++;
+      const known = new Set(sourcesWithVar.map(s => s.variable));
+      for (let i = 0; i < lines.length; i++) {
+        const m = ctRe.exec(lines[i]);
+        if (!m) continue;
+        const [, obj, rhs] = m;
+        if (known.has(obj)) continue;
+        // Reduce the RHS to code positions: keep interpolation `{…}` contents,
+        // drop plain string-literal bodies — so a tainted var NAME appearing as
+        // a substring inside the SQL text (e.g. `id` in `"… WHERE id=@id"`, a
+        // parameterized/safe query) does NOT spuriously taint the command.
+        const codePart = rhs
+          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
+            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ');
+        const rhsTainted = sourcesWithVar.some(s =>
+          new RegExp(`(?<![\\p{L}\\p{N}_])${s.variable.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(codePart),
+        );
+        if (!rhsTainted) continue;
+        sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
+        added = true;
+      }
+    }
+  }
+
   // Pre-compile word-boundary regexes per unique source variable.
   // Escape regex-special characters defensively (variable names should be
   // plain identifiers but Python attribute paths like `obj.attr` could leak in).

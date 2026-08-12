@@ -2840,6 +2840,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // ADO.NET `cmd.CommandText = "…" + x` — emitted as a synthetic call by
   // extractCSharpCalls (property-assignment sink; the ctor-arg sink misses it).
   { method: 'CommandText', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // ADO.NET `cmd.Execute*()` — object-carried sink (cognium-dev#271). The taint
+  // rides the SqlCommand receiver (CommandText set from tainted data); the
+  // receiver is surfaced as arg[0] by extractCSharpCalls, and the command object
+  // is tainted in taint-propagation when its CommandText takes a tainted value.
+  { method: 'ExecuteScalar', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteReader', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteNonQuery', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteScalarAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteReaderAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteNonQueryAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# command injection — Process.Start / ProcessStartInfo (CWE-78).
   { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0], languages: ['csharp'] },

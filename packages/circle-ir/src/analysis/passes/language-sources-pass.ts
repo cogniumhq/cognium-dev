@@ -1231,16 +1231,25 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
   const requestReadRe =
     /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
+  // Console/stdin reads bind their LHS too (dominant source shape in the NIST
+  // Juliet C# corpus). Like `Request.*`, a bare `Console.ReadLine()` returns a
+  // value that nothing else seeds a variable for, so bind it as `io_input`.
+  const consoleReadRe = /\bConsole\s*\.\s*ReadLine\s*\(/;
 
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
     if (!m) continue;
     const [, varName, rhs] = m;
-    if (!requestReadRe.test(rhs)) continue;
+    const type: TaintSource['type'] | null = requestReadRe.test(rhs)
+      ? 'http_param'
+      : consoleReadRe.test(rhs)
+        ? 'io_input'
+        : null;
+    if (!type) continue;
     const lineNumber = i + 1;
     if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
     sources.push({
-      type: 'http_param',
+      type,
       location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
       severity: 'high',
       line: lineNumber,

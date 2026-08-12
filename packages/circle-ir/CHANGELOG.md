@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-08-11
+
+C#/.NET (experimental): object-carried taint through ADO.NET command objects.
+
+### Added
+
+- **`cmd.CommandText = tainted; …; cmd.ExecuteScalar()` is now detected as SQL injection (CWE-89)** (cognium-dev#271). This is the dominant NIST Juliet C# SQLi shape: the query is assigned to `CommandText` on one statement and executed on a later one, so the taint must ride the `SqlCommand` **object**, not an argument. Three cooperating changes: (1) `extractCSharpCalls` surfaces the receiver of a no-arg `Execute*()` call as `arg[0]` so the arg-based flow scan can see the command object; (2) `ExecuteScalar`/`ExecuteReader`/`ExecuteNonQuery` (+ their `…Async` variants) are registered as C# `sql_injection` sinks; (3) taint-propagation seeds the command variable as tainted when its `CommandText` takes a tainted value, with string-literal bodies stripped from the RHS so a tainted var name appearing only *inside* the SQL text (e.g. `id` in a parameterized `"… WHERE id=@id"`) does not spuriously taint the command. Fires on concatenation and `$"…{data}"` interpolation into `CommandText` followed by any `Execute*`; stays clean on static-literal `CommandText` and on parameterized queries (`AddWithValue`). `Console.ReadLine()` — the standard Juliet source — now binds its LHS variable (like `Request.*`) so the full `Console.ReadLine → CommandText → Execute*` chain flows end to end. C#-scoped — **0 delta** on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
+
+C# remains **experimental / not benchmark-verified**. Dapper (`conn.Query`/`Execute`) is intentionally not yet registered (generic method names — an FP risk to be bounded by the Juliet-C# corpus, cognium-ai#285).
+
 ## [4.4.0] - 2026-08-11
 
 C#/.NET (experimental): detect the ADO.NET `CommandText` property SQL sink.
