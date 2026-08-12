@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.0] - 2026-08-12
 
-C#/.NET (experimental): weak-hash coverage (Phase-2 C# core audit).
+C#/.NET (experimental): weak-hash + weak-crypto coverage (Phase-2 C# core audit).
 
 ### Added
 
-- **`weak-hash` (CWE-328) now covers C# `System.Security.Cryptography`.** Flags MD5/SHA-1 use across the three .NET shapes: static factory (`MD5.Create()`, `SHA1.HashData(x)`), weak provider constructors (`new MD5CryptoServiceProvider()`, `new SHA1Managed()`, `new SHA1Cng()`, `new HMACMD5(key)`, `new HMACSHA1(key)`), and named factories with a weak literal algorithm (`HashAlgorithm.Create("MD5")`, `CryptoConfig.CreateFromName("SHA1")`, incl. the `"SHA"` alias = SHA-1). Precise: SHA-256/384/512, `new HMACSHA256(...)`, non-crypto `*.Create()`, and non-literal factory arguments are **not** flagged. Constant-pattern match (no data flow), like the existing Java/Python/JS/Go weak-hash detection. C#-scoped — 0 flow delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
+- **`weak-hash` (CWE-328) now covers C# `System.Security.Cryptography`.** Flags MD5/SHA-1 use across the three .NET shapes: static factory (`MD5.Create()`, `SHA1.HashData(x)`), weak provider constructors (`new MD5CryptoServiceProvider()`, `new SHA1Managed()`, `new SHA1Cng()`, `new HMACMD5(key)`, `new HMACSHA1(key)`), and named factories with a weak literal algorithm (`HashAlgorithm.Create("MD5")`, `CryptoConfig.CreateFromName("SHA1")`, incl. the `"SHA"` alias = SHA-1). Precise: SHA-256/384/512, `new HMACSHA256(...)`, non-crypto `*.Create()`, and non-literal factory arguments are **not** flagged.
+- **`weak-crypto` (CWE-327 / CWE-326) now covers C# `System.Security.Cryptography`.** Flags weak symmetric ciphers DES/3DES/RC2 — static factory (`DES.Create()`, `TripleDES.Create()`, `RC2.Create()`), weak provider constructors (`new DESCryptoServiceProvider()`, `new TripleDESCryptoServiceProvider()`, `new RC2CryptoServiceProvider()`), and named factories with a weak literal (`SymmetricAlgorithm.Create("DES")`, `CryptoConfig.CreateFromName("TripleDES")`) — plus weak RSA/DSA key size < 2048 (`new RSACryptoServiceProvider(1024)`, `RSA.Create(1024)`, CWE-326). Precise: AES/`Aes.Create()`/`AesManaged`, the safe 2048-bit default (no-arg `RSA.Create()` / `new RSACryptoServiceProvider()`), and non-literal factory/key-size args are **not** flagged. (ECB-mode detection via the `.Mode = CipherMode.ECB` property assignment is deferred — it needs an assignment scan rather than a call match.)
+
+Both are constant-pattern matches (no data flow), mirroring the existing Java/Python/JS/Go branches. C#-scoped — 0 flow delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230.
 
 ### Notes
 
-- **Phase-2 C# core audit** (tasks.md): swept the ~48 `language === '…'` core branches for C# gaps and mis-fires. **No C#-specific mis-fires found** — un-gated passes (`todo-in-prod`, `unused-variable`) behave identically to Java, and the per-language security/quality passes cleanly exclude C# (no false positives). `weak-hash` was the highest-value, lowest-FP coverage gap and is wired here; remaining quality-pass coverage (weak-crypto, broad-catch, etc.) stays deliberately un-wired for C# pending the same canonical-shape + control-verified bar.
+- **Phase-2 C# core audit** (tasks.md): swept the ~48 `language === '…'` core branches for C# gaps and mis-fires. **No C#-specific mis-fires found** — un-gated passes (`todo-in-prod`, `unused-variable`) behave identically to Java, and the per-language security/quality passes cleanly exclude C# (no false positives). `weak-hash` and `weak-crypto` were the highest-value, lowest-FP coverage gaps and are wired here; the remaining quality passes (broad-catch, insecure-cookie, tls-verify, …) stay deliberately un-wired for C# pending the same canonical-shape + control-verified bar.
 
 ## [4.6.0] - 2026-08-11
 

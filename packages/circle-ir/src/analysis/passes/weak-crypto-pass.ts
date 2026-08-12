@@ -62,6 +62,35 @@ const WEAK_CIPHER_BASES = new Set([
   'idea', 'seed', 'cast5',
 ]);
 
+// C#/.NET (System.Security.Cryptography). Weak symmetric cipher *class* used
+// as a `.Create()` factory receiver: `DES.Create()`, `RC2.Create()`. AES/Aes/
+// Rijndael are strong and absent.
+const CSHARP_WEAK_CIPHER_CLASSES = new Set(['DES', 'TripleDES', 'RC2', 'RC4']);
+// Named-factory receivers: `SymmetricAlgorithm.Create("DES")`,
+// `CryptoConfig.CreateFromName("TripleDES")` — the weak algorithm is the literal.
+const CSHARP_CIPHER_FACTORY_RECEIVERS = new Set(['SymmetricAlgorithm', 'CryptoConfig']);
+// Concrete weak-cipher provider constructors → normalized base.
+const CSHARP_WEAK_CIPHER_CTORS: Record<string, string> = {
+  DESCryptoServiceProvider: 'des', TripleDESCryptoServiceProvider: '3des',
+  RC2CryptoServiceProvider: 'rc2',
+};
+// Asymmetric key-size providers: first arg to `.Create(bits)` / the constructor
+// is the RSA/DSA key size in bits (weak when < 2048, CWE-326).
+const CSHARP_RSA_FACTORY_CLASSES = new Set(['RSA', 'DSA']);
+const CSHARP_RSA_CTORS = new Set([
+  'RSACryptoServiceProvider', 'DSACryptoServiceProvider', 'RSACng', 'DSACng',
+]);
+
+// Normalize a .NET symmetric-cipher literal to a WEAK_CIPHER_BASES base, or
+// null if strong. `literalAlgo` unquotes but does not lowercase, so do it here.
+function csharpWeakCipher(cleaned: string | null): string | null {
+  if (!cleaned) return null;
+  const base = (cleaned.split('.').pop() ?? cleaned).toLowerCase();
+  if (base === 'tripledes' || base === 'desede') return '3des';
+  if (base === 'arc4') return 'rc4';
+  return WEAK_CIPHER_BASES.has(base) ? base : null;
+}
+
 // Java cipher transformation regex: "ALG/MODE/PADDING"; we look at base and mode.
 function classifyJavaCipherSpec(spec: string): { weakBase?: string; ecb?: boolean } {
   const parts = spec.split('/').map((p) => p.trim().toLowerCase());
@@ -757,6 +786,42 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
             issue: 'weak-rsa-key',
             detail: String(n),
             api: 'rsa.GenerateKey',
+          });
+        }
+      }
+      return out;
+    }
+
+    if (language === 'csharp') {
+      // Weak symmetric cipher factory: DES.Create() / TripleDES.Create() / RC2.Create().
+      if (method === 'Create' && CSHARP_WEAK_CIPHER_CLASSES.has(receiver)) {
+        const base = receiver === 'TripleDES' ? '3des' : receiver.toLowerCase();
+        out.push({ issue: 'weak-cipher', detail: base, api: `${receiver}.Create` });
+      }
+      // Named factory with a weak literal: SymmetricAlgorithm.Create("DES") /
+      // CryptoConfig.CreateFromName("TripleDES").
+      if ((method === 'Create' || method === 'CreateFromName') && CSHARP_CIPHER_FACTORY_RECEIVERS.has(receiver)) {
+        const base = csharpWeakCipher(literalAlgo(call, 0));
+        if (base) out.push({ issue: 'weak-cipher', detail: base, api: `${receiver}.${method}` });
+      }
+      // Concrete weak-cipher provider constructor: new DESCryptoServiceProvider() etc.
+      if (call.is_constructor && CSHARP_WEAK_CIPHER_CTORS[method]) {
+        out.push({ issue: 'weak-cipher', detail: CSHARP_WEAK_CIPHER_CTORS[method], api: `new ${method}()` });
+      }
+      // Weak RSA/DSA key size: RSA.Create(1024) / new RSACryptoServiceProvider(1024).
+      // The default no-arg forms (RSA.Create(), new RSACryptoServiceProvider())
+      // are 2048-bit and safe, so an absent/non-numeric arg does not match.
+      const rsaFactory = method === 'Create' && CSHARP_RSA_FACTORY_CLASSES.has(receiver);
+      const rsaCtor = call.is_constructor && CSHARP_RSA_CTORS.has(method);
+      if (rsaFactory || rsaCtor) {
+        const sizeArg = call.arguments.find((a) => a.position === 0);
+        const expr = (sizeArg?.literal ?? sizeArg?.expression ?? '').trim();
+        const n = parseInt(expr, 10);
+        if (Number.isFinite(n) && n > 0 && n < 2048) {
+          out.push({
+            issue: 'weak-rsa-key',
+            detail: String(n),
+            api: rsaCtor ? `new ${method}()` : `${receiver}.Create`,
           });
         }
       }

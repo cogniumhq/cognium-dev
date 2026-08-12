@@ -342,4 +342,38 @@ func gen() {
     const f = weakCrypto(r).filter((x: any) => x.cwe === 'CWE-326');
     expect(f).toHaveLength(0);
   });
+
+  // C#/.NET (Phase-2 C# core audit) — System.Security.Cryptography
+  const cs = (snippet: string) => `public class C { void M() { ${snippet} } }`;
+  const csHas = async (snippet: string, cwe?: string) => {
+    const r = await analyze(cs(snippet), 'C.cs', 'csharp');
+    const f = weakCrypto(r).filter((x: any) => !cwe || x.cwe === cwe);
+    return f.length > 0;
+  };
+
+  it('C#: weak symmetric ciphers (DES/3DES/RC2) are flagged', async () => {
+    expect(await csHas('var a = DES.Create();')).toBe(true);
+    expect(await csHas('var a = TripleDES.Create();')).toBe(true);
+    expect(await csHas('var a = RC2.Create();')).toBe(true);
+    expect(await csHas('var a = new DESCryptoServiceProvider();')).toBe(true);
+    expect(await csHas('var a = new TripleDESCryptoServiceProvider();')).toBe(true);
+    expect(await csHas('var a = SymmetricAlgorithm.Create("DES");')).toBe(true);
+    expect(await csHas('var a = CryptoConfig.CreateFromName("TripleDES");')).toBe(true);
+  });
+
+  it('C#: weak RSA/DSA key size (< 2048) is flagged (CWE-326)', async () => {
+    expect(await csHas('var a = new RSACryptoServiceProvider(1024);', 'CWE-326')).toBe(true);
+    expect(await csHas('var a = RSA.Create(1024);', 'CWE-326')).toBe(true);
+  });
+
+  it('C#: strong algorithms / safe key sizes / non-literals are NOT flagged', async () => {
+    expect(await csHas('var a = Aes.Create();')).toBe(false);
+    expect(await csHas('var a = new AesManaged();')).toBe(false);
+    expect(await csHas('var a = SymmetricAlgorithm.Create("AES");')).toBe(false);
+    expect(await csHas('var a = new RSACryptoServiceProvider(2048);')).toBe(false);
+    expect(await csHas('var a = RSA.Create();')).toBe(false);
+    expect(await csHas('var a = widget.Create();')).toBe(false);
+    expect(await csHas('var a = new RSACryptoServiceProvider(keySize);')).toBe(false);
+  });
+
 });
