@@ -2903,6 +2903,25 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'DirectorySearcher', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'DirectoryEntry', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
+  // C# open redirect — ASP.NET MVC / Minimal API redirect helpers (CWE-601,
+  // cognium-dev#273/#275). Classless: `return Redirect(url)` on a controller is
+  // an implicit-`this` call (no receiver), and `Results.Redirect(url)` /
+  // `TypedResults.Redirect(url)` also route through the same method name. Taint-
+  // gated, so a constant URL never fires. `LocalRedirect` is deliberately NOT
+  // registered — it rejects non-local URLs and is the documented mitigation.
+  { method: 'Redirect', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
+  { method: 'RedirectPermanent', type: 'open_redirect', cwe: 'CWE-601', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
+
+  // C# CRLF / HTTP response-header injection — classic ASP.NET header writers
+  // (CWE-113, cognium-dev#273/#275). The injectable value is the second arg.
+  { method: 'AddHeader', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+  { method: 'AppendHeader', type: 'crlf', cwe: 'CWE-113', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+
+  // C# NoSQL injection — MongoDB filter built from raw JSON (CWE-943,
+  // cognium-dev#273/#275). `BsonDocument.Parse(userJson)` deserializes an
+  // attacker-controlled query document. Class-scoped (static receiver resolves).
+  { method: 'Parse', class: 'BsonDocument', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
   // C# XPath injection — System.Xml.XPath (CWE-643). Distinctive selector methods.
   { method: 'SelectSingleNode', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'SelectNodes', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },

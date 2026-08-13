@@ -424,6 +424,46 @@ public class C {
 });
 
 // cognium-dev#274 (Q-25) — missing-public-doc for C#.
+// cognium-dev#273/#275 — canonical missing sink categories (taint-gated).
+describe('C# Phase-2: open_redirect / crlf / nosql sink categories (#273/#275)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+
+  it('open_redirect: return Redirect(taintedUrl) fires; constant is clean', async () => {
+    const tp = `
+using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public IActionResult M([FromQuery] string url) { var u = url; return Redirect(u); }
+}`;
+    const safe = `
+using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase { public IActionResult M() { return Redirect("/home"); } }`;
+    expect(has(await analyze(tp, 'C.cs', 'csharp'), 'open_redirect')).toBe(true);
+    expect(has(await analyze(safe, 'C.cs', 'csharp'), 'open_redirect')).toBe(false);
+  });
+
+  it('crlf: Response.AddHeader(name, taintedValue) fires', async () => {
+    const code = `
+using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public void M([FromQuery] string v) { var x = v; Response.AddHeader("X-Custom", x); }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'crlf')).toBe(true);
+  });
+
+  it('nosql: BsonDocument.Parse(taintedJson) fires; constant is clean', async () => {
+    const tp = `
+using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public void M([FromQuery] string json) { var j = json; var f = BsonDocument.Parse(j); }
+}`;
+    const safe = `public class C { public void M() { var f = BsonDocument.Parse("{}"); } }`;
+    expect(has(await analyze(tp, 'C.cs', 'csharp'), 'nosql_injection')).toBe(true);
+    expect(has(await analyze(safe, 'C.cs', 'csharp'), 'nosql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: missing-public-doc (#274 Q-25)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const docFindings = (r: Awaited<ReturnType<typeof analyze>>) =>
