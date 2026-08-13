@@ -386,6 +386,69 @@ public class C {
   });
 });
 
+// cognium-dev#272 — XXE sanitizer credit: XmlResolver=null / DtdProcessing
+// Prohibit|Ignore are the documented XXE mitigations, so a hardened parse must
+// not fire `xxe`.
+describe('C# Phase-2: XXE hardening sanitizer (#272)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const xxe = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.sinks ?? []).some((s) => s.type === 'xxe');
+
+  it('still fires on an unhardened XmlDocument.LoadXml', async () => {
+    const code = `
+using System.Xml;
+public class C { public void M(string xml) { var d = new XmlDocument(); d.LoadXml(xml); } }`;
+    expect(xxe(await analyze(code, 'C.cs', 'csharp'))).toBe(true);
+  });
+
+  it('is credited by XmlResolver = null', async () => {
+    const code = `
+using System.Xml;
+public class C { public void M(string xml) { var d = new XmlDocument(); d.XmlResolver = null; d.LoadXml(xml); } }`;
+    expect(xxe(await analyze(code, 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('is credited by DtdProcessing = Prohibit', async () => {
+    const code = `
+using System.Xml;
+public class C {
+  public void M(string xml) {
+    var s = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
+    var r = XmlReader.Create(new System.IO.StringReader(xml), s);
+    var d = new XmlDocument();
+    d.Load(r);
+  }
+}`;
+    expect(xxe(await analyze(code, 'C.cs', 'csharp'))).toBe(false);
+  });
+});
+
+// cognium-dev#274 (Q-25) — missing-public-doc for C#.
+describe('C# Phase-2: missing-public-doc (#274 Q-25)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const docFindings = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.findings ?? []).filter((f) => f.rule_id === 'missing-public-doc').map((f) => f.line);
+
+  it('flags an undocumented public class and method; documented/private/internal stay clean', async () => {
+    const code = `namespace App {
+  /// <summary>A documented service.</summary>
+  public class Svc {
+    /// <summary>Does the thing.</summary>
+    public void Documented() {}
+    public void Undocumented(int x) {}
+    private void Helper() {}
+    internal void Internal() {}
+  }
+}`;
+    const lines = docFindings(await analyze(code, 'Svc.cs', 'csharp'));
+    expect(lines).toContain(6);   // Undocumented public method
+    expect(lines).not.toContain(5); // Documented
+    expect(lines).not.toContain(7); // private Helper
+    expect(lines).not.toContain(8); // internal Internal
+    expect(lines).not.toContain(3); // documented class
+  });
+});
+
 describe('C# Phase-1: explicit ASP.NET request sources', () => {
   beforeAll(async () => { await initAnalyzer(); });
 

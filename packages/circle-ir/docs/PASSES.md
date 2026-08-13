@@ -284,7 +284,7 @@ of `config-loader.ts` into dedicated `AnalysisPass` implementations.
 | # | rule_id | CWE | level | graphs | status | Description |
 |---|---------|-----|-------|--------|--------|-------------|
 | 33 | `stale-doc-ref` | — | note | ast, imports | shipped | Doc comment references a symbol that no longer exists |
-| 35 | `missing-public-doc` | — | note | ast | shipped | Public/exported function or type has no doc block |
+| 35 | `missing-public-doc` | — | note | ast | shipped | Public/exported function or type has no doc block. Java / JS / TS / TSX / Python, and **C# (4.7.0, #274 Q-25)** — an undocumented `public` C# type/method is flagged; `///` XML-doc and `private`/`internal`/`protected` members stay clean |
 | 36 | `todo-in-prod` | — | note | ast | shipped | TODO/FIXME/HACK comment in non-test production file |
 | 30 | `doc-param-mismatch` | — | warning | ast, dfg | llm-only | @param documented but not in signature, or vice versa |
 | 31 | `return-type-mismatch` | — | warning | cfg, ast | llm-only | Doc says "never null" but CFG shows null return path |

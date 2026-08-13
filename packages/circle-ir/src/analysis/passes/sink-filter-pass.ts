@@ -1868,7 +1868,17 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     if (language === 'csharp') {
       const sourceLines = ctx.code.split('\n');
       const sanitizedByType = csharpSanitizedVarsByType(ctx.code);
+      // File-level XXE hardening (cognium-dev#272). `XmlResolver = null` and
+      // `DtdProcessing = Prohibit|Ignore` are the documented XXE mitigations —
+      // an external entity cannot resolve once either is set. Deterministic
+      // config markers (not guard/dominator inference), so credit them
+      // file-wide and drop `xxe` sinks, mirroring the file-level deserialization
+      // safety gate. Conservative: on absence, the sink still fires.
+      const xxeHardened =
+        /\bXmlResolver\s*=\s*null\b/.test(ctx.code) ||
+        /\bDtdProcessing\s*=\s*(?:DtdProcessing\s*\.\s*)?(?:Prohibit|Ignore)\b/.test(ctx.code);
       filtered = filtered.filter(sink => {
+        if (sink.type === 'xxe' && xxeHardened) return false;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         // (a) inline sanitizer on the sink line, e.g. Html.Raw(HtmlEncode(x)).
         for (const { re, type } of CSHARP_SANITIZER_RES) {

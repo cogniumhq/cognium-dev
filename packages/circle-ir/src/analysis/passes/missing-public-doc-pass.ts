@@ -70,6 +70,11 @@ function isPublicMethod(method: MethodInfo, language: string): boolean {
   switch (language) {
     case 'java':
       return method.modifiers.includes('public');
+    case 'csharp':
+      // C# defaults to private, so only an explicit `public` is a public API
+      // surface (an undocumented `internal`/`protected` member is not a
+      // maintainability finding for external consumers).
+      return method.modifiers.includes('public');
     case 'javascript':
     case 'typescript':
     case 'tsx':
@@ -106,7 +111,7 @@ export class MissingPublicDocPass implements AnalysisPass<MissingPublicDocPassRe
     }
 
     // Only supported languages.
-    if (!['java', 'javascript', 'typescript', 'tsx', 'python'].includes(language)) {
+    if (!['java', 'javascript', 'typescript', 'tsx', 'python', 'csharp'].includes(language)) {
       return { missingDocMethods: [], missingDocTypes: [] };
     }
 
