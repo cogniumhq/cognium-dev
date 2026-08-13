@@ -86,8 +86,17 @@ plus get C# parsing end-to-end. Day-by-day record:
 ### Phase 2 — Cross-file + framework depth — ~2–3 wk
 - [ ] namespace / `using` resolution; cross-file taint via `analyzeProject`
 - [ ] EF Core, DI patterns, more ASP.NET source/sink coverage
-- [ ] Audit the ~48-branch `language === '…'` core for C# gaps / mis-fires
-      (quality passes need C# gating, not free reuse)
+- [x] **Audit the ~48-branch `language === '…'` core for C# gaps / mis-fires
+      (4.7.0).** Swept the branch sites + behavioral probes. **KEY RESULT: no
+      C#-specific mis-fires** — un-gated passes (`todo-in-prod`,
+      `unused-variable`) behave identically to Java; per-language security/quality
+      passes cleanly exclude C# (zero FP). For experimental C#, zero-FP is the
+      correct state; coverage gaps are feature work, not bugs. Wired the
+      canonical low-FP gaps into 4.7.0: `weak-hash` (CWE-328) + `weak-crypto`
+      (CWE-327/326) for `System.Security.Cryptography`; `missing-public-doc`
+      (#274 Q-25). See the "Recently closed" 4.7.0 bundle. Remaining quality
+      passes (weak-random, broad-catch, insecure-cookie, tls-verify) left
+      un-wired — same canonical-shape + control-verified bar.
 
 ### Phase 3 — Benchmark-grade + hardening — ~5–9 wk (long tail)
 - [ ] **Define "done" first:** agreed TPR/FPR on an agreed corpus. There is NO
@@ -335,6 +344,7 @@ into a tight number.
 - **cognium-ai#287** — intermittent analyze/repository `failed` on identical input (~370 LLM calls) → **not circle-ir** (deterministic engine can't be non-deterministic). LLM-verifier/queue-pressure (#244/#245) + `errors[]` propagation is circle-pack/cortex API. Commented.
 
 ### Recently closed
+- **4.7.0 C# Phase-2 bundle** (git 2f7b01f; npm publish pending — batched at user request). Phase-2 C# core audit (**no mis-fires** — un-gated passes match Java, per-language passes cleanly exclude C#) + canonical low-FP wiring: **weak-hash** CWE-328 + **weak-crypto** CWE-327/326 (`System.Security.Cryptography`); **#276** `Process.Start(fileName, arguments)` argv cmdi (`arg_positions [0,1]`); **#277** `Environment.GetEnvironmentVariable` `env_input` source; **#272** (partial) XXE-hardening sanitizer credit (`XmlResolver=null`/`DtdProcessing=Prohibit|Ignore`); **#274** Q-25 `missing-public-doc` for C#; **#273/#275** three taint-gated sink categories — open_redirect (CWE-601), crlf (CWE-113), nosql (CWE-943). All `languages:['csharp']`-scoped, 0 flow delta on OWASP/SecuriBench/BenchmarkPython. **Deferred to ca#285 corpus (with reasoning on each ticket):** #272 guard-analysis clusters; #273/#275 FP-prone categories (log/format/ssti), tier-2 config passes (insecure-cookie/tls-verify/jwt-verify), ecosystem sinks (Dapper/Flurl/Blazor); #274 metrics (McCabe/MI need C# CFG), god-class/feature-envy (off pipeline by design), magic-numbers (no pass). **#271** object-carried taint closed (shipped 4.5.0; Juliet recall re-measure rides ca#285). **ca#298** System.Text.Json CWE-502 FP = not in-boundary (circle-ir emits no such sink; handed off).
 - **#225** (cognium-dev) — closed-as-variance (CVE-2020-26217 XStream 1.4.14 flip = LLM-discovery variance, not an engine regression; the RCE class was already detected via the `fromXML` CWE-502 taint sink). **4.6.0 (8034bcd) added a deterministic complement:** new Java pass 117 `insecure-deserialization-config` (CWE-502) — a call-shape match (like `weak-crypto`, not a taint flow) that flags `xstream.addPermission(AnyTypePermission.ANY)` / `new AnyTypePermission()` at the misconfiguration site (inside the CVE fix range), so detection no longer depends on discovery variance. Clean on `NoTypePermission.NONE` / `WildcardTypePermission` / `allowTypes`; **0 findings** on 2865 OWASP Java + SecuriBench files; `taint.flows` 0-delta. +8 tests, 4593 suite pass. **Gotcha:** CWE-Bench-Java scores this CVE under its CWE-078 slice and reads `taint.sinks`, so a correct **CWE-502** *finding* may not move the strict gate without a harness-side mapping — deliberately NOT retyped to CWE-078 (that would be benchmark-gaming). Mapping decision is circle-ir-ai-side. Commented on #225.
 - **#270** (cognium-dev) fixed 3.211.0 (eb2c397, 2026-08-06) — `getAttribute` over-broad xss sink (degenerate source==sink self-flow); 494 spurious OWASP xss flows dropped, classification byte-identical, 0 recall change. Same family as #268. Surfaced by the #247 fleet-bump elide re-scan.
 - **#268** (cognium-dev) fixed 3.208.0 (89b3b65, 2026-08-04) — over-broad `StringBuilder`/`StringBuffer.append` XSS sink removed; **0 OWASP xss TP loss and 0 SecuriBench detection loss** (the 2 flagged files still detect their real BAD lines; only spurious duplicate findings dropped — the earlier "-2" claim was a delta-scorer artifact, corrected 2026-08-06). Originated from the cognium-ai top-100 sweep but filed in cognium-dev. Closed on GitHub 2026-08-05. *(Earlier entries mislabeled this `cognium-ai#268` — corrected 2026-08-05; it is a bare cognium-dev issue.)*
