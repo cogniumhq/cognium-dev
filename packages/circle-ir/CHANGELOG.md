@@ -12,6 +12,7 @@ Performance: near-linear analysis on large files (removes three O(n²) hot spots
 ### Added
 
 - **Go `os.Args` is now a taint source (`io_input`)** (cognium-dev#213). `os.Args` is a package-level variable, not a call, so the method-based source model never seeded it — `v := os.Args[i]` / `v = os.Args[i]` / `for _, v := range os.Args` flowing to a command/SQL sink were false negatives. A binder now binds the assigned/ranged variable. A `len(os.Args)` guard and unrelated `.Args` fields do not match (no `<ident> = os.Args`), so it stays clean.
+- **Bash untrusted env vars read through a parameter expansion are now sources** (cognium-dev#213). The env-var regex required `}` immediately after the name, so `${QUERY_STRING#*=}` (prefix-strip — the classic CGI idiom) and `${HTTP_X_CMD:-}` (default) hid the read. It now allows a trailing parameter-expansion operator. Still gated on the known-untrusted-name list, so `${HOME:-/root}` and other benign env vars stay clean.
 
 ### Fixed
 

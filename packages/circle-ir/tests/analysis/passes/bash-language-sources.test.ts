@@ -314,6 +314,28 @@ describe('Bash language-sources pattern rules', () => {
     });
   });
 
+  // cognium-dev#213 — untrusted env vars read via a parameter expansion
+  // (`${QUERY_STRING#*=}` prefix-strip, `${VAR:-default}`) must still be seen
+  // as sources; the operator previously hid the read from the env-var regex.
+  describe('untrusted env var through a parameter expansion (#213)', () => {
+    const flows = (r: Awaited<ReturnType<typeof analyze>>) => r.taint?.flows ?? [];
+
+    it('`${QUERY_STRING#*=}` (prefix strip) flows to a command sink', async () => {
+      const code = '#!/bin/bash\nq="${QUERY_STRING#*=}"\neval "grep $q"';
+      expect(flows(await analyze(code, 'cgi.sh', 'bash')).length).toBeGreaterThan(0);
+    });
+
+    it('`${HTTP_X_CMD:-}` (default) flows to a command sink', async () => {
+      const code = '#!/bin/bash\nq="${HTTP_X_CMD:-}"\neval "grep $q"';
+      expect(flows(await analyze(code, 'cgi.sh', 'bash')).length).toBeGreaterThan(0);
+    });
+
+    it('a non-untrusted env var (`${HOME}`) is NOT a source', async () => {
+      const code = '#!/bin/bash\nq="${HOME:-/root}"\neval "grep $q"';
+      expect(flows(await analyze(code, 'cfg.sh', 'bash')).length).toBe(0);
+    });
+  });
+
   // ── CFG integration ────────────────────────────────────────────────────
 
   describe('CFG integration', () => {

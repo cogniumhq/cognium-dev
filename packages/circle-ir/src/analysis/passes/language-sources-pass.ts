@@ -2513,8 +2513,11 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
     }
 
     // 3. Environment variables: $VAR where VAR was never assigned in the script
-    //    and matches known untrusted env patterns
-    const envRe = /\$([A-Z][A-Z0-9_]{2,})|\$\{([A-Z][A-Z0-9_]{2,})\}/g;
+    //    and matches known untrusted env patterns. The braced form allows a
+    //    parameter-expansion operator after the name — `${QUERY_STRING#*=}`
+    //    (prefix strip, the classic CGI idiom), `${VAR:-default}`, `${VAR%.txt}`
+    //    — so the operator no longer hides an untrusted read (cognium-dev#213).
+    const envRe = /\$([A-Z][A-Z0-9_]{2,})|\$\{([A-Z][A-Z0-9_]{2,})(?:[:#%/^,@!*+?=-][^}]*)?\}/g;
     let em: RegExpExecArray | null;
     while ((em = envRe.exec(line)) !== null) {
       const envVar = em[1] ?? em[2];
