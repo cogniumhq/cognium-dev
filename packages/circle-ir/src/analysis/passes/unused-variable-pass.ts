@@ -36,6 +36,9 @@ const SKIP_NAMES = new Set([
   'null', 'never', 'void', 'any', 'unknown', 'bigint',
 ]);
 
+/** Shared empty line-index for names absent from the source text. */
+const EMPTY_LINES: readonly number[] = [];
+
 export interface UnusedVariableResult {
   unusedVars: Array<{ line: number; variable: string }>;
 }
@@ -56,6 +59,36 @@ export class UnusedVariablePass implements AnalysisPass<UnusedVariableResult> {
     const codeLines = code.split('\n');
     const unusedVars: UnusedVariableResult['unusedVars'] = [];
     const reported = new Set<string>(); // deduplicate by variable+line
+
+    // Precompute two indexes ONCE so the per-def fallback is not quadratic on
+    // large files (cognium-ai#305): grouping defs by variable avoids an O(defs)
+    // rescan per candidate, and a name→line-numbers map avoids an O(lines)
+    // text scan per candidate. Both replace the previous O(defs²)+O(defs·lines)
+    // work — the dominant cost on files where the DFG surfaces few uses.
+    const defsByVar = new Map<string, typeof graph.ir.dfg.defs>();
+    for (const d of graph.ir.dfg.defs) {
+      const arr = defsByVar.get(d.variable);
+      if (arr) arr.push(d); else defsByVar.set(d.variable, [d]);
+    }
+    // 1-indexed line numbers on which each identifier token appears (deduped
+    // per line). Equivalent to a `\bname\b` scan for identifier names; names
+    // containing non-identifier chars (dotted paths, `$`) fall back to regex.
+    const nameLines = new Map<string, number[]>();
+    const idRe = /[A-Za-z_][A-Za-z0-9_]*/g;
+    for (let i = 0; i < codeLines.length; i++) {
+      const line = codeLines[i];
+      idRe.lastIndex = 0;
+      let seen: Set<string> | null = null;
+      let m: RegExpExecArray | null;
+      while ((m = idRe.exec(line)) !== null) {
+        const w = m[0];
+        if (seen === null) seen = new Set();
+        if (seen.has(w)) continue;
+        seen.add(w);
+        const arr = nameLines.get(w);
+        if (arr) arr.push(i + 1); else nameLines.set(w, [i + 1]);
+      }
+    }
 
     for (const def of graph.ir.dfg.defs) {
       if (def.kind !== 'local') continue;
@@ -82,18 +115,20 @@ export class UnusedVariablePass implements AnalysisPass<UnusedVariableResult> {
       // module-level constants referenced inside a class method body, or
       // conditional reassignments where the DFG links the final read only to
       // the last def so earlier defs appear unused).
-      const otherDefs = graph.ir.dfg.defs.filter(
-        d => d.variable === variable && d.id !== def.id,
-      );
+      const otherDefs = (defsByVar.get(variable) ?? []).filter(d => d.id !== def.id);
       const otherDefLines = new Set(otherDefs.map(d => d.line));
-      const escapedName = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const namePattern = new RegExp(`\\b${escapedName}\\b`);
+      // Plain identifier names use the precomputed index; others fall back to a
+      // per-line regex (rare — dotted paths / `$`).
+      const plainName = /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable);
+      const idxLines = plainName ? (nameLines.get(variable) ?? EMPTY_LINES) : null;
+      const namePattern = plainName ? null
+        : new RegExp(`\\b${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
 
       if (otherDefLines.size === 0) {
-        // Single def — simple text search: any occurrence on another line suppresses.
-        const usedElsewhere = codeLines.some((line, idx) =>
-          idx !== def.line - 1 && namePattern.test(line),
-        );
+        // Single def — any occurrence on another line suppresses.
+        const usedElsewhere = idxLines !== null
+          ? idxLines.some(ln => ln !== def.line)
+          : codeLines.some((line, idx) => idx !== def.line - 1 && namePattern!.test(line));
         if (usedElsewhere) continue;
       } else {
         // Multiple defs exist.
@@ -115,22 +150,27 @@ export class UnusedVariablePass implements AnalysisPass<UnusedVariableResult> {
           || /\blet\s+(?:mut\s+)?\w/.test(lineText);
 
         if (isTrueDeclaration) {
-          // Case A: suppress only if use appears before any intermediate def.
-          const usedBeforeNextDef = codeLines.some((line, idx) => {
-            const lineNum = idx + 1;
-            if (lineNum === def.line || otherDefLines.has(lineNum)) return false;
-            if (!namePattern.test(line)) return false;
-            // If any other def for this variable sits between our def and this use,
-            // the value was overwritten → this use belongs to the later def → don't suppress.
-            return !otherDefs.some(d => d.line > def.line && d.line < lineNum);
-          });
+          // Case A: suppress only if a use appears before any intermediate def
+          // (an intermediate def would mean the value was overwritten first).
+          const usedBeforeNextDef = idxLines !== null
+            ? idxLines.some(ln =>
+                ln !== def.line && !otherDefLines.has(ln) &&
+                !otherDefs.some(d => d.line > def.line && d.line < ln))
+            : codeLines.some((line, idx) => {
+                const lineNum = idx + 1;
+                if (lineNum === def.line || otherDefLines.has(lineNum)) return false;
+                if (!namePattern!.test(line)) return false;
+                return !otherDefs.some(d => d.line > def.line && d.line < lineNum);
+              });
           if (usedBeforeNextDef) continue;
         } else {
           // Case B: bare reassignment — suppress if used on any non-def line.
-          const usedOnNonDefLine = codeLines.some((line, idx) => {
-            const lineNum = idx + 1;
-            return lineNum !== def.line && !otherDefLines.has(lineNum) && namePattern.test(line);
-          });
+          const usedOnNonDefLine = idxLines !== null
+            ? idxLines.some(ln => ln !== def.line && !otherDefLines.has(ln))
+            : codeLines.some((line, idx) => {
+                const lineNum = idx + 1;
+                return lineNum !== def.line && !otherDefLines.has(lineNum) && namePattern!.test(line);
+              });
           if (usedOnNonDefLine) continue;
         }
       }

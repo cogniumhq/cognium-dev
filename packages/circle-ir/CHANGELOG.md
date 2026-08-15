@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.1] - 2026-08-14
+
+Performance: near-linear `unused-variable` on large files.
+
+### Fixed
+
+- **`unused-variable` no longer degrades to O(n²) on large files** (cognium-ai#305). Its text-search fallback — used when the DFG surfaces no uses for a def, which is the common case on the still-incomplete C# DFG — rescanned every def (O(defs²)) and every source line (O(defs·lines)) per candidate. It now precomputes a `variable → defs` map and a `name → line-numbers` index once, so the fallback is near-linear. On a synthetic 46k-LOC C# file, analysis drops from ~51s to ~5s, and the pass falls from ~58% of CPU to <1%; behavior is byte-for-byte preserved (findings-only pass, **0 flow delta** on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230; full suite unchanged). This is the circle-ir-side contribution to the large-repo scan stalls; the orchestrator-level wall-clock watchdog remains a consumer concern.
+
 ## [4.7.0] - 2026-08-12
 
 C#/.NET (experimental): Phase-2 C# core audit — weak-hash + weak-crypto coverage, taint source/sink correctness fixes, XXE sanitizer credit, and `missing-public-doc`.

@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.1] - 2026-08-14
+
+Adopts [`circle-ir@4.7.1`](https://www.npmjs.com/package/circle-ir) — performance: `unused-variable` is now near-linear on large files (was O(n²); ~51s→~5s on a 46k-LOC C# file), reducing large-repo scan stalls (cognium-ai#305). No behavior or CLI surface change.
+
 ## [4.7.0] - 2026-08-12
 
 Adopts [`circle-ir@4.7.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental) Phase-2 audit: `weak-hash` (CWE-328) and `weak-crypto` (CWE-327/326) flag MD5/SHA-1, DES/3DES/RC2 and weak RSA key sizes; `Process.Start(fileName, arguments)` argv overload now fires command-injection (cognium-dev#276); `Environment.GetEnvironmentVariable` is now a taint source (cognium-dev#277); XXE hardening (`XmlResolver=null`/`DtdProcessing=Prohibit`) is credited (cognium-dev#272); `missing-public-doc` covers C# (cognium-dev#274); and three new C# sink categories — open_redirect, CRLF/header-injection, and NoSQL (cognium-dev#273/#275). No CLI surface change.

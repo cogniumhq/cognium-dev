@@ -106,6 +106,27 @@ describe('UnusedVariablePass', () => {
     expect(findings).toHaveLength(0);
   });
 
+  // Locks the O(n²)→near-linear text-fallback rewrite (cognium-ai#305): the
+  // name→line index must reproduce the exact `\bname\b` logic when the DFG
+  // surfaces no uses (as with the incomplete C# DFG).
+  it('multi-def reused name with no reads: both defs flagged (index path)', () => {
+    const code = 'let t = 1;\nlet t = 2;\n';
+    const defs = [makeDef(1, 't', 1), makeDef(2, 't', 2)]; // name only on def lines
+    const ir = makeIR(code, defs, []); // no DFG uses → text fallback + index
+    const { ctx, findings } = makeCtx(ir, code);
+    new UnusedVariablePass().run(ctx);
+    expect(findings.map(f => f.line).sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it('single-def name read on another line: suppressed via the index (size-0 branch)', () => {
+    const code = 'let solo = 1;\nreturn solo + 2;\n';
+    const defs = [makeDef(1, 'solo', 1)];
+    const ir = makeIR(code, defs, []); // no DFG uses → text fallback finds line 2
+    const { ctx, findings } = makeCtx(ir, code);
+    new UnusedVariablePass().run(ctx);
+    expect(findings).toHaveLength(0);
+  });
+
   it('flags the first def (overwritten before read) but not the second', () => {
     // let x = 1;   (line 1) — value overwritten without read → unused
     // x = 2;       (line 2) — creates second def
