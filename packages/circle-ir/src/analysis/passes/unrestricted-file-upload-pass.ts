@@ -46,8 +46,9 @@ const UPLOAD_NAME_RE =
 const FILE_SAFE_CALL_RE =
   /(?:secure_filename|FilenameUtils\.getExtension|\.lastIndexOf\(['"]\.['"]\)|ALLOWED_EXT|ALLOWED_EXTENSIONS|allowedExtensions|\bfileFilter\b|filepath\.Ext|path\.extname)/;
 
-function lineWindow(code: string, startLine: number, endLine: number): string {
-  const lines = code.split('\n');
+// Takes the pre-split source lines so the whole file is not re-split on every
+// call (was O(methods · lines) ≈ O(n²) on large files — cognium-ai#305).
+function lineWindow(lines: string[], startLine: number, endLine: number): string {
   const s = Math.max(0, startLine - 1);
   const e = Math.min(lines.length, endLine);
   return lines.slice(s, e).join('\n');
@@ -71,6 +72,7 @@ export class UnrestrictedFileUploadPass implements AnalysisPass<UnrestrictedFile
     const { graph, language, code } = ctx;
     const file = graph.ir.meta.file;
     const findings: UnrestrictedFileUploadResult['findings'] = [];
+    const codeLines = code.split('\n'); // split once; reused by every lineWindow
 
     // Build per-function safety windows: a function is "safe" if its body
     // contains any FILE_SAFE_CALL_RE marker. Used to suppress findings inside
@@ -78,7 +80,7 @@ export class UnrestrictedFileUploadPass implements AnalysisPass<UnrestrictedFile
     const safeFunctionRanges: Array<{ start: number; end: number }> = [];
     for (const t of graph.ir.types) {
       for (const m of t.methods) {
-        const body = lineWindow(code, m.start_line, m.end_line);
+        const body = lineWindow(codeLines, m.start_line, m.end_line);
         if (FILE_SAFE_CALL_RE.test(body)) {
           safeFunctionRanges.push({ start: m.start_line, end: m.end_line });
         }
@@ -90,7 +92,7 @@ export class UnrestrictedFileUploadPass implements AnalysisPass<UnrestrictedFile
         if (line >= r.start && line <= r.end) return true;
       }
       // No method information — fall back to a ±20-line window around the call.
-      const win = lineWindow(code, Math.max(1, line - 20), line + 5);
+      const win = lineWindow(codeLines, Math.max(1, line - 20), line + 5);
       return FILE_SAFE_CALL_RE.test(win);
     };
 

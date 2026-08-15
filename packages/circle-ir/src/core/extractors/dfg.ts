@@ -1114,6 +1114,9 @@ function computeChains(defs: DFGDef[], uses: DFGUse[]): DFGChain[] {
 
   // For each definition, find uses on the same line that might be in its initializer
   // This is a heuristic - more precise would require tracking def-use relationships in AST
+  // Dedup via a Set keyed on (from_def, to_def, via) — an `Array.some` scan per
+  // insertion was O(chains²) on large files (cognium-ai#305).
+  const seenChains = new Set<string>();
   for (const def of defs) {
     if (def.kind === 'local') {
       const usesOnLine = usesByLine.get(def.line) ?? [];
@@ -1121,12 +1124,9 @@ function computeChains(defs: DFGDef[], uses: DFGUse[]): DFGChain[] {
       for (const use of usesOnLine) {
         // If this use has a reaching def, create a chain
         if (use.def_id !== null && use.def_id !== def.id) {
-          // Avoid duplicate chains
-          const exists = chains.some(
-            c => c.from_def === use.def_id && c.to_def === def.id && c.via === use.variable
-          );
-
-          if (!exists) {
+          const key = `${use.def_id} ${def.id} ${use.variable}`;
+          if (!seenChains.has(key)) {
+            seenChains.add(key);
             chains.push({
               from_def: use.def_id,
               to_def: def.id,

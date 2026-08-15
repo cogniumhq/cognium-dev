@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.1] - 2026-08-14
 
-Performance: near-linear `unused-variable` on large files.
+Performance: near-linear analysis on large files (removes three O(n²) hot spots).
 
 ### Fixed
 
-- **`unused-variable` no longer degrades to O(n²) on large files** (cognium-ai#305). Its text-search fallback — used when the DFG surfaces no uses for a def, which is the common case on the still-incomplete C# DFG — rescanned every def (O(defs²)) and every source line (O(defs·lines)) per candidate. It now precomputes a `variable → defs` map and a `name → line-numbers` index once, so the fallback is near-linear. On a synthetic 46k-LOC C# file, analysis drops from ~51s to ~5s, and the pass falls from ~58% of CPU to <1%; behavior is byte-for-byte preserved (findings-only pass, **0 flow delta** on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230; full suite unchanged). This is the circle-ir-side contribution to the large-repo scan stalls; the orchestrator-level wall-clock watchdog remains a consumer concern.
+Large-file scan cost was superlinear (cognium-ai#305). Three per-file passes were quadratic; each is now near-linear, and profiling a ~45k-LOC file shows no single pass above ~4% of CPU (was one pass at ~58%). All three are behavior-preserving — **0 flow delta** on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230, full suite unchanged. Net effect on a realistic 46k-LOC C# file: **~5s → ~2.4s** (and a pathological same-name synthetic that previously took ~51s no longer dominates).
+
+- **`unused-variable`** — its text-search fallback (hit when the DFG surfaces no uses for a def, the common case on the still-incomplete C# DFG) rescanned every def (O(defs²)) and every source line (O(defs·lines)) per candidate. Now precomputes a `variable → defs` map and a `name → line-numbers` index once. Fell from ~58% of CPU to <1%.
+- **`computeChains` (DFG)** — deduplicated new chains with an `Array.some` scan over all chains so far (O(chains²)). Now uses a `Set` keyed on `(from_def, to_def, via)` for O(1) dedup, with identical output.
+- **`unrestricted-file-upload`** — its `lineWindow` helper re-split the entire file on every call, once per method (O(methods·lines)). Now splits the source once and slices the shared array.
+
+The orchestrator-level wall-clock watchdog for apex repos remains a consumer concern.
 
 ## [4.7.0] - 2026-08-12
 
