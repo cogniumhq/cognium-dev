@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.1] - 2026-08-14
 
-Adopts [`circle-ir@4.7.1`](https://www.npmjs.com/package/circle-ir) — performance: removes three O(n²) hot spots on large files (`unused-variable`, `computeChains`, `unrestricted-file-upload`); a realistic 46k-LOC C# file drops to ~2.4s and no pass exceeds ~4% of CPU, reducing large-repo scan stalls (cognium-ai#305). No behavior or CLI surface change.
+Adopts [`circle-ir@4.7.1`](https://www.npmjs.com/package/circle-ir) — performance: removes three O(n²) hot spots on large files (`unused-variable`, `computeChains`, `unrestricted-file-upload`); a realistic 46k-LOC C# file drops to ~2.4s (cognium-ai#305). Also adds Go `os.Args` as a taint source (cognium-dev#213). No CLI surface change.
 
 ## [4.7.0] - 2026-08-12
 

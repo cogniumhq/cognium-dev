@@ -244,6 +244,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- C#: explicit ASP.NET request sources --------------------------------
     additionalSources.push(...findCSharpRequestSources(code, language));
+    additionalSources.push(...findGoArgvSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -1224,6 +1225,40 @@ function findSetterChainSources(
  * `context.`) and seed the LHS variable as an `http_param` source so the
  * text-scan propagation bridges it to sinks.
  */
+/**
+ * Go process-argv sources (cognium-dev#213). `os.Args` is a package-level
+ * variable, not a call, so the method-based source model never seeds it. Bind
+ * the LHS of `v := os.Args[i]` / `v = os.Args[i]` (and the whole-slice
+ * `v := os.Args`), plus the value var of `for _, v := range os.Args`, as
+ * `io_input`. `len(os.Args)` and other non-assignment reads do not match (there
+ * is no `<ident> =` immediately before `os.Args`), so a length guard is safe.
+ */
+function findGoArgvSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const rangeRe = /\bfor\b[^;{]*?,\s*([A-Za-z_]\w*)\s*:?=\s*range\s+os\.Args\b/;
+  const assignRe = /\b([A-Za-z_]\w*)\s*:?=\s*os\.Args\b/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const rm = rangeRe.exec(line);
+    const m = rm ?? assignRe.exec(line);
+    if (!m) continue;
+    const varName = m[1];
+    const lineNumber = i + 1;
+    if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
+    sources.push({
+      type: 'io_input',
+      location: `${varName} = os.Args`,
+      severity: 'high',
+      line: lineNumber,
+      confidence: 1.0,
+      variable: varName,
+    });
+  }
+  return sources;
+}
+
 function findCSharpRequestSources(sourceCode: string, language: string): TaintSource[] {
   if (language !== 'csharp') return [];
   const sources: TaintSource[] = [];

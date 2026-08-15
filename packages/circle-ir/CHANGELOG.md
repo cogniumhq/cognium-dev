@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.1] - 2026-08-14
 
-Performance: near-linear analysis on large files (removes three O(n²) hot spots).
+Performance: near-linear analysis on large files (removes three O(n²) hot spots); plus a Go process-argv taint source.
+
+### Added
+
+- **Go `os.Args` is now a taint source (`io_input`)** (cognium-dev#213). `os.Args` is a package-level variable, not a call, so the method-based source model never seeded it — `v := os.Args[i]` / `v = os.Args[i]` / `for _, v := range os.Args` flowing to a command/SQL sink were false negatives. A binder now binds the assigned/ranged variable. A `len(os.Args)` guard and unrelated `.Args` fields do not match (no `<ident> = os.Args`), so it stays clean.
 
 ### Fixed
 

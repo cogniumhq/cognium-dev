@@ -123,4 +123,39 @@ func h(c *fiber.Ctx, db *sql.DB) error {
     const r = await analyze(code, 'fiber-bp.go', 'go');
     expect(hasFlow(r)).toBe(true);
   });
+
+  // cognium-dev#213 — `os.Args` process-argv source (a package variable, not a
+  // call, so the method-based source model missed it).
+  it('os.Args[i] (conditional) flows to a command sink', async () => {
+    const code = `package main
+import ("os"; "os/exec")
+func main() {
+    v := ""
+    if len(os.Args) > 1 { v = os.Args[1] }
+    exec.Command("sh", "-c", "echo "+v).Run()
+}`;
+    expect(hasFlow(await analyze(code, 'argv.go', 'go'))).toBe(true);
+  });
+
+  it('`for _, a := range os.Args` flows to a command sink', async () => {
+    const code = `package main
+import ("os"; "os/exec")
+func main() {
+    for _, a := range os.Args {
+        exec.Command("sh", "-c", "echo "+a).Run()
+    }
+}`;
+    expect(hasFlow(await analyze(code, 'argv-range.go', 'go'))).toBe(true);
+  });
+
+  it('does NOT fire on a `len(os.Args)` guard or an unrelated `.Args` field', async () => {
+    const guard = `package main
+import ("os"; "fmt")
+func main() { if len(os.Args) > 1 { fmt.Println("has") } }`;
+    const field = `package main
+import "fmt"
+func main() { cfg := loadConfig(); x := cfg.Args; fmt.Println(x) }`;
+    expect(hasFlow(await analyze(guard, 'guard.go', 'go'))).toBe(false);
+    expect(hasFlow(await analyze(field, 'field.go', 'go'))).toBe(false);
+  });
 });
