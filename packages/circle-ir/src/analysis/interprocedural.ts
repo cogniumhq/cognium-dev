@@ -234,6 +234,21 @@ export function analyzeInterprocedural(
     'Command', 'CommandContext',
   ]);
 
+  // Structured ORM / query-builder finder methods (JS/TS ecosystem — Prisma,
+  // Sequelize, TypeORM, Mongoose, Strapi, knex, drizzle). The driver binds
+  // values positionally, so a tainted value in a `where`/filter object is
+  // parameterised, not injected — exactly the Go `Query`/`Exec` case above.
+  // These names have raw/unsafe siblings (`queryRaw`, `$queryRawUnsafe`,
+  // `whereRaw`, `raw`, `find`) which are intentionally NOT listed and still
+  // fall through to the escape/injection check. Suppresses only the
+  // low-confidence CWE-668 `external_taint_escape` fallback — genuine
+  // sql/nosql sinks are governed by their configured patterns. (cognium-ai#279 R-1)
+  const ormQueryBuilderMethods = new Set([
+    'findMany', 'findFirst', 'findUnique', 'findUniqueOrThrow', 'findFirstOrThrow',
+    'findOne', 'findAll', 'findByPk', 'findAndCountAll', 'findBy', 'findOneBy',
+    'where', 'andWhere', 'orWhere', 'whereIn', 'whereNot', 'first', 'bind',
+  ]);
+
   // Build set of sanitizer method names (methods that clean tainted data)
   // Sanitizer methods may be in formats like "encode" or "URLEncoder.encode()"
   const sanitizerMethods = new Set<string>();
@@ -276,7 +291,8 @@ export function analyzeInterprocedural(
       if (taintedArgPositions.length > 0 &&
           !collectionMethods.has(call.method_name) &&
           !sanitizerMethods.has(call.method_name) &&
-          !safeUtilityMethods.has(call.method_name)) {
+          !safeUtilityMethods.has(call.method_name) &&
+          !ormQueryBuilderMethods.has(call.method_name)) {
         // Bash specialization: every external utility (ping, whois, curl, nc,
         // …) is an unknown call, but an unquoted tainted positional yields
         // word-splitting/arg-injection that is concretely CWE-78 command

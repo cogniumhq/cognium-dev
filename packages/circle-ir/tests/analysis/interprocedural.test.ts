@@ -625,4 +625,32 @@ public class Checker {
       expect(summary.taintedMethods).toBeLessThan(summary.totalMethods);
     });
   });
+
+  // cognium-ai#279 R-1: parameterized ORM / query-builder finders must not
+  // fall through to the CWE-668 external_taint_escape fallback — the driver
+  // binds values. Raw/unsafe variants and configured sinks still fire.
+  describe('ORM query-builder external_taint_escape suppression (#279 R-1)', () => {
+    beforeAll(async () => { await initAnalyzer(); });
+    const flows = (r: Awaited<ReturnType<typeof analyze>>) => r.taint?.flows ?? [];
+
+    it('does NOT flag prisma/sequelize/strapi finders with a tainted where-object', async () => {
+      for (const code of [
+        `function h(req){ return strapi.db.query('api::x').findMany({ where: req.query.f }); }`,
+        `function h(req){ return adapter.findOne({ model:'user', where:[{field:'id',value:req.query.id}] }); }`,
+        `function h(req){ return knex('users').where({ id: req.query.id }).first(); }`,
+        `function h(req){ return prisma.user.findUnique({ where:{ id: req.query.id } }); }`,
+      ]) {
+        expect(flows(await analyze(code, 'x.js', 'javascript'))).toHaveLength(0);
+      }
+    });
+
+    it('STILL fires on raw SQL, exec, and the whereRaw/raw variants', async () => {
+      const raw = `function h(req){ return db.query("SELECT * FROM u WHERE id=" + req.query.id); }`;
+      const cmd = `const {exec}=require('child_process'); function h(req){ exec("grep "+req.query.q); }`;
+      const whereRaw = `function h(req){ return knex('u').whereRaw("id = "+req.query.id); }`;
+      expect(flows(await analyze(raw, 'x.js', 'javascript')).some(f => f.sink_type === 'sql_injection')).toBe(true);
+      expect(flows(await analyze(cmd, 'x.js', 'javascript')).some(f => f.sink_type === 'command_injection')).toBe(true);
+      expect(flows(await analyze(whereRaw, 'x.js', 'javascript')).length).toBeGreaterThan(0);
+    });
+  });
 });
