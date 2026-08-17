@@ -1474,8 +1474,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // SAX handler sinks (can lead to XSS in parsed content)
   { method: 'startElement', class: 'ContentHandler', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1, 2] },
   { method: 'characters', class: 'ContentHandler', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  // Template output sinks
-  { method: 'output', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  // Template output sinks. `output` is classless (Java template engines /
+  // Velocity), but Rust `std::process::Command::…output()` is process
+  // execution, not HTML — it already fires the CWE-78 command_injection sink,
+  // so exclude Rust here to drop the spurious xss (cognium-dev#146).
+  { method: 'output', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], exclude_languages: ['rust'] },
   { method: 'setOutput', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'writeAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
   // AntiSamy specific (SAX filters)

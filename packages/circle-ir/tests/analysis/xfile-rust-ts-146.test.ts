@@ -59,6 +59,19 @@ pub fn run(arg: &str) { Command::new(arg).spawn().unwrap(); }`;
     expect(xfileTaintTo(r, 'helper.rs', 'command_injection')).toBe(true);
   });
 
+  it('Rust — Command.output() is command_injection only, not a spurious xss (#146)', async () => {
+    // `.output()` matched the classless Java template-output xss sink, so the
+    // cmdi cross-file path was mislabeled xss. Now Rust is excluded from it.
+    const helper = `use std::process::Command;
+pub fn run(arg: &str) { Command::new("sh").arg("-c").arg(arg).output().unwrap(); }`;
+    const r = await analyzeProject([
+      { code: helper, filePath: 'helper.rs', language: 'rust' },
+      { code: rustController, filePath: 'controller.rs', language: 'rust' },
+    ]);
+    expect(xfileTaintTo(r, 'helper.rs', 'command_injection')).toBe(true);
+    expect(xfileTaintTo(r, 'helper.rs', 'xss')).toBe(false);
+  });
+
   it('Rust — controller source → helper path_traversal sink (cross-file)', async () => {
     const helper = `use std::fs;
 pub fn run(arg: &str) { let _ = fs::read_to_string(arg); }`;
