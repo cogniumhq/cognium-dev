@@ -552,6 +552,38 @@ public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x 
   });
 });
 
+// cognium-ai#275/#318 — S batch: PhysicalFile (path_traversal), XPathNavigator
+// Select/Evaluate (xpath_injection, class-scoped so LINQ .Select stays clean),
+// and P/Invoke libc system(...) (command_injection).
+describe('C# Phase-2: PhysicalFile / XPathNavigator / P-Invoke system sinks', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+  const ctrl = (body: string, using = '') => `
+using Microsoft.AspNetCore.Mvc; ${using}
+public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x = p; ${body} } }`;
+
+  it('PhysicalFile(path) fires path_traversal; constant path is clean', async () => {
+    expect(has(await analyze(ctrl('var r = PhysicalFile(x, "application/pdf");'), 'C.cs', 'csharp'), 'path_traversal')).toBe(true);
+    expect(has(await analyze(ctrl('var r = PhysicalFile("/static/logo.png", "image/png");'), 'C.cs', 'csharp'), 'path_traversal')).toBe(false);
+  });
+
+  it('XPathNavigator.Select/Evaluate fire xpath_injection', async () => {
+    const u = 'using System.Xml.XPath;';
+    expect(has(await analyze(ctrl('XPathNavigator nav = doc.CreateNavigator(); nav.Select(x);', u), 'C.cs', 'csharp'), 'xpath_injection')).toBe(true);
+    expect(has(await analyze(ctrl('XPathNavigator nav = doc.CreateNavigator(); nav.Evaluate(x);', u), 'C.cs', 'csharp'), 'xpath_injection')).toBe(true);
+  });
+
+  it('LINQ .Select is NOT treated as an xpath sink', async () => {
+    expect(has(await analyze(ctrl('var r = items.Select(i => i.Name).ToList();'), 'C.cs', 'csharp'), 'xpath_injection')).toBe(false);
+  });
+
+  it('P/Invoke system(cmd) fires command_injection; constant is clean', async () => {
+    expect(has(await analyze(ctrl('system(x);'), 'C.cs', 'csharp'), 'command_injection')).toBe(true);
+    expect(has(await analyze(ctrl('system("ls -la");'), 'C.cs', 'csharp'), 'command_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>

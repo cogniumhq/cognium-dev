@@ -2864,6 +2864,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // injectable — the second is the argv path where taint rides arg[1] (#276).
   { method: 'Start', class: 'Process', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
   { method: 'ProcessStartInfo', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
+  // P/Invoke of libc `system(cmd)` — lowercase `system` in C# is virtually
+  // always the imported shell entry point (cognium-ai#275 interop/IlPinvoke).
+  { method: 'system', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# path traversal — System.IO file APIs (CWE-22). Distinctive method names.
   { method: 'ReadAllText', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
@@ -2893,6 +2896,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Delete', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'GetFiles', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'EnumerateFiles', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // ASP.NET `ControllerBase.PhysicalFile(path, contentType)` serves a file from
+  // an absolute disk path — attacker-controllable path is CWE-22 (cognium-ai#326/#275).
+  { method: 'PhysicalFile', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# SSRF — HttpClient / WebClient / WebRequest (CWE-918).
   { method: 'GetAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
@@ -2979,6 +2985,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'SelectSingleNode', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'SelectNodes', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Compile', class: 'XPathExpression', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // XPathNavigator.Select/Evaluate — class-scoped (both names collide with LINQ
+  // `.Select`/`.Evaluate`, so they must resolve to an XPathNavigator receiver).
+  { method: 'Select', class: 'XPathNavigator', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Evaluate', class: 'XPathNavigator', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# XXE — untrusted XML into a parser without DTD hardening (CWE-611).
   { method: 'LoadXml', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },

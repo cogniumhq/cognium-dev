@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.3] - 2026-08-21
+
+C#/.NET (experimental): three more canonical taint sinks.
+
+### Added
+
+- **`ControllerBase.PhysicalFile(path, …)` → path traversal (CWE-22).** Serving a file from an attacker-controllable absolute disk path is CWE-22. Taint-gated; a constant path never fires. (cognium-ai#275/#326)
+- **`XPathNavigator.Select` / `Evaluate` → XPath injection (CWE-643).** Class-scoped to an `XPathNavigator` receiver so LINQ `.Select`/`.Evaluate` are never mistaken for XPath evaluation. Complements the existing classless `SelectSingleNode`/`SelectNodes`. (cognium-ai#318)
+- **P/Invoke libc `system(cmd)` → command injection (CWE-78).** A lowercase `system` call in C# is virtually always the imported shell entry point. Taint-gated; a constant argument never fires. (cognium-ai#275)
+
+All three are `languages: ['csharp']`-scoped — zero movement across the OWASP-Java / SecuriBench / BenchmarkPython corpora (4095 files).
+
 ## [4.7.2] - 2026-08-20
 
 C#/.NET (experimental): xxe/deserialization finding conversion + `Process.Start` argv precision + more canonical sink names.

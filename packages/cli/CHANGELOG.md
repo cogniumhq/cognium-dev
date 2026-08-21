@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.3] - 2026-08-21
+
+Adopts [`circle-ir@4.7.3`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): three more canonical taint sinks (`PhysicalFile` → path traversal, `XPathNavigator.Select`/`Evaluate` → XPath injection, P/Invoke `system` → command injection). No CLI surface change.
+
 ## [4.7.2] - 2026-08-20
 
 **Fixes C#/.NET scanning via the CLI.** `initWasm` registered grammar paths for 8 languages but omitted `csharp` (and `tsx`), so `cognium-dev scan` on a `.cs` file failed with `ENOENT: wasm/tree-sitter-csharp.wasm` — the C# engine support (shipped since 4.0.0) was unreachable through the CLI. Added `csharp` and `tsx` to both the npm and standalone `languagePaths`. `.cs` files now scan; `.tsx` files now parse.
