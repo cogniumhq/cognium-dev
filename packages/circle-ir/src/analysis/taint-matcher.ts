@@ -942,6 +942,42 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
 }
 
 /**
+ * C# `Process.Start(fileName, arguments)` argv-overload safe-shape gate
+ * (cognium-ai#328). Mirror of the JS/Go/Rust execFile gates: when the executable
+ * is a constant NON-shell binary, .NET passes `arguments` to it directly (no
+ * shell → no metacharacter interpretation), so tainted `arguments` cannot inject
+ * a command. The single-string overload (`Process.Start("sh -c " + x)`, one
+ * arg) and a shell executable (`Process.Start("/bin/sh", "-c " + x)` — kept
+ * firing for #276) stay dangerous. A variable executable stays dangerous.
+ */
+function isSafeCSharpProcessStartCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+  if (language !== 'csharp') return false;
+  if (pattern.type !== 'command_injection') return false;
+  if (call.method_name !== 'Start') return false;
+  // argv form only — needs a separate arguments arg beyond the filename.
+  if (call.arguments.length < 2) return false;
+
+  const fileArg = call.arguments.find(a => a.position === 0);
+  if (!fileArg) return false;
+  let raw: string;
+  if (fileArg.literal !== null && fileArg.literal !== undefined) {
+    raw = String(fileArg.literal).trim();
+  } else {
+    raw = (fileArg.expression ?? '').trim();
+  }
+  // constant string literal only ("git", @"C:\git.exe"); a variable exe is dangerous.
+  if (!/^@?"[^"]*"$/.test(raw)) return false;
+  const program = (raw.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
+    .toLowerCase().replace(/\.exe$/, '');
+
+  const SHELL_PROGRAMS = new Set([
+    'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
+    'cmd', 'powershell', 'pwsh',
+  ]);
+  return !SHELL_PROGRAMS.has(program);
+}
+
+/**
  * Check if a Rust `Command::new(...).arg(...).args(...).spawn().output()`
  * chain is safe-by-shape: the program (bound at `Command::new("prog")`) is a
  * string literal AND not a shell program. In that shape Rust invokes
@@ -1614,6 +1650,13 @@ function findSinks(
         // invokes execve() directly so subsequent argv elements cannot
         // escape into shell metacharacters. cognium-dev #187 Sprint 54.
         if (isSafeJSChildProcessCall(call, pattern, language)) {
+          continue;
+        }
+
+        // Skip C# `Process.Start(constNonShellExe, arguments)` argv calls —
+        // a non-shell executable receives the arguments directly (no shell),
+        // so tainted arguments cannot inject a command. cognium-ai#328.
+        if (isSafeCSharpProcessStartCall(call, pattern, language)) {
           continue;
         }
 

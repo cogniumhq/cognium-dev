@@ -489,6 +489,66 @@ describe('C# Phase-2: missing-public-doc (#274 Q-25)', () => {
   });
 });
 
+// cognium-ai#317 — C# xxe/deserialization sinks are reached via param-seeded
+// (interprocedural_param) sources, but that source was missing xxe/deserialization
+// in the reach-map, so flows never formed and findings converted at 0%.
+// cognium-ai#328 — Process.Start(constNonShellExe, arguments) argv form is not
+// command injection (the non-shell exe receives args directly, no shell).
+describe('C# Phase-2: Process.Start non-shell argv safe-shape (#328)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const cmdi = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'command_injection');
+  const ctrl = (body: string) => `
+using System.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+public class C { public void M([FromQuery] string arg) { var a = arg; ${body} } }`;
+
+  it('does NOT fire on a constant non-shell executable (git / dotnet)', async () => {
+    expect(cmdi(await analyze(ctrl(`Process.Start("git", "clone " + a);`), 'C.cs', 'csharp'))).toBe(false);
+    expect(cmdi(await analyze(ctrl(`Process.Start("dotnet", "run " + a);`), 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('STILL fires on a shell executable (preserves #276)', async () => {
+    for (const b of [`Process.Start("/bin/sh", "-c " + a);`, `Process.Start("cmd", "/c " + a);`, `Process.Start("powershell", "-Command " + a);`]) {
+      expect(cmdi(await analyze(ctrl(b), 'C.cs', 'csharp'))).toBe(true);
+    }
+  });
+
+  it('STILL fires on a variable executable and the single-string overload', async () => {
+    const varExe = `using System.Diagnostics; using Microsoft.AspNetCore.Mvc;
+public class C { public void M([FromQuery] string exe) { var e = exe; Process.Start(e, "sub"); } }`;
+    expect(cmdi(await analyze(varExe, 'C.cs', 'csharp'))).toBe(true);
+    expect(cmdi(await analyze(ctrl(`Process.Start("sh -c " + a);`), 'C.cs', 'csharp'))).toBe(true);
+  });
+});
+
+describe('C# Phase-2: xxe / deserialization reach-map (#317)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+
+  it('a param flowing to XmlDocument.LoadXml forms an xxe flow', async () => {
+    const code = `
+using System.Xml;
+public class C { public void M(string xml) { var d = new XmlDocument(); d.LoadXml(xml); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xxe')).toBe(true);
+  });
+
+  it('a param flowing to BinaryFormatter.Deserialize forms a deserialization flow', async () => {
+    const code = `
+using System.Runtime.Serialization.Formatters.Binary;
+public class C { public object M(System.IO.Stream s) { var bf = new BinaryFormatter(); return bf.Deserialize(s); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(true);
+  });
+
+  it('a hardened parse (XmlResolver = null) stays clean', async () => {
+    const code = `
+using System.Xml;
+public class C { public void M(string xml) { var d = new XmlDocument(); d.XmlResolver = null; d.LoadXml(xml); } }`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'xxe')).toBe(false);
+  });
+});
+
 describe('C# Phase-1: explicit ASP.NET request sources', () => {
   beforeAll(async () => { await initAnalyzer(); });
 

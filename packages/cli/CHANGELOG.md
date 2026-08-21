@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.2] - 2026-08-20
+
+Adopts [`circle-ir@4.7.2`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): xxe/deserialization sinks now convert to findings (cognium-ai#317), and `Process.Start(constNonShellExe, args)` argv calls no longer false-positive as command injection (cognium-ai#328). No CLI surface change.
+
 ## [4.7.1] - 2026-08-14
 
 Adopts [`circle-ir@4.7.1`](https://www.npmjs.com/package/circle-ir) — performance: removes three O(n²) hot spots on large files (`unused-variable`, `computeChains`, `unrestricted-file-upload`); a realistic 46k-LOC C# file drops to ~2.4s (cognium-ai#305). Also adds Go `os.Args` as a taint source (cognium-dev#213). No CLI surface change.

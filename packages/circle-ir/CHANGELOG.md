@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.2] - 2026-08-20
+
+C#/.NET (experimental): xxe/deserialization finding conversion + `Process.Start` argv precision.
+
+### Fixed
+
+- **C# `xxe` and `deserialization` sinks now convert to findings** (cognium-ai#317). Both are reached via param-seeded (`interprocedural_param`) sources in C#, but that source was missing `xxe`/`deserialization` in the source→sink reach map (`canSourceReachSink`), so the flow was never constructed and finding conversion was **0%** (17 xxe + 2 deser files detected-but-dropped). Added both to the `interprocedural_param` map — the C# `XmlDocument.Load`/`BinaryFormatter.Deserialize` flows now form, and the 4.7.0 XXE-hardening sanitizer (`XmlResolver=null`) still suppresses the safe shape. 0 flow delta on OWASP Java 2740 + SecuriBench 125 + BenchmarkPython 1230 (the corpus has no `interprocedural_param → xxe/deser` shape).
+- **C# `Process.Start(constNonShellExe, arguments)` argv form no longer false-positives as command injection** (cognium-ai#328). When the executable is a constant **non-shell** binary (`git`, `dotnet`, …), .NET passes `arguments` to it directly — no shell, so tainted arguments cannot inject a command (this is the recommended-secure shape). A shell executable (`/bin/sh`, `cmd`, `powershell` — kept firing per cognium-dev#276), a variable executable, and the single-string `Process.Start("sh -c " + x)` overload all still fire. Mirrors the existing Go/Rust/JS `execFile` safe-shape gates. (The inline host-allowlist SSRF-guard shape from #328 needs dominator analysis and is deferred.)
+
 ## [4.7.1] - 2026-08-14
 
 Performance: near-linear analysis on large files (removes three O(n²) hot spots); plus a Go process-argv taint source.
