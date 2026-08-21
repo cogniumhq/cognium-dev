@@ -7,6 +7,16 @@ import type { CFG, CFGBlock, CFGEdge, SupportedLanguage } from '../../types/inde
 import { getNodesFromCache, type NodeCache } from '../parser.js';
 
 /**
+ * Statement dialect for the shared block/statement processors. The grammars
+ * diverge on a handful of node names (declarations, foreach, switch cases), so
+ * every processor threads a dialect instead of a lone `isJavaScript` boolean:
+ *   - `'js'`  — JavaScript / TypeScript / TSX
+ *   - `'java'` — Java (also used for Go and Bash bodies, unchanged behaviour)
+ *   - `'csharp'` — C# / .NET
+ */
+type Dialect = 'js' | 'java' | 'csharp';
+
+/**
  * Detect language from tree structure.
  */
 function detectLanguage(tree: Tree): 'javascript' | 'java' {
@@ -66,6 +76,10 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeC
     return buildGoCFG(tree, blockIdCounter, cache);
   }
 
+  if (effectiveLanguage === 'csharp') {
+    return buildCSharpCFG(tree, blockIdCounter, cache);
+  }
+
   if (isJavaScript) {
     // Find all JavaScript function bodies
     const functions = [
@@ -82,7 +96,7 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeC
 
       // Arrow functions can have expression bodies
       if (body.type === 'statement_block') {
-        const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, true);
+        const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, 'js');
         allBlocks.push(...blocks);
         allEdges.push(...edges);
         blockIdCounter = nextId;
@@ -108,11 +122,51 @@ export function buildCFG(tree: Tree, language?: SupportedLanguage, cache?: NodeC
       const body = method.childForFieldName('body');
       if (!body) continue;
 
-      const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, false);
+      const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, 'java');
       allBlocks.push(...blocks);
       allEdges.push(...edges);
       blockIdCounter = nextId;
     }
+  }
+
+  return { blocks: allBlocks, edges: allEdges };
+}
+
+/**
+ * Build CFG for C# code.
+ *
+ * C# shares most control-flow node names with Java (`if_statement`,
+ * `for_statement`, `while_statement`, `do_statement`, `try_statement`,
+ * `switch_statement`, `return_statement`, `block`) but diverges on
+ * declarations (`local_declaration_statement`), iteration (`foreach_statement`),
+ * scoped blocks (`using_statement` / `lock_statement`) and switch bodies
+ * (`switch_section`). The shared statement processors handle those via the
+ * `'csharp'` dialect. Method-like containers include property accessors,
+ * local functions and operators in addition to methods/constructors.
+ */
+function buildCSharpCFG(tree: Tree, blockIdCounter: number, cache?: NodeCache): CFG {
+  const allBlocks: CFGBlock[] = [];
+  const allEdges: CFGEdge[] = [];
+
+  const containers = [
+    ...getNodesFromCache(tree.rootNode, 'method_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'constructor_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'destructor_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'operator_declaration', cache),
+    ...getNodesFromCache(tree.rootNode, 'local_function_statement', cache),
+    ...getNodesFromCache(tree.rootNode, 'accessor_declaration', cache),
+  ];
+
+  for (const container of containers) {
+    // Only block-bodied members produce a CFG; expression-bodied members
+    // (`=> expr`) carry no branch structure (complexity 1) and are skipped.
+    const body = container.childForFieldName('body');
+    if (!body || body.type !== 'block') continue;
+
+    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, 'csharp');
+    allBlocks.push(...blocks);
+    allEdges.push(...edges);
+    blockIdCounter = nextId;
   }
 
   return { blocks: allBlocks, edges: allEdges };
@@ -132,7 +186,7 @@ interface CFGBuildResult {
 function buildMethodCFG(
   body: Node,
   startId: number,
-  isJavaScript: boolean
+  dialect: Dialect
 ): { blocks: CFGBlock[]; edges: CFGEdge[]; nextId: number } {
   const blocks: CFGBlock[] = [];
   const edges: CFGEdge[] = [];
@@ -148,7 +202,7 @@ function buildMethodCFG(
   blocks.push(entryBlock);
 
   // Process statements in the body
-  const result = processStatements(body, currentId, blocks, edges, isJavaScript);
+  const result = processStatements(body, currentId, blocks, edges, dialect);
   currentId = result.nextId;
 
   // Connect entry to first statement
@@ -204,7 +258,7 @@ function processStatements(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
   let firstBlockId = -1;
@@ -215,9 +269,9 @@ function processStatements(
     if (!stmt) continue;
 
     // Skip non-statement nodes
-    if (!isStatement(stmt, isJavaScript)) continue;
+    if (!isStatement(stmt, dialect)) continue;
 
-    const result = processStatement(stmt, currentId, blocks, edges, isJavaScript);
+    const result = processStatement(stmt, currentId, blocks, edges, dialect);
     currentId = result.nextId;
 
     if (firstBlockId === -1) {
@@ -251,38 +305,59 @@ function processStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   switch (stmt.type) {
     case 'if_statement':
-      return processIfStatement(stmt, startId, blocks, edges, isJavaScript);
+      return processIfStatement(stmt, startId, blocks, edges, dialect);
 
     case 'for_statement':
     case 'enhanced_for_statement':
     case 'for_in_statement':
     case 'for_of_statement':
-      return processForStatement(stmt, startId, blocks, edges, isJavaScript);
+    case 'foreach_statement': // C#
+      return processForStatement(stmt, startId, blocks, edges, dialect);
 
     case 'while_statement':
-      return processWhileStatement(stmt, startId, blocks, edges, isJavaScript);
+      return processWhileStatement(stmt, startId, blocks, edges, dialect);
 
     case 'do_statement':
-      return processDoWhileStatement(stmt, startId, blocks, edges, isJavaScript);
+      return processDoWhileStatement(stmt, startId, blocks, edges, dialect);
 
     case 'try_statement':
-      return processTryStatement(stmt, startId, blocks, edges, isJavaScript);
+      return processTryStatement(stmt, startId, blocks, edges, dialect);
 
     case 'switch_expression':
     case 'switch_statement':
-      return processSwitchStatement(stmt, startId, blocks, edges, isJavaScript);
+      return processSwitchStatement(stmt, startId, blocks, edges, dialect);
+
+    // C# scoped blocks add no branching — flow through the inner block so its
+    // nested statements are still captured.
+    case 'using_statement':
+    case 'lock_statement':
+    case 'checked_statement':
+    case 'unsafe_statement': {
+      const inner = stmt.childForFieldName('body') ?? lastBlockChild(stmt);
+      if (inner) return processStatement(inner, startId, blocks, edges, dialect);
+      return processSimpleStatement(stmt, startId, blocks);
+    }
 
     case 'block':
     case 'statement_block':
-      return processStatements(stmt, startId, blocks, edges, isJavaScript);
+      return processStatements(stmt, startId, blocks, edges, dialect);
 
     default:
       return processSimpleStatement(stmt, startId, blocks);
   }
+}
+
+/** Last direct `block` child of a node (C# `lock`/`unsafe` bodies are unnamed). */
+function lastBlockChild(node: Node): Node | null {
+  for (let i = node.childCount - 1; i >= 0; i--) {
+    const c = node.child(i);
+    if (c && c.type === 'block') return c;
+  }
+  return null;
 }
 
 /**
@@ -316,7 +391,7 @@ function processIfStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
 
@@ -334,7 +409,7 @@ function processIfStatement(
   // Process consequence (then branch)
   const consequence = stmt.childForFieldName('consequence');
   if (consequence) {
-    const thenResult = processStatement(consequence, currentId, blocks, edges, isJavaScript);
+    const thenResult = processStatement(consequence, currentId, blocks, edges, dialect);
     currentId = thenResult.nextId;
 
     edges.push({
@@ -349,7 +424,7 @@ function processIfStatement(
   // Process alternative (else branch)
   const alternative = stmt.childForFieldName('alternative');
   if (alternative) {
-    const elseResult = processStatement(alternative, currentId, blocks, edges, isJavaScript);
+    const elseResult = processStatement(alternative, currentId, blocks, edges, dialect);
     currentId = elseResult.nextId;
 
     edges.push({
@@ -379,7 +454,7 @@ function processForStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
 
@@ -395,7 +470,7 @@ function processForStatement(
   // Process body
   const body = stmt.childForFieldName('body');
   if (body) {
-    const bodyResult = processStatement(body, currentId, blocks, edges, isJavaScript);
+    const bodyResult = processStatement(body, currentId, blocks, edges, dialect);
     currentId = bodyResult.nextId;
 
     // Connect loop to body (true branch)
@@ -430,10 +505,10 @@ function processWhileStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   // Similar to for statement
-  return processForStatement(stmt, startId, blocks, edges, isJavaScript);
+  return processForStatement(stmt, startId, blocks, edges, dialect);
 }
 
 /**
@@ -444,7 +519,7 @@ function processDoWhileStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
 
@@ -454,7 +529,7 @@ function processDoWhileStatement(
   let bodyExitIds: number[] = [];
 
   if (body) {
-    const bodyResult = processStatement(body, currentId, blocks, edges, isJavaScript);
+    const bodyResult = processStatement(body, currentId, blocks, edges, dialect);
     currentId = bodyResult.nextId;
     bodyEntryId = bodyResult.entryId;
     bodyExitIds = bodyResult.exitIds;
@@ -500,7 +575,7 @@ function processTryStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
   const exitIds: number[] = [];
@@ -510,7 +585,7 @@ function processTryStatement(
   let tryEntryId = -1;
 
   if (body) {
-    const bodyResult = processStatements(body, currentId, blocks, edges, isJavaScript);
+    const bodyResult = processStatements(body, currentId, blocks, edges, dialect);
     currentId = bodyResult.nextId;
     tryEntryId = bodyResult.entryId;
     exitIds.push(...bodyResult.exitIds);
@@ -522,7 +597,7 @@ function processTryStatement(
     if (child?.type === 'catch_clause') {
       const catchBody = child.childForFieldName('body');
       if (catchBody) {
-        const catchResult = processStatements(catchBody, currentId, blocks, edges, isJavaScript);
+        const catchResult = processStatements(catchBody, currentId, blocks, edges, dialect);
         currentId = catchResult.nextId;
 
         // Add exception edges from try blocks to catch
@@ -539,10 +614,20 @@ function processTryStatement(
     }
   }
 
-  // Process finally clause (Java: finally, JS: finalizer)
-  const finallyClause = stmt.childForFieldName('finally') ?? stmt.childForFieldName('finalizer');
+  // Process finally clause (Java: finally, JS: finalizer). C# has no field —
+  // the `finally_clause` is a child node whose body is a `block`.
+  let finallyClause = stmt.childForFieldName('finally') ?? stmt.childForFieldName('finalizer');
+  if (!finallyClause && dialect === 'csharp') {
+    for (let i = 0; i < stmt.childCount; i++) {
+      const child = stmt.child(i);
+      if (child?.type === 'finally_clause') {
+        finallyClause = lastBlockChild(child);
+        break;
+      }
+    }
+  }
   if (finallyClause) {
-    const finallyResult = processStatements(finallyClause, currentId, blocks, edges, isJavaScript);
+    const finallyResult = processStatements(finallyClause, currentId, blocks, edges, dialect);
     currentId = finallyResult.nextId;
 
     // Connect all exits to finally
@@ -576,7 +661,7 @@ function processSwitchStatement(
   startId: number,
   blocks: CFGBlock[],
   edges: CFGEdge[],
-  isJavaScript: boolean
+  dialect: Dialect
 ): StatementsResult {
   let currentId = startId;
 
@@ -594,15 +679,19 @@ function processSwitchStatement(
   // Find switch body
   const body = stmt.childForFieldName('body');
   if (body) {
-    // Process each case (Java: switch_block_statement_group, JS: switch_case, switch_default)
-    const caseTypes = isJavaScript
-      ? ['switch_case', 'switch_default']
-      : ['switch_block_statement_group', 'switch_rule'];
+    // Per-case containers: JS `switch_case`/`switch_default`,
+    // C# `switch_section`, Java `switch_block_statement_group`/`switch_rule`.
+    const caseTypes =
+      dialect === 'js'
+        ? ['switch_case', 'switch_default']
+        : dialect === 'csharp'
+          ? ['switch_section']
+          : ['switch_block_statement_group', 'switch_rule'];
 
     for (let i = 0; i < body.childCount; i++) {
       const child = body.child(i);
       if (child && caseTypes.includes(child.type)) {
-        const caseResult = processStatements(child, currentId, blocks, edges, isJavaScript);
+        const caseResult = processStatements(child, currentId, blocks, edges, dialect);
         currentId = caseResult.nextId;
 
         if (caseResult.entryId !== -1) {
@@ -649,7 +738,7 @@ function buildBashCFG(tree: Tree, startId: number, cache?: NodeCache): CFG {
   for (const func of functions) {
     const body = func.childForFieldName('body');
     if (!body) continue;
-    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, false);
+    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, 'java');
     allBlocks.push(...blocks);
     allEdges.push(...edges);
     blockIdCounter = nextId;
@@ -679,7 +768,7 @@ function buildBashCFG(tree: Tree, startId: number, cache?: NodeCache): CFG {
     let firstBlockId = -1;
 
     for (const stmt of topLevelStatements) {
-      const result = processStatement(stmt, blockIdCounter, allBlocks, allEdges, false);
+      const result = processStatement(stmt, blockIdCounter, allBlocks, allEdges, 'java');
       blockIdCounter = result.nextId;
 
       if (firstBlockId === -1) {
@@ -738,7 +827,9 @@ function isBashStatement(node: Node): boolean {
 /**
  * Check if a node is a statement.
  */
-function isStatement(node: Node, isJavaScript: boolean): boolean {
+function isStatement(node: Node, dialect: Dialect): boolean {
+  if (dialect === 'csharp') return csharpStatementTypes.has(node.type);
+
   const javaStatementTypes = new Set([
     'local_variable_declaration',
     'expression_statement',
@@ -784,8 +875,34 @@ function isStatement(node: Node, isJavaScript: boolean): boolean {
     'import_statement',
   ]);
 
-  return isJavaScript ? jsStatementTypes.has(node.type) : javaStatementTypes.has(node.type);
+  return dialect === 'js' ? jsStatementTypes.has(node.type) : javaStatementTypes.has(node.type);
 }
+
+// C# statement node types (grammar diverges from Java on declarations,
+// iteration and scoped blocks). Kept module-level so `isStatement` allocates
+// it once rather than per call.
+const csharpStatementTypes = new Set([
+  'local_declaration_statement',
+  'expression_statement',
+  'if_statement',
+  'for_statement',
+  'foreach_statement',
+  'while_statement',
+  'do_statement',
+  'try_statement',
+  'switch_statement',
+  'return_statement',
+  'throw_statement',
+  'break_statement',
+  'continue_statement',
+  'using_statement',
+  'lock_statement',
+  'checked_statement',
+  'unsafe_statement',
+  'yield_statement',
+  'goto_statement',
+  'block',
+]);
 
 // =============================================================================
 // Go CFG Builder
@@ -814,7 +931,7 @@ function buildGoCFG(tree: Tree, blockIdCounter: number, cache?: NodeCache): CFG 
     const body = func.childForFieldName('body');
     if (!body || body.type !== 'block') continue;
 
-    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, false);
+    const { blocks, edges, nextId } = buildMethodCFG(body, blockIdCounter, 'java');
     allBlocks.push(...blocks);
     allEdges.push(...edges);
     blockIdCounter = nextId;

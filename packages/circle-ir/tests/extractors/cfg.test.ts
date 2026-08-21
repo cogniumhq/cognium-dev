@@ -329,3 +329,81 @@ public class Test {
     expect(conditionalBlock).toBeDefined();
   });
 });
+
+describe('CFG Builder — C#', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  const countType = (cfg: ReturnType<typeof buildCFG>, t: string) =>
+    cfg.blocks.filter((b) => b.type === t).length;
+  const countEdge = (cfg: ReturnType<typeof buildCFG>, t: string) =>
+    cfg.edges.filter((e) => e.type === t).length;
+
+  it('builds entry/exit for a C# method', async () => {
+    const tree = await parse(`class C { int M() { int x = 1; return x; } }`, 'csharp');
+    const cfg = buildCFG(tree, 'csharp');
+    expect(cfg.blocks.find((b) => b.type === 'entry')).toBeDefined();
+    expect(cfg.blocks.find((b) => b.type === 'exit')).toBeDefined();
+  });
+
+  it('captures a foreach as a loop with a back edge (the Java path dropped it)', async () => {
+    const tree = await parse(
+      `class C { void M(int[] xs) { foreach (var y in xs) { Use(y); } } }`,
+      'csharp',
+    );
+    const cfg = buildCFG(tree, 'csharp');
+    expect(countType(cfg, 'loop')).toBe(1);
+    expect(countEdge(cfg, 'back')).toBe(1);
+  });
+
+  it('recovers all three C# loop forms (for / foreach / while)', async () => {
+    const tree = await parse(
+      `class C { void M(string s, int[] xs) {
+        for (int i = 0; i < 10; i++) { A(i); }
+        foreach (var y in xs) { B(y); }
+        while (s.Length > 0) { s = s.Substring(1); }
+      } }`,
+      'csharp',
+    );
+    const cfg = buildCFG(tree, 'csharp');
+    expect(countType(cfg, 'loop')).toBe(3);
+    expect(countEdge(cfg, 'back')).toBe(3);
+  });
+
+  it('enumerates switch_section cases and branches an if', async () => {
+    const tree = await parse(
+      `class C { int M(string s) {
+        if (s == "a") { return 1; } else { return 2; }
+        switch (s) { case "p": return 3; case "q": return 4; default: return 5; }
+      } }`,
+      'csharp',
+    );
+    const cfg = buildCFG(tree, 'csharp');
+    // if + switch => two conditional blocks; if contributes true+false edges.
+    expect(countType(cfg, 'conditional')).toBe(2);
+    expect(countEdge(cfg, 'true')).toBeGreaterThanOrEqual(1);
+    expect(countEdge(cfg, 'false')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('models try/catch/finally with an exception edge', async () => {
+    const tree = await parse(
+      `class C { void M() { try { Risky(); } catch (Exception e) { Log(e); } finally { Clean(); } } }`,
+      'csharp',
+    );
+    const cfg = buildCFG(tree, 'csharp');
+    expect(countEdge(cfg, 'exception')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('flows through using/lock scoped blocks without adding branches', async () => {
+    const tree = await parse(
+      `class C { void M(object o) { using (var r = Open()) { r.Read(); } lock (o) { Touch(); } } }`,
+      'csharp',
+    );
+    const cfg = buildCFG(tree, 'csharp');
+    // no branches — but the nested statements are still captured as blocks.
+    expect(countType(cfg, 'conditional')).toBe(0);
+    expect(countType(cfg, 'loop')).toBe(0);
+    expect(cfg.blocks.length).toBeGreaterThanOrEqual(3);
+  });
+});

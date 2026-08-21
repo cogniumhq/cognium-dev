@@ -624,6 +624,20 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
         'return_statement', 'defer_statement', 'go_statement',
         'selector_expression', 'identifier',
       ]);
+    case 'csharp':
+      // Superset of the Java default (shared: class/method/constructor/field/
+      // import) plus the C#-only `buildCSharpCFG` containers, so
+      // `collectAllNodes` populates the cache in one pass and `buildCSharpCFG`
+      // skips its per-type `findNodes` walk on every C# file.
+      return new Set([
+        'method_invocation', 'object_creation_expression', 'class_declaration',
+        'method_declaration', 'constructor_declaration', 'field_declaration',
+        'import_declaration', 'interface_declaration', 'enum_declaration',
+        'package_declaration', 'local_variable_declaration',
+        // buildCSharpCFG method-like containers
+        'destructor_declaration', 'operator_declaration',
+        'local_function_statement', 'accessor_declaration',
+      ]);
     default:
       // Java default. `method_declaration` / `constructor_declaration` /
       // `import_declaration` are reused by `buildCFG` and `extractImports`

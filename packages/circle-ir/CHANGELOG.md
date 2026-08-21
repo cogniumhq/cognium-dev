@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-08-21
+
+C#/.NET (experimental): a real control-flow graph — complexity & maintainability metrics now work for C#.
+
+### Added
+
+- **`buildCSharpCFG` — a dedicated C# control-flow graph.** C# previously rode the Java statement path, which silently dropped C#-only constructs (`foreach`, `switch` sections, `using`/`lock` scopes, `local_declaration_statement`, `finally` clauses), so its CFG was incomplete and per-method complexity under-counted or did not attribute at all. The new builder models all C# loop forms (`for`/`foreach`/`while`/`do`), `if`/`switch` branching, and `try`/`catch`/`finally`, over the full set of method-like containers (methods, constructors, destructors, operators, local functions, property accessors).
+- **C# cyclomatic / loop / condition complexity + WMC.** With the CFG in place, `cyclomatic_complexity` (McCabe `v(G)`), `loop_complexity`, `condition_complexity` and `WMC` now emit per C# method — unblocking the C# quality-metrics work (cognium-ai#274).
+
+### Internal
+
+- The shared block/statement processors now thread a `Dialect` (`'js'` / `'java'` / `'csharp'`) instead of a lone `isJavaScript` boolean. The Java, JavaScript/TypeScript, Go and Bash paths are behaviourally unchanged (old `false` → `'java'`, `true` → `'js'`); full suite green and 0-delta across the OWASP-Java / SecuriBench / BenchmarkPython corpora (4095 files).
+
 ## [4.7.4] - 2026-08-21
 
 C#/.NET (experimental): Blazor XSS, tainted format strings, and Json.NET deserialization-config detection.

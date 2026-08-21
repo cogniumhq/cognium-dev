@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-08-21
+
+Adopts [`circle-ir@4.8.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental) now has a real control-flow graph, so `cognium-dev metrics` reports cyclomatic / loop / condition complexity and WMC for C# code (previously under-counted or absent). No CLI surface change.
+
 ## [4.7.4] - 2026-08-21
 
 Adopts [`circle-ir@4.7.4`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): Blazor `MarkupString` → XSS, tainted `String.Format` → CWE-134, and Json.NET `TypeNameHandling` deserialization-config detection (CWE-502). No CLI surface change.
