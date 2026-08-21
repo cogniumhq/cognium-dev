@@ -950,31 +950,75 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
  * arg) and a shell executable (`Process.Start("/bin/sh", "-c " + x)` — kept
  * firing for #276) stay dangerous. A variable executable stays dangerous.
  */
-function isSafeCSharpProcessStartCall(call: CallInfo, pattern: SinkPattern, language: SupportedLanguage | undefined): boolean {
+const CSHARP_SHELL_PROGRAMS = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
+  'cmd', 'powershell', 'pwsh',
+]);
+
+/** True when a `"prog"` / `@"C:\prog.exe"` literal names a non-shell program. */
+function isConstNonShellExe(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  const t = raw.trim();
+  // constant string literal only ("git", @"C:\git.exe"); a variable exe is dangerous.
+  if (!/^@?"[^"]*"$/.test(t)) return false;
+  const program = (t.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
+    .toLowerCase().replace(/\.exe$/, '');
+  return !CSHARP_SHELL_PROGRAMS.has(program);
+}
+
+// Extract the executable literal from a `new ProcessStartInfo("exe", …)`
+// expression, or by resolving a bare `psi` variable back to its
+// `psi = new ProcessStartInfo("exe", …)` construction in the file. Returns the
+// raw literal (e.g. `"grep"`) or null when it cannot be determined statically.
+const PSI_CTOR_EXE_RE = /\bnew\s+ProcessStartInfo\s*(?:<[^>]*>)?\s*\(\s*(@?"[^"]*")/;
+function processStartInfoExe(expr: string, sourceLines: string[] | undefined): string | null {
+  const inline = PSI_CTOR_EXE_RE.exec(expr);
+  if (inline) return inline[1];
+  // Bare identifier — resolve its construction from the file text.
+  if (sourceLines && /^[A-Za-z_]\w*$/.test(expr.trim())) {
+    const varName = expr.trim();
+    const assignRe = new RegExp(
+      `\\b${varName}\\s*=\\s*new\\s+ProcessStartInfo\\s*(?:<[^>]*>)?\\s*\\(\\s*(@?"[^"]*")`,
+    );
+    for (const line of sourceLines) {
+      const m = assignRe.exec(line);
+      if (m) return m[1];
+    }
+  }
+  return null;
+}
+
+function isSafeCSharpProcessStartCall(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines?: string[],
+): boolean {
   if (language !== 'csharp') return false;
   if (pattern.type !== 'command_injection') return false;
-  if (call.method_name !== 'Start') return false;
-  // argv form only — needs a separate arguments arg beyond the filename.
-  if (call.arguments.length < 2) return false;
+  const method = call.method_name;
+  if (method !== 'Start' && method !== 'ProcessStartInfo') return false;
 
-  const fileArg = call.arguments.find(a => a.position === 0);
-  if (!fileArg) return false;
-  let raw: string;
-  if (fileArg.literal !== null && fileArg.literal !== undefined) {
-    raw = String(fileArg.literal).trim();
-  } else {
-    raw = (fileArg.expression ?? '').trim();
+  // argv forms: `Process.Start(exe, args)` and the inline
+  // `new ProcessStartInfo(exe, args)` constructor (cognium-ai#328 shape 2) —
+  // executable at [0], argument string at [1]. A constant non-shell exe means
+  // the arguments are passed argv (no shell), so a tainted [1] is not injection.
+  if (call.arguments.length >= 2) {
+    const fileArg = call.arguments.find(a => a.position === 0);
+    const raw = fileArg?.literal != null ? String(fileArg.literal) : fileArg?.expression;
+    return isConstNonShellExe(raw);
   }
-  // constant string literal only ("git", @"C:\git.exe"); a variable exe is dangerous.
-  if (!/^@?"[^"]*"$/.test(raw)) return false;
-  const program = (raw.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
-    .toLowerCase().replace(/\.exe$/, '');
 
-  const SHELL_PROGRAMS = new Set([
-    'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh',
-    'cmd', 'powershell', 'pwsh',
-  ]);
-  return !SHELL_PROGRAMS.has(program);
+  // Single-arg `Process.Start(psi)` where `psi` is an inline or variable
+  // ProcessStartInfo built with a constant non-shell exe — argv/`ArgumentList`
+  // or a non-shell `Arguments` string, still no shell (cognium-ai#328 shape 2,
+  // object-carried variant).
+  if (method === 'Start' && call.arguments.length === 1) {
+    const arg0 = call.arguments.find(a => a.position === 0);
+    const expr = (arg0?.expression ?? '').trim();
+    return isConstNonShellExe(processStartInfoExe(expr, sourceLines));
+  }
+  return false;
 }
 
 /**
@@ -1656,7 +1700,7 @@ function findSinks(
         // Skip C# `Process.Start(constNonShellExe, arguments)` argv calls —
         // a non-shell executable receives the arguments directly (no shell),
         // so tainted arguments cannot inject a command. cognium-ai#328.
-        if (isSafeCSharpProcessStartCall(call, pattern, language)) {
+        if (isSafeCSharpProcessStartCall(call, pattern, language, sourceLines)) {
           continue;
         }
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.2] - 2026-08-21
+
+C#/.NET (experimental): `ProcessStartInfo` argv false-positive fix.
+
+### Fixed
+
+- **`Process.Start(new ProcessStartInfo("grep", pattern) { UseShellExecute = false })` no longer false-fires command injection (cognium-ai#328 shape 2).** When the executable is a constant non-shell program, its arguments are passed argv — no shell interprets metacharacters — so a tainted argument is not injection (the same `execFile`-vs-`exec` distinction already drawn for Go/Rust/JS). The `isSafeCSharpProcessStartCall` gate now also covers the `ProcessStartInfo` constructor and the object-carried `var psi = new ProcessStartInfo("grep", …); Process.Start(psi)` form (inline and variable, incl. `ArgumentList`). Recall preserved: a shell exe (`cmd.exe`/`bash`/…) or a variable executable still fires.
+
+Note: cognium-ai#328 shape 1 (inline host-allowlist equality guard for SSRF) is **not** in this release — it needs guard *dominance* (an `== const` positive guard sanitizes, but an `== const` early-return blocklist must not), which is a CFG/dominator task, not a text match.
+
 ## [4.8.1] - 2026-08-21
 
 C#/.NET (experimental): LDAP injection sink.

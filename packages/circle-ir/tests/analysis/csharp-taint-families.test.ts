@@ -640,6 +640,34 @@ public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x 
   });
 });
 
+// cognium-ai#328 shape 2 — a ProcessStartInfo argv invocation with a constant
+// non-shell executable is not command injection: no shell interprets the
+// tainted arguments. Mirrors the execFile/argv gates for Go/Rust/JS.
+describe('C# Phase-2: ProcessStartInfo argv safe-shape (#328 shape 2)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const cmdi = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'command_injection');
+  const M = (body: string) => `
+using System.Diagnostics; using Microsoft.AspNetCore.Mvc;
+public class Ctl : ControllerBase { public void M([FromQuery] string pattern) { ${body} } }`;
+
+  it('does NOT fire on a constant non-shell exe with tainted argv', async () => {
+    // inline constructor, with and without the explicit UseShellExecute flag
+    expect(cmdi(await analyze(M('Process.Start(new ProcessStartInfo("grep", pattern) { UseShellExecute = false });'), 'C.cs', 'csharp'))).toBe(false);
+    expect(cmdi(await analyze(M('Process.Start(new ProcessStartInfo("grep", pattern));'), 'C.cs', 'csharp'))).toBe(false);
+    // object-carried: a variable ProcessStartInfo passed to Process.Start
+    expect(cmdi(await analyze(M('var psi = new ProcessStartInfo("grep", pattern) { UseShellExecute = false };\nProcess.Start(psi);'), 'C.cs', 'csharp'))).toBe(false);
+    expect(cmdi(await analyze(M('var psi = new ProcessStartInfo("grep");\npsi.ArgumentList.Add(pattern);\nProcess.Start(psi);'), 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('STILL fires on a shell exe or a variable executable (recall preserved)', async () => {
+    expect(cmdi(await analyze(M('Process.Start(new ProcessStartInfo("cmd.exe", "/c " + pattern) { UseShellExecute = false });'), 'C.cs', 'csharp'))).toBe(true);
+    expect(cmdi(await analyze(M('Process.Start(new ProcessStartInfo(pattern, "x"));'), 'C.cs', 'csharp'))).toBe(true);
+    expect(cmdi(await analyze(M('var psi = new ProcessStartInfo("cmd.exe", "/c " + pattern);\nProcess.Start(psi);'), 'C.cs', 'csharp'))).toBe(true);
+    expect(cmdi(await analyze(M('var psi = new ProcessStartInfo(pattern);\nProcess.Start(psi);'), 'C.cs', 'csharp'))).toBe(true);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>
