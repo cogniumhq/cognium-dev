@@ -584,6 +584,38 @@ public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x 
   });
 });
 
+// cognium-ai#275/#318 — M batch: Blazor MarkupString (xss), tainted String.Format
+// (format_string, CWE-134), and the Json.NET TypeNameHandling config-detect (CWE-502).
+describe('C# Phase-2: MarkupString / String.Format / TypeNameHandling', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const flow = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+  const rule = (r: Awaited<ReturnType<typeof analyze>>, id: string) =>
+    (r.findings ?? []).some((f) => f.rule_id === id);
+  const ctrl = (body: string, using = '') => `
+using Microsoft.AspNetCore.Mvc; ${using}
+public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x = p; ${body} } }`;
+
+  it('new MarkupString(x) fires xss; a constant literal is clean', async () => {
+    const u = 'using Microsoft.AspNetCore.Components;';
+    expect(flow(await analyze(ctrl('var m = new MarkupString(x);', u), 'C.cs', 'csharp'), 'xss')).toBe(true);
+    expect(flow(await analyze(ctrl('var m = new MarkupString("<b>ok</b>");', u), 'C.cs', 'csharp'), 'xss')).toBe(false);
+  });
+
+  it('String.Format fires format_string only when the FORMAT string is tainted', async () => {
+    expect(flow(await analyze(ctrl('var s = String.Format(x, 1);'), 'C.cs', 'csharp'), 'format_string')).toBe(true);
+    // taint in an *argument* (not the format) is normal usage — must not fire.
+    expect(flow(await analyze(ctrl('var s = String.Format("hi {0}", x);'), 'C.cs', 'csharp'), 'format_string')).toBe(false);
+  });
+
+  it('TypeNameHandling.All/Auto flags insecure-deserialization-config; None is clean', async () => {
+    const u = 'using Newtonsoft.Json;';
+    expect(rule(await analyze(ctrl('var s = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };', u), 'C.cs', 'csharp'), 'insecure-deserialization-config')).toBe(true);
+    expect(rule(await analyze(ctrl('settings.TypeNameHandling = TypeNameHandling.Auto;', u), 'C.cs', 'csharp'), 'insecure-deserialization-config')).toBe(true);
+    expect(rule(await analyze(ctrl('var s = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.None };', u), 'C.cs', 'csharp'), 'insecure-deserialization-config')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>

@@ -2941,6 +2941,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Raw', class: 'Html', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'HtmlString', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // Blazor `new MarkupString(x)` renders its argument as raw HTML (the framework's
+  // documented "trusted markup" escape hatch) — attacker-controlled input is XSS. (ca#275)
+  { method: 'MarkupString', class: 'constructor', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // `String.Format(fmt, …)` with an attacker-controlled FORMAT string — CWE-134.
+  // Taint-gated on arg 0 (the format), so ordinary `String.Format("...", user)` where
+  // only an argument is tainted never fires. .NET composite formatting can't corrupt
+  // memory, so medium (FormatException DoS / unintended arg access), unlike C printf.
+  { method: 'Format', class: 'String', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
 
   // C# LDAP injection — System.DirectoryServices (CWE-90). The user-built
   // filter is the constructor argument.

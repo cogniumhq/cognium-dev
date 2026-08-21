@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.4] - 2026-08-21
+
+C#/.NET (experimental): Blazor XSS, tainted format strings, and Json.NET deserialization-config detection.
+
+### Added
+
+- **Blazor `new MarkupString(x)` → XSS (CWE-79).** `MarkupString` is the framework's "render as raw HTML" escape hatch; an attacker-controlled argument is stored XSS. Taint-gated; a constant literal never fires. (cognium-ai#275)
+- **`String.Format(fmt, …)` with a tainted format string → CWE-134.** Taint-gated on arg 0 (the format), so ordinary `String.Format("…", user)` — where only an *argument* is tainted — never fires. Severity `medium`: .NET composite formatting cannot corrupt memory (no `%n`), the risk is `FormatException` DoS / unintended argument access. (cognium-ai#273)
+- **Json.NET `TypeNameHandling` config-detect → CWE-502.** The `insecure-deserialization-config` pass (pass 117) now also flags `TypeNameHandling = TypeNameHandling.All/Auto/Objects/Arrays` in C#: a `$type` field in untrusted JSON then instantiates arbitrary .NET types (the .NET analogue of XStream's grant-all). Config-shape match, independent of flow; the secure value `None` never matches. (cognium-ai#318)
+
+All C#-scoped (or C#-branch-gated) — zero movement across the OWASP-Java / SecuriBench / BenchmarkPython corpora (4095 files); the Java XStream path is byte-identical.
+
 ## [4.7.3] - 2026-08-21
 
 C#/.NET (experimental): three more canonical taint sinks.
