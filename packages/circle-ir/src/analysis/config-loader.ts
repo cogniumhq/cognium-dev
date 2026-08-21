@@ -2892,9 +2892,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'RunAsync', class: 'CSharpScript', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
-  // C# insecure deserialization — BinaryFormatter et al. (CWE-502).
+  // C# insecure deserialization — the polymorphic BCL formatters that can
+  // instantiate arbitrary types named in the payload (CWE-502, cognium-ai#318).
+  // Each of these classes exists only to deserialize and is unsafe on untrusted
+  // input; class-scoped, so no collision with safe JSON APIs (System.Text.Json /
+  // Newtonsoft-default, which are intentionally NOT sinks).
   { method: 'Deserialize', class: 'BinaryFormatter', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'Deserialize', class: 'NetDataContractSerializer', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Deserialize', class: 'SoapFormatter', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Deserialize', class: 'LosFormatter', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Deserialize', class: 'ObjectStateFormatter', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# XSS — raw HTML output (CWE-79).
   { method: 'Raw', class: 'Html', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
@@ -2934,6 +2941,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'LoadXml', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Load', class: 'XmlDocument', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Load', class: 'XDocument', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // `new XmlTextReader(input)` — its DtdProcessing defaults to Parse (resolves
+  // external entities), unlike `XmlReader.Create` (Prohibit). CWE-611,
+  // cognium-ai#318. The 4.7.0 XmlResolver=null / DtdProcessing=Prohibit
+  // hardening still suppresses the safe shape.
+  { method: 'XmlTextReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // Python SQLi — asyncpg Connection.*
   { method: 'execute',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0] },

@@ -547,6 +547,29 @@ using System.Xml;
 public class C { public void M(string xml) { var d = new XmlDocument(); d.XmlResolver = null; d.LoadXml(xml); } }`;
     expect(has(await analyze(code, 'C.cs', 'csharp'), 'xxe')).toBe(false);
   });
+
+  // cognium-ai#318 — additional canonical polymorphic deserializers + the
+  // DTD-resolving XmlTextReader.
+  it('SoapFormatter / LosFormatter / ObjectStateFormatter fire deserialization', async () => {
+    const cases = ['SoapFormatter', 'LosFormatter', 'ObjectStateFormatter'];
+    for (const cls of cases) {
+      const code = `
+using System.IO;
+public class C { public void M(string d, Stream s) { var f = new ${cls}(); f.Deserialize(d); } }`;
+      expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(true);
+    }
+  });
+
+  it('new XmlTextReader(input) fires xxe; hardened (DtdProcessing=Prohibit) is clean', async () => {
+    const unsafe = `
+using System.Xml; using System.IO;
+public class C { public void M(string d) { var r = new XmlTextReader(new StringReader(d)); while (r.Read()) {} } }`;
+    const safe = `
+using System.Xml; using System.IO;
+public class C { public void M(string d) { var r = new XmlTextReader(new StringReader(d)); r.DtdProcessing = DtdProcessing.Prohibit; while (r.Read()) {} } }`;
+    expect(has(await analyze(unsafe, 'C.cs', 'csharp'), 'xxe')).toBe(true);
+    expect(has(await analyze(safe, 'C.cs', 'csharp'), 'xxe')).toBe(false);
+  });
 });
 
 describe('C# Phase-1: explicit ASP.NET request sources', () => {

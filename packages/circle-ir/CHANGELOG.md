@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.2] - 2026-08-20
 
-C#/.NET (experimental): xxe/deserialization finding conversion + `Process.Start` argv precision.
+C#/.NET (experimental): xxe/deserialization finding conversion + `Process.Start` argv precision + more canonical sink names.
+
+### Added
+
+- **More canonical C# CWE-502 / XXE sink names** (cognium-ai#318). Deserialization: `SoapFormatter`, `LosFormatter`, `ObjectStateFormatter` (the remaining polymorphic BCL formatters that can instantiate payload-named types — class-scoped, so System.Text.Json / Newtonsoft-default stay non-sinks). XXE: `new XmlTextReader(input)` — its `DtdProcessing` defaults to `Parse` (resolves external entities), unlike `XmlReader.Create`. The 4.7.0 `XmlResolver=null` / `DtdProcessing=Prohibit` hardening still suppresses the safe shape.
 
 ### Fixed
 
