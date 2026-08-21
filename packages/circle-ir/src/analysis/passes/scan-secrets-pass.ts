@@ -291,6 +291,15 @@ function isLikelyCredentialAssignment(line: string): { name: string; value: stri
   // Reject all-same-char (e.g. "xxx", "----").
   if (isAllSameChar(value)) return null;
 
+  // #326 D — the value IS its own declaring identifier (a config key name or
+  // placeholder, not a secret): `LicenseReportPassword = "LicenseReportPassword"`,
+  // `ViewPasswordBtn = "ViewPasswordBtn"`. A real credential is never equal to
+  // the variable that holds it. Case-insensitive to cover casing variants.
+  if (value.toLowerCase() === name.toLowerCase()) return null;
+  // XML namespace / URI values that merely contain a credential keyword
+  // (e.g. an OOXML namespace `http://…/password`) are not secrets.
+  if (/^(?:https?:\/\/|urn:|xmlns)/i.test(value)) return null;
+
   // #130 — value-shape gate (positive predicates).
   // Real credentials are ≥ 12 chars, have entropy ≥ 3.5 bits/char, and
   // mix at least 2 character classes. Together these reject low-entropy

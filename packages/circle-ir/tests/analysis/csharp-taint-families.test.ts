@@ -522,6 +522,76 @@ public class C { public void M([FromQuery] string exe) { var e = exe; Process.St
   });
 });
 
+// cognium-ai#326 Child B — ASP.NET ControllerBase.File(stream|bytes, contentType)
+// is a result helper, not a path sink; the Java `new File(path)` sink over-matched it.
+// cognium-ai#318 — C# ILogger log injection (CWE-117). Only the message
+// template (arg[0]) is injectable; the structured form keeps taint in later args.
+describe('C# Phase-2: ILogger log_injection (#318)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'log_injection');
+  const ctrl = (body: string) => `
+using Microsoft.AspNetCore.Mvc; using Microsoft.Extensions.Logging;
+public class C : ControllerBase { private ILogger _logger; public void M([FromQuery] string u) { var x = u; ${body} } }`;
+
+  it('fires when the tainted value is the log message', async () => {
+    for (const b of [`_logger.LogInformation(x);`, `_logger.LogError("bad: " + x);`, `_logger.LogWarning(x);`]) {
+      expect(has(await analyze(ctrl(b), 'C.cs', 'csharp'))).toBe(true);
+    }
+  });
+
+  it('does NOT fire on structured logging (taint in a template argument) or a constant message', async () => {
+    expect(has(await analyze(ctrl(`_logger.LogInformation("User {Id} did action", x);`), 'C.cs', 'csharp'))).toBe(false);
+    expect(has(await analyze(ctrl(`_logger.LogInformation("app started");`), 'C.cs', 'csharp'))).toBe(false);
+  });
+});
+
+// cognium-ai#326 Child C — a tainted var NAME appearing only inside a SQL string
+// literal (parameterized `"… WHERE n=@n"`) must not taint the command object.
+describe('C# Phase-2: parameterized query not sql_injection (#326 C)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'sql_injection');
+  const M = (body: string) => `
+using System.Data.SqlClient;
+public class C {
+  public void M([Microsoft.AspNetCore.Mvc.FromQuery] string n) {
+${body}
+  }
+}`;
+
+  it('does NOT fire on a parameterized query whose literal contains the param name', async () => {
+    expect(has(await analyze(M(`    var cmd = new SqlCommand("SELECT * FROM u WHERE n=@n");\n    cmd.Parameters.AddWithValue("@n", n);\n    cmd.ExecuteReader();`), 'C.cs', 'csharp'))).toBe(false);
+    expect(has(await analyze(M(`    var cmd = new SqlCommand("SELECT * FROM u WHERE n=@n");\n    cmd.ExecuteReader();`), 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('STILL fires on genuine concatenation / interpolation into the command', async () => {
+    expect(has(await analyze(M(`    var cmd = new SqlCommand("SELECT * FROM u WHERE n=" + n);\n    cmd.ExecuteReader();`), 'C.cs', 'csharp'))).toBe(true);
+    expect(has(await analyze(M(`    var cmd = new SqlCommand();\n    cmd.CommandText = "SELECT * FROM u WHERE n=" + n;\n    cmd.ExecuteReader();`), 'C.cs', 'csharp'))).toBe(true);
+  });
+});
+
+describe('C# Phase-2: ControllerBase.File() not path_traversal (#326 B)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const path = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'path_traversal');
+
+  it('does NOT fire on File(stream, ct) / File(bytes, ct)', async () => {
+    const s = `using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase { public IActionResult M(System.IO.Stream s) { return File(s, "application/pdf"); } }`;
+    const b = `using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase { public IActionResult M(byte[] b) { return File(b, "application/pdf"); } }`;
+    expect(path(await analyze(s, 'C.cs', 'csharp'))).toBe(false);
+    expect(path(await analyze(b, 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('STILL fires on a real path sink (File.ReadAllText of user input)', async () => {
+    const code = `using System.IO; using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase { public string M([FromQuery] string p) { var x = p; return File.ReadAllText(x); } }`;
+    expect(path(await analyze(code, 'C.cs', 'csharp'))).toBe(true);
+  });
+});
+
 describe('C# Phase-2: xxe / deserialization reach-map (#317)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>

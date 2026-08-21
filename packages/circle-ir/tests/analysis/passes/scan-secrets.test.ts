@@ -843,3 +843,23 @@ describe('ScanSecretsPass — connection-string credentials (cognium-ai#253)', (
     expect(csFindings(runPass('a.js', 'const x = "http://host:8080@cache";', 'javascript'))).toHaveLength(0);
   });
 });
+
+// cognium-ai#326 Child D — the value IS its declaring identifier (a config key
+// name / placeholder), or an XML namespace — not a secret.
+describe('ScanSecretsPass — identifier-name / namespace values are not secrets (#326 D)', () => {
+  const cred = (out: SastFinding[]) => out.filter(f => f.rule_id === 'hardcoded-credential');
+
+  it('does NOT flag a value equal to its declaring identifier', () => {
+    expect(cred(runPass('a.cs', 'const string LicenseReportPassword = "LicenseReportPassword";', 'csharp'))).toHaveLength(0);
+    expect(cred(runPass('a.cs', 'const string ViewPasswordBtn = "ViewPasswordBtn";', 'csharp'))).toHaveLength(0);
+  });
+
+  it('does NOT flag an XML-namespace value that merely contains a keyword', () => {
+    expect(cred(runPass('a.cs', 'const string ns = "http://schemas.example.com/2006/password";', 'csharp'))).toHaveLength(0);
+  });
+
+  // The guards only add two narrow negative conditions (value == identifier;
+  // value is an http/urn/xmlns URI) — a real provider token never satisfies
+  // either, so genuine-secret detection is unaffected (covered by the provider
+  // tests above). A test literal here would be blocked by push protection.
+});

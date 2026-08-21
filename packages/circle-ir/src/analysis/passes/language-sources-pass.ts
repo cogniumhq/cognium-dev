@@ -2256,8 +2256,19 @@ export function buildJavaTaintedVars(
       if (JAVA_KEYWORDS.has(lhs)) continue;
       if (knownTainted.has(lhs)) continue;
       const escaped = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Reduce the RHS to code positions before matching a tainted var name:
+      // keep `$"…{expr}"` interpolation contents, drop plain / verbatim string
+      // literal bodies and char literals. Otherwise a tainted var NAME that
+      // appears only *inside* a string literal — e.g. `n` in
+      // `new SqlCommand("… WHERE n=@n")` (a parameterized/safe query) — would
+      // spuriously taint the LHS (cognium-ai#326 C). Mirrors the #271 object-carry.
+      const rhsCode = rhs
+        .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
+          ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+        .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+        .replace(/'(?:[^'\\]|\\.)'/g, ' ');
       const ref = [...knownTainted].some(v =>
-        new RegExp(`(?<![\\p{L}\\p{N}_])${escaped(v)}(?![\\p{L}\\p{N}_])`, 'u').test(rhs),
+        new RegExp(`(?<![\\p{L}\\p{N}_])${escaped(v)}(?![\\p{L}\\p{N}_])`, 'u').test(rhsCode),
       );
       if (ref) {
         derived.set(lhs, i + 1);

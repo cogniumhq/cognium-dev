@@ -1230,7 +1230,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // File: covers both File(String pathname) and File(parent, child). The 2-arg
   // overload's child argument carries CVE-2018-8041 (Camel mail Content-Disposition
   // filename written to disk).
-  { method: 'File', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1] },
+  // Java `new File(path)` idiom. Excluded for C#: there is no `new File()` in
+  // .NET (it's `System.IO.File` statics + `FileStream`, covered separately), and
+  // this over-matched ASP.NET `ControllerBase.File(stream|bytes, contentType)` —
+  // a result helper that returns a file, not a path sink (cognium-ai#326 B).
+  { method: 'File', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1], exclude_languages: ['csharp'] },
   { method: 'FileInputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileOutputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileReader', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
@@ -2931,6 +2935,21 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // cognium-dev#273/#275). `BsonDocument.Parse(userJson)` deserializes an
   // attacker-controlled query document. Class-scoped (static receiver resolves).
   { method: 'Parse', class: 'BsonDocument', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // C# log injection — Microsoft.Extensions.Logging `ILogger` (CWE-117,
+  // cognium-ai#318). Only the message TEMPLATE (arg[0]) is the injectable
+  // position; the structured form `LogInformation("… {Id}", id)` keeps taint in
+  // later args (the logger renders them as data), so arg_positions:[0] does not
+  // flag it. Mirrors the Java `Logger` sinks; severity low.
+  { method: 'LogInformation', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogWarning', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogError', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogDebug', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogCritical', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogTrace', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  // Generic `ILogger.Log(logLevel, message, …)` — class-scoped (`Log` alone is
+  // too generic); the message is arg[1].
+  { method: 'Log', class: 'ILogger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1], languages: ['csharp'] },
 
   // C# XPath injection — System.Xml.XPath (CWE-643). Distinctive selector methods.
   { method: 'SelectSingleNode', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0], languages: ['csharp'] },
