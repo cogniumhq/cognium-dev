@@ -2847,6 +2847,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // ADO.NET `cmd.CommandText = "…" + x` — emitted as a synthetic call by
   // extractCSharpCalls (property-assignment sink; the ctor-arg sink misses it).
   { method: 'CommandText', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // `DirectorySearcher.Filter = "(uid=" + x + ")"` — LDAP injection (cognium-ai#272).
+  // Emitted as a synthetic call by extractCSharpCalls ONLY when the receiver
+  // resolves to a DirectorySearcher, so this classless entry never over-matches
+  // other `.Filter =` assignments (DataView/BindingSource/collection filters).
+  { method: 'Filter', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   // ADO.NET `cmd.Execute*()` — object-carried sink (cognium-dev#271). The taint
   // rides the SqlCommand receiver (CommandText set from tainted data); the
   // receiver is surfaced as arg[0] by extractCSharpCalls, and the command object

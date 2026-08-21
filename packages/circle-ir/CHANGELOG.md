@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.1] - 2026-08-21
+
+C#/.NET (experimental): LDAP injection sink.
+
+### Added
+
+- **`DirectorySearcher.Filter = "(uid=" + x + ")"` → LDAP injection (CWE-90).** Emitted as a property-assignment sink (like ADO.NET `CommandText`), but **class-gated at emission** to a resolved `DirectorySearcher` receiver — so the classless `Filter` registry entry never over-matches the many unrelated `.Filter =` properties (`DataView`, `BindingSource`, collection filters). Taint-gated; a constant filter never fires. (cognium-ai#272)
+
 ## [4.8.0] - 2026-08-21
 
 C#/.NET (experimental): a real control-flow graph — complexity & maintainability metrics now work for C#.

@@ -268,13 +268,25 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     const left = asn.childForFieldName('left');
     if (left?.type !== 'member_access_expression') continue;
     const nameNode = left.childForFieldName('name');
-    if (!nameNode || getNodeText(nameNode) !== 'CommandText') continue;
+    if (!nameNode) continue;
+    const propName = getNodeText(nameNode);
+    const exprNode = left.childForFieldName('expression');
+    // `CommandText` is distinctive to ADO.NET commands, so it fires classless.
+    // `Filter` is a common property name, so it is class-gated to a resolved
+    // `DirectorySearcher` receiver (cognium-ai#272 LDAP injection) — this keeps
+    // the classless registry sink from over-matching unrelated `.Filter =`.
+    if (propName === 'Filter') {
+      const recv = exprNode ? getNodeText(exprNode) : null;
+      const recvType = recv ? typeMap.get(recv) : undefined;
+      if (recvType !== 'DirectorySearcher') continue;
+    } else if (propName !== 'CommandText') {
+      continue;
+    }
     const right = asn.childForFieldName('right');
     if (!right) continue;
     const rhsText = getNodeText(right);
-    const exprNode = left.childForFieldName('expression');
     calls.push({
-      method_name: 'CommandText',
+      method_name: propName,
       receiver: exprNode ? getNodeText(exprNode) : null,
       receiver_type: null,
       receiver_type_fqn: null,

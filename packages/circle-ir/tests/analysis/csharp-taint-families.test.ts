@@ -616,6 +616,30 @@ public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x 
   });
 });
 
+// cognium-ai#272 — DirectorySearcher.Filter LDAP injection. The `Filter`
+// property-assignment sink is class-gated to a resolved DirectorySearcher
+// receiver so unrelated `.Filter =` assignments never fire.
+describe('C# Phase-2: DirectorySearcher.Filter LDAP injection (#272)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'ldap_injection');
+  const ctrl = (body: string) => `
+using Microsoft.AspNetCore.Mvc; using System.DirectoryServices;
+public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x = p; ${body} } }`;
+
+  it('fires on a tainted Filter for both typed and var DirectorySearcher receivers', async () => {
+    expect(has(await analyze(ctrl('DirectorySearcher s = new DirectorySearcher(); s.Filter = "(uid=" + x + ")"; s.FindAll();'), 'C.cs', 'csharp'))).toBe(true);
+    expect(has(await analyze(ctrl('var s = new DirectorySearcher(entry); s.Filter = "(cn=" + x + ")"; s.FindOne();'), 'C.cs', 'csharp'))).toBe(true);
+  });
+
+  it('does NOT fire on a constant filter, or on an unrelated .Filter receiver', async () => {
+    expect(has(await analyze(ctrl('DirectorySearcher s = new DirectorySearcher(); s.Filter = "(objectClass=user)"; s.FindAll();'), 'C.cs', 'csharp'))).toBe(false);
+    // DataView / BindingSource also expose a `.Filter` — must not be LDAP.
+    expect(has(await analyze(ctrl('var view = new DataView(); view.Filter = "Name=\'" + x + "\'";'), 'C.cs', 'csharp'))).toBe(false);
+    expect(has(await analyze(ctrl('BindingSource bs = new BindingSource(); bs.Filter = "Age > " + x;'), 'C.cs', 'csharp'))).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>
