@@ -526,6 +526,32 @@ public class C { public void M([FromQuery] string exe) { var e = exe; Process.St
 // is a result helper, not a path sink; the Java `new File(path)` sink over-matched it.
 // cognium-ai#318 — C# ILogger log injection (CWE-117). Only the message
 // template (arg[0]) is injectable; the structured form keeps taint in later args.
+// Additional canonical C# System.IO / reflection sink coverage.
+describe('C# Phase-2: File/Directory path + Assembly.Load sinks', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+  const io = (body: string) => `
+using System.IO; using System.Reflection; using Microsoft.AspNetCore.Mvc;
+public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x = p; ${body} } }`;
+
+  it('File.Copy/Move/Delete/Open/Create + Directory.* fire path_traversal', async () => {
+    for (const b of ['File.Copy(x, "d");', 'File.Move(x, "d");', 'File.Delete(x);', 'File.Open(x, FileMode.Open);', 'File.Create(x);', 'Directory.CreateDirectory(x);', 'var f = Directory.GetFiles(x);']) {
+      expect(has(await analyze(io(b), 'C.cs', 'csharp'), 'path_traversal')).toBe(true);
+    }
+  });
+
+  it('Assembly.Load/LoadFrom fire code_injection; constant is clean', async () => {
+    expect(has(await analyze(io('Assembly.Load(x);'), 'C.cs', 'csharp'), 'code_injection')).toBe(true);
+    expect(has(await analyze(io('Assembly.LoadFrom(x);'), 'C.cs', 'csharp'), 'code_injection')).toBe(true);
+    expect(has(await analyze(io('Assembly.Load("System.Data");'), 'C.cs', 'csharp'), 'code_injection')).toBe(false);
+  });
+
+  it('constant paths do not fire path_traversal', async () => {
+    expect(has(await analyze(io('File.Copy("/a", "/b");'), 'C.cs', 'csharp'), 'path_traversal')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>

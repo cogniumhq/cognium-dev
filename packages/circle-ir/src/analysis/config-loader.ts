@@ -2877,6 +2877,22 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'FileStream', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // Remaining System.IO.File path APIs — class-scoped so they don't collide
+  // with unrelated methods. Copy/Move take a source AND destination path (both
+  // attacker-controllable → read-anywhere / write-anywhere), hence [0, 1].
+  { method: 'Copy', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1], languages: ['csharp'] },
+  { method: 'Move', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0, 1], languages: ['csharp'] },
+  { method: 'Delete', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Open', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'OpenText', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Create', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'WriteAllLines', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'AppendAllLines', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // System.IO.Directory path APIs.
+  { method: 'CreateDirectory', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Delete', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'GetFiles', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'EnumerateFiles', class: 'Directory', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# SSRF — HttpClient / WebClient / WebRequest (CWE-918).
   { method: 'GetAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
@@ -2895,6 +2911,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // C# code injection — dynamic script/assembly loading (CWE-94).
   { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'RunAsync', class: 'CSharpScript', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // Loading an assembly from an attacker-controlled name/path is arbitrary code
+  // execution. Class-scoped to `Assembly` (low FP — a tainted arg here is rare
+  // in benign code). `Type.GetType`/`Activator.CreateInstance` are intentionally
+  // NOT added — reflection with config-driven type names is common in DI, an FP
+  // trap without the reflection-suppress machinery.
+  { method: 'Load', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LoadFrom', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LoadFile', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# insecure deserialization — the polymorphic BCL formatters that can
   // instantiate arbitrary types named in the payload (CWE-502, cognium-ai#318).
