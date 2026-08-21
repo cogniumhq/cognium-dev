@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.7.2] - 2026-08-20
 
+**Fixes C#/.NET scanning via the CLI.** `initWasm` registered grammar paths for 8 languages but omitted `csharp` (and `tsx`), so `cognium-dev scan` on a `.cs` file failed with `ENOENT: wasm/tree-sitter-csharp.wasm` — the C# engine support (shipped since 4.0.0) was unreachable through the CLI. Added `csharp` and `tsx` to both the npm and standalone `languagePaths`. `.cs` files now scan; `.tsx` files now parse.
+
 Adopts [`circle-ir@4.7.2`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): xxe/deserialization sinks now convert to findings (cognium-ai#317), and `Process.Start(constNonShellExe, args)` argv calls no longer false-positive as command injection (cognium-ai#328). No CLI surface change.
 
 ## [4.7.1] - 2026-08-14

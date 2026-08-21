@@ -574,6 +574,8 @@ async function initWasm(spin: Spinner | null): Promise<void> {
           python: join(wasmDir, 'tree-sitter-python.wasm'),
           rust: join(wasmDir, 'tree-sitter-rust.wasm'),
           html: join(wasmDir, 'tree-sitter-html.wasm'),
+          csharp: join(wasmDir, 'tree-sitter-csharp.wasm'),
+          tsx: join(wasmDir, 'tree-sitter-tsx.wasm'),
         }
       });
     } else {
@@ -606,6 +608,8 @@ async function initWasm(spin: Spinner | null): Promise<void> {
         python: wasmBasePath + 'tree-sitter-python.wasm',
         rust: wasmBasePath + 'tree-sitter-rust.wasm',
         html: wasmBasePath + 'tree-sitter-html.wasm',
+        csharp: wasmBasePath + 'tree-sitter-csharp.wasm',
+        tsx: wasmBasePath + 'tree-sitter-tsx.wasm',
       }
     });
   }
