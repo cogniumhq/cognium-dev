@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.0] - 2026-08-21
+
+C#/.NET (experimental): field extraction — cohesion metrics & god-class now work for C#.
+
+### Added
+
+- **C# field & property extraction (`type.fields`).** `extractCSharpTypes` previously left `fields` empty, so every field-based metric was blind on C#. It now extracts `field_declaration`s (including multi-declarator `int a, b;`) and `property_declaration`s (auto-properties hold state too), with type and modifiers.
+- **C# cohesion metrics + god-class detection.** With fields populated, `LCOM`/`LCOM_avg` discriminate cohesive from non-cohesive C# classes (they were structurally `0` before), and the **god-class** pass (`LCOM2`/`WMC`/`CBO`, CWE-1060) can finally reach its 2-of-3 thresholds on C# — closing the last piece of the C# quality-metrics work (cognium-ai#274). 0-delta across the OWASP-Java / SecuriBench / BenchmarkPython corpora (4095 files).
+
 ## [4.8.3] - 2026-08-21
 
 C#/.NET (experimental): SSRF host-allowlist guard — completes cognium-ai#328.

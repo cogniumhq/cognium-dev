@@ -57,3 +57,45 @@ describe('C# complexity metrics (end-to-end)', () => {
     expect(loop?.value).toBeGreaterThanOrEqual(1);
   });
 });
+
+// C# field extraction unblocks cohesion: LCOM was structurally 0 for C#
+// (empty type.fields) so god-class could never hit its 2-of-3 thresholds.
+describe('C# cohesion / god-class (field-access)', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+  const metric = (r: Awaited<ReturnType<typeof analyze>>, name: string) =>
+    (r.metrics?.metrics ?? []).find((m) => m.name === name)?.value;
+
+  it('LCOM discriminates a non-cohesive class from a cohesive one', async () => {
+    // One method per line: LCOM attributes field access by method line range.
+    const nonCohesive = `class Big {
+      int fa; int fb; int fc; int fd;
+      void A() { fa = 1; }
+      void B() { fb = 2; }
+      void C() { fc = 3; }
+      void D() { fd = 4; }
+    }`;
+    const cohesive = `class Small {
+      int x; int y;
+      void A() { x = 1; y = 2; }
+      int B() { return x + y; }
+    }`;
+    const hi = metric(await analyze(nonCohesive, 'Big.cs', 'csharp'), 'LCOM')!;
+    const lo = metric(await analyze(cohesive, 'Small.cs', 'csharp'), 'LCOM')!;
+    expect(hi).toBeGreaterThan(lo);
+    expect(lo).toBe(0);
+  });
+
+  it('god-class fires for a genuinely non-cohesive, highly-coupled C# class', async () => {
+    const fields: string[] = [];
+    const methods: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      fields.push(`  T${i} f${i};`);
+      methods.push(`  void M${i}(Ext${i} p) { f${i} = null; }`);
+    }
+    const god = `class God {\n${fields.join('\n')}\n${methods.join('\n')}\n}`;
+    const r = await analyze(god, 'God.cs', 'csharp');
+    expect((r.findings ?? []).some((f) => f.rule_id === 'god-class')).toBe(true);
+  });
+});

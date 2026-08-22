@@ -412,3 +412,45 @@ async fn fetch(url: &str) -> Result<String, Error> {
     });
   });
 });
+
+describe('C# Type Extractor — fields', () => {
+  beforeAll(async () => {
+    await initParser();
+  });
+
+  it('extracts field_declarations (incl. multi-declarator) and properties', async () => {
+    const code = `class C {
+      private int _a;
+      int _b, _c;
+      static readonly double PI = 3.14;
+      public string Name { get; set; }
+      void M() { _a = 1; }
+    }`;
+    const tree = await parse(code, 'csharp');
+    const types = extractTypes(tree, undefined, 'csharp');
+    const c = types.find(t => t.name === 'C');
+    expect(c).toBeDefined();
+
+    const names = c!.fields.map(f => f.name).sort();
+    // fields _a/_b/_c/PI + the auto-property Name (state for cohesion)
+    expect(names).toEqual(['Name', 'PI', '_a', '_b', '_c']);
+
+    const a = c!.fields.find(f => f.name === '_a');
+    expect(a!.type).toBe('int');
+    expect(a!.modifiers).toContain('private');
+
+    // multi-declarator shares the type
+    expect(c!.fields.find(f => f.name === '_b')!.type).toBe('int');
+    expect(c!.fields.find(f => f.name === '_c')!.type).toBe('int');
+
+    const name = c!.fields.find(f => f.name === 'Name');
+    expect(name!.type).toBe('string');
+    expect(name!.modifiers).toContain('public');
+  });
+
+  it('returns no fields for a fieldless class', async () => {
+    const tree = await parse(`class C { void M() { int x = 1; } }`, 'csharp');
+    const types = extractTypes(tree, undefined, 'csharp');
+    expect(types.find(t => t.name === 'C')!.fields).toHaveLength(0);
+  });
+});

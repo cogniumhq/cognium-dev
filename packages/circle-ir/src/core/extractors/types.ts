@@ -102,6 +102,7 @@ function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
       const nameNode = node.childForFieldName('name');
       const body = node.childForFieldName('body');
       const methods: MethodInfo[] = [];
+      const fields: FieldInfo[] = extractCSharpFields(body);
       if (body) {
         for (let i = 0; i < body.childCount; i++) {
           const m = body.child(i);
@@ -145,13 +146,57 @@ function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
         implements: [],
         annotations: [],
         methods,
-        fields: [],
+        fields,
         start_line: node.startPosition.row + 1,
         end_line: node.endPosition.row + 1,
       });
     }
   }
   return types;
+}
+
+/**
+ * Extract C# instance state — `field_declaration`s (incl. multi-declarator
+ * `int a, b;`) and `property_declaration`s (auto-properties hold state too).
+ * Both are class members that methods reference by name, so both count toward
+ * cohesion metrics (LCOM). Returns [] for a null body (e.g. expression-bodied
+ * or partial declarations without an inline body).
+ */
+function extractCSharpFields(body: Node | null): FieldInfo[] {
+  const fields: FieldInfo[] = [];
+  if (!body) return fields;
+  for (let i = 0; i < body.childCount; i++) {
+    const c = body.child(i);
+    if (!c) continue;
+    if (c.type === 'field_declaration') {
+      let varDecl: Node | null = null;
+      for (let k = 0; k < c.childCount; k++) {
+        const cc = c.child(k);
+        if (cc?.type === 'variable_declaration') { varDecl = cc; break; }
+      }
+      if (!varDecl) continue;
+      const typeNode = varDecl.childForFieldName('type');
+      const type = typeNode ? getNodeText(typeNode) : null;
+      const modifiers = extractCSharpModifiers(c);
+      for (let k = 0; k < varDecl.childCount; k++) {
+        const decl = varDecl.child(k);
+        if (decl?.type !== 'variable_declarator') continue;
+        const nameNode = decl.childForFieldName('name');
+        fields.push({ name: nameNode ? getNodeText(nameNode) : 'unknown', type, modifiers, annotations: [] });
+      }
+    } else if (c.type === 'property_declaration') {
+      const nameNode = c.childForFieldName('name');
+      if (!nameNode) continue;
+      const typeNode = c.childForFieldName('type');
+      fields.push({
+        name: getNodeText(nameNode),
+        type: typeNode ? getNodeText(typeNode) : null,
+        modifiers: extractCSharpModifiers(c),
+        annotations: [],
+      });
+    }
+  }
+  return fields;
 }
 
 /** Leading `modifier` tokens (public/static/…) of a C# declaration node. */
