@@ -668,6 +668,41 @@ public class Ctl : ControllerBase { public void M([FromQuery] string pattern) { 
   });
 });
 
+// cognium-ai#328 shape 1 — an SSRF sink dominated by an exact-equality host
+// allowlist is sanitized. Correctness is structural: a positive `==` guard
+// sanitizes only when the sink is INSIDE its then-block, and a `!=` guard only
+// when its then-block is an early exit — the blocklist forms must still fire.
+describe('C# Phase-2: SSRF inline host-allowlist guard (#328 shape 1)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const ssrf = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'ssrf');
+  const M = (body: string) => `
+using System.Net.Http; using System.Threading.Tasks; using Microsoft.AspNetCore.Mvc;
+public class Ctl : ControllerBase { public async Task M([FromQuery] string url, [FromQuery] string host) { ${body} } }`;
+
+  it('suppresses SSRF for the allowlist forms (== inside / != early-return)', async () => {
+    // positive == guard, sink inside the then-block
+    expect(ssrf(await analyze(M('if (new System.Uri(url).Host == "api.internal.example.com")\n await new HttpClient().GetAsync(url);'), 'C.cs', 'csharp'))).toBe(false);
+    // != early-return guard-clause, sink after
+    expect(ssrf(await analyze(M('if (host != "api.internal.example.com") return;\n await new HttpClient().GetAsync("https://" + host + "/health");'), 'C.cs', 'csharp'))).toBe(false);
+    // braced variants + throw
+    expect(ssrf(await analyze(M('if (host == "api.internal.example.com") {\n await new HttpClient().GetAsync("https://" + host);\n}'), 'C.cs', 'csharp'))).toBe(false);
+    expect(ssrf(await analyze(M('if (host != "ok.com") { return; }\n await new HttpClient().GetAsync("https://" + host);'), 'C.cs', 'csharp'))).toBe(false);
+    expect(ssrf(await analyze(M('if (host != "ok.com") throw new System.Exception();\n await new HttpClient().GetAsync("https://" + host);'), 'C.cs', 'csharp'))).toBe(false);
+  });
+
+  it('STILL fires on the blocklist / non-dominating forms (no false negative)', async () => {
+    // == blocklist early-return: sink runs when host != "bad" → not sanitized
+    expect(ssrf(await analyze(M('if (host == "known.bad.com") return;\n await new HttpClient().GetAsync("https://" + host);'), 'C.cs', 'csharp'))).toBe(true);
+    // != with the sink inside the then-block: runs when host != "ok"
+    expect(ssrf(await analyze(M('if (host != "api.internal.example.com")\n await new HttpClient().GetAsync("https://" + host);'), 'C.cs', 'csharp'))).toBe(true);
+    // guard on an unrelated variable
+    expect(ssrf(await analyze(M('if (host == "ok") { }\n await new HttpClient().GetAsync(url);'), 'C.cs', 'csharp'))).toBe(true);
+    // no guard at all
+    expect(ssrf(await analyze(M('await new HttpClient().GetAsync(url);'), 'C.cs', 'csharp'))).toBe(true);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>

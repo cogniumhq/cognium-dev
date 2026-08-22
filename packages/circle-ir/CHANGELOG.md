@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.3] - 2026-08-21
+
+C#/.NET (experimental): SSRF host-allowlist guard — completes cognium-ai#328.
+
+### Fixed
+
+- **An SSRF sink dominated by an inline exact-equality host allowlist is no longer a false positive (cognium-ai#328 shape 1).** `if (new Uri(url).Host == "api.internal.example.com") await client.GetAsync(url);` and the early-return form `if (host != "api.internal.example.com") return; … GetAsync(…)` are the strongest allowlist and pin the URL to a constant. The credit is **structural, not a text match**: a positive `==` guard sanitizes only when the sink is *inside* its then-block, and a `!=` guard only when its then-block is an early exit (`return`/`throw`) — so the blocklist forms (`if (host == "bad") return; sink`, `if (host != "ok") sink`) still fire. Braced and single-statement layouts both handled.
+
+With this, **cognium-ai#328 is fully addressed** (shape 2 — `ProcessStartInfo` argv — shipped in 4.8.2).
+
 ## [4.8.2] - 2026-08-21
 
 C#/.NET (experimental): `ProcessStartInfo` argv false-positive fix.

@@ -1021,6 +1021,196 @@ function isSafeCSharpProcessStartCall(
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// C# SSRF inline host-allowlist guard (cognium-ai#328 shape 1).
+//
+// An exact string-equality check against a constant is the strongest allowlist;
+// when it *dominates* the sink the flowing URL/host is pinned to a constant and
+// there is no SSRF. Correctness hinges on the operator AND the sink's position,
+// not merely the guard's presence:
+//   if (host == "c") sink(host);       // == , sink INSIDE then  → SAFE
+//   if (host != "c") return; sink(host);// != , then is early-exit → SAFE
+//   if (host == "c") return; sink(host);// == , early-exit (blocklist) → UNSAFE
+//   if (host != "c") sink(host);        // != , sink INSIDE then     → UNSAFE
+// A naive "an == guard appears above the sink" heuristic would wrongly suppress
+// the two blocklist forms, so we resolve the then-block structurally.
+
+/** Strip C# string/char literals and `//` comments so brace/paren scans are clean. */
+function stripCsLiterals(line: string): string {
+  return line
+    .replace(/\/\/.*$/, '')
+    .replace(/@?"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)'/g, "''");
+}
+
+/** Cumulative `{` depth before line `idx` (string/comment-safe). */
+function csBraceDepthBefore(lines: string[], idx: number): number {
+  let depth = 0;
+  for (let i = 0; i < idx && i < lines.length; i++) {
+    for (const ch of stripCsLiterals(lines[i])) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+  }
+  return depth;
+}
+
+/** Net `{` minus `}` in a code fragment (caller strips literals first). */
+function netBraces(fragment: string): number {
+  let n = 0;
+  for (const ch of fragment) {
+    if (ch === '{') n++;
+    else if (ch === '}') n--;
+  }
+  return n;
+}
+
+/** Split `if (cond) rest…` on one line; null if the condition spans lines. */
+function splitCsIf(line: string): { cond: string; rest: string; ifCol: number } | null {
+  const m = /\bif\s*\(/.exec(line);
+  if (!m) return null;
+  const ifCol = m.index;
+  let i = m.index + m[0].length;
+  let depth = 1;
+  let inStr = false;
+  let strCh = '';
+  for (; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === strCh) inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = true; strCh = c; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) break; }
+  }
+  if (depth !== 0) return null;
+  return { cond: line.slice(m.index + m[0].length, i), rest: line.slice(i + 1), ifCol };
+}
+
+/** Extract `{op, exprSide}` from a `EXPR == "lit"` / `"lit" != EXPR` condition. */
+function csEqualityGuard(cond: string): { op: '==' | '!='; exprSide: string } | null {
+  const c = cond.trim();
+  let m = /^(.*?)\s*(==|!=)\s*@?"[^"]*"\s*$/.exec(c);
+  if (m) return { op: m[2] as '==' | '!=', exprSide: m[1].trim() };
+  m = /^@?"[^"]*"\s*(==|!=)\s*(.*)$/.exec(c);
+  if (m) return { op: m[1] as '==' | '!=', exprSide: m[2].trim() };
+  return null;
+}
+
+const CS_IDENT_RE = /[A-Za-z_]\w*/g;
+function csIdentifiers(expr: string): Set<string> {
+  return new Set((expr.match(CS_IDENT_RE) ?? []));
+}
+
+/**
+ * Resolve the then-block of an `if` at `ifIdx`, whose condition-line remainder
+ * is `rest`. Returns the inclusive line range plus whether the block is an
+ * early exit (only return/throw/continue/break).
+ */
+function csThenBlock(
+  lines: string[],
+  ifIdx: number,
+  rest: string,
+): { start: number; end: number; earlyExit: boolean } {
+  const isExit = (s: string) => /^\s*(?:return|throw|continue|break)\b/.test(s);
+
+  // The then-target begins in the if-line remainder (`rest`), else on the next
+  // non-empty line. When it starts on the if-line we must scan only `rest`, not
+  // the whole line — earlier braces on that line (class/method `{`) are not ours.
+  let firstIdx: number;
+  let firstText: string;
+  if (rest.trim()) {
+    firstIdx = ifIdx;
+    firstText = rest;
+  } else {
+    let j = ifIdx + 1;
+    while (j < lines.length && stripCsLiterals(lines[j]).trim() === '') j++;
+    firstIdx = j;
+    firstText = lines[j] ?? '';
+  }
+
+  if (firstText.trim().startsWith('{')) {
+    // Braced block: brace-match from the block's own `{`, collecting the body so
+    // early-exit is judged from the block's first statement, not the `if` line.
+    let depth = 0;
+    let started = false;
+    let endLine = lines.length - 1;
+    let body = '';
+    for (let i = firstIdx; i < lines.length; i++) {
+      const stripped = stripCsLiterals(i === firstIdx ? firstText : lines[i]);
+      let broke = false;
+      for (const ch of stripped) {
+        if (ch === '{') { depth++; started = true; if (depth === 1) continue; }
+        else if (ch === '}') { depth--; if (depth === 0) { endLine = i; broke = true; break; } }
+        if (started && depth >= 1) body += ch;
+      }
+      if (broke) break;
+      if (started) body += ' ';
+    }
+    return { start: ifIdx, end: endLine, earlyExit: isExit(body.trim()) };
+  }
+
+  // Single-statement then (same line as the `if`, or the next line).
+  return { start: ifIdx, end: firstIdx, earlyExit: isExit(firstText.trim()) };
+}
+
+/**
+ * True when a C# SSRF sink is dominated by an exact-equality host allowlist:
+ * either `if (…var… == "const") <sink>` (sink inside the then-block) or
+ * `if (…var… != "const") <early exit>` with the sink after the guard at the
+ * same block depth. `var` is any identifier flowing into the sink argument.
+ */
+function isCSharpSsrfHostAllowlistGuarded(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (language !== 'csharp') return false;
+  if (pattern.type !== 'ssrf') return false;
+  if (!sourceLines || sourceLines.length === 0) return false;
+
+  const candidates = new Set<string>();
+  for (const a of call.arguments) {
+    if (a.variable) candidates.add(a.variable);
+    for (const id of csIdentifiers(a.expression ?? '')) candidates.add(id);
+  }
+  if (candidates.size === 0) return false;
+
+  const sinkIdx = call.location.line - 1;
+  const sinkDepth = csBraceDepthBefore(sourceLines, sinkIdx);
+
+  for (let i = 0; i < sinkIdx; i++) {
+    const parts = splitCsIf(sourceLines[i]);
+    if (!parts) continue;
+    const guard = csEqualityGuard(parts.cond);
+    if (!guard) continue;
+    // The compared expression must reference a variable that flows to the sink.
+    const guardIds = csIdentifiers(guard.exprSide);
+    if (![...guardIds].some((id) => candidates.has(id))) continue;
+
+    const block = csThenBlock(sourceLines, i, parts.rest);
+
+    if (guard.op === '==') {
+      // Positive allowlist: safe only when the sink sits inside the then-block.
+      if (sinkIdx >= block.start && sinkIdx <= block.end) return true;
+    } else {
+      // Reject guard: safe only when the then-block is an early exit and the
+      // sink follows it at the same enclosing depth (dominated by the guard).
+      // The guard's depth includes any braces opened before `if` on its line
+      // (compact `{ if (…)` layouts), so this is layout-independent.
+      const guardDepth = csBraceDepthBefore(sourceLines, i) +
+        netBraces(stripCsLiterals(sourceLines[i]).slice(0, parts.ifCol));
+      if (block.earlyExit && sinkIdx > block.end && guardDepth === sinkDepth) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Check if a Rust `Command::new(...).arg(...).args(...).spawn().output()`
  * chain is safe-by-shape: the program (bound at `Command::new("prog")`) is a
@@ -1701,6 +1891,13 @@ function findSinks(
         // a non-shell executable receives the arguments directly (no shell),
         // so tainted arguments cannot inject a command. cognium-ai#328.
         if (isSafeCSharpProcessStartCall(call, pattern, language, sourceLines)) {
+          continue;
+        }
+
+        // Skip C# SSRF sinks dominated by an inline exact-equality host
+        // allowlist (`if (host == "c") sink` / `if (host != "c") return; sink`).
+        // cognium-ai#328 shape 1.
+        if (isCSharpSsrfHostAllowlistGuarded(call, pattern, language, sourceLines)) {
           continue;
         }
 

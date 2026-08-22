@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.3] - 2026-08-21
+
+Adopts [`circle-ir@4.8.3`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): an SSRF sink guarded by an inline exact-equality host allowlist (`if (host == "…") sink` / `if (host != "…") return; sink`) no longer false-positives (cognium-ai#328 shape 1, structurally distinguished from blocklist forms that still fire). No CLI surface change.
+
 ## [4.8.2] - 2026-08-21
 
 Adopts [`circle-ir@4.8.2`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): `Process.Start(new ProcessStartInfo("grep", tainted) { UseShellExecute = false })` argv calls no longer false-positive as command injection (cognium-ai#328 shape 2). No CLI surface change.
