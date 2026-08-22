@@ -49,6 +49,13 @@ const VERIFY_FALSE_RE = /\bverify\s*=\s*False\b/;
 const REJECT_UNAUTHORIZED_FALSE_RE = /\brejectUnauthorized\s*:\s*false\b/;
 const INSECURE_SKIP_VERIFY_TRUE_RE = /\bInsecureSkipVerify\s*:\s*true\b/;
 const HOSTNAME_LAMBDA_TRUE_RE = /\(\s*\w+\s*,\s*\w+\s*\)\s*->\s*true\b/;
+// C#: a cert-validation callback given an always-true lambda — assigned
+// (`= `/`+= `) or wrapped in a delegate constructor (`new …Callback( … )`).
+// Accepts a parenthesised or single-identifier parameter list and either
+// `=> true` or `=> { return true; }`.
+const CS_CERT_CALLBACK_TRUE_RE =
+  /\b(ServerCertificateValidationCallback|ServerCertificateCustomValidationCallback|RemoteCertificateValidationCallback)\s*(?:\+?=|\()\s*(?:\([^)]*\)|\w+)\s*=>\s*(?:true\b|\{\s*return\s+true\b)/;
+const CS_DANGEROUS_ACCEPT_RE = /\bDangerousAcceptAnyServerCertificateValidator\b/;
 const ALLOW_ALL_HOSTNAME_VERIFIERS = new Set([
   'NoopHostnameVerifier.INSTANCE',
   'new AllowAllHostnameVerifier()',
@@ -251,6 +258,28 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
       }
     }
 
+    if (language === 'csharp') {
+      // A certificate-validation callback whose body is `true` accepts every
+      // cert (active MITM). Covers ServicePointManager.ServerCertificateValidationCallback,
+      // HttpClientHandler.ServerCertificateCustomValidationCallback and the
+      // RemoteCertificateValidationCallback delegate — assigned an always-true
+      // lambda (`(s,c,ch,e) => true` / `=> { return true; }`) or the built-in
+      // `HttpClientHandler.DangerousAcceptAnyServerCertificateValidator`.
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        const m = CS_CERT_CALLBACK_TRUE_RE.exec(l);
+        if (m) {
+          out.push({ line: i + 1, pattern: `${m[1]} => true`, api: m[1] });
+        } else if (CS_DANGEROUS_ACCEPT_RE.test(l)) {
+          out.push({
+            line: i + 1,
+            pattern: 'DangerousAcceptAnyServerCertificateValidator',
+            api: 'HttpClientHandler',
+          });
+        }
+      }
+    }
+
     return out;
   }
 
@@ -278,6 +307,12 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     }
     if (pattern.includes('ssl._create_unverified_context')) {
       return 'Do not use `_create_unverified_context()`. Use `ssl.create_default_context()`.';
+    }
+    if (language === 'csharp') {
+      return 'Do not accept every certificate. Remove the always-true validation ' +
+        'callback (and `DangerousAcceptAnyServerCertificateValidator`); rely on the ' +
+        'platform default. To trust a private CA, validate the chain against it in ' +
+        'the callback instead of returning true.';
     }
     return 'Restore TLS certificate and hostname verification.';
   }

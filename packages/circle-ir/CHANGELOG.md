@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.2] - 2026-08-21
+
+C#/.NET (experimental): TLS certificate-verification-disabled detection.
+
+### Added
+
+- **C# `tls-verify-disabled` (CWE-295) (cognium-dev#273 Tier-2).** Flags a certificate-validation callback that accepts every certificate — `ServicePointManager.ServerCertificateValidationCallback` / `HttpClientHandler.ServerCertificateCustomValidationCallback` / `RemoteCertificateValidationCallback` assigned (or wrapped in a delegate constructor with) an always-true lambda `(s,c,ch,e) => true` / `=> { return true; }`, and `HttpClientHandler.DangerousAcceptAnyServerCertificateValidator`. A callback that actually inspects `SslPolicyErrors`/the chain is **not** flagged.
+
 ## [4.9.1] - 2026-08-21
 
 C#/.NET (experimental): server-side template injection sinks.

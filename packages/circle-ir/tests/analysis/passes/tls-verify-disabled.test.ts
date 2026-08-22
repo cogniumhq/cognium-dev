@@ -141,4 +141,24 @@ public class A {
     const r = await analyze(code, 'B.java', 'java');
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
+
+  // ---------------- C# ----------------
+  const cs = (b: string) => `using System.Net; using System.Net.Http;\nclass C { void M() { ${b} } }`;
+
+  it('C#: an always-true certificate-validation callback is flagged', async () => {
+    for (const b of [
+      `ServicePointManager.ServerCertificateValidationCallback = (s,c,ch,e) => true;`,
+      `var h = new HttpClientHandler(); h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;`,
+      `var cb = new RemoteCertificateValidationCallback((s,c,ch,e) => true);`,
+      `ServicePointManager.ServerCertificateValidationCallback = (s,c,ch,e) => { return true; };`,
+      `var h = new HttpClientHandler(); h.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;`,
+    ]) {
+      expect(tlsOff(await analyze(cs(b), 'C.cs', 'csharp')).length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('C#: a callback that actually validates is NOT flagged', async () => {
+    expect(tlsOff(await analyze(cs(`ServicePointManager.ServerCertificateValidationCallback = (s,c,ch,e) => e == System.Net.Security.SslPolicyErrors.None;`), 'C.cs', 'csharp'))).toHaveLength(0);
+    expect(tlsOff(await analyze(cs(`ServicePointManager.ServerCertificateValidationCallback = (s,c,ch,e) => { return ValidateChain(c); };`), 'C.cs', 'csharp'))).toHaveLength(0);
+  });
 });
