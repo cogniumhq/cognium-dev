@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.1] - 2026-08-21
+
+C#/.NET (experimental): server-side template injection sinks.
+
+### Added
+
+- **C# SSTI → `code_injection` (CWE-94) (cognium-dev#273).** Compiling an attacker-controlled template string is arbitrary code execution, classified as `code_injection` to match how Python (Jinja2/Mako) and Node SSTI are already modelled. Restricted to **distinctive** template-compile APIs — `RunCompile` (RazorEngine), `CompileRenderStringAsync` (RazorLight), and `Compile` class-scoped to `Handlebars` — so the generic `Template.Parse` / `.Compile` / `int.Parse` names are never over-matched. Taint-gated: a constant template never fires. (The `.cshtml` view-rendering and custom report-scripting helpers flagged as by-design in the .NET corpus audit use different names and are intentionally not matched.)
+
 ## [4.9.0] - 2026-08-21
 
 C#/.NET (experimental): field extraction — cohesion metrics & god-class now work for C#.

@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.1] - 2026-08-21
+
+Adopts [`circle-ir@4.9.1`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): server-side template injection (RazorEngine `RunCompile`, RazorLight `CompileRenderStringAsync`, Handlebars `Compile`) now reported as code injection (CWE-94), taint-gated. No CLI surface change.
+
 ## [4.9.0] - 2026-08-21
 
 Adopts [`circle-ir@4.9.0`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): field/property extraction unblocks cohesion metrics (`LCOM`) and god-class detection for C#, so `cognium-dev metrics` now reports them for C# code. No CLI surface change.

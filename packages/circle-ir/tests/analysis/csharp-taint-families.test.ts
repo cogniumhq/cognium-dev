@@ -703,6 +703,32 @@ public class Ctl : ControllerBase { public async Task M([FromQuery] string url, 
   });
 });
 
+// cognium-dev#273 — C# server-side template injection. Compiling a tainted
+// template string is code_injection (CWE-94), matching Python/Node SSTI. Only
+// distinctive template-compile APIs, so generic Parse/Compile don't over-match.
+describe('C# Phase-2: SSTI → code_injection (#273)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const code = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === 'code_injection');
+  const ctrl = (body: string, using = '') => `
+using Microsoft.AspNetCore.Mvc; ${using}
+public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x = p; ${body} } }`;
+
+  it('fires on tainted template compilation (RazorEngine / RazorLight / Handlebars)', async () => {
+    expect(code(await analyze(ctrl('var h = Engine.Razor.RunCompile(x, "key");'), 'C.cs', 'csharp'))).toBe(true);
+    expect(code(await analyze(ctrl('var h = await engine.CompileRenderStringAsync("k", x, model);'), 'C.cs', 'csharp'))).toBe(true);
+    expect(code(await analyze(ctrl('var t = Handlebars.Compile(x);', 'using HandlebarsDotNet;'), 'C.cs', 'csharp'))).toBe(true);
+  });
+
+  it('does not fire on constant templates or generic Parse/Compile', async () => {
+    expect(code(await analyze(ctrl('var h = Engine.Razor.RunCompile("<h1>Hi</h1>", "key");'), 'C.cs', 'csharp'))).toBe(false);
+    expect(code(await analyze(ctrl('var t = Handlebars.Compile("{{name}}");', 'using HandlebarsDotNet;'), 'C.cs', 'csharp'))).toBe(false);
+    // generic APIs that share these names must never be SSTI
+    expect(code(await analyze(ctrl('var n = int.Parse(x);'), 'C.cs', 'csharp'))).toBe(false);
+    expect(code(await analyze(ctrl('var e = expr.Compile();'), 'C.cs', 'csharp'))).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>

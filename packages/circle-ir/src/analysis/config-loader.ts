@@ -2930,6 +2930,17 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Load', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'LoadFrom', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'LoadFile', class: 'Assembly', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  // C# server-side template injection (SSTI). Compiling an attacker-controlled
+  // template string is arbitrary code execution — classified as code_injection
+  // (CWE-94), matching how Python (Jinja2/Mako) and Node SSTI are modelled.
+  // Restricted to DISTINCTIVE template-compile APIs so the generic
+  // `Template.Parse` / `.Compile` names (int.Parse, Regex.Compile, …) are not
+  // over-matched. Taint-gated: a constant template never fires. `RunCompile`
+  // = RazorEngine; `CompileRenderStringAsync` = RazorLight; `Compile` is
+  // class-scoped to Handlebars. (cognium-dev#273)
+  { method: 'RunCompile', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'CompileRenderStringAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0, 1], languages: ['csharp'] },
+  { method: 'Compile', class: 'Handlebars', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
 
   // C# insecure deserialization — the polymorphic BCL formatters that can
   // instantiate arbitrary types named in the payload (CWE-502, cognium-ai#318).
