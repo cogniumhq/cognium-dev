@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.3] - 2026-08-22
+
+Adopts [`circle-ir@4.9.3`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): flags JWT signature verification disabled (`RequireSignedTokens = false` / bypass `SignatureValidator`, CWE-347) and insecure cookies (`CookieOptions { Secure = false / HttpOnly = false }`, CWE-614). No CLI surface change.
+
 ## [4.9.2] - 2026-08-21
 
 Adopts [`circle-ir@4.9.2`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): flags TLS certificate verification disabled via an always-true `ServerCertificateValidationCallback` / `DangerousAcceptAnyServerCertificateValidator` (CWE-295). No CLI surface change.

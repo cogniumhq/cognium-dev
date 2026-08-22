@@ -70,6 +70,15 @@ const GO_HTTPONLY_TRUE_RE = /\bHttpOnly\s*:\s*true\b/;
 const RUST_SET_COOKIE_MACRO_RE =
   /(format!|write!|writeln!)\s*\(([^()]*Set-Cookie[^()]*)\)/gis;
 
+// ---------- C# ----------
+// `new CookieOptions { Secure = false, HttpOnly = false }` — flag only an
+// EXPLICIT `= false` (absence defaults are often set by framework policy, so
+// treating a missing flag as insecure would be an FP trap). Body is brace-free
+// (`[^{}]*`) — cookie-option initializers do not nest braces.
+const CS_COOKIE_OPTIONS_RE = /\bnew\s+CookieOptions\s*\{([^{}]*)\}/gs;
+const CS_SECURE_FALSE_RE = /\bSecure\s*=\s*false\b/;
+const CS_HTTPONLY_FALSE_RE = /\bHttpOnly\s*=\s*false\b/;
+
 export interface InsecureCookieResult {
   insecureCookies: Array<{
     line: number;
@@ -128,9 +137,30 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
         insecureCookies.push(det);
         this.emit(ctx, file, det, 'rust');
       }
+    } else if (language === 'csharp') {
+      for (const det of this.detectCSharpCookieOptions(code)) {
+        insecureCookies.push(det);
+        this.emit(ctx, file, det, 'csharp');
+      }
     }
 
     return { insecureCookies };
+  }
+
+  // ---------------- C# ----------------
+  private detectCSharpCookieOptions(code: string): InsecureCookieResult['insecureCookies'] {
+    const out: InsecureCookieResult['insecureCookies'] = [];
+    const re = new RegExp(CS_COOKIE_OPTIONS_RE.source, CS_COOKIE_OPTIONS_RE.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(code)) !== null) {
+      const body = m[1] ?? '';
+      const missingSecure = CS_SECURE_FALSE_RE.test(body);
+      const missingHttpOnly = CS_HTTPONLY_FALSE_RE.test(body);
+      if (!missingSecure && !missingHttpOnly) continue;
+      const line = code.slice(0, m.index).split('\n').length;
+      out.push({ line, receiver: 'CookieOptions', missingSecure, missingHttpOnly, optionsPresent: true });
+    }
+    return out;
   }
 
   // ---------------- JS / TS ----------------
@@ -281,7 +311,7 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
     ctx: PassContext,
     file: string,
     det: InsecureCookieResult['insecureCookies'][number],
-    flavor: 'js' | 'python' | 'java' | 'go' | 'rust',
+    flavor: 'js' | 'python' | 'java' | 'go' | 'rust' | 'csharp',
   ): void {
     const missing: string[] = [];
     if (det.missingSecure) {
@@ -290,6 +320,7 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
         : flavor === 'python' ? '`secure=True`'
         : flavor === 'java' ? '`setSecure(true)`'
         : flavor === 'go' ? '`Secure: true`'
+        : flavor === 'csharp' ? '`Secure = true`'
         : '`Secure` attribute',
       );
     }
@@ -299,6 +330,7 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
         : flavor === 'python' ? '`httponly=True`'
         : flavor === 'java' ? '`setHttpOnly(true)`'
         : flavor === 'go' ? '`HttpOnly: true`'
+        : flavor === 'csharp' ? '`HttpOnly = true`'
         : '`HttpOnly` attribute',
       );
     }
@@ -312,7 +344,9 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
             ? 'After constructing the cookie, call `cookie.setSecure(true)` and `cookie.setHttpOnly(true)` before adding it to the response.'
             : flavor === 'go'
               ? 'Set `Secure: true` and `HttpOnly: true` on the `http.Cookie` struct literal passed to `http.SetCookie`.'
-              : 'Append `; Secure; HttpOnly` to the `Set-Cookie` header string.';
+              : flavor === 'csharp'
+                ? 'Set `Secure = true` and `HttpOnly = true` on the `CookieOptions` (or enforce them globally via `CookiePolicyOptions`).'
+                : 'Append `; Secure; HttpOnly` to the `Set-Cookie` header string.';
 
     ctx.addFinding({
       id: `${this.name}-${file}-${det.line}`,

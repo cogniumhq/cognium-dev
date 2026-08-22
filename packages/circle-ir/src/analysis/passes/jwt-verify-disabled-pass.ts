@@ -41,6 +41,16 @@ const PY_ALG_NONE_RE = /\balgorithms\s*=\s*[\[\(]\s*["']none["']/i;
 // JS `algorithms: ['none']` inside an options literal.
 const JS_ALG_NONE_RE = /\balgorithms\s*:\s*\[\s*["']none["']/i;
 
+// C# (Microsoft.IdentityModel TokenValidationParameters) — signature-bypass
+// shapes only. `RequireSignedTokens = false` accepts unsigned (alg=none)
+// tokens; a `SignatureValidator` that just wraps the raw token in a
+// `JwtSecurityToken` performs no cryptographic check (the canonical bypass).
+// `ValidateIssuer/Audience/Lifetime = false` are deliberately NOT matched —
+// they weaken claim checks but do not disable signature verification.
+const CS_REQUIRE_SIGNED_FALSE_RE = /\bRequireSignedTokens\s*=\s*false\b/;
+const CS_SIGNATURE_VALIDATOR_BYPASS_RE =
+  /\bSignatureValidator\s*=\s*[^;]*=>\s*new\s+JwtSecurityToken\b/;
+
 interface Detection {
   pattern: string;
   api: string;
@@ -66,29 +76,42 @@ export class JwtVerifyDisabledPass
     const file = graph.ir.meta.file;
     const findings: JwtVerifyDisabledResult['findings'] = [];
 
+    const emit = (line: number, det: Detection) => {
+      findings.push({ line, language, ...det });
+      ctx.addFinding({
+        id: `${this.name}-${file}-${line}-${det.pattern}`,
+        pass: this.name,
+        category: this.category,
+        rule_id: this.name,
+        cwe: 'CWE-347',
+        severity: 'critical',
+        level: 'error',
+        message:
+          `JWT signature verification disabled via \`${det.pattern}\` in ` +
+          `\`${det.api}\`. Any attacker can forge a token with arbitrary ` +
+          'claims (user id, roles, expiry) since the signature is not ' +
+          'checked.',
+        file,
+        line,
+        fix: this.fixFor(language),
+        evidence: { ...det, language },
+      });
+    };
+
     for (const call of graph.ir.calls) {
-      const detections = this.detect(call, language);
-      for (const det of detections) {
-        const line = call.location.line;
-        findings.push({ line, language, ...det });
-        ctx.addFinding({
-          id: `${this.name}-${file}-${line}-${det.pattern}`,
-          pass: this.name,
-          category: this.category,
-          rule_id: this.name,
-          cwe: 'CWE-347',
-          severity: 'critical',
-          level: 'error',
-          message:
-            `JWT signature verification disabled via \`${det.pattern}\` in ` +
-            `\`${det.api}\`. Any attacker can forge a token with arbitrary ` +
-            'claims (user id, roles, expiry) since the signature is not ' +
-            'checked.',
-          file,
-          line,
-          fix: this.fixFor(language),
-          evidence: { ...det, language },
-        });
+      for (const det of this.detect(call, language)) emit(call.location.line, det);
+    }
+
+    // C# TokenValidationParameters signature-bypass is an object-initializer
+    // assignment, not a call — scan the source text.
+    if (language === 'csharp') {
+      const lines = ctx.code.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (CS_REQUIRE_SIGNED_FALSE_RE.test(lines[i])) {
+          emit(i + 1, { pattern: 'RequireSignedTokens = false', api: 'TokenValidationParameters' });
+        } else if (CS_SIGNATURE_VALIDATOR_BYPASS_RE.test(lines[i])) {
+          emit(i + 1, { pattern: 'SignatureValidator returns an unvalidated token', api: 'TokenValidationParameters' });
+        }
       }
     }
 
@@ -204,6 +227,14 @@ export class JwtVerifyDisabledPass
         'For auth0/java-jwt: use `JWT.require(Algorithm.HMAC256(secret))` or ' +
         'an RSA algorithm. For jjwt: call `parseClaimsJws(token)` (signature ' +
         'enforced) rather than `parse(token)` (signature ignored).'
+      );
+    }
+    if (language === 'csharp') {
+      return (
+        'Leave `RequireSignedTokens = true` and do not install a custom ' +
+        '`SignatureValidator` that returns the token unverified. Configure ' +
+        '`IssuerSigningKey`/`IssuerSigningKeys` and let the handler validate ' +
+        'the signature.'
       );
     }
     return (

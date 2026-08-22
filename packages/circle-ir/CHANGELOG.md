@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.3] - 2026-08-22
+
+C#/.NET (experimental): JWT-verification-disabled + insecure-cookie detection.
+
+### Added
+
+- **C# `jwt-verify-disabled` (CWE-347) (cognium-dev#273 Tier-2).** Flags the two `TokenValidationParameters` **signature-bypass** shapes: `RequireSignedTokens = false` (accepts unsigned `alg=none` tokens) and a `SignatureValidator` that returns an unvalidated token (`SignatureValidator = (t, _) => new JwtSecurityToken(t)`). `ValidateIssuer`/`ValidateAudience`/`ValidateLifetime = false` are deliberately **not** flagged — they weaken claim checks but do not disable signature verification.
+- **C# `insecure-cookie` (CWE-614) (cognium-dev#273 Tier-2).** Flags a `CookieOptions` initializer with an explicit `Secure = false` or `HttpOnly = false`. Absence of a flag is not flagged (it is commonly set by `CookiePolicyOptions`), keeping this conservative.
+
 ## [4.9.2] - 2026-08-21
 
 C#/.NET (experimental): TLS certificate-verification-disabled detection.

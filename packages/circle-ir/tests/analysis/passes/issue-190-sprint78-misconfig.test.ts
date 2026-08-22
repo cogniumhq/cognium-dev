@@ -275,3 +275,26 @@ describe('#190 Sprint 78 — Tier-2 misconfig detectors (8 cells)', () => {
     expect(countRule(r, 'xml-entity-expansion')).toBe(0);
   });
 });
+
+// cognium-dev#273 Tier-2 — C# jwt-verify-disabled + insecure-cookie branches.
+describe('#273 Tier-2 — C# misconfig detectors', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('C# jwt-verify-disabled fires on signature-bypass shapes only', async () => {
+    const W = (b: string) => `using Microsoft.IdentityModel.Tokens; using System.IdentityModel.Tokens.Jwt; class C { void M(){ ${b} } }`;
+    expect(countRule(await analyze(W('var p = new TokenValidationParameters { RequireSignedTokens = false };'), 'a.cs', 'csharp'), 'jwt-verify-disabled')).toBeGreaterThanOrEqual(1);
+    expect(countRule(await analyze(W('var p = new TokenValidationParameters { SignatureValidator = (t, k) => new JwtSecurityToken(t) };'), 'b.cs', 'csharp'), 'jwt-verify-disabled')).toBeGreaterThanOrEqual(1);
+    // ValidateIssuer/Audience/Lifetime = false are NOT signature bypass → clean
+    expect(countRule(await analyze(W('var p = new TokenValidationParameters { ValidateIssuer = false, ValidateAudience = false, ValidateLifetime = false };'), 'c.cs', 'csharp'), 'jwt-verify-disabled')).toBe(0);
+    expect(countRule(await analyze(W('var p = new TokenValidationParameters { RequireSignedTokens = true };'), 'd.cs', 'csharp'), 'jwt-verify-disabled')).toBe(0);
+  });
+
+  it('C# insecure-cookie fires on an explicit Secure/HttpOnly = false', async () => {
+    const W = (b: string) => `using Microsoft.AspNetCore.Http; class C { void M(){ ${b} } }`;
+    expect(countRule(await analyze(W('var o = new CookieOptions { Secure = false, HttpOnly = true };'), 'e.cs', 'csharp'), 'insecure-cookie')).toBeGreaterThanOrEqual(1);
+    expect(countRule(await analyze(W('Response.Cookies.Append("sid", val, new CookieOptions { HttpOnly = false });'), 'f.cs', 'csharp'), 'insecure-cookie')).toBeGreaterThanOrEqual(1);
+    // both true, or no explicit false → clean (absence is not flagged)
+    expect(countRule(await analyze(W('var o = new CookieOptions { Secure = true, HttpOnly = true };'), 'g.cs', 'csharp'), 'insecure-cookie')).toBe(0);
+    expect(countRule(await analyze(W('var o = new CookieOptions { SameSite = SameSiteMode.Lax };'), 'h.cs', 'csharp'), 'insecure-cookie')).toBe(0);
+  });
+});
