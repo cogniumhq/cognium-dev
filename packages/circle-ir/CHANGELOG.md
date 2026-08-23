@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.4] - 2026-08-22
+
+C#/.NET (experimental): AES/3DES ECB-mode detection.
+
+### Added
+
+- **C# ECB block-cipher mode → `weak-crypto` (CWE-327) (cognium-dev#273 Tier-2).** Flags selecting ECB via `CipherMode.ECB` (assigned to a `SymmetricAlgorithm.Mode` or set in an object initializer) — ECB leaks plaintext structure (identical blocks → identical ciphertext). Source-scan (the mode is an assignment, not a call), complementing the existing C# weak-cipher (DES/3DES/RC2) and weak-RSA-key detection. A non-ECB mode (`CBC`/`GCM`) is not flagged.
+
 ## [4.9.3] - 2026-08-22
 
 C#/.NET (experimental): JWT-verification-disabled + insecure-cookie detection.

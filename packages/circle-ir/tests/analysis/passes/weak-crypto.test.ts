@@ -366,6 +366,14 @@ func gen() {
     expect(await csHas('var a = RSA.Create(1024);', 'CWE-326')).toBe(true);
   });
 
+  it('C#: ECB mode via CipherMode.ECB is flagged (CWE-327)', async () => {
+    expect(await csHas('var a = Aes.Create(); a.Mode = CipherMode.ECB;', 'CWE-327')).toBe(true);
+    expect(await csHas('var a = new AesManaged { Mode = CipherMode.ECB };', 'CWE-327')).toBe(true);
+    expect(await csHas('var a = Aes.Create(); a.Mode = System.Security.Cryptography.CipherMode.ECB;', 'CWE-327')).toBe(true);
+    // a non-ECB mode is not flagged
+    expect(await csHas('var a = Aes.Create(); a.Mode = CipherMode.CBC;')).toBe(false);
+  });
+
   it('C#: strong algorithms / safe key sizes / non-literals are NOT flagged', async () => {
     expect(await csHas('var a = Aes.Create();')).toBe(false);
     expect(await csHas('var a = new AesManaged();')).toBe(false);

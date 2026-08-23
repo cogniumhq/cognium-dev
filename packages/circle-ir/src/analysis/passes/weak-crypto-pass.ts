@@ -421,6 +421,9 @@ export interface WeakCryptoResult {
   }>;
 }
 
+// C#: `CipherMode.ECB` (fully-qualified or not) selects ECB mode.
+const CS_CIPHER_MODE_ECB_RE = /\bCipherMode\s*\.\s*ECB\b/;
+
 export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
   readonly name = 'weak-crypto';
   readonly category = 'security' as const;
@@ -460,27 +463,39 @@ export class WeakCryptoPass implements AnalysisPass<WeakCryptoResult> {
     // are recognised; runtime values stay invisible.
     const literalBindings = scanLiteralBindings(code, language);
 
-    for (const call of graph.ir.calls) {
-      const detections = this.detect(call, language, constProp, literalBindings);
-      for (const det of detections) {
-        const line = call.location.line;
-        findings.push({ line, language, ...det });
+    const emit = (line: number, det: { issue: WeakCryptoIssue; detail: string; api: string }) => {
+      findings.push({ line, language, ...det });
+      ctx.addFinding({
+        id: `${this.name}-${file}-${line}-${det.issue}`,
+        pass: this.name,
+        category: this.category,
+        rule_id: this.name,
+        cwe: ISSUE_CWE[det.issue],
+        severity: 'high',
+        level: 'error',
+        message: this.buildMessage(det),
+        file,
+        line,
+        fix: this.buildFix(det.issue),
+        evidence: { ...det, language },
+      });
+    };
 
-        const message = this.buildMessage(det);
-        ctx.addFinding({
-          id: `${this.name}-${file}-${line}-${det.issue}`,
-          pass: this.name,
-          category: this.category,
-          rule_id: this.name,
-          cwe: ISSUE_CWE[det.issue],
-          severity: 'high',
-          level: 'error',
-          message,
-          file,
-          line,
-          fix: this.buildFix(det.issue),
-          evidence: { ...det, language },
-        });
+    for (const call of graph.ir.calls) {
+      for (const det of this.detect(call, language, constProp, literalBindings)) {
+        emit(call.location.line, det);
+      }
+    }
+
+    // C# selects ECB by assigning `CipherMode.ECB` to a symmetric algorithm's
+    // `Mode` property (or in an object initializer) — an assignment, not a
+    // call. `CipherMode.ECB` is unambiguous, so a plain source scan is enough.
+    if (language === 'csharp') {
+      const lines = code.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (CS_CIPHER_MODE_ECB_RE.test(lines[i])) {
+          emit(i + 1, { issue: 'ecb-mode', detail: 'CipherMode.ECB', api: 'SymmetricAlgorithm.Mode' });
+        }
       }
     }
 
