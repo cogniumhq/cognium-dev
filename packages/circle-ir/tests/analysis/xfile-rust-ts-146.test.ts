@@ -167,4 +167,51 @@ export function run(arg: string): void { fetch(arg); }`;
     ]);
     expect(xfileTaintTo(r, 'helper.ts', 'ssrf')).toBe(true);
   });
+
+  // ── C# (cognium-dev#273) ──────────────────────────────────────────────
+  // A `[FromQuery]`/`[FromBody]` controller parameter is a confirmed request
+  // source, so it can reach a sink in a helper file (previously it was only a
+  // speculative `interprocedural_param`, which cross-file flows exclude).
+  const csController = `using Microsoft.AspNetCore.Mvc;
+public class Ctl : ControllerBase { public void M([FromQuery] string q) { Helper.Run(q); } }`;
+
+  it('C# — controller [FromQuery] → helper command_injection sink (cross-file)', async () => {
+    const helper = `using System.Diagnostics;
+public class Helper { public static void Run(string arg) { Process.Start("cmd.exe", arg); } }`;
+    const r = await analyzeProject([
+      { code: helper, filePath: 'Helper.cs', language: 'csharp' },
+      { code: csController, filePath: 'Controller.cs', language: 'csharp' },
+    ]);
+    expect(xfileTaintTo(r, 'Helper.cs', 'command_injection')).toBe(true);
+  });
+
+  it('C# — controller [FromQuery] → helper path_traversal sink (cross-file)', async () => {
+    const helper = `using System.IO;
+public class Helper { public static void Run(string arg) { File.ReadAllText(arg); } }`;
+    const r = await analyzeProject([
+      { code: helper, filePath: 'Helper.cs', language: 'csharp' },
+      { code: csController, filePath: 'Controller.cs', language: 'csharp' },
+    ]);
+    expect(xfileTaintTo(r, 'Helper.cs', 'path_traversal')).toBe(true);
+  });
+
+  it('C# — [FromBody] DTO property → helper command_injection sink (cross-file)', async () => {
+    const helper = `using System.Diagnostics;
+public class Helper { public static void Run(string arg) { Process.Start("cmd.exe", arg); } }`;
+    const ctl = `using Microsoft.AspNetCore.Mvc;
+public class Ctl : ControllerBase { public void M([FromBody] Dto d) { Helper.Run(d.Name); } }
+public class Dto { public string Name { get; set; } }`;
+    const r = await analyzeProject([
+      { code: helper, filePath: 'Helper.cs', language: 'csharp' },
+      { code: ctl, filePath: 'Controller.cs', language: 'csharp' },
+    ]);
+    // [FromBody] is an http_body source (not http_param), so assert directly.
+    expect(
+      (r.taint_paths ?? []).some(
+        (p) => p.source.type === 'http_body' &&
+               p.sink.file === 'Helper.cs' &&
+               p.sink.type === 'command_injection',
+      ),
+    ).toBe(true);
+  });
 });

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.7] - 2026-08-22
+
+C#/.NET (experimental): cross-file taint from controller sources.
+
+### Added
+
+- **C# `[FromQuery]`/`[FromBody]`/`[FromRoute]`/`[FromForm]`/`[FromHeader]` parameters are now confirmed request sources (`http_param`/`http_body`/`http_path`), enabling cross-file taint (cognium-dev#273).** Previously these were seeded only as speculative `interprocedural_param` sources, which cross-file taint-flow analysis deliberately excludes — so a controller passing a request parameter to a sink in a *helper file* (`Helper.Run(q)` → `Process.Start(cmd, arg)`) was a false negative, even though the same pattern is detected for Java `@RequestParam`. The confirmed `http_*` types are a subset of the `interprocedural_param` reach-map, so single-file behavior is unchanged; only cross-file paths are added.
+
 ## [4.9.6] - 2026-08-22
 
 C#/.NET (experimental): Minimal-API route-handler sources.

@@ -244,6 +244,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- C#: explicit ASP.NET request sources --------------------------------
     additionalSources.push(...findCSharpRequestSources(code, language));
+    additionalSources.push(...findCSharpBindingAttributeSources(code, language));
     additionalSources.push(...findCSharpMinimalApiSources(code, language));
     additionalSources.push(...findGoArgvSources(code, language));
 
@@ -1320,6 +1321,49 @@ const CSHARP_NON_INPUT_TYPES = new Set([
 ]);
 
 /**
+ * C# parameters carrying an ASP.NET binding attribute (`[FromQuery]`/`[FromRoute]`/
+ * `[FromBody]`/`[FromForm]`/`[FromHeader]`) — on a controller action or a Minimal-API
+ * lambda — as CONFIRMED request sources (cognium-dev#273 cross-file).
+ *
+ * The interprocedural-param seeding already treats these as speculative
+ * `interprocedural_param` sources, which fire single-file but are deliberately
+ * excluded from cross-file taint flows (they would over-fire on every typed
+ * library parameter). Emitting the confirmed `http_param`/`http_body`/
+ * `http_path` type — the same class Java's `@RequestParam` gets — lets a
+ * controller source reach a sink in a helper file. The `http_*` reach-maps are
+ * a subset of `interprocedural_param`'s, so no new single-file flow appears.
+ */
+function findCSharpBindingAttributeSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'csharp') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const re =
+    /\[\s*(FromQuery|FromBody|FromForm|FromRoute|FromHeader)(?:\s*\([^)]*\))?\s*\]\s*(?:\[[^\]]*\]\s*)*[\w.<>[\]?]+\s+([A-Za-z_]\w*)/g;
+  for (let i = 0; i < lines.length; i++) {
+    const lineRe = new RegExp(re.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = lineRe.exec(lines[i])) !== null) {
+      const attr = m[1];
+      const name = m[2];
+      const type: TaintSource['type'] =
+        attr === 'FromBody' || attr === 'FromForm' ? 'http_body'
+        : attr === 'FromRoute' ? 'http_path'
+        : 'http_param';
+      if (sources.some((s) => s.line === i + 1 && s.variable === name)) continue;
+      sources.push({
+        type,
+        location: `[${attr}] ${name}`,
+        severity: 'high',
+        line: i + 1,
+        confidence: 1.0,
+        variable: name,
+      });
+    }
+  }
+  return sources;
+}
+
+/**
  * ASP.NET Core Minimal-API route-handler parameters (cognium-dev#273).
  * `app.MapGet("/u/{id}", (string id) => …)` / `app.MapPost("/u", ([FromBody]
  * Dto d) => …)` — the lambda parameters are request-bound but live inside a
@@ -1366,6 +1410,9 @@ function classifyCSharpLambdaParam(
 ): { type: TaintSource['type']; name: string; via: string } | null {
   const attrs = [...raw.matchAll(/\[([^\]]*)\]/g)].map((a) => a[1].split('(')[0].trim());
   if (attrs.includes('FromServices')) return null;
+  // Binding-attributed params are seeded by findCSharpBindingAttributeSources;
+  // this function owns only the un-attributed bare `string` route/query param.
+  if (attrs.some((a) => CSHARP_MINIMAL_API_BINDING.has(a))) return null;
 
   const noAttr = raw.replace(/\[[^\]]*\]/g, '').trim();
   const parts = noAttr.split(/\s+/).filter(Boolean);
