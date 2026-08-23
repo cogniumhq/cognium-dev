@@ -120,7 +120,7 @@ function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
                 parameters.push({
                   name: getNodeText(pName),
                   type: pType ? getNodeText(pType) : null,
-                  annotations: [],
+                  annotations: extractCSharpParamAnnotations(pnode),
                   line: pnode.startPosition.row + 1,
                 });
               }
@@ -197,6 +197,26 @@ function extractCSharpFields(body: Node | null): FieldInfo[] {
     }
   }
   return fields;
+}
+
+/**
+ * Attribute names on a C# `parameter` node — e.g. `[FromBody]` / `[FromQuery]`
+ * → `['FromBody']` / `['FromQuery']`. Used to recognise ASP.NET model-binding
+ * parameters (including DTO types) as taint sources.
+ */
+function extractCSharpParamAnnotations(param: Node): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < param.childCount; i++) {
+    const list = param.child(i);
+    if (list?.type !== 'attribute_list') continue;
+    for (let j = 0; j < list.childCount; j++) {
+      const attr = list.child(j);
+      if (attr?.type !== 'attribute') continue;
+      const name = attr.childForFieldName('name');
+      if (name) out.push(getNodeText(name));
+    }
+  }
+  return out;
 }
 
 /** Leading `modifier` tokens (public/static/…) of a C# declaration node. */

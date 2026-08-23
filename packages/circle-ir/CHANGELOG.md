@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.5] - 2026-08-22
+
+C#/.NET (experimental): DTO model-binding taint propagation.
+
+### Added
+
+- **C# `[FromBody]`/`[FromQuery]`/`[FromRoute]`/`[FromForm]`/`[FromHeader]` DTO parameters are now taint sources (cognium-dev#273).** Previously only primitive-typed bound parameters (`[FromBody] string s`) seeded taint; a custom DTO type (`[FromBody] OrderDto d`) did not, so `d.Name` flowing to a sink was a false negative. C# parameter attributes are now extracted (`extractCSharpParamAnnotations`), and an ASP.NET binding attribute makes the parameter a source regardless of type — the whole object and its properties come from the request. Gated on the attribute, so an ordinary non-annotated object parameter is never treated as a source.
+
 ## [4.9.4] - 2026-08-22
 
 C#/.NET (experimental): AES/3DES ECB-mode detection.

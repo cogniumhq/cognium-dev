@@ -405,9 +405,21 @@ function findSources(
         // Check if parameter type could carry tainted data
         // For typed languages (Java), check the type
         // For untyped languages (JavaScript), treat all params as potentially tainted
-        const isTaintable = param.type
-          ? isInterproceduralTaintableType(param.type, language)
-          : true; // JavaScript/Python - no type means any value
+        //
+        // C# ASP.NET model binding: a `[FromBody]`/`[FromQuery]`/`[FromRoute]`/
+        // `[FromForm]`/`[FromHeader]` parameter is attacker-controlled even when
+        // its type is a custom DTO (not a primitive) — the whole object and its
+        // properties come from the request. Seed those regardless of type; the
+        // tainted-var scan bridges `d` and its member accesses (`d.Name`) to
+        // sinks. (cognium-dev#273 DTO-property propagation.)
+        const hasCSharpBindingAttr =
+          language === 'csharp' &&
+          param.annotations.some((a) => CSHARP_BINDING_ATTRS.has(a));
+        const isTaintable = hasCSharpBindingAttr
+          ? true
+          : param.type
+            ? isInterproceduralTaintableType(param.type, language)
+            : true; // JavaScript/Python - no type means any value
 
         if (isTaintable) {
           // Use parameter line if available, fallback to method start line
@@ -600,6 +612,11 @@ function findSources(
 
   return result;
 }
+
+/** ASP.NET model-binding attributes — a so-annotated parameter is request-controlled. */
+const CSHARP_BINDING_ATTRS = new Set([
+  'FromBody', 'FromQuery', 'FromRoute', 'FromForm', 'FromHeader',
+]);
 
 /**
  * Check if a parameter type could carry tainted data in inter-procedural analysis.

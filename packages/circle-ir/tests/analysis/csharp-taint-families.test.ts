@@ -729,6 +729,36 @@ public class Ctl : ControllerBase { public void M([FromQuery] string p) { var x 
   });
 });
 
+// cognium-dev#273 — DTO model-binding propagation. A `[FromBody]`/`[FromQuery]`
+// parameter of a custom (non-primitive) type is request-controlled, so its
+// properties (`d.Name`) carry taint. Gated on the binding attribute so an
+// ordinary non-annotated object parameter is never a source.
+describe('C# Phase-2: DTO model-binding property propagation (#273)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+  const dto = 'public class Dto { public string Name { get; set; } }';
+
+  it('propagates taint from a [FromBody] DTO property to a sink', async () => {
+    const sqli = `using Microsoft.AspNetCore.Mvc; using System.Data.SqlClient;
+public class Ctl : ControllerBase { public void M([FromBody] Dto d) { var cmd = new SqlCommand("SELECT '" + d.Name + "'"); cmd.ExecuteReader(); } }
+${dto}`;
+    expect(has(await analyze(sqli, 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+
+    const path = `using Microsoft.AspNetCore.Mvc; using System.IO;
+public class Ctl : ControllerBase { public void M([FromQuery] Dto d) { File.ReadAllText(d.Name); } }
+${dto}`;
+    expect(has(await analyze(path, 'C.cs', 'csharp'), 'path_traversal')).toBe(true);
+  });
+
+  it('does NOT treat a non-annotated object parameter as a source', async () => {
+    const code = `using System.Data.SqlClient;
+public class Svc { public void Helper(Dto d) { var cmd = new SqlCommand("SELECT " + d.Name); cmd.ExecuteReader(); } }
+${dto}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>
