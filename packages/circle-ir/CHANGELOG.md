@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.6] - 2026-08-22
+
+C#/.NET (experimental): Minimal-API route-handler sources.
+
+### Added
+
+- **C# ASP.NET Minimal-API lambda parameters are now taint sources (cognium-dev#273).** `app.MapGet("/u/{id}", (string id) => …)` / `app.MapPost("/u", ([FromBody] Dto d) => …)` — the request-bound parameters live inside a `MapGet/Post/Put/Delete/Patch(...)` call, not a method declaration, so the interprocedural-param seeding never saw them. A parameter carrying a binding attribute (`[FromQuery]`/`[FromRoute]`/`[FromBody]`/`[FromForm]`/`[FromHeader]`) or a bare `string` (route/query binding) is now seeded. Conservative: `[FromServices]` DI parameters, `HttpContext`, `CancellationToken`, `ILogger`, and other framework types are never seeded.
+
 ## [4.9.5] - 2026-08-22
 
 C#/.NET (experimental): DTO model-binding taint propagation.

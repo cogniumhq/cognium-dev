@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.6] - 2026-08-22
+
+Adopts [`circle-ir@4.9.6`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): ASP.NET Minimal-API route-handler lambda parameters (`app.MapGet("/u/{id}", (string id) => …)`) are now taint sources; framework/DI parameters are not. No CLI surface change.
+
 ## [4.9.5] - 2026-08-22
 
 Adopts [`circle-ir@4.9.5`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): `[FromBody]`/`[FromQuery]` DTO parameters are now taint sources, so tainted DTO properties (`d.Name`) reaching a sink are detected. No CLI surface change.

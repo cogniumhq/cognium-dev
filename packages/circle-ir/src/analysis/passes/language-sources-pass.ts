@@ -244,6 +244,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- C#: explicit ASP.NET request sources --------------------------------
     additionalSources.push(...findCSharpRequestSources(code, language));
+    additionalSources.push(...findCSharpMinimalApiSources(code, language));
     additionalSources.push(...findGoArgvSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
@@ -1300,6 +1301,88 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     });
   }
   return sources;
+}
+
+// ASP.NET binding attributes for Minimal-API lambda params. `FromServices`
+// binds a DI service (not attacker-controlled) and is intentionally excluded.
+const CSHARP_MINIMAL_API_BINDING = new Map<string, TaintSource['type']>([
+  ['FromBody', 'http_body'],
+  ['FromForm', 'http_body'],
+  ['FromQuery', 'http_param'],
+  ['FromRoute', 'http_path'],
+  ['FromHeader', 'http_param'],
+]);
+// Framework / DI parameter types a route handler receives that are NOT request
+// data — never seeded as sources.
+const CSHARP_NON_INPUT_TYPES = new Set([
+  'HttpContext', 'HttpRequest', 'HttpResponse', 'CancellationToken',
+  'ClaimsPrincipal', 'ILogger', 'IFormFileCollection',
+]);
+
+/**
+ * ASP.NET Core Minimal-API route-handler parameters (cognium-dev#273).
+ * `app.MapGet("/u/{id}", (string id) => …)` / `app.MapPost("/u", ([FromBody]
+ * Dto d) => …)` — the lambda parameters are request-bound but live inside a
+ * `MapX(...)` call, not a method declaration, so the interprocedural-param
+ * seeding never sees them. Text-scan the `MapGet/Post/Put/Delete/Patch(route,
+ * (params) => …)` shape and seed each request-bound parameter.
+ *
+ * Conservative: seeds a param only when it carries a binding attribute
+ * (except `[FromServices]`) or is a bare `string` (the common route/query
+ * binding). DI services, `HttpContext`, `CancellationToken`, etc. are skipped,
+ * so no framework parameter becomes a spurious source.
+ */
+function findCSharpMinimalApiSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'csharp') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  // MapX( <route>, [lambda-attr] [async] ( <params> ) => …   (params on the decl line)
+  const mapRe =
+    /\bMap(?:Get|Post|Put|Delete|Patch)\s*\(\s*(?:@?"[^"]*"|[\w.]+)\s*,\s*(?:\[[^\]]*\]\s*)?(?:async\s*)?\(([^)]*)\)\s*=>/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = mapRe.exec(lines[i]);
+    if (!m || !m[1].trim()) continue;
+    for (const rawParam of m[1].split(',')) {
+      const seed = classifyCSharpLambdaParam(rawParam);
+      if (!seed) continue;
+      if (sources.some((s) => s.line === i + 1 && s.variable === seed.name)) continue;
+      sources.push({
+        type: seed.type,
+        location: `${seed.name} (Minimal API ${seed.via})`,
+        severity: 'high',
+        line: i + 1,
+        confidence: 1.0,
+        variable: seed.name,
+      });
+    }
+  }
+  return sources;
+}
+
+/** Classify one Minimal-API lambda parameter as a request source (or null). */
+function classifyCSharpLambdaParam(
+  raw: string,
+): { type: TaintSource['type']; name: string; via: string } | null {
+  const attrs = [...raw.matchAll(/\[([^\]]*)\]/g)].map((a) => a[1].split('(')[0].trim());
+  if (attrs.includes('FromServices')) return null;
+
+  const noAttr = raw.replace(/\[[^\]]*\]/g, '').trim();
+  const parts = noAttr.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null; // need `type name`
+  const name = parts[parts.length - 1];
+  if (!/^[A-Za-z_]\w*$/.test(name)) return null;
+  const baseType = (parts[parts.length - 2] ?? '')
+    .replace(/[?\[\]]/g, '').split('<')[0].split('.').pop() ?? '';
+  if (CSHARP_NON_INPUT_TYPES.has(baseType)) return null;
+
+  for (const a of attrs) {
+    const t = CSHARP_MINIMAL_API_BINDING.get(a);
+    if (t) return { type: t, name, via: `[${a}]` };
+  }
+  // Bare `string` param = route/query binding; DI services are never `string`.
+  if (baseType === 'string') return { type: 'http_param', name, via: 'string param' };
+  return null;
 }
 
 function findJavaScriptAssignmentSources(sourceCode: string, language: string): TaintSource[] {

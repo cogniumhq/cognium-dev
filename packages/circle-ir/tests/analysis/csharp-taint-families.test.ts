@@ -759,6 +759,30 @@ ${dto}`;
   });
 });
 
+// cognium-dev#273 — Minimal-API route-handler lambda parameters are
+// request-bound but live inside `MapX(...)`, not a method decl. Seed the
+// request-bound ones (binding attribute or bare string); framework/DI
+// parameters (HttpContext / [FromServices] / CancellationToken) are not.
+describe('C# Phase-2: Minimal API route-handler lambda sources (#273)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+  const has = (r: Awaited<ReturnType<typeof analyze>>, t: string) =>
+    (r.taint?.flows ?? []).some((f) => f.sink_type === t);
+  const H = 'using Microsoft.AspNetCore.Builder; using Microsoft.AspNetCore.Mvc; using System.Data.SqlClient; using System.IO;\nvar app = WebApplication.Create();\n';
+
+  it('seeds bare-string, [FromQuery], and [FromBody] DTO lambda params', async () => {
+    expect(has(await analyze(H + 'app.MapGet("/u/{id}", (string id) => {\n var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + id);\n cmd.ExecuteReader();\n});', 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+    expect(has(await analyze(H + 'app.MapGet("/f", ([FromQuery] string p) => {\n var t = File.ReadAllText(p);\n});', 'C.cs', 'csharp'), 'path_traversal')).toBe(true);
+    expect(has(await analyze(H + 'app.MapPost("/u", ([FromBody] Dto d) => {\n var cmd = new SqlCommand("INSERT " + d.Name);\n cmd.ExecuteReader();\n});\npublic class Dto { public string Name { get; set; } }', 'C.cs', 'csharp'), 'sql_injection')).toBe(true);
+  });
+
+  it('does NOT seed framework / DI parameters', async () => {
+    // [FromServices] DI service used in the query → must stay clean
+    expect(has(await analyze(H + 'app.MapGet("/d", ([FromServices] IFoo svc) => {\n var cmd = new SqlCommand("SELECT " + svc.Val);\n cmd.ExecuteReader();\n});', 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+    // HttpContext is not request-data-by-parameter
+    expect(has(await analyze(H + 'app.MapGet("/c", (HttpContext ctx) => {\n var cmd = new SqlCommand("SELECT " + ctx.Request.Path);\n cmd.ExecuteReader();\n});', 'C.cs', 'csharp'), 'sql_injection')).toBe(false);
+  });
+});
+
 describe('C# Phase-2: ILogger log_injection (#318)', () => {
   beforeAll(async () => { await initAnalyzer(); });
   const has = (r: Awaited<ReturnType<typeof analyze>>) =>
