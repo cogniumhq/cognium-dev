@@ -34,6 +34,7 @@ import {
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
 } from './formatters.js';
 import { version } from './version.js';
+import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { colors } from './utils/colors.js';
@@ -1546,7 +1547,7 @@ async function main(): Promise<void> {
 
   // Handle version command or flag
   if (command === 'version' || options.version || options.V) {
-    showVersion(version);
+    showVersion(version, buildInfo);
     return;
   }
 

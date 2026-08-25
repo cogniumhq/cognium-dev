@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.8] - 2026-08-25
+
+### Added
+- Build provenance in `--version`: the build now stamps the git commit SHA and UTC timestamp (via `bun --define`), printed as a `build <sha> · <time>` line so it is verifiable which source a build ran from. Source (unbuilt) runs omit the line. (#279)
+
+### Changed
+- Internal runtime dependencies (`circle-ir`, `@cognium/project-profile-detect`) are now exact-pinned instead of caret ranges, so a published `cognium-dev@X` always resolves the exact `circle-ir@X` it was built and tested against rather than silently adopting a newer, untested version. `release.sh` keeps runtime deps exact each release. Adopts circle-ir@4.9.8.
+
+### Fixed
+- Regenerated `package-lock.json` (was stale at 4.4.0), removing two nested stale circle-ir 3.x copies so `npm ci` resolves a tree that matches the checked-out sources. (#279)
+
 ## [4.9.7] - 2026-08-22
 
 Adopts [`circle-ir@4.9.7`](https://www.npmjs.com/package/circle-ir) — C#/.NET (experimental): `[FromQuery]`/`[FromBody]` controller parameters are now confirmed request sources, so cross-file taint (controller → helper-file sink) is detected. No CLI surface change.

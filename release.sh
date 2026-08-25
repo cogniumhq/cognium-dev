@@ -77,15 +77,38 @@ info "Bumping cognium-dev to $NEW_VERSION..."
 success "cognium-dev: $CLI_OLD → $NEW_VERSION"
 
 # ── Update CLI's circle-ir dep ──────────────────────────────────────────────────
-info "Updating $CLI_DIR/package.json: circle-ir → ^$NEW_VERSION"
+# Exact pin (not ^) — circle-ir and cognium-dev release in lockstep, so a
+# published cognium-dev@X must always resolve circle-ir@X, the exact pair it was
+# built and tested against. A caret range would let a fresh install pull a newer,
+# untested circle-ir (the consumer never sees this repo's package-lock).
+info "Updating $CLI_DIR/package.json: circle-ir → $NEW_VERSION (exact)"
 node -e "
   const fs = require('fs');
   const p = '$CLI_DIR/package.json';
   const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-  j.dependencies['circle-ir'] = '^$NEW_VERSION';
+  j.dependencies['circle-ir'] = '$NEW_VERSION';
   fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
 "
-success "CLI dep pinned to ^$NEW_VERSION"
+success "CLI dep pinned to $NEW_VERSION (exact)"
+
+# ── Update companion packages' circle-ir dep ────────────────────────────────────
+# mcp-server and project-profile-detect keep their own independent version streams,
+# but their circle-ir dependency range must track the monorepo lib version — otherwise
+# it rots a major behind and an external install pulls a stale circle-ir (cognium-dev#279).
+info "Updating companion packages: circle-ir → $NEW_VERSION"
+node -e "
+  const fs = require('fs');
+  for (const p of ['packages/mcp-server/package.json', 'packages/project-profile-detect/package.json']) {
+    if (!fs.existsSync(p)) continue;
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    // Runtime deps ship to consumers → exact pin (lockstep). Dev deps resolve to
+    // the workspace copy locally, so a caret is fine and less churny.
+    if (j.dependencies && j.dependencies['circle-ir']) j.dependencies['circle-ir'] = '$NEW_VERSION';
+    if (j.devDependencies && j.devDependencies['circle-ir']) j.devDependencies['circle-ir'] = '^$NEW_VERSION';
+    fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+  }
+"
+success "Companion circle-ir deps pinned (runtime exact, dev ^)"
 
 # ── Sync root lockfile ──────────────────────────────────────────────────────────
 info "Syncing root package-lock.json..."

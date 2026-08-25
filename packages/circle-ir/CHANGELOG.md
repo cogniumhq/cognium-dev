@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.8] - 2026-08-25
+
+### Changed
+- Dependency / lockfile refresh (dev + transitive): esbuild 0.28.2, vitest 4.1.11, web-tree-sitter 0.26.13, @types/node 25.9.5. No source or API changes.
+- Security: `npm audit` 8 → 0 (all findings were dev/transitive). Version bump published for lockstep parity with cognium-dev 4.9.8.
+
 ## [4.9.7] - 2026-08-22
 
 C#/.NET (experimental): cross-file taint from controller sources.

@@ -156,7 +156,13 @@ For more information, visit: https://cognium.dev
 `);
 }
 
-export function showVersion(version: string): void {
+export function showVersion(
+  version: string,
+  buildInfo?: { gitSha: string; builtAt: string | null },
+): void {
   console.log(`cognium-dev v${version}`);
+  if (buildInfo?.builtAt) {
+    console.log(`build ${buildInfo.gitSha} · ${buildInfo.builtAt}`);
+  }
   console.log(`Powered by Cognium Labs`);
 }
