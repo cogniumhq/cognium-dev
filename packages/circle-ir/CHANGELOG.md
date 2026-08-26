@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.9] - 2026-08-26
+
+Performance: large C#/Java file analysis no longer degrades quadratically.
+
+### Fixed
+- Taint analysis on large single files (thousands of sinks/sources) was superlinear — an ~16k-line C# file took ~37s and very large generated files (e.g. in big .NET repos) could appear to hang. The cost was entirely in the taint/sink text-scan layer (parsing itself was already linear). Six behavior-preserving changes remove the hot paths:
+  - `buildJavaTaintedVars` (Java/C# derived-taint scan) compiled a fresh word-boundary regex per known-tainted variable per line; replaced with a one-pass identifier tokenization + set membership (with a regex fallback for attribute-path seeds).
+  - `csBraceDepthBefore` (C# guard scanners) re-scanned every prior line per sink; now uses a precomputed cumulative-depth prefix.
+  - `isCSharpSsrfHostAllowlistGuarded` scanned every line before each SSRF sink; now consults a precomputed identifier→guard-line index and checks only relevant guards.
+  - `detectExpressionScanFlows` replaced an O(flows) duplicate-scan with a key set, and its source×sink matcher now indexes sources by name and visits only candidates that occur in the sink argument (attribute-path sources handled separately).
+  - `isReassignedToLiteralBetween` no longer re-splits the whole file on every call.
+- Result: ~11× faster on the pathological case, scaling is now sub-quadratic. Verified with **0 change** in `taint.flows` across the OWASP-Java, SecuriBench, and BenchmarkPython corpora (4101 files) and the full unit-test suite green. (cognium-ai#305)
+
 ## [4.9.8] - 2026-08-25
 
 ### Changed

@@ -2368,6 +2368,20 @@ export function buildJavaTaintedVars(
     'break', 'continue', 'default', 'class', 'interface', 'enum',
   ]);
 
+  // Attribute-path seeds (e.g. `this.name`) are matched as a whole by a
+  // word-boundary regex but are not single identifier tokens, so the fast
+  // token-membership check below cannot find them. Precompile their boundary
+  // regexes once (derived vars are always simple identifiers, so the complex
+  // set never grows) and OR them into the reference test (cognium-ai#305; the
+  // #104/#78 OOP object-flow cases regressed without this).
+  const complexTaintedRes: RegExp[] = [];
+  for (const v of knownTainted) {
+    if (!/^[\p{L}\p{N}_]+$/u.test(v)) {
+      const esc = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      complexTaintedRes.push(new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'u'));
+    }
+  }
+
   let changed = true;
   let guard = 0;
   while (changed && guard < lines.length + 2) {
@@ -2385,7 +2399,6 @@ export function buildJavaTaintedVars(
       const rhs = m[2];
       if (JAVA_KEYWORDS.has(lhs)) continue;
       if (knownTainted.has(lhs)) continue;
-      const escaped = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // Reduce the RHS to code positions before matching a tainted var name:
       // keep `$"…{expr}"` interpolation contents, drop plain / verbatim string
       // literal bodies and char literals. Otherwise a tainted var NAME that
@@ -2397,9 +2410,15 @@ export function buildJavaTaintedVars(
           ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
         .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
         .replace(/'(?:[^'\\]|\\.)'/g, ' ');
-      const ref = [...knownTainted].some(v =>
-        new RegExp(`(?<![\\p{L}\\p{N}_])${escaped(v)}(?![\\p{L}\\p{N}_])`, 'u').test(rhsCode),
-      );
+      // A tainted var `v` "references" the RHS iff it occurs as a maximal
+      // identifier token (Unicode word-boundary match). Tokenizing the RHS once
+      // and testing Set membership is equivalent to — and avoids compiling one
+      // fresh boundary regex per known-tainted var per line, which was O(n²) in
+      // file size on large files with many derived vars (cognium-ai#305).
+      const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+      const ref =
+        (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+        (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
       if (ref) {
         derived.set(lhs, i + 1);
         knownTainted.add(lhs);

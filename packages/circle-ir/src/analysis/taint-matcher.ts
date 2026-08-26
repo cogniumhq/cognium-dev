@@ -1061,15 +1061,30 @@ function stripCsLiterals(line: string): string {
 }
 
 /** Cumulative `{` depth before line `idx` (string/comment-safe). */
+// One-slot cache of the cumulative brace-depth prefix for a `lines` array.
+// `csBraceDepthBefore` is called per C# sink (and per guard candidate) and used
+// to re-scan every line from 0..idx, stripping literals each time — O(lines) per
+// call, O(sinks × lines) across a file (cognium-ai#305). Building the prefix once
+// per distinct `lines` reference makes each lookup O(1) with identical results.
+let _csDepthLines: string[] | undefined;
+let _csDepthPrefix: Int32Array | undefined;
 function csBraceDepthBefore(lines: string[], idx: number): number {
-  let depth = 0;
-  for (let i = 0; i < idx && i < lines.length; i++) {
-    for (const ch of stripCsLiterals(lines[i])) {
-      if (ch === '{') depth++;
-      else if (ch === '}') depth--;
+  if (lines !== _csDepthLines) {
+    const pref = new Int32Array(lines.length + 1);
+    let depth = 0;
+    for (let i = 0; i < lines.length; i++) {
+      pref[i] = depth; // depth BEFORE line i
+      for (const ch of stripCsLiterals(lines[i])) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
     }
+    pref[lines.length] = depth;
+    _csDepthLines = lines;
+    _csDepthPrefix = pref;
   }
-  return depth;
+  const clamped = idx < 0 ? 0 : idx > lines.length ? lines.length : idx;
+  return _csDepthPrefix![clamped];
 }
 
 /** Net `{` minus `}` in a code fragment (caller strips literals first). */
@@ -1179,6 +1194,36 @@ function csThenBlock(
  * `if (…var… != "const") <early exit>` with the sink after the guard at the
  * same block depth. `var` is any identifier flowing into the sink argument.
  */
+/** A parsed C# equality-guard `if` line, indexed by the identifiers it tests. */
+interface CsGuardEntry { i: number; rest: string; ifCol: number; op: '==' | '!='; }
+
+// One-slot cache: identifier → equality-guard `if` lines that test it. Building
+// this once per `sourceLines` reference lets the SSRF host-allowlist check visit
+// only guards that reference the sink's argument identifiers, instead of
+// re-scanning every line 0..sinkIdx per sink — the last O(sinks × lines) path on
+// large C# files (cognium-ai#305).
+let _csGuardLines: string[] | undefined;
+let _csGuardMap: Map<string, CsGuardEntry[]> | undefined;
+function csEqualityGuardIndex(lines: string[]): Map<string, CsGuardEntry[]> {
+  if (lines === _csGuardLines && _csGuardMap) return _csGuardMap;
+  const map = new Map<string, CsGuardEntry[]>();
+  for (let i = 0; i < lines.length; i++) {
+    const parts = splitCsIf(lines[i]);
+    if (!parts) continue;
+    const guard = csEqualityGuard(parts.cond);
+    if (!guard) continue;
+    const entry: CsGuardEntry = { i, rest: parts.rest, ifCol: parts.ifCol, op: guard.op };
+    for (const id of csIdentifiers(guard.exprSide)) {
+      let arr = map.get(id);
+      if (!arr) { arr = []; map.set(id, arr); }
+      arr.push(entry);
+    }
+  }
+  _csGuardLines = lines;
+  _csGuardMap = map;
+  return map;
+}
+
 function isCSharpSsrfHostAllowlistGuarded(
   call: CallInfo,
   pattern: SinkPattern,
@@ -1199,29 +1244,34 @@ function isCSharpSsrfHostAllowlistGuarded(
   const sinkIdx = call.location.line - 1;
   const sinkDepth = csBraceDepthBefore(sourceLines, sinkIdx);
 
-  for (let i = 0; i < sinkIdx; i++) {
-    const parts = splitCsIf(sourceLines[i]);
-    if (!parts) continue;
-    const guard = csEqualityGuard(parts.cond);
-    if (!guard) continue;
-    // The compared expression must reference a variable that flows to the sink.
-    const guardIds = csIdentifiers(guard.exprSide);
-    if (![...guardIds].some((id) => candidates.has(id))) continue;
+  // Only guards whose tested expression references a variable flowing to the
+  // sink can credit it. Look those up directly rather than scanning every line.
+  // The result is an existential boolean, so guard order does not matter; a
+  // shared entry is checked once via `checked`.
+  const guardMap = csEqualityGuardIndex(sourceLines);
+  const checked = new Set<CsGuardEntry>();
+  for (const cand of candidates) {
+    const guards = guardMap.get(cand);
+    if (!guards) continue;
+    for (const g of guards) {
+      if (g.i >= sinkIdx || checked.has(g)) continue;
+      checked.add(g);
 
-    const block = csThenBlock(sourceLines, i, parts.rest);
+      const block = csThenBlock(sourceLines, g.i, g.rest);
 
-    if (guard.op === '==') {
-      // Positive allowlist: safe only when the sink sits inside the then-block.
-      if (sinkIdx >= block.start && sinkIdx <= block.end) return true;
-    } else {
-      // Reject guard: safe only when the then-block is an early exit and the
-      // sink follows it at the same enclosing depth (dominated by the guard).
-      // The guard's depth includes any braces opened before `if` on its line
-      // (compact `{ if (…)` layouts), so this is layout-independent.
-      const guardDepth = csBraceDepthBefore(sourceLines, i) +
-        netBraces(stripCsLiterals(sourceLines[i]).slice(0, parts.ifCol));
-      if (block.earlyExit && sinkIdx > block.end && guardDepth === sinkDepth) {
-        return true;
+      if (g.op === '==') {
+        // Positive allowlist: safe only when the sink sits inside the then-block.
+        if (sinkIdx >= block.start && sinkIdx <= block.end) return true;
+      } else {
+        // Reject guard: safe only when the then-block is an early exit and the
+        // sink follows it at the same enclosing depth (dominated by the guard).
+        // The guard's depth includes any braces opened before `if` on its line
+        // (compact `{ if (…)` layouts), so this is layout-independent.
+        const guardDepth = csBraceDepthBefore(sourceLines, g.i) +
+          netBraces(stripCsLiterals(sourceLines[g.i]).slice(0, g.ifCol));
+        if (block.earlyExit && sinkIdx > block.end && guardDepth === sinkDepth) {
+          return true;
+        }
       }
     }
   }

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.9] - 2026-08-26
+
+### Changed
+- Bump `circle-ir` to 4.9.9, which removes quadratic slowdowns when analyzing large C#/Java files (scans that previously appeared to hang on very large repos now complete in seconds). No CLI behavior or output changes.
+
 ## [4.9.8] - 2026-08-25
 
 ### Added

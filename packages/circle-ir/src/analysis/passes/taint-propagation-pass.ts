@@ -1077,6 +1077,20 @@ function detectParameterSinkFlows(
  * no array indexing) so we never drop a flow whose downstream use is a
  * different member of the same object.
  */
+// One-entry cache for `code.split('\n')`. `isReassignedToLiteralBetween` is
+// called once per (source, sink) candidate pair and previously re-split the
+// whole file on every call — O(lines) per call, O(n²) across a large file
+// (cognium-ai#305). Within a single analysis all calls pass the same `code`
+// reference, so a 1-slot cache collapses the repeated splits to one.
+let _reassignSplitCode: string | undefined;
+let _reassignSplitLines: string[] | undefined;
+function splitLinesCached(code: string): string[] {
+  if (code === _reassignSplitCode && _reassignSplitLines) return _reassignSplitLines;
+  _reassignSplitCode = code;
+  _reassignSplitLines = code.split('\n');
+  return _reassignSplitLines;
+}
+
 function isReassignedToLiteralBetween(
   code: string,
   variable: string,
@@ -1087,7 +1101,7 @@ function isReassignedToLiteralBetween(
   // Bare identifiers only — attribute paths like `obj.attr` are not
   // simple variables and we shouldn't claim they were reassigned.
   if (!/^[A-Za-z_][\w]*$/.test(variable)) return false;
-  const lines = code.split('\n');
+  const lines = splitLinesCached(code);
   const lo = Math.max(0, srcLine); // line numbers are 1-based; lines[] 0-based.
   const hi = Math.min(lines.length, sinkLine - 1);
   // String-literal sub-pattern: double-quoted, single-quoted, or backtick.
@@ -1557,12 +1571,18 @@ function detectExpressionScanFlows(
     }
   }
 
-  // Pre-compile word-boundary regexes per unique source variable.
-  // Escape regex-special characters defensively (variable names should be
-  // plain identifiers but Python attribute paths like `obj.attr` could leak in).
+  // A single identifier token; such variables are matched via the fast token
+  // index below, where membership is exactly equivalent to a word-boundary
+  // regex — so they need no compiled regex at all.
+  const SIMPLE_IDENT = /^[\p{L}\p{N}_]+$/u;
+
+  // Pre-compile word-boundary regexes only for COMPLEX source variables
+  // (attribute paths like `obj.attr`). Simple identifiers are handled by token
+  // lookup, so compiling a regex for each would be wasted work on large files
+  // with thousands of sources (cognium-ai#305).
   const reCache = new Map<string, RegExp>();
   for (const s of sourcesWithVar) {
-    if (reCache.has(s.variable)) continue;
+    if (SIMPLE_IDENT.test(s.variable) || reCache.has(s.variable)) continue;
     const escaped = s.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Unicode-aware word boundary so non-ASCII identifiers (e.g. `café`) match.
     reCache.set(s.variable, new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u'));
@@ -1575,6 +1595,38 @@ function detectExpressionScanFlows(
     existing.push(call);
     callsByLine.set(call.location.line, existing);
   }
+
+  // Index sources by variable name, retaining original order via `ord`. The
+  // sink-arg loop below looks up only the sources whose name actually appears
+  // in the argument, instead of scanning every source per sink — the previous
+  // O(sinks × sources) inner loop was the last quadratic on large files
+  // (cognium-ai#305). Sorting the small candidate list by `ord` preserves the
+  // original "first matching source wins" order exactly.
+  type OrderedSource = { source: typeof sourcesWithVar[number]; ord: number; complex: boolean };
+  const sourcesByVar = new Map<string, OrderedSource[]>();
+  // Attribute-path source variables (e.g. `this.tmpl`, `self.url`) are matched
+  // by the word-boundary regex as a whole but are NOT single identifier tokens,
+  // so they cannot be found by token lookup. Keep them in a separate list that
+  // is always considered (the regex gate in the loop body filters them), while
+  // simple identifiers use the fast per-name index (cognium-ai#305, and the
+  // #104/#105/#78 OOP object-flow cases that regressed without this split).
+  const complexSources: OrderedSource[] = [];
+  sourcesWithVar.forEach((source, ord) => {
+    const complex = !SIMPLE_IDENT.test(source.variable);
+    const entry = { source, ord, complex };
+    if (!complex) {
+      let list = sourcesByVar.get(source.variable);
+      if (!list) { list = []; sourcesByVar.set(source.variable, list); }
+      list.push(entry);
+    } else {
+      complexSources.push(entry);
+    }
+  });
+
+  // O(1) dedup key set replaces an O(flows) `flows.some(...)` scan per
+  // candidate — the scan was quadratic in flow count on large files
+  // (cognium-ai#305). Key mirrors the original predicate exactly.
+  const flowKeys = new Set<string>();
 
   for (const sink of sinks) {
     if (unreachableLines.has(sink.line)) continue;
@@ -1590,7 +1642,28 @@ function detectExpressionScanFlows(
         const expr = arg.expression;
         if (!expr) continue;
 
-        for (const source of sourcesWithVar) {
+        // Gather only the sources whose variable name occurs as an identifier
+        // token in this sink argument (a cached word-boundary regex matches
+        // `source.variable` iff the name is such a token). Sorting by original
+        // order (`ord`) preserves the previous "first matching source wins"
+        // semantics while avoiding the O(sources) scan per sink arg
+        // (cognium-ai#305).
+        const exprIdentMatches = expr.match(/[\p{L}\p{N}_]+/gu);
+        // Complex (attribute-path) sources must be checked against every arg
+        // via the regex gate; simple sources are looked up by identifier token.
+        let candidates: OrderedSource[] | null =
+          complexSources.length > 0 ? complexSources.slice() : null;
+        if (exprIdentMatches) {
+          for (const id of new Set(exprIdentMatches)) {
+            const list = sourcesByVar.get(id);
+            if (!list) continue;
+            (candidates ??= []).push(...list);
+          }
+        }
+        if (!candidates) continue;
+        if (candidates.length > 1) candidates.sort((a, b) => a.ord - b.ord);
+
+        for (const { source, complex } of candidates) {
           // Source must appear before the sink (no backward flows).
           if (source.line >= sink.line) continue;
 
@@ -1610,8 +1683,13 @@ function detectExpressionScanFlows(
             continue;
           }
 
-          const re = reCache.get(source.variable);
-          if (!re || !re.test(expr)) continue;
+          // Simple-identifier sources are already confirmed present by the
+          // token index; only complex (attribute-path) sources need the
+          // word-boundary regex to confirm they actually occur in the arg.
+          if (complex) {
+            const re = reCache.get(source.variable);
+            if (!re || !re.test(expr)) continue;
+          }
 
           // cognium-dev #138: source-semantics gate. Drop flows whose
           // source was tagged constant / SPI-loaded by
@@ -1624,11 +1702,8 @@ function detectExpressionScanFlows(
           // Dedupe by (source_line, sink_line, sink.type) — a single source
           // can reach multiple distinct sinks at the same line (e.g. an
           // execute() call modeled as both `xss` and `sql_injection`).
-          if (flows.some(f =>
-            f.source_line === source.line &&
-            f.sink_line === sink.line &&
-            f.sink_type === sink.type
-          )) continue;
+          const dedupKey = `${source.line}:${sink.line}:${sink.type}`;
+          if (flowKeys.has(dedupKey)) continue;
 
           // cognium-dev #65 pt2: suppress flows where the derived alias
           // was created by an assignment that wraps the tainted operand
@@ -1666,6 +1741,7 @@ function detectExpressionScanFlows(
             confidence: source.confidence * sink.confidence * 0.7,
             sanitized: false,
           });
+          flowKeys.add(dedupKey);
           break; // one source per arg is enough
         }
       }
