@@ -203,6 +203,24 @@ const CSHARP_COMMAND_EXECUTE_METHODS = new Set([
   'ExecuteScalarAsync', 'ExecuteReaderAsync', 'ExecuteNonQueryAsync',
 ]);
 
+/**
+ * Bare method/type name for a C# node, with any generic type-argument list
+ * stripped (cognium-dev#275).
+ *
+ * tree-sitter-c-sharp represents `conn.Query<User>(sql)` with a `generic_name`
+ * in the `name` field, so `getNodeText` yields `"Query<User>"` — which matches
+ * no registry entry, making EVERY generic C# call invisible to the sink matcher
+ * (Dapper's `Query<T>`/`QueryAsync<T>`, `Deserialize<T>`, `GetService<T>`, …).
+ * Taking the identifier child restores the bare name the registry keys on.
+ */
+function csharpBareName(node: Node): string {
+  if (node.type === 'generic_name') {
+    const id = node.childForFieldName('name') ?? node.namedChild(0);
+    if (id) return getNodeText(id);
+  }
+  return getNodeText(node);
+}
+
 function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
   const typeMap = buildCSharpReceiverTypeMap(tree, cache);
@@ -215,10 +233,10 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     if (fn?.type === 'member_access_expression') {
       const nameNode = fn.childForFieldName('name');
       const exprNode = fn.childForFieldName('expression');
-      methodName = nameNode ? getNodeText(nameNode) : 'unknown';
+      methodName = nameNode ? csharpBareName(nameNode) : 'unknown';
       receiver = exprNode ? getNodeText(exprNode) : null;
     } else if (fn) {
-      methodName = getNodeText(fn);
+      methodName = csharpBareName(fn);
     }
     const argsNode = inv.childForFieldName('arguments');
     let args = argsNode ? extractCSharpArguments(argsNode) : [];
@@ -246,7 +264,7 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     const typeNode = creation.childForFieldName('type');
     const argsNode = creation.childForFieldName('arguments');
     calls.push({
-      method_name: typeNode ? getNodeText(typeNode) : 'unknown',
+      method_name: typeNode ? csharpBareName(typeNode) : 'unknown',
       receiver: null,
       receiver_type: null,
       receiver_type_fqn: null,

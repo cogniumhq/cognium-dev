@@ -2844,6 +2844,24 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'ExecuteSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'FromSqlRaw', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'FromSqlRawAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+
+  // Dapper micro-ORM (cognium-dev#275). Every Dapper entry point is an
+  // `IDbConnection` extension whose arg 0 is raw SQL text — `conn.Query<T>(sql)`
+  // is exactly as injectable as `new SqlCommand(sql)`. Taint-gated on arg 0, so
+  // a constant/interpolation-free query never fires, and a same-named method on
+  // an unrelated receiver (e.g. RestSharp's `client.Execute(request)`, whose
+  // arg 0 is a request object rather than a tainted string) stays clean.
+  { method: 'Query', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryFirst', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryFirstAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryFirstOrDefault', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryFirstOrDefaultAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QuerySingle', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QuerySingleOrDefault', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'QueryMultiple', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'Execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ExecuteAsync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   // ADO.NET `cmd.CommandText = "…" + x` — emitted as a synthetic call by
   // extractCSharpCalls (property-assignment sink; the ctor-arg sink misses it).
   { method: 'CommandText', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
@@ -2918,6 +2936,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'DownloadData', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'DownloadFile', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [1], languages: ['csharp'] },
   { method: 'Create', class: 'WebRequest', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // RestSharp (cognium-dev#275) — the base URL is fixed at construction, so
+  // `new RestClient(userUrl)` points every later request at attacker-controlled
+  // infrastructure. Ctor arg 0, taint-gated.
+  { method: 'RestClient', class: 'constructor', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# code injection — dynamic script/assembly loading (CWE-94).
   { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
@@ -2960,6 +2982,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Blazor `new MarkupString(x)` renders its argument as raw HTML (the framework's
   // documented "trusted markup" escape hatch) — attacker-controlled input is XSS. (ca#275)
   { method: 'MarkupString', class: 'constructor', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // `return Content(html, "text/html")` on a controller writes arg 0 to the
+  // response body unescaped (cognium-dev#275). Taint-gated on arg 0; the common
+  // `Content(constantString)` and the JSON/plain-text content types are
+  // unaffected because a constant argument carries no taint.
+  { method: 'Content', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   // `String.Format(fmt, …)` with an attacker-controlled FORMAT string — CWE-134.
   // Taint-gated on arg 0 (the format), so ordinary `String.Format("...", user)` where
   // only an argument is tainted never fires. .NET composite formatting can't corrupt
@@ -2998,6 +3025,17 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'LogInformation', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogWarning', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogError', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+
+  // C# ReDoS (CWE-1333, cognium-dev#275). The injectable position is the
+  // PATTERN, not the input: a user-supplied regex can be crafted with
+  // catastrophic backtracking. `Regex.IsMatch(input, pattern)` and friends take
+  // the pattern at arg 1; the `new Regex(pattern)` ctor takes it at arg 0. A
+  // tainted *input* with a constant pattern is not ReDoS and does not fire.
+  { method: 'IsMatch', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+  { method: 'Match', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+  { method: 'Matches', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+  { method: 'Replace', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
+  { method: 'Regex', class: 'constructor', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogDebug', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogCritical', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogTrace', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
