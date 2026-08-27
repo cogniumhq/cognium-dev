@@ -2933,11 +2933,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Remaining HttpClient/Flurl verbs (cognium-dev#275). For HttpClient these
   // take the URL at arg 0; for Flurl's fluent form the receiver is surfaced as
   // arg 0 by CSHARP_RECEIVER_URL_METHODS. Taint-gated either way.
-  { method: 'GetStreamAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // (GetStreamAsync / PutAsync / DeleteAsync are already registered below.)
   { method: 'GetJsonAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'PutAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'PatchAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'DeleteAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'HeadAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'GetStreamAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'SendAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
@@ -3038,6 +3036,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'LogInformation', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogWarning', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   { method: 'LogError', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogDebug', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogCritical', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
+  { method: 'LogTrace', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
 
   // C# ReDoS (CWE-1333, cognium-dev#275). The injectable position is the
   // PATTERN, not the input: a user-supplied regex can be crafted with
@@ -3049,9 +3050,6 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'Matches', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
   { method: 'Replace', class: 'Regex', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [1], languages: ['csharp'] },
   { method: 'Regex', class: 'constructor', type: 'redos', cwe: 'CWE-1333', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
-  { method: 'LogDebug', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
-  { method: 'LogCritical', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
-  { method: 'LogTrace', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [0], languages: ['csharp'] },
   // Generic `ILogger.Log(logLevel, message, …)` — class-scoped (`Log` alone is
   // too generic); the message is arg[1].
   { method: 'Log', class: 'ILogger', type: 'log_injection', cwe: 'CWE-117', severity: 'low', arg_positions: [1], languages: ['csharp'] },
