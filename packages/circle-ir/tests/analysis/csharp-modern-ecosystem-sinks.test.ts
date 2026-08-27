@@ -96,3 +96,64 @@ describe('cognium-dev#275 — modern ecosystem sinks', () => {
     expect(flows).not.toContain('sql_injection');
   });
 });
+
+describe('cognium-dev#275 — receiver-carried and metadata taint', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const flows = async (code: string) => {
+    const r = await analyze(code, 'F.cs', 'csharp');
+    return (r.taint?.flows ?? []).map((f) => f.sink_type);
+  };
+
+  const handler = (body: string, usings = '') => `${usings}using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public async Task<IActionResult> Get(string url) {
+${body}
+    return Ok();
+  } }`;
+
+  it('Flurl fluent form taints via the RECEIVER', async () => {
+    expect(await flows(handler('    var r = await url.GetStringAsync();', 'using Flurl.Http; ')))
+      .toContain('ssrf');
+    expect(await flows(handler('    var r = await url.GetJsonAsync<Thing>();', 'using Flurl.Http; ')))
+      .toContain('ssrf');
+  });
+
+  it('HttpClient keeps arg-0 SSRF detection (the receiver-prepend must not shift it)', async () => {
+    expect(await flows(handler(
+      '    var c = new HttpClient();\n    var r = await c.GetStringAsync(url);', 'using System.Net.Http; ',
+    ))).toContain('ssrf');
+  });
+
+  it('HttpClient with a constant URL stays clean', async () => {
+    expect(await flows(handler(
+      '    var c = new HttpClient();\n    var r = await c.GetStringAsync("https://fixed.example");',
+      'using System.Net.Http; ',
+    ))).not.toContain('ssrf');
+  });
+
+  it('IFormFile.FileName is a taint source (upload path traversal)', async () => {
+    const code = `using Microsoft.AspNetCore.Http; using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public IActionResult Up(IFormFile file) {
+    var path = "/uploads/" + file.FileName;
+    using var s = System.IO.File.Create(path);
+    return Ok();
+  } }`;
+    expect(await flows(code)).toContain('path_traversal');
+  });
+
+  it('a .FileName on an unrelated type is NOT a source (scoping)', async () => {
+    const code = `using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public IActionResult Up() {
+    var info = new System.IO.FileInfo("/etc/fixed.txt");
+    var path = "/uploads/" + info.FileName;
+    using var s = System.IO.File.Create(path);
+    return Ok();
+  } }`;
+    expect(await flows(code)).not.toContain('path_traversal');
+  });
+});

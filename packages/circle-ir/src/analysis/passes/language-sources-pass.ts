@@ -1277,6 +1277,24 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // `env_input`. Binding here (not a bare return_tainted source) avoids the
   // unbound-source over-fire seen in #271.
   const envReadRe = /\bEnvironment\s*\.\s*GetEnvironmentVariables?\s*(?:\(|\[)/;
+  // `IFormFile.FileName` is client-supplied metadata, not a server-assigned
+  // name — the upload path-traversal vector (`"/uploads/" + file.FileName`,
+  // cognium-dev#275). Scoped to variables actually declared `IFormFile`, so an
+  // unrelated `.FileName` on some other type is not seeded. Note this is
+  // narrower than treating the parameter itself as a source: the file CONTENT
+  // arrives separately and `IFormFileCollection` stays in
+  // CSHARP_NON_INPUT_TYPES — only the attacker-settable metadata is tainted.
+  // `\s+` after the type name keeps `IFormFileCollection files` from matching.
+  const formFileParams = new Set<string>();
+  const formFileDeclRe = /\bIFormFile\s+([A-Za-z_]\w*)/g;
+  for (const line of lines) {
+    const re = new RegExp(formFileDeclRe.source, 'g');
+    let d: RegExpExecArray | null;
+    while ((d = re.exec(line)) !== null) formFileParams.add(d[1]);
+  }
+  const formFileReadRe = formFileParams.size > 0
+    ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
+    : null;
 
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
@@ -1284,11 +1302,13 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     const [, varName, rhs] = m;
     const type: TaintSource['type'] | null = requestReadRe.test(rhs)
       ? 'http_param'
-      : consoleReadRe.test(rhs)
-        ? 'io_input'
-        : envReadRe.test(rhs)
-          ? 'env_input'
-          : null;
+      : formFileReadRe?.test(rhs)
+        ? 'http_param'
+        : consoleReadRe.test(rhs)
+          ? 'io_input'
+          : envReadRe.test(rhs)
+            ? 'env_input'
+            : null;
     if (!type) continue;
     const lineNumber = i + 1;
     if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
