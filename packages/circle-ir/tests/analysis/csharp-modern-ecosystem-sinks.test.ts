@@ -205,3 +205,34 @@ ${body}
     expect(await flows(action('    var js = new BsonJavaScript(q);', u))).toContain('nosql_injection');
   });
 });
+
+describe('cognium-dev#275 — local-redirect guards are sanitizers, not sinks', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const flows = async (code: string) => {
+    const r = await analyze(code, 'L.cs', 'csharp');
+    return (r.taint?.flows ?? []).map((f) => f.sink_type);
+  };
+
+  const go = (body: string) => `using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public IActionResult Go(string next) {
+${body}
+  } }`;
+
+  it('an unguarded Redirect(tainted) still fires (recall preserved)', async () => {
+    expect(await flows(go('    return Redirect(next);'))).toContain('open_redirect');
+  });
+
+  it('a Redirect guarded by Url.IsLocalUrl is credited as sanitized (was a false positive)', async () => {
+    expect(await flows(go(
+      '    if (Url.IsLocalUrl(next)) { return Redirect(next); }\n    return Redirect("/");',
+    ))).not.toContain('open_redirect');
+  });
+
+  it('LocalRedirect is not a sink — the framework throws on a non-local URL', async () => {
+    expect(await flows(go('    return LocalRedirect(next);'))).not.toContain('open_redirect');
+  });
+});
