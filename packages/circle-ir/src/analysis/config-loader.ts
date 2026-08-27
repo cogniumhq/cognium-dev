@@ -3325,6 +3325,15 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // this table; the drift surfaced as a SecuriBench Micro FP on
   // `sanitizers/Sanitizers3.java` (`URLEncoder.encode` + `sendRedirect`).
   { method: 'encodeForURL', removes: ['xss', 'ssrf', 'open_redirect'] },
+  // ASP.NET Core local-redirect guards (cognium-dev#275). `Url.IsLocalUrl(x)`
+  // returns false for any absolute/scheme-relative URL, so a `Redirect(x)` gated
+  // on it cannot leave the site — without this credit the guarded form is a
+  // false positive. `LocalRedirect(x)` is the same check applied by the
+  // framework itself: it THROWS on a non-local URL, which is why it is
+  // deliberately not registered as an open_redirect sink. Recording it here
+  // states that intent in the model rather than leaving it as a silent omission.
+  { method: 'IsLocalUrl', removes: ['open_redirect'] },
+  { method: 'LocalRedirect', removes: ['open_redirect'] },
   // URL encoding wrapper aliases (common patterns in benchmarks and real-world code)
   { method: 'encodeURL', removes: ['xss', 'ssrf', 'open_redirect'] },
   { method: 'urlEncode', removes: ['xss', 'ssrf', 'open_redirect'] },
