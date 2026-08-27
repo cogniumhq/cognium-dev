@@ -2930,6 +2930,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'DeleteAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'GetStringAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'GetByteArrayAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // Remaining HttpClient/Flurl verbs (cognium-dev#275). For HttpClient these
+  // take the URL at arg 0; for Flurl's fluent form the receiver is surfaced as
+  // arg 0 by CSHARP_RECEIVER_URL_METHODS. Taint-gated either way.
+  { method: 'GetStreamAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'GetJsonAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'PutAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'PatchAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'DeleteAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  { method: 'HeadAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'GetStreamAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'SendAsync', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'DownloadString', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },

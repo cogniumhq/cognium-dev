@@ -204,6 +204,29 @@ const CSHARP_COMMAND_EXECUTE_METHODS = new Set([
 ]);
 
 /**
+ * Flurl fluent HTTP methods (cognium-dev#275). Flurl extends `string`/`Url`, so
+ * the request target is the RECEIVER — `userUrl.GetStringAsync()` — which the
+ * arg-position sink model cannot address.
+ *
+ * These names collide with `HttpClient`'s (`client.GetStringAsync(url)`), where
+ * the URL is already arg 0 and the receiver is an untainted client. Prepending
+ * the receiver unconditionally would shift that URL to index 1 and silently
+ * break every existing HttpClient SSRF detection. The two are disambiguated by
+ * arity instead: the Flurl fluent form passes no URL argument, HttpClient always
+ * does — so the receiver is only surfaced as arg 0 for a ZERO-argument call.
+ *
+ * Consequence: body-carrying Flurl verbs (`url.PostJsonAsync(dto)`,
+ * `url.DownloadFileAsync(dir)`) are NOT covered — they pass an argument, so the
+ * guard skips them. Covering those needs real receiver-type resolution to tell a
+ * `Url`/`string` receiver from an `HttpClient` one; listing their names here
+ * without it would only add entries the guard can never reach.
+ */
+const CSHARP_RECEIVER_URL_METHODS = new Set([
+  'GetAsync', 'PostAsync', 'PutAsync', 'PatchAsync', 'DeleteAsync', 'HeadAsync',
+  'GetStringAsync', 'GetByteArrayAsync', 'GetStreamAsync', 'GetJsonAsync',
+]);
+
+/**
  * Bare method/type name for a C# node, with any generic type-argument list
  * stripped (cognium-dev#275).
  *
@@ -247,6 +270,11 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     // Juliet shape). The command-object taint is seeded in taint-propagation.
     if (receiver && CSHARP_COMMAND_EXECUTE_METHODS.has(methodName)) {
       args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }, ...args];
+    }
+    // Flurl fluent form only — see CSHARP_RECEIVER_URL_METHODS. The arity guard
+    // is what keeps `client.GetStringAsync(url)` (HttpClient) untouched.
+    if (receiver && args.length === 0 && CSHARP_RECEIVER_URL_METHODS.has(methodName)) {
+      args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }];
     }
     calls.push({
       method_name: methodName,
