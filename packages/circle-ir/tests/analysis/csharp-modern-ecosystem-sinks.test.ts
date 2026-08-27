@@ -157,3 +157,51 @@ public class C : ControllerBase {
     expect(await flows(code)).not.toContain('path_traversal');
   });
 });
+
+describe('cognium-dev#275 — header writes and MongoDB JS payloads', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const flows = async (code: string) => {
+    const r = await analyze(code, 'H.cs', 'csharp');
+    return (r.taint?.flows ?? []).map((f) => f.sink_type);
+  };
+
+  const action = (body: string, usings = '') => `${usings}using System.Collections.Generic; using Microsoft.AspNetCore.Mvc;
+public class C : ControllerBase {
+  public IActionResult Get(string q) {
+${body}
+    return Ok();
+  } }`;
+
+  it('Response.Headers.Add(name, tainted) is CRLF injection', async () => {
+    expect(await flows(action('    Response.Headers.Add("X-C", q);'))).toContain('crlf');
+  });
+
+  it('the Headers indexer form is CRLF injection too', async () => {
+    expect(await flows(action('    Response.Headers["X-C"] = q;'))).toContain('crlf');
+  });
+
+  it('a constant header value does not fire', async () => {
+    expect(await flows(action('    Response.Headers.Add("X-C", "fixed");'))).not.toContain('crlf');
+  });
+
+  // The header normalization keys on a `.Headers` receiver precisely so that
+  // the ubiquitous bare `Add` is never registered as a sink.
+  it('List.Add / Dictionary.Add / dictionary indexer are untouched (precision)', async () => {
+    for (const body of [
+      '    var items = new List<string>();\n    items.Add(q);',
+      '    var d = new Dictionary<string,string>();\n    d.Add("k", q);',
+      '    var d = new Dictionary<string,string>();\n    d["k"] = q;',
+    ]) {
+      expect(await flows(action(body)), body).not.toContain('crlf');
+    }
+  });
+
+  it('BsonDocument.Parse(json) and new BsonJavaScript(code) are NoSQL injection', async () => {
+    const u = 'using MongoDB.Bson; using MongoDB.Driver; ';
+    expect(await flows(action('    var f = BsonDocument.Parse(q);', u))).toContain('nosql_injection');
+    expect(await flows(action('    var js = new BsonJavaScript(q);', u))).toContain('nosql_injection');
+  });
+});

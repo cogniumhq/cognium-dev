@@ -227,6 +227,14 @@ const CSHARP_RECEIVER_URL_METHODS = new Set([
 ]);
 
 /**
+ * Receiver expressions that denote an ASP.NET header dictionary —
+ * `Response.Headers`, `ctx.Response.Headers`, `req.Headers`. Used to normalize
+ * `.Headers.Add(k, v)` / `.Headers[k] = v` onto the registered `AddHeader`
+ * CRLF sink without registering the ubiquitous bare `Add`. (cognium-dev#275)
+ */
+const CSHARP_HEADER_RECEIVER_RE = /(^|\.)Headers$/;
+
+/**
  * Bare method/type name for a C# node, with any generic type-argument list
  * stripped (cognium-dev#275).
  *
@@ -271,6 +279,15 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     if (receiver && CSHARP_COMMAND_EXECUTE_METHODS.has(methodName)) {
       args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }, ...args];
     }
+    // `Response.Headers.Add(name, value)` is the ASP.NET Core response-header
+    // writer, but a bare `Add` is far too common to register as a CRLF sink
+    // (List.Add, Dictionary.Add, …). Normalize the header-dictionary form to the
+    // already-registered `AddHeader` name instead, gated on the receiver
+    // expression ending in `.Headers`, so the existing arg-1 crlf sink matches
+    // and nothing else named `Add` is touched. (cognium-dev#275)
+    if (methodName === 'Add' && receiver && CSHARP_HEADER_RECEIVER_RE.test(receiver)) {
+      methodName = 'AddHeader';
+    }
     // Flurl fluent form only — see CSHARP_RECEIVER_URL_METHODS. The arity guard
     // is what keeps `client.GetStringAsync(url)` (HttpClient) untouched.
     if (receiver && args.length === 0 && CSHARP_RECEIVER_URL_METHODS.has(methodName)) {
@@ -312,6 +329,42 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const assignments = getNodesFromCache(tree.rootNode, 'assignment_expression', cache);
   for (const asn of assignments) {
     const left = asn.childForFieldName('left');
+    // `Response.Headers["X-Foo"] = tainted` — the indexer form of the header
+    // write above. Emitted as `AddHeader(name, value)` so the same arg-1 crlf
+    // sink matches. (cognium-dev#275)
+    if (left?.type === 'element_access_expression') {
+      const target = left.childForFieldName('expression');
+      const right = asn.childForFieldName('right');
+      if (!target || !right) continue;
+      if (!CSHARP_HEADER_RECEIVER_RE.test(getNodeText(target))) continue;
+      const subscript = left.childForFieldName('subscript') ?? left.namedChild(1);
+      const rhsText = getNodeText(right);
+      calls.push({
+        method_name: 'AddHeader',
+        receiver: getNodeText(target),
+        receiver_type: null,
+        receiver_type_fqn: null,
+        arguments: [
+          {
+            position: 0,
+            expression: subscript ? getNodeText(subscript) : '',
+            variable: null,
+            literal: subscript ? getNodeText(subscript) : null,
+            value: null,
+          },
+          {
+            position: 1,
+            expression: rhsText,
+            variable: right.type === 'identifier' ? rhsText : null,
+            literal: right.type === 'string_literal' ? rhsText : null,
+            value: null,
+          },
+        ],
+        location: { line: asn.startPosition.row + 1, column: asn.startPosition.column },
+        in_method: findEnclosingMethod(asn),
+      });
+      continue;
+    }
     if (left?.type !== 'member_access_expression') continue;
     const nameNode = left.childForFieldName('name');
     if (!nameNode) continue;

@@ -3025,6 +3025,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // cognium-dev#273/#275). `BsonDocument.Parse(userJson)` deserializes an
   // attacker-controlled query document. Class-scoped (static receiver resolves).
   { method: 'Parse', class: 'BsonDocument', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // `new BsonJavaScript(userCode)` wraps a server-side JS string — the payload
+  // MongoDB's `$where` / `$function` operators execute. Unconditionally
+  // dangerous when tainted, so no literal gating is needed (cognium-dev#275).
+  { method: 'BsonJavaScript', class: 'constructor', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# log injection — Microsoft.Extensions.Logging `ILogger` (CWE-117,
   // cognium-ai#318). Only the message TEMPLATE (arg[0]) is the injectable
