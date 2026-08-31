@@ -5,13 +5,15 @@ description: Triage Cognium taint paths and attack surface, then propose a sanit
 
 # Cognium taint triage and defensive fix
 
-Triage with the `cognium` MCP tools, then propose a **defensive** fix grounded in circle-ir's sanitizer catalog. Do not invent flows, do not claim a helper is a sanitizer unless `check_sanitizer` says so, and do not include exploit steps, payloads, or attack procedures.
+Triage with the `cognium` MCP tools, then propose a **defensive** fix grounded in circle-ir's sanitizer catalog. The model must not invent flows, must not claim a helper is a sanitizer unless `check_sanitizer` says so, and must not include exploit steps, payloads, or attack procedures.
 
 ## When to use
 
 - The user asks why a finding matters, where taint flows, or how to fix it.
 - A scan already ran and the next step is triage or remediation.
 - The user wants an attack-surface overview (entry points, reachable sinks).
+
+If the MCP tools are missing, say so and stop. Do not invent paths or sanitizer names.
 
 ## Tool-call flow
 

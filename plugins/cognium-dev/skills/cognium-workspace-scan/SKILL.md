@@ -1,27 +1,29 @@
 ---
 name: cognium-workspace-scan
-description: Run Cognium SAST on the workspace with the cognium MCP tools and report findings. Use when the user asks to scan, audit, or check the project for vulnerabilities, taint issues, CWEs, or SAST results.
+description: Run Cognium SAST on the project with the cognium MCP tools and report findings. Use when the user asks to scan, audit, or check the project for vulnerabilities, taint issues, CWEs, or SAST results.
 ---
 
 # Cognium workspace scan
 
-Run **deterministic** SAST through the `cognium` MCP server (`@cognium/mcp-server`). Findings come from circle-ir. Do not invent vulnerabilities, do not estimate severity, and do not describe exploit steps, payloads, or attack procedures.
+Run **deterministic** SAST through the `cognium` MCP server (`@cognium/mcp-server`). Findings come from circle-ir. The model must not invent vulnerabilities, must not estimate severity, and must not describe exploit steps, payloads, or attack procedures.
 
 ## When to use
 
-- The user asks to scan the workspace, a directory, or a file.
+- The user asks to scan the project, a directory, or a file.
 - A security review needs engine-backed evidence rather than guessed findings.
 - After a large change, when the user wants an updated SAST report.
 
 ## Prerequisites
 
-- The `cognium` MCP server from this plugin is enabled (stdio, `npx -y @cognium/mcp-server`).
-- Node.js **≥ 20.19.0** is on the PATH so `npx` can start the server.
+- The `cognium` MCP tools are available (`scan`, `explain_finding`, and related tools). In Cursor and Claude Code this plugin starts `@cognium/mcp-server` over stdio (`npx -y @cognium/mcp-server`). ChatGPT skills-only listings do **not** include that server.
+- Node.js **≥ 20.19.0** is on the PATH when the stdio server is used.
 - No API keys or plugin variables are required.
+
+If the MCP tools are missing, say so and stop. Do not fill in guessed findings. Do not pretend a scan ran.
 
 ## Tool-call flow
 
-1. Resolve the scan target as an **absolute path**. Default to the workspace root. `scan.path` must be absolute.
+1. Resolve the scan target as an **absolute path**. Default to the project / workspace root. `scan.path` must be absolute.
 2. Call `scan` on that path. Optional filters:
    - `language`: `java` | `javascript` | `typescript` | `python` | `go` | `rust` | `bash` | `html`
    - `severity`: `critical` | `high` | `medium` | `low`

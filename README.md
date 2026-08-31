@@ -104,20 +104,21 @@ cognium-dev list-passes security
 | [`cognium-dev`](./packages/cli) | CLI for scanning and metrics | [![npm](https://img.shields.io/npm/v/cognium-dev.svg)](https://www.npmjs.com/package/cognium-dev) |
 | [`circle-ir`](./packages/circle-ir) | Core SAST library | [![npm](https://img.shields.io/npm/v/circle-ir.svg)](https://www.npmjs.com/package/circle-ir) |
 | [`@cognium/mcp-server`](./packages/mcp-server) | MCP server (Cursor, Claude Desktop, Claude Code) | [![npm](https://img.shields.io/npm/v/@cognium/mcp-server.svg)](https://www.npmjs.com/package/@cognium/mcp-server) |
-| [Cursor plugin](./plugins/cognium-dev) | Cognium SAST plugin (skills, rules, commands, agent + MCP) | Cursor Marketplace (not listed until submitted) |
+| [Cursor / Claude plugin](./plugins/cognium-dev) | Cognium SAST plugin (skills, rules, commands, agent + MCP) | Cursor Marketplace, Claude Code community, OpenAI skills-only (not listed until submitted) |
 
 ---
 
-## Cursor plugin
+## Cursor / Claude Code plugin
 
-Scan a workspace from Cursor through the existing MCP server, then explain findings and propose defensive fixes.
+Scan a project from Cursor or Claude Code through the existing MCP server, then explain findings and propose defensive fixes.
 
 - Plugin package: [`plugins/cognium-dev`](./plugins/cognium-dev) (identifier `cognium-dev`, MIT)
-- Team marketplace manifest: [`.cursor-plugin/marketplace.json`](./.cursor-plugin/marketplace.json)
-- Local test: symlink `plugins/cognium-dev` into `~/.cursor/plugins/local`, reload the window, check **Customize**
-- Public submit (manual review; repo must stay public): https://cursor.com/marketplace/publish
+- Cursor marketplace: [`.cursor-plugin/marketplace.json`](./.cursor-plugin/marketplace.json)
+- Claude marketplace: [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) (`/plugin marketplace add cogniumhq/cognium-dev` then `/plugin install cognium-dev@cognium`)
+- OpenAI: skills-only until a public HTTPS MCP exists — [`plugins/cognium-dev/openai/README.md`](./plugins/cognium-dev/openai/README.md)
+- Submit: [Cursor](https://cursor.com/marketplace/publish) · [Claude community](https://platform.claude.com/plugins/submit) · [OpenAI](https://developers.openai.com/plugins/guides/submit-claude-plugin)
 
-Requires **Node.js ≥ 20.19.0**. No API keys. The plugin is authored in this repo; it is not listed on the Cursor Marketplace until Cognium Labs submits it.
+Requires **Node.js ≥ 20.19.0**. No API keys. Listings are not live until Cognium Labs submits them.
 
 ---
 
@@ -200,7 +201,8 @@ console.log(project.taint_paths);
 - [CLI Documentation](./packages/cli/README.md)
 - [Library Documentation](./packages/circle-ir/README.md)
 - [MCP server](./packages/mcp-server/README.md)
-- [Cursor plugin](./plugins/cognium-dev/README.md)
+- [Cognium SAST plugin](./plugins/cognium-dev/README.md)
+- [OpenAI skills-only notes](./plugins/cognium-dev/openai/README.md)
 - [Analysis Passes](./packages/circle-ir/docs/PASSES.md)
 - [Circle-IR Specification](./packages/circle-ir/docs/SPEC.md)
 - [Architecture](./packages/circle-ir/docs/ARCHITECTURE.md)
