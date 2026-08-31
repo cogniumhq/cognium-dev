@@ -1,0 +1,26 @@
+{
+  "name": "cognium-dev",
+  "displayName": "Cognium SAST",
+  "version": "0.1.0",
+  "description": "Deterministic SAST for Cursor. Scan the workspace with circle-ir via MCP, explain taint findings, and propose sanitizer-backed defensive fixes. No API keys.",
+  "author": {
+    "name": "Cognium Labs",
+    "email": "hello@cognium.net"
+  },
+  "homepage": "https://cognium.dev",
+  "repository": "https://github.com/cogniumhq/cognium-dev",
+  "license": "MIT",
+  "keywords": [
+    "sast",
+    "security",
+    "taint-analysis",
+    "mcp",
+    "cognium"
+  ],
+  "logo": "assets/logo.svg",
+  "skills": "./skills/",
+  "rules": "./rules/",
+  "agents": "./agents/",
+  "commands": "./commands/",
+  "mcpServers": "./mcp.json"
+}

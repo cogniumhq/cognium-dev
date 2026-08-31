@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cognium": {
+      "command": "npx",
+      "args": ["-y", "@cognium/mcp-server"]
+    }
+  }
+}

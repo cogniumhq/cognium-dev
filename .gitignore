@@ -9,9 +9,9 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# Standalone binaries
-cognium-dev
-cognium-dev-*
+# Standalone binaries (repo-root only — do not ignore plugins/cognium-dev)
+/cognium-dev
+/cognium-dev-*
 *.bun-build
 
 # Package files

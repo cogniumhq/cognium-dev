@@ -1,0 +1,13 @@
+---
+description: When remediating Cognium SAST findings, verify sanitizers with MCP and keep fixes defensive.
+globs: "**/*.{java,js,jsx,ts,tsx,mjs,cjs,py,go,rs,sh,bash,html,htm}"
+alwaysApply: false
+---
+
+cognium-remediation: When writing or reviewing application code that may handle untrusted input, prefer engine-backed guidance from the `cognium` MCP server.
+
+- Call `explain_finding` before rewriting a flagged sink.
+- Call `check_sanitizer` before claiming a function sanitizes a given `sink_type`.
+- Prefer cataloged sanitizers and safe APIs (parameterized queries, framework encoding, allowlisted path handling).
+- After a fix, `refresh` and re-`scan` the same project root to confirm the finding is resolved.
+- Do not add exploit samples, payloads, or attack procedures in comments, tests, or review notes.

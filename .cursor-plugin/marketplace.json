@@ -1,0 +1,19 @@
+{
+  "name": "cognium",
+  "owner": {
+    "name": "Cognium Labs",
+    "email": "hello@cognium.net"
+  },
+  "metadata": {
+    "description": "Official Cursor plugins for Cognium SAST (cognium-dev / circle-ir).",
+    "version": "0.1.0",
+    "pluginRoot": "plugins"
+  },
+  "plugins": [
+    {
+      "name": "cognium-dev",
+      "source": "cognium-dev",
+      "description": "Deterministic SAST for Cursor: scan the workspace, triage taint paths, and propose sanitizer-backed fixes via @cognium/mcp-server."
+    }
+  ]
+}
