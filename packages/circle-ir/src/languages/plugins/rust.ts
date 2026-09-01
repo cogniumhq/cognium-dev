@@ -253,14 +253,11 @@ export class RustPlugin extends BaseLanguagePlugin {
         argPositions: [0],
       },
 
-      // Format String (Rust is mostly safe, but unchecked format! can be dangerous)
-      {
-        method: 'format!',
-        type: 'format_string',
-        cwe: 'CWE-134',
-        severity: 'medium',
-        argPositions: [0],
-      },
+      // Format String — `format!` is NOT a CWE-134 sink in Rust. Its template
+      // is a compile-time string literal; a non-literal template does not
+      // compile, so an attacker-controlled format string is not expressible.
+      // Interpolating data into `format!` is the ordinary, safe way to build a
+      // string. (cognium-dev #294 part 1 — removed as a format_string sink.)
 
       // Unsafe operations
       {
