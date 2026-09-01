@@ -311,7 +311,13 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // scan path (`generateFindings`) dropped every `http_*/io/network/interproc →
     // prompt_injection` flow even though `taint.flows` / the trust pass reported
     // it — the same "two paths disagree" shape as #129. Now emitted from scan too.
-    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    // xxe added (cognium-dev #282): `request.getParameter("xml")` reaching an
+    // XML parser (DocumentBuilder.parse etc.) is XXE, but xxe was absent from
+    // http_param/http_query (present on http_body/io_input/file_input), so the
+    // pairing was gated out and generateFindings dropped it — same class as the
+    // #129 log_injection/format_string/nosql_injection drop. Mirrors how
+    // deserialization already sits on both http_param and http_query.
+    http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'xxe', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
@@ -322,7 +328,7 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // annotated `/* BAD */`. Prior to 3.163.0 the reach map omitted xss
     // so http_path → xss inline-colocation flows were silently dropped.
     http_path: ['path_traversal', 'sql_injection', 'ssrf', 'mybatis_mapper_call', 'open_redirect', 'trust_boundary', 'xss', 'log_injection', 'format_string', 'prompt_injection'],
-    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    http_query: ['sql_injection', 'command_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'xxe', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     // ssrf added Sprint 57 #200: bash CGI/webhook handlers and scripts that
     // take a URL on stdin or as a positional CLI arg (`curl "$1"`,
     // `wget "$(read line)"`) and curl/wget it server-side are textbook SSRF
