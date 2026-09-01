@@ -9,10 +9,10 @@
  * "two paths disagree" shape as the log_injection / format_string /
  * nosql_injection omission fixed for cognium-ai#129, which did not cover xxe.
  *
- * CHARACTERIZATION TEST. The `http_param` expectations assert today's
- * (defective) behaviour. When #282 is fixed they must flip to `true` / a
- * non-empty finding list; the `http_body` cases below are the recall guard
- * that must keep passing either way.
+ * FIXED: `xxe` was added to the `http_param` and `http_query` reach lists
+ * (mirroring `deserialization`), so the servlet XXE now converts into a
+ * finding. This test locks that in; the `http_body` cases are the recall
+ * guard that must keep passing either way.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
@@ -51,10 +51,10 @@ describe('cognium-dev#282 — xxe reach-map omission', () => {
     };
   };
 
-  it('the reach map omits xxe for every request-derived source except http_body', () => {
+  it('the reach map credits xxe for http_param and http_query (#282 fixed)', () => {
     expect(canSourceReachSink('http_body', 'xxe')).toBe(true);   // recall guard
-    expect(canSourceReachSink('http_param', 'xxe')).toBe(false); // the defect
-    expect(canSourceReachSink('http_query', 'xxe')).toBe(false);
+    expect(canSourceReachSink('http_param', 'xxe')).toBe(true);  // was the defect
+    expect(canSourceReachSink('http_query', 'xxe')).toBe(true);
   });
 
   it('source and sink are both detected for the http_param servlet', async () => {
@@ -63,9 +63,9 @@ describe('cognium-dev#282 — xxe reach-map omission', () => {
     expect(ir.taint.sources.some((s) => s.type === 'http_param')).toBe(true);
   });
 
-  it('...yet no xxe finding is emitted (the silent FN)', async () => {
+  it('...and an xxe finding is now emitted for the http_param servlet (#282 fixed)', async () => {
     const { findings } = await findingsFor(PARAM_XXE);
-    expect(findings.filter((f) => f.type === 'xxe')).toHaveLength(0);
+    expect(findings.filter((f) => f.type === 'xxe').length).toBeGreaterThan(0);
   });
 
   it('the http_body variant DOES emit, proving the fixture shape is sound', async () => {
