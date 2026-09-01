@@ -1,0 +1,22 @@
+{
+  "name": "cognium-dev",
+  "displayName": "Cognium SAST",
+  "version": "0.1.0",
+  "description": "Deterministic SAST via circle-ir MCP. Scan a project, explain taint findings, and propose sanitizer-backed defensive fixes. No API keys.",
+  "author": {
+    "name": "Cognium Labs",
+    "email": "hello@cognium.net",
+    "url": "https://cognium.dev"
+  },
+  "homepage": "https://cognium.dev",
+  "repository": "https://github.com/cogniumhq/cognium-dev",
+  "license": "MIT",
+  "keywords": [
+    "sast",
+    "security",
+    "taint-analysis",
+    "mcp",
+    "cognium"
+  ],
+  "mcpServers": "./.mcp.json"
+}

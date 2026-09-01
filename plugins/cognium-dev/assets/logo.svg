@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Cognium">
+  <!-- 1:1 logotype with an opaque background plate (marketplace publish form).
+       Mark derived from the Circle-IR browser example in this repo. -->
+  <defs>
+    <linearGradient id="cognium-logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="128" height="128" fill="#0B1220"/>
+  <g transform="translate(64,64)">
+    <path d="M-28,0 C-28,-15 -15,-15 0,0 C15,15 28,15 28,0 C28,-15 15,-15 0,0 C-15,15 -28,15 -28,0 Z"
+          fill="none" stroke="url(#cognium-logo-gradient)" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="-18" cy="0" r="4" fill="#60A5FA"/>
+    <circle cx="18" cy="0" r="4" fill="#06B6D4"/>
+    <circle cx="0" cy="0" r="5" fill="#FFFFFF"/>
+  </g>
+</svg>

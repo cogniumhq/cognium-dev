@@ -99,12 +99,26 @@ cognium-dev list-passes security
 
 ## Packages
 
-This monorepo contains two packages:
-
-| Package | Description | npm |
-|---------|-------------|-----|
+| Package | Description | Distribution |
+|---------|-------------|--------------|
 | [`cognium-dev`](./packages/cli) | CLI for scanning and metrics | [![npm](https://img.shields.io/npm/v/cognium-dev.svg)](https://www.npmjs.com/package/cognium-dev) |
 | [`circle-ir`](./packages/circle-ir) | Core SAST library | [![npm](https://img.shields.io/npm/v/circle-ir.svg)](https://www.npmjs.com/package/circle-ir) |
+| [`@cognium/mcp-server`](./packages/mcp-server) | MCP server (Cursor, Claude Desktop, Claude Code) | [![npm](https://img.shields.io/npm/v/@cognium/mcp-server.svg)](https://www.npmjs.com/package/@cognium/mcp-server) |
+| [Cursor / Claude plugin](./plugins/cognium-dev) | Cognium SAST plugin (skills, rules, commands, agent + MCP) | Cursor Marketplace, Claude Code community, OpenAI skills-only (not listed until submitted) |
+
+---
+
+## Cursor / Claude Code plugin
+
+Scan a project from Cursor or Claude Code through the existing MCP server, then explain findings and propose defensive fixes.
+
+- Plugin package: [`plugins/cognium-dev`](./plugins/cognium-dev) (identifier `cognium-dev`, MIT)
+- Cursor marketplace: [`.cursor-plugin/marketplace.json`](./.cursor-plugin/marketplace.json)
+- Claude marketplace: [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) (`/plugin marketplace add cogniumhq/cognium-dev` then `/plugin install cognium-dev@cognium`)
+- OpenAI: skills-only until a public HTTPS MCP exists — [`plugins/cognium-dev/openai/README.md`](./plugins/cognium-dev/openai/README.md)
+- Submit: [Cursor](https://cursor.com/marketplace/publish) · [Claude community](https://platform.claude.com/plugins/submit) · [OpenAI](https://developers.openai.com/plugins/guides/submit-claude-plugin)
+
+Requires **Node.js ≥ 20.19.0**. No API keys. Listings are not live until Cognium Labs submits them.
 
 ---
 
@@ -186,6 +200,9 @@ console.log(project.taint_paths);
 
 - [CLI Documentation](./packages/cli/README.md)
 - [Library Documentation](./packages/circle-ir/README.md)
+- [MCP server](./packages/mcp-server/README.md)
+- [Cognium SAST plugin](./plugins/cognium-dev/README.md)
+- [OpenAI skills-only notes](./plugins/cognium-dev/openai/README.md)
 - [Analysis Passes](./packages/circle-ir/docs/PASSES.md)
 - [Circle-IR Specification](./packages/circle-ir/docs/SPEC.md)
 - [Architecture](./packages/circle-ir/docs/ARCHITECTURE.md)

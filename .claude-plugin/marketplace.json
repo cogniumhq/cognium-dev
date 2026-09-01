@@ -1,0 +1,16 @@
+{
+  "name": "cognium",
+  "owner": {
+    "name": "Cognium Labs",
+    "email": "hello@cognium.net",
+    "url": "https://cognium.dev"
+  },
+  "description": "Official Claude Code plugins for Cognium SAST (cognium-dev / circle-ir).",
+  "plugins": [
+    {
+      "name": "cognium-dev",
+      "source": "./plugins/cognium-dev",
+      "description": "Deterministic SAST: scan a project, triage taint paths, and propose sanitizer-backed fixes via @cognium/mcp-server."
+    }
+  ]
+}

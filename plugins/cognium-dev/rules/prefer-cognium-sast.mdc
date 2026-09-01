@@ -1,0 +1,12 @@
+---
+description: Prefer Cognium MCP SAST tools over guessed vulnerabilities. Use deterministic scan results when assessing security.
+alwaysApply: true
+---
+
+cognium-sast: When assessing security in this workspace, use the `cognium` MCP tools (`scan`, `attack_surface_summary`, `explain_finding`, `taint_paths`, `list_reachable_sinks`, `check_sanitizer`, and related tools) instead of guessing vulnerabilities, CWE ids, or sanitizer names.
+
+- Do not invent findings. If the MCP server is unavailable, say so.
+- Do not run a full-project `scan` on every prompt. Scan when the user asks, when doing a security review, or when a command/skill in this plugin is invoked.
+- Pass **absolute** paths to `scan` and `project_root` arguments.
+- Findings and taint paths come from circle-ir. Treat empty taint flows as unconfirmed reachability, not as a confirmed exploit.
+- Stay defensive: explain issues and propose sanitizer-backed fixes. Never provide exploit steps, payloads, or attack procedures.

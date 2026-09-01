@@ -60,6 +60,8 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
+The same stdio config is bundled in the [Cognium SAST plugin](../../plugins/cognium-dev) for Cursor (`mcp.json`) and Claude Code (`.mcp.json`). That plugin also ships skills, rules, commands, and a SAST reviewer agent.
+
 ## Tools
 
 | Tool | Purpose |
