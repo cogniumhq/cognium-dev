@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.10] - 2026-09-01
+
+### Changes
+
+- fix(taint): credit http_param/http_query -> xxe in the finding reach map (#282) (#300)
+- fix(rust): drop format! as a format_string sink (#294 part 1) (#299)
+- fix(csharp): drop duplicate SSRF registrations, relocate ReDoS block
+- test(analysis): characterize library-profile gates lost in the taint rebuild
+- fix(csharp): credit local-redirect guards as open_redirect sanitizers (#275)
+- feat(csharp): header-write CRLF sinks + BsonJavaScript NoSQL sink (#275)
+- feat(csharp): Flurl receiver-carried SSRF + IFormFile.FileName source (#275)
+- feat(csharp): modern ecosystem sinks + generic-call extraction fix (#275)
+- test(analysis): lock #280 bisect result + characterize #281/#282 defects
+
 ## [4.9.9] - 2026-08-26
 
 Performance: large C#/Java file analysis no longer degrades quadratically.

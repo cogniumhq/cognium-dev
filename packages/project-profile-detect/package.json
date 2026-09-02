@@ -1,7 +1,7 @@
 {
   "name": "@cognium/project-profile-detect",
   "version": "1.1.0",
-  "description": "Detect project shape (library/application/cli/server/plugin) \u00d7 environment (production/dev/sample/benchmark/test) from Maven/Gradle build files. Companion to circle-ir.",
+  "description": "Detect project shape (library/application/cli/server/plugin) × environment (production/dev/sample/benchmark/test) from Maven/Gradle build files. Companion to circle-ir.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -60,7 +60,7 @@
   "devDependencies": {
     "@types/node": "^25.5.0",
     "bun-types": "^1.3.11",
-    "circle-ir": "^4.9.9",
+    "circle-ir": "^4.9.10",
     "typescript": "^6.0.2"
   }
 }

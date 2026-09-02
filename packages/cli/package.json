@@ -1,6 +1,6 @@
 {
   "name": "cognium-dev",
-  "version": "4.9.9",
+  "version": "4.9.10",
   "description": "Static Application Security Testing CLI for detecting security vulnerabilities via taint tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,7 @@
     "test": "bun test",
     "clean": "rm -rf dist cognium-dev cognium-dev-* *.bun-build wasm",
     "typecheck": "tsc --noEmit",
-    "version": "node -e \"const v = require('./package.json').version; require('fs').writeFileSync('src/version.ts', '/**\\n * Version information\\n *\\n * Kept in sync with package.json via the \\`version\\` npm lifecycle script.\\n * Do not edit manually \u2014 use \\`npm version patch|minor|major\\` instead.\\n */\\nexport const version = \\x27' + v + '\\x27;\\n')\" && git add src/version.ts",
+    "version": "node -e \"const v = require('./package.json').version; require('fs').writeFileSync('src/version.ts', '/**\\n * Version information\\n *\\n * Kept in sync with package.json via the \\`version\\` npm lifecycle script.\\n * Do not edit manually — use \\`npm version patch|minor|major\\` instead.\\n */\\nexport const version = \\x27' + v + '\\x27;\\n')\" && git add src/version.ts",
     "dogfood": "bun run src/cli.ts scan src/ -q",
     "prepublishOnly": "bun run build"
   },
@@ -66,7 +66,7 @@
   },
   "dependencies": {
     "@cognium/project-profile-detect": "1.1.0",
-    "circle-ir": "4.9.9"
+    "circle-ir": "4.9.10"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
