@@ -306,6 +306,37 @@ interface MetricsOptions {
 
 // ScanResult, CrossFileData, SINK_SEVERITY, SINK_CWE imported from formatters.ts
 
+/**
+ * cognium-dev #284 (defect 3) — collapse duplicate security vulnerabilities.
+ *
+ * `taint.flows` can hold more than one flow to the same sink when the same
+ * tainted value reaches it via different provenance (the flow-dedup key carries
+ * `source_line`), e.g. `res.redirect('/x?q=' + req.query.next)` yields a flow
+ * from the request-parameter line AND from the concatenation line. Mapping
+ * flows 1:1 to vulnerabilities then reports the same defect at the same line
+ * twice. Collapse by `(type, line)`, keeping the highest-severity entry and
+ * preserving order. Pure dedup: never drops the last entry for a key, so it
+ * cannot hide a finding.
+ */
+const VULN_SEVERITY_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+export function dedupeVulnerabilities(
+  vulns: ScanResult['vulnerabilities'],
+): ScanResult['vulnerabilities'] {
+  const best = new Map<string, ScanResult['vulnerabilities'][number]>();
+  const order: string[] = [];
+  for (const v of vulns) {
+    const key = `${v.type}:${v.line}`;
+    const current = best.get(key);
+    if (current === undefined) {
+      best.set(key, v);
+      order.push(key);
+    } else if ((VULN_SEVERITY_RANK[v.severity] ?? -1) > (VULN_SEVERITY_RANK[current.severity] ?? -1)) {
+      best.set(key, v);
+    }
+  }
+  return order.map(k => best.get(k)!);
+}
+
 export function detectLanguage(filePath: string): string | null {
   const ext = extname(filePath).toLowerCase();
   return LANG_MAP[ext] || null;
@@ -456,7 +487,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       });
     }
 
-    return { file: filePath, vulnerabilities };
+    return { file: filePath, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
   } catch (error) {
     return {
       file: filePath,
@@ -511,7 +542,7 @@ async function scanProject(
         ...(finding.tags && finding.tags.length > 0 ? { tags: [...finding.tags] } : {}),
       });
     }
-    return { file, vulnerabilities };
+    return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
   });
 
   return {
