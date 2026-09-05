@@ -4,6 +4,14 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-09-02
+
+### Changed
+
+- Bump the `circle-ir` dependency to `4.9.10`, which drops the Rust `format!`
+  format_string false positive (#294 part 1) and fixes the http_param/http_query
+  → xxe finding-reach-map false negative (#282).
+
 ## [0.1.2] - 2026-08-31
 
 ### Added
