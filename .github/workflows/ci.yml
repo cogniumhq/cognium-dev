@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # packages/cli and packages/project-profile-detect run their suites
+      # under `bun test`, so both runtimes are required.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - run: npm ci
+
+      # `build:all`, not `build`. Plain `build` is `tsc` only, which leaves
+      # packages/circle-ir/dist/wasm empty — and tests/setup.ts loads the
+      # tree-sitter grammars from exactly that directory, so every circle-ir
+      # test would abort on a missing web-tree-sitter.wasm. `build:all` adds
+      # the browser/core bundles, and it is the browser step that copies the
+      # grammars into dist/wasm.
+      #
+      # The build is also what makes the downstream suites work at all:
+      # packages/cli resolves `@cognium/project-profile-detect` and
+      # packages/mcp-server resolves `circle-ir` through their `main`/`dist`
+      # entries. Without this step those two suites fail with module-resolution
+      # errors that look like 47 unrelated test failures (see #290).
+      - run: npm run build:all
+
+      - run: npm run typecheck
+
+      # Each workspace reports separately so one red suite does not hide the
+      # state of the others. `!cancelled()` keeps the later steps running after
+      # an earlier failure, which is the whole point of splitting them.
+      - name: test — circle-ir
+        if: ${{ !cancelled() }}
+        run: npm run test -w packages/circle-ir
+
+      - name: test — cli
+        if: ${{ !cancelled() }}
+        run: npm run test -w packages/cli
+
+      - name: test — mcp-server
+        if: ${{ !cancelled() }}
+        run: npm run test -w packages/mcp-server
+
+      # KNOWN RED: one genuine failure, `mergeMavenInheritance — depth cap`.
+      # Tracked in #290 (order-dependent inheritance merge). Deliberately NOT
+      # skipped — the test is correct that something is wrong, and quarantining
+      # it would hide a real non-determinism bug.
+      - name: test — project-profile-detect
+        if: ${{ !cancelled() }}
+        run: npm run test -w packages/project-profile-detect
