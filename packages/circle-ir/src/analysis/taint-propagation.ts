@@ -306,6 +306,23 @@ function findInitialTaint(
     const defsOnLine = defsByLine.get(source.line) ?? [];
 
     for (const def of defsOnLine) {
+      // cognium-dev #308 (from cognium-ai#326 / #289): an
+      // `interprocedural_param` source names exactly one parameter
+      // (`source.variable`, set for Java/C#). Every parameter shares the
+      // signature line, so seeding *all* param defs on that line co-tainted
+      // non-taintable neighbours — `SqlConnection conn` beside
+      // `string input` — and `new SqlCommand(constSql, conn)` then carried
+      // the bogus taint into `cmd.ExecuteReader()`. Taintable neighbours
+      // (`string tableName`) get their own source, so restricting the seed
+      // to the named parameter loses nothing.
+      if (
+        source.type === 'interprocedural_param' &&
+        source.variable &&
+        def.kind === 'param' &&
+        def.variable !== source.variable
+      ) {
+        continue;
+      }
       tainted.push({
         variable: def.variable,
         defId: def.id,

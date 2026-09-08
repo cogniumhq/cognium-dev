@@ -505,10 +505,23 @@ function findSources(
     }
   }
 
-  // Deduplicate sources by line+type, keeping highest confidence
+  // Deduplicate sources by line+type, keeping highest confidence.
+  //
+  // cognium-dev #308: `interprocedural_param` sources are keyed by parameter
+  // as well. Every parameter of a method shares the signature line, so the
+  // line+type key collapsed `(string input, string tableName)` to a single
+  // source and the second parameter's taint only survived through the
+  // same-line co-tainting in `findInitialTaint` — which is exactly the
+  // over-approximation that also tainted `SqlConnection conn`. Keeping one
+  // source per named parameter lets the propagator seed each taintable
+  // parameter precisely. Flows are still deduplicated on
+  // (source_line, sink_line, sink_type), so reported counts do not change.
   const sourceMap = new Map<string, TaintSource>();
   for (const source of sources) {
-    const key = `${source.line}:${source.type}`;
+    const key =
+      source.type === 'interprocedural_param' && source.variable
+        ? `${source.line}:${source.type}:${source.variable}`
+        : `${source.line}:${source.type}`;
     const existing = sourceMap.get(key);
     if (!existing || source.confidence > existing.confidence) {
       sourceMap.set(key, source);
