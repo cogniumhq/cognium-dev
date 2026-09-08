@@ -160,7 +160,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // scan each sink's call-argument expressions for that variable name as
     // an identifier-boundary match. This is language-agnostic but in practice
     // benefits Python the most because Java sources rarely set `variable`.
-    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, constProp.tainted, ctx.code, ctx.language) ?? [];
+    const exprScanFlows = detectExpressionScanFlows(calls, sources, sinks, sanitizers, constProp.unreachableLines, constProp.tainted, ctx.code, ctx.language, types) ?? [];
     for (const f of exprScanFlows) {
       if (flowKeys.has(flowKey(f))) continue;
 
@@ -1148,6 +1148,7 @@ function detectExpressionScanFlows(
   tainted: Set<string>,
   code?: string,
   language?: string,
+  types?: CircleIR['types'],
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
 
@@ -1519,12 +1520,42 @@ function detectExpressionScanFlows(
       for (const s of sourcesWithVar) {
         if (s.line < anchor.line) anchor = s;
       }
+      // cognium-dev #316 (from cognium-ai#326): `buildJavaTaintedVars` is
+      // file-global and name-based, and every derived alias used to be
+      // pushed as a copy of the globally earliest source — inheriting that
+      // source's `in_method`. A `cmd` tainted by an assignment in method
+      // Bad therefore matched `cmd.ExecuteReader()` in an unrelated,
+      // earlier method Safe (same `in_method` as the anchor, so the #101
+      // cross-method guard let it through). Anchor each alias to the
+      // earliest source inside the method that encloses the derived
+      // assignment instead, and stamp that method as `in_method`, so the
+      // alias can only reach sinks in its own method.
+      const methodAt = (line: number): string | null => {
+        for (const t of types ?? []) {
+          for (const m of t.methods) {
+            if (line >= m.start_line && line <= m.end_line) return m.name;
+          }
+        }
+        return null;
+      };
       const existingVars = new Set(sourcesWithVar.map(s => s.variable));
-      for (const [varName] of derived) {
+      for (const [varName, derivedLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
+        const owner = methodAt(derivedLine);
+        let scopedAnchor = anchor;
+        if (owner) {
+          let best: typeof anchor | undefined;
+          for (const s of sourcesWithVar) {
+            const sOwner = s.in_method ?? methodAt(s.line);
+            if (sOwner !== owner) continue;
+            if (!best || s.line < best.line) best = s;
+          }
+          if (best) scopedAnchor = best;
+        }
         sourcesWithVar.push({
-          ...anchor,
+          ...scopedAnchor,
           variable: varName,
+          ...(owner ? { in_method: owner } : {}),
         });
         existingVars.add(varName);
       }
