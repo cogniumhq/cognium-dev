@@ -505,10 +505,23 @@ function findSources(
     }
   }
 
-  // Deduplicate sources by line+type, keeping highest confidence
+  // Deduplicate sources by line+type, keeping highest confidence.
+  //
+  // cognium-dev #308: `interprocedural_param` sources are keyed by parameter
+  // as well. Every parameter of a method shares the signature line, so the
+  // line+type key collapsed `(string input, string tableName)` to a single
+  // source and the second parameter's taint only survived through the
+  // same-line co-tainting in `findInitialTaint` — which is exactly the
+  // over-approximation that also tainted `SqlConnection conn`. Keeping one
+  // source per named parameter lets the propagator seed each taintable
+  // parameter precisely. Flows are still deduplicated on
+  // (source_line, sink_line, sink_type), so reported counts do not change.
   const sourceMap = new Map<string, TaintSource>();
   for (const source of sources) {
-    const key = `${source.line}:${source.type}`;
+    const key =
+      source.type === 'interprocedural_param' && source.variable
+        ? `${source.line}:${source.type}:${source.variable}`
+        : `${source.line}:${source.type}`;
     const existing = sourceMap.get(key);
     if (!existing || source.confidence > existing.confidence) {
       sourceMap.set(key, source);
@@ -1542,6 +1555,24 @@ const CWE_78_RECEIVER_ALLOWLIST: ReadonlySet<string> = new Set([
  *
  * cognium-dev #152.
  */
+/**
+ * cognium-dev #310 — is `receiver` a JavaScript regular-expression value?
+ * True for a regex literal (`/^\w+$/i`), a `new RegExp(...)` / `RegExp(...)`
+ * expression, or an identifier that is declared with one of those shapes
+ * anywhere in the file (`const RE = /x/;` … `RE.exec(input)`). Text-level on
+ * purpose: JS receiver types are rarely resolved, and a regex literal cannot
+ * be mistaken for a child_process handle.
+ */
+function isRegexReceiver(receiver: string | null | undefined, sourceLines?: string[]): boolean {
+  const r = (receiver ?? '').trim();
+  if (r.length === 0) return false;
+  if (r.startsWith('/') && /\/[a-z]*$/.test(r)) return true;
+  if (/^(?:new\s+)?RegExp\s*\(/.test(r)) return true;
+  if (!/^[A-Za-z_$][\w$]*$/.test(r) || !sourceLines) return false;
+  const decl = new RegExp(`(?:const|let|var)\\s+${escapeRe(r)}\\s*=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
+  return sourceLines.some(l => decl.test(l));
+}
+
 function isFunctionCallbackArgument(arg: ArgumentInfo): boolean {
   // A string literal sets `literal` to the unquoted value — definitively
   // NOT a function literal.
@@ -2030,6 +2061,38 @@ function findSinks(
           if (firstArg && isFunctionCallbackArgument(firstArg)) {
             continue;
           }
+        }
+
+        // cognium-dev #310 (from cognium-ai#195) — the classless `exec`
+        // CWE-78 sink exists to catch destructured `child_process.exec`, but
+        // `RegExp.prototype.exec` shares the name. A receiver that is a regex
+        // literal (`/re/.exec(x)`), a `new RegExp(...)` expression, or a
+        // variable bound to either in this file is a pattern match, not a
+        // shell. Scoped to JS/TS so Java `Runtime.exec` is untouched.
+        if (
+          pattern.type === 'command_injection' &&
+          call.method_name === 'exec' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
+
+        // cognium-dev #311 (from cognium-ai#196) — Python's classless
+        // `compile` CWE-94 sink models the builtin `compile(src, name, mode)`.
+        // Any `<receiver>.compile(...)` is a library method instead
+        // (`re.compile`, `workflow.compile`, `jinja_env.compile`) and cannot
+        // execute the argument. Only the bare builtin (or an explicit
+        // `builtins.compile`) keeps the sink; `re.compile` has its own
+        // `redos` sink so nothing is lost there.
+        if (
+          pattern.type === 'code_injection' &&
+          language === 'python' &&
+          call.method_name === 'compile' &&
+          call.receiver &&
+          call.receiver !== 'builtins'
+        ) {
+          continue;
         }
 
         // #148 — Go json.Unmarshal(data, &typedStruct) and
