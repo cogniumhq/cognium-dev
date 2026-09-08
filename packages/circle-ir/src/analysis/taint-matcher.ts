@@ -2078,6 +2078,23 @@ function findSinks(
           continue;
         }
 
+        // cognium-dev #311 (from cognium-ai#196) — Python's classless
+        // `compile` CWE-94 sink models the builtin `compile(src, name, mode)`.
+        // Any `<receiver>.compile(...)` is a library method instead
+        // (`re.compile`, `workflow.compile`, `jinja_env.compile`) and cannot
+        // execute the argument. Only the bare builtin (or an explicit
+        // `builtins.compile`) keeps the sink; `re.compile` has its own
+        // `redos` sink so nothing is lost there.
+        if (
+          pattern.type === 'code_injection' &&
+          language === 'python' &&
+          call.method_name === 'compile' &&
+          call.receiver &&
+          call.receiver !== 'builtins'
+        ) {
+          continue;
+        }
+
         // #148 — Go json.Unmarshal(data, &typedStruct) and
         // json.NewDecoder(...).Decode(&typedStruct) are safe when the
         // destination is a concrete typed value (typed struct, typed map,
