@@ -1555,6 +1555,24 @@ const CWE_78_RECEIVER_ALLOWLIST: ReadonlySet<string> = new Set([
  *
  * cognium-dev #152.
  */
+/**
+ * cognium-dev #310 — is `receiver` a JavaScript regular-expression value?
+ * True for a regex literal (`/^\w+$/i`), a `new RegExp(...)` / `RegExp(...)`
+ * expression, or an identifier that is declared with one of those shapes
+ * anywhere in the file (`const RE = /x/;` … `RE.exec(input)`). Text-level on
+ * purpose: JS receiver types are rarely resolved, and a regex literal cannot
+ * be mistaken for a child_process handle.
+ */
+function isRegexReceiver(receiver: string | null | undefined, sourceLines?: string[]): boolean {
+  const r = (receiver ?? '').trim();
+  if (r.length === 0) return false;
+  if (r.startsWith('/') && /\/[a-z]*$/.test(r)) return true;
+  if (/^(?:new\s+)?RegExp\s*\(/.test(r)) return true;
+  if (!/^[A-Za-z_$][\w$]*$/.test(r) || !sourceLines) return false;
+  const decl = new RegExp(`(?:const|let|var)\\s+${escapeRe(r)}\\s*=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
+  return sourceLines.some(l => decl.test(l));
+}
+
 function isFunctionCallbackArgument(arg: ArgumentInfo): boolean {
   // A string literal sets `literal` to the unquoted value — definitively
   // NOT a function literal.
@@ -2043,6 +2061,21 @@ function findSinks(
           if (firstArg && isFunctionCallbackArgument(firstArg)) {
             continue;
           }
+        }
+
+        // cognium-dev #310 (from cognium-ai#195) — the classless `exec`
+        // CWE-78 sink exists to catch destructured `child_process.exec`, but
+        // `RegExp.prototype.exec` shares the name. A receiver that is a regex
+        // literal (`/re/.exec(x)`), a `new RegExp(...)` expression, or a
+        // variable bound to either in this file is a pattern match, not a
+        // shell. Scoped to JS/TS so Java `Runtime.exec` is untouched.
+        if (
+          pattern.type === 'command_injection' &&
+          call.method_name === 'exec' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
         }
 
         // #148 — Go json.Unmarshal(data, &typedStruct) and
