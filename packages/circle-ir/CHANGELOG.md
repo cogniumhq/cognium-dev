@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.11] - 2026-09-10
+
+### Fixed
+
+- **C# object-carried SQL reported one vulnerability three times (#302, from cognium-ai#330).** The canonical ADO.NET shape — `new SqlCommand()`, then `cmd.CommandText = "…" + taint`, then `cmd.Execute*()` — emitted three `sql_injection` sinks on three lines, two of which cannot be triaged or patched. A zero-argument constructor cannot carry taint through an argument and is no longer a sink; the `CommandText` write is a waypoint whose duplicate flow is now dropped, but only when a flow already reports a later execution of the same command object, so a shape whose execution is never reached keeps its only signal. On Juliet-C# CWE-89 (1651 files) no file lost detection and duplicate findings on the true-positive cases halved 54 → 27.
+- **Derived taint aliases leaked across methods (#316, from cognium-ai#326).** Aliases derived by name across a file were anchored to the globally earliest source, inheriting its method tag, so a `cmd` tainted in one method matched a same-named `cmd` in an unrelated earlier method. Aliases are now anchored to the earliest source inside their own enclosing method. Same-method alias flows are unchanged.
+- **C# sibling parameters on a signature line were co-tainted (#308, from cognium-ai#326/#289).** Every DFG definition on an `interprocedural_param` source's line was seeded, and all parameters share the signature line — so `SqlConnection conn` beside `string input` became tainted and carried into `new SqlCommand(constSql, conn)`, firing CWE-89 on a fully parameterised query. Seeding is now restricted to the named parameter, and taint sources are deduplicated per parameter so a second taintable parameter keeps its own source.
+- **`RegExp.prototype.exec` matched the command-injection sink (#310, from cognium-ai#195/#419).** The classless `exec` CWE-78 sink exists to catch destructured `child_process.exec`. Regex-literal, `new RegExp(...)`, and regex-bound-variable receivers no longer match it; bare `exec(...)`, module handles, and Java `Runtime.exec` are unaffected.
+- **Python `re.compile` / `workflow.compile()` matched the code-injection sink (#311, from cognium-ai#196).** The classless `compile` CWE-94 sink models the builtin, so it now requires the receiver-less form (or explicit `builtins.compile`). `re.compile` retains its dedicated `redos` sink.
+
+All five are precision fixes verified with a per-file verdict differential over the local corpora — OWASP Benchmark Java (2740), SecuriBench Micro (254), BenchmarkPython (1230), Juliet-C# CWE-89 (1651), juice-shop, nodegoat and dvna — with zero true-positive loss.
+
 ## [4.9.10] - 2026-09-01
 
 ### Changes
