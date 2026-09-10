@@ -563,9 +563,24 @@ function buildTaintFlow(
 ): TaintFlow {
   const path: TaintFlowStep[] = [];
 
-  // Start with source
+  // Start with source.
+  //
+  // Label this step with the SOURCE's own variable, not the propagated one.
+  // Using `taintInfo.variable` here named the sink-side variable at the
+  // source's line — for `void Run(string input) { var v = input; … sink(v); }`
+  // the first step read `v@4`, a variable that does not exist on line 4.
+  //
+  // That is not only wrong in rendered output: `TaintPropagationPass` runs
+  // every path step through the const-prop FP check, so the check was asked
+  // "is `v` tainted at line 4?" instead of "is `input` tainted at line 4?".
+  // For a reassigned local const-prop tracks but never marks tainted (its
+  // intra-procedural seeding does not model `interprocedural_param`), the
+  // answer suppressed a real flow. Same class as the two FN regressions
+  // already recorded on that check — cognium-dev#77 (JS) and #104 (OOP field
+  // paths) — with the fix here at the mislabelled input rather than by
+  // weakening the guard. cognium-dev#287.
   path.push({
-    variable: taintInfo.variable,
+    variable: source.variable ?? taintInfo.variable,
     line: source.line,
     type: 'source',
     description: `Tainted data enters via ${source.type}`,
