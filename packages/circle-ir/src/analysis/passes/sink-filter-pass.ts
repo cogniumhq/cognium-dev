@@ -886,6 +886,33 @@ export interface SinkFilterResult {
   sanitizers: TaintSanitizer[];
 }
 
+/**
+ * cognium-dev #284 — does a redirect argument begin with a same-origin literal
+ * whose concatenation point is inside the query string?
+ *
+ * Matches  `redirect('/landing?from=' + x)`  and  `redirect(`/a?b=${x}`)`.
+ * Rejects  `'//' + x` (protocol-relative), `'/' + x` (x may start with `/`),
+ * and any absolute prefix (`'https://…' + x`).
+ */
+function hasSameOriginLiteralPrefix(lineText: string): boolean {
+  // First quoted literal that opens the redirect argument list.
+  const m = lineText.match(/\(\s*(['"`])([^'"`]*)\1\s*(?:\+|,|\))/);
+  const prefix = m?.[2];
+  if (prefix === undefined) {
+    // Template literal with an interpolation: `` `/a?b=${x}` ``.
+    const t = lineText.match(/\(\s*`([^`$]*)\$\{/);
+    if (!t) return false;
+    return isSameOriginQueryPrefix(t[1]);
+  }
+  return isSameOriginQueryPrefix(prefix);
+}
+
+function isSameOriginQueryPrefix(prefix: string): boolean {
+  if (!prefix.startsWith('/')) return false;   // absolute or relative-no-slash
+  if (prefix.startsWith('//')) return false;   // protocol-relative
+  return prefix.includes('?');                 // taint lands in the query
+}
+
 export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
   readonly name = 'sink-filter';
   readonly category = 'security' as const;
@@ -1147,6 +1174,24 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Match e.g. `res.setHeader('X-Foo', '*')` where 2nd arg is a literal.
         const setHeaderMatch = sinkLineText.match(/setHeader\s*\(\s*[^,]+,\s*(['"`])([^'"`]*)\1\s*\)/);
         if (setHeaderMatch) {
+          return false;
+        }
+        // 8e. cognium-dev #284 defect 1 — same-origin relative literal prefix.
+        // `res.redirect('/landing?from=' + tainted)` cannot leave the origin:
+        // the literal fixes scheme + host, and the tainted value lands in the
+        // QUERY STRING, which cannot change where the browser navigates. So it
+        // is not an open redirect.
+        //
+        // Deliberately narrow, because two neighbouring shapes are NOT safe:
+        //   - `'//' + x`      protocol-relative — `//evil.com` leaves the origin
+        //   - `'/' + x`       x may itself begin with `/`, producing `//evil.com`
+        // Requiring a `?` in the prefix means the concatenation point is inside
+        // the query, which rules both out.
+        //
+        // `crlf` is intentionally NOT dropped: a raw newline in a query value
+        // still splits the response header, which is the ticket's expected
+        // verdict for this shape ("crlf only").
+        if (sink.type === 'open_redirect' && hasSameOriginLiteralPrefix(sinkLineText)) {
           return false;
         }
         // 8d. Express/Koa `res.cookie(name, value, [opts])` is CRLF-safe by

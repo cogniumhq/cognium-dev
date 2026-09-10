@@ -1317,7 +1317,16 @@ function isCSharpSsrfHostAllowlistGuarded(
     const guards = guardMap.get(cand);
     if (!guards) continue;
     for (const g of guards) {
-      if (g.i >= sinkIdx || checked.has(g)) continue;
+      // cognium-dev #285: `g.i <= sinkIdx`, not `<`. A compact
+      // `if (host == "const") <sink>;` puts the guard and the sink on the SAME
+      // line, and skipping equality here dropped that guard entirely — so
+      // adding a single newline between them flipped a false positive to clean
+      // with no AST or token change. `csThenBlock` already returns
+      // `start === end === ifIdx` for a same-line then, so the positive-allowlist
+      // containment check below handles it unchanged. The `!=` reject-guard
+      // branch requires `sinkIdx > block.end`, which a same-line guard can never
+      // satisfy, so it stays conservative.
+      if (g.i > sinkIdx || checked.has(g)) continue;
       checked.add(g);
 
       const block = csThenBlock(sourceLines, g.i, g.rest);

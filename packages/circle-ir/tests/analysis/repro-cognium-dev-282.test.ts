@@ -72,7 +72,8 @@ describe('cognium-dev#282 — xxe reach-map omission', () => {
     const { findings } = await findingsFor(BODY_XXE);
     const xxe = findings.filter((f) => f.type === 'xxe');
     expect(xxe.length).toBeGreaterThan(0);
-    // Capped at medium by the separate #281 defect.
-    expect(xxe[0].severity).toBe('medium');
+    // Was capped at medium by the separate #281 defect; that is fixed, so a
+    // high-confidence xxe flow now reaches `high`.
+    expect(xxe[0].severity).toBe('high');
   });
 });
