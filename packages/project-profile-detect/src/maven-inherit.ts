@@ -16,7 +16,11 @@
  *  - `hasJpmsModuleInfo`/`hasSpiServices`/`hasMainMethod` — filesystem-local
  *
  * Safety:
- *  - Chain depth capped at `MAX_DEPTH` to bound pathological cases.
+ *  - Chain depth capped at `MAX_DEPTH`, enforced as a true horizon: the walk
+ *    reads a snapshot of each ancestor's OWN signals taken before any merging,
+ *    so a module can never inherit values that another module merged in first
+ *    (cognium-dev #290). Without the snapshot the effective horizon was
+ *    unbounded and the result depended on filesystem discovery order.
  *  - Cycle detection via visited-path Set.
  *  - Scan-root boundary enforced — never follow `<relativePath>` that
  *    resolves outside `scanRoot` (Pillar I sandboxing).
@@ -54,6 +58,21 @@ export function mergeMavenInheritance(modules: BuildModule[], scanRoot: string):
     }
   }
 
+  // cognium-dev #290 — snapshot each module's OWN signals before any merging.
+  // `walkParents` used to read the live `parent.signals` arrays, which this
+  // same loop mutates. A module processed early absorbed its ancestors' values
+  // and wrote them into its own signals; a module processed later then walked
+  // into it and inherited those too. That made `MAX_DEPTH` no bound at all and
+  // made the output depend on directory-iteration order, so the same project
+  // could yield different `distributionUrls` on different machines.
+  const ownSignals = new Map<string, { urls: readonly string[]; plugins: readonly string[] }>();
+  for (const [buildFile, m] of byBuildFile) {
+    ownSignals.set(buildFile, {
+      urls: [...m.signals.distributionUrls],
+      plugins: [...m.signals.plugins],
+    });
+  }
+
   for (const child of modules) {
     if (child.buildSystem !== 'maven') continue;
     if (!child.parentRef) continue;
@@ -61,7 +80,14 @@ export function mergeMavenInheritance(modules: BuildModule[], scanRoot: string):
     const inheritedUrls = new Set<string>();
     const inheritedPlugins = new Set<string>();
 
-    walkParents(child, byBuildFile, normalizedScanRoot, inheritedUrls, inheritedPlugins);
+    walkParents(
+      child,
+      byBuildFile,
+      ownSignals,
+      normalizedScanRoot,
+      inheritedUrls,
+      inheritedPlugins,
+    );
 
     if (inheritedUrls.size === 0 && inheritedPlugins.size === 0) continue;
 
@@ -80,6 +106,7 @@ export function mergeMavenInheritance(modules: BuildModule[], scanRoot: string):
 function walkParents(
   start: BuildModule,
   byBuildFile: Map<string, BuildModule>,
+  ownSignals: Map<string, { urls: readonly string[]; plugins: readonly string[] }>,
   scanRoot: string,
   outUrls: Set<string>,
   outPlugins: Set<string>,
@@ -115,8 +142,12 @@ function walkParents(
     const parent = byBuildFile.get(parentBuildFile);
     if (!parent) return; // parent not discovered by walker → stop
 
-    for (const u of parent.signals.distributionUrls) outUrls.add(u);
-    for (const p of parent.signals.plugins) outPlugins.add(p);
+    // Read the ancestor's OWN pre-merge signals, never the live arrays (#290).
+    const parentOwn = ownSignals.get(parentBuildFile);
+    if (parentOwn) {
+      for (const u of parentOwn.urls) outUrls.add(u);
+      for (const p of parentOwn.plugins) outPlugins.add(p);
+    }
 
     current = parent;
   }
