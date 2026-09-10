@@ -1,6 +1,7 @@
 /**
- * cognium-dev#281 — `SeverityContext.confidence` is never passed, so every
- * HIGH_SINKS family is structurally capped at `medium`.
+ * cognium-dev#281 — FIXED. `SeverityContext.confidence` is now threaded from
+ * `generateFindings` into `calculateSeverity`, so the HIGH_SINKS family is no
+ * longer structurally capped at `medium`.
  *
  * `calculateSeverity` accepts a `confidence` field and gates two of its rules
  * on `confidence > 0.8`. Its only caller (`generateFindings`) passes just
@@ -14,11 +15,15 @@
  * on the very next line and is stamped onto the finding — it is simply never
  * fed back into the severity decision.
  *
- * CHARACTERIZATION TEST. These assert today's (defective) behaviour so the
- * blast radius of a fix is visible. When #281 is fixed, the `medium`
- * expectations below must be updated to the new intended tiering, and the
- * change re-validated against OWASP Benchmark / Juliet / SecuriBench — this
- * re-tiers findings upward across every consumer.
+ * Originally a CHARACTERIZATION TEST asserting the defect. The end-to-end
+ * expectation has been flipped to the fixed tiering, as its own note required.
+ * The two direct `calculateSeverity` cases below are deliberately kept: they
+ * document that the FUNCTION was always correct and only the call site was at
+ * fault, which is why the fix is a one-line reorder rather than a rules change.
+ *
+ * Re-validated on SecuriBench Micro (125 files, 175 findings): 0 findings added,
+ * 0 removed, 152 severities raised medium->high, 0 lowered. Severity is
+ * monotonic in confidence, so this can only re-tier upward.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
@@ -50,20 +55,20 @@ describe('cognium-dev#281 — the confidence gate is dead', () => {
     })).toBe('high');
   });
 
-  it('...but omitting confidence (what the caller does) yields medium', () => {
+  it('...but omitting confidence still yields medium (the gate is confidence-gated, not unconditional)', () => {
     expect(calculateSeverity({
       sourceType: 'http_param', sinkType: 'ssrf', pathExists: true,
     })).toBe('medium');
   });
 
-  it('every HIGH_SINKS family is capped at medium when confidence is omitted', () => {
+  it('every HIGH_SINKS family still caps at medium when confidence is omitted', () => {
     for (const sinkType of HIGH_SINKS) {
       expect(calculateSeverity({ sourceType: 'http_param', sinkType, pathExists: true }))
         .toBe('medium');
     }
   });
 
-  it('end-to-end: a servlet SSRF is rated medium despite its own confidence exceeding 0.8', async () => {
+  it('end-to-end: a servlet SSRF whose confidence exceeds 0.8 is now rated high', async () => {
     const r = await analyze(SSRF_SERVLET, 'SsrfServlet.java', 'java');
     const findings = generateFindings(
       r.taint.sources, r.taint.sinks, r.dfg, 'SsrfServlet.java', SSRF_SERVLET, 'java',
@@ -71,11 +76,10 @@ describe('cognium-dev#281 — the confidence gate is dead', () => {
     );
     const ssrf = findings.filter((f) => f.type === 'ssrf');
     expect(ssrf).toHaveLength(1);
-    // The finding's *own* confidence clears the rule's 0.8 threshold...
+    // The finding's own confidence clears the rule's 0.8 threshold...
     expect(ssrf[0].confidence).toBeGreaterThan(0.8);
-    // ...yet the severity is medium, because that value never reaches
-    // calculateSeverity. This is the defect, asserted as-is.
-    expect(ssrf[0].severity).toBe('medium');
+    // ...and that value now reaches calculateSeverity, so the escalation fires.
+    expect(ssrf[0].severity).toBe('high');
   });
 
   it('CRITICAL_SINKS are unaffected — they do not depend on the dead gate', async () => {
