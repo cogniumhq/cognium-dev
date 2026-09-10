@@ -427,6 +427,45 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #302 (from cognium-ai#330): ADO.NET object-carried SQL
+    // reported one flow per waypoint — the `cmd.CommandText = … + taint`
+    // write AND the later `cmd.Execute*()` — so one vulnerability surfaced as
+    // two findings on two lines, and the CommandText line cannot be patched.
+    // Drop the CommandText flow ONLY when a flow already reports a later
+    // execution of the same command object: a shape whose execution is not
+    // reported (out-of-file, or unreached by propagation) keeps its only
+    // signal. Juliet-C# `CommandText_15` is exactly that shape.
+    if (ctx.language === 'csharp' && finalFlows.length > 1) {
+      const CSHARP_ADO_EXECUTE = /^Execute(?:Reader|NonQuery|Scalar)(?:Async)?$/;
+      const commandTextReceiverByLine = new Map<number, string>();
+      const execLinesByReceiver = new Map<string, number[]>();
+      for (const call of calls) {
+        const receiver = (call.receiver ?? '').trim();
+        if (!receiver) continue;
+        if (call.method_name === 'CommandText') {
+          commandTextReceiverByLine.set(call.location.line, receiver);
+        } else if (CSHARP_ADO_EXECUTE.test(call.method_name)) {
+          const lines = execLinesByReceiver.get(receiver) ?? [];
+          lines.push(call.location.line);
+          execLinesByReceiver.set(receiver, lines);
+        }
+      }
+      if (commandTextReceiverByLine.size > 0) {
+        const reportedSqlSinkLines = new Set(
+          finalFlows.filter(f => f.sink_type === 'sql_injection').map(f => f.sink_line),
+        );
+        finalFlows = finalFlows.filter(f => {
+          if (f.sink_type !== 'sql_injection') return true;
+          const receiver = commandTextReceiverByLine.get(f.sink_line);
+          if (receiver === undefined) return true;
+          const execLines = execLinesByReceiver.get(receiver) ?? [];
+          return !execLines.some(
+            line => line > f.sink_line && reportedSqlSinkLines.has(line),
+          );
+        });
+      }
+    }
+
     return { flows: finalFlows };
   }
 }
