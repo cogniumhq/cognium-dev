@@ -138,12 +138,27 @@ export function generateFindings(
         if (isPairSanitized(source, sink, pathResult)) {
           continue;
         }
+        // cognium-dev #281 — thread `confidence` into the severity rules.
+        // `calculateSeverity` accepts it and gates two escalations on
+        // `confidence > 0.8`, but this call site never passed it, so it always
+        // fell back to the 0.5 default and neither rule could fire. The
+        // practical consequence was that every HIGH_SINKS type (`xss`,
+        // `path_traversal`, `xxe`, `ssrf`, `ldap_injection`, `xpath_injection`)
+        // was structurally incapable of being rated `high` on this path — it
+        // capped at `medium` no matter how strong the evidence.
+        //
+        // The value was already being computed one statement below; only the
+        // order changed. Note this is monotonic: every confidence gate is a
+        // `> 0.8` escalation placed ahead of the lower fallbacks, and no rule
+        // tests for LOW confidence, so threading it can raise a severity but
+        // never lower one, and the finding SET is untouched.
+        const confidence = calculateConfidence(source, sink, pathResult);
         const severity = calcSeverity({
           sourceType: source.type,
           sinkType: sink.type,
           pathExists: pathResult.pathExists,
+          confidence,
         });
-        const confidence = calculateConfidence(source, sink, pathResult);
 
         findings.push({
           id: `vuln${findingId++}`,
