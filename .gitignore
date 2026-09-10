@@ -24,7 +24,13 @@ coverage/
 *.swo
 
 # Claude Code personal configs (per-user, not project)
-.claude/
+# Ignore the directory contents but TRACK .claude/skills/ — the autofix lane's skill and its
+# benchmark scorer are project operating procedure, not per-user config, and a fresh clone that
+# does not carry them cannot run the lane. settings.local.json (per-user permissions) and
+# scheduled_tasks.lock stay ignored. Must be the `.claude/*` form: git cannot re-include a file
+# whose parent directory is itself excluded by `.claude/`.
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store
