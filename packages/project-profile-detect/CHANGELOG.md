@@ -2,6 +2,11 @@
 
 All notable changes to `@cognium/project-profile-detect` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-09-10
+
+### Fixed — deterministic Maven parent inheritance (#290)
+- **`mergeMavenInheritance` output no longer depends on filesystem discovery order.** `walkParents` read the live `parent.signals` arrays that the same merge loop mutates, so a module processed early absorbed its ancestors' values and wrote them into its own signals; a module processed later walked into it and inherited those too. Two consequences: `MAX_DEPTH` bounded nothing, and the same project could produce different `distributionUrls` on different runs or machines. Each module's own signals are now snapshotted before merging and the walk reads that snapshot, which makes the depth cap a true horizon and the result order-independent. This is the behaviour the existing `depth cap` test and the `MAX_DEPTH` documentation already asserted.
+
 ## [1.1.0] — 2026-06-24
 
 ### Added — Maven parent-pom inheritance (#192)

@@ -4,6 +4,11 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-09-10
+
+### Changed
+- Adopts `circle-ir@4.9.11`, which carries five taint-precision fixes: C# object-carried SQL no longer reports one vulnerability three times, derived taint aliases no longer leak across methods, C# sibling parameters on a signature line are no longer co-tainted, `RegExp.prototype.exec` no longer matches the command-injection sink, and Python `re.compile` no longer matches the code-injection sink. No MCP tool, schema, or response-shape changes.
+
 ## [0.1.3] - 2026-09-02
 
 ### Changed

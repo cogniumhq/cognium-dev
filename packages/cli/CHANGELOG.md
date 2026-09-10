@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.11] - 2026-09-10
+
+### Fixed
+- **Duplicate vulnerabilities in scan output (#284 defect 3).** `taint.flows` was mapped 1:1 to vulnerabilities, so two flows reaching the same sink (same type and line, different source lines) reported the same defect twice. `dedupeVulnerabilities` now collapses by `(type, line)`, keeping the highest severity and preserving order.
+
+### Changed
+- Adopts `circle-ir@4.9.11` (five taint-precision fixes: C# object-carried SQL duplicates, cross-method alias leakage, C# signature-line co-tainting, `RegExp.exec` as command injection, Python `compile` as code injection) and `@cognium/project-profile-detect@1.1.1` (deterministic Maven parent inheritance). No CLI flag or output-shape changes.
+
 ## [4.9.10] - 2026-09-01
 
 ### Changes
