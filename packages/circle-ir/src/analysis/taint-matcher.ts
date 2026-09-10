@@ -46,6 +46,54 @@ const PYTHON_TAINTED_PATTERNS: Array<{ pattern: RegExp; sourceType: SourceType }
  * pipelines, SARIF reporters) can then render the offending line without
  * re-reading the file.
  */
+/**
+ * cognium-dev #302 (from cognium-ai#330) — a zero-argument constructor is not
+ * an injection point.
+ *
+ * The canonical Juliet/ASP.NET shape is three statements:
+ *
+ *   SqlCommand cmd = new SqlCommand();                 // (a) zero-arg ctor
+ *   cmd.CommandText = "select … '" + data + "'";       // (b) taint enters obj
+ *   object x = cmd.ExecuteScalar();                    // (c) INJECTION POINT
+ *
+ * `SqlCommand` and `CommandText` are both registered sinks, and the C#
+ * extractor surfaces (a) as a constructor call and (b) as a synthetic call, so
+ * one bug produced three `sql_injection` sinks at three lines. Two of them
+ * cannot be triaged or patched: a zero-argument constructor cannot carry taint
+ * through an argument at all, and the `CommandText` write is the waypoint that
+ * loads the command object — #271's object-carried propagation already carries
+ * that taint forward to (c).
+ *
+ * `new SqlCommand()` takes no argument, so it cannot carry taint through one;
+ * it is a waypoint on the object-carried flow, not a sink. The duplicate
+ * between the `CommandText` write and the later `Execute*` is removed at the
+ * flow level in TaintPropagationPass, where it can be proven that the
+ * execution is actually reported.
+ */
+function dropCSharpObjectCarriedWaypoints(
+  sinks: TaintSink[],
+  calls: CallInfo[],
+): TaintSink[] {
+  // `line:method` of every zero-argument constructor call.
+  const zeroArgCtors = new Set<string>();
+  for (const call of calls) {
+    if (call.is_constructor && call.arguments.length === 0) {
+      zeroArgCtors.add(`${call.location.line}:${call.method_name}`);
+    }
+  }
+
+  return sinks.filter(sink => {
+    if (sink.type !== 'sql_injection') return true;
+
+    // (a) A zero-argument constructor has no argument to carry taint.
+    if (sink.method && zeroArgCtors.has(`${sink.line}:${sink.method}`)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 export function analyzeTaint(
   calls: CallInfo[],
   types: TypeInfo[],
@@ -59,9 +107,11 @@ export function analyzeTaint(
   let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
   sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
+  const gatedSinks =
+    language === 'csharp' ? dropCSharpObjectCarriedWaypoints(sinks, calls) : sinks;
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
 
-  return { sources, sinks, sanitizers };
+  return { sources, sinks: gatedSinks, sanitizers };
 }
 
 /**
