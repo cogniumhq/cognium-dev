@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+# Read-only: this workflow builds and tests, it never writes to the repo.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -62,10 +67,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run test -w packages/mcp-server
 
-      # KNOWN RED: one genuine failure, `mergeMavenInheritance — depth cap`.
-      # Tracked in #290 (order-dependent inheritance merge). Deliberately NOT
-      # skipped — the test is correct that something is wrong, and quarantining
-      # it would hide a real non-determinism bug.
+      # Was the one red suite in this repo (`mergeMavenInheritance — depth cap`,
+      # an order-dependent merge). Fixed in #290 / #320, so this step is green
+      # and the whole workflow can be a required check.
       - name: test — project-profile-detect
         if: ${{ !cancelled() }}
         run: npm run test -w packages/project-profile-detect
