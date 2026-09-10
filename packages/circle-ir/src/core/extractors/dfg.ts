@@ -102,6 +102,9 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
 
   for (const method of methods) {
     scopeStack.push(new Map());
+    // Where this method's defs begin, so the reaching-def correction below stays
+    // inside the method — `defs` accumulates across every method in the file.
+    const methodDefStart = defs.length;
 
     // Parameters (kind: param).
     const params = method.childForFieldName('parameters');
@@ -137,6 +140,7 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
       }
       // Uses: all identifier references, reaching defs resolved from scope.
       const bodyUses = extractUses(body, useIdCounter, scopeStack, false);
+      resolveReassignedUses(defs.slice(methodDefStart), bodyUses.uses);
       uses.push(...bodyUses.uses);
       useIdCounter = bodyUses.nextId;
     }
@@ -1084,6 +1088,75 @@ function findReachingDef(name: string, scopeStack: Map<string, number>[]): numbe
 }
 
 /**
+ * Point uses of a *reassigned* variable at the nearest preceding definition.
+ *
+ * `DFGUse.def_id` is specified as the reaching definition, but the C# builder
+ * collects every def in a method body before it resolves any use, so the scope
+ * map holds only the LAST def of each variable by the time uses are resolved.
+ * With one def per variable last == reaching and nothing is wrong; a reassigned
+ * variable binds every use to its final def, which breaks taint two ways
+ * (cognium-dev#287):
+ *
+ *   var v = input;   // def A
+ *   v = v + "";      // def B — the right-hand `v` resolved to B, i.e. itself
+ *   sink(v);         // resolved to B
+ *
+ * `computeChains` skips a use whose def_id is the def it is building, so the
+ * self-reference produced no A -> B chain and taint stopped at A, while the
+ * sink read B. It also emitted a *backwards* B -> A chain, because the use of
+ * `v` on def A's own line resolved to B. Net effect: `v = v.Trim()`,
+ * `v = v.Replace(...)`, `v = v + x` silently cleared taint — a false negative,
+ * which leaves no trace to notice.
+ *
+ * Deliberately narrow. A use is repointed only when its variable has more than
+ * one definition AND a strictly-preceding one exists, so single-def variables
+ * and one-line `var sb = new StringBuilder(); sb.Append(x)` shapes keep exactly
+ * the binding they have today. Same-line ties resolve to the earlier def
+ * because in `v = f(v)` the right-hand side is evaluated before the assignment.
+ *
+ * Scoped to `local` and `param` defs. Fields are excluded on purpose: they are
+ * registered after the method loop and resolving them here would newly enable
+ * cross-method field-carried taint, which is a separate feature (the
+ * `San08FieldStore` half of #287), not this correction.
+ *
+ * Call this per method, with only that method's defs, or a local in one method
+ * will bind to a same-named local in another.
+ */
+function resolveReassignedUses(methodDefs: DFGDef[], methodUses: DFGUse[]): void {
+  const defsByVar = new Map<string, DFGDef[]>();
+  for (const def of methodDefs) {
+    if (def.kind !== 'local' && def.kind !== 'param') continue;
+    const existing = defsByVar.get(def.variable);
+    if (existing) existing.push(def);
+    else defsByVar.set(def.variable, [def]);
+  }
+
+  for (const list of defsByVar.values()) {
+    if (list.length > 1) list.sort((a, b) => a.line - b.line || a.id - b.id);
+  }
+
+  for (const use of methodUses) {
+    const list = defsByVar.get(use.variable);
+    if (!list || list.length < 2) continue;  // not reassigned — leave untouched
+
+    // Prefer the last def strictly before this use: in `v = f(v)` the
+    // right-hand side is evaluated before the assignment, so the read sees the
+    // previous value. Falling back to a def on the use's own line keeps the
+    // declaration site (`var v = input`) bound to itself instead of to a later
+    // reassignment — that mis-binding is what emitted a *backwards* chain from
+    // the second def to the first.
+    let strictlyBefore: DFGDef | undefined;
+    let sameLine: DFGDef | undefined;
+    for (const def of list) {
+      if (def.line < use.line) strictlyBefore = def;
+      else if (def.line === use.line) sameLine = def;
+    }
+    const reaching = strictlyBefore ?? sameLine;
+    if (reaching) use.def_id = reaching.id;
+  }
+}
+
+/**
  * Compute def-use chains.
  *
  * A chain connects a definition to another definition when the first
@@ -1124,7 +1197,7 @@ function computeChains(defs: DFGDef[], uses: DFGUse[]): DFGChain[] {
       for (const use of usesOnLine) {
         // If this use has a reaching def, create a chain
         if (use.def_id !== null && use.def_id !== def.id) {
-          const key = `${use.def_id} ${def.id} ${use.variable}`;
+          const key = `${use.def_id}\0${def.id}\0${use.variable}`;
           if (!seenChains.has(key)) {
             seenChains.add(key);
             chains.push({
