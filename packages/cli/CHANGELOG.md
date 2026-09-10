@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.12] - 2026-09-10
+
+### Changed
+- Adopts `circle-ir@4.9.12`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+- **Severities move upward.** circle-ir #281 threads finding confidence into the severity rules, which were previously unable to rate `xss`, `path_traversal`, `xxe`, `ssrf`, `ldap_injection` or `xpath_injection` above `medium`. Scans will report more `high` rows for identical code — 152 of 175 findings shifted `medium` → `high` on SecuriBench Micro, with none added, removed or lowered. If you filter with `--severity high` or gate CI on high-or-critical counts, re-baseline the threshold.
+- `res.redirect('/relative?x=' + tainted)` no longer reports `open_redirect` (it still reports `crlf`).
+
 ## [4.9.11] - 2026-09-10
 
 ### Fixed

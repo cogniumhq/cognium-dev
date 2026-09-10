@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.12] - 2026-09-10
+
+### Fixed
+
+- **Finding confidence never reached the severity rules (#281).** `calculateSeverity` accepts a `confidence` field and gates two escalations on `confidence > 0.8`, but `generateFindings`' call site never passed it, so it always fell back to the 0.5 default and neither rule could fire. Every `HIGH_SINKS` type — `xss`, `path_traversal`, `xxe`, `ssrf`, `ldap_injection`, `xpath_injection` — was structurally incapable of being rated `high`; it capped at `medium` regardless of evidence. The value was already computed one statement below the call site, so only the order changed.
+- **A C# host-allowlist guard was ignored when it sat on the sink's own line (#285).** The guard lookup skipped anything not strictly before the sink, discarding the compact `if (host == "const") <sink>;` form — so adding a single newline between guard and sink flipped a false positive to clean with no AST or token change. Recall is unchanged: an unguarded sink still fires, and a same-line guard on an unrelated variable still fires.
+- **A same-origin literal prefix is no longer an open redirect (#284 defect 1).** `res.redirect('/landing?from=' + tainted)` cannot leave the origin, so `open_redirect` is dropped for that shape while `crlf` is deliberately kept — a raw newline in a query value still splits the response header. The rule requires a `?` in the literal prefix, because `'//' + x` is protocol-relative and `'/' + x` can produce `//evil.com`; both still fire, as do absolute prefixes and fully-tainted targets.
+
+### Consumer Impact
+
+**Severities move upward.** As a direct result of #281, findings that previously surfaced as `medium` now surface as `high`. Measured on SecuriBench Micro (125 files, 175 findings): **0 findings added, 0 removed, 152 severities raised `medium` → `high`, 0 lowered.** A consumer filtering on `--severity high`, or gating a build on high-or-critical counts, will see more rows for identical code and may need its threshold re-baselined.
+
+Severity is monotonic in confidence — every confidence gate is a `> 0.8` escalation placed ahead of the lower fallbacks and no rule tests for low confidence — so no finding can move down, and the finding set itself is untouched. A test pins that property across sink types, path states and source types.
+
+### Verification
+
+Each fix carries a per-file differential with zero true-positive loss: SecuriBench Micro (#281 severity and signatures), Juliet-C# CWE89 + CWE601 across 2193 files (#285 control), and nodegoat / dvna / juice-shop (#284). No local C# corpus carries SSRF cases, so the Juliet run is a control for #285 rather than a recall proof; the recall evidence there is the unguarded and unrelated-guard tests.
+
 ## [4.9.11] - 2026-09-10
 
 ### Fixed
