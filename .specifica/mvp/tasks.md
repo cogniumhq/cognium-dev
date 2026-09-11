@@ -305,11 +305,13 @@ into a tight number.
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-09-11 — tagged circle-ir/cognium-dev **4.9.13**, `@cognium/mcp-server` **0.1.6**, `@cognium/project-profile-detect` **1.1.1** unchanged; **npm publish pending** — the registry still serves 4.9.12 / 0.1.5; verified against GitHub)
+### GitHub issue ledger (as of 2026-09-11 — `latest` circle-ir/cognium-dev **4.9.13**, `@cognium/mcp-server` **0.1.6**, `@cognium/project-profile-detect` **1.1.1** unchanged; all four published and tarball-verified; verified against GitHub)
 
 **cognium-dev open (19).** Zero are in the autofix lane — every one carries `autofix-skip`, so each is blocked on a decision, a corpus, or fixtures rather than on capacity. The count rose while the backlog got *smaller* in substance: seven fixes shipped and five issues were filed out of them, each replacing a vague row with an isolated cause.
 
-**`main` is one commit ahead of the 4.9.13 tags.** #341 (#272 LDAP-strip cluster) merged after the release was cut and rides the next one.
+**Published 4.9.13 does not match its tag.** #341 (#272 LDAP-strip cluster) merged at `ef652dc`, after the tag at `79d2c7f` — but the npm publish was made from the working tree at `main`, so the published tarball *does* contain it (`CSHARP_ALLOWLIST_STRIP_RE` verified present in `dist`). The artifact therefore ships one fix that its tag, CHANGELOG and release notes omit, and it is consumer-visible: fewer C# `ldap_injection` / `xpath_injection` / `command_injection` / `sql_injection` findings where an allowlist character strip is applied. Pending a decision on whether to amend the 4.9.13 docs to match the artifact or re-point the tags; nothing unsafe shipped (9 tests, and a gate over 3467 Juliet-C# files in exactly those four families with zero removals).
+
+**Propagation note.** `npm view @cognium/mcp-server@0.1.6` returned 404 with `latest` still at 0.1.5 immediately after publishing; the registry document showed 0.1.6 at ~30 s. Poll `https://registry.npmjs.org/<pkg>` rather than trusting `npm view`, and never conclude a publish failed from a 404.
 
 | # | Kind | Title | Status | Next step |
 |---|------|-------|--------|-----------|
@@ -366,7 +368,7 @@ JS already has a narrow precedent (sink-filter Stage 15f credits anchored host-a
 - **cognium-ai#287** — intermittent analyze/repository `failed` on identical input (~370 LLM calls) → **not circle-ir** (deterministic engine can't be non-deterministic). LLM-verifier/queue-pressure (#244/#245) + `errors[]` propagation is circle-pack/cortex API. Commented.
 
 ### Recently closed
-- **4.9.13 release train (2026-09-11). Tagged and staged; npm publish pending.** circle-ir + cognium-dev 4.9.13, `@cognium/mcp-server` 0.1.6 (dependency bump only), `@cognium/project-profile-detect` unchanged at 1.1.1. Tags cut on `main` at `79d2c7f` **after** the squash-merge, GitHub releases published. Seven fixes across six circle-ir source changes.
+- **4.9.13 release train (2026-09-11). All four packages published and tarball-verified.** circle-ir + cognium-dev 4.9.13, `@cognium/mcp-server` 0.1.6 (dependency bump only), `@cognium/project-profile-detect` unchanged at 1.1.1. Tags cut on `main` at `79d2c7f` **after** the squash-merge, GitHub releases published. Seven fixes across six circle-ir source changes.
   - **#287 (partial)** — a reassigned C# local lost its taint. `buildCSharpDFG` collected every definition in a method body before resolving any use, so the scope map held only the **last** definition — and `DFGUse.def_id` is *specified* as the reaching definition. With one definition per variable last == reaching, which is exactly why single-assignment code always worked. End-to-end still blocked by #328.
   - **#315** — `blocking-main-thread` was blind to inline Express/Koa route handlers, which produce no type and no method, so the commonest JS handler shape was silently exempt while a byte-identical named handler reported. Fixed using the synthetic `<verb>_handler` name the extractor already assigns, gated on a router verb **and** handler-shaped parameters so `items.map(x => …)` is not swept in. **#315 closed** — all five of its cells resolved: one real defect, four not reproducible as filed.
   - **#333** — a path-containment guard was credited even when it logs and falls through, because the forward scan found the *enclosing method's* `return` past the guard's already-closed block. Affected Java ×2 and JS; **Rust was the only one written correctly** and became the model for a shared `guardRejects` helper. **#333 closed.**
