@@ -631,6 +631,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
     }
 
+    // -- C#: cognium-dev#286 C — Path.GetFullPath + !StartsWith(root) reject
+    // guard (the canonicalize-then-contain path-traversal defence). Java and
+    // JS/TS already credit their equivalents above; C# was the gap.
+    if (language === 'csharp') {
+      additionalSanitizers.push(
+        ...findCSharpFullPathStartsWithGuardSanitizers(code),
+      );
+    }
+
     // -- Java: Sprint 73 (#216 Pattern A) — Jackson readValue / Gson
     // fromJson recognized as ETE terminator (does not affect
     // configured `deserialization` sinks).
@@ -5171,6 +5180,107 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
         sanitizers.push({
           type: 'java_canonical_startswith_guard',
           method: 'getCanonicalPath',
+          line: l + 1,
+          sanitizes: ['path_traversal', 'external_taint_escape'],
+        });
+      }
+    }
+  }
+  return sanitizers;
+}
+
+/**
+ * C# `Path.GetFullPath(...)` + `!x.StartsWith(root)` reject guard — the
+ * canonicalize-then-contain path-traversal defence (cognium-dev#286 C).
+ *
+ * Counterpart of `findJavaCanonicalPathStartsWithGuardSanitizers` and
+ * `findJsPathResolveStartsWithGuardSanitizers`; C# was the only one of the
+ * three missing it, so the OWASP-canonical shape reported a false positive:
+ *
+ *   var root = Path.GetFullPath("/srv/data") + Path.DirectorySeparatorChar;
+ *   var full = Path.GetFullPath(Path.Combine(root, input));
+ *   if (!full.StartsWith(root)) return;
+ *   File.ReadAllText(full);            // was path_traversal
+ *
+ * `Path.GetFileName` is already credited, but it cannot express this case —
+ * it flattens the path, so a legitimate subdirectory cannot be preserved.
+ *
+ * One requirement the Java version gets for free. There, canonicalisation and
+ * the containment test are the same expression
+ * (`!f.getCanonicalPath().startsWith(base)`), so matching the guard proves the
+ * value is canonical. In C# they are separate statements, and the guard alone
+ * is just `full.StartsWith(root)` — indistinguishable from an ordinary string
+ * prefix test. Crediting on the guard alone would silence path_traversal for
+ * any `if (!name.StartsWith("x")) return;`. So the guarded variable must also
+ * be traceable to an assignment whose right-hand side calls
+ * `Path.GetFullPath(`.
+ *
+ * Scope note: only the **reject** polarity (`if (!x.StartsWith(root))` plus a
+ * `return`/`throw`) is credited, matching the Java precedent. The enclosing
+ * form `if (x.StartsWith(root)) { … }` still reports, and a test pins that so
+ * the gap stays visible rather than silently assumed.
+ */
+function findCSharpFullPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  // Variables assigned from an expression that calls Path.GetFullPath(...).
+  const assignRe =
+    /^\s*(?:(?:var|string)\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+  const fullPathRe = /\bPath\s*\.\s*GetFullPath\s*\(/;
+  const canonicalVars = new Set<string>();
+  for (const line of lines) {
+    const a = assignRe.exec(line);
+    if (a && fullPathRe.test(a[2])) canonicalVars.add(a[1]);
+  }
+  if (canonicalVars.size === 0) return sanitizers;
+
+  const guardRe = /\bif\s*\(\s*!\s*([A-Za-z_]\w*)\s*\.\s*StartsWith\s*\(/;
+  const terminatorRe = /\b(throw|return)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardRe.exec(lines[i]);
+    if (!m || !canonicalVars.has(m[1])) continue;
+
+    // The guard must actually reject. Test the guard line first, which catches
+    // the single-line form `if (!full.StartsWith(root)) return null;`.
+    let hasTerminator = terminatorRe.test(lines[i]);
+    if (!hasTerminator && lines[i].includes('}')) {
+      // The guard's block opens and closes on this line without returning or
+      // throwing, so control falls through to the sink and the check is not a
+      // rejection: `if (!full.StartsWith(root)) { Log("odd"); }`. Scanning on
+      // from here would find the *enclosing method's* `return` and credit a
+      // path that was never rejected — a silent false negative.
+      continue;
+    }
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
+        if (lines[j].includes('}')) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    // Credit the guarded variable across the whole scan, as the Java version
+    // does: a containment check proves the path is inside the root regardless
+    // of where it was built, so a sink preceding the guard is safe too.
+    // Derivations are still tracked in source order.
+    const guarded = new Set<string>([m[1]]);
+    const mentions = (t: string): boolean => {
+      for (const n of guarded) if (new RegExp(`\\b${n}\\b`).test(t)) return true;
+      return false;
+    };
+    for (let l = 0; l < lines.length; l++) {
+      const lt = lines[l];
+      const a = assignRe.exec(lt);
+      if (a) {
+        if (mentions(a[2])) guarded.add(a[1]);
+        else if (a[1] !== m[1]) guarded.delete(a[1]);
+      }
+      if (mentions(lt)) {
+        sanitizers.push({
+          type: 'csharp_fullpath_startswith_guard',
+          method: 'GetFullPath',
           line: l + 1,
           sanitizes: ['path_traversal', 'external_taint_escape'],
         });
