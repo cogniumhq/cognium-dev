@@ -4862,10 +4862,10 @@ function findJsPathResolveStartsWithGuardSanitizers(
       l++
     ) {
       if (!guardRe.test(lines[l])) continue;
-      if (
-        terminatorRe.test(lines[l]) ||
-        (l + 1 < lines.length && terminatorRe.test(lines[l + 1]))
-      ) {
+      // Terminator on the guard line (single-line if) or the next one (block
+      // form) — but never the enclosing function's own terminator reached past
+      // a guard block that already closed. See `guardRejects` (#333).
+      if (guardRejects(lines, l, terminatorRe, 2)) {
         guardLine = l + 1;
         break;
       }
@@ -5065,12 +5065,11 @@ function findJavaPathNormalizeStartsWithGuardSanitizers(
       l++
     ) {
       if (!guardRe.test(lines[l])) continue;
-      // The terminator may be on the same line (single-line if) or on
-      // the next line (block-form if).
-      if (
-        terminatorRe.test(lines[l]) ||
-        (l + 1 < lines.length && terminatorRe.test(lines[l + 1]))
-      ) {
+      // The terminator may be on the same line (single-line if) or on the next
+      // line (block-form if) — but never the enclosing function's own
+      // terminator reached past a guard block that already closed. See
+      // `guardRejects` (#333).
+      if (guardRejects(lines, l, terminatorRe, 2)) {
         guardLine = l + 1;
         break;
       }
@@ -5150,14 +5149,7 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
   for (let i = 0; i < lines.length; i++) {
     const m = guardRe.exec(lines[i]);
     if (!m) continue;
-    let hasTerminator = terminatorRe.test(lines[i]);
-    if (!hasTerminator) {
-      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
-        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
-        if (lines[j].includes('}')) break;
-      }
-    }
-    if (!hasTerminator) continue;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
 
     const guarded = new Set<string>([m[1]]);
     const mentions = (t: string): boolean => {
@@ -5187,6 +5179,54 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
     }
   }
   return sanitizers;
+}
+
+/**
+ * Does the `if (...)` guard on `lines[i]` actually **reject**?
+ *
+ * Path-containment guards (`!full.startsWith(root)`) only sanitise when the
+ * failing branch leaves — returns or throws. A guard that merely logs lets
+ * control fall through to the sink, so the path was never rejected and the
+ * value is still attacker-controlled.
+ *
+ * cognium-dev#333: three guards got this wrong the same way. They scanned
+ * forward from the guard line for a `return`/`throw` without noticing the
+ * guard's own block had already closed, so
+ *
+ *     if (!full.startsWith(root)) { log("odd"); }
+ *     return read(full);              // <- this return was credited
+ *
+ * found the *enclosing method's* terminator and suppressed a genuine
+ * path_traversal. Rust's equivalent (`findRustCanonicalizeGuardSanitizers`) was
+ * the only one written correctly — it requires the guard line to open a block,
+ * brace-matches to the close, and demands the terminator inside. This gives the
+ * other three the same discipline cheaply.
+ *
+ * `window` bounds the forward scan and preserves each caller's original reach:
+ * the canonical-path guard scanned six lines, the normalize and path.resolve
+ * guards only looked at the next one.
+ */
+function guardRejects(
+  lines: string[],
+  i: number,
+  terminatorRe: RegExp,
+  window: number,
+): boolean {
+  // Single-line rejecting form: `if (!full.startsWith(root)) return null;`
+  if (terminatorRe.test(lines[i])) return true;
+
+  // Block opens and closes on the guard line with no terminator inside it, so
+  // control falls through: `if (!full.startsWith(root)) { log("odd"); }`.
+  const opens = (lines[i].match(/\{/g) ?? []).length;
+  const closes = (lines[i].match(/\}/g) ?? []).length;
+  if (opens > 0 && closes >= opens) return false;
+
+  for (let j = i + 1; j < Math.min(lines.length, i + window); j++) {
+    if (terminatorRe.test(lines[j])) return true;
+    // Reached the end of the guard body without terminating.
+    if (lines[j].includes('}')) return false;
+  }
+  return false;
 }
 
 /**
@@ -5242,24 +5282,7 @@ function findCSharpFullPathStartsWithGuardSanitizers(code: string): TaintSanitiz
     const m = guardRe.exec(lines[i]);
     if (!m || !canonicalVars.has(m[1])) continue;
 
-    // The guard must actually reject. Test the guard line first, which catches
-    // the single-line form `if (!full.StartsWith(root)) return null;`.
-    let hasTerminator = terminatorRe.test(lines[i]);
-    if (!hasTerminator && lines[i].includes('}')) {
-      // The guard's block opens and closes on this line without returning or
-      // throwing, so control falls through to the sink and the check is not a
-      // rejection: `if (!full.StartsWith(root)) { Log("odd"); }`. Scanning on
-      // from here would find the *enclosing method's* `return` and credit a
-      // path that was never rejected — a silent false negative.
-      continue;
-    }
-    if (!hasTerminator) {
-      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
-        if (terminatorRe.test(lines[j])) { hasTerminator = true; break; }
-        if (lines[j].includes('}')) break;
-      }
-    }
-    if (!hasTerminator) continue;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
 
     // Credit the guarded variable across the whole scan, as the Java version
     // does: a containment check proves the path is inside the root regardless
