@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Consumer Impact
 - **Finding counts move in both directions this release** — re-baseline rather than assuming a one-way shift.
   - **New rows appear:** `blocking-main-thread` now reports blocking calls inside inline Express/Koa route handlers (`app.get('/x', (req, res) => …)`), which were silently exempt; and `path_traversal` now reports where a canonicalize-then-contain guard logs instead of rejecting.
-  - **Rows disappear:** C# `path_traversal` on the canonicalize-then-contain defence, C# `ssrf` on an `HttpClient` with a constant `BaseAddress` and a relative path, and Java/Python `log_injection` where the CRLF strip lives in a helper function.
+  - **Rows disappear:** C# `path_traversal` on the canonicalize-then-contain defence, C# `ssrf` on an `HttpClient` with a constant `BaseAddress` and a relative path, Java/Python `log_injection` where the CRLF strip lives in a helper function, and C# `ldap_injection` / `xpath_injection` / `command_injection` / `sql_injection` where an allowlist character strip (`Regex.Replace(x, "[^a-zA-Z0-9]", "")`) is applied.
+
+The published `cognium-dev@4.9.13` adopts a `circle-ir@4.9.13` that includes circle-ir #272 (the allowlist strip), which merged after the release tag was cut. See the circle-ir 4.9.13 entry for the tag-vs-artifact note.
 - If you gate CI on total finding counts, expect movement on JS/TS (up) and on C#, Java and Python (down). Severity distribution is unaffected — no rule changed tier this release.
 - Benchmark scores are unchanged: zero signature delta across OWASP Benchmark, SecuriBench Micro, BenchmarkPython, Juliet-C#, nodegoat and dvna, with identical OWASP TPR/FPR.
 
