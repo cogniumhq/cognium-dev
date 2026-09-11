@@ -601,6 +601,62 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
 const CSHARP_ALLOWLIST_STRIP_RE =
   /\bRegex\s*\.\s*Replace\s*\([^,]*,\s*@?"\[\^(?:[A-Za-z0-9_\- ]|\\w|\\d|\\s)+\]"\s*,\s*@?"[A-Za-z0-9_]?"\s*\)/;
 
+/**
+ * Is this `plugin_param` source a map read of a key that was never written, on
+ * a map whose entire contents we can see? (cognium-dev#328 prerequisite.)
+ *
+ * Sound only when the map's provenance is fully known, so all three hold:
+ *
+ *  (a) the receiver is constructed locally — `new HashMap<…>()` and friends. A
+ *      map arriving as a parameter, field or return value may already hold
+ *      anything, which is the case the `plugin_param` registration exists for,
+ *      so it keeps its source.
+ *  (b) the receiver never escapes — it is not passed as an argument to any
+ *      call. `helper(m)` could `put` into it out of sight, so once it escapes
+ *      the contents are no longer knowable from this file.
+ *  (c) the read key is a string literal with **no** `put` of that same literal
+ *      anywhere in the file. A matching `put` keeps the source regardless of
+ *      whether the stored value looks tainted — this gate only removes reads
+ *      that provably yield `null`, never reads whose value it judged clean.
+ *
+ * Deliberately narrow: `plugin_param` only, literal keys only, and any
+ * uncertainty leaves the source untouched. Non-literal keys (`m.get(k)`) are
+ * out of scope because the key is unknown, not because it is safe.
+ */
+function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean {
+  if (source.type !== 'plugin_param') return false;
+
+  const lines = code.split('\n');
+  const lineText = lines[source.line - 1] ?? '';
+
+  // (c1) the read itself: `<recv>.get("<key>")`
+  const read = /\b([A-Za-z_]\w*)\s*\.\s*get\s*\(\s*"([^"]*)"\s*\)/.exec(lineText);
+  if (!read) return false;
+  const [, recv, key] = read;
+
+  // (a) locally constructed map
+  const ctorRe = new RegExp(
+    `\\b${recv}\\s*=\\s*new\\s+(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
+  );
+  if (!lines.some(l => ctorRe.test(l))) return false;
+
+  // (b) no escape: the receiver must not appear inside any call's arguments.
+  //     `m.put(...)` / `m.get(...)` are receiver positions, not arguments.
+  const escapeRe = new RegExp(`\\w\\s*\\([^)]*(?<![\\w.])${recv}(?![\\w.])[^)]*\\)`);
+  for (const l of lines) {
+    if (!escapeRe.test(l)) continue;
+    // Allow the map's own keyed calls on this line.
+    const stripped = l.replace(new RegExp(`\\b${recv}\\s*\\.\\s*\\w+\\s*\\(`, 'g'), 'X(');
+    if (escapeRe.test(stripped)) return false;
+  }
+
+  // (c2) was this literal key ever written?
+  const putRe = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
+  if (lines.some(l => putRe.test(l))) return false;
+
+  return true;
+}
+
 const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
   { re: /\b(?:HtmlEncode|JavaScriptStringEncode)\s*\(/, type: 'xss' },
   { re: /\bHtmlEncoder\s*\.\s*Encode\s*\(/, type: 'xss' },
@@ -977,11 +1033,31 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // `ctx.language` aren't supplied (legacy callers) — this preserves
     // pre-3.168 behaviour for programmatic callers that pass an
     // already-computed source list without file text.
-    const sources: TaintSource[] = (ctx.code && ctx.language)
+    const executableSources: TaintSource[] = (ctx.code && ctx.language)
       ? mergedSources.filter(
           s => !isNonExecutableSourceLine(ctx.code as string, s.line, ctx.language as string),
         )
       : mergedSources;
+
+    // cognium-dev#328 prerequisite — key-aware map reads.
+    //
+    // `Map.get` / `HashMap.get` / … are registered as unconditional
+    // `plugin_param` sources with `return_tainted: true` (config-loader.ts),
+    // which models reading a config/plugin parameter map populated from
+    // outside. Applied to *every* map, it also makes a read of a key that was
+    // never written a source:
+    //
+    //   Map m = new HashMap();
+    //   m.put("a", req.getParameter("name"));
+    //   String s1 = (String) m.get("b");   // <- source today; yields null
+    //
+    // That is SecuriBench Micro `Collections6:47`, an `/* OK */` line. The
+    // false positive is currently masked by the const-prop veto in #328, so
+    // this gate is behaviour-neutral today; its purpose is to make lifting that
+    // veto safe, which is the sequencing chosen on #328.
+    const sources: TaintSource[] = ctx.code
+      ? executableSources.filter(s => !isUnwrittenLocalMapKeyRead(ctx.code as string, s))
+      : executableSources;
 
     // Build merged sinks, deduplicating JS DOM sinks that may overlap with config sinks.
     const sinks: TaintSink[] = [...taintMatcher.sinks];
