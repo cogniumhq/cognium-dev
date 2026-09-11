@@ -4,6 +4,14 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-09-11
+
+### Changed
+- Adopts `circle-ir@4.9.13`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+- **Finding counts move in both directions.** Tool responses gain `blocking-main-thread` rows for inline Express/Koa route handlers and `path_traversal` rows where a containment guard falls through without rejecting; they lose C# `path_traversal` (canonicalize-then-contain), C# `ssrf` (constant `BaseAddress` with a relative path) and Java/Python `log_injection` (CRLF strip in a helper). Severity tiers are unchanged this release.
+
 ## [0.1.5] - 2026-09-10
 
 ### Changed
