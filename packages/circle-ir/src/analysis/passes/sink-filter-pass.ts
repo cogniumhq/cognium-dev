@@ -575,10 +575,43 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
 // C# sanitizers (Phase-1) and the sink types each neutralises. A tainted value
 // that flows through one of these before reaching a sink of the matching type
 // is safe. Method names are C#-distinctive (see config-loader C# sanitizers).
+/**
+ * `Regex.Replace(x, "[^<allowlist>]", "")` — an allowlist character strip
+ * (cognium-dev#272, the LDAP-strip cluster).
+ *
+ * A **negated** class is the whole point: `[^a-zA-Z0-9]` deletes everything
+ * *not* in the set, so the surviving characters are exactly the set. That makes
+ * the result provably inert for the metacharacter-driven injection families
+ * below. A blacklist replace (`"[<>]"`) proves nothing — it enumerates what to
+ * remove and silently misses the rest — and must not match.
+ *
+ * Two conditions, both load-bearing:
+ *
+ *  (a) the pattern is a string literal beginning `[^`. A computed pattern could
+ *      be anything, including attacker-influenced.
+ *  (b) the surviving set contains **no metacharacters**. `[^a-zA-Z0-9']` would
+ *      keep the single quote alive, which breaks SQL and LDAP escaping outright
+ *      — so the class body is restricted to alphanumerics, `\w`, `\d`, `\s`,
+ *      underscore, hyphen and spaces. Anything else (quote, paren, backslash,
+ *      dot, asterisk, semicolon) fails the match and the sink still fires.
+ *
+ * The replacement must be empty or a single safe character, so
+ * `Regex.Replace(x, "[^a-z]", "';DROP")` cannot qualify.
+ */
+const CSHARP_ALLOWLIST_STRIP_RE =
+  /\bRegex\s*\.\s*Replace\s*\([^,]*,\s*@?"\[\^(?:[A-Za-z0-9_\- ]|\\w|\\d|\\s)+\]"\s*,\s*@?"[A-Za-z0-9_]?"\s*\)/;
+
 const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
   { re: /\b(?:HtmlEncode|JavaScriptStringEncode)\s*\(/, type: 'xss' },
   { re: /\bHtmlEncoder\s*\.\s*Encode\s*\(/, type: 'xss' },
   { re: /\bPath\s*\.\s*GetFileName\s*\(/, type: 'path_traversal' },
+  // An allowlist strip leaves only inert characters, so it covers every family
+  // whose exploitation needs a metacharacter. Each has a fixture; see
+  // `issue-272-csharp-allowlist-strip.test.ts`.
+  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'ldap_injection' },
+  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'xpath_injection' },
+  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'command_injection' },
+  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'sql_injection' },
 ];
 
 /**
