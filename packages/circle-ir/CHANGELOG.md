@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.13] - 2026-09-11
+
+### Fixed
+
+- **A reassigned C# local lost its taint (#287, partial).** `var v = input; v = v.Trim(); sink(v)` reported nothing, while the same code without the reassignment reported correctly. `buildCSharpDFG` collected every definition in a method body before resolving any use, so the scope map held only the *last* definition of each variable — and `DFGUse.def_id` is specified as the reaching definition. With one definition per variable last == reaching, which is why single-assignment code always worked; for a reassigned local the right-hand `v` in `v = v + ""` resolved to the definition it was creating, no forward chain existed, and a backwards chain was emitted instead. A use of a reassigned variable now takes the last definition strictly before it, per method. Narrow by construction: only variables with more than one definition are repointed, so single-definition code keeps the binding it had. `buildTaintFlow` also labelled the source path step with the propagated variable rather than the source's own, naming a variable that does not exist on that line.
+- **Blocking calls inside inline route handlers were never reported (#315).** `blocking-main-thread` built its handler line-ranges only from `graph.ir.types[].methods`, so it saw handlers that are *methods* — a NestJS `@Get()` method, or a named `function handler(req, res)` — but an inline `app.get('/x', (req, res) => …)` produces no type and no method at all. The most common Express/Koa shape in the ecosystem was silently exempt, while a byte-identical named handler reported. Detection now also uses the synthetic `<verb>_handler` name the call extractor already assigns to router callbacks, gated on a router verb *and* handler-shaped callback parameters so ordinary callbacks such as `items.map(x => …)` are not swept in.
+- **A path-containment guard was credited even when it does not reject (#333).** `!full.startsWith(root)` only sanitises when the failing branch leaves. A guard that merely logs lets control fall through to the sink, but three guards scanned forward past their own already-closed block and found the *enclosing method's* `return`, suppressing a genuine `path_traversal`. Affected the Java `getCanonicalPath`, Java `Path.normalize` and JS `path.resolve` guards; the Rust equivalent was already correct and is the model the shared check now follows.
+
+### Added
+
+- **C# canonicalize-then-contain is credited (#286 C).** `Path.GetFileName` was C#'s only registered `path_traversal` sanitizer and it flattens the path, so it cannot express the subdirectory-preserving case — leaving the OWASP-canonical containment defence reported as a vulnerability. Java and JS/TS already credited their equivalents. The guarded variable must trace back to a `Path.GetFullPath(` assignment: in Java the canonicalisation and the containment test are one expression, but in C# they are separate statements and the guard alone is indistinguishable from an ordinary string prefix test. Only the reject polarity is credited; the enclosing `if (full.StartsWith(root)) { … }` form still reports.
+- **C# `ssrf`: a constant `BaseAddress` with a relative path is no longer reported (#286 D).** When an `HttpClient`'s `BaseAddress` is a compile-time constant, attacker input can only extend the path. Suppression requires the argument to begin with a string literal that is neither absolute nor protocol-relative, because **.NET ignores `BaseAddress` entirely when the request URI is absolute** — so `client.GetAsync(input)` on a constant-base client is still a genuine SSRF and continues to fire.
+- **User-defined CRLF-stripping helpers are credited at their call sites (#293, Java and Python).** The existing detector only credited a strip applied on the log line itself, so moving it into a `redact()` helper left the sanitizer detected inside the helper body and never applied at the call. A helper qualifies only when it replaces `\r`/`\n`/`\t`; a helper doing `.replace(" ", "-")` is not a CRLF strip and its callers still report.
+
+### Changed
+
+- `god-class` is now covered end-to-end (#315). Its existing tests exercised the threshold arithmetic against hand-built IR and never ran `analyze()`, so nothing verified that real source produces threshold-crossing metrics. No behaviour change; the pass fires on three different 2-of-3 threshold pairings and is not a size gate — a 10-method class with 20 collaborators fires on LCOM2 + CBO alone.
+
+### Consumer Impact
+
+- **Finding counts move in both directions**, so re-baseline rather than assuming a one-way shift.
+  - **More findings:** JS/TS gains `blocking-main-thread` on inline Express/Koa route handlers (#315), and Java/JS gain `path_traversal` where a containment guard falls through without rejecting (#333). Both were previously silent.
+  - **Fewer findings:** C# loses `path_traversal` on canonicalize-then-contain (#286 C) and `ssrf` on a constant `BaseAddress` with a relative path (#286 D); Java and Python lose `log_injection` where a CRLF strip lives in a helper (#293).
+- **Benchmark scores are unchanged.** Verdict-signature differentials against the 4.9.12 tree show zero added and zero removed on OWASP Benchmark (2740 files), SecuriBench Micro (254), BenchmarkPython (1230), Juliet-C# (3999 across six CWE families), nodegoat (74) and dvna (18). OWASP file-level TPR and FPR are identical. None of these corpora contain the shapes above, so the differentials establish that nothing else moved — not that the changes are invisible.
+
 ## [4.9.12] - 2026-09-10
 
 ### Fixed

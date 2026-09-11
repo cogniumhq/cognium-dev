@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.13] - 2026-09-11
+
+### Changed
+- Adopts `circle-ir@4.9.13`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+- **Finding counts move in both directions this release** — re-baseline rather than assuming a one-way shift.
+  - **New rows appear:** `blocking-main-thread` now reports blocking calls inside inline Express/Koa route handlers (`app.get('/x', (req, res) => …)`), which were silently exempt; and `path_traversal` now reports where a canonicalize-then-contain guard logs instead of rejecting.
+  - **Rows disappear:** C# `path_traversal` on the canonicalize-then-contain defence, C# `ssrf` on an `HttpClient` with a constant `BaseAddress` and a relative path, and Java/Python `log_injection` where the CRLF strip lives in a helper function.
+- If you gate CI on total finding counts, expect movement on JS/TS (up) and on C#, Java and Python (down). Severity distribution is unaffected — no rule changed tier this release.
+- Benchmark scores are unchanged: zero signature delta across OWASP Benchmark, SecuriBench Micro, BenchmarkPython, Juliet-C#, nodegoat and dvna, with identical OWASP TPR/FPR.
+
 ## [4.9.12] - 2026-09-10
 
 ### Changed
