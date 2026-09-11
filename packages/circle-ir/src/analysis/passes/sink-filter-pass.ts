@@ -1942,6 +1942,66 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15l — C# ssrf: HttpClient with a constant BaseAddress and a
+    // relative request path. (cognium-dev#286 D)
+    //
+    // The C# analogue of Stage 15i above (JS fixed-host URL template): when the
+    // host is a compile-time constant, attacker input can only extend the path,
+    // so the request cannot be redirected to another host.
+    //
+    //   var client = new HttpClient { BaseAddress = new Uri("https://api.internal/") };
+    //   await client.GetAsync("lookup/" + Uri.EscapeDataString(input));   // not ssrf
+    //
+    // Three conditions, and each one is load-bearing:
+    //
+    //  (a) `BaseAddress` is assigned a *string-literal* Uri. `new Uri(input)`
+    //      means the attacker chooses the host, which is a worse bug than the
+    //      one being suppressed here — it must keep firing.
+    //  (b) the sink call's receiver is that same client variable.
+    //  (c) the argument starts with a *string literal* that is neither absolute
+    //      (`http://`, `https://`) nor protocol-relative (`//host`). This is
+    //      the subtle one: .NET **ignores BaseAddress entirely when the request
+    //      URI is absolute**, so `client.GetAsync(input)` with a bare tainted
+    //      variable is still a genuine SSRF — the attacker supplies
+    //      `https://evil.example` and the base is discarded. Only a literal
+    //      relative prefix proves the attacker cannot reach the host position,
+    //      the same reasoning as the same-origin literal prefix in #284 d1.
+    if (language === 'csharp') {
+      const sourceLines = ctx.code.split('\n');
+
+      // (a) client variables whose BaseAddress is a constant Uri.
+      const constBaseClients = new Set<string>();
+      const declRe =
+        /\b(?:var|HttpClient)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*\{[^}]*\bBaseAddress\s*=\s*new\s+Uri\s*\(\s*(?:@?"[^"]*"|\$?"[^"{}]*")\s*\)/;
+      for (const line of sourceLines) {
+        const m = declRe.exec(line);
+        if (m) constBaseClients.add(m[1]);
+      }
+
+      if (constBaseClients.size > 0) {
+        // (c) the argument's leading string literal must be a relative path.
+        const relativeLiteralArgRe =
+          /\.\s*(?:Get|Post|Put|Patch|Delete|Send|GetString|GetByteArray|GetStream)\w*Async\s*\(\s*(?:@?\$?)"([^"]*)"/;
+        filtered = filtered.filter(sink => {
+          if (sink.type !== 'ssrf') return true;
+          const text = sourceLines[sink.line - 1] ?? '';
+          // (b) receiver must be a constant-base client.
+          let onConstClient = false;
+          for (const v of constBaseClients) {
+            if (new RegExp(`(?<![\\w])${escapeRegex(v)}\\s*\\.`).test(text)) { onConstClient = true; break; }
+          }
+          if (!onConstClient) return true;
+
+          const m = relativeLiteralArgRe.exec(text);
+          if (!m) return true;                       // no leading literal — keep
+          const lit = m[1];
+          if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(lit)) return true;  // absolute URI
+          if (lit.startsWith('//')) return true;                    // protocol-relative
+          return false;                              // fixed host, relative path
+        });
+      }
+    }
+
     // Stage 16 — JS log_injection (CWE-117) sanitizer suppression.
     // (cognium-dev #216 sanitizer-wrapped FP — Sprint 52)
     //
