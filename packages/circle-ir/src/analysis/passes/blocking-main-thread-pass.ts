@@ -50,6 +50,25 @@ const CRYPTO_BLOCKING_METHODS = new Set([
 
 const SYNC_SUFFIX_RE = /Sync$/;
 
+/**
+ * Router methods that mount an HTTP request handler (Express / Koa / Hono /
+ * Fastify). Lowercase counterparts of HTTP_DECORATORS, plus `use` for
+ * middleware — middleware runs in the request path, so a blocking call there
+ * stalls the loop exactly as one in a route handler does.
+ */
+const ROUTER_METHODS = new Set([
+  'get', 'post', 'put', 'patch', 'delete', 'all', 'options', 'head', 'use',
+]);
+
+/**
+ * Parameter list of a function passed as an argument, for the two shapes that
+ * appear as route callbacks: `(req, res) => …` / `async (req, res) => …` /
+ * `function (req, res) { … }` (group 1), and the single-parameter arrow
+ * `ctx => …` (group 2).
+ */
+const FN_ARG_PARAMS_RE =
+  /^(?:async\s+)?(?:function\s*[\w$]*\s*)?\(([^)]*)\)\s*(?:=>|\{)|^(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/;
+
 export interface BlockingMainThreadResult {
   blockingInHandlers: Array<{
     line: number;
@@ -86,7 +105,23 @@ export class BlockingMainThreadPass implements AnalysisPass<BlockingMainThreadRe
       }
     }
 
-    if (handlerRanges.length === 0) return { blockingInHandlers: [] };
+    // Inline route callbacks are invisible to the loop above: `app.get('/x',
+    // (req, res) => …)` produces no entry in `graph.ir.types`, so it has no
+    // method and no line range — which silently exempted the most common
+    // Express/Koa shape in the ecosystem (cognium-dev#315). A named
+    // `function handler(req, res)` was caught, because top-level functions do
+    // land in the synthetic `<module>` type; an inline arrow did not.
+    //
+    // No line range is needed. The calls extractor already names the enclosing
+    // function for this shape: an arrow or function-expression passed as an
+    // argument to a member-expression call is tagged `<property>_handler` by
+    // `findJSEnclosingFunction` (core/extractors/calls.ts), so a blocking call
+    // inside `app.get(…)` carries `in_method === 'get_handler'`.
+    const inlineHandlers = this.collectInlineHandlerNames(graph.ir.calls);
+
+    if (handlerRanges.length === 0 && inlineHandlers.size === 0) {
+      return { blockingInHandlers: [] };
+    }
 
     const blockingInHandlers: BlockingMainThreadResult['blockingInHandlers'] = [];
 
@@ -97,7 +132,11 @@ export class BlockingMainThreadPass implements AnalysisPass<BlockingMainThreadRe
       if (!isCrypto && !isSyncSuffix) continue;
 
       const line = call.location.line;
-      const range = handlerRanges.find(r => line >= r.start && line <= r.end);
+      const enclosing = call.in_method ?? null;
+      const range = handlerRanges.find(r => line >= r.start && line <= r.end)
+        ?? (enclosing && inlineHandlers.has(enclosing)
+          ? { start: line, end: line, name: enclosing }
+          : undefined);
       if (!range) continue;
 
       const reason: 'sync-suffix' | 'crypto' = isCrypto ? 'crypto' : 'sync-suffix';
@@ -122,6 +161,52 @@ export class BlockingMainThreadPass implements AnalysisPass<BlockingMainThreadRe
     }
 
     return { blockingInHandlers };
+  }
+
+  /**
+   * Synthetic `<verb>_handler` names that really do belong to an HTTP route.
+   *
+   * The extractor tags *any* function argument of *any* member-expression call
+   * this way, so `items.map(x => …)` becomes `map_handler` and
+   * `cache.get(k, () => …)` becomes `get_handler`. Accepting every
+   * `*_handler` would pull ordinary callbacks into a pass that is explicitly
+   * about the HTTP request path, so two conditions are required: the method is
+   * a router verb, and the callback's own parameters look like a request
+   * handler's — the same `HANDLER_PARAM_NAMES` test used for methods.
+   *
+   * Known limitation: `in_method` carries no receiver, so two callbacks that
+   * share a verb in one file are indistinguishable. A file containing both
+   * `app.get('/x', (req, res) => …)` and `cache.get(k, () => …)` will treat a
+   * blocking call in the second as in-handler. Both conditions still have to
+   * hold for the verb to register at all, which keeps that to files already
+   * mounting a real route of the same verb.
+   */
+  private collectInlineHandlerNames(calls: readonly {
+    method_name: string;
+    arguments: Array<{ expression: string }>;
+  }[]): Set<string> {
+    const names = new Set<string>();
+
+    for (const call of calls) {
+      if (!ROUTER_METHODS.has(call.method_name)) continue;
+
+      for (const arg of call.arguments) {
+        const match = FN_ARG_PARAMS_RE.exec((arg.expression ?? '').trim());
+        if (!match) continue;
+
+        const params = (match[1] ?? match[2] ?? '')
+          .split(',')
+          .map(p => p.trim().toLowerCase())
+          .filter(p => p.length > 0);
+
+        if (params.some(p => HANDLER_PARAM_NAMES.has(p))) {
+          names.add(`${call.method_name}_handler`);
+          break;
+        }
+      }
+    }
+
+    return names;
   }
 
   private isRequestHandler(method: {
