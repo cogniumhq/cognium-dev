@@ -412,6 +412,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 77a (#216 Pattern X): Jinja2 Environment(autoescape=...) +
       // .render(...) sanitizer.
       additionalSanitizers.push(...findPythonJinjaAutoescapeSanitizers(code));
+      // cognium-dev#293: user-defined CRLF-stripping helper credited at call sites.
+      additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'python'));
       // Sprint 71 (#190): pattern-based misconfig findings for subscript/context
       // assignment shapes (cors-wildcard-origin, xfo-csp-mismatch, tls-verify-
       // disabled) that the language-agnostic detectors miss in Python.
@@ -657,6 +659,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // guard (the java.io.File OWASP-recommended containment defence).
       additionalSanitizers.push(...findJavaCanonicalPathStartsWithGuardSanitizers(code));
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
+      // cognium-dev#293: the same strip, but living in a user-defined helper.
+      additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'java'));
       // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
       additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
       // Sprint 78 (#190): Java misconfig pattern findings —
@@ -5392,6 +5396,81 @@ function findJavaPathGetFileNameSanitizers(
  * Emits a `log_injection` + `external_taint_escape` sanitizer at
  * that line.
  */
+/**
+ * Java / Python user-defined CRLF-stripping wrapper — credited at its call
+ * sites (cognium-dev#293).
+ *
+ * `findJavaInlineCrlfStripLogSanitizers` only credits a strip applied *on the
+ * log line itself*. When the strip lives in a small helper, the sanitizer was
+ * detected inside the helper body and never reached the call site:
+ *
+ *   private static String redact(String s) {
+ *     return s.replace("\r", "_").replace("\n", "_");   // sanitizer seen HERE
+ *   }
+ *   logger.info("user=" + redact(req.getParameter("user")));  // still log_injection
+ *
+ * JS/TS has had this for a while (`findJsWrapperFunctionSanitizers`); Java and
+ * Python did not, which is two of the seven fixtures on #293.
+ *
+ * Scoped to CRLF / `log_injection` deliberately. The JS version also infers an
+ * `xss` wrapper from an HTML char class, but #293 supplies no Java or Python
+ * xss-wrapper fixture, and a sanitizer credit with no fixture behind it is how
+ * a false negative gets shipped.
+ *
+ * Accepts three strip forms, matching what Java and Python actually write:
+ *   `.replaceAll("[\r\n]", …)`, `.replace('\n', …)`, `.replace("\r", …)`
+ *   and Python's `re.sub(r"[\r\n\t]", …)`.
+ * The double-quoted `replace("\r", …)` form is notably absent from the inline
+ * detector above, which is part of why the fixture on #293 reported.
+ *
+ * A helper qualifies only if it is a *value-returning* declaration whose body
+ * strips CRLF. In Java that means an explicit `String`/`CharSequence` return
+ * type, which keeps `void` log-and-forget methods out.
+ */
+function findCrlfWrapperFunctionSanitizers(
+  code: string,
+  language: 'java' | 'python',
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const declRe =
+    language === 'java'
+      ? /^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:String|CharSequence)\s+([A-Za-z_]\w*)\s*\(/
+      : /^\s*def\s+([A-Za-z_]\w*)\s*\(/;
+
+  // `\\[rnt]` matches the two-character escape as it appears in source text.
+  const stripRe =
+    language === 'java'
+      ? /\.\s*replace(?:All)?\s*\(\s*(?:"[^"]*\\[rnt]|'\\[rnt]')/
+      : /(?:re\s*\.\s*sub\s*\(\s*r?["'][^"']*\\[rnt]|\.\s*replace\s*\(\s*["']\\[rnt])/;
+
+  const bodyWindow = 10;
+  const wrappers = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = declRe.exec(lines[i]);
+    if (!m) continue;
+    const body = lines.slice(i, Math.min(lines.length, i + bodyWindow)).join('\n');
+    if (stripRe.test(body)) wrappers.add(m[1]);
+  }
+  if (wrappers.size === 0) return sanitizers;
+
+  for (let i = 0; i < lines.length; i++) {
+    for (const name of wrappers) {
+      // Never credit the declaration line itself.
+      if (declRe.test(lines[i]) && new RegExp(`\\b${name}\\s*\\(`).test(lines[i])) continue;
+      if (!new RegExp(`\\b${name}\\s*\\(`).test(lines[i])) continue;
+      sanitizers.push({
+        type: language === 'java' ? 'java_wrapper_crlf_strip' : 'python_wrapper_crlf_strip',
+        method: name,
+        line: i + 1,
+        sanitizes: ['log_injection', 'external_taint_escape'],
+      });
+    }
+  }
+  return sanitizers;
+}
+
 function findJavaInlineCrlfStripLogSanitizers(
   code: string,
 ): TaintSanitizer[] {
