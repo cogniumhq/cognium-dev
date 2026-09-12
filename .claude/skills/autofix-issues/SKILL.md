@@ -124,6 +124,56 @@ From the techspec spec. Each is a hard exit, not a warning; report the reason an
   unattended loop: its failure mode is a permanent halt, and the 2-hour bound makes clearing
   safe because no healthy run holds the lock that long. Review fix, 2026-09-10.)
 
+## 0c. Discovery must fail LOUDLY — an API error is not an empty backlog
+
+Observed 2026-09-11, and it nearly produced a wrong report. Every `gh` query in a sweep returned
+
+```
+error connecting to api.github.com
+check your internet connection or https://githubstatus.com
+```
+
+on stderr while still exiting 0, so each `--jq 'length'` rendered as an empty line and each
+candidate query as no rows. Read casually, that is **indistinguishable from a clean empty
+sweep** — and reporting "0 candidates" there would silently skip whatever work was actually
+waiting.
+
+Wrap every `gh` call, and treat an unanswered query as a hard exit rather than a zero:
+
+```
+r() {
+  for i in 1 2 3 4 5; do
+    out=$("$@" 2>&1)
+    if ! echo "$out" | grep -qiE "error connecting|connection reset|read tcp|502 Bad|5[0-9][0-9] |timed out|could not resolve|rate limit"; then
+      echo "$out"; return 0
+    fi
+    sleep 12
+  done
+  echo "API_UNREACHABLE"; return 1
+}
+```
+
+Then track the failures and say so:
+
+```
+fail=0
+v=$(r gh issue list … ) || fail=1
+…
+# any fail=1 => report "discovery unreliable: GitHub API unreachable" and STOP.
+# Never report an issue count, a candidate list, or "no eligible issues" from a failed query.
+```
+
+Three rules follow, and the third is the one that matters:
+
+- Retry with a pause; transient blips have been common in this environment and usually clear
+  within a minute.
+- `git fetch` / `git pull` and `gh auth status` can all succeed while the REST API is
+  unreachable — auth status is partly local, so a green §0.4 does **not** mean discovery works.
+- **Distinguish "nothing to do" from "cannot see".** An empty sweep is a legitimate and common
+  outcome (§3), which is exactly why a failure that looks like one is dangerous: it will be
+  believed. Same failure shape as the dead `timelineItems` query in §0b, which errored and
+  silently disabled the stale-lock expiry for weeks.
+
 ## 1. Discover candidate issues
 
 ### 1a. cognium-dev (home repo)
