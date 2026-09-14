@@ -1178,6 +1178,155 @@ function isReassignedToLiteralBetween(
   return false;
 }
 
+/**
+ * Languages whose plain quoted strings cannot interpolate, so blanking the
+ * literal text before identifier tokenisation is sound (cognium-dev#353).
+ * See `maskStringLiteralsForTokenScan` for why the others are excluded.
+ */
+const MASKABLE_STRING_LANGUAGES = new Set(['python', 'javascript', 'typescript']);
+
+/**
+ * Blank the *text* of string literals in a sink-argument expression before it
+ * is tokenised into identifiers, while preserving interpolated expressions.
+ *
+ * cognium-dev#353 — `detectExpressionScanFlows` tokenises the raw argument
+ * text and trusts a bare identifier match as proof that the source variable
+ * occurs in that argument. A literal's contents are text, not identifiers, so
+ *
+ *   log.info("actor=%s", x)     // arg 0 is the literal "actor=%s"
+ *
+ * tokenised to `['actor', 's']` and reported a flow for a variable that is
+ * never passed to the sink. Format strings routinely name the field they
+ * interpolate, and those are exactly the names the corresponding variables
+ * have, so this fires on ordinary logging code. Worse, it re-attributes a
+ * sanitized flow to the raw source: `safe = strip(actor); log.info("actor=%s",
+ * safe)` reports against `actor`, so a correct CWE-117 defence still shows a
+ * finding.
+ *
+ * Interpolations must survive, because there the identifier IS a real use:
+ *
+ *   log.info(f"actor={actor}")      // python f-string   — keep `actor`
+ *   console.log(`actor=${actor}`)   // JS template       — keep `actor`
+ *
+ * Concatenation, `%` and `.format()` shapes are unaffected either way: the
+ * identifier sits outside the quotes in all of them.
+ *
+ * Interpolation bodies are masked recursively, so a quoted subscript inside
+ * one (`f"{d['actor']}"`) does not smuggle the literal back in.
+ *
+ * LANGUAGE SCOPE — this is applied to Python and JS/TS only, and the caller
+ * gates it (`MASKABLE_STRING_LANGUAGES`). In those three, a plain quoted
+ * string cannot interpolate, so blanking its text is sound. Elsewhere it is
+ * not, and the suite proved it: Bash double quotes DO interpolate, so
+ *
+ *   mapfile -t lines
+ *   eval "${lines[0]}"
+ *
+ * would lose `lines` and drop a true positive (`bash-read-sources.test.ts`).
+ * Rust inline format captures (`format!("{x}")`) and C# interpolated strings
+ * (`$"{x}"`) are the same hazard. Widening to those languages means teaching
+ * this function their interpolation syntax first — deliberately left out of
+ * #353, whose measured FP is Python and JS.
+ *
+ * Exported for direct testing — the edge cases here (triple quotes, `{{`
+ * escapes, nested braces, string prefixes) are far cheaper to cover against
+ * the function than through full analysis.
+ */
+export function maskStringLiteralsForTokenScan(expr: string): string {
+  let out = '';
+  let i = 0;
+
+  /** Collect `{...}` interpolation bodies from an f-string body. */
+  const braceExprs = (body: string): string => {
+    let acc = '';
+    for (let j = 0; j < body.length; ) {
+      if (body[j] === '{' && body[j + 1] === '{') { j += 2; continue; }
+      if (body[j] === '}' && body[j + 1] === '}') { j += 2; continue; }
+      if (body[j] === '{') {
+        j++;
+        let depth = 1;
+        let inner = '';
+        while (j < body.length && depth > 0) {
+          if (body[j] === '{') depth++;
+          else if (body[j] === '}') {
+            depth--;
+            if (depth === 0) break;
+          }
+          inner += body[j];
+          j++;
+        }
+        j++;
+        acc += ' ' + maskStringLiteralsForTokenScan(inner) + ' ';
+        continue;
+      }
+      j++;
+    }
+    return acc;
+  };
+
+  while (i < expr.length) {
+    const ch = expr[i];
+
+    // JS/TS template literal — keep `${...}` bodies, drop the rest.
+    if (ch === '`') {
+      i++;
+      let acc = '';
+      while (i < expr.length && expr[i] !== '`') {
+        if (expr[i] === '\\') { i += 2; continue; }
+        if (expr[i] === '$' && expr[i + 1] === '{') {
+          i += 2;
+          let depth = 1;
+          let inner = '';
+          while (i < expr.length && depth > 0) {
+            if (expr[i] === '{') depth++;
+            else if (expr[i] === '}') {
+              depth--;
+              if (depth === 0) break;
+            }
+            inner += expr[i];
+            i++;
+          }
+          i++;
+          acc += ' ' + maskStringLiteralsForTokenScan(inner) + ' ';
+          continue;
+        }
+        i++;
+      }
+      i++;
+      out += ' ' + acc + ' ';
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      // A Python string prefix already sits in `out`; an `f` in it means the
+      // literal interpolates. Drop the prefix so it cannot become a token.
+      const pm = /[A-Za-z_][A-Za-z0-9_]*$/.exec(out);
+      const prefix = pm ? pm[0] : '';
+      const isPrefix = prefix.length > 0 && /^[rRbBuUfF]+$/.test(prefix);
+      const isF = isPrefix && /[fF]/.test(prefix);
+      if (isPrefix) out = out.slice(0, out.length - prefix.length) + ' ';
+
+      const triple = expr.startsWith(ch.repeat(3), i);
+      const delim = triple ? ch.repeat(3) : ch;
+      i += delim.length;
+      let body = '';
+      while (i < expr.length && !expr.startsWith(delim, i)) {
+        if (expr[i] === '\\') { body += ' '; i += 2; continue; }
+        body += expr[i];
+        i++;
+      }
+      i += delim.length;
+      out += isF ? ' ' + braceExprs(body) + ' ' : ' ';
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -1718,7 +1867,15 @@ function detectExpressionScanFlows(
         // order (`ord`) preserves the previous "first matching source wins"
         // semantics while avoiding the O(sources) scan per sink arg
         // (cognium-ai#305).
-        const exprIdentMatches = expr.match(/[\p{L}\p{N}_]+/gu);
+        // #353 — tokenise the expression with string-literal TEXT blanked out
+        // (interpolations preserved). A name inside a literal is text, not a
+        // use of the variable. Gated by language: see the helper's JSDoc —
+        // Bash double quotes interpolate, so masking there loses real flows.
+        const scannable =
+          language !== undefined && MASKABLE_STRING_LANGUAGES.has(language)
+            ? maskStringLiteralsForTokenScan(expr)
+            : expr;
+        const exprIdentMatches = scannable.match(/[\p{L}\p{N}_]+/gu);
         // Complex (attribute-path) sources must be checked against every arg
         // via the regex gate; simple sources are looked up by identifier token.
         let candidates: OrderedSource[] | null =
