@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.14] - 2026-09-14
+
+### Consumer Impact
+
+Every change below shifts finding counts, in **both directions**. A rescan against an
+existing baseline will show movement that is not a regression:
+
+- **New CWE-78 findings** on `ProcessBuilder` shell-wrapper calls that were previously
+  silent (#351).
+- **A CWE-668 becomes a CWE-89** on try-with-resources JDBC: the finding was always
+  reported, but with the weaker generic type, so a consumer filtering on `sql_injection`
+  sees a new critical appear and an `external_taint_escape` disappear at the same site
+  (#350).
+- **Fewer `xss` / `log_injection` findings** where a source variable's *name* merely
+  appeared inside a string literal at the sink (#353). Measured on juice-shop: 11 findings
+  removed across 10 files, 10 of them `xss`. Every one of those sink arguments is a
+  constant.
+- **Fewer `plugin_param` sources** from reads of map keys that were never written (#346).
+
+Verdict-signature differentials for each change are recorded on PRs #354, #355 and #356,
+including the corpora that do *not* exercise a given change — stated there rather than
+implied.
+
+### Fixed
+
+- **`ProcessBuilder("bash", "-c", tainted)` was not reported (#351).** `command_injection`
+  only fired when the tainted value was argument 0, so the canonical shell-wrapper shape
+  was missed in both the constructor and the `.command(...)` setter, while
+  `Runtime.exec(String[])` with the identical array reported correctly. Two causes: the
+  sink's `arg_positions` was `[0]` although both overloads take `String...` varargs (every
+  element is a command token), and the #179 argv-form suppression then dropped the sink
+  anyway — including the chained `.start()` on the same line. That suppression is correct
+  in general, because `ProcessBuilder(List<String>)` hands argv straight to `fork(2)` with
+  no shell; it is wrong only when argv[0] is *itself* a shell, because then argv[1..] is a
+  script. Fixed with a shell-interpreter exception (basename-matched, so `/bin/bash` and
+  `cmd.exe` count) rather than by treating every argument as dangerous — so
+  `new ProcessBuilder(List.of("cowsay", input))` stays clean, being argument injection
+  (CWE-88) at most. Widening the setter's positions also required an argv-form suppression
+  of its own for `.command(...)`, which #179 never covered, so the fix does not trade a
+  false negative for a false positive. Positions are now enumerated rather than `[]`,
+  because the two layers reading that field disagree about an empty array:
+  `isInDangerousPosition` treats it as *no* position, the sink-reachability loop as *any*.
+- **A tainted variable's name inside a string literal counted as a use of it (#353).**
+  `detectExpressionScanFlows` tokenised the sink argument's raw text and, for a bare
+  identifier, trusted that token index as proof the source occurred in the argument, so
+  `log.info("actor=%s", x)` reported a flow for `actor` — a variable never passed to the
+  sink. Format strings routinely name the field they interpolate, and those are the names
+  the variables have. The worse consequence was re-attributing a *sanitized* flow to the
+  raw source (`safe = strip(actor); log.info("actor=%s", safe)`), so a correct CWE-117
+  defence still showed a finding. Literal text is now blanked before tokenisation with
+  interpolations preserved, since `f"actor={actor}"` and `` `actor=${actor}` `` are genuine
+  uses; concatenation, `%` and `.format()` were never affected. Applied to Python and JS/TS
+  only: Bash double quotes interpolate, so masking `eval "${lines[0]}"` would drop a true
+  positive, and Rust inline format captures and C# interpolated strings are the same
+  hazard.
+- **A JDBC `Statement` declared in a try-with-resources was mis-typed, not missed (#350).**
+  `buildResolutionContext` collected `local_variable_declaration` nodes but not `resource`
+  nodes, which is what try-with-resources uses for its declarations, so the receiver type
+  stayed `null`, the class-scoped `Statement.executeQuery` sink could not match, and the
+  call fell back to the generic escape sink — CWE-668 instead of CWE-89. The same statement
+  written as a plain local always resolved. Try-with-resources is the idiomatic way to
+  write JDBC, so this is the common shape.
+- **A read of a never-written map key is not a source (#346).** `Map.get` / `HashMap.get`
+  are registered as unconditional `plugin_param` sources, which also made a read of a key
+  never written into the map a taint source (SecuriBench Micro `Collections6:47`, an
+  `/* OK */` line). Gated where `ir.taint.sources` is actually produced — `sinkFilter`'s
+  pass result — since a gate in `library-profile-source-gate-pass` mutates a graph field
+  that is discarded (#288).
+
 ## [4.9.13] - 2026-09-11
 
 ### Fixed
