@@ -256,6 +256,52 @@ const OS_EXEC_RECEIVER_RE =
 const PROCESS_BUILDER_ARGV_FORM_RE =
   /\bnew\s+ProcessBuilder\s*\(\s*(?:Arrays\.asList\b|List\.of\b|Collections\.singletonList\b|new\s+ArrayList\b|new\s+String\s*\[\s*\]\s*\{|"[^"]*"\s*,)/;
 
+// Same argv proof, for the `pb.command(...)` setter rather than the ctor.
+// `command(List<String>)` / `command(String...)` feed the same argv array, so
+// a tainted element is one argv slot, not a shell string. Added with #351:
+// that issue widened the `command` sink's `arg_positions` beyond `[0]`, which
+// without this would report `pb.command("ls", userInput)` as CWE-78 when it is
+// at most argument injection (CWE-88) — exactly the FP class #179 removed for
+// the constructor.
+const PROCESS_BUILDER_COMMAND_ARGV_FORM_RE =
+  /\.\s*command\s*\(\s*(?:Arrays\.asList\b|List\.of\b|Collections\.singletonList\b|new\s+ArrayList\b|new\s+String\s*\[\s*\]\s*\{|"[^"]*"\s*,)/;
+
+// cognium-dev#351 — the argv proof above holds only while argv[0] is the
+// PROGRAM. When argv[0] is a shell, argv[1..] is a script and a tainted
+// element is a shell command string, so bypassing the shell is exactly what
+// does NOT happen:
+//
+//   new ProcessBuilder("bash", "-c", "cowsay '" + input + "'")   // CWE-78
+//   new ProcessBuilder(List.of("sh", "-c", tainted))             // CWE-78
+//
+// `Runtime.exec(String[])` with the identical array already reported, so the
+// argv-form suppression was the only thing standing between this shape and a
+// finding. Kept deliberately narrow: only a literal, recognisably-shell
+// argv[0] re-opens the sink; anything else keeps #179's suppression.
+const SHELL_PROGRAMS = new Set([
+  'sh', 'bash', 'zsh', 'ksh', 'dash', 'ash', 'csh', 'tcsh', 'fish',
+  'cmd', 'command', 'powershell', 'pwsh',
+]);
+
+const ARGV_FIRST_LITERAL_RE =
+  /(?:\bnew\s+ProcessBuilder\s*\(|\.\s*command\s*\()\s*(?:Arrays\.asList\s*\(|List\.of\s*\(|Collections\.singletonList\s*\(|new\s+ArrayList\s*(?:<[^>]*>)?\s*\(\s*(?:Arrays\.asList\s*\()?|new\s+String\s*\[\s*\]\s*\{)?\s*"([^"]*)"/;
+
+/**
+ * True when the first argv literal on the line names a shell interpreter.
+ * Compares the basename so `/bin/bash` and `C:\\Windows\\System32\\cmd.exe`
+ * are recognised as well as a bare `bash`.
+ */
+function argvFirstLiteralIsShell(lineText: string): boolean {
+  const m = ARGV_FIRST_LITERAL_RE.exec(lineText);
+  if (!m) return false;
+  const base = m[1]
+    .split(/[\\/]/)
+    .pop()!
+    .replace(/\.exe$/i, '')
+    .toLowerCase();
+  return SHELL_PROGRAMS.has(base);
+}
+
 // ---------------------------------------------------------------------------
 // Stage 12 — Java throw-statement FP suppression.
 // (cognium-dev #157 — Sprint 45)
@@ -1560,10 +1606,25 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       const irTypes = ctx.graph.ir.types;
       filtered = filtered.filter(sink => {
         if (sink.type !== 'command_injection') return true;
-        if (sink.method !== 'ProcessBuilder' && sink.method !== 'start') return true;
+        if (
+          sink.method !== 'ProcessBuilder' &&
+          sink.method !== 'start' &&
+          sink.method !== 'command'
+        ) {
+          return true;
+        }
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
-        if (PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;
+        const isCtorLine = /\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText);
+        const isCommandLine = /\.\s*command\s*\(/.test(sinkLineText);
+        if (!isCtorLine && !isCommandLine) return true;
+        // #351 — a shell argv[0] means the tainted element IS a shell command
+        // string, so the argv form proves nothing. Keep the sink.
+        if (argvFirstLiteralIsShell(sinkLineText)) return true;
+        if (isCtorLine && PROCESS_BUILDER_ARGV_FORM_RE.test(sinkLineText)) return false;
+        if (isCommandLine && PROCESS_BUILDER_COMMAND_ARGV_FORM_RE.test(sinkLineText)) {
+          return false;
+        }
+        if (!isCtorLine) return true;
         // cognium-dev #256 (3.176.0): resolver fallback for method-call and
         // variable arguments whose declared type is `List<String>` /
         // `String[]` / etc. The regex above catches literal shapes
