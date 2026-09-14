@@ -1114,9 +1114,27 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Command Injection (CWE-78)
   { method: 'exec', class: 'Runtime', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1] },
   { method: 'start', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [] },
-  // ProcessBuilder constructor
-  { method: 'ProcessBuilder', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  { method: 'command', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // ProcessBuilder constructor + command(): cognium-dev#351 — BOTH take
+  // `String...` varargs (or a single List<String>), and EVERY element is a
+  // command token, so no position is safe. Pinning these to `[0]` missed the
+  // canonical shell-wrapper shape, where the payload is the last argument:
+  //
+  //   new ProcessBuilder("bash", "-c", tainted)     // payload at position 2
+  //   pb.command("bash", "-c", tainted)
+  //
+  // `Runtime.exec(String[])` with the identical array already fired, so the
+  // taint was available and only the sink model was wrong.
+  //
+  // The positions are enumerated rather than left `[]` because the two layers
+  // that read this field disagree about what an empty array means:
+  // `isInDangerousPosition` (taint-matcher) does `arg_positions.includes(pos)`,
+  // so `[]` matches NOTHING, while the sink-reachability loop in
+  // taint-propagation treats `length === 0` as "any argument".
+  // `ProcessBuilder.start` gets away with `[]` only because it takes no
+  // arguments at all. Enumerating is unambiguous in both, and matches how the
+  // logging sinks in this file already spell it.
+  { method: 'ProcessBuilder', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1, 2, 3, 4, 5, 6, 7] },
+  { method: 'command', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0, 1, 2, 3, 4, 5, 6, 7] },
   // Commons Exec
   // Note: bare class 'Executor' removed — it collided with java.util.concurrent.Executor
   // (Executor.execute(Runnable) is not command injection). Apache Commons Exec users
@@ -2460,8 +2478,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Java CWE-Bench Enhancement Patterns (Collection/Builder)
   // =========================================================================
 
-  // Collection-based command injection (ProcessBuilder with List)
-  { method: 'command', class: 'ProcessBuilder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // Collection-based command injection (ProcessBuilder with List) — the
+  // `ProcessBuilder.command` entry lives with the other ProcessBuilder sinks
+  // above; a second copy here only risked the two drifting apart, which is
+  // what happened (cognium-dev#351).
   // ProcessBuilder.inheritIO removed in 3.83.0 (#124): no args, no command
   // string flows into it. See note above next to the Process-related cluster.
 
