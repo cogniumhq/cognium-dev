@@ -4,6 +4,21 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-09-14
+
+### Changed
+- Adopts `circle-ir@4.9.14`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits the finding-count changes in `circle-ir@4.9.14`, which move in **both**
+directions — new CWE-78 on `ProcessBuilder` shell wrappers (#351), a CWE-668 becoming a
+CWE-89 on try-with-resources JDBC (#350), and fewer `xss` / `log_injection` findings where
+a source variable's name merely appeared inside a string literal at the sink (#353), plus
+fewer `plugin_param` sources from never-written map keys (#346). A rescan against an
+existing baseline will show movement that is not a regression; see the `circle-ir`
+changelog for the measured numbers.
+
 ## [0.1.6] - 2026-09-11
 
 ### Changed
