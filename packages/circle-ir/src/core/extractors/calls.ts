@@ -1162,6 +1162,26 @@ function buildResolutionContext(tree: Tree, cache?: NodeCache): ResolutionContex
     }
   }
 
+  // cognium-dev#350 — try-with-resources declarations are ALSO local variables.
+  //
+  //   try (Connection c = …; Statement s = c.createStatement()) { s.executeQuery(q); }
+  //
+  // A resource is a `resource` node under `resource_specification`, and it holds
+  // its type and name directly — there is no `variable_declarator` child — so
+  // the loop above never sees it. Without an entry here the receiver type stays
+  // `null`, the class-scoped `Statement.executeQuery` sink cannot match, and the
+  // call degrades to the generic `external_taint_escape` fallback: the sink is
+  // still reported, but as CWE-668 instead of CWE-89. That is the idiomatic JDBC
+  // form and the shape most real Spring code uses.
+  const resourceDecls = getNodesFromCache(tree.rootNode, 'resource', cache);
+  for (const res of resourceDecls) {
+    const typeNode = res.childForFieldName('type');
+    const nameNode = res.childForFieldName('name');
+    if (typeNode && nameNode) {
+      context.localVarTypes.set(getNodeText(nameNode), getNodeText(typeNode));
+    }
+  }
+
   // Collect imports — map simple class name to FQN
   const imports = getNodesFromCache(tree.rootNode, 'import_declaration', cache);
   for (const imp of imports) {
