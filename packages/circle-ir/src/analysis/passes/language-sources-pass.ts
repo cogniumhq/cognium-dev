@@ -1282,7 +1282,24 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   if (language !== 'csharp') return [];
   const sources: TaintSource[] = [];
   const lines = sourceCode.split('\n');
-  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+  // cognium-dev#359 — a `using` declaration binds a local exactly like a
+  // plain one, so it must be scanned for request reads too:
+  //
+  //   var       ms = new MemoryStream(Convert.FromBase64String(Request.Query["b"]));  // bound
+  //   using var ms = new MemoryStream(Convert.FromBase64String(Request.Query["b"]));  // was NOT
+  //   using (var ms = …)                                                             // was NOT
+  //
+  // Without the binding there is no source at all, so the CWE-502 on the
+  // following `Deserialize(ms)` went silent — and `generateFindings` then
+  // attached that sink to whatever source the file did carry, which is how
+  // cognium-ai saw a sink in one action reported against a `Request.Query`
+  // read in a different one. `using` is the idiomatic form for a disposable,
+  // which is exactly what a `MemoryStream` / `StreamReader` carrying a payload
+  // is, so this shape is the common case rather than an edge case. Same class
+  // of defect as #350 (Java try-with-resources): a resource-declaration syntax
+  // the scanner never looked at.
+  const assignRe =
+    /^\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
   const requestReadRe =
     /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
   // Console/stdin reads bind their LHS too (dominant source shape in the NIST
