@@ -16,6 +16,10 @@
 
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
+import {
+  DOM_ASSIGNMENT_SINK_METHODS,
+  isProvablyLiteralExpression,
+} from '../literal-expression.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
@@ -2212,6 +2216,16 @@ function findPythonReflectionInvocationSinks(
   return sinks;
 }
 
+/**
+ * cognium-dev#358 — the assignment RHS on this line, if it is provably built
+ * from string literals alone. See `isProvablyLiteralExpression`.
+ */
+function isProvablyLiteralDomAssignment(line: string): boolean {
+  const eq = line.indexOf('=');
+  if (eq < 0) return false;
+  return isProvablyLiteralExpression(line.slice(eq + 1));
+}
+
 function findJavaScriptDOMSinks(sourceCode: string, language: string): Array<{
   type: string; cwe: string; severity: string; line: number; location: string; method?: string;
 }> {
@@ -2233,6 +2247,16 @@ function findJavaScriptDOMSinks(sourceCode: string, language: string): Array<{
         else if (line.includes('.href')) method = 'href';
         else if (line.includes('.cssText')) method = 'cssText';
         else if (line.includes('style.textContent')) method = 'textContent';
+
+        // cognium-dev#358 — a DOM assignment whose RHS is provably literal
+        // carries no attack surface. Assignment-shaped sinks only; the call
+        // shapes below have their own argument guards.
+        if (
+          DOM_ASSIGNMENT_SINK_METHODS.has(method) &&
+          isProvablyLiteralDomAssignment(line)
+        ) {
+          continue;
+        }
 
         // cognium-dev #239 C.4 — `document.write("static")` and
         // `document.writeln("static")` with a single string-literal
