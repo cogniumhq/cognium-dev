@@ -5,6 +5,7 @@
  */
 
 import type { ArgumentInfo, CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
+import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
@@ -1632,6 +1633,60 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
   return sourceLines.some(l => decl.test(l));
 }
 
+/**
+ * cognium-dev#358 — is this argument a NAMED reference to a function declared
+ * in this file? `setTimeout(connect, delay)` is the same benign shape as
+ * `setTimeout(() => connect(), delay)`, but `isFunctionCallbackArgument` only
+ * recognises the inline forms (it drives off expression text starting with
+ * `(` or `function`), so a bare identifier fell through and the CWE-94 sink
+ * was emitted — then paired with a method parameter to produce a
+ * code_injection finding on a reconnect timer.
+ *
+ * Resolves the identifier against file-level declarations, the same text-level
+ * technique `isRegexReceiver` (#310) uses for regex receivers. Only a bare
+ * identifier qualifies, and only when a matching declaration is visible; an
+ * identifier with no function-shaped declaration anywhere keeps the sink,
+ * because a string-valued variable (`setTimeout(userCode, 0)`) is the genuine
+ * implicit-eval shape.
+ *
+ * KNOWN LIMITATION, measured rather than assumed. The lookup is FILE-WIDE and
+ * unscoped, so any declaration of that name anywhere suppresses the sink —
+ * including an unrelated one. In minified code that is close to
+ * unconditional: the corpus differential for #358 dropped three sinks in
+ * vendored minified bundles (`dat.gui.min.js` ×2, `raphael-min.js`) where the
+ * argument was actually a callback *parameter*, and the declarations that
+ * satisfied this test were unrelated same-letter bindings — `function a(c)`,
+ * `var a=function(a,d)`, `function e()`. Those three drops are correct
+ * (`defer:function(a){setTimeout(a,0)}` and a requestAnimationFrame polyfill
+ * are not code injection), but they are correct by accident.
+ *
+ * The residual recall cost is a string-valued variable that shares its name
+ * with a function declaration in the same file — real shadowing. That is
+ * accepted deliberately: the alternative fires on every idiomatic
+ * `setTimeout(callbackParam, 0)`, which is what #358 reported. Scoping the
+ * lookup to the enclosing function would remove the accident; it needs scope
+ * information this text-level check does not have.
+ */
+function isDeclaredFunctionReference(
+  arg: ArgumentInfo,
+  sourceLines?: string[],
+): boolean {
+  if (arg.literal !== null && arg.literal !== undefined) return false;
+  if (!sourceLines) return false;
+  const name = (arg.expression ?? '').trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return false;
+  const n = escapeRe(name);
+  const decls = [
+    // function connect() {}   /   async function connect() {}
+    new RegExp(`\\bfunction\\s+${n}\\s*\\(`),
+    // const connect = () => / function / async () =>
+    new RegExp(
+      `\\b(?:const|let|var)\\s+${n}\\s*=\\s*(?:async\\s+)?(?:function\\b|\\(|[A-Za-z_$][\\w$]*\\s*=>)`,
+    ),
+  ];
+  return sourceLines.some(l => decls.some(re => re.test(l)));
+}
+
 function isFunctionCallbackArgument(arg: ArgumentInfo): boolean {
   // A string literal sets `literal` to the unquoted value — definitively
   // NOT a function literal.
@@ -2117,7 +2172,11 @@ function findSinks(
             call.method_name === 'setImmediate')
         ) {
           const firstArg = call.arguments.find(a => a.position === 0);
-          if (firstArg && isFunctionCallbackArgument(firstArg)) {
+          if (
+            firstArg &&
+            (isFunctionCallbackArgument(firstArg) ||
+              isDeclaredFunctionReference(firstArg, sourceLines))
+          ) {
             continue;
           }
         }
@@ -2128,8 +2187,34 @@ function findSinks(
         // literal (`/re/.exec(x)`), a `new RegExp(...)` expression, or a
         // variable bound to either in this file is a pattern match, not a
         // shell. Scoped to JS/TS so Java `Runtime.exec` is untouched.
+        // cognium-dev#358 — a DOM assignment whose right-hand side is
+        // provably literal is not an xss sink. The JS extractor emits a
+        // synthetic CallInfo for `el.innerHTML = <rhs>`, which matches the
+        // configured `innerHTML` method sink, so a fully static assignment
+        // was reported and then paired with whatever source the file carried.
+        // `cssText` came only from the line scan in LanguageSourcesPass and so
+        // was fixed there; `innerHTML` has BOTH paths and needs both guards.
         if (
-          pattern.type === 'command_injection' &&
+          pattern.type === 'xss' &&
+          (language === 'javascript' || language === 'typescript') &&
+          DOM_ASSIGNMENT_SINK_METHODS.has(call.method_name) &&
+          call.arguments.length > 0
+        ) {
+          const rhs = call.arguments.find(a => a.position === 0);
+          if (rhs && isProvablyLiteralExpression(rhs.expression ?? '')) {
+            continue;
+          }
+        }
+
+        // cognium-dev#358 extends this to `sql_injection`: the JS/TS
+        // `Connection.exec` CWE-89 entry carries `allow_unresolved_receiver`,
+        // and a regex literal IS an unresolved receiver, so `/re/.exec(url)`
+        // matched as a SQL execute. Same receiver test, both sink types — the
+        // command_injection half was fixed in #310 and the SQL half was left,
+        // which is why cognium-ai saw the CWE-78 row disappear and the CWE-89
+        // row stay.
+        if (
+          (pattern.type === 'command_injection' || pattern.type === 'sql_injection') &&
           call.method_name === 'exec' &&
           (language === 'javascript' || language === 'typescript') &&
           isRegexReceiver(call.receiver, sourceLines)
