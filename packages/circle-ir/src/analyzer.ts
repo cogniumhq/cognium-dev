@@ -251,6 +251,29 @@ export interface AnalyzerOptions {
   crossFileBudgetMs?: number;
 
   /**
+   * Wall-clock budget (ms) for the PER-FILE phase of `analyzeProject`
+   * (cognium-dev#366). `0` or omitted disables it — no behaviour change for
+   * existing callers.
+   *
+   * `crossFileBudgetMs` bounds only step 2. On a large multi-module repo the
+   * dominant cost is step 1: measured on `geoserver/geoserver`, 8029 Java
+   * files take ~67s of per-file analysis versus ~28s of cross-file work, and
+   * `apache/nifi` (5435 files) is ~59s versus ~14s. Both complete, but
+   * unbounded — and because the work is synchronous, a consumer's
+   * `Promise.race` timeout cannot interrupt it, so a repo that merely exceeds
+   * the consumer's deadline is indistinguishable from a hang and has to be
+   * killed from outside the process.
+   *
+   * When the budget is spent, the remaining files are skipped, everything
+   * analysed so far is kept (including cross-file analysis over that subset),
+   * and `ProjectAnalysis.per_file_budget_exceeded` is set. Callers that need
+   * a complete result should raise the budget rather than treat truncation as
+   * success — the flag exists so partial results are never mistaken for a
+   * clean scan.
+   */
+  perFileBudgetMs?: number;
+
+  /**
    * Defensive per-file finding cap (#142).
    *
    * A single file producing more than this many findings is treated as a
@@ -1570,7 +1593,24 @@ export async function analyzeProject(
   const sourceLinesByFile = new Map<string, string[]>();
 
   // 1. Per-file analysis
+  //    #366 — optional wall-clock bound. The check is between files, which is
+  //    the only interruption point available without threads: `analyze()` is
+  //    synchronous once entered. That is sufficient here because no single
+  //    file is the problem — on nifi's 5435 files not one exceeded 3s; the
+  //    cost is the aggregate.
+  const perFileBudgetMs = options.perFileBudgetMs ?? 0;
+  const perFileStart = Date.now();
+  let perFileBudgetExceeded = false;
   for (const { code, filePath, language } of files) {
+    if (perFileBudgetMs > 0 && Date.now() - perFileStart > perFileBudgetMs) {
+      perFileBudgetExceeded = true;
+      logger.warn('analyzeProject: per-file budget exceeded, skipping remaining files', {
+        analysed: fileAnalyses.length,
+        total: files.length,
+        budgetMs: perFileBudgetMs,
+      });
+      break;
+    }
     const ir = await analyze(code, filePath, language, options);
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
@@ -1660,6 +1700,9 @@ export async function analyzeProject(
   };
   if (crossFileResult.budgetExceeded) {
     projectAnalysis.cross_file_budget_exceeded = true;
+  }
+  if (perFileBudgetExceeded) {
+    projectAnalysis.per_file_budget_exceeded = true;
   }
   return projectAnalysis;
 }

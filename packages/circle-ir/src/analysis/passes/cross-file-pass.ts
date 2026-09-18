@@ -70,7 +70,10 @@ export class CrossFilePass {
     // --- 1. Cross-file taint flows → TaintPath[] ----------------------------
     const phase1Start = Date.now();
     logger.debug('cross-file: phase 1/4 starting (findCrossFileTaintFlows)');
-    const flows = resolver.findCrossFileTaintFlows();
+    const flows = resolver.findCrossFileTaintFlows(budgetExceeded);
+    // #366 — phase 1 can now stop mid-walk, so the flag has to be set here
+    // too; previously `exceeded` could only become true at a phase boundary.
+    let phase1Truncated = budgetExceeded();
     logger.info('cross-file: phase 1/4 done', {
       flows: flows.length,
       elapsedMs: Date.now() - phase1Start,
@@ -140,7 +143,7 @@ export class CrossFilePass {
     // Phases 2-4 are individually budget-gated so a pathological 3rd phase
     // (e.g. quadratic aliasing on a large Java monorepo) cannot block
     // delivery of phase-1/2 taint paths. See #141 / 3.89.0 CHANGELOG.
-    let exceeded = false;
+    let exceeded = phase1Truncated;
     const ipPaths: InterproceduralTaintPath[] = [];
 
     if (budgetExceeded()) {
@@ -151,7 +154,7 @@ export class CrossFilePass {
     } else {
       const phase2Start = Date.now();
       logger.debug('cross-file: phase 2/4 starting (findInterproceduralTaintPaths)');
-      const phase2 = resolver.findInterproceduralTaintPaths();
+      const phase2 = resolver.findInterproceduralTaintPaths(budgetExceeded);
       ipPaths.push(...phase2);
       logger.info('cross-file: phase 2/4 done', {
         paths: phase2.length, elapsedMs: Date.now() - phase2Start,
@@ -166,7 +169,7 @@ export class CrossFilePass {
     } else if (!exceeded) {
       const phase3Start = Date.now();
       logger.debug('cross-file: phase 3/4 starting (findFieldBindingTaintPaths)');
-      const phase3 = resolver.findFieldBindingTaintPaths();
+      const phase3 = resolver.findFieldBindingTaintPaths(budgetExceeded);
       ipPaths.push(...phase3);
       logger.info('cross-file: phase 3/4 done', {
         paths: phase3.length, elapsedMs: Date.now() - phase3Start,
