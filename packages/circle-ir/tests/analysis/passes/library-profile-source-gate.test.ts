@@ -98,7 +98,7 @@ function src(type: SourceType, line: number): TaintSource {
 // Drop behaviour under library/* profile
 // ---------------------------------------------------------------------------
 
-describe('LibraryProfileSourceGatePass — library/* drops speculative sources', () => {
+describe('LibraryProfileSourceGatePass — library/* COUNTS speculative sources without removing them (#288 option A)', () => {
   it('TP-1: library/production drops interprocedural_param', () => {
     const { result, remaining } = runGate(
       [src('interprocedural_param', 5)],
@@ -106,9 +106,9 @@ describe('LibraryProfileSourceGatePass — library/* drops speculative sources',
     );
     expect(result.applied).toBe(true);
     expect(result.profile).toBe('library/production');
-    expect(result.dropped).toBe(1);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(result.droppedByType.interprocedural_param).toBe(1);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).not.toHaveLength(0); // sources survive under option A
   });
 
   it('TP-2: library/dev drops constructor_field', () => {
@@ -117,9 +117,9 @@ describe('LibraryProfileSourceGatePass — library/* drops speculative sources',
       'library/dev',
     );
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(1);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(result.droppedByType.constructor_field).toBe(1);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).not.toHaveLength(0); // sources survive under option A
   });
 
   it('TP-3: library/production drops both speculative types together', () => {
@@ -132,10 +132,10 @@ describe('LibraryProfileSourceGatePass — library/* drops speculative sources',
       'library/production',
     );
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(3);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(result.droppedByType.interprocedural_param).toBe(2);
     expect(result.droppedByType.constructor_field).toBe(1);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).not.toHaveLength(0); // sources survive under option A
   });
 
   it('TP-4: library/benchmark still triggers gate', () => {
@@ -144,7 +144,7 @@ describe('LibraryProfileSourceGatePass — library/* drops speculative sources',
       'library/benchmark',
     );
     expect(result.applied).toBe(true);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).not.toHaveLength(0); // sources survive under option A
   });
 
   it('TP-5: library/test still triggers gate', () => {
@@ -153,7 +153,7 @@ describe('LibraryProfileSourceGatePass — library/* drops speculative sources',
       'library/test',
     );
     expect(result.applied).toBe(true);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).not.toHaveLength(0); // sources survive under option A
   });
 });
 
@@ -168,7 +168,7 @@ describe('LibraryProfileSourceGatePass — concrete sources are preserved', () =
       'library/production',
     );
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(0);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(remaining).toHaveLength(1);
     expect(remaining[0].type).toBe('http_param');
   });
@@ -181,11 +181,11 @@ describe('LibraryProfileSourceGatePass — concrete sources are preserved', () =
     ];
     const { result, remaining } = runGate(sources, 'library/production');
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(0);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(remaining).toHaveLength(3);
   });
 
-  it('TN-3: mixed list — speculative dropped, concrete kept', () => {
+  it('TN-3: mixed list — every source survives, speculative ones are counted', () => {
     const sources = [
       src('http_param', 1),
       src('interprocedural_param', 2),
@@ -194,9 +194,14 @@ describe('LibraryProfileSourceGatePass — concrete sources are preserved', () =
     ];
     const { result, remaining } = runGate(sources, 'library/production');
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(2);
-    expect(remaining).toHaveLength(2);
-    expect(remaining.map((s) => s.type).sort()).toEqual(['db_input', 'http_param']);
+    expect(result.dropped).toBe(0); // option A: counted, not removed
+    expect(remaining).toHaveLength(4);
+    expect(remaining.map((s) => s.type).sort()).toEqual([
+      'constructor_field', 'db_input', 'http_param', 'interprocedural_param',
+    ]);
+    // the judgement is still reported, just not enacted by deletion
+    expect(result.droppedByType.interprocedural_param).toBe(1);
+    expect(result.droppedByType.constructor_field).toBe(1);
   });
 });
 
@@ -211,7 +216,7 @@ describe('LibraryProfileSourceGatePass — non-library profiles are no-ops', () 
       'application/production',
     );
     expect(result.applied).toBe(false);
-    expect(result.dropped).toBe(0);
+    expect(result.dropped).toBe(0); // #288 option A: counted, not removed
     expect(remaining).toHaveLength(1);
   });
 
@@ -272,13 +277,13 @@ describe('LibraryProfileSourceGatePass — empty inputs', () => {
     const { result, remaining } = runGate([], 'library/production');
     expect(result.applied).toBe(true);
     expect(result.dropped).toBe(0);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).toHaveLength(0); // empty in, empty out
   });
 
   it('empty source list under absent profile returns applied=false', () => {
     const { result, remaining } = runGate([], undefined);
     expect(result.applied).toBe(false);
     expect(result.dropped).toBe(0);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).toHaveLength(0); // empty in, empty out
   });
 });

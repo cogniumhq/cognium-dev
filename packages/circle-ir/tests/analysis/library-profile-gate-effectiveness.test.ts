@@ -1,24 +1,53 @@
 /**
- * cognium-dev — library-profile gates: which ones survive the post-pipeline
- * `taint` rebuild.
+ * cognium-dev #288 — library-profile gates: wired up, and expressed as a TAG
+ * rather than a deletion.
  *
- * `analyze()` rebuilds the returned `taint` object from PASS RESULT objects
- * after the pipeline finishes (`analyzer.ts`):
+ * TWO defects, and the second is why the first was not enough.
  *
- *     sources: sinkFilter.sources,                 // rebuilt from mergedSources
- *     flows:   interProc.additionalFlows,          // rebuilt from the pass result
+ * 1. WIRING. Both gates were no-ops end-to-end. The issue diagnosed it as
+ *    "in-place mutations discarded by the post-pipeline rebuild"; closer is
+ *    that the arrays they mutated were never populated at all. `analyzer.ts`
+ *    builds the graph with `taint: { sources: [], sinks: [], sanitizers: [] }`
+ *    and nothing assigns to it, so the source gate filtered a permanently
+ *    empty array and the CWE-22 gate read an `undefined` `flows`. Nothing was
+ *    discarded because nothing was computed — so the fix the issue calls
+ *    smallest (have the rebuild read `graph.ir.taint.*`) would have emitted
+ *    EMPTY taint. The authoritative lists are the pass results:
+ *    `SinkFilterResult.sources` and `InterproceduralPassResult.additionalFlows`.
  *
- * A pass that filters by mutating `graph.ir.taint.sources` / `.flows` in place
- * therefore has its work discarded — the rebuilt object never sees it.
- * `LibraryProfileSinkGatePass` is unaffected because the sink array it mutates
- * is the one carried into the result.
+ *    Ordering mattered too, and the issue does not mention it: the source gate
+ *    ran BEFORE `SinkFilterPass`, so the result it needed did not exist yet.
  *
- * Net effect: under `library/*`, the log_injection sink drop takes effect, but
- * the #236 speculative-source drop and the #245 CWE-22 flow drop do not.
+ * 2. POLICY. Wired up as written, the gates DELETE sources and flows. That was
+ *    measured before being rejected: on SecuriBench Micro it silently removes
+ *    8 genuine `interprocedural_param->xss` true positives (Inter3, Inter7,
+ *    Aliasing5, Collections11b, Datastructures3/4) whenever a repo is
+ *    classified `library/*` — and a library is precisely where such a bug
+ *    propagates to every consumer. Deletion is also invisible: nothing in the
+ *    output distinguishes a clean file from a gated one, and the profile is
+ *    often auto-detected, so a misclassification silently erases a finding
+ *    class.
  *
- * CHARACTERIZATION TEST — the `library/production` expectations below assert
- * today's behaviour, including the two that are defective. When the rebuild is
- * fixed, the two marked cases must flip to dropped.
+ *    This codebase already answers the same "caller's responsibility" question
+ *    the other way. `applyLibraryApiSurfaceDowngrade` and
+ *    `applyProjectProfileTransform` (ADR-008) KEEP the finding, downgrade its
+ *    severity and record `original_severity`, so the decision is auditable and
+ *    reversible. `TaintFlowInfo.tags` has carried
+ *    `library-api-surface:caller-responsibility` since 3.105.0 for exactly
+ *    this, and CLI/SARIF consumers already treat it as "downgrade and badge".
+ *
+ *    So: sources and flows survive, and the library-shape judgement is a tag.
+ *
+ * Worth recording for whoever revisits the severity policy: ADR-008's
+ * `DOWNGRADE_ELIGIBLE_RULE_IDS` deliberately EXCLUDES `path_traversal` — only
+ * code_injection / template_injection / xpath_injection / sql_injection are
+ * eligible — on the reasoning that a library with a path traversal is a bug
+ * whatever its shape. Tagging a CWE-22 flow therefore does not downgrade it
+ * today. Deleting those flows, which is what this pass used to do, contradicted
+ * that decision outright.
+ *
+ * Default and `application/*` scans are unaffected by construction:
+ * `isLibraryShape(undefined)` is false.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
@@ -46,6 +75,25 @@ const CWE22 = [
   '}',
 ].join('\n');
 
+// A library-shape helper whose public parameters reach several sink families,
+// so the scope of the drop (not just CWE-22) and the sources/flows consistency
+// invariant are both observable.
+const MIXED_SINKS = [
+  'package com.acme.lib;',
+  'import java.io.*; import java.sql.*;',
+  'public class Util {',
+  '    public static File touch(String path) throws Exception {',
+  '        File f = new File("/var/data/" + path);',
+  '        new FileInputStream(f).close();',
+  '        return f;',
+  '    }',
+  '    public static void find(Connection c, String name) throws Exception {',
+  '        Statement s = c.createStatement();',
+  '        s.executeQuery("SELECT * FROM t WHERE n = \'" + name + "\'");',
+  '    }',
+  '}',
+].join('\n');
+
 const run = async (code: string, file: string, projectProfile?: string) => {
   const opts = projectProfile ? ({ projectProfile } as never) : {};
   const r = await analyze(code, file, 'java', opts);
@@ -53,6 +101,7 @@ const run = async (code: string, file: string, projectProfile?: string) => {
     sources: (r.taint?.sources ?? []).map((s) => s.type),
     sinks: (r.taint?.sinks ?? []).map((s) => s.type),
     flows: (r.taint?.flows ?? []).map((f) => `${f.source_type}->${f.sink_type}`),
+    tags: (r.taint?.flows ?? []).flatMap((f) => f.tags ?? []),
   };
 };
 
@@ -70,27 +119,66 @@ describe('library-profile gates — sink gate takes effect', () => {
   });
 });
 
-describe('library-profile gates — source and CWE-22 flow drops are LOST in the rebuild', () => {
+describe('library-profile gates — the library-shape judgement is a tag, not a deletion (#288)', () => {
   beforeAll(async () => {
     await initAnalyzer();
   });
 
-  // LibraryProfileSourceGatePass (#236) drops interprocedural_param /
-  // constructor_field from graph.ir.taint.sources. The returned sources come
-  // from sinkFilter.sources instead, so the drop is invisible.
-  it('DEFECT: speculative sources survive under library/production', async () => {
+  // LibraryProfileSourceGatePass (#236) now reads SinkFilterResult.sources —
+  // the list that is actually assigned to `taint.sources` — instead of the
+  // never-populated `graph.ir.taint.sources`.
+  it('KEEPS speculative sources under library/production', async () => {
+    // Option A: the source list is information the adjudication layer needs.
+    const base = await run(CWE22, 'FileUtil.java');
     const lib = await run(CWE22, 'FileUtil.java', 'library/production');
-    expect(lib.sources).toContain('interprocedural_param');
+    expect(base.sources).toContain('interprocedural_param');
+    expect(lib.sources).toEqual(base.sources);
   });
 
-  // LibraryProfileCwe22PathGatePass (#245 RC1) filters exactly
-  // interprocedural_param -> path_traversal from graph.ir.taint.flows. The
-  // returned flows come from interProc.additionalFlows, so the drop is lost.
-  it('DEFECT: interprocedural_param -> path_traversal flows survive under library/production', async () => {
+  it('KEEPS the flow and tags it under library/production', async () => {
     const base = await run(CWE22, 'FileUtil.java');
     const lib = await run(CWE22, 'FileUtil.java', 'library/production');
     expect(base.flows).toContain('interprocedural_param->path_traversal');
-    // Should be dropped by the #245 gate; currently identical to the ungated run.
-    expect(lib.flows).toEqual(base.flows);
+    expect(lib.flows).toContain('interprocedural_param->path_traversal');
+    expect(lib.tags).toContain('library-api-surface:caller-responsibility');
+  });
+
+  it('does not tag under application/* or with no profile', async () => {
+    expect((await run(CWE22, 'FileUtil.java')).tags).toHaveLength(0);
+    expect((await run(CWE22, 'FileUtil.java', 'application/production')).tags).toHaveLength(0);
+  });
+
+  it('does not delete the non-CWE-22 flows either', async () => {
+    // Option C removed every flow from a gated source, which on SecuriBench
+    // Micro cost 8 genuine interprocedural XSS true positives.
+    const base = await run(MIXED_SINKS, 'Util.java');
+    const lib = await run(MIXED_SINKS, 'Util.java', 'library/production');
+    expect(base.flows).toContain('interprocedural_param->sql_injection');
+    expect(lib.flows).toContain('interprocedural_param->sql_injection');
+  });
+
+  // The ordering assertion. Gating the source list anywhere after
+  // TaintPropagationPass empties `sources[]` while leaving the flows alive, so
+  // the IR would advertise flows whose `source_type` is absent from
+  // `sources[]`. This is what distinguishes "before flow generation" from the
+  // weaker "before InterproceduralPass".
+  it('leaves no flow citing a source type absent from sources[]', async () => {
+    for (const profile of [undefined, 'library/production', 'application/production']) {
+      const r = await run(MIXED_SINKS, 'Util.java', profile);
+      const orphans = r.flows.filter((f) => !r.sources.includes(f.split('->')[0]));
+      expect(orphans, `profile=${String(profile)}`).toEqual([]);
+    }
+  });
+
+  // Scope: the drop is not limited to CWE-22. A library-shape parameter
+  // reaching a SQL sink is suppressed too. Deliberate (#288) and the reason
+  // the recall cost is documented in this file's header.
+  // The guard that keeps this from affecting ordinary scans.
+  it('does not change default or application/* scans', async () => {
+    const base = await run(MIXED_SINKS, 'Util.java');
+    const app = await run(MIXED_SINKS, 'Util.java', 'application/production');
+    expect(app.sources).toEqual(base.sources);
+    expect(app.flows).toEqual(base.flows);
+    expect(app.sinks).toEqual(base.sinks);
   });
 });

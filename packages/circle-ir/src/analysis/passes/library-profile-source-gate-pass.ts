@@ -55,7 +55,8 @@
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
-import type { ProjectProfile, SourceType } from '../../types/index.js';
+import type { ProjectProfile, SourceType, TaintSource } from '../../types/index.js';
+import type { SinkFilterResult } from './sink-filter-pass.js';
 
 /**
  * Source types eligible for the library-profile drop. These are the
@@ -123,7 +124,19 @@ export class LibraryProfileSourceGatePass
       };
     }
 
-    const sources = graph.ir.taint.sources;
+    // cognium-dev#288 — read the AUTHORITATIVE source list, mirroring the
+    // fetch pattern `LibraryProfileSinkGatePass` already uses and proves.
+    //
+    // `graph.ir.taint.sources` is NOT that list: `analyzer.ts` constructs the
+    // graph with `taint: { sources: [], sinks: [], sanitizers: [] }` and
+    // nothing ever populates it, so this pass used to filter a permanently
+    // empty array and report `dropped: 0` on every run. The list that both
+    // `InterproceduralPass` and the final `taint` rebuild consume is
+    // `SinkFilterResult.sources`. The fallback keeps the stand-alone unit
+    // tests working, which build an IR by hand and never run SinkFilterPass.
+    const sources: TaintSource[] = ctx.hasResult('sink-filter')
+      ? ctx.getResult<SinkFilterResult>('sink-filter').sources
+      : graph.ir.taint.sources;
     if (sources.length === 0) {
       return {
         profile,
@@ -133,24 +146,35 @@ export class LibraryProfileSourceGatePass
       };
     }
 
+    // cognium-dev#288 (option A) — COUNT, do not delete.
+    //
+    // This pass used to splice the speculative sources out of the authoritative
+    // list. Deleting them destroys information the downstream adjudication
+    // layer needs and is invisible in the output: a consumer cannot tell a
+    // clean file from a gated one, and `@cognium/project-profile-detect` can
+    // misclassify a repo as a library. It is also inconsistent with how this
+    // codebase already answers the same "caller's responsibility" question —
+    // `applyLibraryApiSurfaceDowngrade` and `applyProjectProfileTransform`
+    // (ADR-008) TAG a finding and downgrade its severity while keeping it,
+    // recording `original_severity` so the decision is auditable and
+    // reversible.
+    //
+    // So the sources survive and the signal is carried on the FLOWS instead,
+    // via the `library-api-surface:caller-responsibility` tag that
+    // `TaintFlowInfo.tags` has existed for since 3.105.0. The count is still
+    // reported for diagnostics.
     const droppedByType: Partial<Record<SourceType, number>> = {};
-    const kept = [];
     for (const src of sources) {
       if (SPECULATIVE_SOURCE_TYPES.has(src.type)) {
         droppedByType[src.type] = (droppedByType[src.type] ?? 0) + 1;
-        continue;
       }
-      kept.push(src);
     }
+    const dropped = 0;
 
-    const dropped = sources.length - kept.length;
-
-    // Mutate the array in place so downstream passes see the
-    // filtered list. Every existing pass reads `graph.ir.taint.sources`
-    // by reference.
-    sources.length = 0;
-    sources.push(...kept);
-
+    // No mutation: `sources` is handed to `TaintPropagationPass` and
+    // `InterproceduralPass` and assigned to `taint.sources` by the rebuild.
+    // Leaving it intact is the point of option A — the sources/flows stay and
+    // the library-shape judgement is expressed as a tag, not a deletion.
     return {
       profile,
       applied: true,

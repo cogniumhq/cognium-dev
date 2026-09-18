@@ -391,31 +391,33 @@ function flow(
   };
 }
 
-describe('LibraryProfileCwe22PathGatePass — CWE-22 speculative-source drops', () => {
-  it('CWE22-1: library/production drops path_traversal + interprocedural_param flow', () => {
+describe('LibraryProfileCwe22PathGatePass — CWE-22 speculative-source flows are TAGGED, not dropped (#288 option A)', () => {
+  it('CWE22-1: library/production tags a path_traversal + interprocedural_param flow', () => {
     const { result, remaining } = runCwe22Gate(
       [flow('interprocedural_param', 'path_traversal')],
       'library/production',
     );
     expect(result.applied).toBe(true);
     expect(result.profile).toBe('library/production');
-    expect(result.dropped).toBe(1);
+    expect(result.dropped).toBe(1); // reports how many were TAGGED
     expect(result.droppedBySourceType.interprocedural_param).toBe(1);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).toHaveLength(1); // the flow survives
+    expect(remaining[0].tags).toContain('library-api-surface:caller-responsibility');
   });
 
-  it('CWE22-2: library/production drops path_traversal + constructor_field flow', () => {
+  it('CWE22-2: library/production tags a path_traversal + constructor_field flow', () => {
     const { result, remaining } = runCwe22Gate(
       [flow('constructor_field', 'path_traversal')],
       'library/production',
     );
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(1);
+    expect(result.dropped).toBe(1); // reports how many were TAGGED
     expect(result.droppedBySourceType.constructor_field).toBe(1);
-    expect(remaining).toHaveLength(0);
+    expect(remaining).toHaveLength(1); // the flow survives
+    expect(remaining[0].tags).toContain('library-api-surface:caller-responsibility');
   });
 
-  it('CWE22-3: library/sample drops both speculative source shapes in mixed list', () => {
+  it('CWE22-3: library/sample tags both speculative source shapes in a mixed list', () => {
     const flows = [
       flow('interprocedural_param', 'path_traversal', 10),
       flow('constructor_field', 'path_traversal', 20),
@@ -423,11 +425,17 @@ describe('LibraryProfileCwe22PathGatePass — CWE-22 speculative-source drops', 
     ];
     const { result, remaining } = runCwe22Gate(flows, 'library/sample');
     expect(result.applied).toBe(true);
-    expect(result.dropped).toBe(2);
+    expect(result.dropped).toBe(2); // reports how many were TAGGED
     expect(result.droppedBySourceType.interprocedural_param).toBe(1);
     expect(result.droppedBySourceType.constructor_field).toBe(1);
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].source_type).toBe('http_param');
+    // all three survive; only the two speculative ones are tagged
+    expect(remaining).toHaveLength(3);
+    const TAG = 'library-api-surface:caller-responsibility';
+    const tagged = remaining.filter((f) => f.tags?.includes(TAG)).map((f) => f.source_type).sort();
+    expect(tagged).toEqual(['constructor_field', 'interprocedural_param']);
+    const untagged = remaining.filter((f) => !f.tags?.includes(TAG));
+    expect(untagged).toHaveLength(1);
+    expect(untagged[0].source_type).toBe('http_param'); // genuine source, untouched
   });
 
   it('CWE22-4: library/production preserves path_traversal + http_param (genuine)', () => {
