@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.15] - 2026-09-18
+
+### Consumer Impact
+
+Finding counts move in **both directions**; a rescan against an existing baseline will show
+movement that is not a regression:
+
+- **Fewer** `code_injection` / `xss` / `sql_injection` findings from three JS/TS sink-shape
+  misclassifications (#358). Measured: 3 removed across juice-shop and nodegoat, all in
+  vendored minified bundles, 0 added.
+- **New** `deserialization` (CWE-502) findings in C#: a `using` declaration now binds a
+  taint source, so payloads carried through a disposable are reported (#359).
+- **No finding change** from #366 unless you opt in to the new `perFileBudgetMs`.
+
+### Added
+
+- **`AnalyzerOptions.perFileBudgetMs` + `ProjectAnalysis.per_file_budget_exceeded`
+  (#366).** A wall-clock bound on `analyzeProject`'s per-file phase, which is the dominant
+  cost on large multi-module repos (measured: 59s of nifi's 73s, 67s of geoserver's 95s).
+  Defaults to `0` = off, so no existing caller changes behaviour. When the budget is spent
+  the remaining files are skipped, everything analysed so far is kept — including cross-file
+  analysis over that subset — and the flag is set so a truncated scan cannot be reported as
+  a clean one.
+
+  Consumers scanning large repos behind their own timeout should set this. `analyze()` is
+  synchronous once entered, so a caller's `Promise.race` cannot interrupt it; without a
+  budget a repo that merely exceeds the caller's deadline has to be killed from outside the
+  process, which looks indistinguishable from a hang.
+
+### Fixed
+
+- **Three JS/TS sink shapes were mispaired into findings (#358).** Reported together but
+  three independent defects, all reaching users through `generateFindings` — two produce no
+  `taint.flows` entry at all, so they were invisible to flow-based checks.
+  `setTimeout(connect, delay)` reported `code_injection`: the #152/#188 guard exempts only
+  *inline* arrows and function expressions, so a NAMED callback reference fell through.
+  A fully literal DOM assignment (`el.innerHTML = 'a' + 'b'`, `el.style.cssText = …`)
+  reported `xss`; this needed two guards, because `cssText` comes only from the line scan
+  while `innerHTML` also matches the configured method sink via the synthetic CallInfo the
+  JS extractor emits for `el.innerHTML = <rhs>`. And `/re/.exec(url)` reported
+  `sql_injection`, because the JS/TS `Connection.exec` CWE-89 entry carries
+  `allow_unresolved_receiver` and a regex literal is an unresolved receiver — #310 fixed the
+  `command_injection` twin and left this one. Each shape keeps its true positive:
+  `setTimeout("doThing("+code+")")`, `el.innerHTML = '<div>' + label`, and
+  `db.exec("SELECT …" + name)` all still fire.
+
+  Known limitation, found by the corpus differential and pinned by a test: the callback
+  lookup is file-wide and unscoped, so an unrelated same-named function declaration
+  suppresses the sink. The residual cost is real shadowing — a string-valued local sharing a
+  name with a function declaration. Accepted, because the alternative fires on every
+  idiomatic `setTimeout(callbackParam, 0)`.
+
+- **C#: a `using` declaration bound no taint source (#359).** `findCSharpRequestSources`
+  allowed an optional `var` or a type name before the variable but not a leading `using`, so
+  `using var ms = new MemoryStream(Convert.FromBase64String(Request.Query["b"]))` — and even
+  the bare `using var s = Request.Query["b"]` — bound nothing, and the CWE-502 on the
+  following `Deserialize(ms)` went silent. `using (…)` and `await using` are covered too.
+  Same class of defect as #350 (Java try-with-resources): a resource-declaration syntax the
+  scanner never looked at, and the idiomatic form for exactly the disposables that carry a
+  payload.
+
+  This also fixes the cross-method mis-attribution reported alongside it, which was a
+  consequence: with no source bound in the first action, `generateFindings` attached the sink
+  to the only source the file had — a request read in a *different* action. The primary
+  `source.line` is now the read in the same action, backed by a real DFG flow.
+
+- **`crossFileBudgetMs` did not bound work within a phase (#366).** It was evaluated only
+  *between* the four cross-file sub-phases, so a single phase ran unbounded and the
+  documented "bounded" contract did not hold. The deadline is now threaded into the three
+  project-wide walks in `resolution/cross-file.ts` and checked in their outer per-file
+  loops. On nifi a 50ms budget truncates 7643 paths to 632 and reports `budgetExceeded`;
+  previously that walk could not be interrupted at all.
+
 ## [4.9.14] - 2026-09-14
 
 ### Consumer Impact
