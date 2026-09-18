@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.16] - 2026-09-18
+
+### Changed
+- Adopts `circle-ir@4.9.16`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+
+Inherits the new `trust_boundary` (CWE-501) findings from `circle-ir@4.9.16` on Python code
+writing untrusted data into a Flask session (#363). Purely additive — 17 findings added on
+OWASP BenchmarkPython, all on genuinely vulnerable files, none removed.
+
 ## [4.9.15] - 2026-09-18
 
 ### Changed
