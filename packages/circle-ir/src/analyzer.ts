@@ -909,8 +909,6 @@ export async function analyze(
   // other `interprocedural_param → *` flows are never emitted. Reads
   // `graph.ir.meta.projectProfile` (populated in 3.150.1 via #235).
   // No-op when profile is absent, `'unknown'`, or non-library shape.
-  if (!disabledPasses.has('library-profile-source-gate'))
-    pipeline.add(new LibraryProfileSourceGatePass());
   // cognium-dev #241 Java: scan MyBatis @Select/@Update/@Insert/@Delete
   // annotation bodies for `${varname}` interpolation and emit synthetic
   // `sql_injection` sinks on the call sites of the annotated Mapper
@@ -978,6 +976,23 @@ export async function analyze(
   // Tier 2 cohort (cognium-ai#189 §3, 2026-07).
   if (!disabledPasses.has('library-profile-xss-gate'))
     pipeline.add(new LibraryProfileXssGatePass());
+  // cognium-dev #236 / #288: under `library/*`, drop the speculative
+  // `interprocedural_param` / `constructor_field` sources.
+  //
+  // Ordering is load-bearing in BOTH directions:
+  //   - AFTER `SinkFilterPass`, because the authoritative source list is that
+  //     pass's result. `graph.ir.taint.sources` is never populated (the graph
+  //     is constructed with empty taint arrays), so the original registration
+  //     ahead of `SinkFilterPass` filtered an empty array and did nothing.
+  //   - BEFORE `TaintPropagationPass`, because that is where flows are
+  //     generated from `SinkFilterResult.sources`. Gating any later leaves
+  //     flows alive that cite a source type no longer present in `sources[]`.
+  //     Placing it before `InterproceduralPass` is NOT sufficient — the flows
+  //     already exist by then. (#288)
+  // No-op when profile is absent, `'unknown'`, or non-library shape.
+  if (!disabledPasses.has('library-profile-source-gate'))
+    pipeline.add(new LibraryProfileSourceGatePass());
+
   pipeline.add(new TaintPropagationPass());
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,

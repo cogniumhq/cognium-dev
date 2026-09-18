@@ -70,6 +70,8 @@
  */
 
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
+import type { InterproceduralPassResult } from './interprocedural-pass.js';
+import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import type { ProjectProfile, SinkType, SourceType, TaintFlowInfo, TaintSink } from '../../types/index.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 
@@ -240,9 +242,22 @@ export class LibraryProfileCwe22PathGatePass
       };
     }
 
-    // `TaintPropagationPass` / `InterproceduralPass` populate
-    // `graph.ir.taint.flows`. Nothing to filter if no flow ever ran.
-    const flows = graph.ir.taint.flows;
+    // cognium-dev#288 — the authoritative flow list is
+    // `InterproceduralPassResult.additionalFlows`, which is what the
+    // post-pipeline rebuild assigns to `taint.flows`. The comment here used to
+    // claim `TaintPropagationPass` / `InterproceduralPass` populate
+    // `graph.ir.taint.flows`; they do not — nothing ever assigns it, so this
+    // pass read `undefined` and returned early on every run.
+    //
+    // With the source gate now effective BEFORE flow generation (#288), no
+    // flow from a gated source should reach this point at all. That makes this
+    // a genuine belt-and-suspenders net rather than the primary mechanism —
+    // but it is wired correctly now, so if a new flow-producing path ever
+    // bypasses the source list it will still be caught instead of silently
+    // doing nothing.
+    const flows: TaintFlowInfo[] | undefined = ctx.hasResult('interprocedural')
+      ? ctx.getResult<InterproceduralPassResult>('interprocedural').additionalFlows
+      : graph.ir.taint.flows;
     if (!flows || flows.length === 0) {
       return {
         profile,
@@ -252,8 +267,30 @@ export class LibraryProfileCwe22PathGatePass
       };
     }
 
+    // cognium-dev#288 (option A) — TAG, do not delete.
+    //
+    // Previously this spliced matching flows out of the list. A flow removed
+    // here is unrecoverable downstream: the finding simply never exists, with
+    // nothing in the output to say a library-shape judgement was applied. That
+    // is the wrong default for the deterministic layer, whose job is to expose
+    // signals for adjudication (CLAUDE.md), and it is inconsistent with
+    // ADR-008, which keeps such findings and downgrades them.
+    //
+    // `TaintFlowInfo.tags` exists for exactly this (3.105.0): the
+    // `library-api-surface:caller-responsibility` tag is already understood by
+    // CLI/SARIF consumers as "downgrade and badge". So the flow survives,
+    // carrying the reason it was judged speculative.
+    //
+    // Note for whoever revisits the policy: ADR-008's
+    // `DOWNGRADE_ELIGIBLE_RULE_IDS` deliberately EXCLUDES `path_traversal`
+    // (only code_injection / template_injection / xpath_injection /
+    // sql_injection are eligible), on the reasoning that a library with a path
+    // traversal is a bug whatever its shape. So tagging a CWE-22 flow does not
+    // downgrade it under `applyProjectProfileTransform` today — the tag is
+    // carried, and the severity policy stays where ADR-008 put it. Deleting
+    // these flows, as this pass used to, contradicted that decision outright.
     const droppedBySourceType: Partial<Record<SourceType, number>> = {};
-    const kept: TaintFlowInfo[] = [];
+    let tagged = 0;
     for (const flow of flows) {
       if (
         flow.sink_type === 'path_traversal' &&
@@ -261,19 +298,17 @@ export class LibraryProfileCwe22PathGatePass
       ) {
         droppedBySourceType[flow.source_type] =
           (droppedBySourceType[flow.source_type] ?? 0) + 1;
-        continue;
+        const tags = flow.tags ?? [];
+        if (!tags.includes(LIBRARY_API_SURFACE_TAG)) {
+          flow.tags = [...tags, LIBRARY_API_SURFACE_TAG];
+        }
+        tagged++;
       }
-      kept.push(flow);
     }
 
-    const dropped = flows.length - kept.length;
-
-    // Mutate the flow array in place so downstream consumers
-    // (`CrossFilePass`, SARIF writer) see the filtered list.
-    if (dropped > 0) {
-      flows.length = 0;
-      flows.push(...kept);
-    }
+    // `dropped` keeps its name for result-shape compatibility but now reports
+    // how many flows were TAGGED; none are removed.
+    const dropped = tagged;
 
     return {
       profile,
