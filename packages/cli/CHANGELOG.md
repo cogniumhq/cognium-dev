@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.15] - 2026-09-18
+
+### Changed
+- Adopts `circle-ir@4.9.15`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+
+Inherits the finding-count changes in `circle-ir@4.9.15`, which move in **both** directions:
+fewer `code_injection` / `xss` / `sql_injection` from three JS/TS sink-shape
+misclassifications (#358), and **new** C# CWE-502 findings where a `using` declaration now
+binds a taint source (#359). A rescan against an existing baseline will show movement that
+is not a regression; see the `circle-ir` changelog for the measured numbers.
+
 ## [4.9.14] - 2026-09-14
 
 ### Changed
