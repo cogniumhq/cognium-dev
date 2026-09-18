@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -145,6 +145,61 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             path: [
               { variable: src.variable ?? 'session_key', line: src.line, type: 'source' as const },
               { variable: src.variable ?? 'session_key', line: v.sinkLine, type: 'sink' as const },
+            ],
+            confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
+            sanitized: false,
+          });
+        }
+      }
+    }
+
+    // Supplement: Python return-XSS (CWE-79) flows — cognium-dev#368.
+    //
+    // Same wiring gap as #363, on a different detector. `LanguageSourcesPass`
+    // synthesises an `xss` sink for `return f"<div>{taint}</div>"` and
+    // `return "<div>" + taint`, but that sink has no `method` and no
+    // arguments, so no argument matcher can connect a source to it — the sink
+    // was reported while `taint.flows` stayed empty. Returning interpolated
+    // request data from a Flask view is real reflected XSS (a `str` return
+    // gets `text/html`), so the flow belongs here.
+    //
+    // Sanitizer-aware by construction: the registered Python escapers
+    // (`html.escape`, `markupsafe.escape`, `flask.escape`, …) are detected ON
+    // the return line, so `return f"<div>{html.escape(p)}</div>"` carries an
+    // xss-covering sanitizer at the sink line and is skipped. Without that
+    // check this would trade a false-negative class for a worse
+    // false-positive one.
+    if (ctx.language === 'python' && typeof ctx.code === 'string') {
+      const pyTainted = buildPythonTaintedVars(ctx.code);
+      if (pyTainted.size > 0) {
+        const xssSanitizerLines = sanitizers
+          .filter(sa => sa.sanitizes.includes('xss'))
+          .map(sa => sa.line);
+        for (const rx of findPythonReturnXSSSinks(ctx.code, pyTainted)) {
+          if (constProp.unreachableLines.has(rx.sinkLine)) continue;
+          const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === 'xss');
+          if (!sink) continue;
+          const src = sources
+            .filter(sc => sc.line <= rx.sinkLine)
+            .sort((a, b) => b.line - a.line)[0];
+          if (!src) continue;
+          // An xss-covering sanitizer anywhere on the source -> sink range
+          // suppresses the flow. Checking only the SINK line is not enough:
+          // `n = int(request.args.get('n','0'))` sanitises on the source line
+          // and renders on the next (#100.2), and that case passed before only
+          // because no flow existed at all. Deliberately coarse — for an
+          // additive emitter the safe direction is to emit fewer flows, so an
+          // unrelated in-range sanitizer costs a missed finding rather than a
+          // false positive.
+          if (xssSanitizerLines.some(l => l >= src.line && l <= rx.sinkLine)) continue;
+          pushIfNew({
+            source_line: src.line,
+            sink_line: rx.sinkLine,
+            source_type: src.type,
+            sink_type: 'xss',
+            path: [
+              { variable: src.variable ?? 'response', line: src.line, type: 'source' as const },
+              { variable: src.variable ?? 'response', line: rx.sinkLine, type: 'sink' as const },
             ],
             confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
             sanitized: false,

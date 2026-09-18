@@ -2121,7 +2121,7 @@ function isSafeJinjaReturnExpr(expr: string): boolean {
   return JINJA_SAFE_RTS_RE.test(trimmed) || JINJA_SAFE_TEMPLATE_RE.test(trimmed);
 }
 
-function findPythonReturnXSSSinks(
+export function findPythonReturnXSSSinks(
   sourceCode: string,
   taintedVars: Map<string, number>
 ): Array<{ sinkLine: number }> {
