@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -104,6 +104,54 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       flows.push(f);
       return true;
     };
+
+    // Supplement: Python trust-boundary (CWE-501) flows — cognium-dev#363.
+    //
+    // `LanguageSourcesPass` detects `session[<tainted>] = …` and synthesises a
+    // `trust_boundary` sink for it, but that sink has no `method` and no
+    // arguments because a subscript assignment is not a call. Every flow
+    // builder here matches a source against a sink's ARGUMENTS, so nothing
+    // could ever connect to it: the sink was reported while `taint.flows`
+    // stayed empty, which is why OWASP BenchmarkPython scores the whole
+    // `trustbound` category 0% — its runner (correctly, post-#265) requires an
+    // unsanitised flow of the expected type rather than source+sink
+    // co-occurrence.
+    //
+    // The detector already computes both ends of the flow, so emit it here
+    // rather than teaching the argument matchers about subscript assignment.
+    // Reuses the exported detector so the sink and the flow can never disagree
+    // about what qualifies.
+    if (ctx.language === 'python' && typeof ctx.code === 'string') {
+      const pyTainted = buildPythonTaintedVars(ctx.code);
+      if (pyTainted.size > 0) {
+        for (const v of findPythonTrustBoundaryViolations(ctx.code, pyTainted)) {
+          const sink = sinks.find(sk => sk.line === v.sinkLine && sk.type === 'trust_boundary');
+          if (!sink) continue;
+          // Prefer a real registered source on the detector's line; fall back
+          // to any source at or before it, so a derived tainted var (whose
+          // origin line is the read, not the assignment) still resolves.
+          const src =
+            sources.find(sc => sc.line === v.sourceLine) ??
+            sources
+              .filter(sc => sc.line <= v.sinkLine)
+              .sort((a, b) => b.line - a.line)[0];
+          if (!src) continue;
+          if (constProp.unreachableLines.has(v.sinkLine)) continue;
+          pushIfNew({
+            source_line: src.line,
+            sink_line: v.sinkLine,
+            source_type: src.type,
+            sink_type: 'trust_boundary',
+            path: [
+              { variable: src.variable ?? 'session_key', line: src.line, type: 'source' as const },
+              { variable: src.variable ?? 'session_key', line: v.sinkLine, type: 'sink' as const },
+            ],
+            confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
+            sanitized: false,
+          });
+        }
+      }
+    }
 
     // Supplement: array element flows
     // Sprint 82 (#189) — dedup keys on (source_line, sink_line, sink_type) so
