@@ -50,12 +50,24 @@ function walk(dir: string, out: string[] = []): string[] {
 async function loadEngine(srcDir: string) {
   const analyzer = await import(join(srcDir, 'analyzer.ts'));
   const parser = await import(join(srcDir, 'core', 'parser.ts'));
+  // cognium-dev#361/#372 — the scorer historically snapshotted `taint.flows`
+  // only, which made every scan-path precision change a zero-delta: findings
+  // reach users through `generateFindings` and `ir.findings`, and a change
+  // there is invisible to a flow-only signature. `--surface` opts in.
+  let generateFindings: ((...a: any[]) => any[]) | null = null;
+  try {
+    const mod = await import(join(srcDir, 'analysis', 'findings.ts'));
+    generateFindings = mod.generateFindings ?? null;
+  } catch { /* older trees may not export it; flows-only still works */ }
   const wasmDir = resolve(srcDir, '..', 'wasm');
   const lp: Record<string, string> = {};
   for (const l of ['bash', 'go', 'java', 'javascript', 'python', 'rust', 'html', 'csharp', 'tsx']) lp[l] = join(wasmDir, `tree-sitter-${l}.wasm`);
   lp.typescript = join(wasmDir, 'tree-sitter-typescript.wasm');
   await parser.initParser({ wasmPath: join(REPO, 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm'), languagePaths: lp });
-  return analyzer.analyze as (code: string, file: string, lang: string) => Promise<any>;
+  return {
+    analyze: analyzer.analyze as (code: string, file: string, lang: string) => Promise<any>,
+    generateFindings,
+  };
 }
 
 function readExpected(csv: string): Map<string, boolean> {
@@ -83,7 +95,16 @@ if (cmd === 'pretree') {
   const filter = opt('--filter') ? new RegExp(opt('--filter')!) : null;
   const limit = opt('--limit') ? Number(opt('--limit')) : Infinity;
   const timeoutMs = opt('--timeout-ms') ? Number(opt('--timeout-ms')) : 60_000;
-  const analyze = await loadEngine(srcDir);
+  // `--surface flows|findings|both` (default `flows`, so existing baselines
+  // stay comparable). `findings` adds `F:<type>@<source_line>-><line>` rows
+  // from `generateFindings`, which is the surface the scan path and CLI
+  // report from — see #372 for how far the surfaces can diverge.
+  const surface = (opt('--surface') ?? 'flows') as 'flows' | 'findings' | 'both';
+  if (!['flows', 'findings', 'both'].includes(surface)) throw new Error(`--surface must be flows|findings|both`);
+  const { analyze, generateFindings } = await loadEngine(srcDir);
+  if (surface !== 'flows' && !generateFindings) {
+    throw new Error(`--surface ${surface} needs generateFindings, which this tree does not export`);
+  }
   let files = walk(resolve(corpus)).sort();
   if (filter) files = files.filter(f => filter.test(f));
   files = files.slice(0, limit);
@@ -98,7 +119,27 @@ if (cmd === 'pretree') {
         new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`TIMEOUT>${timeoutMs}ms`)), timeoutMs); }),
       ]).finally(() => clearTimeout(timer));
       const sigs = new Set<string>();
-      for (const fl of ir?.taint?.flows ?? []) sigs.add(`${fl.sink_type}@${fl.source_line}->${fl.sink_line}`);
+      if (surface === 'flows' || surface === 'both') {
+        for (const fl of ir?.taint?.flows ?? []) sigs.add(`${fl.sink_type}@${fl.source_line}->${fl.sink_line}`);
+      }
+      if (surface === 'findings' || surface === 'both') {
+        // Prefixed `F:` so a findings row can never be mistaken for a flow row
+        // when both surfaces are captured, and so an old flows-only baseline
+        // diffed against a `both` snapshot shows the findings rows as ADDED
+        // rather than silently colliding.
+        const fs = generateFindings!(
+          ir?.taint?.sources ?? [],
+          ir?.taint?.sinks ?? [],
+          ir?.dfg ?? { defs: [], uses: [] },
+          f,
+          readFileSync(f, 'utf8'),
+          EXT[extname(f)],
+          ir?.taint?.sanitizers ?? [],
+        );
+        for (const fd of fs ?? []) {
+          sigs.add(`F:${fd.type}@${fd.source?.line ?? '?'}->${fd.line}`);
+        }
+      }
       result[rel] = [...sigs].sort();
     } catch (e) {
       errors++;
@@ -108,14 +149,24 @@ if (cmd === 'pretree') {
     }
     if ((i + 1) % 250 === 0) console.error(`  ${i + 1}/${files.length} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
   }
-  writeFileSync(outFile, JSON.stringify({ src: srcDir, corpus: resolve(corpus), files: files.length, errors, result }, null, 1));
+  writeFileSync(outFile, JSON.stringify({ src: srcDir, corpus: resolve(corpus), surface, files: files.length, errors, result }, null, 1));
   const total = Object.values(result).reduce((n, s) => n + s.length, 0);
   console.log(`snapshot: ${files.length} files, ${total} signatures, ${errors} errors, ${((Date.now() - t0) / 1000).toFixed(0)}s → ${outFile}`);
 } else if (cmd === 'diff') {
   const [beforeF, afterF] = positional;
   if (!beforeF || !afterF) throw new Error('usage: diff <before.json> <after.json> [--expected csv] [--allow regex]');
-  const before = JSON.parse(readFileSync(beforeF, 'utf8')).result as Record<string, string[]>;
-  const after = JSON.parse(readFileSync(afterF, 'utf8')).result as Record<string, string[]>;
+  const beforeDoc = JSON.parse(readFileSync(beforeF, 'utf8'));
+  const afterDoc = JSON.parse(readFileSync(afterF, 'utf8'));
+  // #372 — comparing a flows-only baseline against a findings snapshot would
+  // report every findings row as ADDED and read as a huge regression. Refuse
+  // rather than mislead.
+  const sBefore = beforeDoc.surface ?? 'flows';
+  const sAfter = afterDoc.surface ?? 'flows';
+  if (sBefore !== sAfter) {
+    throw new Error(`surface mismatch: before='${sBefore}' after='${sAfter}' — re-snapshot both with the same --surface`);
+  }
+  const before = beforeDoc.result as Record<string, string[]>;
+  const after = afterDoc.result as Record<string, string[]>;
   const expected = opt('--expected') ? readExpected(opt('--expected')!) : null;
   const allow = opt('--allow') ? new RegExp(opt('--allow')!) : null;
   let removed = 0, added = 0, tpLoss = 0, disallowed = 0, filesChanged = 0;
