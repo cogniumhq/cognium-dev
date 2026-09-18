@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.16] - 2026-09-18
+
+### Consumer Impact
+
+**New `trust_boundary` (CWE-501) findings on Python code** that writes untrusted data into a
+Flask session (#363). Purely additive — nothing is removed. Measured on OWASP
+BenchmarkPython: 17 findings added, **all 17 on files the benchmark marks as genuinely
+vulnerable**, no false positive added and no true positive lost. A baseline rescan of Python
+projects will show new criticals that are not a regression.
+
+### Fixed
+
+- **Python trust-boundary sinks produced no taint flow (#363).** `LanguageSourcesPass`
+  detects `session[<tainted>] = …` and synthesises a `trust_boundary` sink for it, but that
+  sink carries no `method` and no arguments — a subscript assignment is not a call — and
+  every flow builder matches a source against a sink's *arguments*. So nothing could connect
+  to it: the sink was reported while `taint.flows` stayed empty, for every case including the
+  trivial `flask.session[param] = '12345'`.
+
+  Any consumer that judges detection by an unsanitised flow of the expected sink type — the
+  correct thing to do, and what OWASP BenchmarkPython's runner does — therefore saw the
+  entire CWE-501 category as undetected, scoring it 0% with ~18 false negatives. After the
+  fix: **94.4% recall (TP=17, FN=1) at 0% FPR (FP=0, TN=19)**.
+
+  The detector already computed both ends of the flow, so the flow is emitted from it rather
+  than teaching the argument matchers about subscript assignment, reusing the same exported
+  detector so the sink and the flow cannot disagree about what qualifies.
+
+  One false negative remains and is not papered over: `BenchmarkTest00499`, where taint is on
+  the *value* side under a constant key and the intermediate variable's derivation is not
+  tracked by `buildPythonTaintedVars`.
+
+  Note the issue this fixes diagnosed it as "no CWE-501 sink model for Python". The model
+  exists and fires; the flow was the missing half.
+
 ## [4.9.15] - 2026-09-18
 
 ### Consumer Impact

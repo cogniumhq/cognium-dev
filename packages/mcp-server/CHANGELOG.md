@@ -4,6 +4,17 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-09-18
+
+### Changed
+- Adopts `circle-ir@4.9.16`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits the new `trust_boundary` (CWE-501) findings from `circle-ir@4.9.16` on Python code
+writing untrusted data into a Flask session (#363). Purely additive — 17 findings added on
+OWASP BenchmarkPython, all on genuinely vulnerable files, none removed.
+
 ## [0.1.8] - 2026-09-18
 
 ### Changed
