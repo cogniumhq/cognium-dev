@@ -1011,6 +1011,19 @@ export interface ProjectAnalysis {
    * Added in circle-ir 3.89.0 (mitigates #141 langchain4j hang).
    */
   cross_file_budget_exceeded?: boolean;
+  /**
+   * `true` when the PER-FILE phase of `analyzeProject` exceeded its wall-time
+   * budget (see `AnalyzerOptions.perFileBudgetMs`). When `true`, files were
+   * skipped: `files` covers only what was analysed, and every downstream
+   * result — findings, `taint_paths`, `cross_file_calls` — is over that subset
+   * only. A consumer must not report this as a clean scan.
+   *
+   * Distinct from `cross_file_budget_exceeded`, which means all files were
+   * analysed but the cross-file walks were cut short.
+   *
+   * Added in circle-ir 4.9.15 (cognium-dev#366).
+   */
+  per_file_budget_exceeded?: boolean;
 }
 
 export interface FileAnalysis {

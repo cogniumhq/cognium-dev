@@ -834,12 +834,29 @@ export class CrossFileResolver {
   /**
    * Find cross-file taint flows
    */
-  findCrossFileTaintFlows(): CrossFileTaintFlow[] {
+  /**
+   * Optional wall-clock deadline for the three project-wide walks
+   * (cognium-dev#366). Returns true once the caller's budget is spent.
+   *
+   * `CrossFilePass` already had a budget, but it was only evaluated BETWEEN
+   * phases, so a single phase ran unbounded and the documented "bounded"
+   * contract did not hold — which is what makes a large multi-module repo look
+   * like a sync hang to a consumer whose own `Promise.race` timeout cannot
+   * interrupt synchronous work. These walks are the O(F·T·M) ones called out
+   * at the top of this file, so the check goes in their OUTER per-file loops:
+   * frequent enough to bound the work, cheap enough not to matter (one
+   * `Date.now()` per file).
+   *
+   * When the deadline fires the walk returns what it has found so far, which
+   * is the pre-existing `budgetExceeded` semantic — partial results, kept.
+   */
+  findCrossFileTaintFlows(deadline?: () => boolean): CrossFileTaintFlow[] {
     const flows: CrossFileTaintFlow[] = [];
     // Deduplicate: same source + target sink should only emit one flow
     const seen = new Set<string>();
 
     for (const [filePath, ir] of this.fileIRs) {
+      if (deadline?.()) break;
       // Check each source in the file
       for (const source of ir.taint.sources) {
         // `interprocedural_param` sources represent "this method's parameter MIGHT be
@@ -985,7 +1002,7 @@ export class CrossFileResolver {
    *         `taintedParams` covers that position, emit one
    *         `InterproceduralTaintPath` per sink inside the callee body.
    */
-  findInterproceduralTaintPaths(): InterproceduralTaintPath[] {
+  findInterproceduralTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
     const paths: InterproceduralTaintPath[] = [];
     const seen = new Set<string>();
 
@@ -1007,6 +1024,7 @@ export class CrossFileResolver {
     const methodIndex = this.buildMethodIndex();
 
     for (const [callerFile, callerIR] of this.fileIRs) {
+      if (deadline?.()) break;   // cognium-dev#366 — bound the O(F·T·M) walk
       const callerIdx = this.getFileIndex(callerIR);
       for (const type of callerIR.types) {
         for (const method of type.methods) {
@@ -1191,7 +1209,7 @@ export class CrossFileResolver {
    *      tainted locals into cross-file callees whose `taintedParams` mark
    *      the arg position as sink-propagating.
    */
-  findFieldBindingTaintPaths(): InterproceduralTaintPath[] {
+  findFieldBindingTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
     const paths: InterproceduralTaintPath[] = [];
     const seen = new Set<string>();
     if (this.fieldTaintInfo.size === 0) return paths;
@@ -1200,6 +1218,7 @@ export class CrossFileResolver {
     const methodIndex = this.buildMethodIndex();
 
     for (const [callerFile, callerIR] of this.fileIRs) {
+      if (deadline?.()) break;   // cognium-dev#366 — bound the O(F·T·M) walk
       const callerIdx = this.getFileIndex(callerIR);
       for (const type of callerIR.types) {
         const callerTypeFqn = callerIR.meta.package
