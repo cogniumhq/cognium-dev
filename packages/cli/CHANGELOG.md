@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.18] - 2026-09-19
+
+### Fixed
+
+- **The CLI bundle shipped a stale engine for six releases (#383).**
+  `packages/cli/node_modules/circle-ir` was a physical install of circle-ir
+  **4.9.11** dated 2026-09-10, shadowing the root workspace symlink. `circle-ir`
+  is *bundled* into `dist/cli.js` rather than left external, so that copy — not
+  the exact pin in `package.json` — was the engine that shipped. Every
+  `cognium-dev` from **4.9.12 through 4.9.17 embedded circle-ir 4.9.11**.
+
+  Nothing in the pipeline could see it: `--version` reported the correct
+  version and build SHA, the dependency pin and published tarball were correct,
+  `package-lock.json` held only the right workspace symlink, all 147 CLI tests
+  passed (and still pass against the fresh engine), and clean rebuilds were
+  byte-identical. The stale copy is a valid install of a real published version,
+  so nothing looked broken. The likely origin is a `bun install` inside
+  `packages/cli`, which resolves a registry-published exact pin by downloading
+  it instead of linking the workspace sibling.
+
+  Fixes absent from the CLI until now: #302, #316, #308, #310, #311, #305,
+  #350, #351, #353, #358, #359, #363, #366, #368, #288, #374, #361/#372, and
+  the #281 severity re-tiering.
+
+- **`packages/cli/scripts/build.mjs` now fails the build** when the `circle-ir`
+  that would be bundled is not the workspace one. The check compares the
+  resolved **path**, not the version string: a downloaded copy of the matching
+  version number is still the wrong artifact, since it cannot contain anything
+  unreleased — which is the state during every release build.
+
+### Consumer Impact
+
+**`cognium-dev scan` gains every engine fix from circle-ir 4.9.12–4.9.17 at
+once.** This is a large, additive detection change for CLI users, and a rescan
+will surface findings that previous CLI versions could not see — none of it a
+regression. Notable shifts:
+
+- **Severities move upward** (#281): on SecuriBench, 152 of 175 medium findings
+  became high. Any baseline expressed as critical+high counts must be re-taken.
+- **New findings** on Go CWE-22 (#374), Python trust-boundary CWE-501 (#363)
+  and Python return-value XSS (#368), plus C# source shapes that previously
+  bound nothing (#359, #302, #308).
+- **Fewer false positives** from #350, #351, #353, #305, #310, #311.
+
+Measured on five reduced cases spanning Go and C#, the rebuilt CLI now matches
+the library surface exactly, where four of the five previously reported nothing.
+
+No CLI flags, output shapes or exit codes changed. `circle-ir` stays at 4.9.17
+(exact) — its published artifact was always correct; only the CLI's embedded
+copy was stale, so there is no engine change to publish alongside this.
+
 ## [4.9.17] - 2026-09-19
 
 ### Changed
