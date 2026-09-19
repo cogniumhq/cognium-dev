@@ -114,10 +114,10 @@ function resolveProvenance(srcDir: string) {
 function classify(
   before: Record<string, string[]>,
   after: Record<string, string[]>,
-  expected: Map<string, boolean> | null,
+  expected: Map<string, ExpectedRow> | null,
   allow: RegExp | null,
 ) {
-  let removed = 0, added = 0, tpLoss = 0, disallowed = 0, filesChanged = 0, reattributed = 0;
+  let removed = 0, added = 0, tpLoss = 0, disallowed = 0, filesChanged = 0, reattributed = 0, offCategory = 0;
   const rows: string[] = [];
   for (const file of new Set([...Object.keys(before), ...Object.keys(after)])) {
     const b = new Set(before[file] ?? []), a = new Set(after[file] ?? []);
@@ -125,8 +125,9 @@ function classify(
     if (!rem.length && !add.length) continue;
     filesChanged++;
     const name = basename(file).replace(/\.[^.]+$/, '');
-    const real = expected ? expected.get(name) : undefined;
-    const exp = real === undefined ? 'expected=?' : `expected=${real}`;
+    const row = expected ? expected.get(name) : undefined;
+    const real = row?.real;
+    const exp = row === undefined ? 'expected=?' : `expected=${row.real}${row.category ? `/${row.category}` : ''}`;
 
     // #380 — judge at the DETECTION key. A removal whose detection key
     // survives is the same finding with a corrected source line, not a lost
@@ -153,7 +154,14 @@ function classify(
         continue;
       }
       let tag = 'REMOVED';
-      if (real === true) { tag = 'TP-LOSS'; tpLoss++; }
+      // #386 — only a removal whose TYPE is the one this file tests can be a
+      // true-positive loss. An off-category removal is reported, loudly, but
+      // does not gate: the benchmark's own scorer does not count it either.
+      const onCategory = real === true && p.opaque === false
+        ? categoryAllows(row?.category ?? '', p.sinkType)
+        : real === true;
+      if (real === true && onCategory) { tag = 'TP-LOSS'; tpLoss++; }
+      else if (real === true) { tag = 'REMOVED-OFF-CATEGORY'; offCategory++; }
       else if (allow && !allow.test(sig)) { tag = 'REMOVED-OUTSIDE-ALLOW'; disallowed++; }
       else if (!allow) { tag = 'REMOVED-UNCLASSIFIED'; disallowed++; }
       rows.push(`${tag}\t${file}\t${sig}\t${exp}`);
@@ -168,7 +176,7 @@ function classify(
       rows.push(`ADDED\t${file}\t${sig}\t${exp}`);
     }
   }
-  return { rows, removed, added, tpLoss, disallowed, filesChanged, reattributed };
+  return { rows, removed, added, tpLoss, disallowed, filesChanged, reattributed, offCategory };
 }
 
 /**
@@ -248,14 +256,78 @@ async function loadEngine(srcDir: string) {
   };
 }
 
-function readExpected(csv: string): Map<string, boolean> {
-  const m = new Map<string, boolean>();
+/**
+ * OWASP / BenchmarkPython expected-results row: is the file a real
+ * vulnerability, and of WHICH category.
+ *
+ * The category used to be discarded — see `categoryAllows` for why keeping it
+ * matters.
+ */
+interface ExpectedRow { real: boolean; category: string }
+
+function readExpected(csv: string): Map<string, ExpectedRow> {
+  const m = new Map<string, ExpectedRow>();
   for (const line of readFileSync(csv, 'utf8').split('\n')) {
     if (!line || line.startsWith('#')) continue;
-    const [name, , real] = line.split(',').map(s => s.trim());
-    if (name) m.set(name, real === 'true');
+    const [name, category, real] = line.split(',').map(s => s.trim());
+    if (name) m.set(name, { real: real === 'true', category: category ?? '' });
   }
   return m;
+}
+
+/**
+ * Benchmark category → the `sink_type`s circle-ir emits for it.
+ *
+ * cognium-dev#386 — TP-LOSS used to be decided on the filename alone: any
+ * removal on a `real=true` file counted, whatever its type. But these corpora
+ * label each file with ONE tested category, and the engine legitimately emits
+ * other types on the same file. So removing an off-category finding scored as
+ * TP loss even though the tested vulnerability was untouched.
+ *
+ * Measured case that forced this: dropping `System.out.println` as an xss sink
+ * removed 243 signatures on OWASP Java across 135 files. The gate reported
+ * `tp_loss=173 GATE: FAIL`. Every one of those 243 was on a file whose tested
+ * category is `pathtraver`, and NONE on a file whose category is `xss` — the
+ * benchmark's own scorer, which is category-scoped, counts zero of them. Real
+ * TP loss was 0.
+ *
+ * That blind spot is not symmetrical with #380's: #380 was the SOURCE-LINE
+ * axis (attribution), this is the TYPE axis. Both made a correct change look
+ * like a regression, and neither could be told apart from a real one.
+ *
+ * An unknown category (not in this map) is treated as matching ANY type, so a
+ * corpus whose categories we have not mapped keeps the old, stricter
+ * behaviour rather than silently exempting removals.
+ */
+const CATEGORY_SINK_TYPES: Record<string, ReadonlySet<string>> = {
+  pathtraver: new Set(['path_traversal']),
+  cmdi: new Set(['command_injection']),
+  sqli: new Set(['sql_injection']),
+  xss: new Set(['xss']),
+  ldapi: new Set(['ldap_injection']),
+  xpathi: new Set(['xpath_injection']),
+  crypto: new Set(['weak_crypto']),
+  hash: new Set(['weak_hash']),
+  trustbound: new Set(['trust_boundary']),
+  securecookie: new Set(['insecure_cookie']),
+  weakrand: new Set(['weak_random']),
+  httprs: new Set(['http_response_splitting', 'crlf']),
+  // BenchmarkPython categories that differ in spelling from the Java set.
+  pathtraversal: new Set(['path_traversal']),
+  codeinj: new Set(['code_injection']),
+  deserialization: new Set(['insecure_deserialization']),
+  redirect: new Set(['open_redirect']),
+  ssrf: new Set(['ssrf']),
+  xxe: new Set(['xxe']),
+};
+
+/**
+ * Does `category` test for `sinkType`? Unknown categories allow everything,
+ * so we never get *less* strict by accident on an unmapped corpus.
+ */
+function categoryAllows(category: string, sinkType: string): boolean {
+  const types = CATEGORY_SINK_TYPES[category];
+  return types === undefined ? true : types.has(sinkType);
 }
 
 if (cmd === 'pretree') {
@@ -396,13 +468,14 @@ if (cmd === 'pretree') {
   const after = afterDoc.result as Record<string, string[]>;
   const expected = opt('--expected') ? readExpected(opt('--expected')!) : null;
   const allow = opt('--allow') ? new RegExp(opt('--allow')!) : null;
-  const { rows, removed, added, tpLoss, disallowed, filesChanged, reattributed } =
+  const { rows, removed, added, tpLoss, disallowed, filesChanged, reattributed, offCategory } =
     classify(before, after, expected, allow);
   const sasBefore = sourceAfterSink(before), sasAfter = sourceAfterSink(after);
   if (rows.length) console.log(rows.join('\n'));
   console.log(
     `\nsummary: files_changed=${filesChanged} removed=${removed} added=${added} ` +
-    `reattributed=${reattributed} tp_loss=${tpLoss} removed_outside_allow=${disallowed}`,
+    `reattributed=${reattributed} tp_loss=${tpLoss} off_category=${offCategory} ` +
+    `removed_outside_allow=${disallowed}`,
   );
   console.log(
     `detection-level: lost=${tpLoss + disallowed} (gated)  ` +
@@ -420,8 +493,10 @@ if (cmd === 'pretree') {
     if (cond) { console.log(`  ok   ${name}`); }
     else { console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); failures++; }
   };
-  const expTrue = new Map([['T', true]]);
-  const expFalse = new Map([['T', false]]);
+  // #386 — expected rows now carry the tested category. 'xss' here so the
+  // xss fixtures below are ON-category and keep gating as before.
+  const expTrue = new Map([['T', { real: true, category: 'xss' }]]);
+  const expFalse = new Map([['T', { real: false, category: 'xss' }]]);
 
   // 1. #380's defect: source line moves, detection preserved, file is a real
   //    vulnerability. Must be REATTRIBUTED and must NOT gate.
@@ -479,6 +554,27 @@ if (cmd === 'pretree') {
     const b = parseSig('ERROR:nope');
     check('parseSig reads the findings prefix', !a.opaque && a.prefix === 'F:' && a.sinkType === 'path_traversal' && a.sourceLine === 33 && a.sinkLine === 60);
     check('parseSig marks junk opaque', b.opaque === true);
+  }
+  // 11. #386 — an OFF-category removal on a real=true file is not TP loss.
+  //     This is the System.out-as-xss case: the file tests pathtraver, the
+  //     removed signature is xss, and OWASP's own scorer counts zero of them.
+  {
+    const expPath = new Map([['T', { real: true, category: 'pathtraver' }]]);
+    const r = classify({ 'T.java': ['xss@21->45'] }, { 'T.java': [] }, expPath, null);
+    check('off-category removal does not gate', r.tpLoss === 0 && r.offCategory === 1, `tpLoss=${r.tpLoss} offCategory=${r.offCategory}`);
+    check('off-category removal is still reported', r.rows.some(x => x.startsWith('REMOVED-OFF-CATEGORY')), r.rows.join(' | '));
+  }
+  // 12. The ON-category removal on the same corpus still gates.
+  {
+    const expPath = new Map([['T', { real: true, category: 'pathtraver' }]]);
+    const r = classify({ 'T.java': ['path_traversal@21->45'] }, { 'T.java': [] }, expPath, null);
+    check('on-category removal still gates', r.tpLoss === 1 && r.offCategory === 0, `tpLoss=${r.tpLoss}`);
+  }
+  // 13. An UNMAPPED category must not silently exempt anything.
+  {
+    const expUnknown = new Map([['T', { real: true, category: 'somethingnew' }]]);
+    const r = classify({ 'T.java': ['xss@21->45'] }, { 'T.java': [] }, expUnknown, null);
+    check('unknown category keeps the strict behaviour', r.tpLoss === 1, `tpLoss=${r.tpLoss}`);
   }
   console.log(failures === 0 ? '\nselftest: PASS' : `\nselftest: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
