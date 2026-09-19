@@ -252,6 +252,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findCSharpMinimalApiSources(code, language));
     additionalSources.push(...findGoArgvSources(code, language));
     additionalSources.push(...findGoArchiveEntrySources(code, language));
+    additionalSources.push(...findGoMultipartUploadSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -1344,6 +1345,80 @@ function findGoArchiveEntrySources(sourceCode: string, language: string): TaintS
     sources.push({
       type: 'file_input',
       location: `${lhs} derived from archive entry name ${matched}.Name (Zip/Tar Slip)`,
+      severity: 'high',
+      line: lineNumber,
+      confidence: 0.9,
+      variable: lhs,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Go multipart upload filenames — the dominant real-world CWE-22 source shape.
+ *
+ *   file, handler, err := r.FormFile("uploadfile")
+ *   f, err := os.OpenFile("./assets/img/"+handler.Filename, os.O_WRONLY, 0666)
+ *
+ * `handler.Filename` is attacker-controlled: it is whatever the client put in
+ * the multipart Content-Disposition header, and Go does NOT sanitise it (the
+ * stdlib docs say so explicitly). Concatenated into a path it is a textbook
+ * traversal.
+ *
+ * Found on `vulnerability-goapp/pkg/image/imageUploader.go:83`, where the
+ * `os.OpenFile` path_traversal sink now registers but produced no finding
+ * because nothing bound `handler` as a source — the sink half of #374 landed
+ * without its source half, so the flow count stayed at zero.
+ *
+ * The source is emitted on the FormFile line bound to the SECOND return value,
+ * because the tainted value is reached as `<handler>.Filename` inline inside
+ * the sink call rather than through an intermediate assignment. Variables
+ * later assigned from `<handler>.Filename` are bound too, for the shape that
+ * does go through a local.
+ */
+function findGoMultipartUploadSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!/\.\s*(?:FormFile|MultipartForm|MultipartReader)\b/.test(sourceCode)) return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  // 1. `file, handler, err := r.FormFile("field")` — bind the FileHeader.
+  const headerVars = new Set<string>();
+  const formFileRe =
+    /\b[A-Za-z_]\w*\s*,\s*([A-Za-z_]\w*)\s*(?:,\s*[A-Za-z_]\w*\s*)?:?=\s*[A-Za-z_][\w.]*\.\s*FormFile\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = formFileRe.exec(lines[i]);
+    if (!m) continue;
+    const v = m[1];
+    if (v === '_') continue;
+    headerVars.add(v);
+    sources.push({
+      type: 'http_param',
+      location: `${v}.Filename from r.FormFile (client-supplied upload filename)`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
+      variable: v,
+    });
+  }
+
+  // 2. `name := handler.Filename` — bind the local the filename lands in.
+  const assignRe = /^\s*(?:var\s+)?([A-Za-z_]\w*)\s*(?::?=|=)\s*(.+?)\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignRe.exec(lines[i]);
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    if (lhs === '_') continue;
+    let matched: string | null = null;
+    for (const v of headerVars) {
+      if (new RegExp(`(?<![\\w.])${v}\\s*\\.\\s*Filename\\b`).test(rhs)) { matched = v; break; }
+    }
+    if (!matched) continue;
+    const lineNumber = i + 1;
+    if (sources.some(sc => sc.line === lineNumber && sc.variable === lhs)) continue;
+    sources.push({
+      type: 'http_param',
+      location: `${lhs} derived from upload filename ${matched}.Filename`,
       severity: 'high',
       line: lineNumber,
       confidence: 0.9,
