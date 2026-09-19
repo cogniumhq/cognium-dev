@@ -236,6 +236,38 @@ const PROTOCOL_CLIENT_PACKAGES: readonly string[] = [
 const OS_EXEC_RECEIVER_RE =
   /\b(?:Runtime|ProcessBuilder|DefaultExecutor|Executor|Exec|Launcher|ProcStarter|ProcessExecutor|RuntimeUtil)\s*[.(]/;
 
+// Stage 15e — Java xss: `System.out` / `System.err` are not HTTP responses.
+// (cognium-dev#374 — Java over-prediction)
+//
+// The canonical Java xss sink set is class-scoped — `PrintWriter.println`,
+// `ServletOutputStream.println`, `WikiPrinter.println` — plus a CLASSLESS
+// `println` entry so an unresolved writer receiver is still caught.
+// `System.out.println(x)` / `System.err.println(x)` match that classless entry,
+// so every console print of a tainted value was reported as CWE-79.
+//
+// Stdout and stderr are not a browser context: no HTML document, no script
+// execution, no HTTP response. There is no reading under which this is XSS.
+//
+// WHY THIS IS A DROP AND NOT A RETYPE. CWE-117 (improper output neutralisation
+// for logs) would be a defensible label — container stdout is routinely shipped
+// to a log aggregator, where an unneutralised newline forges entries. But Java
+// `log_injection` is deliberately `Logger`-scoped (`info`/`warn`/`error`/…), and
+// extending it to `System.out` is a separate, ADDITIVE decision: console prints
+// are ubiquitous, so it would trade an xss flood for a log_injection flood of
+// the same cardinality and buy no localization improvement. Retyping was also
+// tried at the registry level and matched unpredictably — `System.err` missed
+// the new entry entirely while `PrintWriter.println` gained a spurious
+// `log_injection` alongside its correct xss. So these lines are now unflagged,
+// and the CWE-117 question is left to its own issue with its own measurement.
+//
+// This matters out of proportion to its subtlety because *every* Java class
+// prints. On the 500-repo vuln-localization benchmark Java emits ~306
+// security-typed findings per repo against ~8 genuinely vulnerable files, so the
+// real finding drowns and hit@3 collapses to 16% while recall stays at 79% —
+// a ranking failure caused by FP volume, not a detection gap.
+const JAVA_STDOUT_PRINT_RE =
+  /\bSystem\s*\.\s*(?:out|err)\s*\.\s*(?:println|print|printf|write|append)\s*\(/;
+
 // ---------------------------------------------------------------------------
 // Stage 11 — Java command_injection (CWE-78) FP reduction.
 // (cognium-dev #179 Sink 1 — Sprint 44)
@@ -1973,6 +2005,30 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // text/html signal keeps them (avoids dropping a real HTML response).
     if (language === 'java' && !HTML_CONTENT_TYPE_RE.test(ctx.code)) {
       filtered = filtered.filter(sink => !(sink.type === 'xss' && sink.method === 'body'));
+    }
+
+    // Stage 15e — Java xss on a `System.out` / `System.err` print. See
+    // JAVA_STDOUT_PRINT_RE above for why this is not CWE-79, and why it is a
+    // drop rather than a retype to CWE-117.
+    //
+    // Scoped three ways so the real XSS writers are untouched:
+    //   1. `xss` sinks only;
+    //   2. only sinks with NO resolved class — `sink.class` records which
+    //      pattern matched, so `undefined` means the classless `println` entry
+    //      caught it. `PrintWriter.println` / `ServletOutputStream.println`
+    //      resolve to their class and never reach this branch;
+    //   3. only when the sink's own line actually prints via System.out/err.
+    //
+    // Known limitation of (3): a single line carrying BOTH a System.out print
+    // and an unresolved real writer print would lose the latter. The sink
+    // carries no column, and every other stage here judges on line text, so
+    // this follows the existing convention rather than inventing a new one.
+    if (language === 'java') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss' || sink.class !== undefined) return true;
+        return !JAVA_STDOUT_PRINT_RE.test(sourceLines[sink.line - 1] ?? '');
+      });
     }
 
     // Stage 15d — Java path_traversal: `if (x.contains("..")) throw/return`
