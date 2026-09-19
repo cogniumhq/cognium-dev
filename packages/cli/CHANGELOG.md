@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.17] - 2026-09-19
+
+### Changed
+- Adopts `circle-ir@4.9.17`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+
+**New `path_traversal` (CWE-22) findings on Go code** (circle-ir #374) — additive. Go
+previously modelled only `os.Open` as a path sink; the write/delete side, Zip/Tar Slip, and
+the multipart upload-filename source were unmodelled. A baseline rescan of Go projects will
+show new findings that are not a regression.
+
+**`xss` flows on Python return-value sinks** (circle-ir #368) — also additive.
+
+The source-line attribution changes in circle-ir #361/#372 are **opt-in at the library
+level** and are not yet wired into the CLI, so `cognium-dev scan` output is unchanged by
+them. Sink lines and finding counts are unaffected either way.
+
 ## [4.9.16] - 2026-09-18
 
 ### Changed
