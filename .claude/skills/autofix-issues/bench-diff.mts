@@ -149,7 +149,28 @@ if (cmd === 'pretree') {
     }
     if ((i + 1) % 250 === 0) console.error(`  ${i + 1}/${files.length} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
   }
-  writeFileSync(outFile, JSON.stringify({ src: srcDir, corpus: resolve(corpus), surface, files: files.length, errors, result }, null, 1));
+  // Provenance — cognium-dev#377. A snapshot is only meaningful if you know
+  // WHICH code produced it, and the failure that motivates this is silent: a
+  // `post` snapshot taken from the working tree after a checkout/stash/rebase
+  // captures whatever HEAD happens to be, so base and post can be the same
+  // code and the diff reports a confident `added=0 removed=0`. That happened
+  // repeatedly while fixing #363 and #368 and nearly shipped a false result.
+  // Recording it makes the mistake visible in `diff` instead of invisible.
+  const provenance = (() => {
+    try {
+      const head = execSync('git rev-parse HEAD', { cwd: REPO, encoding: 'utf8' }).trim();
+      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: REPO, encoding: 'utf8' }).trim();
+      const dirty = execSync('git status --porcelain', { cwd: REPO, encoding: 'utf8' }).trim().length > 0;
+      // A `--src` pointing into a pretree is a materialised historical commit,
+      // so the repo's HEAD says nothing about it; flag which kind this is.
+      const fromPretree = /\/pre(tree)?\//.test(srcDir) || !srcDir.startsWith(join(REPO, 'packages'));
+      return { head, branch, dirty, from: fromPretree ? 'pretree' : 'working-tree' };
+    } catch { return null; }
+  })();
+  writeFileSync(outFile, JSON.stringify({ src: srcDir, corpus: resolve(corpus), surface, provenance, files: files.length, errors, result }, null, 1));
+  if (provenance) {
+    console.error(`  provenance: ${provenance.from} branch=${provenance.branch} head=${provenance.head.slice(0, 7)}${provenance.dirty ? ' DIRTY' : ''}`);
+  }
   const total = Object.values(result).reduce((n, s) => n + s.length, 0);
   console.log(`snapshot: ${files.length} files, ${total} signatures, ${errors} errors, ${((Date.now() - t0) / 1000).toFixed(0)}s → ${outFile}`);
 } else if (cmd === 'diff') {
@@ -164,6 +185,24 @@ if (cmd === 'pretree') {
   const sAfter = afterDoc.surface ?? 'flows';
   if (sBefore !== sAfter) {
     throw new Error(`surface mismatch: before='${sBefore}' after='${sAfter}' — re-snapshot both with the same --surface`);
+  }
+  // #377 — print what produced each side, and refuse the one comparison that
+  // is guaranteed to mislead: two working-tree snapshots from the same commit
+  // with neither dirty cannot contain a code difference, so a clean gate there
+  // means "I measured nothing", not "nothing changed".
+  const pv = (d: any) => d.provenance
+    ? `${d.provenance.from} ${d.provenance.branch}@${String(d.provenance.head).slice(0, 7)}${d.provenance.dirty ? ' DIRTY' : ''}`
+    : '(no provenance recorded)';
+  console.log(`before: ${pv(beforeDoc)}`);
+  console.log(`after:  ${pv(afterDoc)}`);
+  const pb = beforeDoc.provenance, pa = afterDoc.provenance;
+  if (pb && pa && pb.from === 'working-tree' && pa.from === 'working-tree'
+      && pb.head === pa.head && !pb.dirty && !pa.dirty) {
+    throw new Error(
+      `both snapshots came from the same clean commit (${String(pb.head).slice(0, 7)}) — ` +
+      `they cannot differ, so this diff would prove nothing. Re-snapshot the base from a ` +
+      `pretree (\`bench-diff pretree <ref> <dir>\`) or the post from the tree carrying the fix.`,
+    );
   }
   const before = beforeDoc.result as Record<string, string[]>;
   const after = afterDoc.result as Record<string, string[]>;
