@@ -135,6 +135,14 @@ if (cmd === 'pretree') {
           readFileSync(f, 'utf8'),
           EXT[extname(f)],
           ir?.taint?.sanitizers ?? [],
+          // #361 — method ranges for the proximity gate. Older trees have a
+          // 7-parameter `generateFindings` and simply ignore this, so a
+          // pretree base snapshot is unaffected.
+          ir?.types ?? [],
+          // #372 — flow-derived findings. Older trees take 8 parameters or
+          // fewer and ignore the extra argument, so pretree baselines stay
+          // valid.
+          ir?.taint?.flows ?? [],
         );
         for (const fd of fs ?? []) {
           sigs.add(`F:${fd.type}@${fd.source?.line ?? '?'}->${fd.line}`);
