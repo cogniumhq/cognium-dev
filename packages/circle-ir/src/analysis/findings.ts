@@ -16,6 +16,8 @@ import type {
   Finding,
   TaintHop,
   SinkType,
+  TypeInfo,
+  TaintFlowInfo,
 } from '../types/index.js';
 import {
   calculateSeverity as calcSeverity,
@@ -46,8 +48,15 @@ export function generateFindings(
   sourceCode?: string,
   language?: string,
   sanitizers: TaintSanitizer[] = [],
+  types: TypeInfo[] = [],
+  flows: TaintFlowInfo[] = [],
 ): Finding[] {
   const findings: Finding[] = [];
+  // cognium-dev#361 — method ranges for the proximity gate below. Optional and
+  // trailing: a caller that does not pass `types` keeps the pre-existing
+  // line-window behaviour exactly.
+  const methodRanges = buildMethodRanges(types);
+  const fieldNames = buildFieldNames(types);
   let findingId = 1;
 
   // cognium-dev: sanitizer-awareness for the scan path. Historically
@@ -131,7 +140,7 @@ export function generateFindings(
       // Try to find a path through the DFG
       const pathResult = findTaintPath(source, sink, dfg);
 
-      if (pathResult.pathExists || isProximityVulnerability(source, sink)) {
+      if (pathResult.pathExists || isProximityVulnerability(source, sink, methodRanges, fieldNames)) {
         // Drop the pair when a sanitizer covers the sink (at the sink line, or
         // on a reaching-def line feeding the sink var) — aligns the scan path
         // with taint.flows. No-op when the caller passed no sanitizers.
@@ -194,6 +203,69 @@ export function generateFindings(
         });
       }
     }
+  }
+
+  // cognium-dev#372 — emit findings for DFG-backed flows the source x sink
+  // pairing cannot reach.
+  //
+  // That loop iterates `sources`, and that list is not always the one
+  // `taint.flows` used. Measured on BenchmarkTest01193.py:
+  //
+  //     taint.sources = [interprocedural_param@21]   <- init()'s `app` param
+  //     taint.flows   = [http_param@42->45]          <- the real source
+  //
+  // So the only pair formable was 21 -> 45: right sink, wrong source, credited
+  // purely by the 50-line proximity window. Scoping proximity to the enclosing
+  // method (#361) correctly rejects that pair — and the finding then vanished
+  // instead of being re-attributed, because the real line-42 source is absent
+  // from `sources`. Measured cost of that alone: 433 file-level true positives
+  // (OWASP 305, BenchmarkPython 125, SecuriBench 3).
+  //
+  // A flow is the stronger signal: DFG-backed, already sanitizer-checked by the
+  // propagation layer, and carrying the correct source line. Pushed BEFORE the
+  // grouping below so it merges with any pair on the same (sink line, type) —
+  // and since the grouping keeps the highest-confidence source, a flow's
+  // correct attribution wins over a proximity guess rather than duplicating it.
+  for (const fl of flows) {
+    if (fl.sanitized) continue;
+    const sink = sinks.find(sk => sk.line === fl.sink_line && sk.type === fl.sink_type);
+    if (!sink) continue;
+    const src = sources.find(sc => sc.line === fl.source_line)
+      ?? { type: fl.source_type, location: `${fl.source_type} at line ${fl.source_line}`,
+           severity: 'high' as const, line: fl.source_line, confidence: fl.confidence };
+    const hops = (fl.path ?? []).map(st => ({ variable: st.variable, line: st.line, type: st.type }));
+    // PathResult needs `variables` too — `generateExplanation` reads it.
+    const pathResult: PathResult = {
+      pathExists: true,
+      hops: hops as never[],
+      variables: (fl.path ?? []).map(st => st.variable).filter(Boolean),
+    };
+    findings.push({
+      id: `vuln${findingId++}`,
+      type: sink.type,
+      cwe: sink.cwe,
+      severity: calcSeverity({
+        sourceType: fl.source_type,
+        sinkType: fl.sink_type,
+        pathExists: true,
+        confidence: fl.confidence,
+      }),
+      confidence: fl.confidence,
+      line: sink.line,
+      source: { type: fl.source_type, file: fileName, line: fl.source_line, code: src.location },
+      sink: { type: sink.type, file: fileName, line: sink.line, code: sink.location },
+      path: hops.length > 0 ? (hops as never[]) : undefined,
+      exploitable: fl.confidence > 0.7,
+      explanation: generateExplanation(src as TaintSource, sink, pathResult),
+      remediation: getRemediation(sink.type),
+      verification: {
+        graph_path_exists: true,
+        llm_verified: false,
+        llm_confidence: 0,
+        discoveryMethod: computeDiscoveryMethod(src as TaintSource, sink),
+      },
+      ...(fl.tags && fl.tags.length > 0 ? { tags: fl.tags } : {}),
+    } as Finding);
   }
 
   // Deduplicate: group by (sink.line, type), keep highest confidence,
@@ -530,9 +602,117 @@ function findPathThroughChains(
 /**
  * Check if source and sink are close enough to suggest vulnerability.
  */
-function isProximityVulnerability(source: TaintSource, sink: TaintSink): boolean {
-  // Within same method (roughly 50 lines for complex functions)
-  return Math.abs(source.line - sink.line) <= 50;
+/**
+ * Flat list of method line ranges, used to answer "are these two lines in the
+ * same method?" without trusting `in_method`, which is populated unevenly:
+ * Java sources carry it, Java SINKS do not, and C# carries it on neither
+ * (verified on both). `ir.types[].methods[]` has reliable `start_line` /
+ * `end_line` for every language that populates `types`.
+ */
+interface MethodRange { start: number; end: number; key: string }
+
+/**
+ * Names of every declared field across the file's types.
+ *
+ * A source that writes a FIELD is not scoped to the method that writes it —
+ * the taint lives on the object, so any other method can read it back. See
+ * `isProximityVulnerability` for why that exempts the pair from method
+ * scoping entirely.
+ */
+function buildFieldNames(types: TypeInfo[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of types ?? []) {
+    for (const f of t.fields ?? []) {
+      if (f?.name) out.add(f.name);
+    }
+  }
+  return out;
+}
+
+function buildMethodRanges(types: TypeInfo[]): MethodRange[] {
+  const out: MethodRange[] = [];
+  for (const t of types ?? []) {
+    for (const m of t.methods ?? []) {
+      if (typeof m.start_line !== 'number' || typeof m.end_line !== 'number') continue;
+      out.push({ start: m.start_line, end: m.end_line, key: `${t.name}.${m.name}` });
+    }
+  }
+  return out;
+}
+
+/** True when at least one known method range contains `line`. */
+function anyMethodContains(line: number, ranges: MethodRange[]): boolean {
+  return ranges.some((r) => line >= r.start && line <= r.end);
+}
+
+/**
+ * True when a SINGLE method range contains both lines.
+ *
+ * Containment, not innermost-method identity: methods nest. A Flask
+ * `def init(app)` wraps its route handlers, and a Java/C# local function or
+ * lambda body sits inside its declaring method. In every such case the outer
+ * range contains both lines and the pair is genuinely reachable, even though
+ * the innermost range around each line differs.
+ */
+function sharedMethod(a: number, b: number, ranges: MethodRange[]): boolean {
+  return ranges.some((r) => a >= r.start && a <= r.end && b >= r.start && b <= r.end);
+}
+
+/**
+ * Proximity fallback for a source/sink pair with no DFG path.
+ *
+ * cognium-dev#361 — the comment here used to say "within same method" while
+ * the code checked only `Math.abs(source.line - sink.line) <= 50`, in EITHER
+ * direction. So any source within 50 lines of a type-compatible sink became a
+ * finding: across method boundaries, and even when the source appears AFTER
+ * the sink. Observed consequence — a `BinaryFormatter.Deserialize` sink in one
+ * controller action reported against a `Request.Query` read in the NEXT
+ * action, six lines below it.
+ *
+ * Now the comment is enforced when the information exists: if BOTH lines fall
+ * inside some known method and NO single method contains both, the pair is
+ * rejected. When either side falls outside every known range — no `types`
+ * passed, a top-level script, a language that does not populate `types` — the
+ * original line window is used unchanged, so nothing regresses for callers
+ * that cannot supply ranges.
+ *
+ * The test is containment rather than innermost-method identity, because
+ * methods nest (BenchmarkPython wraps every route handler in `def init(app)`;
+ * local functions and lambdas nest the same way). Comparing innermost methods
+ * rejected 63 real detections across 46 files of BenchmarkPython where the
+ * source sat on the enclosing function and the sink in a nested handler.
+ *
+ * Deliberately NOT changed here: the direction. A source below its sink looks
+ * wrong, but a field or `interprocedural_param` source legitimately sits
+ * outside the method body, and a loop can carry a later line's value back
+ * round. Method scoping already rejects the reported case; ordering needs its
+ * own evidence.
+ */
+function isProximityVulnerability(
+  source: TaintSource,
+  sink: TaintSink,
+  methodRanges: MethodRange[] = [],
+  fieldNames: Set<string> = new Set(),
+): boolean {
+  if (Math.abs(source.line - sink.line) > 50) return false;
+  // A source that writes a field escapes its writing method by construction,
+  // so method scoping must not apply. SecuriBench `Refl2` is the case:
+  //
+  //   41  protected void doGet(...)          { name = req.getParameter(...); }  // field write
+  //   51  private void f(ServletResponse r)  { writer.println(myName); }        // reads it back
+  //
+  // `doGet` and `f` are disjoint siblings, yet the flow is real (and marked
+  // BAD in the corpus) because the taint travels through the field `name`.
+  // Rejecting on method boundaries lost this true positive.
+  if (source.variable && fieldNames.has(source.variable)) return true;
+  if (methodRanges.length > 0) {
+    const sourceKnown = anyMethodContains(source.line, methodRanges);
+    const sinkKnown = anyMethodContains(sink.line, methodRanges);
+    if (sourceKnown && sinkKnown && !sharedMethod(source.line, sink.line, methodRanges)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 
