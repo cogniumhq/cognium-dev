@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.19] - 2026-09-19
+
+### Consumer Impact
+
+**Java scans report FEWER findings. This is false-positive removal, not lost detection.**
+`System.out.println(x)` and `System.err.println(x)` are no longer reported as XSS
+(CWE-79). Stdout and stderr are not a browser context — no HTML document, no script
+execution, no HTTP response — so there is no reading under which this was XSS.
+
+Measured on OWASP Benchmark Java (2740 files): **243 signatures removed across 135
+files, 0 added**. Every one sits on a file whose tested category is `pathtraver`, and
+**none on a file whose tested category is `xss`**, so real true-positive loss is
+**zero**. SecuriBench Micro: no change at all.
+
+A Java baseline expressed as finding counts (or as critical+high counts) must be
+re-taken. Since every Java class prints, the reduction can be large on
+logging-heavy and CLI-shaped code.
+
+**Why our own Java benchmark never showed this class.** OWASP's scorer is
+category-scoped: each test file declares one category and findings of other types on
+that file are never counted. Of the 11601 signatures circle-ir emits on that corpus,
+2948 are on-category and **8653 are off-category and structurally invisible to it**.
+So "OWASP Benchmark Java: 100% TPR, 0% FPR" was never in tension with the ~306
+security-typed findings per repo seen on real Maven repositories — the benchmark
+cannot see an FP that lands off-category, and a real repository has no categories, so
+every finding competes for rank. Treat that as a standing caveat on the benchmark
+number rather than as a contradiction.
+
+### Fixed
+
+- **`System.out` / `System.err` prints reported as xss (#387).** The canonical Java
+  xss sink set is class-scoped — `PrintWriter.println`, `ServletOutputStream.println`,
+  `WikiPrinter.println` — plus a *classless* `println` entry so an unresolved writer
+  receiver is still caught. Console prints matched that fallback.
+
+  Scoped three ways so the real writers are untouched: `xss` sinks only; only sinks
+  with no resolved class (`sink.class` records which pattern matched, so `undefined`
+  means the classless entry caught it); and only when the sink's own line actually
+  prints via `System.out`/`System.err`. A chained `resp.getWriter().println(...)` also
+  lands in the unresolved set and is pinned by a test as still firing.
+
+  Deliberately a drop rather than a retype to CWE-117: Java `log_injection` is
+  `Logger`-scoped by design, and extending it to `System.out` would trade an xss flood
+  for a log-injection flood of the same cardinality without improving localization.
+  Left to its own issue.
+
+### Notes
+
+Released without the `File` path-projection source change (#390), which is still under
+review: it removes `File.getPath` / `File.getAbsolutePath` / `Path.toString` as taint
+sources and carries a coverage trade for `dir.listFiles()`-derived paths.
+
+The remaining Java over-prediction work is tracked in #387: `generateFindings` emits
+8801 rows on OWASP Java against 2800 `taint.flows` rows, and 75.4% of findings rows
+have no flow reaching the same sink.
+
 ## [4.9.17] - 2026-09-19
 
 ### Consumer Impact
