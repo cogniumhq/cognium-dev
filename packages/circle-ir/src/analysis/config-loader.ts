@@ -261,12 +261,56 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getHeader', class: 'Message', type: 'http_header', severity: 'high', return_tainted: true },
 
   // File name sources (common in path traversal vulnerabilities)
-  { method: 'getFileName', type: 'file_input', severity: 'high', return_tainted: true },
-  { method: 'getName', class: 'File', type: 'file_input', severity: 'high', return_tainted: true },
-  { method: 'getPath', class: 'File', type: 'file_input', severity: 'high', return_tainted: true },
-  { method: 'getAbsolutePath', class: 'File', type: 'file_input', severity: 'high', return_tainted: true },
-  { method: 'toString', class: 'Path', type: 'file_input', severity: 'medium', return_tainted: true },
-  { method: 'getFileName', class: 'Path', type: 'file_input', severity: 'high', return_tainted: true },
+  //
+  // cognium-dev#387 — the CLASSLESS `getFileName` was removed with the path
+  // projections below. It had no class and no `languages` scope, so it matched
+  // every `.getFileName()` anywhere, and it kept `Paths.get("/etc/app.conf")
+  // .getFileName()` reporting path_traversal after the class-scoped
+  // `Path.getFileName` was dropped — i.e. it silently defeated that removal,
+  // the same way the classless `getPath` defeated the first revision of this
+  // change. Measured redundant for the sources that matter: with it removed,
+  // `Part.getFileName`, `BodyPart`/`MimeBodyPart.getFileName` and
+  // `MultipartFile.getOriginalFilename` all still bind their sources from
+  // their own class-scoped entries below.
+  // cognium-dev#387 — REMOVED as taint sources: `File.getName`,
+  // `File.getPath`, `File.getAbsolutePath`, `Path.toString`,
+  // `Path.getFileName`, and the classless `getPath` further down this file.
+  //
+  // All of these are pure path PROJECTIONS: they hand back some part of the
+  // path the object already holds. They cannot introduce taint that is not
+  // already present — if the File/Path was built from untrusted input,
+  // propagation carries it — but as blanket sources they turned every
+  // program-constructed path into a high-severity source, and the enclosing
+  // call is usually itself a sink, so source and sink land on the same line.
+  // Each of these was a measured false positive with NO untrusted input
+  // anywhere in the file:
+  //
+  //   File f = new File("/etc/app.conf");
+  //   new FileInputStream(f.getAbsolutePath());          // path_traversal
+  //   new FileInputStream(f.getPath());                  // path_traversal
+  //   new FileInputStream("/d/" + f.getName());          // path_traversal
+  //   Paths.get("/etc/app.conf").getFileName();          // path_traversal
+  //
+  // and conversely, with a genuinely tainted path the finding does NOT depend
+  // on the projection being a source: it comes from the http source and
+  // survives. Verified across six shapes — same-method, inline with no
+  // intermediate variable, `getPath`, `Paths.get(p).toString()`, a File passed
+  // cross-method as a parameter, and a field-held File read in another method.
+  //
+  // The genuinely untrusted name sources are separately class-scoped and
+  // unaffected: `ZipEntry`/`TarArchiveEntry.getName` (Zip/Tar Slip),
+  // `MultipartFile.getOriginalFilename`/`getName`, `Part`, `BodyPart`.
+  // Measured: those still bind their sources with these removed.
+  //
+  // NO `listFiles` COVERAGE IS LOST — an earlier revision of this change
+  // claimed there was. Measured directly, before vs after, for a File taken
+  // from `dir.listFiles()`: `getName` 0 flows -> 0 flows, `getAbsolutePath`
+  // 0 -> 0, `getPath` 1 -> 1. The first two never fired in that shape at all,
+  // because class resolution does not resolve a for-each variable to `File`.
+  // Modelling `listFiles` / `Files.list` / `Files.walk` as sources is still
+  // worth doing — the directory listing IS external data — but it is additive,
+  // needs its own FP measurement, and is not a regression from this change.
+  // Tracked on #387.
 
   // Multipart file uploads
   { method: 'getOriginalFilename', class: 'MultipartFile', type: 'file_input', severity: 'high', return_tainted: true },
@@ -374,7 +418,12 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   // Jenkins/CI pipeline sources
   { method: 'getScriptPath', type: 'io_input', severity: 'critical', return_tainted: true },
   { method: 'getFilePathSuffix', type: 'io_input', severity: 'high', return_tainted: true },
-  { method: 'getPath', type: 'file_input', severity: 'high', return_tainted: true },
+  // cognium-dev#387 — the classless `getPath` was REMOVED here too. The first
+  // revision of this change dropped only the class-scoped `File.getPath` and
+  // left this one, so `f.getPath()` kept emitting a `file_input` source and the
+  // self-flow false positive survived — the change did not do what it claimed.
+  // This entry is strictly broader than the one it shadowed: no class and no
+  // `languages` scope, so it matched every `.getPath()` in every language.
   { method: 'contentAsString', type: 'file_input', severity: 'critical', return_tainted: true },
   { method: 'readAsString', type: 'file_input', severity: 'critical', return_tainted: true },
   { method: 'content', type: 'file_input', severity: 'high', return_tainted: true },
