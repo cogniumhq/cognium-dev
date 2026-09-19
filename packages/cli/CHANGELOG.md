@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.19] - 2026-09-19
+
+### Changed
+- Adopts `circle-ir@4.9.19`.
+
+### Consumer Impact
+
+**If you are upgrading from `cognium-dev@4.9.17` — the last published CLI — this is a
+large change, because 4.9.17's bundle shipped a stale engine.**
+
+`cognium-dev` 4.9.12 through 4.9.17 embedded **circle-ir 4.9.11** (#383): a physical
+`packages/cli/node_modules/circle-ir` shadowed the workspace symlink, and since
+`circle-ir` is bundled into `dist/cli.js` rather than left external, that copy — not
+the exact dependency pin — was the engine that shipped. The `circle-ir` npm package
+itself was never affected, so library consumers always had the correct engine.
+
+So `cognium-dev scan` now gains every engine change from circle-ir 4.9.12 through
+4.9.19 at once. **Re-baseline before comparing.** Notably:
+
+- **Severities move upward** (#281): on SecuriBench, 152 of 175 medium findings became
+  high. Any baseline expressed as critical+high counts must be re-taken.
+- **New findings** on Go CWE-22 (#374), Python trust-boundary CWE-501 (#363) and
+  Python return-value XSS (#368), plus C# source shapes that previously bound nothing
+  (#359, #302, #308).
+- **Fewer findings** on Java: `System.out`/`System.err` prints are no longer XSS
+  (#387) — false-positive removal with zero measured true-positive loss. Also fewer
+  FPs from #350, #351, #353, #305, #310, #311.
+
+None of it is a regression. No CLI flags, output shapes or exit codes changed.
+
+`4.9.18` was tagged for the #383 fix but never published; it is superseded by this
+release, which contains it.
+
+### Fixed
+- Carries #383: the CLI no longer bundles a stale `circle-ir`, and
+  `packages/cli/scripts/build.mjs` now fails the build when the `circle-ir` that would
+  be bundled is not the workspace one. It compares the resolved **path**, not the
+  version string — a downloaded copy of the matching version is still the wrong
+  artifact, since it cannot contain anything unreleased.
+
 ## [4.9.18] - 2026-09-19
 
 ### Fixed
