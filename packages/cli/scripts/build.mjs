@@ -13,6 +13,9 @@
  * would dirty the tree on every build).
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync, realpathSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function capture(cmd, cmdArgs, fallback) {
   try {
@@ -21,6 +24,62 @@ function capture(cmd, cmdArgs, fallback) {
     return fallback;
   }
 }
+
+/**
+ * Fail the build if the `circle-ir` that will be BUNDLED is not the workspace
+ * one (cognium-dev#383).
+ *
+ * `circle-ir` is bundled into `dist/cli.js`, not left external — so whatever
+ * copy the bundler resolves at build time IS the engine that ships, and the
+ * exact pin in package.json has no say in it. A `bun install` run inside
+ * `packages/cli` resolves that exact, registry-published pin by DOWNLOADING it
+ * instead of linking the workspace, leaving a physical
+ * `packages/cli/node_modules/circle-ir` that shadows the root symlink.
+ *
+ * That happened on 2026-09-10 and went unnoticed for six releases: every CLI
+ * bundle from 4.9.12 through 4.9.17 embedded circle-ir 4.9.11 while its
+ * package.json claimed the matching version. `--version` was right, the
+ * dependency pin was right, the tests passed, and the engine was ten fixes
+ * stale. Nothing in the pipeline could see it, because the stale copy is a
+ * valid install of a real published version.
+ *
+ * So the check is on the resolved PATH, not the version string: a version
+ * match would also be satisfied by a downloaded copy of the same number,
+ * which is still the wrong artifact (it lacks anything unreleased).
+ */
+function assertWorkspaceEngine() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cliRoot = resolve(here, '..');
+  const workspaceEngine = realpathSync(resolve(cliRoot, '..', 'circle-ir'));
+
+  const nested = join(cliRoot, 'node_modules', 'circle-ir');
+  const resolvedRoot = existsSync(nested)
+    ? realpathSync(nested)
+    : realpathSync(join(cliRoot, '..', '..', 'node_modules', 'circle-ir'));
+
+  if (resolvedRoot !== workspaceEngine) {
+    const v = (dir) => {
+      try { return JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version; }
+      catch { return '?'; }
+    };
+    console.error(`
+ERROR: the CLI bundle would embed a non-workspace circle-ir.
+
+  would bundle : ${resolvedRoot}  (${v(resolvedRoot)})
+  workspace    : ${workspaceEngine}  (${v(workspaceEngine)})
+
+circle-ir is bundled into dist/cli.js, so this copy — not the package.json
+pin — is the engine that ships. Remove the shadowing install and rebuild:
+
+  rm -rf packages/cli/node_modules/circle-ir
+  npm run build -w packages/circle-ir
+
+See cognium-dev#383. Do not publish a bundle built this way.`);
+    process.exit(1);
+  }
+}
+
+assertWorkspaceEngine();
 
 const sha = capture('git', ['rev-parse', '--short', 'HEAD'], 'unknown');
 const dirty = capture('git', ['status', '--porcelain'], '') ? '-dirty' : '';
