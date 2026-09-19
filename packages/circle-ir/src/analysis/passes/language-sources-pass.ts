@@ -251,6 +251,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findCSharpBindingAttributeSources(code, language));
     additionalSources.push(...findCSharpMinimalApiSources(code, language));
     additionalSources.push(...findGoArgvSources(code, language));
+    additionalSources.push(...findGoArchiveEntrySources(code, language));
+    additionalSources.push(...findGoMultipartUploadSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -342,6 +344,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'go') {
       additionalSanitizers.push(...findGoMapAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findGoHtmlTemplateImportSanitizers(code));
+      additionalSanitizers.push(...findGoPathContainmentGuardSanitizers(code));
       // Sprint 78 (#190): Go ECB-mode weak-crypto detection.
       const goMisconfigFindings = findGoPatternFindings(code, graph.ir.meta.file);
       for (const finding of goMisconfigFindings) {
@@ -1273,6 +1276,153 @@ function findGoArgvSources(sourceCode: string, language: string): TaintSource[] 
       line: lineNumber,
       confidence: 1.0,
       variable: varName,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Go archive-entry names — Zip Slip / Tar Slip (CWE-22), cognium-dev#374.
+ *
+ * Zip Slip IS modelled, but only for Java: `ZipEntry.getName`,
+ * `ZipArchiveEntry.getName`, `TarArchiveEntry.getName` (issue #52) are METHOD
+ * calls, and the source matcher is method-based. In Go the entry name is a
+ * struct FIELD —
+ *
+ *     for _, f := range r.File { p := filepath.Join(dest, f.Name); os.Create(p) }
+ *     hdr, err := tr.Next();     p := filepath.Join(dest, hdr.Name)
+ *
+ * — so nothing matched and Go archive extraction was entirely invisible. That
+ * is the dominant CWE-22 shape in the Cisco vuln-localization Go corpus: its
+ * ground-truth files are extractors (`unzip.go`, `uzip.go`, the singularity
+ * squashfs unpacker), and CWE-22 is the single largest taint-class miss there
+ * (15 of 17 repos).
+ *
+ * An archive entry name is attacker-controlled whenever the archive is: it can
+ * contain `../` or an absolute path, which is the whole vulnerability.
+ *
+ * Gated three ways to keep it off unrelated `.Name` reads, which are extremely
+ * common in Go:
+ *   1. the file must import `archive/zip` or `archive/tar`;
+ *   2. the entry variable must be bound by a recognised archive idiom —
+ *      `range <x>.File` (zip) or `<v>, _ := <r>.Next()` (tar);
+ *   3. only a read of THAT variable's `.Name` counts.
+ *
+ * `file_input` matches the type the Java archive-entry sources already use, so
+ * the existing source -> sink reach map applies unchanged.
+ */
+function findGoArchiveEntrySources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!/\bimport\b[\s\S]{0,400}?archive\/(?:zip|tar)|"archive\/(?:zip|tar)"/.test(sourceCode)) return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  // 1. Collect entry variables bound by an archive idiom.
+  const entryVars = new Set<string>();
+  const zipRange = /\bfor\b[^;{]*?,\s*([A-Za-z_]\w*)\s*:?=\s*range\s+[A-Za-z_][\w.]*\.File\b/;
+  const tarNext = /\b([A-Za-z_]\w*)\s*,\s*[A-Za-z_]\w*\s*:?=\s*[A-Za-z_][\w.]*\.Next\s*\(\s*\)/;
+  for (const line of lines) {
+    const z = zipRange.exec(line);
+    if (z) entryVars.add(z[1]);
+    const t = tarNext.exec(line);
+    if (t) entryVars.add(t[1]);
+  }
+  if (entryVars.size === 0) return sources;
+
+  // 2. Bind any variable assigned from a read of `<entry>.Name`.
+  const assignRe = /^\s*(?:var\s+)?([A-Za-z_]\w*)\s*(?::?=|=)\s*(.+?)\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignRe.exec(lines[i]);
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    let matched: string | null = null;
+    for (const v of entryVars) {
+      if (new RegExp(`(?<![\\w.])${v}\\s*\\.\\s*Name\\b`).test(rhs)) { matched = v; break; }
+    }
+    if (!matched) continue;
+    const lineNumber = i + 1;
+    if (sources.some(sc => sc.line === lineNumber && sc.variable === lhs)) continue;
+    sources.push({
+      type: 'file_input',
+      location: `${lhs} derived from archive entry name ${matched}.Name (Zip/Tar Slip)`,
+      severity: 'high',
+      line: lineNumber,
+      confidence: 0.9,
+      variable: lhs,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Go multipart upload filenames — the dominant real-world CWE-22 source shape.
+ *
+ *   file, handler, err := r.FormFile("uploadfile")
+ *   f, err := os.OpenFile("./assets/img/"+handler.Filename, os.O_WRONLY, 0666)
+ *
+ * `handler.Filename` is attacker-controlled: it is whatever the client put in
+ * the multipart Content-Disposition header, and Go does NOT sanitise it (the
+ * stdlib docs say so explicitly). Concatenated into a path it is a textbook
+ * traversal.
+ *
+ * Found on `vulnerability-goapp/pkg/image/imageUploader.go:83`, where the
+ * `os.OpenFile` path_traversal sink now registers but produced no finding
+ * because nothing bound `handler` as a source — the sink half of #374 landed
+ * without its source half, so the flow count stayed at zero.
+ *
+ * The source is emitted on the FormFile line bound to the SECOND return value,
+ * because the tainted value is reached as `<handler>.Filename` inline inside
+ * the sink call rather than through an intermediate assignment. Variables
+ * later assigned from `<handler>.Filename` are bound too, for the shape that
+ * does go through a local.
+ */
+function findGoMultipartUploadSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!/\.\s*(?:FormFile|MultipartForm|MultipartReader)\b/.test(sourceCode)) return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+
+  // 1. `file, handler, err := r.FormFile("field")` — bind the FileHeader.
+  const headerVars = new Set<string>();
+  const formFileRe =
+    /\b[A-Za-z_]\w*\s*,\s*([A-Za-z_]\w*)\s*(?:,\s*[A-Za-z_]\w*\s*)?:?=\s*[A-Za-z_][\w.]*\.\s*FormFile\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = formFileRe.exec(lines[i]);
+    if (!m) continue;
+    const v = m[1];
+    if (v === '_') continue;
+    headerVars.add(v);
+    sources.push({
+      type: 'http_param',
+      location: `${v}.Filename from r.FormFile (client-supplied upload filename)`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
+      variable: v,
+    });
+  }
+
+  // 2. `name := handler.Filename` — bind the local the filename lands in.
+  const assignRe = /^\s*(?:var\s+)?([A-Za-z_]\w*)\s*(?::?=|=)\s*(.+?)\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignRe.exec(lines[i]);
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    if (lhs === '_') continue;
+    let matched: string | null = null;
+    for (const v of headerVars) {
+      if (new RegExp(`(?<![\\w.])${v}\\s*\\.\\s*Filename\\b`).test(rhs)) { matched = v; break; }
+    }
+    if (!matched) continue;
+    const lineNumber = i + 1;
+    if (sources.some(sc => sc.line === lineNumber && sc.variable === lhs)) continue;
+    sources.push({
+      type: 'http_param',
+      location: `${lhs} derived from upload filename ${matched}.Filename`,
+      severity: 'high',
+      line: lineNumber,
+      confidence: 0.9,
+      variable: lhs,
     });
   }
   return sources;
@@ -3421,6 +3571,89 @@ function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
  * detection bails out (ambiguous — fall back to per-call class
  * resolution). (cognium-dev #102 FP-19b)
  */
+/**
+ * Go path-containment guards — cognium-dev#374.
+ *
+ * Needed by the Zip/Tar Slip sources added in the same change. A CORRECT Go
+ * extractor validates the joined path before opening it, and without this the
+ * new source fires on exactly the code that got it right:
+ *
+ *     p := filepath.Join(dest, f.Name)
+ *     if !strings.HasPrefix(p, filepath.Clean(dest)+string(os.PathSeparator)) {
+ *         continue                       // <- containment enforced
+ *     }
+ *     os.Create(p)
+ *
+ * Two canonical shapes are credited:
+ *
+ *   1. `strings.HasPrefix(<path>, <root>…)` negated, with the guard body
+ *      rejecting (continue / return / break / error).
+ *   2. `filepath.Rel(<root>, <path>)` followed by a `..` check — the other
+ *      idiom the Go docs steer people to.
+ *
+ * `guardRejects` (#333) does the load-bearing part: a guard whose body does
+ * NOT reject earns nothing, so `if !strings.HasPrefix(p, dest) { log(...) }`
+ * still reports. That distinction is why this is a guard test rather than a
+ * bare pattern match — the same reason the C# analogue
+ * (`findCSharpFullPathStartsWithGuardSanitizers`, #286) is written this way.
+ *
+ * Scoped to `path_traversal` only: containment says nothing about SQL, shell
+ * or markup safety.
+ */
+function findGoPathContainmentGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const REJECT = /\b(?:continue|break|return|panic|fmt\.Errorf|errors\.New)\b/;
+
+  // Variables proven contained, and the line the proof appears on.
+  const guarded = new Map<string, number>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 1. `if !strings.HasPrefix(p, <root>…) { reject }`
+    const hp = /if\s*!\s*strings\s*\.\s*HasPrefix\s*\(\s*([A-Za-z_]\w*)\s*,/.exec(line);
+    if (hp && guardRejects(lines, i, REJECT, 4)) {
+      if (!guarded.has(hp[1])) guarded.set(hp[1], i + 1);
+      continue;
+    }
+
+    // 2. `rel, err := filepath.Rel(root, p)` followed by a `..` rejection.
+    const rel = /([A-Za-z_]\w*)\s*,\s*[A-Za-z_]\w*\s*:?=\s*filepath\s*\.\s*Rel\s*\(\s*[A-Za-z_]\w*\s*,\s*([A-Za-z_]\w*)\s*\)/.exec(line);
+    if (rel) {
+      const window = lines.slice(i, i + 5).join('\n');
+      if (/\.\./.test(window) && REJECT.test(window)) {
+        if (!guarded.has(rel[2])) guarded.set(rel[2], i + 1);
+      }
+    }
+  }
+  if (guarded.size === 0) return sanitizers;
+
+  // Emit at every line AFTER the guard that references the guarded variable,
+  // mirroring `findCSharpFullPathStartsWithGuardSanitizers` (#286). The
+  // sanitizer machinery keys on the line it is consulted at — the sink line,
+  // or a reaching-def line — and a guard line is neither, so emitting only
+  // there credits nothing.
+  //
+  // Scoped to `path_traversal` alone: containment proves nothing about SQL,
+  // shell or markup safety. And restricted to lines mentioning the guarded
+  // variable, so a co-located flow through a DIFFERENT variable is not
+  // silently cleared — the failure mode that withdrew #348.
+  for (const [name, guardLine] of guarded) {
+    const useRe = new RegExp(`(?<![\\w.])${name}(?![\\w])`);
+    for (let l = guardLine; l < lines.length; l++) {
+      if (!useRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'go_path_containment_guard',
+        method: 'strings.HasPrefix',
+        line: l + 1,
+        sanitizes: ['path_traversal'],
+      });
+    }
+  }
+  return sanitizers;
+}
+
 function findGoHtmlTemplateImportSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
 

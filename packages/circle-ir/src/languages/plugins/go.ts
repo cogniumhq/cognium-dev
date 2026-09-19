@@ -314,6 +314,78 @@ export class GoPlugin extends BaseLanguagePlugin {
         argPositions: [0],
       },
 
+      // cognium-dev#374 — the Go CWE-22 sink set was `os.Open` / `os.ReadFile`
+      // / `os.WriteFile` only, which misses the ones the Cisco
+      // vuln-localization Go corpus actually uses. Counting the file-opening
+      // calls across its CWE-22 ground-truth files:
+      //
+      //   filepath.Join 21 · os.Stat 14 · filepath.Clean 11 · os.Create 9
+      //   os.OpenFile 8 · os.Open 6 · os.RemoveAll 4 · os.Remove 3
+      //   ioutil.WriteFile 2 · ioutil.ReadFile 2
+      //
+      // `os.Create` and `os.OpenFile` together outnumber `os.Open` nearly
+      // 3:1 and were not sinks at all, so an attacker-controlled path reaching
+      // a file CREATE was silent while the same path reaching a file OPEN was
+      // reported. Adding them is consistent with the `os.Open` entry that has
+      // always been here rather than a new policy.
+      {
+        method: 'Create',
+        class: 'os',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'OpenFile',
+        class: 'os',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      // Destructive path operations: a traversal here deletes outside the
+      // intended root, which is strictly worse than reading.
+      {
+        method: 'Remove',
+        class: 'os',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'RemoveAll',
+        class: 'os',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      // Pre-1.16 spellings. Still pervasive in the corpus, and `io/ioutil` is
+      // deprecated rather than removed.
+      {
+        method: 'ReadFile',
+        class: 'ioutil',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      {
+        method: 'WriteFile',
+        class: 'ioutil',
+        type: 'path_traversal',
+        cwe: 'CWE-22',
+        severity: 'high',
+        argPositions: [0],
+      },
+      // NOTE: `os.Stat` is deliberately NOT a sink despite appearing 14 times.
+      // It returns metadata only, so a traversal there discloses existence
+      // rather than content — a weaker finding that would fire on every
+      // path-validation helper that stats before opening, including the
+      // correct ones. Left out until there is corpus evidence it pays.
+
       // XSS (writing to http.ResponseWriter without escaping)
       {
         method: 'Fprintf',
