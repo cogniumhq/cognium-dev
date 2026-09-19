@@ -4,6 +4,18 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-09-19
+
+### Changed
+- Adopts `circle-ir@4.9.17`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits the additive detection changes in `circle-ir@4.9.17`: new `path_traversal` (CWE-22)
+findings on Go code (#374) and new `xss` flows on Python return-value sinks (#368). Agents
+rescanning a previously-scanned Go or Python project will see new findings that are not a
+regression.
+
 ## [0.1.9] - 2026-09-18
 
 ### Changed

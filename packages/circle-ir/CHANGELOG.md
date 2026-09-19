@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.17] - 2026-09-19
+
+### Consumer Impact
+
+**1. Source-line attribution changes on existing findings (#361, #372) — opt-in.**
+`generateFindings` gained two optional trailing parameters, `types` and `flows`. A caller
+that passes neither keeps the exact previous behaviour, so nothing changes unless you opt
+in. **To get either fix you must pass `ir.types` AND `ir.taint.flows`** — passing only the
+first leaves #372 inert.
+
+With both passed, the *source* line reported for a finding can move; the sink line and the
+set of detections do not. Measured on OWASP BenchmarkPython (1230 files): 75 findings
+re-attributed, **0 sink-level detections lost and 0 gained**, 915 findings rows before and
+after. On SecuriBench Micro: 0 lost, **2 gained**. Findings whose reported source line sat
+*after* their own sink — impossible as written — fell from 23 to 10 on BenchmarkPython and
+4 to 3 on SecuriBench. Anything keyed on the exact `(source_line, sink_line)` pair should
+be re-baselined; anything keyed on the sink will not move.
+
+**2. New `path_traversal` (CWE-22) findings on Go (#374).** Purely additive. Go previously
+modelled only `os.Open` on the path-traversal sink side; the write and delete side, the
+Zip/Tar Slip shape, and the multipart upload-filename source were all unmodelled. A
+baseline rescan of Go projects will show new findings that are not a regression.
+
+**3. New `xss` flows on Python return-value sinks (#368)** and library-profile source gating
+now expressed as a tag (#288). See the 4.9.16 notes for the gate's severity semantics.
+
+### Fixed
+
+- **Proximity pairing ignored method boundaries and direction (#361).**
+  `isProximityVulnerability` claimed "within same method" in its comment while checking only
+  `Math.abs(source.line - sink.line) <= 50`, in either direction. Any source within 50 lines
+  of a type-compatible sink became a finding — across method boundaries, and even when the
+  source sat *after* the sink. The reported case: a `BinaryFormatter.Deserialize` sink in one
+  controller action attributed to a `Request.Query` read in the **next** action, six lines
+  below it. `taint.flows` was correct throughout; only the `generateFindings` path — which is
+  what `scan` and the CLI report from — was affected.
+
+  The constraint is now enforced as *containment*: the pair is rejected only when both lines
+  fall inside some known method and no single method contains both. Containment rather than
+  innermost-method identity, because methods nest — an earlier cut comparing innermost
+  methods removed 63 real detections across 46 BenchmarkPython files, which wrap every route
+  handler in `def init(app)`. A source whose variable is a declared field is exempt entirely:
+  a field write escapes its writing method by construction, and scoping it lost a SecuriBench
+  true positive where taint travelled through a field between disjoint sibling methods.
+
+  Method ranges come from `ir.types[].methods[]`, not `in_method`, which is populated
+  unevenly — Java sources carry it, Java *sinks* do not, and C# carries it on neither.
+
+  Direction is deliberately unchanged: a field or `interprocedural_param` source legitimately
+  sits outside the method body, and a loop can carry a later line's value back round.
+
+- **The reporting surfaces disagreed on the source line (#372).** The taint layer could prove
+  a flow with a precise source line while `generateFindings` rebuilt its own source/sink pairs
+  and never consulted those flows, so a correctly-computed flow could be reported against the
+  wrong source. `generateFindings` now derives findings from the flows it is given.
+
+- **Go CWE-22 was missing most of its sink surface and its dominant source shape (#374).**
+  Added `os.Create`, `os.OpenFile`, `os.Remove`, `os.RemoveAll`, `ioutil.ReadFile` and
+  `ioutil.WriteFile` as `path_traversal` sinks. `os.Stat` is deliberately excluded: it neither
+  reads nor writes content, so a tainted path there is an information-disclosure question
+  rather than CWE-22.
+
+  Zip/Tar Slip is now modelled for Go. Java reaches it through `ZipEntry.getName()`, a method
+  call; Go reaches it through struct *fields* (`f.Name` from `range r.File`, `hdr.Name` from
+  `tr.Next()`), which method-shaped detection could not see. Gated on language, an
+  `archive/zip`/`archive/tar` import, and an actual entry-variable binding.
+
+  The sinks alone moved nothing, because the matching source was unmodelled: after they
+  landed, an `os.OpenFile` sink registered on a real upload handler and still produced no
+  finding, since nothing bound `handler` from `file, handler, err := r.FormFile(...)`. Sink
+  present, source absent, no flow. `handler.Filename` is the client's multipart
+  Content-Disposition filename and the Go standard library explicitly does not sanitise it;
+  it is now bound as an `http_param` source.
+
+### Notes
+
+The differential scorer reports #361/#372 as `tp_loss=74 GATE: FAIL`. That is an artifact of
+its signature including the source line, which makes every re-attribution read as a removal
+plus an addition; re-keyed on `(sink_type, sink_line)` the same snapshots show 0 lost and 0
+gained. Tracked as #380, with #378 covering a related provenance gap.
+
 ## [4.9.16] - 2026-09-18
 
 ### Consumer Impact
