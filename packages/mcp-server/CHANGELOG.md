@@ -4,6 +4,19 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-09-19
+
+### Changed
+- Adopts `circle-ir@4.9.20`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits the Java false-positive removal in `circle-ir@4.9.20`: `File`/`Path`
+path projections are no longer taint sources, so agents rescanning a
+previously-scanned Java project will see fewer `path_traversal` findings. This
+is FP removal with detection on genuinely tainted paths unchanged, not lost
+coverage. A stored baseline keyed on finding counts should be re-taken.
+
 ## [0.1.11] - 2026-09-19
 
 ### Changed

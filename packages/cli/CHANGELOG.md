@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.20] - 2026-09-19
+
+### Changed
+- Adopts `circle-ir@4.9.20`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+
+**`cognium-dev scan` reports fewer `path_traversal` (CWE-22) findings on Java.**
+False-positive removal, not lost detection: `File`/`Path` path projections
+(`getName`, `getPath`, `getAbsolutePath`, `Path.toString`, `Path.getFileName`)
+are no longer taint sources, because they hand back a path the object already
+holds and so cannot introduce taint that propagation would not already carry.
+
+Measured on real Java repositories: plexus-archiver 229 -> 162 signatures,
+commons-io 684 -> 559, with findings whose source line sits *after* their own
+sink roughly halving in both. Detection on genuinely tainted paths is unchanged,
+and Zip/Tar Slip and upload-filename sources are unaffected.
+
+Re-take any Java baseline expressed as finding counts.
+
 ## [4.9.19] - 2026-09-19
 
 ### Changed

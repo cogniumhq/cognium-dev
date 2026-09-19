@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.20] - 2026-09-19
+
+### Consumer Impact
+
+**Java scans report FEWER `path_traversal` (CWE-22) findings. This is
+false-positive removal, not lost detection.** Seven spellings of "give me back
+the path I already hold" were treated as high-severity `file_input` taint
+sources:
+
+    class-scoped   File.getName, File.getPath, File.getAbsolutePath,
+                   Path.toString, Path.getFileName
+    classless      getPath, getFileName   (no class, no language scope)
+
+These are pure path **projections**. They cannot introduce taint that is not
+already present — if the File/Path was built from untrusted input, propagation
+carries it — but as blanket sources they made every program-constructed path a
+source, and the enclosing call is usually itself a sink, so source and sink
+landed on the same line.
+
+Measured on real Java repositories, which is where this class is visible at all:
+
+| project | signatures | removals (test / production) | source-after-sink |
+|---|---|---|---|
+| plexus-archiver 3.5 | 229 -> 162 | 66 (41 / 25) | 36 -> 18 |
+| commons-io 2.6 | 684 -> 559 | 122 (113 / 9) | 157 -> 114 |
+
+"source-after-sink" counts findings whose reported source line sits *after*
+their own sink — impossible as written. Those roughly halve, which is the
+cleanest available signal that the removals are FPs. Test code dominates the
+rest, consistent with FPs on hardcoded fixture paths.
+
+**Detection on a genuinely tainted path is unchanged**, verified across six
+shapes: same method with an intermediate variable, inline with none, `getPath`,
+`Paths.get(p).toString()`, a File passed cross-method as a parameter, and a
+field-held File read in another method.
+
+**Zip/Tar Slip is unaffected** — `ZipEntry`/`TarArchiveEntry.getName` are
+separate, class-scoped sources. Confirmed positively: 44 `path_traversal`
+findings still fire in plexus-archiver's production code, including
+`AbstractUnArchiver`, `AbstractZipArchiver` and `ArchiveEntry`. Upload filename
+sources (`MultipartFile.getOriginalFilename`, `Part`, `BodyPart`) are also
+untouched and were verified to still bind after the classless removals.
+
+A Java baseline expressed as finding counts should be re-taken.
+
+### Fixed
+
+- **`File`/`Path` path projections were taint sources (#387).** Each of these
+  reported `path_traversal` with no untrusted input anywhere in the file:
+
+      File f = new File("/etc/app.conf");
+      new FileInputStream(f.getAbsolutePath());
+      new FileInputStream(f.getPath());
+      new FileInputStream("/d/" + f.getName());
+      Paths.get("/etc/app.conf").getFileName();
+
+  The two **classless** entries were the load-bearing part. A classless
+  `getPath` in an unrelated configuration block matched every `.getPath()` in
+  every language, and shadowed the class-scoped entry — so removing only the
+  class-scoped one left the false positive alive for the more common spelling.
+  Both classless entries were measured non-load-bearing before removal.
+
+  Production removals were inspected individually rather than assumed. The only
+  production `path_traversal` lost in plexus-archiver is a self-flow inside
+  `AnonymousResource.getName()`, a private helper returning
+  `file.getPath().replace('\\','/')`. In commons-io they are self-flows such as
+  `FileUtils.copyFileToDirectory(srcFile, destDir)`, where both paths are
+  caller-supplied parameters of a public library API — the library-API-surface
+  case ADR-008 already treats as caller responsibility.
+
+### Notes
+
+OWASP Benchmark Java and SecuriBench Micro contain **zero** occurrences of any
+of these calls, so they cannot measure this change at all. Its evidence comes
+entirely from real repositories. This is the same blind spot recorded in the
+4.9.19 notes, in a second form: that release's FP class was invisible because
+the benchmark's scorer is category-scoped; this one is invisible because the
+corpora do not contain the code shape.
+
+The remaining Java over-prediction work is tracked in #387, where the dominant
+item is that `generateFindings` emits 8801 rows on OWASP Java against 2800
+`taint.flows` rows, with 75.4% of findings rows unbacked by any flow reaching
+the same sink.
+
 ## [4.9.19] - 2026-09-19
 
 ### Consumer Impact
