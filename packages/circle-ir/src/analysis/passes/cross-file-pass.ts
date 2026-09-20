@@ -73,7 +73,7 @@ export class CrossFilePass {
     const flows = resolver.findCrossFileTaintFlows(budgetExceeded);
     // #366 — phase 1 can now stop mid-walk, so the flag has to be set here
     // too; previously `exceeded` could only become true at a phase boundary.
-    let phase1Truncated = budgetExceeded();
+    const phase1Truncated = budgetExceeded();
     logger.info('cross-file: phase 1/4 done', {
       flows: flows.length,
       elapsedMs: Date.now() - phase1Start,

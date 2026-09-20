@@ -62,6 +62,13 @@ jobs:
 
       - run: npm run typecheck
 
+      # Narrow by design: strict tsc already covers types and unused symbols,
+      # so this enforces only the correctness rules tsc does not — atomic
+      # update races, unreachable/unmodified loops, fallthrough, self-compare.
+      - name: lint
+        if: ${{ !cancelled() }}
+        run: npm run lint
+
       # Each workspace reports separately so one red suite does not hide the
       # state of the others. `!cancelled()` keeps the later steps running after
       # an earlier failure, which is the whole point of splitting them.
@@ -88,6 +95,32 @@ jobs:
       - name: test — project-profile-detect
         if: ${{ !cancelled() }}
         run: npm run test:coverage -w packages/project-profile-detect
+
+      # Dogfooding: the scanner runs against its own source. A SAST vendor
+      # whose CI never runs its own product has no early warning when a
+      # regression makes the CLI stop finding things.
+      #
+      # `scan .` from the package root, not `scan src/`: cognium.config.json
+      # matches its `include` globs (`src/**/*.ts`) against paths relative to
+      # the scan target, so `scan src/` sees `cli.ts` rather than `src/cli.ts`,
+      # matches nothing, and prints "No supported files found" — with exit 0.
+      # A gate invoked that way is green because it scanned nothing.
+      #
+      # --severity high gates on high+critical only. The package is clean at
+      # that level today; the one standing finding is a medium (log_injection,
+      # CWE-117) which is reported by the unfiltered step below but not gated.
+      - name: self-scan — gate on high/critical
+        if: ${{ !cancelled() }}
+        working-directory: packages/cli
+        run: node dist/cli.js scan . --severity high
+
+      # Unfiltered, non-blocking: surfaces the medium/low and quality findings
+      # in the log so they stay visible without failing the build.
+      - name: self-scan — full report (advisory)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: packages/cli
+        run: node dist/cli.js scan .
 
       # Coverage reports are what makes a threshold failure diagnosable — the
       # console summary says a gate moved, the lcov/html says which lines.
