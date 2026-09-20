@@ -55,6 +55,26 @@ export function generateFindings(
   // cognium-dev#361 — method ranges for the proximity gate below. Optional and
   // trailing: a caller that does not pass `types` keeps the pre-existing
   // line-window behaviour exactly.
+  // cognium-dev#387 — sink-level flow backing. `generateFindings` accepts a
+  // pair on a DFG path OR the proximity fallback, while the taint layer's flow
+  // builders refuse most of those pairs; measured on OWASP Benchmark Java,
+  // 2800 flow rows against 8801 findings rows, 75.4% of findings with no flow
+  // reaching the same sink. Recording which side a finding falls on is the
+  // cheapest way to let a consumer rank on proven detections, and it is pure
+  // metadata: no finding is added, removed, re-severitied or re-ordered.
+  //
+  // Keyed on (sink_type, sink_line), NOT the source line: a finding whose
+  // source was re-attributed by #361/#372 is still the same proven detection.
+  const flowBackedSinks = new Set<string>();
+  for (const fl of flows ?? []) {
+    if (typeof fl.sink_line === 'number') flowBackedSinks.add(`${fl.sink_type}@${fl.sink_line}`);
+  }
+  // `flows` is an optional trailing parameter, so distinguish "no flow reaches
+  // this sink" from "the caller never gave us flows to check against".
+  const flowsKnown = (flows ?? []).length > 0;
+  const isFlowBacked = (t: string, line: number): boolean | undefined =>
+    flowsKnown ? flowBackedSinks.has(`${t}@${line}`) : undefined;
+
   const methodRanges = buildMethodRanges(types);
   const fieldNames = buildFieldNames(types);
   let findingId = 1;
@@ -196,6 +216,7 @@ export function generateFindings(
           remediation: getRemediation(sink.type),
           verification: {
             graph_path_exists: pathResult.pathExists,
+            flow_backed: isFlowBacked(sink.type, sink.line),
             llm_verified: false,
             llm_confidence: 0,
             discoveryMethod: computeDiscoveryMethod(source, sink),
@@ -260,6 +281,8 @@ export function generateFindings(
       remediation: getRemediation(sink.type),
       verification: {
         graph_path_exists: true,
+        // #387 — derived FROM a flow by construction, so backed by definition.
+        flow_backed: true,
         llm_verified: false,
         llm_confidence: 0,
         discoveryMethod: computeDiscoveryMethod(src as TaintSource, sink),
