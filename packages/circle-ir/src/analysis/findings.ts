@@ -49,8 +49,9 @@ export function generateFindings(
   language?: string,
   sanitizers: TaintSanitizer[] = [],
   types: TypeInfo[] = [],
-  flows: TaintFlowInfo[] = [],
+  flowsArg?: TaintFlowInfo[],
 ): Finding[] {
+  const flows = flowsArg ?? [];
   const findings: Finding[] = [];
   // cognium-dev#361 — method ranges for the proximity gate below. Optional and
   // trailing: a caller that does not pass `types` keeps the pre-existing
@@ -66,12 +67,15 @@ export function generateFindings(
   // Keyed on (sink_type, sink_line), NOT the source line: a finding whose
   // source was re-attributed by #361/#372 is still the same proven detection.
   const flowBackedSinks = new Set<string>();
-  for (const fl of flows ?? []) {
+  for (const fl of flows) {
     if (typeof fl.sink_line === 'number') flowBackedSinks.add(`${fl.sink_type}@${fl.sink_line}`);
   }
   // `flows` is an optional trailing parameter, so distinguish "no flow reaches
-  // this sink" from "the caller never gave us flows to check against".
-  const flowsKnown = (flows ?? []).length > 0;
+  // this sink" from "the caller never gave us flows to check against". Keyed on
+  // whether the argument was PASSED, not on its length: an empty array is the
+  // taint layer saying it proved nothing in this file, which is exactly where
+  // unbacked pairings concentrate — those must read `false`, not "unknown".
+  const flowsKnown = flowsArg !== undefined;
   const isFlowBacked = (t: string, line: number): boolean | undefined =>
     flowsKnown ? flowBackedSinks.has(`${t}@${line}`) : undefined;
 

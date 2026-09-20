@@ -104,6 +104,32 @@ describe('#387 — verification.flow_backed', () => {
     }
   });
 
+  it('is false — not undefined — when the caller passes an EMPTY flows array', async () => {
+    // An empty `taint.flows` is the taint layer saying it proved nothing in
+    // this file, which is where unbacked pairings concentrate. The path below
+    // is a constant; the request parameter never reaches it. If these read
+    // "unknown", a consumer keeping `flow_backed !== false` retains precisely
+    // the findings the field exists to let it drop.
+    const code = [
+      'import javax.servlet.http.*;',
+      'public class V extends HttpServlet {',
+      '  protected void doGet(HttpServletRequest request, HttpServletResponse response) throws Exception {',
+      '    String p = request.getParameter("p");',
+      '    java.io.File f = new java.io.File("/etc/app.conf");',
+      '    new java.io.FileInputStream(f);',
+      '  }',
+      '}',
+    ].join('\n');
+    const r = await analyze(code, 'V.java', 'java');
+    expect(r.taint.flows).toEqual([]);
+    const fs = generateFindings(
+      r.taint.sources, r.taint.sinks, r.dfg, 'V.java', code, 'java',
+      r.taint.sanitizers, r.types, r.taint.flows,
+    );
+    expect(fs.length).toBeGreaterThan(0);
+    expect(fs.every(f => f.verification.flow_backed === false)).toBe(true);
+  });
+
   it('does not change the finding set, only its metadata', async () => {
     // The guarantee the change rests on: filtering is the consumer's choice,
     // so this must be observably pure metadata.
