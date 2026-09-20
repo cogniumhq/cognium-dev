@@ -21,7 +21,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test:coverage": "bun test --coverage"
   },
   "keywords": [
     "sast",

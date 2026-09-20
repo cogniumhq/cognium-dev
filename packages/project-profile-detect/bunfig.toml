@@ -1,0 +1,10 @@
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coveragePathIgnorePatterns = ["../**"]
+
+# This package is thoroughly tested — every src file is at 100% functions and
+# all but walk.ts at 100% lines (measured 2026-09-20). The threshold is set just
+# under that so an untested new file is caught immediately.
+coverageThreshold = { line = 0.95, function = 0.95 }
