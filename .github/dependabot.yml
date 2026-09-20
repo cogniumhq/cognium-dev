@@ -1,0 +1,46 @@
+# Dependabot version updates.
+#
+# Security updates are enabled separately in repo settings and are not
+# configured here — this file covers routine version bumps only.
+version: 2
+updates:
+  # The npm workspace root. `directory: /` covers packages/* too, because
+  # npm workspaces resolve from the root lockfile.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per ecosystem-ish cluster rather than per package: the CI suite
+      # is the gate either way, and a single grouped PR is far cheaper to
+      # review than fifteen individual bumps.
+      dev-tooling:
+        patterns:
+          - "typescript"
+          - "@types/*"
+          - "vitest"
+          - "@vitest/*"
+          - "bun-types"
+          - "esbuild"
+        update-types: [minor, patch]
+      tree-sitter:
+        patterns:
+          - "tree-sitter-*"
+          - "web-tree-sitter"
+        update-types: [minor, patch]
+    # Majors land as their own PR so the breaking change gets its own review.
+
+  # Pinned action SHAs/tags go stale silently and are a supply-chain surface
+  # in their own right — this repo runs actions on a self-hosted box.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

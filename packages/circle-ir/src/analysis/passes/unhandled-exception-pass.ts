@@ -86,7 +86,7 @@ function buildJsCoveredRanges(
   const ranges: Array<{ start: number; end: number }> = [];
   // Stack of try-line numbers; push on `try {`, pop on matching `} catch`
   const tryStack: number[] = [];
-  let braceDepthAtTry: number[] = [];
+  const braceDepthAtTry: number[] = [];
   let braceDepth = 0;
 
   for (let i = 0; i < codeLines.length; i++) {

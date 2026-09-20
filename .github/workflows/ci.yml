@@ -12,14 +12,41 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Jobs are split rather than sequenced inside one block so each surfaces as its
+# own check: they run in parallel, a lint failure cannot mask a test failure,
+# and any one of them can be made required in the ruleset independently.
+#
+# The runner split follows skillsregistry: heavy build/test work goes to the
+# self-hosted `grace` node (registered per-repo at /opt/gh-runners/cognium-dev,
+# running as `ghrunner`), while the cheap independent jobs stay GitHub-hosted
+# rather than queueing behind it.
+
 jobs:
-  test:
-    name: build + test
-    # Self-hosted on `grace`, matching the other cogniumhq repos. The runner is
-    # registered per-repo at /opt/gh-runners/cognium-dev and runs as `ghrunner`.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Narrow by design: strict tsc already covers types and unused symbols,
+      # so this enforces only the correctness rules tsc does not — atomic
+      # update races, unreachable/unmodified loops, fallthrough, self-compare.
+      - run: npm run lint
+
+  build:
+    name: build + typecheck
     runs-on: [self-hosted, grace]
     # Container: the runner is persistent, unlike a GitHub-hosted one, so
     # without this the jobs share ~/.npm and leftover node_modules with every
@@ -28,18 +55,19 @@ jobs:
     # binary is glibc-linked.
     container:
       image: node:22-bookworm
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
 
-      # packages/cli and packages/project-profile-detect run their suites
-      # under `bun test`, so both runtimes are required.
+      # packages/cli's build shells out to `bun build` (scripts/build.mjs), so
+      # every job that runs `build:all` needs the bun runtime, not just the
+      # ones that run `bun test`.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.11'
@@ -52,52 +80,179 @@ jobs:
       # test would abort on a missing web-tree-sitter.wasm. `build:all` adds
       # the browser/core bundles, and it is the browser step that copies the
       # grammars into dist/wasm.
-      #
-      # The build is also what makes the downstream suites work at all:
+      - run: npm run build:all
+
+      - run: npm run typecheck
+
+  test:
+    name: test — ${{ matrix.package }}
+    runs-on: [self-hosted, grace]
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 30
+    strategy:
+      # One check per workspace, and a red suite in one package must not stop
+      # the others reporting — the reason the previous single job split its
+      # test steps with `if: !cancelled()`.
+      fail-fast: false
+      matrix:
+        package: [circle-ir, cli, mcp-server, project-profile-detect]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # packages/cli and packages/project-profile-detect run their suites
+      # under `bun test`, so both runtimes are required.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - run: npm ci
+
+      # The build is what makes the downstream suites work at all:
       # packages/cli resolves `@cognium/project-profile-detect` and
       # packages/mcp-server resolves `circle-ir` through their `main`/`dist`
       # entries. Without this step those two suites fail with module-resolution
       # errors that look like 47 unrelated test failures (see #290).
       - run: npm run build:all
 
-      - run: npm run typecheck
-
-      # Each workspace reports separately so one red suite does not hide the
-      # state of the others. `!cancelled()` keeps the later steps running after
-      # an earlier failure, which is the whole point of splitting them.
-      #
-      # These run with --coverage so the thresholds in each package's config
-      # actually gate. Without it the thresholds are decoration: they were
-      # configured in packages/circle-ir/vitest.config.ts long before CI ever
-      # invoked them.
-      - name: test — circle-ir
-        if: ${{ !cancelled() }}
-        run: npm run test:coverage -w packages/circle-ir
-
-      - name: test — cli
-        if: ${{ !cancelled() }}
-        run: npm run test:coverage -w packages/cli
-
-      - name: test — mcp-server
-        if: ${{ !cancelled() }}
-        run: npm run test:coverage -w packages/mcp-server
-
-      # Was the one red suite in this repo (`mergeMavenInheritance — depth cap`,
-      # an order-dependent merge). Fixed in #290 / #320, so this step is green
-      # and the whole workflow can be a required check.
-      - name: test — project-profile-detect
-        if: ${{ !cancelled() }}
-        run: npm run test:coverage -w packages/project-profile-detect
+      # `test:coverage`, not `test`, so each package's thresholds actually
+      # gate. Without --coverage they are decoration: circle-ir's were
+      # configured long before CI ever invoked them.
+      - name: test + coverage thresholds
+        run: npm run test:coverage -w packages/${{ matrix.package }}
 
       # Coverage reports are what makes a threshold failure diagnosable — the
-      # console summary says a gate moved, the lcov/html says which lines.
-      # Kept for 14 days; these are build artifacts, not a record.
-      - name: Upload coverage reports
+      # console summary says a gate moved, the lcov says which lines.
+      - name: Upload coverage report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: coverage
-          path: |
-            packages/*/coverage/
+          name: coverage-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/coverage/
           retention-days: 14
           if-no-files-found: warn
+
+  self-scan:
+    name: self-scan (SAST)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # packages/cli's build shells out to `bun build` (scripts/build.mjs), so
+      # every job that runs `build:all` needs the bun runtime, not just the
+      # ones that run `bun test`.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - run: npm ci
+
+      - run: npm run build:all
+
+      # Dogfooding: the scanner runs against its own source. A SAST vendor
+      # whose CI never runs its own product has no early warning when a
+      # regression makes the CLI stop finding things.
+      #
+      # `scan .` from the package root, not `scan src/`: cognium.config.json
+      # matches its `include` globs (`src/**/*.ts`) against paths relative to
+      # the scan target, so `scan src/` sees `cli.ts` rather than `src/cli.ts`,
+      # matches nothing, and prints "No supported files found" — with exit 0.
+      # A gate invoked that way is green because it scanned nothing.
+      #
+      # --severity high gates on high+critical only. The package is clean at
+      # that level today; the one standing finding is a medium (log_injection,
+      # CWE-117) reported by the advisory step below but not gated.
+      - name: Gate on high/critical
+        working-directory: packages/cli
+        run: node dist/cli.js scan . --severity high
+
+      - name: Full report (advisory)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: packages/cli
+        run: node dist/cli.js scan .
+
+  dependency-audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Production dependencies only, failing on high/critical. Dev-only
+      # advisories never reach anyone installing `cognium-dev`, and failing on
+      # them would make this gate noise rather than signal.
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  pack-dry-run:
+    name: pack dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # packages/cli's build shells out to `bun build` (scripts/build.mjs), so
+      # every job that runs `build:all` needs the bun runtime, not just the
+      # ones that run `bun test`.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - run: npm ci
+
+      - run: npm run build:all
+
+      # A broken `main`/`types`/`bin` entry otherwise surfaces only at publish
+      # time, and this repo ships two packages from one release script. Pack
+      # both and assert every declared entrypoint exists in the built tree.
+      #
+      # This check's first run found a pre-existing, already published break:
+      # cognium-dev declares `main`/`types` pointing at dist/index.js and
+      # dist/index.d.ts, which scripts/build.mjs never emits (see #403).
+      # Fixing that is a product decision, so cognium-dev runs --warn-only
+      # (a visible annotation, exit 0) while circle-ir gates normally.
+      #
+      # Note: `continue-on-error` is deliberately NOT used. It masks the step
+      # conclusion to success, so the report disappears from the checks UI —
+      # the finding would be silent. Drop --warn-only once #403 lands.
+      - name: Pack publishable packages and verify entrypoints
+        run: |
+          set -euo pipefail
+          for pkg in circle-ir cli; do
+            echo "::group::pack $pkg"
+            npm pack --workspace "packages/$pkg" --pack-destination /tmp >/dev/null
+            if [ "$pkg" = "cli" ]; then
+              node scripts/verify-entrypoints.mjs "packages/$pkg" --warn-only
+            else
+              node scripts/verify-entrypoints.mjs "packages/$pkg"
+            fi
+            echo "::endgroup::"
+          done

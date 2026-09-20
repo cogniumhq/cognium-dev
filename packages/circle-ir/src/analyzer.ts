@@ -523,6 +523,10 @@ export async function initAnalyzer(options: AnalyzerOptions = {}): Promise<void>
     languageModules: options.languageModules,
   });
 
+  // Lazy-init guard: two concurrent callers can both pass the check and
+  // initialise, but initialisation is idempotent, so the cost is a
+  // repeated call rather than corrupted state.
+  // eslint-disable-next-line require-atomic-updates
   initialized = true;
 }
 

@@ -8359,7 +8359,7 @@ export function findRustEvalCrateCodeInjectionFindings(
       if (arg === null) continue;
       if (arg.length === 0) continue;
       // unwrap leading '&' borrow
-      let unwrapped = arg.replace(/^&\s*/, '').trim();
+      const unwrapped = arg.replace(/^&\s*/, '').trim();
       if (/^"[^"]*"$/.test(unwrapped)) continue;
       let tainted = false;
       for (const v of fn.tainted) {

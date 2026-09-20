@@ -41,6 +41,10 @@ async function getNodeModules() {
       dynamicImport('path'),
       dynamicImport('fs'),
     ]);
+    // Lazy-init guard: two concurrent callers can both pass the check and
+    // initialise, but initialisation is idempotent, so the cost is a
+    // repeated call rather than corrupted state.
+    // eslint-disable-next-line require-atomic-updates
     nodeModules = {
       fileURLToPath: urlMod.fileURLToPath,
       dirname: pathMod.dirname,

@@ -1693,7 +1693,9 @@ export class ConstantPropagator {
 
       const startIdx = matchingIdx >= 0 ? matchingIdx : defaultIdx;
 
-      for (let i = 0; i < startIdx && startIdx >= 0; i++) {
+      // `startIdx >= 0` was redundant: i starts at 0, so `i < startIdx`
+      // already yields no iterations for any startIdx <= 0.
+      for (let i = 0; i < startIdx; i++) {
         this.markUnreachable(caseGroups[i]);
       }
 

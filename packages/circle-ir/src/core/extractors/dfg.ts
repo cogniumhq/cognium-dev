@@ -1373,7 +1373,7 @@ function buildRustDFG(tree: Tree, cache?: NodeCache): DFG {
   const defs: DFGDef[] = [];
   const uses: DFGUse[] = [];
   let defIdCounter = 1;
-  let useIdCounter = 1;
+  const useIdCounter = 1;
 
   // Track definitions by variable name and scope for reaching definitions
   const scopeStack: Map<string, number>[] = [new Map()];
