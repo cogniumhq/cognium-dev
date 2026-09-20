@@ -234,19 +234,25 @@ jobs:
       # time, and this repo ships two packages from one release script. Pack
       # both and assert every declared entrypoint exists in the built tree.
       #
-      # Advisory for now: this check's first run found a pre-existing, already
-      # published break — cognium-dev declares `main`/`types` pointing at
-      # dist/index.js and dist/index.d.ts, which scripts/build.mjs never emits
-      # (see #403). Fixing that is a product decision, so the job reports
-      # rather than blocks. Flip `continue-on-error` off once #403 lands —
-      # gating is the entire point of this check.
+      # This check's first run found a pre-existing, already published break:
+      # cognium-dev declares `main`/`types` pointing at dist/index.js and
+      # dist/index.d.ts, which scripts/build.mjs never emits (see #403).
+      # Fixing that is a product decision, so cognium-dev runs --warn-only
+      # (a visible annotation, exit 0) while circle-ir gates normally.
+      #
+      # Note: `continue-on-error` is deliberately NOT used. It masks the step
+      # conclusion to success, so the report disappears from the checks UI —
+      # the finding would be silent. Drop --warn-only once #403 lands.
       - name: Pack publishable packages and verify entrypoints
-        continue-on-error: true
         run: |
           set -euo pipefail
           for pkg in circle-ir cli; do
             echo "::group::pack $pkg"
             npm pack --workspace "packages/$pkg" --pack-destination /tmp >/dev/null
-            node scripts/verify-entrypoints.mjs "packages/$pkg"
+            if [ "$pkg" = "cli" ]; then
+              node scripts/verify-entrypoints.mjs "packages/$pkg" --warn-only
+            else
+              node scripts/verify-entrypoints.mjs "packages/$pkg"
+            fi
             echo "::endgroup::"
           done
