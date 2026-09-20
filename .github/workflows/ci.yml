@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Lets the self-hosted runner be re-verified without opening a PR.
   workflow_dispatch:
 
 # Read-only: this workflow builds and tests, it never writes to the repo.
@@ -17,7 +18,16 @@ concurrency:
 jobs:
   test:
     name: build + test
-    runs-on: ubuntu-latest
+    # Self-hosted on `grace`, matching the other cogniumhq repos. The runner is
+    # registered per-repo at /opt/gh-runners/cognium-dev and runs as `ghrunner`.
+    runs-on: [self-hosted, grace]
+    # Container: the runner is persistent, unlike a GitHub-hosted one, so
+    # without this the jobs share ~/.npm and leftover node_modules with every
+    # other repo on the box. Must stay a glibc image (not alpine):
+    # actions/checkout runs on the node binary the runner mounts in, and that
+    # binary is glibc-linked.
+    container:
+      image: node:22-bookworm
     timeout-minutes: 30
 
     steps:
@@ -55,21 +65,39 @@ jobs:
       # Each workspace reports separately so one red suite does not hide the
       # state of the others. `!cancelled()` keeps the later steps running after
       # an earlier failure, which is the whole point of splitting them.
+      #
+      # These run with --coverage so the thresholds in each package's config
+      # actually gate. Without it the thresholds are decoration: they were
+      # configured in packages/circle-ir/vitest.config.ts long before CI ever
+      # invoked them.
       - name: test — circle-ir
         if: ${{ !cancelled() }}
-        run: npm run test -w packages/circle-ir
+        run: npm run test:coverage -w packages/circle-ir
 
       - name: test — cli
         if: ${{ !cancelled() }}
-        run: npm run test -w packages/cli
+        run: npm run test:coverage -w packages/cli
 
       - name: test — mcp-server
         if: ${{ !cancelled() }}
-        run: npm run test -w packages/mcp-server
+        run: npm run test:coverage -w packages/mcp-server
 
       # Was the one red suite in this repo (`mergeMavenInheritance — depth cap`,
       # an order-dependent merge). Fixed in #290 / #320, so this step is green
       # and the whole workflow can be a required check.
       - name: test — project-profile-detect
         if: ${{ !cancelled() }}
-        run: npm run test -w packages/project-profile-detect
+        run: npm run test:coverage -w packages/project-profile-detect
+
+      # Coverage reports are what makes a threshold failure diagnosable — the
+      # console summary says a gate moved, the lcov/html says which lines.
+      # Kept for 14 days; these are build artifacts, not a record.
+      - name: Upload coverage reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            packages/*/coverage/
+          retention-days: 14
+          if-no-files-found: warn

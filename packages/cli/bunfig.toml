@@ -1,0 +1,18 @@
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+# Without this the report is dominated by ../circle-ir/dist/* and
+# ../project-profile-detect/dist/*: bun instruments every module the suite
+# loads, so a sibling package's compiled output lands in this package's
+# coverage at ~0% and makes any threshold here meaningless.
+coveragePathIgnorePatterns = ["../**"]
+
+# Baseline thresholds, measured on the pristine CI checkout rather than chosen
+# as an aspiration. They are a ratchet: raise them as coverage improves, never
+# lower them to make a PR pass. Measured 2026-09-20: 63.69% funcs, 69.68% lines.
+#
+# The gap is concentrated in src/cli.ts (41.67% funcs / 19.87% lines — the
+# argument-dispatch and command bodies are only reached through tests/e2e.test.ts)
+# and src/utils/spinner.ts (0% — TTY-only rendering, never entered under test).
+coverageThreshold = { line = 0.66, function = 0.60 }
