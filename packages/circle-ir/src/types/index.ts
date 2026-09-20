@@ -864,6 +864,32 @@ export interface Finding {
   remediation: string;
   verification: {
     graph_path_exists: boolean;
+    /**
+     * Whether the taint layer independently proved a flow reaching this
+     * finding's sink (cognium-dev#387). Added in 4.9.21; OPTIONAL, so a
+     * consumer that ignores it sees no change.
+     *
+     * `generateFindings` rebuilds its own source/sink pairs and emits one
+     * whenever a DFG path *or* the proximity fallback accepts it. The taint
+     * layer's flow builders refuse most of those pairs, so the two surfaces
+     * disagree badly — measured on OWASP Benchmark Java: 2800 `taint.flows`
+     * rows against 8801 findings rows, with **6635 (75.4%) of findings having
+     * no flow reaching the same sink**.
+     *
+     * That gap is the dominant driver of Java over-prediction (~353
+     * security-typed findings per repo against ~8 genuinely vulnerable files
+     * on the 500-repo vuln-localization benchmark), and it is invisible from
+     * the finding alone — an unbacked pairing looks exactly like a proven one.
+     *
+     * Backing is judged at SINK level: true when some flow of the same
+     * `sink_type` reaches the same line. Deliberately not an exact
+     * source-line match, because a finding whose source line was
+     * re-attributed (see #361/#372) is still the same proven detection.
+     *
+     * `undefined` means the question was not asked — the caller passed no
+     * `flows` to `generateFindings`. Treat that as "unknown", never as false.
+     */
+    flow_backed?: boolean;
     llm_verified: boolean;
     llm_confidence: number;
     /**
