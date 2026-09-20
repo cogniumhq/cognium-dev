@@ -605,13 +605,37 @@ export function formatJSON(
   return JSON.stringify(output, null, 2);
 }
 
+/**
+ * Build a SARIF `physicalLocation` for a file/line pair.
+ *
+ * SARIF puts `minimum: 1` on `region.startLine`, and a region with no
+ * startLine/charOffset/byteOffset fails the `anyOf`. Either way the *whole
+ * run* is invalid, not just the one result — GitHub code scanning rejects the
+ * upload and every finding in it disappears. Analyzer findings do not always
+ * carry a usable line (0 and undefined both occur), so emit the region only
+ * when the line is a positive integer and fall back to a file-level location
+ * otherwise. A file-level finding is worth strictly more than a dropped run.
+ */
+function physicalLocation(file: string, line: number | undefined) {
+  const hasLine = Number.isInteger(line) && (line as number) >= 1;
+  return {
+    physicalLocation: {
+      artifactLocation: { uri: file },
+      ...(hasLine ? { region: { startLine: line } } : {}),
+    },
+  };
+}
+
 export function formatSARIF(
   results: ScanResult[],
   crossFileData?: CrossFileData,
   profileSummary?: ProjectProfileSummary,
 ): string {
   const sarif = {
-    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    // The OASIS repo moved this file: master/Schemata/ is a 404 today, the
+    // schema now lives under main/sarif-2.1/schema/. Consumers that resolve
+    // $schema were getting a dead link.
+    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json',
     version: '2.1.0',
     runs: [
       {
@@ -691,14 +715,7 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
         ruleId: vuln.type.replace(/\s+/g, '-').toLowerCase(),
         level: vuln.severity === 'critical' || vuln.severity === 'high' ? 'error' : 'warning',
         message: { text: vuln.message },
-        locations: [
-          {
-            physicalLocation: {
-              artifactLocation: { uri: result.file },
-              region: { startLine: vuln.line },
-            },
-          },
-        ],
+        locations: [physicalLocation(result.file, vuln.line)],
         properties: {
           cwe: vuln.cwe,
           severity: vuln.severity,
@@ -721,22 +738,12 @@ function generateSarifResults(results: ScanResult[], crossFileData?: CrossFileDa
       message: {
         text: `Cross-file taint flow from ${p.source.file}:${p.source.line} to ${p.sink.file}:${p.sink.line}`,
       },
-      locations: [
-        {
-          physicalLocation: {
-            artifactLocation: { uri: p.sink.file },
-            region: { startLine: p.sink.line },
-          },
-        },
-      ],
+      locations: [physicalLocation(p.sink.file, p.sink.line)],
       relatedLocations: [
         {
           id: 0,
           message: { text: 'taint source' },
-          physicalLocation: {
-            artifactLocation: { uri: p.source.file },
-            region: { startLine: p.source.line },
-          },
+          ...physicalLocation(p.source.file, p.source.line),
         },
       ],
       properties: {
