@@ -1,5 +1,5 @@
 /**
- * Tests for cognium-dev #166 — Java `xml-entity-expansion` (CWE-776)
+ * Tests for cognium-dev #166 — Java `xml-entity-expansion` (CWE-611)
  * FP suppression on JDK 8u121+ entity-limit hardening and the
  * load-external-dtd / secure-processing feature patterns.
  *

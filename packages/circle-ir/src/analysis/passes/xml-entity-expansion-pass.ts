@@ -1,5 +1,5 @@
 /**
- * Pass: xml-entity-expansion (CWE-776 / CWE-611, category: security)
+ * Pass: xml-entity-expansion (CWE-611 / CWE-776, category: security)
  *
  * Pattern pass — flags XML parser instantiation that does *not* disable
  * DTD / external-entity processing in the same file. This covers:
@@ -37,6 +37,19 @@
  * the orthogonal *configuration* signal — fire even on hard-coded inputs
  * because billion-laughs is exploitable via any attacker-supplied entity
  * file even when the parse() argument itself is trusted.
+ *
+ * CWE is assigned PER API, by which weakness the unhardened default actually
+ * leaves open (#426) — the same per-API reasoning `language-sources-pass`
+ * applies to Python's `xml.sax`:
+ *   - Java JAXP factories  -> CWE-611. External entity resolution is ON by
+ *     default, while JAXP has shipped a default entity-expansion limit for
+ *     years, so the live risk on a current JDK is external entities. Every
+ *     hardening token this pass looks for is an external-entity control.
+ *   - `lxml.etree`         -> CWE-611. `resolve_entities` defaults on.
+ *   - `xml.etree.ElementTree` -> CWE-776. It never resolves external entities;
+ *     what remains is entity expansion.
+ * The JS variant of this rule (`libxmljs` `noent: true`) already reported
+ * CWE-611, so before this the rule disagreed with itself across languages.
  *
  * Issue: #86, Sprint 6.
  */
@@ -161,9 +174,9 @@ export class XmlEntityExpansionPass
           level: 'error',
           message:
             `${det.api} created without disabling DTD / external-entity ` +
-            'processing. Vulnerable to billion-laughs / quadratic ' +
-            'blow-up DoS (CWE-776) and external-entity disclosure ' +
-            '(CWE-611). Add `setFeature("http://apache.org/xml/features/' +
+            'processing. Vulnerable to external-entity disclosure ' +
+            '(CWE-611) and billion-laughs / quadratic blow-up DoS ' +
+            '(CWE-776). Add `setFeature("http://apache.org/xml/features/' +
             'disallow-doctype-decl", true)` (or the equivalent) before ' +
             'parsing.',
           file,
@@ -195,8 +208,11 @@ export class XmlEntityExpansionPass
           level: 'error',
           message:
             `${det.api} called without an entity-safe parser. Vulnerable ` +
-            'to billion-laughs / quadratic blow-up DoS (CWE-776) and ' +
-            'external-entity disclosure (CWE-611). Use `defusedxml` or pass ' +
+            (det.cwe === 'CWE-611'
+              ? 'to external-entity disclosure (CWE-611) and billion-laughs / ' +
+                'quadratic blow-up DoS (CWE-776). '
+              : 'to billion-laughs / quadratic blow-up DoS (CWE-776). ') +
+            'Use `defusedxml` or pass ' +
             'an `XMLParser(resolve_entities=False)` to lxml.',
           file,
           line,
@@ -314,7 +330,7 @@ export class XmlEntityExpansionPass
         return {
           pattern: `${factory}.newInstance()`,
           api: factory,
-          cwe: 'CWE-776',
+          cwe: 'CWE-611',
         };
       }
     }
@@ -330,7 +346,7 @@ export class XmlEntityExpansionPass
       return {
         pattern: `etree.${method}`,
         api: `lxml.etree.${method}`,
-        cwe: 'CWE-776',
+        cwe: 'CWE-611',
       };
     }
     // xml.etree.ElementTree.parse / fromstring
