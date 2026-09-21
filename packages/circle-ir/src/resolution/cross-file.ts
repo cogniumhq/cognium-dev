@@ -18,6 +18,30 @@ import { SymbolTable, type ExportedSymbol } from './symbol-table.js';
 import { TypeHierarchyResolver } from './type-hierarchy.js';
 
 /**
+ * Token used for whole-word identifier matching.
+ * Python stores `*args` / `**kwargs` with the stars; the body refers to
+ * the bare name, and `\b` before `*` is never a word boundary anyway (#420).
+ */
+function identifierMatchToken(name: string): string {
+  return name.replace(/^\*+/, '');
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Whole-word identifier regex, or undefined if the name cannot form one. */
+function wholeWordIdentifierRe(name: string): RegExp | undefined {
+  const token = identifierMatchToken(name);
+  if (!token) return undefined;
+  try {
+    return new RegExp(`\\b${escapeRegExp(token)}\\b`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Resolved call with target information
  */
 export interface ResolvedCall {
@@ -763,8 +787,8 @@ export class CrossFileResolver {
             // Heuristic: scan the expression for whole-word param-name tokens.
             // Catches concatenations / nested expressions like `prefix + url`.
             for (const [name] of paramNameToIndex) {
-              const re = new RegExp(`\\b${name}\\b`);
-              if (re.test(arg.expression)) candidates.push(name);
+              const re = wholeWordIdentifierRe(name);
+              if (re?.test(arg.expression)) candidates.push(name);
             }
           }
           for (const cand of candidates) {
@@ -911,7 +935,8 @@ export class CrossFileResolver {
               }
               if (arg.expression) {
                 for (const v of reachable.names) {
-                  if (new RegExp(`\\b${v}\\b`).test(arg.expression)) {
+                  const re = wholeWordIdentifierRe(v);
+                  if (re?.test(arg.expression)) {
                     matchedName = v;
                     break;
                   }
@@ -1505,8 +1530,8 @@ export class CrossFileResolver {
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
     if (arg.expression) {
       for (const [tv, origin] of tainted) {
-        const re = new RegExp(`\\b${tv}\\b`);
-        if (re.test(arg.expression)) return { var: tv, origin };
+        const re = wholeWordIdentifierRe(tv);
+        if (re?.test(arg.expression)) return { var: tv, origin };
       }
     }
 
