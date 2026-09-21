@@ -887,7 +887,9 @@ export interface Finding {
      * re-attributed (see #361/#372) is still the same proven detection.
      *
      * `undefined` means the question was not asked — the caller passed no
-     * `flows` to `generateFindings`. Treat that as "unknown", never as false.
+     * `flows` argument to `generateFindings`. Treat that as "unknown", never
+     * as false. An EMPTY `flows` array is an answer, not an omission: the
+     * taint layer proved nothing in the file, so every finding reads `false`.
      */
     flow_backed?: boolean;
     llm_verified: boolean;
