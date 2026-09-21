@@ -2365,7 +2365,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
             continue;
           }
           // Direct in-line helper call: `{helper(arg)}` — extract name.
-          let helperName: string | null = null;
+          let helperName: string | null;
           const directCall = t.match(/^([A-Za-z_]\w*)\s*\(/);
           if (directCall) {
             helperName = directCall[1] ?? null;

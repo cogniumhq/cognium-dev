@@ -502,7 +502,7 @@ function parsePythonDecorator(dec: Node): ParsedPythonDecorator | null {
     const fnNode = target.childForFieldName('function');
     if (!fnNode) return null;
     let receiver = '';
-    let method = '';
+    let method: string;
     if (fnNode.type === 'identifier') {
       method = getNodeText(fnNode);
     } else if (fnNode.type === 'attribute') {
@@ -603,7 +603,7 @@ function classifyPythonDecorator(
     const isRoutey = isPyRouterReceiver(receiver);
     if (isRoutey) {
       // Framework inference: import-driven
-      let framework: RuntimeRegistration['framework'] = 'unknown';
+      let framework: RuntimeRegistration['framework'];
       if (imp.hasFlask) framework = 'flask';
       else if (imp.hasFastApi) framework = 'fastapi';
       else if (method === 'route') framework = 'flask';   // Flask hallmark
