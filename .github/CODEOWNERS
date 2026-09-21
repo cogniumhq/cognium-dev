@@ -1,0 +1,52 @@
+# Code owners for cognium-dev.
+#
+# Owners are requested automatically on any PR touching a matching path.
+# Last match wins, so the specific rules below override the catch-all.
+#
+# TWO THINGS GATE THIS FILE — until both are done it is inert:
+#
+#   1. @cogniumhq/coreteam must have WRITE access to this repository.
+#      GitHub silently ignores CODEOWNERS entries for a team that lacks
+#      write access; no error is surfaced anywhere. At time of writing
+#      `GET /repos/cogniumhq/cognium-dev/teams` returns [] — no team has
+#      been granted access to this repo at all.
+#   2. Branch protection on `main` must enable "Require review from Code
+#      Owners". It currently requires nine status checks but no reviews
+#      (`required_pull_request_reviews` is null), so owners would be
+#      requested but merges would not block.
+#
+# See #442.
+
+# Default owner for everything not matched below.
+*                                   @cogniumhq/coreteam
+
+# ---------------------------------------------------------------------------
+# Supply chain — a change here can execute code on every developer machine
+# and every CI run, so these are the paths most worth a second pair of eyes.
+# ---------------------------------------------------------------------------
+
+/.github/                           @cogniumhq/coreteam
+/.github/workflows/                 @cogniumhq/coreteam
+/release.sh                         @cogniumhq/coreteam
+/scripts/                           @cogniumhq/coreteam
+
+# Dependency manifests and the lockfile: the review surface for a malicious
+# or typosquatted transitive dependency.
+/package.json                       @cogniumhq/coreteam
+/package-lock.json                  @cogniumhq/coreteam
+/packages/*/package.json            @cogniumhq/coreteam
+
+# Prebuilt binaries cannot be meaningfully diffed in review, so any change
+# to one is a deliberate decision rather than an incidental edit.
+*.wasm                              @cogniumhq/coreteam
+
+# ---------------------------------------------------------------------------
+# Analysis engine — changes here move detection behaviour, and a regression
+# is a missed vulnerability rather than a broken build.
+# ---------------------------------------------------------------------------
+
+/packages/circle-ir/src/analysis/   @cogniumhq/coreteam
+/packages/circle-ir/src/core/       @cogniumhq/coreteam
+
+# Security policy.
+/SECURITY.md                        @cogniumhq/coreteam
