@@ -119,6 +119,15 @@ export type {
 // to a default branch. Locked by tests/public-entry-exports.test.ts.
 export { SOURCE_TYPES, SINK_TYPES } from './types/index.js';
 
+// Modelled-CWE export (#393) — which weakness classes the taint engine covers,
+// derived from the live sink registries.
+export {
+  getModelledCwes,
+  isModelledCwe,
+  RELATED_CWE,
+  type ModelledCwes,
+} from './analysis/modelled-cwes.js';
+
 // Config types
 export type {
   SourceConfig,

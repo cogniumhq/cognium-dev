@@ -15,6 +15,7 @@ export { GoPlugin } from './go.js';
 export { CSharpPlugin } from './csharp.js';
 
 import { registerLanguage } from '../registry.js';
+import type { LanguagePlugin } from '../types.js';
 import { JavaPlugin } from './java.js';
 import { JavaScriptPlugin } from './javascript.js';
 import { PythonPlugin } from './python.js';
@@ -26,17 +27,29 @@ import { GoPlugin } from './go.js';
 import { CSharpPlugin } from './csharp.js';
 
 /**
+ * Fresh instances of every built-in language plugin, unregistered. The single
+ * list both `registerBuiltinPlugins` and registry-wide enumerations (e.g. the
+ * modelled-CWE export) read, so a new plugin cannot be added to one and missed
+ * by the other.
+ */
+export function createBuiltinPlugins(): LanguagePlugin[] {
+  return [
+    new JavaPlugin(),
+    new JavaScriptPlugin(),
+    new PythonPlugin(),
+    new RustPlugin(),
+    new BashPlugin(),
+    new HtmlPlugin(),
+    new VuePlugin(),
+    new GoPlugin(),
+    new CSharpPlugin(),
+  ];
+}
+
+/**
  * Register all built-in language plugins with the global registry.
  * Call this during analyzer initialization.
  */
 export function registerBuiltinPlugins(): void {
-  registerLanguage(new JavaPlugin());
-  registerLanguage(new JavaScriptPlugin());
-  registerLanguage(new PythonPlugin());
-  registerLanguage(new RustPlugin());
-  registerLanguage(new BashPlugin());
-  registerLanguage(new HtmlPlugin());
-  registerLanguage(new VuePlugin());
-  registerLanguage(new GoPlugin());
-  registerLanguage(new CSharpPlugin());
+  for (const plugin of createBuiltinPlugins()) registerLanguage(plugin);
 }
