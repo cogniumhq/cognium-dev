@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.21] - 2026-09-20
+
+### Fixed
+
+**SARIF output is now schema-valid on every finding (#399).** SARIF requires
+`region.startLine >= 1`, and a region with no `startLine`/`charOffset`/
+`byteOffset` is invalid outright. Findings do not always carry a usable line —
+`0` and `undefined` both occur — and the formatter passed the value through
+unguarded. GitHub code scanning rejects an invalid upload wholesale, so **one
+such finding silently dropped every finding alongside it.**
+
+- A finding without a usable line now emits a file-level location instead of an
+  invalid region. Less precise, but it survives the upload.
+- The emitted `$schema` URL was a 404 (OASIS moved the file); it now points at
+  `main/sarif-2.1/schema/sarif-schema-2.1.0.json`.
+
+Locked by a conformance test that validates whole documents against the vendored
+SARIF 2.1.0 schema plus the stricter invariants GitHub code scanning enforces.
+
+### Changed
+- Adopts `circle-ir@4.9.21`. No CLI flag changes.
+
+### Consumer Impact
+
+**SARIF only.** If a `--format sarif` upload to GitHub code scanning was being
+rejected, or showing no results, re-run it on this version. Anything that
+string-matches the `$schema` URL needs updating. Text and JSON output, finding
+counts and exit codes are identical to 4.9.20 — `circle-ir@4.9.21`'s new
+`verification.flow_backed` field lives on the library's `generateFindings`
+surface, which `cognium-dev scan` does not use. No baseline needs re-taking.
+
 ## [4.9.20] - 2026-09-19
 
 ### Changed
