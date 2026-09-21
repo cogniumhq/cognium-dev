@@ -15,18 +15,18 @@ export default defineConfig({
       // Thresholds sit just under the measured values, and ratchet: raise
       // them as coverage improves, never lower them to make a PR pass.
       //
-      // Measured 2026-09-20 after tests/tools-analysis.test.ts covered the
-      // four analysis handlers, which had sat at 0% branch coverage:
-      // 86.79 stmts / 70.69 branches / 92.47 funcs / 91.23 lines.
+      // Measured 2026-09-20 after tools-filters-cache.test.ts covered
+      // refresh's single-project branch, scan's filter permutations and the
+      // filesystem error paths in util/files:
+      // 92.81 stmts / 80.64 branches / 95.69 funcs / 95.50 lines.
       //
-      // What remains is concentrated in refresh.ts (66.66/50 — the cache-miss
-      // path), scan.ts (77.77/55.1 — option permutations), and util/files.ts
-      // (73.17/57.14 — filesystem error branches).
+      // What remains is mostly describe-source.ts (75/53.84) and the
+      // list-entry-points framework branches (57.14).
       thresholds: {
-        statements: 84,
-        branches: 68,
-        functions: 90,
-        lines: 89,
+        statements: 91,
+        branches: 78,
+        functions: 94,
+        lines: 94,
       },
     },
   },

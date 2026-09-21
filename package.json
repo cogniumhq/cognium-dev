@@ -15,7 +15,8 @@
     "clean": "npm run clean --workspaces",
     "dogfood": "npm run dogfood -w packages/cli",
     "release": "bash release.sh",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:scripts": "node --test 'scripts/*.test.mjs'"
   },
   "author": {
     "name": "Cognium Labs",
