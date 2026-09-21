@@ -59,7 +59,7 @@
     "circle-ir": ">=4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0",
+    "@types/node": "^26.6.1",
     "bun-types": "^1.4.2",
     "circle-ir": "^4.9.12",
     "typescript": "^7.0.2"
