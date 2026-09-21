@@ -25,6 +25,17 @@ updates:
           - "bun-types"
           - "esbuild"
         update-types: [minor, patch]
+      # eslint and @eslint/js are released in lockstep and peer-depend on each
+      # other, so a PR bumping one alone cannot install — #408 bumped
+      # @eslint/js to 10 against eslint ^9 and failed `npm ci` outright.
+      # Grouped across ALL update-types (majors included) so they always move
+      # together; a major here still gets its own PR, just not a broken one.
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
       tree-sitter:
         patterns:
           - "tree-sitter-*"
