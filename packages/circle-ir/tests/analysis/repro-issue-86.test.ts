@@ -289,7 +289,8 @@ public class T {
   });
 
   // ---------------------------------------------------------------------
-  // XML entity expansion (XML bomb / billion-laughs) — CWE-776
+  // xml-entity-expansion — CWE assigned per API (#426): JAXP + lxml resolve
+  // external entities by default (CWE-611); ElementTree never does (CWE-776).
   // ---------------------------------------------------------------------
 
   it('flags Java SAXParserFactory without disallow-doctype feature', async () => {
@@ -305,7 +306,7 @@ public class T {
     const r = await analyze(code, 'T.java', 'java');
     const finds = (r.findings ?? []).filter((f) => f.rule_id === 'xml-entity-expansion');
     expect(finds.length).toBeGreaterThanOrEqual(1);
-    expect(finds[0].cwe).toBe('CWE-776');
+    expect(finds[0].cwe).toBe('CWE-611');
   });
 
   it('flags Java DocumentBuilderFactory without safe features', async () => {
