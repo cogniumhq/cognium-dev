@@ -14,13 +14,29 @@ const BLUE = '\x1b[94m';     // Bright blue
 const CYAN = '\x1b[96m';     // Bright cyan
 const MAGENTA = '\x1b[95m';  // Bright magenta
 
+/**
+ * Honor NO_COLOR (https://no-color.org/) and TERM=dumb.
+ * Checked on each call so tests can toggle the env without re-importing.
+ * Empty NO_COLOR does not disable color (spec: present and non-empty).
+ */
+export function colorEnabled(): boolean {
+  const noColor = process.env.NO_COLOR;
+  if (noColor !== undefined && noColor !== '') return false;
+  if (process.env.TERM === 'dumb') return false;
+  return true;
+}
+
+function paint(code: string, text: string): string {
+  return colorEnabled() ? `${code}${text}${RESET}` : text;
+}
+
 export const colors = {
-  red: (text: string) => `${RED}${text}${RESET}`,
-  green: (text: string) => `${GREEN}${text}${RESET}`,
-  yellow: (text: string) => `${YELLOW}${text}${RESET}`,
-  blue: (text: string) => `${BLUE}${text}${RESET}`,
-  cyan: (text: string) => `${CYAN}${text}${RESET}`,
-  magenta: (text: string) => `${MAGENTA}${text}${RESET}`,
-  bold: (text: string) => `${BOLD}${text}${RESET}`,
+  red: (text: string) => paint(RED, text),
+  green: (text: string) => paint(GREEN, text),
+  yellow: (text: string) => paint(YELLOW, text),
+  blue: (text: string) => paint(BLUE, text),
+  cyan: (text: string) => paint(CYAN, text),
+  magenta: (text: string) => paint(MAGENTA, text),
+  bold: (text: string) => paint(BOLD, text),
   dim: (text: string) => text, // No dimming - keep text readable
 };
