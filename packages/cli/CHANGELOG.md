@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.22] - 2026-09-21
+
+### Changed
+- Adopts `circle-ir@4.9.22`. No CLI flag or output-shape changes.
+
+### Consumer Impact
+
+**`xml-entity-expansion` findings on Java and Python `lxml` now report CWE-611
+instead of CWE-776.** Label only: the rule id, the finding set and exit codes
+are unchanged by this. Update any `--format sarif` / JSON consumer, suppression
+or baseline that matches this rule by CWE — a `CWE-776` match stops seeing the
+Java and lxml findings, a `CWE-611` match starts. `xml.etree.ElementTree`
+findings keep CWE-776.
+
+**A few more `xml-entity-expansion` findings on Java.** A hardened XML factory
+no longer hides an unhardened one in the same file. Narrow by design: 5 files
+added and 0 removed across 102 real Java repositories. A baseline expressed as
+finding counts may move by a handful on code that mixes hardened and unhardened
+factories.
+
 ## [4.9.21] - 2026-09-20
 
 ### Fixed
