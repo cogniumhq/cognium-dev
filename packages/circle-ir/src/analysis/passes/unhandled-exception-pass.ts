@@ -192,13 +192,6 @@ export class UnhandledExceptionPass implements AnalysisPass<UnhandledExceptionRe
 
     // Collect catch-block start lines (to detect re-throws)
     // Include both CFG-based and source-based catch lines
-    const catchStarts = new Set<number>(
-      exGraph.pairs.map(p => p.catchBlock.start_line),
-    );
-    for (const range of coveredRanges) {
-      catchStarts.add(range.end + 1); // catch line = end of covered range + 1
-    }
-
     const throwRe = language === 'python' ? PYTHON_RAISE_RE : JS_THROW_RE;
 
     const unhandled: UnhandledExceptionResult['unhandled'] = [];
@@ -208,19 +201,10 @@ export class UnhandledExceptionPass implements AnalysisPass<UnhandledExceptionRe
       const lineText = codeLines[ln - 1] ?? '';
       if (!throwRe.test(lineText)) continue;
 
-      // Skip re-throws inside catch blocks
+      // Skip re-throws inside catch blocks: the throw must follow a catch
+      // start *within the same method* — a bare line-number comparison would
+      // also match throws in later, unrelated methods.
       let inCatch = false;
-      for (const cs of catchStarts) {
-        if (ln >= cs) { inCatch = true; break; }
-      }
-      // More precise: only skip if ln is actually within a catch body
-      // (not just any line after a catch start). Use method boundary check.
-      // Simplified: if the line is >= any catch start within the same method, skip.
-      // Better heuristic: check if any pair has catchBlock.start_line <= ln
-      // and the throw is inside that catch body (ln <= methodEnd of that catch).
-      // We use a simple check: if the throw line is >= a catch start and
-      // the enclosing method contains the corresponding try, treat as re-throw.
-      inCatch = false;
       for (const pair of exGraph.pairs) {
         if (ln >= pair.catchBlock.start_line) {
           // Check same method

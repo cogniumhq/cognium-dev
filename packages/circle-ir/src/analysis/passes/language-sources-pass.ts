@@ -3864,16 +3864,12 @@ function findPythonRegexAllowlistWrapperSanitizers(code: string): TaintSanitizer
     // `if not re.fullmatch(<tight>, <arg>): <terminator>` and `return arg`.
     let foundGuard = false;
     let returnsArg = false;
-    let blockEnd = -1;
     const maxScan = Math.min(lines.length, i + 40);
     for (let j = i + 1; j < maxScan; j++) {
       const line = lines[j];
       if (line.trim() === '') continue;
       const indent = line.length - line.trimStart().length;
-      if (indent <= defIndent) {
-        blockEnd = j - 1;
-        break;
-      }
+      if (indent <= defIndent) break;
       if (!foundGuard) {
         const guard = new RegExp(
           `if\\s+not\\s+re\\.(?:fullmatch|match)\\s*\\(\\s*(${tightRegex.source})\\s*,\\s*${argName}\\s*\\)\\s*:`,
@@ -3894,7 +3890,6 @@ function findPythonRegexAllowlistWrapperSanitizers(code: string): TaintSanitizer
         returnsArg = true;
       }
     }
-    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 39);
     if (!foundGuard || !returnsArg) continue;
 
     wrappers.push({ name: wrapperName, defLine: i, defIndent });
@@ -9241,7 +9236,7 @@ export function findJsLdapInjectionFindings(
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const fm = line.match(filterPropRe);
-    let expr: string | null = null;
+    let expr: string;
     if (fm) {
       expr = fm[1].trim();
     } else if (filterShorthandRe.test(line)) {

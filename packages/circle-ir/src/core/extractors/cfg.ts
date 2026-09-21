@@ -788,7 +788,7 @@ function buildBashCFG(tree: Tree, startId: number, cache?: NodeCache): CFG {
 
     // Create exit block
     const exitBlock: CFGBlock = {
-      id: blockIdCounter++,
+      id: blockIdCounter,
       type: 'exit',
       start_line: topLevelStatements[topLevelStatements.length - 1].endPosition.row + 1,
       end_line: topLevelStatements[topLevelStatements.length - 1].endPosition.row + 1,
@@ -945,7 +945,7 @@ function buildGoCFG(tree: Tree, blockIdCounter: number, cache?: NodeCache): CFG 
   if (hasTopLevelDecls) {
     // Create a single block for top-level declarations
     const block: CFGBlock = {
-      id: blockIdCounter++,
+      id: blockIdCounter,
       type: 'normal',
       start_line: 1,
       end_line: tree.rootNode.endPosition.row + 1,
