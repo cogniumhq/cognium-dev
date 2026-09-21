@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { matchesGlob, isTestFile, detectLanguage } from '../src/cli.js';
+import { matchesGlob, isTestFile, detectLanguage, resolveScanLanguage, SUPPORTED_SCAN_LANGUAGES } from '../src/cli.js';
 
 // ─── matchesGlob ─────────────────────────────────────────────────────────────
 
@@ -160,5 +160,34 @@ describe('detectLanguage', () => {
   test('is case-insensitive on extension', () => {
     expect(detectLanguage('Foo.JAVA')).toBe('java');
     expect(detectLanguage('app.TS')).toBe('typescript');
+  });
+});
+
+// ─── resolveScanLanguage (cognium-dev#443) ───────────────────────────────────
+
+describe('resolveScanLanguage', () => {
+  test('accepts every language that LANG_MAP can detect', () => {
+    expect(SUPPORTED_SCAN_LANGUAGES).toEqual([
+      'bash', 'csharp', 'go', 'html', 'java', 'javascript', 'python', 'rust', 'typescript',
+    ]);
+    for (const lang of SUPPORTED_SCAN_LANGUAGES) {
+      expect(resolveScanLanguage(lang)).toBe(lang);
+    }
+  });
+
+  test('normalizes case and surrounding whitespace', () => {
+    expect(resolveScanLanguage('  Java  ')).toBe('java');
+    expect(resolveScanLanguage('TypeScript')).toBe('typescript');
+  });
+
+  test('treats missing / empty as unrestricted', () => {
+    expect(resolveScanLanguage(undefined)).toBeUndefined();
+    expect(resolveScanLanguage('')).toBeUndefined();
+  });
+
+  test('rejects unknown languages instead of silently matching nothing', () => {
+    expect(() => resolveScanLanguage('ruby')).toThrow(/Invalid language: ruby/);
+    expect(() => resolveScanLanguage('jaba')).toThrow(/Valid options:.*java/);
+    expect(() => resolveScanLanguage('js')).toThrow(/Invalid language: js/);
   });
 });
