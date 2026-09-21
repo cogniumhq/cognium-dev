@@ -4,6 +4,22 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-09-20
+
+### Changed
+- Adopts `circle-ir@4.9.21`. No MCP tool, schema, or response-shape changes.
+- Runtime dependency `zod` `^3.23.8` -> `^4.6.5` (major). Tool input schemas are
+  declared the same way and validate the same inputs; the four analysis tool
+  handlers, filters and cache paths are now covered by tests that pass on it.
+
+### Consumer Impact
+
+**None expected.** `circle-ir@4.9.21` adds an optional
+`verification.flow_backed` field to the library's `generateFindings` output,
+which this server does not use, so tool results are identical to 0.1.12. The one
+thing to watch is the `zod` major: an install that dedupes `zod` with another
+package pinned to v3 will now carry two copies.
+
 ## [0.1.12] - 2026-09-19
 
 ### Changed
