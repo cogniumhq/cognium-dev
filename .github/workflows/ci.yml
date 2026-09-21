@@ -45,6 +45,13 @@ jobs:
       # update races, unreachable/unmodified loops, fallthrough, self-compare.
       - run: npm run lint
 
+      # Repo tooling under scripts/ is not part of any workspace, so no package
+      # suite covers it. Node's built-in runner keeps this dependency-free.
+      # It guards the pack dry-run checker, whose contract is its exit code and
+      # its ::warning:: output — both of which have been wrong once already.
+      - name: test — repo scripts
+        run: npm run test:scripts
+
   build:
     name: build + typecheck
     runs-on: [self-hosted, grace]
