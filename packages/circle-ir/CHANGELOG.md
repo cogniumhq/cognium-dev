@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.21] - 2026-09-20
+
+### Added
+
+**`verification.flow_backed` on every `generateFindings` finding (#387).** Tells
+a consumer whether the taint layer independently proved a flow reaching the
+finding's sink.
+
+`generateFindings` rebuilds its own source/sink pairs and emits one whenever a
+DFG path *or* the proximity fallback accepts it. The taint layer's flow builders
+refuse most of those pairs, so the two surfaces disagree badly. Measured on
+OWASP Benchmark Java:
+
+| surface | rows |
+|---|---|
+| `taint.flows` | 2800 |
+| `generateFindings` | 8801 |
+| findings with no flow to the same sink | 6635 (75.4%) |
+
+That gap is the dominant driver of Java over-prediction, and it was invisible
+from a finding alone — an unbacked pairing looks exactly like a proven one.
+
+Semantics:
+
+| value | meaning |
+|---|---|
+| `true` | some flow of the same `sink_type` reaches the same line |
+| `false` | `flows` was passed — **including an empty array** — and none does |
+| `undefined` | the caller passed no `flows` argument; the question was not asked |
+
+- **Sink-level, not exact-pair.** A finding whose source line was re-attributed
+  by #361/#372 is still the same proven detection, so an exact source-line
+  match would wrongly mark proven findings unbacked.
+- **An empty `flows` array is an answer, not an omission.** Zero-flow files are
+  where unbacked pairings concentrate (a constant `new File("/etc/app.conf")`
+  opened beside an unrelated `getParameter` still emits `path_traversal`), so
+  those findings read `false`, never "unknown".
+- The #372 flow-derived findings are `true` by construction.
+
+To use it, pass `ir.taint.flows` as the trailing `flows` argument and rank or
+filter on `verification.flow_backed === true`.
+
+### Consumer Impact
+
+**None unless you filter.** Pure metadata: no finding is added, removed,
+re-severitied or re-ordered, and the `type@source->sink` signature surface
+cannot change, so every corpus differential is zero-delta by construction
+(confirmed on SecuriBench Micro: 313 signatures before and after). The CLI does
+not call `generateFindings` and is unaffected.
+
+What filtering buys, measured on real Java repositories:
+
+| repo | findings | files with findings |
+|---|---|---|
+| commons-io | 277 -> 182 | 55 -> 43 |
+| nacos | 138 -> 122 | 41 -> 35 |
+| camel | 326 -> 109 | 59 -> 35 |
+
+It varies a lot by repo — the OWASP 3.1x is the high end, not typical. On the
+two vuln-localization maven repos sampled where the ground-truth file was in the
+analysed subset, the true file survived the filter in both (undertow 3/3 files,
+cyclonedx-core-java 1/1) while predicted files fell 128 -> 82 and 22 -> 17.
+Small sample; directionally fewer predictions at unchanged recall.
+
+### Changed
+- Runtime dependency `web-tree-sitter` `^0.26.7` -> `^0.27.0`. No API change and
+  no grammar rebuild; the full suite (392 files / 4961 tests across all eight
+  languages) passes on it. A consumer that pins `web-tree-sitter` itself should
+  move to 0.27.
+
 ## [4.9.20] - 2026-09-19
 
 ### Consumer Impact
