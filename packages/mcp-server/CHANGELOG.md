@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime dependency `zod` `^3.23.8` -> `^4.6.5` (major). Tool input schemas are
   declared the same way and validate the same inputs; the four analysis tool
   handlers, filters and cache paths are now covered by tests that pass on it.
+- Runtime dependency `yaml` `^2.8.3` -> `^2.9.1`. Floor bump only; the previous
+  range already admitted 2.9.1.
 
 ### Consumer Impact
 
