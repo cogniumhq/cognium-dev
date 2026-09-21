@@ -74,6 +74,11 @@ Small sample; directionally fewer predictions at unchanged recall.
   no grammar rebuild; the full suite (392 files / 4961 tests across all eight
   languages) passes on it. A consumer that pins `web-tree-sitter` itself should
   move to 0.27.
+- Runtime dependency `yaml` `^2.8.3` -> `^2.9.1`. Floor bump only: the previous
+  range already admitted 2.9.1, so a fresh install resolved it before this.
+- Built with TypeScript 7.0.2 (was 6.0.3). Dev-only, but it is the compiler
+  that emits `dist/`; the suite, the browser/core bundles and a functional check
+  of the built artifact all pass on its output.
 
 ## [4.9.20] - 2026-09-19
 
