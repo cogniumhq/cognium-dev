@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.22] - 2026-09-21
+
+Two changes to pass 95 `xml-entity-expansion`, both found while working the
+vuln-localization miss list (#374 / #387).
+
+### Consumer Impact
+
+**`xml-entity-expansion` findings on Java and `lxml` now carry CWE-611 instead
+of CWE-776 (#426). Label only — no finding is added or removed by this, and
+`rule_id` is unchanged.**
+
+| API | before | after |
+|---|---|---|
+| Java `SAXParserFactory` / `DocumentBuilderFactory` / `XMLInputFactory` / `SchemaFactory` / `TransformerFactory` | CWE-776 | **CWE-611** |
+| Python `lxml.etree.*` | CWE-776 | **CWE-611** |
+| Python `xml.etree.ElementTree.*` | CWE-776 | CWE-776 |
+| JS `libxmljs` `{ noent: true }` | CWE-611 | CWE-611 |
+
+**What to change on your side:** any filter, suppression, baseline or dashboard
+keyed on `cwe` for this rule. One matching `CWE-776` stops seeing the Java and
+lxml findings; one matching `CWE-611` starts. SARIF CWE tags move the same way.
+Filters keyed on `rule_id` are unaffected.
+
+Why: the CWE is now assigned per API, by which weakness the unhardened default
+actually leaves open. JAXP resolves external entities by default while it has
+shipped a default entity-expansion limit for years, and every hardening token
+this pass looks for is an external-entity control. `lxml` defaults
+`resolve_entities` on. `ElementTree` never resolves external entities, so only
+expansion remains and it keeps CWE-776. The rule's own JS variant already
+reported CWE-611, so before this the rule disagreed with itself across
+languages. The Python message now names only the weakness that applies.
+
+Verified label-only over 102 real Java repositories: every repository keeps an
+identical `(file, line, api)` finding set; all 848 findings move 776 -> 611.
+
+### Fixed
+
+**One hardened XML factory no longer masks an unhardened one beside it (#425).**
+Any hardening token anywhere in a Java file used to silence the whole file, so a
+class that hardens its `DocumentBuilderFactory` in one method and creates an
+untouched `SchemaFactory` in the next reported nothing.
+
+Hardening evidence still silences the file, except for a factory that provably
+never receives it:
+
+- **chained** — `Factory.newInstance().newDocumentBuilder()`, product not handed
+  to another call or returned
+- **local** — `Factory f = Factory.newInstance();` where `f` builds a parser, is
+  never passed on, and is never returned
+
+and in both only when the enclosing method has no hardening-capable setter on
+ANY receiver, because hardening can land on the factory's product
+(`parser.getXMLReader().setFeature(...)`). A `TransformerFactory` additionally
+needs a `StreamSource` in its method. `jdk.xml.*` limits are process-wide and
+keep file-level silence. Fields, helpers and returned factories stay silent as
+before, and a file with no hardening evidence at all is unchanged.
+
+This one DOES add findings, by design and narrowly: over the same 102
+repositories, 610 previously-flagged files are unchanged, 0 are removed, and
+**5 files are added**, each read individually (keycloak `StaxParserUtil`,
+activemq `RuntimeConfigurationBroker`, log4j2 `XmlConfiguration`, OpenNMS
+`JaxbUtils`, camel `SpringBootStarterMojo`). Expect a small number of new
+`xml-entity-expansion` findings on Java code that mixes hardened and unhardened
+factories in one file.
+
 ## [4.9.21] - 2026-09-20
 
 ### Added

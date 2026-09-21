@@ -4,6 +4,20 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-09-21
+
+### Changed
+- Adopts `circle-ir@4.9.22`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits two `xml-entity-expansion` changes from `circle-ir@4.9.22`. Java and
+Python `lxml` findings now carry **CWE-611 instead of CWE-776** (label only —
+same rule id, same findings), so an agent or stored baseline matching this rule
+by CWE should match `CWE-611`. And a hardened XML factory no longer hides an
+unhardened one in the same Java file, which adds a small number of findings
+(5 files across 102 real repositories, none removed).
+
 ## [0.1.13] - 2026-09-20
 
 ### Changed
