@@ -253,6 +253,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findGoArgvSources(code, language));
     additionalSources.push(...findGoArchiveEntrySources(code, language));
     additionalSources.push(...findGoMultipartUploadSources(code, language));
+    additionalSources.push(...findGoGrpcRequestSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -1424,6 +1425,117 @@ function findGoMultipartUploadSources(sourceCode: string, language: string): Tai
       confidence: 0.9,
       variable: lhs,
     });
+  }
+  return sources;
+}
+
+/**
+ * cognium-dev#394 — Go gRPC request messages are remote input.
+ *
+ *   func (s *Server) Mount(ctx context.Context, req *v1alpha1.MountRequest) (*v1alpha1.MountResponse, error) {
+ *     err = json.Unmarshal([]byte(req.GetAttributes()), &attrib)
+ *     ...
+ *     ioutil.WriteFile(filepath.Join(targetPath, attrib["objectName"]), content, perm)
+ *
+ * Everything downstream of `req.GetAttributes()` was already modelled; only the
+ * root was missing, so three of the four `secrets-store-csi-driver` provider
+ * repos in the vuln-localization corpus produced no security finding at all.
+ *
+ * The rule is scoped by the PARAMETER, never by the method name. `GetX()` is on
+ * every protobuf-generated type, so treating the getter itself as a source would
+ * repeat the classless-entry mistake removed in #387/#390. What is distinctive
+ * is the handler: the canonical unary server signature —
+ *
+ *   method with a receiver, exported name,
+ *   (ctx context.Context, <p> *[pkg.]<Name>Request|Req) (*<T>, error)
+ *
+ * — and only reads of that one parameter inside that one function count:
+ * `<p>.GetX()` (chained getters included) and direct exported-field reads
+ * `<p>.X`. Streaming handlers, and messages not named *Request/*Req, are left
+ * for a measured follow-up rather than guessed at.
+ *
+ * Binding follows what the engine already does for HTTP reads:
+ *   - `json.Unmarshal([]byte(<p>.GetX()), &v)` binds the out-argument `v`;
+ *   - `lhs := <p>.GetX()` binds `lhs` — only when the right-hand side IS the
+ *     read (conversions and chained getters allowed). `n, err :=
+ *     strconv.ParseUint(<p>.GetPermission(), 10, 32)` binds a parsed integer,
+ *     not the attacker's string, and falls through to the inline case;
+ *   - a read used inline as a call argument binds the parameter itself, the
+ *     token the receiving call actually sees on that line.
+ * A read that only feeds a condition (`if len(req.GetName()) == 0`) binds
+ * nothing and is skipped: an unbound source on a line with no call to carry it
+ * only feeds the proximity pairing measured in #387.
+ */
+function findGoGrpcRequestSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!sourceCode.includes('context.Context')) return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const sigRe =
+    /^func\s*\([^)]*\)\s*[A-Z]\w*\s*\(\s*\w+\s+context\.Context\s*,\s*([A-Za-z_]\w*)\s+\*(?:\w+\.)?\w*(?:Request|Req)\s*\)\s*\(\s*\*[\w.]+\s*,\s*error\s*\)\s*\{/;
+  const controlRe = /^\s*(?:\}\s*else\s+)?(?:if|for|switch|case|return)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const sig = sigRe.exec(lines[i]);
+    if (!sig) continue;
+    const param = sig[1];
+    if (param === '_') continue;
+    // `<p>.GetX()` with no arguments, or an exported field read `<p>.X` that is
+    // not itself a call (`req.String()`, `req.Validate()`, `req.ProtoReflect()`).
+    const readRe = new RegExp(
+      `(?<![\\w.])${param}\\s*\\.\\s*(?:Get[A-Z]\\w*\\s*\\(\\s*\\)|[A-Z]\\w*\\b(?!\\s*\\())`,
+    );
+    // The whole right-hand side IS the read — optionally through conversions
+    // (`[]byte(…)`, `string(…)`) and chained getters. Only then does the LHS hold
+    // the request value; `n, err := strconv.ParseUint(req.GetPermission(), 10, 32)`
+    // binds a parsed integer, which is not the attacker's string.
+    const directReadRe = new RegExp(
+      `^(?:(?:\\[\\]\\w+|string)\\s*\\(\\s*)*${param}(?:\\s*\\.\\s*(?:Get[A-Z]\\w*\\s*\\(\\s*\\)|[A-Z]\\w*\\b(?!\\s*\\()))+(?:\\s*\\))*$`,
+    );
+    const numericParseRe = new RegExp(
+      `\\bstrconv\\s*\\.\\s*(?:Atoi|ParseInt|ParseUint|ParseFloat|ParseBool)\\s*\\(\\s*${param}\\s*\\.`,
+    );
+    // A top-level Go function ends at the first `}` in column 0.
+    let end = i + 1;
+    while (end < lines.length && !/^\}/.test(lines[end])) end++;
+
+    for (let j = i + 1; j < end; j++) {
+      const line = lines[j];
+      const read = readRe.exec(line);
+      if (!read) continue;
+      // Parsed to a number or bool on the spot: what survives is not a string
+      // an injection sink can use.
+      if (numericParseRe.test(line)) continue;
+      let variable: string | undefined;
+      const unmarshal = /\bUnmarshal\w*\s*\([^&]*&\s*([A-Za-z_]\w*)/.exec(line);
+      const assign = /^\s*(?:var\s+)?([A-Za-z_][\w\s,]*?)\s*:?=(?!=)\s*(.+)$/.exec(line);
+      if (unmarshal && line.indexOf(read[0]) < line.indexOf('&' )) {
+        variable = unmarshal[1];
+      } else if (assign && directReadRe.test(assign[2].trim()) && !controlRe.test(line)) {
+        variable = assign[1]
+          .split(',')
+          .map((v) => v.trim())
+          .find((v) => v !== '_' && v !== 'err' && v !== 'ok' && /^[A-Za-z_]\w*$/.test(v));
+        if (!variable) continue;
+      } else if (controlRe.test(line)) {
+        continue;
+      } else {
+        // Inline as a call argument: the token the sink actually sees is the
+        // parameter, so that is what carries the taint on this line.
+        variable = param;
+      }
+      const lineNumber = j + 1;
+      if (sources.some((sc) => sc.line === lineNumber && sc.variable === variable)) continue;
+      sources.push({
+        type: 'http_body',
+        location: `${read[0].replace(/\s+/g, '')} — field of the gRPC request message \`${param}\``,
+        severity: 'high',
+        line: lineNumber,
+        confidence: 0.85,
+        variable,
+      });
+    }
+    i = end;
   }
   return sources;
 }
