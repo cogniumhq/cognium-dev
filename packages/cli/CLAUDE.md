@@ -70,14 +70,32 @@ bun run typecheck    # TypeScript validation only (no build)
 
 ## Testing
 
-**CRITICAL: NO TESTS CURRENTLY EXIST**
+```bash
+bun test             # 159 tests across 11 files
+bun test --coverage  # same, with a coverage report
+```
 
-The project has `bun test` configured but zero test files. When adding tests:
-- Use Bun's built-in test runner
-- Name tests: `*.test.ts` or `*.spec.ts`
-- Place in `src/` directory or separate `test/` directory
-- Test the CLI commands, formatters, and file collection logic
-- Mock `circle-ir` for unit tests
+Tests live in `tests/` when they exercise a module through its public surface,
+and beside the source as `src/*.test.ts` when they are tied to one file's
+internals. Both are picked up by `bun test`; name either `*.test.ts`.
+
+| File | Covers |
+|---|---|
+| `tests/args.test.ts` | argument parsing |
+| `tests/config.test.ts` | `loadConfig()` / config → pass options |
+| `tests/glob.test.ts` | `matchesGlob()`, including traversal-ish patterns |
+| `tests/suppressions.test.ts` | `applySuppressionsToResults()` |
+| `tests/formatters.test.ts` | `formatJSON()` / `formatSARIF()` |
+| `tests/sarif-conformance.test.ts` | SARIF output against the schema |
+| `tests/dedupe-vulnerabilities.test.ts` | finding deduplication |
+| `tests/registry.test.ts` | rule registry |
+| `tests/e2e.test.ts` | CLI end-to-end, real scans |
+| `src/sbom.test.ts` | SBOM generation |
+| `src/exclude-tests.test.ts` | test-file classification |
+
+`e2e.test.ts` drives the real engine rather than a mock, so a change that
+breaks the CLI/circle-ir contract fails here rather than passing against a
+stub that has drifted.
 
 ## Project Structure
 

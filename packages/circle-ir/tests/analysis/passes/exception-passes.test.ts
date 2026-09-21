@@ -300,6 +300,141 @@ describe('UnhandledExceptionPass', () => {
     expect(ctx.findings[0].line).toBe(2);
   });
 
+  // Re-throws inside a catch body are the handler propagating, not an
+  // uncaught throw. The pass decides this by checking that the throw and the
+  // catch sit in the SAME method — a bare line-number comparison would also
+  // swallow a genuine throw in a later, unrelated method, which the second
+  // test here pins down.
+  it('does not flag a re-throw inside a catch body', () => {
+    // 1: function load(p) {
+    // 2:   try {
+    // 3:     read(p);
+    // 4:   } catch (e) {
+    // 5:     throw e;
+    // 6:   }
+    // 7: }
+    const code = 'function load(p) {\n  try {\n    read(p);\n  } catch (e) {\n    throw e;\n  }\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 7, hash: '' },
+      types: [
+        {
+          name: 'module', kind: 'class', start_line: 1, end_line: 7,
+          methods: [{ name: 'load', start_line: 1, end_line: 7, parameters: [], is_public: true }],
+          fields: [], implements: [],
+        },
+      ],
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 2, end_line: 3 },
+          { id: 1, type: 'catch', start_line: 4, end_line: 6 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
+  it('still flags an uncovered throw in a method that follows a catch block', () => {
+    // The throw on line 9 is after the catch on line 4 by line number, but in
+    // a different method, so it must still be reported.
+    // 1: function load(p) {
+    // 2:   try {
+    // 3:     read(p);
+    // 4:   } catch (e) {
+    // 5:     log(e);
+    // 6:   }
+    // 7: }
+    // 8: function check(x) {
+    // 9:   throw x;
+    // 10: }
+    const code = [
+      'function load(p) {', '  try {', '    read(p);', '  } catch (e) {',
+      '    log(e);', '  }', '}', 'function check(x) {', '  throw x;', '}',
+    ].join('\n');
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 10, hash: '' },
+      types: [
+        {
+          name: 'module', kind: 'class', start_line: 1, end_line: 10,
+          methods: [
+            { name: 'load', start_line: 1, end_line: 7, parameters: [], is_public: true },
+            { name: 'check', start_line: 8, end_line: 10, parameters: [], is_public: true },
+          ],
+          fields: [], implements: [],
+        },
+      ],
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 2, end_line: 3 },
+          { id: 1, type: 'catch', start_line: 4, end_line: 6 },
+        ],
+        edges: [{ from: 0, to: 1, type: 'exception' }],
+      },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+    expect(ctx.findings[0].line).toBe(9);
+    expect(ctx.findings[0].evidence?.method).toBe('check');
+  });
+
+  it('detects a bare raise in Python', () => {
+    // 1: def load(p):
+    // 2:     raise ValueError("bad")
+    const code = 'def load(p):\n    raise ValueError("bad")';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.py', language: 'python', loc: 2, hash: '' },
+      types: [
+        {
+          name: 'module', kind: 'class', start_line: 1, end_line: 2,
+          methods: [{ name: 'load', start_line: 1, end_line: 2, parameters: [], is_public: true }],
+          fields: [], implements: [],
+        },
+      ],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'python');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+    expect(ctx.findings[0].rule_id).toBe('unhandled-exception');
+    expect(ctx.findings[0].line).toBe(2);
+  });
+
+  it('reports one finding per method even with several uncovered throws', () => {
+    // 1: function pick(x) {
+    // 2:   if (x) throw new Error("a");
+    // 3:   throw new Error("b");
+    // 4: }
+    const code = 'function pick(x) {\n  if (x) throw new Error("a");\n  throw new Error("b");\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'test.js', language: 'javascript', loc: 4, hash: '' },
+      types: [
+        {
+          name: 'module', kind: 'class', start_line: 1, end_line: 4,
+          methods: [{ name: 'pick', start_line: 1, end_line: 4, parameters: [], is_public: true }],
+          fields: [], implements: [],
+        },
+      ],
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'javascript');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(1);
+  });
+
+  it('skips Java, where checked exceptions are propagated deliberately', () => {
+    const code = 'void load() {\n  throw new IOException();\n}';
+    const ir = makeIR({
+      meta: { circle_ir: '3.0', file: 'T.java', language: 'java', loc: 3, hash: '' },
+      cfg: { blocks: [], edges: [] },
+    });
+    const ctx = makeCtx(ir, code, 'java');
+    new UnhandledExceptionPass().run(ctx);
+    expect(ctx.findings).toHaveLength(0);
+  });
+
   it('does not flag throw inside a try body (covered range)', () => {
     // Line 1: try {
     // Line 2:   throw new Error("bad");
