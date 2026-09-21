@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.9.22] - 2026-09-21
 
 ### Changed
-- Adopts `circle-ir@4.9.22`. No CLI flag or output-shape changes.
+- Adopts `circle-ir@4.9.22`. No CLI flag or output-shape changes. (Its new
+  `getModelledCwes()` library API is not used by the CLI.)
 
 ### Consumer Impact
 

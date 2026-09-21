@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.9.22] - 2026-09-21
 
 Two changes to pass 95 `xml-entity-expansion`, both found while working the
-vuln-localization miss list (#374 / #387).
+vuln-localization miss list (#374 / #387), and one additive API.
 
 ### Consumer Impact
 
@@ -69,6 +69,31 @@ activemq `RuntimeConfigurationBroker`, log4j2 `XmlConfiguration`, OpenNMS
 `JaxbUtils`, camel `SpringBootStarterMojo`). Expect a small number of new
 `xml-entity-expansion` findings on Java code that mixes hardened and unhardened
 factories in one file.
+
+### Added
+
+**`getModelledCwes()` / `isModelledCwe()` / `RELATED_CWE` — which weakness
+classes the taint engine models (#393).** Anything scoring the engine against a
+CWE-labelled corpus needs the answer, and a hand-kept list drifts and can be
+tuned. This derives it from the same runtime registries the analyzer matches
+against, so it is always true for the installed version and grows as sinks are
+added.
+
+| export | |
+|---|---|
+| `getModelledCwes()` | `{ sinkCwes, related }` — every CWE a registered SINK pattern carries (`DEFAULT_SINKS` + each plugin's `getBuiltinSinks()`), numerically sorted; 22 today |
+| `isModelledCwe(cwe)` | true directly, or through `RELATED_CWE` while the class it maps to is itself still modelled |
+| `RELATED_CWE` | 13 advisory-side ids for a modelled sink family — CWE-23/36/73 -> 22, 77/88 -> 78, 80 -> 79, 564 -> 89, 95/917/1336 -> 94, 93 -> 113, 91 -> 643, 776 -> 611 |
+
+Deliberately narrow: sink-registered CWEs only. Non-taint pattern passes stamp
+their CWE per finding and have no registry to enumerate, so they are left out
+rather than half-listed. `RELATED_CWE` is short and literal on purpose — each
+entry widens what counts as in scope, so each is a claim someone can check.
+
+Purely additive; no analysis path is touched and no finding changes. Exported
+from the main entry (`import { getModelledCwes } from 'circle-ir'`), alongside
+`generateFindings` and `getCwe`; the curated `circle-ir/core` and
+`circle-ir/browser` bundles are unchanged.
 
 ## [4.9.21] - 2026-09-20
 
