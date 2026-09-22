@@ -1,6 +1,11 @@
 import { describe, test, expect } from 'bun:test';
-import { applySuppressionsToResults, type Suppression } from '../src/cli.js';
+import {
+  applySuppressionsToResults,
+  applySuppressionsToTaintPaths,
+  type Suppression,
+} from '../src/cli.js';
 import type { ScanResult } from '../src/formatters.js';
+import type { TaintPath } from 'circle-ir';
 
 function makeResult(file: string, vulns: Array<{ type: string; line: number }>): ScanResult {
   return {
@@ -114,5 +119,78 @@ describe('applySuppressionsToResults', () => {
     ];
     const out = applySuppressionsToResults(results, suppressions, '/app');
     expect(out[0].vulnerabilities).toHaveLength(0);
+  });
+});
+
+function makePath(sinkFile: string, sinkLine: number, sinkType: TaintPath['sink']['type'] = 'sql_injection'): TaintPath {
+  return {
+    id: `tp-${sinkFile}-${sinkLine}`,
+    source: { file: 'src/A.java', line: 5, type: 'http_param', code: 'req.getParameter("q")' },
+    sink: { file: sinkFile, line: sinkLine, type: sinkType, cwe: 'CWE-89', code: 'stmt.execute(q)' },
+    hops: [],
+    sanitizers_in_path: [],
+    path_exists: true,
+    confidence: 0.9,
+  };
+}
+
+describe('applySuppressionsToTaintPaths (#412)', () => {
+  test('returns paths unchanged when no suppressions', () => {
+    const paths = [makePath('/app/src/B.java', 20)];
+    expect(applySuppressionsToTaintPaths(paths, [], '/app')).toHaveLength(1);
+  });
+
+  test('suppresses by sink type across all files', () => {
+    const paths = [
+      makePath('/app/src/B.java', 20, 'sql_injection'),
+      makePath('/app/src/C.java', 8, 'xss'),
+    ];
+    const out = applySuppressionsToTaintPaths(paths, [{ pass: 'sql_injection' }], '/app');
+    expect(out).toHaveLength(1);
+    expect(out[0].sink.type).toBe('xss');
+  });
+
+  test('also matches the cross-file-<type> SARIF rule id', () => {
+    const paths = [makePath('/app/src/B.java', 20)];
+    const out = applySuppressionsToTaintPaths(
+      paths,
+      [{ pass: 'cross-file-sql_injection' }],
+      '/app',
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  test('suppresses by sink file + line', () => {
+    const paths = [
+      makePath('/app/src/B.java', 20),
+      makePath('/app/src/B.java', 40),
+    ];
+    const out = applySuppressionsToTaintPaths(
+      paths,
+      [{ pass: 'sql_injection', file: 'src/B.java', line: 20 }],
+      '/app',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].sink.line).toBe(40);
+  });
+
+  test('does not suppress when file or line does not match', () => {
+    const paths = [makePath('/app/src/B.java', 20)];
+    expect(applySuppressionsToTaintPaths(
+      paths,
+      [{ pass: 'sql_injection', file: 'src/C.java' }],
+      '/app',
+    )).toHaveLength(1);
+    expect(applySuppressionsToTaintPaths(
+      paths,
+      [{ pass: 'sql_injection', file: 'src/B.java', line: 99 }],
+      '/app',
+    )).toHaveLength(1);
+  });
+
+  test('does not suppress a different sink type', () => {
+    const paths = [makePath('/app/src/B.java', 20, 'ssrf')];
+    const out = applySuppressionsToTaintPaths(paths, [{ pass: 'sql_injection' }], '/app');
+    expect(out).toHaveLength(1);
   });
 });

@@ -11,7 +11,7 @@ import {
   initAnalyzer, analyze, analyzeProject,
   setLogLevel, type LogLevel,
   setFindingsInstrumentation,
-  type SinkType, type SastFinding, type SupportedLanguage,
+  type SinkType, type SastFinding, type SupportedLanguage, type TaintPath,
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
@@ -207,6 +207,43 @@ export function applySuppressionsToResults(
     });
 
     return { ...result, vulnerabilities: filteredVulns };
+  });
+}
+
+/**
+ * Apply the same suppressions to cross-file taint paths.
+ *
+ * Per-file findings and cross-file paths are two surfaces of the same
+ * sink. Severity / CWE / category filters already cover both; suppressions
+ * only covered the per-file list, so a fully-suppressed scan still exited 1
+ * and SARIF still emitted `cross-file-*` results (#412).
+ *
+ * A path is suppressed when `pass` matches the sink type (or the
+ * `cross-file-<type>` SARIF rule id) and optional file/line match the sink.
+ */
+export function applySuppressionsToTaintPaths(
+  paths: TaintPath[],
+  suppressions: Suppression[],
+  basePath: string,
+): TaintPath[] {
+  if (suppressions.length === 0) return paths;
+
+  return paths.filter(path => {
+    for (const supp of suppressions) {
+      const sinkType = path.sink.type;
+      if (supp.pass !== sinkType && supp.pass !== `cross-file-${sinkType}`) continue;
+
+      if (supp.file) {
+        const suppFile = supp.file.replace(/^\.\//, '');
+        const relativeFile = relative(basePath, path.sink.file) || path.sink.file;
+        if (suppFile !== relativeFile && suppFile !== path.sink.file) continue;
+      }
+
+      if (supp.line !== undefined && supp.line !== path.sink.line) continue;
+
+      return false;
+    }
+    return true;
   });
 }
 
@@ -916,9 +953,18 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // Apply suppressions from config
     // Use cwd as base path since suppression files are relative to project root
     if (suppressions.length > 0) {
-      const beforeCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0);
+      const beforeCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0)
+        + (crossFileData?.taintPaths.length ?? 0);
       results = applySuppressionsToResults(results, suppressions, process.cwd());
-      const afterCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0);
+      if (crossFileData) {
+        crossFileData.taintPaths = applySuppressionsToTaintPaths(
+          crossFileData.taintPaths,
+          suppressions,
+          process.cwd(),
+        );
+      }
+      const afterCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0)
+        + (crossFileData?.taintPaths.length ?? 0);
       if (!options.quiet && beforeCount !== afterCount) {
         // 3.89.2: status to stderr (stdout reserved for payload).
         console.error(colors.dim(`Suppressed ${beforeCount - afterCount} finding(s) via config`));

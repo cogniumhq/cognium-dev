@@ -300,6 +300,51 @@ describe('config integration', () => {
   }, 30_000);
 });
 
+// ─── #412: suppressions apply to cross-file taint ───────────────────────────
+
+describe('cross-file suppressions (#412)', () => {
+  const dir = join(FIXTURES, 'cross-file-taint');
+  const profile = join(dir, 'cognium.config.json');
+
+  afterAll(() => {
+    if (existsSync(profile)) unlinkSync(profile);
+  });
+
+  test('directory scan reports a cross-file taint path', async () => {
+    const { stdout, exitCode } = await run('scan', dir, '-f', 'json', '-q', '--category', 'security');
+    const parsed = JSON.parse(stdout);
+    expect(parsed.summary.crossFileTaintPaths).toBeGreaterThan(0);
+    expect(exitCode).toBe(1);
+  }, 60_000);
+
+  test('config suppressions drop cross-file paths and their SARIF results', async () => {
+    writeFileSync(profile, JSON.stringify({
+      suppressions: [{ pass: 'command_injection' }],
+    }));
+
+    const { stdout, exitCode } = await run(
+      'scan', dir, '-f', 'json', '-q', '--category', 'security', '--profile', profile,
+    );
+    const parsed = JSON.parse(stdout);
+    expect(parsed.summary.crossFileTaintPaths).toBe(0);
+    expect(parsed.cross_file_taint_paths).toEqual([]);
+
+    const remainingSecurity = parsed.results
+      .flatMap((r: { vulnerabilities: Array<{ category: string }> }) => r.vulnerabilities)
+      .filter((v: { category: string }) => v.category === 'security');
+    expect(exitCode).toBe(remainingSecurity.length > 0 ? 1 : 0);
+
+    const sarifRun = await run(
+      'scan', dir, '-f', 'sarif', '-q', '--category', 'security', '--profile', profile,
+    );
+    const sarif = JSON.parse(sarifRun.stdout);
+    const ruleIds = (sarif.runs?.[0]?.results ?? []).map((r: { ruleId: string }) => r.ruleId);
+    expect(ruleIds.every((id: string) => !String(id).startsWith('cross-file-'))).toBe(true);
+
+    unlinkSync(profile);
+  }, 60_000);
+});
+
 // ─── Other commands ─────────────────────────────────────────────────────────
 
 describe('other commands', () => {
