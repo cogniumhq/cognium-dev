@@ -28,6 +28,13 @@ procedure verbatim in its prompt and a fresh clone could not run §7 at all. A s
 only needs: *run the `autofix-issues` skill*. The corpora the scorer reads are still local-only
 (`circle-ir-ai`), so a runner without them must skip precision fixes per §2.
 
+**Related skills (same tracked tree):** Part 2 review is
+`.claude/skills/review-agent-prs/SKILL.md`; Part 3 squash-merge is
+`.claude/skills/merge-agent-prs/SKILL.md`. The **cloud** Part 1 cron still
+stops at a labelled PR (`Refs #n`) and leaves review + merge to those two.
+This skill's §8 auto-merge is the **local** lane (corpus differential
+present). Do not run Part 3 from a local sweep that already merged.
+
 ## Autonomy contract
 
 - **Never ask the user anything.** Do not pause for confirmation. Accept every default
@@ -433,12 +440,12 @@ Only if §7 passed and at least one fix survived:
    `agent-in-progress` from the issues, and report it in §9.
 
    > **Known policy divergence — auto-merge.** The techspec spec scopes Part 1 to *opening* a PR
-   > and says auto-merge is Part 3, "not in this spec" — i.e. that design wants a human to merge.
-   > This skill auto-merges, and that behaviour is retained deliberately: it is what has been
-   > running, the user has repeatedly asked for merges to happen unattended, and eight fixes have
-   > shipped that way behind the §7 gate. The merged-in guardrails (pending-PR cap, concurrency
-   > lock, rebase-conflict abort) are what make it safe rather than merely fast. **If the intent
-   > is human-merge, delete step 3 and stop at the labelled PR — nothing else needs to change.**
+   > and says auto-merge is Part 3. The **cloud** lane follows that: stop at the labelled PR
+   > (`Refs #n`); Part 2 (`review-agent-prs`) and Part 3 (`merge-agent-prs`) own review and
+   > squash. This skill still auto-merges **locally**, behind the §7 corpus differential —
+   > eight fixes shipped that way. Do not also run `merge-agent-prs` on a PR this sweep
+   > already squash-merged. Switch Part 1 from `Refs` to `Closes` only after cloud Part 3
+   > has been merging cleanly; until then Part 3 closes `Refs` issues itself.
 5. **Release the lock** on every issue in the batch, merged or not:
    ```
    gh issue edit <n> --repo cogniumhq/cognium-dev --remove-label agent-in-progress
