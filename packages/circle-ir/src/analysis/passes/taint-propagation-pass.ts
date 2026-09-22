@@ -1769,7 +1769,7 @@ function detectExpressionScanFlows(
             let blocked = false;
             for (const other of taintedVars) {
               if (other === varName) continue;
-              const re = new RegExp(`\\b${other}\\b`);
+              const re = new RegExp(`\\b${other.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
               if (!re.test(rhs)) continue;
               anyReferenced = true;
               const cov = aliasSanitizedFor.get(other);
@@ -2159,7 +2159,7 @@ function detectExpressionScanFlows(
         // `var =`. Matches single `=` only (not ==, !=, <=, >=).
         const assignMatch = sinkCode.match(/^\s*(?:[A-Za-z_][\w.<>[\]\s,?]*\s+)?[A-Za-z_]\w*\s*=(?!=)\s*/);
         const rhs = assignMatch ? sinkCode.slice(assignMatch[0].length) : sinkCode;
-        if (new RegExp(`\\b${sourceVar}\\b`).test(rhs)) {
+        if (new RegExp(`\\b${sourceVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(rhs)) {
           continue;
         }
       }

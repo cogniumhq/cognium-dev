@@ -209,6 +209,18 @@ export function buildFileIndex(ir: CircleIR): FileIndex {
 /**
  * CrossFileResolver - Resolves calls and tracks taint across files
  */
+/**
+ * Escape a string for safe interpolation into a `new RegExp(...)`. A method
+ * parameter name can be a Python starred parameter (`*args`, `**kwargs`), and
+ * `*` is a regex quantifier — an unescaped interpolation throws "Nothing to
+ * repeat" and fails the whole project analysis closed (cognium-dev#458). Such a
+ * key never matches a `\b`-anchored expression, so escaping fixes the crash
+ * without changing any resolved flow.
+ */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export class CrossFileResolver {
   // -- pre-3.89.0 pre-index cache (see FileIndex above) --
   private readonly fileIndexes: WeakMap<CircleIR, FileIndex> = new WeakMap();
@@ -763,7 +775,7 @@ export class CrossFileResolver {
             // Heuristic: scan the expression for whole-word param-name tokens.
             // Catches concatenations / nested expressions like `prefix + url`.
             for (const [name] of paramNameToIndex) {
-              const re = new RegExp(`\\b${name}\\b`);
+              const re = new RegExp(`\\b${escapeRegExp(name)}\\b`);
               if (re.test(arg.expression)) candidates.push(name);
             }
           }
@@ -911,7 +923,7 @@ export class CrossFileResolver {
               }
               if (arg.expression) {
                 for (const v of reachable.names) {
-                  if (new RegExp(`\\b${v}\\b`).test(arg.expression)) {
+                  if (new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression)) {
                     matchedName = v;
                     break;
                   }
@@ -1505,7 +1517,7 @@ export class CrossFileResolver {
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
     if (arg.expression) {
       for (const [tv, origin] of tainted) {
-        const re = new RegExp(`\\b${tv}\\b`);
+        const re = new RegExp(`\\b${escapeRegExp(tv)}\\b`);
         if (re.test(arg.expression)) return { var: tv, origin };
       }
     }
