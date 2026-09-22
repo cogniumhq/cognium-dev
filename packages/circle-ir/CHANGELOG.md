@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.23] - 2026-09-22
+
+A Go recall + precision batch, all four found and measured on the 214-repo
+vuln-localization Go corpus. They interlock: #455 clears the noise floor,
+#447 / #343 add request sources whose escapes would have landed in it, and
+#456 turns the residual `Fprintf` escapes into real findings.
+
+### Added
+
+- **#447 — Go gRPC request messages are `http_body` sources.** A method with a
+  receiver and the canonical unary signature
+  `(ctx context.Context, req *…Request) (*…, error)` now treats reads of `req`
+  (`req.GetX()`, chained getters, exported fields) as remote input. Fixes repos
+  that produced no finding at all (e.g. the secrets-store-csi providers). Only
+  cross-file (`analyzeProject`) consumers see the flow; per-file `analyze()`
+  does not, since source and sink are in different files.
+- **#343 — the Go HTTP request body is an `http_body` source.**
+  `json.NewDecoder(r.Body).Decode(&x)`, `xml.NewDecoder(r.Body)`,
+  `io.Copy(dst, r.Body)` and `io.ReadAll(r.Body)` now seed taint. Scoped to
+  `.Body` on a name declared as an `*http.Request` parameter, so a fetched
+  `resp.Body` (`*http.Response`) is never a source. `io.ReadAll` keeps its
+  existing `io_input` and gains `http_body`; the two reach sets are
+  complementary and `generateFindings` dedups by sink line, so no double
+  finding.
+
+### Fixed
+
+- **#455 — builtins, error construction, formatters, loggers and pure stdlib
+  helpers are no longer `external_taint_escape`.** On the corpus these were 78%
+  of all Go taint flows (9,469 CWE-668 vs 2,742 to modelled sinks). The gate is
+  Go-only: `len`/`make`/`append`/… by name; `errors`/`status`/`xerrors` by
+  receiver; `Errorf`/`Sprintf` and logging verbs by name; `strings`/`strconv`/
+  `bytes`/`path`/… by receiver. Removes 4,099 escapes; **0 flows to modelled
+  sinks lost.**
+- **#456 — `fmt.Fprint*(w, …)` to an `http.ResponseWriter` is xss on the
+  varargs**, not only the format-string position, so `fmt.Fprintf(w, "%s", q)`
+  (the common reflected-XSS shape) now reports. Gated on the writer resolving to
+  an `http.ResponseWriter` parameter of the enclosing func or inline closure, so
+  `Fprintf(os.Stderr, …)` and buffer writes stay `format_string` only.
+
+### Consumer Impact
+
+**Go scans change; no other language is affected.** More findings on genuine
+request-derived flows (gRPC and request-body sources; reflected xss on response
+writers). **Far fewer low-confidence CWE-668 `external_taint_escape` findings**
+(≈43% removed) — re-take any Go baseline expressed as finding counts. `xss`
+moves onto some `fmt.Fprint*` lines and off a few non-writer `Fprintf` calls
+(FP removal; `format_string` retained there). The new request-body and gRPC
+sources are gated so response bodies and non-handler code stay clean.
+
 ## [4.9.22] - 2026-09-21
 
 Two changes to pass 95 `xml-entity-expansion`, both found while working the

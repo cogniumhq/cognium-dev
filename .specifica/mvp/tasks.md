@@ -6,7 +6,11 @@
 
 ## In Progress
 
-(none)
+- **Go recall + precision batch — merged, unreleased on `main` (4.9.23 candidates). All four consumer-visible, Go-only, each measured on the 214-repo vuln-localization Go corpus this session built.** They interlock: #455 clears the CWE-668 noise floor, #447/#459 add sources whose escapes would have landed in it, #457 turns the residual `Fprintf` escapes into real xss.
+  - **#455** (`c25b19f`) — builtins, error construction, formatters, loggers, pure stdlib helpers are no longer `external_taint_escape`. **78% of all Go taint flows were CWE-668** (9,469 vs 2,742 to modelled sinks); removes 4,099, **0 classical lost**, +1 sound `redos` the escape had masked. Admin-merged (branch protection #450 requires a code-owner review; author cannot self-approve).
+  - **#447** (`66681c5`, coreteam-approved) — gRPC request messages are `http_body` sources, scoped to the unary-handler parameter. Azure secrets-store CVE 0 → exact cross-file path. Only `analyzeProject` consumers can credit it; #394 is really 3 + 1 (vault reads `pflag` CLI flags, not gRPC) so it stays open.
+  - **#457** (`83d339e`, #456) — `fmt.Fprint*(w, …)` to a `ResponseWriter` is xss on the varargs, not just the format position. +215 xss on real writers, −6 xss FPs on `os.Create` handles. A gate bug (inline-closure writer) was caught by the differential, not review.
+  - **#459** (`d130922`, #343) — HTTP request body (`json.NewDecoder(r.Body).Decode`, `io.ReadAll(r.Body)`, `io.Copy`) is an `http_body` source, scoped so `resp.Body` stays distinct. 98/214 repos, 221 flows; real detection (SSRF/SQLi/redirect/xss) + #447-style attribution noise. **Unblocked #343**, which was `agent-declined` solely because "no Go corpus" made the FP cost unmeasurable — that corpus now exists.
 
 ## Epic — C#/.NET language support (proposed 2026-08-09; not started)
 
@@ -133,6 +137,12 @@ resolves the DFG assumption and grammar fidelity, turning the 12–20 wk range
 into a tight number.
 
 ## Open — High Priority
+
+- [ ] **Cisco vuln-localization benchmark — engine levers measured (#374 / #387 / #393 / #394)**
+  - **#387 measured, premise refuted.** Flow-backed filtering does NOT raise maven precision toward 0.25: on a 61-repo replica, file precision is flat ~3% backed or not, recall falls with volume, 74% of maven CVEs are unmodelled classes yet 80% "hit" via volume. Only free win: exclude test paths (F1 0.044 → 0.071). Ranking signals all within noise of random; oracle is 7×. Two comments on #387.
+  - **#393 — decision OPEN, resolution proposed.** Registry-derived split: taint-modelled 150 repos (30%) F1 0.191 / hit 0.68; not-modelled 345 (70%) hit **0.46 = the any-finding noise floor**. Hand list undercounted (43% vs 70%) and wrongly excluded CWE-770/-772/-200. Engine export shipped 4.9.22 (`getModelledCwes`). **Needs a ruling: scope out, report three rows with the noise floor.**
+  - **Handoff to cognium-ai published**; 4 of 7 items already in their #476 (bump, full generateFindings args, category filter, test-path exclude). Remaining: re-baseline, taint-subset + noise floor, ranking with random+oracle, run `analyzeProject`.
+  - **Open Go FN follow-ups now that the corpus exists:** #348 (Go/Java inline CRLF strip not credited), #343 `bufio.Scanner(r.Body)` tail, #349 residual (regexp read-methods on a constant pattern still escape — #455 handled only the derived-int rows).
 
 - [ ] **NOTE — verify consumer-facing claims against the published artifact, not the source**
   - Three claims in the 3.195.0–3.197.0 window were overstated and each was caught by cognium-ai rather than here: "no longer emits `user_input`/`env_var`" (only the Python duplicates were removed), the scope of off-union types (9 + 4, not 2), and "`SOURCE_TYPES` exported" (it was `export type` only, absent from the built module)
@@ -305,7 +315,9 @@ into a tight number.
 
 ## Open Issues
 
-### GitHub issue ledger (as of 2026-09-11 — `latest` circle-ir/cognium-dev **4.9.13**, `@cognium/mcp-server` **0.1.6**, `@cognium/project-profile-detect` **1.1.1** unchanged; all four published and tarball-verified; verified against GitHub)
+### GitHub issue ledger (as of 2026-09-22 — `latest` published circle-ir/cognium-dev **4.9.22**, `@cognium/mcp-server` **0.1.14**, `@cognium/project-profile-detect` **1.1.1**; verified from a registry install. `main` is ahead by the four Go changes above, unreleased.)
+
+**Ledger count 42 open (was 19).** 24 were filed 2026-09-21/22 by other sessions (#420–#443, #452: release automation, packaging, CLI robustness, test coverage) and are not triaged here. The rows below cover the localization-benchmark lane and the engine fixes shipped from it.
 
 **cognium-dev open (19).** Zero are in the autofix lane — every one carries `autofix-skip`, so each is blocked on a decision, a corpus, or fixtures rather than on capacity. The count rose while the backlog got *smaller* in substance: seven fixes shipped and five issues were filed out of them, each replacing a vague row with an isolated cause.
 
@@ -368,6 +380,10 @@ JS already has a narrow precedent (sink-filter Stage 15f credits anchored host-a
 - **cognium-ai#287** — intermittent analyze/repository `failed` on identical input (~370 LLM calls) → **not circle-ir** (deterministic engine can't be non-deterministic). LLM-verifier/queue-pressure (#244/#245) + `errors[]` propagation is circle-pack/cortex API. Commented.
 
 ### Recently closed
+- **4.9.22 (2026-09-22). Published, post-publish check from a registry install passed.** #425 (one hardened XML factory no longer masks an unhardened sibling; +5 files/102 repos, 0 removed), #426 (`xml-entity-expansion` CWE per API: JAXP+lxml 776→611, ElementTree stays 776; label only, 848 findings), #393-partial (`getModelledCwes` export). **⚠️ Consumer Impact:** any `cwe`-keyed filter/SARIF tag for this rule must move 776→611 on Java+lxml.
+- **4.9.21 (2026-09-21).** #387 `verification.flow_backed` on every generateFindings finding (#395 + #396 fixed the empty-array `undefined` bug); #399 CLI SARIF invalid-region fix (a bad finding rejected the whole upload); deps web-tree-sitter 0.27, yaml 2.9.1, zod 4, TypeScript 7. Published in reverse order once (harmless, recorded).
+- **4.9.14 – 4.9.20 (2026-09-14 → 09-19), from the release notes.** #351 ProcessBuilder CWE-78 (14); #363 Python trust-boundary flows, recall 0%→94.4% (16); #361/#372 method-scoped pairing + flow-derived findings, #374 Go CWE-22 (17); **#383 — CLI bundled a stale circle-ir 4.9.11 for six releases**, never published, rolled into 4.9.19 (18); #389 System.out no longer xss (19); #390 Java File/Path projections no longer sources (20).
+- **Process (2026-09-21/22).** Several tag/release/merge steps were denied by the auto-mode permission classifier ("Create Public Surface") and completed by the user running a prepared script. Branch protection (#450) now requires one code-owner review on `main`; the PR author cannot self-approve, so precision PRs merge on a coreteam review or an explicit admin bypass. `tsc` never deletes stale `dist` outputs — a branch build left orphan files that would have shipped in 4.9.22, caught by the `npm publish --dry-run` file count (752 → 756).
 - **4.9.13 release train (2026-09-11). All four packages published and tarball-verified.** circle-ir + cognium-dev 4.9.13, `@cognium/mcp-server` 0.1.6 (dependency bump only), `@cognium/project-profile-detect` unchanged at 1.1.1. Tags cut on `main` at `79d2c7f` **after** the squash-merge, GitHub releases published. Seven fixes across six circle-ir source changes.
   - **#287 (partial)** — a reassigned C# local lost its taint. `buildCSharpDFG` collected every definition in a method body before resolving any use, so the scope map held only the **last** definition — and `DFGUse.def_id` is *specified* as the reaching definition. With one definition per variable last == reaching, which is exactly why single-assignment code always worked. End-to-end still blocked by #328.
   - **#315** — `blocking-main-thread` was blind to inline Express/Koa route handlers, which produce no type and no method, so the commonest JS handler shape was silently exempt while a byte-identical named handler reported. Fixed using the synthetic `<verb>_handler` name the extractor already assigns, gated on a router verb **and** handler-shaped parameters so `items.map(x => …)` is not swept in. **#315 closed** — all five of its cells resolved: one real defect, four not reproducible as filed.

@@ -4,6 +4,19 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-09-22
+
+### Changed
+- Adopts `circle-ir@4.9.23`. No MCP tool, schema, or response-shape changes.
+
+### Consumer Impact
+
+Inherits the Go batch in `circle-ir@4.9.23`: an agent scanning Go code sees
+far fewer low-confidence CWE-668 `external_taint_escape` findings (≈43%
+removed) and more real findings on request bodies, gRPC request messages, and
+`fmt.Fprintf` to a response writer. A stored Go baseline keyed on finding
+counts should be re-taken. Non-Go results are unchanged.
+
 ## [0.1.14] - 2026-09-21
 
 ### Changed
