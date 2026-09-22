@@ -254,6 +254,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findGoArchiveEntrySources(code, language));
     additionalSources.push(...findGoMultipartUploadSources(code, language));
     additionalSources.push(...findGoGrpcRequestSources(code, language));
+    additionalSources.push(...findGoRequestBodySources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -1536,6 +1537,70 @@ function findGoGrpcRequestSources(sourceCode: string, language: string): TaintSo
       });
     }
     i = end;
+  }
+  return sources;
+}
+
+function findGoRequestBodySources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!sourceCode.includes('.Body')) return [];
+  const lines = sourceCode.split('\n');
+
+  // Names declared as `*http.Request` parameters anywhere in the file. `.Body`
+  // on one of these is unambiguously the REQUEST body (http_body); `resp.Body`
+  // on an `*http.Response` never matches, because its name is not in this set.
+  // That is #343 acceptance #4 — request vs response bodies stay distinct.
+  const reqNames = new Set<string>();
+  const paramRe = /([A-Za-z_]\w*)\s+\*http\.Request\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    paramRe.lastIndex = 0;
+    while ((m = paramRe.exec(line)) !== null) reqNames.add(m[1]);
+  }
+  if (reqNames.size === 0) return [];
+  const bodyAlt = [...reqNames].map((n) => n.replace(/\$/g, '\\$')).join('|');
+  // `<req>.Body`, tolerant of `io.NopCloser(r.Body)` wrapping around it.
+  const bodyRef = `(?<![\\w.])(?:${bodyAlt})\\s*\\.\\s*Body\\b`;
+
+  const sources: TaintSource[] = [];
+  const push = (variable: string | undefined, line: number, how: string) => {
+    if (variable === '_' || variable === '') return;
+    if (sources.some((s) => s.line === line && s.variable === variable)) return;
+    sources.push({
+      type: 'http_body',
+      location: `${how} — HTTP request body`,
+      severity: 'high',
+      line,
+      confidence: 0.85,
+      ...(variable ? { variable } : {}),
+    });
+  };
+
+  const bodyRe = new RegExp(bodyRef);
+  // Decode target: `json.NewDecoder(r.Body).Decode(&dst)` /
+  // `xml.NewDecoder(r.Body).Decode(&dst)` — dst receives the parsed body.
+  const decodeRe = new RegExp(
+    `(?:json|xml)\\s*\\.\\s*NewDecoder\\s*\\(\\s*(?:io\\.NopCloser\\s*\\(\\s*)?(?:${bodyAlt})\\s*\\.\\s*Body\\b[^)]*\\)\\s*\\)?\\s*\\.\\s*Decode\\s*\\(\\s*&\\s*([A-Za-z_]\\w*)`,
+  );
+  // `io.ReadAll(r.Body)` / `ioutil.ReadAll(r.Body)` — LHS holds the raw bytes.
+  const readAllRe = new RegExp(
+    `\\b([A-Za-z_]\\w*)\\s*,\\s*\\w+\\s*:?=\\s*(?:io|ioutil)\\s*\\.\\s*ReadAll\\s*\\(\\s*(?:${bodyAlt})\\s*\\.\\s*Body\\b`,
+  );
+  // `io.Copy(dst, r.Body)` — dst receives the body bytes.
+  const copyRe = new RegExp(
+    `\\bio\\s*\\.\\s*Copy\\s*\\(\\s*([A-Za-z_]\\w*|&\\s*[A-Za-z_]\\w*)\\s*,\\s*(?:${bodyAlt})\\s*\\.\\s*Body\\b`,
+  );
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!bodyRe.test(line)) continue;
+    const n = i + 1;
+    const dec = decodeRe.exec(line);
+    if (dec) { push(dec[1], n, `json/xml decode of ${dec[0].split('.')[0]}.Body`); continue; }
+    const ra = readAllRe.exec(line);
+    if (ra) { push(ra[1], n, 'io.ReadAll(req.Body)'); continue; }
+    const cp = copyRe.exec(line);
+    if (cp) { push(cp[1].replace(/^&\s*/, ''), n, 'io.Copy(dst, req.Body)'); continue; }
   }
   return sources;
 }
