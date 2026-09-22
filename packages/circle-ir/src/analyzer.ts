@@ -760,6 +760,26 @@ function computeProjectProfileSummary(
 /**
  * Analyze source code and produce Circle-IR output.
  */
+/**
+ * Longest single line in `code`, by a single O(n) scan (no split — a huge
+ * array-spread would risk a stack overflow on a one-line bundle). cognium-dev#460.
+ */
+function longestLineLength(code: string): number {
+  let max = 0, start = 0;
+  for (let i = 0; i < code.length; i++) {
+    if (code.charCodeAt(i) === 10 /* \n */) {
+      if (i - start > max) max = i - start;
+      start = i + 1;
+    }
+  }
+  if (code.length - start > max) max = code.length - start;
+  return max;
+}
+
+// A single line longer than this is minified / generated, not hand-written
+// source; taint analysis of it is both pathological (O(line²)) and valueless.
+const MAX_ANALYZABLE_LINE_LENGTH = 50_000;
+
 export async function analyze(
   code: string,
   filePath: string,
@@ -867,6 +887,32 @@ export async function analyze(
     meta.projectProfile = makeProfileResolver(options.projectProfile)(filePath);
   }
   phaseEnd('extractMeta', tMeta);
+
+  // cognium-dev#460 — a minified / bundled file is one enormous line, and the
+  // DFG chain builder plus taint propagation are super-linear in defs-per-line
+  // (`computeChains` pairs every def with every use on the same line). On a
+  // 73 KB single-line webpack bundle that is O(n²) and wedges the process
+  // synchronously (100 % CPU, no timer fires — the project-path `crossFile
+  // BudgetMs` is inert), while producing no meaningful taint result on
+  // generated code. Detect a pathological longest line and return a minimal IR
+  // — real meta and parse status, empty analysis — so both `analyze()` and, by
+  // extension, `analyzeProject()` stay bounded. Threshold is far past any
+  // hand-written source line; consumers that already skip minified inputs
+  // (cognium-ai preFlightSkip) see no change.
+  if (longestLineLength(code) > MAX_ANALYZABLE_LINE_LENGTH) {
+    logger.warn('Skipping analysis of a minified / single-line file', {
+      filePath, language, codeLength: code.length,
+    });
+    return {
+      meta, types: [], calls: [], cfg: { blocks: [], edges: [] },
+      dfg: { defs: [], uses: [], chains: [] },
+      taint: { sources: [], sinks: [], sanitizers: [] },
+      imports: [], exports: [], unresolved: [], enriched: {},
+      metrics: { file: filePath, metrics: [] },
+      parse_status: parseStatus,
+    };
+  }
+
   const tTypes = phaseStart();
   const types   = extractTypes(tree, nodeCache, language);
   phaseEnd('extractTypes', tTypes);
