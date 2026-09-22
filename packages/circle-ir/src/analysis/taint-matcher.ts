@@ -1862,6 +1862,51 @@ function classifyGoDestinationType(decl: GoLocalDeclResult): 'safe' | 'unsafe' |
 }
 
 /**
+ * #456 — true when a Go `fmt.Fprint` / `Fprintf` / `Fprintln` xss sink's
+ * writer (arg[0]) does NOT resolve to an `http.ResponseWriter` parameter of
+ * the enclosing function. Only the plain identifier form is recognised (`w`,
+ * `rw`, `resp`); the signature may wrap, so up to four lines from the nearest
+ * preceding `func` are joined before matching. Anything else — a field, a
+ * call result, a shadowed name — is treated as not a response writer.
+ */
+function isGoFprintToNonResponseWriter(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (language !== 'go') return false;
+  if (pattern.type !== 'xss' || pattern.class !== 'fmt') return false;
+  if (!/^Fprint(?:f|ln)?$/.test(call.method_name)) return false;
+  if (!sourceLines) return true;
+  const writer = call.arguments.find(a => a.position === 0);
+  const name = (writer?.expression ?? '').trim();
+  if (!/^[A-Za-z_]\w*$/.test(name)) return true;
+  // Walk up to the nearest enclosing `func` header — a top-level declaration OR
+  // an inline closure (`router.GET("/", func(w http.ResponseWriter, …) {`), which
+  // is the common handler shape and does not start the line. The first `func`
+  // above the call whose parameter list names the writer as an http.ResponseWriter
+  // keeps the sink; the first one that does not drops it.
+  const rwRe = new RegExp(`\\b${name}\\s+(?:net/)?http\\.ResponseWriter\\b`);
+  for (let i = call.location.line - 1; i >= 0; i--) {
+    const line = sourceLines[i] ?? '';
+    const funcIdx = line.search(/\bfunc\b/);
+    if (funcIdx < 0) continue;
+    // Parameter list is between this `func` and the opening brace of its body,
+    // which may be a few lines down when the signature wraps.
+    const header = sourceLines.slice(i, i + 4).join(' ');
+    const brace = header.indexOf('{');
+    const params = header.slice(funcIdx, brace >= 0 ? brace : header.length);
+    if (rwRe.test(params)) return false;   // writer is this scope's ResponseWriter
+    // A named function that does not take the writer: the name is not a
+    // response writer here. An inline closure that does not either — keep
+    // climbing, an outer scope may still bind it.
+    if (/^\s*func\b/.test(line)) return true;
+  }
+  return true;
+}
+
+/**
  * Gate for Go `json.Unmarshal(data, &dst)` / `json.NewDecoder(r).Decode(&dst)`
  * deserialization (CWE-502) sinks. Returns `true` when the destination is a
  * provably typed value (concrete struct, typed slice/map, pointer to named
@@ -2250,6 +2295,16 @@ function findSinks(
         // (interface{}, any, map[string]interface{}) and unresolvable
         // shapes.
         if (isSafeGoJsonUnmarshalCall(call, pattern, language, sourceLines)) {
+          continue;
+        }
+
+        // #456 — Go fmt.Fprint*(writer, …) is xss only when the writer is the
+        // enclosing handler's http.ResponseWriter. Any other writer (stderr,
+        // a file, a buffer) keeps the CWE-134 format_string sink and nothing
+        // else. Unresolvable writers are dropped: an xss finding that names
+        // the wrong sphere is worse than the low-confidence escape it
+        // replaces.
+        if (isGoFprintToNonResponseWriter(call, pattern, language, sourceLines)) {
           continue;
         }
 
