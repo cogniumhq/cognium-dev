@@ -60,11 +60,11 @@ describe('Go escape fallback — non-escaping calls', () => {
     expect(await types(handler('f, _ := os.Open(q)', '_ = f'))).toContain('path_traversal');
   });
 
-  it('keeps the escape on fmt.Fprintf to the response writer', async () => {
-    // Go has no xss sink for Fprintf(w, …) today, so the escape is the only
-    // signal on the reflected-XSS shape; gating the whole `fmt` package would
-    // have silenced it.
-    expect(await types(handler('fmt.Fprintf(w, "%s", q)'))).toContain('external_taint_escape');
+  it('does not gate fmt as a package: Fprintf to the response writer is xss (#456)', async () => {
+    // When this gate was written, Go had no xss sink for the varargs form and
+    // the escape was the only signal here — which is why `fmt` is not in the
+    // package list. #456 added the sink; the escape is now superseded by it.
+    expect(await types(handler('fmt.Fprintf(w, "%s", q)'))).toContain('xss');
   });
 
   it('is Go-only: the same gate does not silence other languages', async () => {

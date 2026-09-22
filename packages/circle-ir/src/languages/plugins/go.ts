@@ -386,14 +386,33 @@ export class GoPlugin extends BaseLanguagePlugin {
       // path-validation helper that stats before opening, including the
       // correct ones. Left out until there is corpus evidence it pays.
 
-      // XSS (writing to http.ResponseWriter without escaping)
+      // XSS (writing to http.ResponseWriter without escaping). The format
+      // string AND the varargs — `Fprintf(w, "%s", q)` is the common shape
+      // (#456). Gated in taint-matcher on arg[0] resolving to an
+      // http.ResponseWriter parameter, so `Fprintf(os.Stderr, …)` is not xss.
       {
         method: 'Fprintf',
         class: 'fmt',
         type: 'xss',
         cwe: 'CWE-79',
         severity: 'high',
-        argPositions: [1],
+        argPositions: [1, 2, 3, 4, 5, 6],
+      },
+      {
+        method: 'Fprint',
+        class: 'fmt',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [1, 2, 3, 4, 5, 6],
+      },
+      {
+        method: 'Fprintln',
+        class: 'fmt',
+        type: 'xss',
+        cwe: 'CWE-79',
+        severity: 'high',
+        argPositions: [1, 2, 3, 4, 5, 6],
       },
       {
         method: 'Write',
