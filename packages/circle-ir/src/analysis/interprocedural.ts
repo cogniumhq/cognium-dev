@@ -89,6 +89,59 @@ export interface InterproceduralOptions {
  * Accepts either a CodeGraph (preferred) or the legacy (types, calls, dfg, ...)
  * signature for backward compatibility.
  */
+// Go calls that consume a tainted value without it leaving the program. Kept
+// narrow and literal: language builtins and conversions; error construction
+// from the standard library, pkg/errors and grpc status; string formatting
+// that RETURNS a string (Fprintf is deliberately absent — its writer may be an
+// http.ResponseWriter, which the xss sink governs); logging verbs (a log
+// sink is modelled separately as log_injection, so an escape on a logger is
+// a duplicate, not a detection); and pure functions from stdlib packages
+// gated on the package receiver so a same-named method on a project type
+// still falls through. Anything not listed is still an escape.
+const GO_BUILTIN_CALLS = new Set([
+  'len', 'cap', 'make', 'new', 'append', 'copy', 'delete', 'close', 'panic',
+  'recover', 'print', 'println', 'min', 'max', 'clear',
+  'string', 'int', 'int8', 'int16', 'int32', 'int64', 'uint', 'uint8', 'uint16',
+  'uint32', 'uint64', 'float32', 'float64', 'bool', 'byte', 'rune', 'error',
+]);
+// Matched by NAME on any receiver, so only verbs that are unambiguous: a
+// method called Errorf/Sprintf/Warnf on a project type is still formatting or
+// logging. Error CONSTRUCTION names (`New`, `Is`, `Wrap`, `Join` …) are NOT
+// here — `client.New(socketPath)` is a genuine unknown call and must escape —
+// they are covered by the receiver-gated packages below.
+const GO_ERROR_AND_LOG_CALLS = new Set([
+  'Errorf',
+  // string formatting that returns a string
+  'Sprintf', 'Sprint', 'Sprintln',
+  // logging verbs (stdlib log, klog/glog, logrus, zap, zerolog)
+  'Print', 'Printf', 'Println', 'Fatal', 'Fatalf', 'Fatalln', 'Panic', 'Panicf',
+  'Panicln', 'Debug', 'Debugf', 'Debugln', 'Debugw', 'Info', 'Infof', 'Infoln',
+  'Infow', 'InfoS', 'Warn', 'Warnf', 'Warnln', 'Warnw', 'Warning', 'Warningf',
+  'Warningln', 'Error', 'Errorln', 'Errorw', 'ErrorS', 'Trace', 'Tracef',
+  'V', 'WithError', 'WithField', 'WithFields', 'WithValues', 'Msg', 'Msgf',
+]);
+// Error-construction receivers whose every method is non-escaping.
+// Error construction / inspection receivers: stdlib errors, pkg/errors and
+// xerrors (all imported as `errors`), grpc `status`, multierr. NOT `fmt`:
+// fmt.Fprintf(w, …) to an http.ResponseWriter is the reflected-XSS shape, and
+// on Go today the escape is the only signal on it.
+const GO_ERROR_PACKAGES = new Set(['errors', 'status', 'xerrors', 'multierr', 'multierror']);
+// Pure stdlib packages: a call through one of these returns a derived value.
+const GO_PURE_PACKAGES = new Set([
+  'strings', 'strconv', 'bytes', 'unicode', 'utf8', 'path', 'filepath', 'math',
+  'sort', 'slices', 'maps', 'time', 'regexp', 'url', 'hex', 'base64',
+]);
+
+function isGoNonEscapeCall(call: CallInfo): boolean {
+  const name = call.method_name;
+  const recv = (call.receiver ?? '').split('.').pop() ?? '';
+  if (!call.receiver && GO_BUILTIN_CALLS.has(name)) return true;
+  if (GO_ERROR_PACKAGES.has(recv)) return true;
+  if (GO_PURE_PACKAGES.has(recv)) return true;
+  if (GO_ERROR_AND_LOG_CALLS.has(name)) return true;
+  return false;
+}
+
 export function analyzeInterprocedural(
   graphOrTypes: CodeGraph | TypeInfo[],
   callsOrSources: CallInfo[] | TaintSource[],
@@ -299,6 +352,15 @@ export function analyzeInterprocedural(
         // injection — not a generic CWE-668 escape. Re-classify, except for a
         // small allowlist of side-effect-free builtins.
         const isBash = graph.ir.meta.language === 'bash';
+        // Go: a value consumed by a builtin, wrapped into an error, formatted
+        // into a string, logged, or run through a pure stdlib helper has not
+        // left the program. Measured on 203 Go repositories these shapes were
+        // 78% of ALL Go taint flows (9469 escapes vs 2742 classical), with
+        // `len` alone at 709 — so a handler file with a single request read
+        // produced a page of CWE-668 before any real sink was reached.
+        if (graph.ir.meta.language === 'go' && isGoNonEscapeCall(call)) {
+          continue;
+        }
         const bashSafeBuiltins = new Set([
           'echo', 'printf', 'test', '[', '[[', 'true', 'false', ':',
           'declare', 'local', 'export', 'readonly', 'typeset',
