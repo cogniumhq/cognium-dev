@@ -533,6 +533,15 @@ export async function initAnalyzer(options: AnalyzerOptions = {}): Promise<void>
 /**
  * Build enriched metadata section from analysis results.
  */
+/**
+ * Escape a string for safe interpolation into a `new RegExp(...)` pattern.
+ * cognium-dev#458 — Python starred parameter names (`*args`, `**kwargs`) reach
+ * the tainted-var map with their stars, and `*` is a quantifier.
+ */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function buildEnriched(
   types: CircleIR['types'],
   _calls: CircleIR['calls'],
@@ -1392,12 +1401,20 @@ export async function analyzeForAPI(
     filteredSinks = filteredSinks.filter(sink => {
       if (sink.type !== 'xpath_injection') return true;
       const sinkLineText = sourceLines[sink.line - 1] ?? '';
+      // cognium-dev#458 — a tainted-var key can be a Python starred parameter
+      // (`*args`, `**kwargs`, `**httplib_request_kw`), and `*` is a regex
+      // quantifier, so an unescaped `new RegExp(\`\\b${v}\\b\`)` throws
+      // "Nothing to repeat" and (via analyzeForAPI) fails the whole project
+      // closed. Escape every interpolated key before compiling. A starred key
+      // never matches a `\b`-anchored sink line, so this only fixes the crash;
+      // it changes no finding.
       const taintedVarOnLine = [...pythonTaintedVars.keys()].find(v =>
-        new RegExp(`\\b${v}\\b`).test(sinkLineText)
+        new RegExp(`\\b${escapeRegExp(v)}\\b`).test(sinkLineText)
       );
       if (!taintedVarOnLine) return false;
       if (pythonSanitizedVars.has(taintedVarOnLine)) return false;
-      if (new RegExp(`\\.xpath\\s*\\([^)]*\\b\\w+\\s*=\\s*\\b${taintedVarOnLine}\\b`).test(sinkLineText)) return false;
+      const escVar = escapeRegExp(taintedVarOnLine);
+      if (new RegExp(`\\.xpath\\s*\\([^)]*\\b\\w+\\s*=\\s*\\b${escVar}\\b`).test(sinkLineText)) return false;
       return true;
     });
   }
