@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.25] - 2026-09-23
+
+### Fixed
+- **#441 — `NO_COLOR` and `TERM=dumb` are honored.** Text output and the
+  spinner emitted ANSI codes unconditionally; they are now plain when
+  `NO_COLOR` is set (non-empty) or `TERM=dumb`.
+- **#443 — an unknown `--language` is an error.** `--language ruby` used to
+  match no files and exit 0, which looked like a clean scan. It now exits 1 and
+  lists the accepted values.
+
+### Changed
+- Adopts `circle-ir@4.9.25` (lockstep; no library changes).
+
+### Consumer Impact
+
+**CLI only.** A script that passed an unsupported `--language` value and relied
+on exit 0 now fails with exit 1. Colored output is suppressed under `NO_COLOR` /
+`TERM=dumb`. Findings are unchanged.
+
 ## [4.9.24] - 2026-09-22
 
 ### Changed
