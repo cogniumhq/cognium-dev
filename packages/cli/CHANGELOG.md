@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Consumer Impact
 
 **Robustness only.** Two `circle-ir` fixes to the project-analysis path: a
-Python `*args`/`**kwargs` function no longer crashes a cross-file scan, and a
-minified single-line bundle (>50,000 chars on one line) no longer hangs the
-scanner — it is skipped with empty analysis. Findings on ordinary source are
+Python `*args`/`**kwargs` function no longer crashes a cross-file scan, and
+minified / bundled files (any line >10,000 chars, e.g. vendored `*.min.js`) no
+longer hang or crawl a directory scan — they are skipped with empty analysis.
+Findings on ordinary source are
 unchanged.
 
 ## [4.9.23] - 2026-09-22

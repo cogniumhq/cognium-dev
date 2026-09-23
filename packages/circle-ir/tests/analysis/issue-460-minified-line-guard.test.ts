@@ -51,7 +51,7 @@ describe('#460 — minified single-line guard', () => {
   });
 
   it('analyzes a long line that is still under the threshold', async () => {
-    const code = 'var x = req.query.q; child_process.exec(x);'.padEnd(40_000, ' ') + ';';
+    const code = 'var x = req.query.q; child_process.exec(x);'.padEnd(8_000, ' ') + ';';
     const ir = await analyze(code, 'u.js', 'javascript');
     expect((ir.taint.flows ?? []).length).toBeGreaterThanOrEqual(1);
   });

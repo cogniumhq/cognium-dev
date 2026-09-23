@@ -24,18 +24,22 @@ promptly. No detection behaviour changes for normal source.
   result to this — urllib3, fickling, haystack, …). Per-file `analyze()` was
   never affected.
 
-- **#460 — a minified single-line bundle no longer wedges the process.** A
-  webpack production bundle of 73 KB on one line drove `analyzeProject` to
-  100% CPU indefinitely; the work is synchronous, so no timer fired and the
-  caller's budget was inert. The DFG chain builder is super-linear in
-  defs-per-line, and a bundle collapses everything onto one line. `analyze()`
-  now returns a minimal IR (real meta, empty analysis) for any file whose
-  longest line exceeds 50,000 characters — far past hand-written source — which
-  bounds both `analyze()` and `analyzeProject()`.
+- **#460 / #421 — minified / bundled files no longer wedge or crawl the
+  project scan.** A webpack bundle of 73 KB on one line drove `analyzeProject`
+  to 100% CPU indefinitely (synchronous, so no timer fired and the caller's
+  budget was inert); a directory of ordinary-looking projects that merely
+  *vendored* minified libraries (NodeGoat: `raphael-min.js`, `jquery.min.js`,
+  `morris.min.js`, …) took ~56 s for the same reason at smaller per-file scale.
+  The DFG chain builder is super-linear in defs-per-line, and a minified file
+  collapses everything onto one line. `analyze()` now returns a minimal IR
+  (real meta, empty analysis) for any file whose longest line exceeds **10,000
+  characters** — far past hand-written source, and matching only minified /
+  bundled / generated files (`*.min.js`, embedded-data `*_bin.go`, …). NodeGoat
+  drops from ~56 s to ~0.4 s.
 
 ### Consumer Impact
 
-**Robustness only.** A file whose longest line exceeds 50,000 characters
+**Robustness only.** A file whose longest line exceeds 10,000 characters
 (minified / bundled / generated) now returns empty analysis instead of hanging;
 consumers that already skip minified inputs see no change. Python projects with
 starred-parameter functions that previously failed `analyzeProject` closed now

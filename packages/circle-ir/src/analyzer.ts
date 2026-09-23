@@ -778,7 +778,7 @@ function longestLineLength(code: string): number {
 
 // A single line longer than this is minified / generated, not hand-written
 // source; taint analysis of it is both pathological (O(line²)) and valueless.
-const MAX_ANALYZABLE_LINE_LENGTH = 50_000;
+const MAX_ANALYZABLE_LINE_LENGTH = 10_000;
 
 export async function analyze(
   code: string,
