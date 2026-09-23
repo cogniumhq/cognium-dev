@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.24] - 2026-09-22
+
+Two robustness fixes for `analyzeProject` — each turned a scannable repo into a
+hard failure (a crash and a synchronous hang), so both are worth taking
+promptly. No detection behaviour changes for normal source.
+
+### Fixed
+
+- **#458 / #420 — a Python starred parameter name no longer crashes
+  `analyzeProject`.** `CrossFileResolver` built a `\b<name>\b` regexp
+  from a method parameter, and `*args` / `**kwargs` / `**httplib_request_kw`
+  arrive with their stars — `*` is a quantifier, so the pattern failed to
+  compile ("Nothing to repeat") and failed the whole project analysis closed.
+  Every bare `\b${identifier}\b` interpolation in the engine is now escaped.
+  Zero behaviour change: a starred name never matched a word boundary anyway.
+  (6 of the first 95 Cisco vuln-localization repos lost their entire cross-file
+  result to this — urllib3, fickling, haystack, …). Per-file `analyze()` was
+  never affected.
+
+- **#460 — a minified single-line bundle no longer wedges the process.** A
+  webpack production bundle of 73 KB on one line drove `analyzeProject` to
+  100% CPU indefinitely; the work is synchronous, so no timer fired and the
+  caller's budget was inert. The DFG chain builder is super-linear in
+  defs-per-line, and a bundle collapses everything onto one line. `analyze()`
+  now returns a minimal IR (real meta, empty analysis) for any file whose
+  longest line exceeds 50,000 characters — far past hand-written source — which
+  bounds both `analyze()` and `analyzeProject()`.
+
+### Consumer Impact
+
+**Robustness only.** A file whose longest line exceeds 50,000 characters
+(minified / bundled / generated) now returns empty analysis instead of hanging;
+consumers that already skip minified inputs see no change. Python projects with
+starred-parameter functions that previously failed `analyzeProject` closed now
+analyze. No findings change on ordinary source.
+
 ## [4.9.23] - 2026-09-22
 
 A Go recall + precision batch, all four found and measured on the 214-repo
