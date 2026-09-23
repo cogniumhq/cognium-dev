@@ -40,10 +40,9 @@ describe('loadConfig', () => {
     expect(loaded!.passes?.['naming-convention']).toBe(false);
   });
 
-  test('returns null and warns on invalid JSON', () => {
+  test('throws on invalid JSON instead of silently continuing (#434)', () => {
     writeFileSync(TMP_CONFIG, '{ invalid json');
-    const loaded = loadConfig(TMP_CONFIG);
-    expect(loaded).toBeNull();
+    expect(() => loadConfig(TMP_CONFIG)).toThrow(/Failed to parse/);
   });
 });
 

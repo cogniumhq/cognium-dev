@@ -191,3 +191,35 @@ describe('resolveScanLanguage', () => {
     expect(() => resolveScanLanguage('js')).toThrow(/Invalid language: js/);
   });
 });
+
+// ─── matchesGlob ReDoS (cognium-dev#432) ─────────────────────────────────────
+describe('matchesGlob — pathological patterns are bounded (#432)', () => {
+  const deepPath = Array(30).fill('a').join('/');
+
+  test.each([15, 20, 50])('a run of %i adjacent globstars returns fast', (k) => {
+    // Collapses to a single **/ before compilation. Was 32s at k=15 pre-fix.
+    const start = Date.now();
+    const r = matchesGlob('a/b/c/d/e/f/g/h/i/j/nomatch.ts', '**/'.repeat(k) + 'x.js');
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(r).toBe(false);
+  });
+
+  test.each([12, 16, 40])('non-adjacent globstars + a failing literal return fast', (k) => {
+    // The reviewer's case: several **/ groups that do NOT collapse, matched
+    // against a non-matching path. Pre-fix: ~1s at k=12, ~110s at k=16.
+    // The globstar cap (>4 -> no-match) makes it constant-time.
+    const pattern = Array(k).fill('**/a').join('/') + '/ZZZ';
+    const start = Date.now();
+    const r = matchesGlob(deepPath, pattern);
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(r).toBe(false);   // >4 globstars is treated as no-match
+  });
+
+  test('patterns with up to 4 globstars still match normally', () => {
+    expect(matchesGlob('a/b/c/x.js', '**/**/**/x.js')).toBe(true); // collapses to **/x.js
+    expect(matchesGlob('x.js', '**/x.js')).toBe(true);
+    expect(matchesGlob('src/a/b/app.js', 'src/**/*.js')).toBe(true);
+    expect(matchesGlob('lib/app.js', 'src/**/*.js')).toBe(false);
+    expect(matchesGlob('a/x/b/y/c.js', '**/x/**/y/**/*.js')).toBe(true); // 3 distinct globstars
+  });
+});

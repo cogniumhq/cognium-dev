@@ -110,8 +110,13 @@ export function loadConfig(profilePath?: string): CogniumConfig | null {
     const content = readFileSync(configPath, 'utf-8');
     return JSON.parse(content) as CogniumConfig;
   } catch (err) {
-    console.error(colors.yellow(`Warning: Failed to parse ${configPath}: ${err}`));
-    return null;
+    // #434 — a malformed config is a user error, not a silent no-op: fail
+    // closed so the scan does not run with unintended defaults. Callers let
+    // this propagate to the top-level handler, which exits non-zero.
+    throw new Error(
+      `Failed to parse ${configPath}: ${err instanceof Error ? err.message : String(err)}. ` +
+      'Fix the JSON or remove the file.',
+    );
   }
 }
 
@@ -426,7 +431,26 @@ function fileMatchesLanguage(filePath: string, language?: string): boolean {
 export function matchesGlob(filePath: string, pattern: string): boolean {
   // Normalize separators
   const normalizedPath = filePath.replace(/\\/g, '/');
-  const normalizedPattern = pattern.replace(/\\/g, '/');
+  let normalizedPattern = pattern.replace(/\\/g, '/');
+
+  // #432 — collapse redundant globstars BEFORE building the regex. `**/**` is
+  // semantically `**`, so a run of them (`'**/'`×15 took 32s pre-fix) becomes a
+  // single globstar.
+  normalizedPattern = normalizedPattern
+    .replace(/\*{3,}/g, '**')          // *** or more -> **
+    .replace(/(?:\*\*\/)+/g, '**/')    // **/**/**/ -> **/
+    .replace(/(?:\/\*\*)+/g, '/**');   // /**/**    -> /**
+
+  // #432 — every `**` compiles to a `*`-quantified group, and several such
+  // groups in one pattern are mutually ambiguous, so a NON-matching path
+  // backtracks super-linearly regardless of how each group is written
+  // (`**/a`×12 + a failing literal took ~1s here; ×16 ~110s). Only `**` spans
+  // segment boundaries and causes this — single `*`/`?` are `/`-anchored and
+  // stay linear. A real include/exclude has at most two or three `**`; a
+  // pattern with more is a mistake, so treat it as no-match rather than let it
+  // stall `collectFiles` (which tests every pattern against every file).
+  const globstarCount = (normalizedPattern.match(/\*\*/g) ?? []).length;
+  if (globstarCount > 4) return false;
 
   // Convert glob to regex
   let regex = normalizedPattern
@@ -435,11 +459,15 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
     .replace(/\*/g, '[^/]*')                // * matches anything except /
     .replace(/\?/g, '.');                   // ? matches any single char
 
-  // Handle ** (globstar) — matches zero or more path segments
+  // Handle ** (globstar) — matches zero or more path segments. Each iteration
+  // consumes exactly one segment ending in `/` (`[^/]+/`), so adjacent
+  // quantifiers cannot overlap across a `/` — that is what makes the match
+  // linear instead of exponential (contrast the old `(?:.+/)?`, whose `.+`
+  // spans slashes and backtracks).
   regex = regex
-    .replace(/\{\{GLOBSTAR\}\}\//g, '(?:.+/)?')   // **/ at start or mid → zero or more dirs
-    .replace(/\/\{\{GLOBSTAR\}\}/g, '(?:/.*)?')    // /** at end → optional trailing path
-    .replace(/\{\{GLOBSTAR\}\}/g, '.*');            // bare ** fallback
+    .replace(/\{\{GLOBSTAR\}\}\//g, '(?:[^/]+/)*')   // **/ → zero or more dirs
+    .replace(/\/\{\{GLOBSTAR\}\}/g, '(?:/[^/]+)*')    // /** at end → zero or more trailing segs
+    .replace(/\{\{GLOBSTAR\}\}/g, '[^]*');            // bare ** fallback
 
   return new RegExp('^' + regex + '$').test(normalizedPath);
 }
