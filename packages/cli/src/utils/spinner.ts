@@ -3,6 +3,8 @@
  * Replaces ora dependency with zero-dependency alternative
  */
 
+import { colors } from './colors.js';
+
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const CHECKMARK = '✔';
 const CROSS = '✖';
@@ -72,21 +74,21 @@ export class Spinner {
   succeed(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.error(`\x1b[32m${CHECKMARK}\x1b[0m ${message}`);
+    console.error(`${colors.green(CHECKMARK)} ${message}`);
     return this;
   }
 
   fail(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.error(`\x1b[31m${CROSS}\x1b[0m ${message}`);
+    console.error(`${colors.red(CROSS)} ${message}`);
     return this;
   }
 
   warn(text?: string): this {
     this.stop();
     const message = text || this._text;
-    console.error(`\x1b[33m${WARNING}\x1b[0m ${message}`);
+    console.error(`${colors.yellow(WARNING)} ${message}`);
     return this;
   }
 

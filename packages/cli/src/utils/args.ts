@@ -71,7 +71,7 @@ COMMANDS:
   version              Display version information
 
 SCAN OPTIONS:
-  -l, --language <lang>      Scan only files for language (bash|go|html|java|javascript|typescript|python|rust)
+  -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
   --severity <level>         Filter by severity:
@@ -104,7 +104,7 @@ SCAN OPTIONS:
                                surfaced in output (text warning / JSON / SARIF field).
 
 METRICS OPTIONS:
-  -l, --language <lang>      Analyze only files for language (bash|go|html|java|javascript|typescript|python|rust)
+  -l, --language <lang>      Analyze only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
   -f, --format <format>      Output format (text|json) [default: text]
   --category <cats>          Filter by metric category (comma-separated):
                                - Valid categories: complexity, size, coupling,

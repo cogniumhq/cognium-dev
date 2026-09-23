@@ -342,8 +342,37 @@ export function detectLanguage(filePath: string): string | null {
   return LANG_MAP[ext] || null;
 }
 
+/** Canonical language names accepted by `--language` / `-l`. */
+export const SUPPORTED_SCAN_LANGUAGES: readonly string[] = [
+  ...new Set(Object.values(LANG_MAP)),
+].sort();
+
 function normalizeLanguage(language: string): string {
   return language.trim().toLowerCase();
+}
+
+/**
+ * Validate `--language` / `-l`. Unknown values previously matched no files
+ * and the scan exited 0, which looks like a clean result (cognium-dev#443).
+ */
+export function resolveScanLanguage(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const normalized = normalizeLanguage(String(raw));
+  if (!SUPPORTED_SCAN_LANGUAGES.includes(normalized)) {
+    throw new Error(
+      `Invalid language: ${normalized}\nValid options: ${SUPPORTED_SCAN_LANGUAGES.join(', ')}`,
+    );
+  }
+  return normalized;
+}
+
+function languageFromCliOptions(options: { language?: unknown; l?: unknown }): string | undefined {
+  try {
+    return resolveScanLanguage((options.language || options.l) as string | undefined);
+  } catch (err) {
+    console.error(colors.red(`Error: ${(err as Error).message}`));
+    process.exit(1);
+  }
 }
 
 function fileMatchesLanguage(filePath: string, language?: string): boolean {
@@ -1608,7 +1637,7 @@ async function main(): Promise<void> {
       category: (options.category) as string | undefined,
       output: (options.output || options.o) as string | undefined,
       quiet: options.quiet === true || options.q === true,
-      language: (options.language || options.l) ? normalizeLanguage((options.language || options.l) as string) : undefined,
+      language: languageFromCliOptions(options),
       excludeTests: options['exclude-tests'] === true,
       profile: (options.profile || options.p) as string | undefined,
     };
@@ -1650,7 +1679,7 @@ async function main(): Promise<void> {
 
     const targetPath = args[0];
     const scanOptions: ScanOptions = {
-      language: (options.language || options.l) ? normalizeLanguage((options.language || options.l) as string) : undefined,
+      language: languageFromCliOptions(options),
       format: (options.format || options.f || 'text') as 'text' | 'json' | 'sarif',
       threads: parseInt((options.threads as string) || '4', 10),
       severity: (options.severity) as string | undefined,

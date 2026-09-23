@@ -174,6 +174,21 @@ describe('scan directory', () => {
       expect(result.file).toEndWith('.java');
     }
   }, 60_000);
+
+  test('invalid --language exits 1 instead of scanning nothing (cognium-dev#443)', async () => {
+    const { stdout, stderr, exitCode } = await run('scan', FIXTURES, '-f', 'json', '-q', '--language', 'ruby');
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('Invalid language: ruby');
+    expect(stderr).toContain('Valid options:');
+    expect(stdout.trim()).toBe('');
+  }, 30_000);
+
+  test('typo --language jaba exits 1 (cognium-dev#443)', async () => {
+    const { stderr, exitCode } = await run('scan', '.', '-q', '-l', 'jaba');
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('Invalid language: jaba');
+    expect(stderr).toContain('java');
+  }, 30_000);
 });
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
