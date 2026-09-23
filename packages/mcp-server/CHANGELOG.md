@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Inherits two `circle-ir@4.9.24` robustness fixes to project analysis: a Python
 starred-parameter (`*args`/`**kwargs`) function no longer crashes a cross-file
-scan, and a minified single-line bundle no longer hangs it. No change on
+scan, and minified / bundled files (vendored `*.min.js` etc.) no longer hang or crawl a directory scan. No change on
 ordinary source.
 
 ## [0.1.15] - 2026-09-22
