@@ -2,6 +2,16 @@
 
 All notable changes to `@cognium/project-profile-detect` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-09-24
+
+### Performance — module lookup no longer scans every module per file (#304)
+- `detectProjectProfiles` resolved each file's owning module by checking
+  **every** module (`ownerOf`, O(files × modules)). On a many-module Maven repo
+  (1,971 modules, about 26k files) that was about 50M comparisons and 68% of
+  detection time. A root → module index is now built once and each file walks its
+  ancestors (O(files × depth)). The result is byte-identical; about 17.7s → 4.9s
+  on that repo. `ownerOf` is still exported.
+
 ## [1.1.1] — 2026-09-10
 
 ### Fixed — deterministic Maven parent inheritance (#290)

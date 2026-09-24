@@ -4,6 +4,13 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-09-24
+
+### Changed
+- Adopts `circle-ir@4.9.26`: Go cross-function false positives removed (#472),
+  Go bufio request-body source (#343), C# expression-statement sources (#339),
+  parser init retry (#473). No MCP tool, schema or response-shape changes.
+
 ## [0.1.17] - 2026-09-23
 
 ### Changed
