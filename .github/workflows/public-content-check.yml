@@ -1,0 +1,41 @@
+name: Public content check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-diff:
+    name: Scan diff for private content
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Reject tokens and private files in the diff
+        run: |
+          set -euo pipefail
+          range="origin/${GITHUB_BASE_REF}...HEAD"
+
+          bad_paths="$(git diff --name-only --diff-filter=AMR "$range" \
+            | grep -E '(^|/)\.env($|\.)|(^|/)[^/]*-scan\.json$' \
+            | grep -vE '(^|/)\.env\.example$' || true)"
+          if [ -n "$bad_paths" ]; then
+            echo "These paths must not be added to a public repo:"
+            printf '%s\n' "$bad_paths"
+            exit 1
+          fi
+
+          added="$(git diff -U0 --diff-filter=AM "$range" -- . \
+            ':(exclude).github/workflows/public-content-check.yml' \
+            ':(exclude).cursor/rules/public-repo.mdc' \
+            | grep '^+' | grep -v '^+++' || true)"
+
+          if printf '%s\n' "$added" | grep -E \
+            'ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+            echo "Added lines contain a token or private key. Remove them before merging."
+            exit 1
+          fi
