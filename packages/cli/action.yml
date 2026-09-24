@@ -102,6 +102,9 @@ runs:
 
     - name: Upload SARIF to GitHub Code Scanning
       if: always() && inputs.upload-sarif == 'true' && inputs.format == 'sarif' && inputs.output != ''
+      # A repo without GitHub Advanced Security answers the upload with 403.
+      # That is a reporting failure, not a scan result, so it must not fail the job (#412).
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.output }}
