@@ -40,7 +40,9 @@ if ! command -v buzz >/dev/null 2>&1; then
   git -C "$HOME/buzz-src" remote add origin https://github.com/block/buzz.git
   git -C "$HOME/buzz-src" fetch --depth 1 origin "$BUZZ_REV"
   git -C "$HOME/buzz-src" checkout FETCH_HEAD
-  cargo install --path "$HOME/buzz-src/crates/buzz-cli"
+  # Run inside the clone so rustup reads its rust-toolchain.toml (1.95).
+  # From this repo, rustup stays on 1.83 and cargo install exits 101.
+  ( cd "$HOME/buzz-src" && cargo install --path crates/buzz-cli )
   rm -rf "$HOME/buzz-src"
   if ! command -v buzz >/dev/null 2>&1; then
     cargo_home="${CARGO_HOME:-$HOME/.cargo}"
