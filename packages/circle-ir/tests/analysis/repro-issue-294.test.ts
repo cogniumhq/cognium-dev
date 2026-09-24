@@ -44,3 +44,44 @@ describe('#294 part 1 — Rust format! is not a format_string sink', () => {
     expect(ir.taint.sinks.some(s => s.type === 'format_string')).toBe(true);
   });
 });
+
+/**
+ * #294 (part 2, split) — the classless `from_str` / `from_slice`
+ * deserialization rows matched every `T::from_str` / `from_slice`: ordinary
+ * `FromStr` / byte parsing (`u32::from_str`, `Url::from_str`,
+ * `PublicKey::from_slice`) was reported as CWE-502. Those rows are removed.
+ * The class-scoped serde_json / serde_yaml / bincode / toml / ron sinks are
+ * kept (owner decision 2026-09-24: typed serde_json is a separate labelling
+ * question, and CWE-Bench-Rust RustTest00016 labels it CWE-502).
+ */
+describe('#294 part 2 — generic FromStr parsing is not a deserialization sink', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const deserAt = async (code: string) => {
+    const ir = await analyze(code, 'lib.rs', 'rust');
+    return ir.taint.sinks.filter((s) => s.type === 'deserialization').map((s) => s.line);
+  };
+
+  it('u32::from_str / Url::from_str / PublicKey::from_slice are not deserialization sinks', async () => {
+    expect(await deserAt(`use std::str::FromStr;
+pub fn parse(s: &str, b: &[u8]) {
+    let n = u32::from_str(s).unwrap();
+    let u = Url::from_str(s).unwrap();
+    let k = PublicKey::from_slice(b).unwrap();
+}`)).toEqual([]);
+  });
+
+  it('serde_json::from_str stays a deserialization sink (class-scoped row kept)', async () => {
+    expect(await deserAt(`pub fn parse(body: String) {
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+}`)).toEqual([2]);
+  });
+
+  it('serde_yaml::from_str stays a deserialization sink', async () => {
+    expect(await deserAt(`pub fn parse(body: String) {
+    let v: serde_yaml::Value = serde_yaml::from_str(&body).unwrap();
+}`)).toEqual([2]);
+  });
+});
