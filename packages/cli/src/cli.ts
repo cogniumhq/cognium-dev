@@ -696,7 +696,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
           go: join(wasmDir, 'tree-sitter-go.wasm'),
           java: join(wasmDir, 'tree-sitter-java.wasm'),
           javascript: join(wasmDir, 'tree-sitter-javascript.wasm'),
-          typescript: join(wasmDir, 'tree-sitter-javascript.wasm'),
+          typescript: join(wasmDir, 'tree-sitter-typescript.wasm'),
           python: join(wasmDir, 'tree-sitter-python.wasm'),
           rust: join(wasmDir, 'tree-sitter-rust.wasm'),
           html: join(wasmDir, 'tree-sitter-html.wasm'),
@@ -723,6 +723,12 @@ async function initWasm(spin: Spinner | null): Promise<void> {
     const require = createRequire(import.meta.url);
     const circleIrPkg = require.resolve('circle-ir/package.json');
     const wasmBasePath = join(dirname(circleIrPkg), 'dist', 'wasm') + '/';
+    // `typescript` must load the TypeScript grammar (both branches). With the
+    // JavaScript grammar, TS-only syntax parses as error-recovered garbage —
+    // an interface method signature `query(sql: string): Promise<T>;` became
+    // a `query(...)` call, reported as sql_injection + missing-await (#409).
+    // circle-ir itself switched grammars in 3.24.0 (#5); this explicit map
+    // silently overrode that.
     await initAnalyzer({
       wasmPath: wasmBasePath + 'web-tree-sitter.wasm',
       languagePaths: {
@@ -730,7 +736,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
         go: wasmBasePath + 'tree-sitter-go.wasm',
         java: wasmBasePath + 'tree-sitter-java.wasm',
         javascript: wasmBasePath + 'tree-sitter-javascript.wasm',
-        typescript: wasmBasePath + 'tree-sitter-javascript.wasm',
+        typescript: wasmBasePath + 'tree-sitter-typescript.wasm',
         python: wasmBasePath + 'tree-sitter-python.wasm',
         rust: wasmBasePath + 'tree-sitter-rust.wasm',
         html: wasmBasePath + 'tree-sitter-html.wasm',
