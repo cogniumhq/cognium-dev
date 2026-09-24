@@ -64,7 +64,7 @@ class HttpClient:
     def fetch(self):
         return requests.get(self.url)
 `;
-    const r = await analyze(code, 'oop_ssrf.py', 'python');
+    const r = await analyze(code, 'oop_ssrf.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ssrf').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -75,7 +75,7 @@ class HttpClient:
     def read(self):
         return open(self.path).read()
 `;
-    const r = await analyze(code, 'oop_path.py', 'python');
+    const r = await analyze(code, 'oop_path.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'path_traversal').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -87,7 +87,7 @@ class Redirector:
     def go(self):
         return redirect(self.dest)
 `;
-    const r = await analyze(code, 'oop_redirect.py', 'python');
+    const r = await analyze(code, 'oop_redirect.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'open_redirect').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -99,7 +99,7 @@ class Logger:
     def write(self):
         logging.info(self.msg)
 `;
-    const r = await analyze(code, 'oop_loginj.py', 'python');
+    const r = await analyze(code, 'oop_loginj.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'log_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -111,7 +111,7 @@ class LdapClient:
     def search(self, conn):
         return conn.search_s('dc=example', 2, '(uid=' + self.user + ')')
 `;
-    const r = await analyze(code, 'oop_ldap.py', 'python');
+    const r = await analyze(code, 'oop_ldap.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ldap_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -122,7 +122,7 @@ class LdapClient:
     def find(self, tree):
         return tree.xpath(f"//user[@id='{self.q}']")
 `;
-    const r = await analyze(code, 'oop_xpath.py', 'python');
+    const r = await analyze(code, 'oop_xpath.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'xpath_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -133,7 +133,7 @@ class LdapClient:
     def find(self, db):
         return db.users.find_one({"$where": self.name})
 `;
-    const r = await analyze(code, 'oop_nosql.py', 'python');
+    const r = await analyze(code, 'oop_nosql.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'nosql_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -145,7 +145,7 @@ class Renderer:
     def render(self):
         return Template(self.tmpl).render()
 `;
-    const r = await analyze(code, 'oop_ssti.py', 'python');
+    const r = await analyze(code, 'oop_ssti.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -157,7 +157,7 @@ class Deserializer:
     def load(self):
         return pickle.loads(self.data)
 `;
-    const r = await analyze(code, 'oop_deser.py', 'python');
+    const r = await analyze(code, 'oop_deser.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'deserialization').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -171,7 +171,7 @@ class Deserializer:
   async find(db) { return db.collection('users').findOne({"$where": this.name}); }
 }
 `;
-    const r = await analyze(code, 'oop_nosql.js', 'javascript');
+    const r = await analyze(code, 'oop_nosql.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'nosql_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -181,7 +181,7 @@ class Deserializer:
   write() { console.log(this.msg); }
 }
 `;
-    const r = await analyze(code, 'oop_loginj.js', 'javascript');
+    const r = await analyze(code, 'oop_loginj.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'log_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -192,7 +192,7 @@ class LdapClient {
   search(cb) { return ldap.search('dc=ex', { filter: '(uid=' + this.user + ')' }, cb); }
 }
 `;
-    const r = await analyze(code, 'oop_ldap.js', 'javascript');
+    const r = await analyze(code, 'oop_ldap.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ldap_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -203,7 +203,7 @@ class XmlQ {
   find(doc) { return xpath.select("//user[@id='" + this.q + "']", doc); }
 }
 `;
-    const r = await analyze(code, 'oop_xpath.js', 'javascript');
+    const r = await analyze(code, 'oop_xpath.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'xpath_injection').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -214,7 +214,7 @@ class Deserializer {
   load() { return serialize.unserialize(this.data); }
 }
 `;
-    const r = await analyze(code, 'oop_deser.js', 'javascript');
+    const r = await analyze(code, 'oop_deser.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'deserialization').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -225,7 +225,7 @@ class XmlParser {
   parse() { return libxml.parseXml(this.src, {noent: true, dtdload: true}); }
 }
 `;
-    const r = await analyze(code, 'oop_xxe.js', 'javascript');
+    const r = await analyze(code, 'oop_xxe.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'xxe').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -236,7 +236,7 @@ class Renderer {
   render() { return ejs.render(this.tmpl); }
 }
 `;
-    const r = await analyze(code, 'oop_ssti.js', 'javascript');
+    const r = await analyze(code, 'oop_ssti.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'code_injection').length).toBeGreaterThanOrEqual(1);
   });
 });

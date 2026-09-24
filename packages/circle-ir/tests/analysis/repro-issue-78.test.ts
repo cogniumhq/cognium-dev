@@ -91,7 +91,7 @@ def make_and_run():
     f = OopFlow(host)
     f.do_direct()
 `;
-    const r = await analyze(code, 'oop_flow.py', 'python');
+    const r = await analyze(code, 'oop_flow.py', 'python', { speculativeParamSources: true });
     expect(hasCmdFlow(r.taint.flows, 10)).toBe(true);
   });
 
@@ -111,7 +111,7 @@ def make_and_run():
     f = OopFlow(host)
     f.do_property()
 `;
-    const r = await analyze(code, 'oop_flow.py', 'python');
+    const r = await analyze(code, 'oop_flow.py', 'python', { speculativeParamSources: true });
     expect(hasCmdFlow(r.taint.flows, 10)).toBe(true);
   });
 
