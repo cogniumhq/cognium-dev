@@ -191,6 +191,24 @@ describe('scan directory', () => {
   }, 30_000);
 });
 
+// ─── TypeScript grammar (#409) ──────────────────────────────────────────────
+
+describe('typescript grammar (cognium-dev#409)', () => {
+  // The CLI used to load tree-sitter-javascript for `.ts`. The interface
+  // method signature on line 5 then error-recovered into a `query(...)` call
+  // and was reported as sql_injection + missing-await.
+  const FILE = join(FIXTURES, 'sql-client-interface.ts');
+
+  test('interface method signature is not reported; real concat query still is', async () => {
+    const { stdout } = await run('scan', FILE, '-f', 'json', '-q');
+    const vulns = JSON.parse(stdout).results.flatMap((r: any) => r.vulnerabilities);
+    expect(vulns.filter((v: any) => v.line === 5)).toEqual([]);
+    expect(vulns.some((v: any) => v.type === 'missing-await')).toBe(false);
+    expect(vulns.some((v: any) => v.type === 'sql_injection' && v.line === 12)).toBe(true);
+    expect(vulns.some((v: any) => v.type === 'sql_injection' && v.line === 17)).toBe(false);
+  }, 30_000);
+});
+
 // ─── Metrics ────────────────────────────────────────────────────────────────
 
 describe('metrics', () => {
