@@ -23,20 +23,30 @@ if ! command -v bun >/dev/null 2>&1 || [ "$(bun -v 2>/dev/null || true)" != "$BU
 fi
 export PATH="$HOME/.bun/bin:$PATH"
 
-# Buzz CLI is not in the base image. cargo install lands in ~/.cargo/bin, which
-# is not on PATH for later automation shells, so link it into /usr/local/bin.
+# Buzz CLI is not in the base image. This image already has cargo on PATH
+# (CARGO_HOME=/usr/local/cargo) and no $HOME/.cargo/env, so do not source that
+# file. cargo install writes into $CARGO_HOME/bin, which is already on PATH.
+BUZZ_REV="676e8c43825fa478850a3a320b1367d3288cce1a"
 if ! command -v buzz >/dev/null 2>&1; then
   if ! command -v cargo >/dev/null 2>&1; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    if [ -f "$HOME/.cargo/env" ]; then
+      # shellcheck disable=SC1091
+      . "$HOME/.cargo/env"
+    fi
   fi
-  # shellcheck disable=SC1091
-  . "$HOME/.cargo/env"
   rm -rf "$HOME/buzz-src"
-  git clone --depth 1 https://github.com/block/buzz.git "$HOME/buzz-src"
+  git init "$HOME/buzz-src"
+  git -C "$HOME/buzz-src" remote add origin https://github.com/block/buzz.git
+  git -C "$HOME/buzz-src" fetch --depth 1 origin "$BUZZ_REV"
+  git -C "$HOME/buzz-src" checkout FETCH_HEAD
   cargo install --path "$HOME/buzz-src/crates/buzz-cli"
   rm -rf "$HOME/buzz-src"
-  if command -v sudo >/dev/null 2>&1; then
-    sudo ln -sf "$HOME/.cargo/bin/buzz" /usr/local/bin/buzz
+  if ! command -v buzz >/dev/null 2>&1; then
+    cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+    if [ -x "$cargo_home/bin/buzz" ] && command -v sudo >/dev/null 2>&1; then
+      sudo ln -sf "$cargo_home/bin/buzz" /usr/local/bin/buzz
+    fi
   fi
 fi
 
