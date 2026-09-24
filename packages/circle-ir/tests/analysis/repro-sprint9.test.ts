@@ -463,7 +463,7 @@ function run(cmd) {
   if (process.env.NODE_ENV === 'test') { require('child_process').execSync(cmd); }
 }
 `;
-    const r = await analyze(code, 'dc.js', 'javascript');
+    const r = await analyze(code, 'dc.js', 'javascript', { speculativeParamSources: true });
     const cmdFlows = r.taint.flows.filter(f => f.sink_type === 'command_injection');
     expect(cmdFlows.length).toBeGreaterThan(0);
   });
