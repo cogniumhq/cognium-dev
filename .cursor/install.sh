@@ -23,6 +23,35 @@ if ! command -v bun >/dev/null 2>&1 || [ "$(bun -v 2>/dev/null || true)" != "$BU
 fi
 export PATH="$HOME/.bun/bin:$PATH"
 
+# Buzz CLI is not in the base image. This image already has cargo on PATH
+# (CARGO_HOME=/usr/local/cargo) and no $HOME/.cargo/env, so do not source that
+# file. cargo install writes into $CARGO_HOME/bin, which is already on PATH.
+BUZZ_REV="676e8c43825fa478850a3a320b1367d3288cce1a"
+if ! command -v buzz >/dev/null 2>&1; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    if [ -f "$HOME/.cargo/env" ]; then
+      # shellcheck disable=SC1091
+      . "$HOME/.cargo/env"
+    fi
+  fi
+  rm -rf "$HOME/buzz-src"
+  git init "$HOME/buzz-src"
+  git -C "$HOME/buzz-src" remote add origin https://github.com/block/buzz.git
+  git -C "$HOME/buzz-src" fetch --depth 1 origin "$BUZZ_REV"
+  git -C "$HOME/buzz-src" checkout FETCH_HEAD
+  # Run inside the clone so rustup reads its rust-toolchain.toml (1.95).
+  # From this repo, rustup stays on 1.83 and cargo install exits 101.
+  ( cd "$HOME/buzz-src" && cargo install --path crates/buzz-cli )
+  rm -rf "$HOME/buzz-src"
+  if ! command -v buzz >/dev/null 2>&1; then
+    cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+    if [ -x "$cargo_home/bin/buzz" ] && command -v sudo >/dev/null 2>&1; then
+      sudo ln -sf "$cargo_home/bin/buzz" /usr/local/bin/buzz
+    fi
+  fi
+fi
+
 # Workspace dependencies (npm workspaces).
 npm ci
 
