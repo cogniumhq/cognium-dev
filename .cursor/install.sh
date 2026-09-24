@@ -23,6 +23,23 @@ if ! command -v bun >/dev/null 2>&1 || [ "$(bun -v 2>/dev/null || true)" != "$BU
 fi
 export PATH="$HOME/.bun/bin:$PATH"
 
+# Buzz CLI is not in the base image. cargo install lands in ~/.cargo/bin, which
+# is not on PATH for later automation shells, so link it into /usr/local/bin.
+if ! command -v buzz >/dev/null 2>&1; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  fi
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+  rm -rf "$HOME/buzz-src"
+  git clone --depth 1 https://github.com/block/buzz.git "$HOME/buzz-src"
+  cargo install --path "$HOME/buzz-src/crates/buzz-cli"
+  rm -rf "$HOME/buzz-src"
+  if command -v sudo >/dev/null 2>&1; then
+    sudo ln -sf "$HOME/.cargo/bin/buzz" /usr/local/bin/buzz
+  fi
+fi
+
 # Workspace dependencies (npm workspaces).
 npm ci
 
