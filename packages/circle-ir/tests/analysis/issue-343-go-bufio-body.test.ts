@@ -72,3 +72,16 @@ describe('#343 — bufio wrappers over the Go request body', () => {
     expect(body).toEqual([]);
   });
 });
+
+describe('#343 — inline bufio read does not taint the next line', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('log.Println(sc.Text()) followed by a constant x does not flow to exec(x)', async () => {
+    const r = await analyze([
+      'package main', 'import ("bufio";"log";"net/http";"os/exec")',
+      'func h(w http.ResponseWriter, r *http.Request) {', '  sc := bufio.NewScanner(r.Body)', '  for sc.Scan() {',
+      '    log.Println(sc.Text())', '    x := "fixed"', '    exec.Command(x).Run()', '  }', '}',
+    ].join('\n'), 'adj.go', 'go');
+    expect((r.taint.flows ?? []).filter((f) => f.sink_type === 'command_injection')).toEqual([]);
+  });
+});

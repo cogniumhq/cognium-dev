@@ -1642,13 +1642,17 @@ function findGoRequestBodySources(sourceCode: string, language: string): TaintSo
       const rd = readRe.exec(line);
       if (!rd) continue;
       // `line := sc.Text()` binds the LHS. A read used inline as a call
-      // argument (`db.Query("…" + sc.Text())`) is left unbound so the
-      // same-line colocation path links it to the sink on that line.
+      // argument (`db.Query("…" + sc.Text())`) gets the `<inline>` marker
+      // (as #339 does for C#): it matches no real name, so only a sink on
+      // this very line is reached. Leaving it with NO variable made
+      // findInitialTaint seed every def on the FOLLOWING line by adjacency,
+      // so `log.Println(sc.Text())` tainted a constant `x := "fixed"`.
       const as = assignRe.exec(line);
-      let variable: string | undefined;
+      let variable = '<inline>';
       if (as) {
-        variable = as[1].split(',').map((v) => v.trim()).find((v) => v !== '_' && v !== 'err' && /^[A-Za-z_]\w*$/.test(v));
-        if (!variable) continue;
+        const bound = as[1].split(',').map((v) => v.trim()).find((v) => v !== '_' && v !== 'err' && /^[A-Za-z_]\w*$/.test(v));
+        if (!bound) continue;
+        variable = bound;
       }
       push(variable, j + 1, `bufio ${wrapper}.${rd[1]}() over req.Body`);
     }
