@@ -115,9 +115,12 @@ bun run dev scan ../../packages/circle-ir/tests/fixtures/java/simple
 
 ## Release process
 
-Releases are cut by maintainers via `npm version` from each workspace
-package, then published to npm and tagged (`vX.Y.Z`). Every release
-appears at [GitHub Releases](https://github.com/cogniumhq/cognium-dev/releases).
+Releases are cut by maintainers through a release PR that bumps
+`circle-ir`, `cognium-dev` and `@cognium/mcp-server` together. After it
+merges, each package is published to npm from a clean build and tagged
+`<package>-v<version>` (for example `circle-ir-v4.9.25`,
+`cognium-dev-v4.9.25`, `mcp-server-v0.1.17`). Every release appears at
+[GitHub Releases](https://github.com/cogniumhq/cognium-dev/releases).
 See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Code of Conduct
