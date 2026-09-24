@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.26] - 2026-09-24
+
+### Changed
+- Adopts `circle-ir@4.9.26`. Go scans lose cross-function false positives
+  (#472) and gain `bufio`-over-request-body sources (#343). C# scans gain bare
+  expression-statement sinks with an inline request read (#339). See the
+  circle-ir changelog.
+- Adopts `@cognium/project-profile-detect@1.1.2`: project-shape detection is
+  about 3.6× faster on many-module Maven repos (#304), with identical results.
+
+### Consumer Impact
+**Findings change for Go and C#; no CLI flag or output-shape changes.** Go
+results drop cross-function false positives, and some keep their sink with a
+corrected source line. C# gains findings for `File.Create(... file.FileName);`-style
+statements.
+
 ## [4.9.25] - 2026-09-23
 
 ### Fixed

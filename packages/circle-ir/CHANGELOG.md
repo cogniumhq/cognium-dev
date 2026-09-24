@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.26] - 2026-09-24
+
+### Fixed
+- **#472: Go taint no longer leaks to a same-named local in another function.**
+  The argument-expression matcher links a source to a sink by variable name, and
+  its same-method gate compared method *names*. That gate never ran for
+  assignment-shaped sources (`a := os.Args`, `name := f.Name`), and couldn't
+  separate two functions that share a name (`(*A).ServeHTTP` / `(*C).ServeHTTP`).
+  So `b := []byte("x")` in `out()` inherited the taint of
+  `b, _ := io.ReadAll(r.Body)` in `h()`; this shipped in 4.9.23–4.9.25 via the
+  #459 `r.Body` source. Go now compares the enclosing function by line range.
+  Package-level sources stay unscoped, and closures inside a handler share its
+  scope. On 175 Go corpus repos, 36 flows were removed: 33 re-attributed to the
+  source in the sink's own function, 3 cross-function sinks no longer reported.
+- **#343: Go `bufio.NewScanner` / `NewReader` over the request body.**
+  `sc.Text()`, `sc.Bytes()`, `br.ReadString(…)` and related reads over
+  `<req>.Body` now seed `http_body`. An assigned read binds its left-hand side.
+  An inline read (`db.Query("…" + sc.Text())`) reaches only a sink on the same
+  line.
+- **#339: C# bare expression-statement sinks with an inline request read.**
+  `File.Create(Path.Combine(dir, file.FileName));` was silent while the same
+  call assigned to a local fired. Inline `Request.*`, `IFormFile.FileName` /
+  `ContentType`, `Console.ReadLine()` and `Environment.GetEnvironmentVariable`
+  reads inside the call's arguments now seed a source on that statement.
+- **#473: `initParser` recovers after a failed init.** A rejected `Parser.init`
+  (bad `wasmPath`, transient fetch failure) was cached forever, so every later
+  `initParser` / `initAnalyzer` call failed. The cache is now cleared on failure.
+
+### Consumer Impact
+- **Go:** fewer findings (cross-function false positives removed). Some findings
+  keep their sink but report a different, correct **source line**. Baselines
+  keyed on `sink@source->sink` will show those as one removal plus one addition.
+- **Go / C#:** new findings for the bufio-over-body and expression-statement
+  shapes above.
+- No API or output-shape changes.
+
 ## [4.9.25] - 2026-09-23
 
 Lockstep release with `cognium-dev@4.9.25`. No library changes.
