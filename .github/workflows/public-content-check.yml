@@ -32,10 +32,13 @@ jobs:
           fi
 
           patch="$(mktemp)"
+          added="$(mktemp)"
           git diff -U0 --diff-filter=AMR "$range" > "$patch"
-          added="$(grep '^+' "$patch" | grep -v '^+++' || true)"
+          grep '^+' "$patch" | grep -v '^+++' > "$added" || true
           rm -f "$patch"
-          if printf '%s\n' "$added" | grep -qE "$token_re"; then
+          if grep -qE "$token_re" "$added"; then
+            rm -f "$added"
             echo "Added lines contain a token or private key. Remove them before merging."
             exit 1
           fi
+          rm -f "$added"
