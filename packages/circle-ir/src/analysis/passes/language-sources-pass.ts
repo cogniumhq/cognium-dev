@@ -1602,6 +1602,57 @@ function findGoRequestBodySources(sourceCode: string, language: string): TaintSo
     const cp = copyRe.exec(line);
     if (cp) { push(cp[1].replace(/^&\s*/, ''), n, 'io.Copy(dst, req.Body)'); continue; }
   }
+
+  // `sc := bufio.NewScanner(r.Body)` / `br := bufio.NewReader(r.Body)` — the
+  // wrapper itself is not the data; its reads are. Each `sc.Text()` /
+  // `sc.Bytes()` / `br.ReadString(…)` / `br.ReadBytes(…)` / `br.ReadLine()`
+  // inside the same function body is an http_body source. Scoped to the
+  // wrapper variable's own block, so an unrelated `sc` elsewhere in the file
+  // (e.g. a scanner over os.Stdin) is never seeded.
+  const wrapRe = new RegExp(
+    `^\\s*(?:var\\s+)?([A-Za-z_]\\w*)\\s*:?=\\s*bufio\\s*\\.\\s*New(?:Scanner|Reader|ReaderSize)\\s*\\(.*${bodyRef}`,
+  );
+  const braceDelta = (s: string): number => {
+    // Ignore braces inside string/rune literals and trailing comments.
+    const code = s.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, '""').replace(/\/\/.*$/, '');
+    let d = 0;
+    for (const ch of code) { if (ch === '{') d++; else if (ch === '}') d--; }
+    return d;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const w = wrapRe.exec(lines[i]);
+    if (!w) continue;
+    const wrapper = w[1];
+    if (wrapper === '_') continue;
+    const readRe = new RegExp(
+      `(?<![\\w.])${wrapper}\\s*\\.\\s*(Text|Bytes|ReadString|ReadBytes|ReadLine|ReadSlice)\\s*\\(`,
+    );
+    const assignRe = new RegExp(
+      `^\\s*(?:var\\s+)?([A-Za-z_][\\w\\s,]*?)\\s*:?=(?!=)\\s*(?:string\\s*\\(\\s*)?${wrapper}\\s*\\.\\s*(?:Text|Bytes|ReadString|ReadBytes|ReadLine|ReadSlice)\\s*\\(`,
+    );
+    const rebindRe = new RegExp(`(?<![\\w.])${wrapper}\\s*:?=(?!=)`);
+    // Walk forward until the block holding the declaration closes.
+    let depth = 0;
+    for (let j = i + 1; j < lines.length; j++) {
+      depth += braceDelta(lines[j - 1]);
+      if (depth < 0) break;
+      const line = lines[j];
+      if (/^\s*\/\//.test(line)) continue;
+      if (rebindRe.test(line)) break; // wrapper re-bound to something else
+      const rd = readRe.exec(line);
+      if (!rd) continue;
+      // `line := sc.Text()` binds the LHS. A read used inline as a call
+      // argument (`db.Query("…" + sc.Text())`) is left unbound so the
+      // same-line colocation path links it to the sink on that line.
+      const as = assignRe.exec(line);
+      let variable: string | undefined;
+      if (as) {
+        variable = as[1].split(',').map((v) => v.trim()).find((v) => v !== '_' && v !== 'err' && /^[A-Za-z_]\w*$/.test(v));
+        if (!variable) continue;
+      }
+      push(variable, j + 1, `bufio ${wrapper}.${rd[1]}() over req.Body`);
+    }
+  }
   return sources;
 }
 
