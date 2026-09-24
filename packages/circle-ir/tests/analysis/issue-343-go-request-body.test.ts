@@ -71,3 +71,77 @@ describe('#343 — Go request body source', () => {
     expect(body.length).toBe(1);
   });
 });
+
+/**
+ * #472 — the argument-expression matcher links a source to a sink by variable
+ * NAME. Its #101 gate compared method names, which never ran for untagged
+ * sources (`a := os.Args`, `name := f.Name`) and could not separate two
+ * functions sharing a name (`(*A).ServeHTTP` / `(*C).ServeHTTP`), so a
+ * same-named local in another function inherited the taint. Go now compares
+ * the enclosing function by line range.
+ */
+describe('#472 — Go text-scan sources stay in their own function', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('io.ReadAll(r.Body) in h() does not taint a same-named literal in out()', async () => {
+    const { flows } = await run(
+      'func h(w http.ResponseWriter, r *http.Request) {', '  b, _ := io.ReadAll(r.Body)', '  _ = len(b)', '}',
+      'func out() {', '  b := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(b), os.O_RDONLY, 0)', '}',
+    );
+    expect(flows).toEqual([]);
+  });
+
+  it('a decoded struct in h() does not taint a same-named struct literal in out()', async () => {
+    const { flows } = await run(
+      'func h(w http.ResponseWriter, r *http.Request) {', '  var in struct{ Cmd string }', '  json.NewDecoder(r.Body).Decode(&in)', '  _ = in', '}',
+      'func out() {', '  in := struct{ Cmd string }{"ls"}', '  exec.Command(in.Cmd).Run()', '}',
+    );
+    expect(flows).toEqual([]);
+  });
+
+  it('a gRPC getter source does not leak across functions either', async () => {
+    const r = await analyze([
+      'package main', 'import ("context";"os";pb "x/pb")', 'type S struct{}',
+      'func (s *S) Put(ctx context.Context, req *pb.PutRequest) (*pb.R, error) {', '  p := req.GetTargetPath()', '  _ = p', '  return nil, nil', '}',
+      'func out() {', '  p := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(p), os.O_RDONLY, 0)', '}',
+    ].join('\n'), 'g.go', 'go');
+    expect((r.taint.flows ?? []).filter((f) => f.sink_type === 'path_traversal')).toEqual([]);
+  });
+
+  const flowsOf = async (...lines: string[]) => {
+    const r = await analyze(lines.join('\n'), 'x.go', 'go');
+    return (r.taint.flows ?? []).filter((f) => f.sink_type !== 'external_taint_escape').map((f) => f.sink_type);
+  };
+
+  it('two methods that share a name (ServeHTTP on different receivers) stay separate', async () => {
+    expect(await flowsOf(
+      'package main', 'import ("io";"net/http";"os")', 'type A struct{}', 'type C struct{}',
+      'func (a *A) ServeHTTP(w http.ResponseWriter, r *http.Request) {', '  b, _ := io.ReadAll(r.Body)', '  _ = b', '}',
+      'func (c *C) ServeHTTP(w http.ResponseWriter, r *http.Request) {', '  b := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(b), os.O_RDONLY, 0)', '}',
+    )).toEqual([]);
+  });
+
+  it('assignment-shaped sources (os.Args, zip entry name) stay in their function', async () => {
+    expect(await flowsOf(
+      'package main', 'import ("os")', 'func h() {', '  a := os.Args', '  _ = a', '}',
+      'func out() {', '  a := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(a), os.O_RDONLY, 0)', '}',
+    )).toEqual([]);
+    expect(await flowsOf(
+      'package main', 'import ("archive/zip";"os")', 'func h(r *zip.Reader) {', '  for _, f := range r.File {', '    name := f.Name', '    _ = name', '  }', '}',
+      'func out() {', '  name := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(name), os.O_RDONLY, 0)', '}',
+    )).toEqual([]);
+  });
+
+  it('a package-level source still reaches a function that uses it', async () => {
+    expect(await flowsOf(
+      'package main', 'import ("os";"os/exec")', 'var cmd = os.Args[1]', 'func run() {', '  exec.Command(cmd).Run()', '}',
+    )).toContain('command_injection');
+  });
+
+  it('keeps the same-function flow, including through a conversion and a goroutine closure', async () => {
+    const same = await run('func h(w http.ResponseWriter, r *http.Request) {', '  var in struct{ Cmd string }', '  json.NewDecoder(r.Body).Decode(&in)', '  exec.Command(in.Cmd).Run()', '}');
+    expect(same.flows).toContain('command_injection');
+    const closure = await run('func h(w http.ResponseWriter, r *http.Request) {', '  b, _ := io.ReadAll(r.Body)', '  go func() {', '    os.OpenFile("/data/"+string(b), os.O_RDONLY, 0)', '  }()', '}');
+    expect(closure.flows).toContain('path_traversal');
+  });
+});

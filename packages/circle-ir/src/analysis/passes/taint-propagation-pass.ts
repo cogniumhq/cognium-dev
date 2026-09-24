@@ -1443,6 +1443,22 @@ function detectExpressionScanFlows(
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
 
+  // #472 — Go function ranges for the same-function gate below. Returns the
+  // start line of the outermost function containing `line`, or -1 when the
+  // line is at package level (no scoping then, so package-level sources still
+  // reach every function).
+  const goFnRanges: Array<[number, number]> = language === 'go' && types
+    ? types.flatMap((t) => t.methods.map((m): [number, number] => [m.start_line, m.end_line]))
+    : [];
+  const goFnStart = (line: number): number => {
+    let best = -1;
+    let bestSpan = -1;
+    for (const [start, end] of goFnRanges) {
+      if (line >= start && line <= end && end - start > bestSpan) { best = start; bestSpan = end - start; }
+    }
+    return best;
+  };
+
   // Variable-name scan path: only consider sources that carry an explicit
   // variable name. The colocation path below (cognium-dev #83) runs even
   // when this set is empty, so we no longer early-return.
@@ -2011,6 +2027,17 @@ function detectExpressionScanFlows(
             source.in_method !== call.in_method
           ) {
             continue;
+          }
+
+          // #472: the name gate above cannot separate two functions that share
+          // a name (`(*A).ServeHTTP` vs `(*C).ServeHTTP`) and never runs for
+          // sources with no method tag (`a := os.Args`, `name := f.Name`). In
+          // Go, compare the enclosing function by line range instead. Outermost
+          // containment keeps closures inside a handler in the same scope.
+          if (goFnRanges.length > 0) {
+            const srcFn = goFnStart(source.line);
+            const sinkFn = goFnStart(sink.line);
+            if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
           }
 
           // Simple-identifier sources are already confirmed present by the
