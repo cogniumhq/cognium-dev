@@ -2630,9 +2630,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'deserialize', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'from_str', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'from_str', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  // Generic deserialization patterns
-  { method: 'from_str', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
-  { method: 'from_slice', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
+  // #294: no classless `from_str` / `from_slice` deserialization sink. Those
+  // rows matched EVERY `T::from_str` / `from_slice` — `u32::from_str`,
+  // `Url::from_str`, `PublicKey::from_slice` — i.e. ordinary `FromStr` /
+  // byte parsing, which cannot instantiate an attacker-chosen type. The
+  // serde_json rows above stay class-scoped (whether typed serde_json is
+  // CWE-502 is a separate labelling question, see #294).
 
   // Rust XSS (actix-web, rocket, axum response body)
   { method: 'body', class: 'HttpResponseBuilder', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
