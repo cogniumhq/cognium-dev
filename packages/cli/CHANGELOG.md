@@ -14,15 +14,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#443 — an unknown `--language` is an error.** `--language ruby` used to
   match no files and exit 0, which looked like a clean scan. It now exits 1 and
   lists the accepted values.
+- **#412 — suppressions apply to cross-file taint paths.** Suppressions muted
+  per-file findings but left cross-file taint paths in JSON/SARIF output and in
+  the exit-code count, so a fully suppressed scan still exited 1. Cross-file
+  paths are now filtered by the same `pass` / `file` / `line` rules; `pass`
+  accepts either the sink type or the `cross-file-<type>` SARIF rule id.
+- **#412 — a failed SARIF upload no longer fails the GitHub Action.** A repo
+  without GitHub Advanced Security answers `upload-sarif` with 403; that step is
+  now `continue-on-error`. The scan step's exit code still gates the job.
+- **#434 — a malformed `cognium.config.json` fails the scan.** It used to warn
+  and fall back to defaults, running the scan with unintended settings. It now
+  exits non-zero with the parse error. A missing config is still a no-op.
+- **#432 — glob matching no longer hangs on repeated `**`.** `--include` /
+  `--exclude` patterns with a run of `**/` backtracked super-linearly (`'**/'`×15
+  took 32s). Redundant globstars are collapsed and `**/` compiles to a
+  segment-anchored regex; such patterns now return in under 1ms.
+- **#403 / #435 — no broken programmatic entrypoints.** `package.json` declared
+  `main` / `types` pointing at `dist/index.js` / `dist/index.d.ts`, which the
+  build never emits. `cognium-dev` is a bin-only CLI, so both fields are removed
+  (use `circle-ir` for the library API). CI's entrypoint check now gates the CLI
+  too.
 
 ### Changed
 - Adopts `circle-ir@4.9.25` (lockstep; no library changes).
+- #438 — removed dead workflow files under `packages/circle-ir/.github/` and
+  `packages/cli/.github/`. GitHub only runs root workflows, so they never
+  executed. Repository-only; nothing shipped changes.
 
 ### Consumer Impact
 
-**CLI only.** A script that passed an unsupported `--language` value and relied
-on exit 0 now fails with exit 1. Colored output is suppressed under `NO_COLOR` /
-`TERM=dumb`. Findings are unchanged.
+**CLI and GitHub Action only.** Findings are unchanged.
+- A script that passed an unsupported `--language` value and relied on exit 0
+  now fails with exit 1.
+- A malformed `cognium.config.json` now fails the scan instead of being ignored.
+- Scans whose only remaining results are suppressed cross-file paths now exit 0,
+  and those paths no longer appear in JSON/SARIF.
+- An `--include` / `--exclude` pattern with more than four `**` is treated as
+  matching nothing.
+- `require('cognium-dev')` / its TypeScript types were already broken (the
+  files never shipped); the package now stops advertising them.
+- Colored output is suppressed under `NO_COLOR` / `TERM=dumb`.
 
 ## [4.9.24] - 2026-09-22
 
