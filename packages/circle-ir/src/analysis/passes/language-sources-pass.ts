@@ -1657,19 +1657,91 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
     : null;
 
-  for (let i = 0; i < lines.length; i++) {
-    const m = assignRe.exec(lines[i]);
-    if (!m) continue;
-    const [, varName, rhs] = m;
-    const type: TaintSource['type'] | null = requestReadRe.test(rhs)
+  const classify = (text: string): TaintSource['type'] | null =>
+    requestReadRe.test(text)
       ? 'http_param'
-      : formFileReadRe?.test(rhs)
+      : formFileReadRe?.test(text)
         ? 'http_param'
-        : consoleReadRe.test(rhs)
+        : consoleReadRe.test(text)
           ? 'io_input'
-          : envReadRe.test(rhs)
+          : envReadRe.test(text)
             ? 'env_input'
             : null;
+  // cognium-dev#339 — a bare expression statement reads the request INLINE in
+  // the call, with no local to bind:
+  //
+  //   var s = File.Create(Path.Combine("/uploads", file.FileName));   // bound (LHS `s`)
+  //           File.Create(Path.Combine("/uploads", file.FileName));   // was NOT
+  //
+  // Java/Python/JS already seed such inline reads as call-anchored sources on
+  // the statement line, which the taint pass's inline-colocation step pairs
+  // with a sink on that same line. Mirror that shape here: a source anchored
+  // on the statement (see `variable` below). Scoped to a single-line statement
+  // that opens with a call (`Recv.M(` / `M(`), so a declaration, `return`,
+  // control-flow header or a multi-line fragment is never seeded this way.
+  //
+  // The read must sit INSIDE the statement's argument list. A read that is
+  // the statement's own callee or receiver — `Console.ReadLine();` (value
+  // discarded), `Request.Body.CopyToAsync(ms);` — is not passed to anything
+  // on this line, so there is nothing for it to reach here.
+  const inlineReads: Array<[RegExp | null, TaintSource['type']]> = [
+    [requestReadRe, 'http_param'],
+    [formFileReadRe, 'http_param'],
+    [consoleReadRe, 'io_input'],
+    [envReadRe, 'env_input'],
+  ];
+  const inlineRead = (text: string): { type: TaintSource['type']; read: string } | null => {
+    const argsStart = text.indexOf('(');
+    for (const [re, type] of inlineReads) {
+      if (!re) continue;
+      const g = new RegExp(re.source, 'g');
+      let hit: RegExpExecArray | null;
+      while ((hit = g.exec(text)) !== null) {
+        if (hit.index > argsStart) {
+          return { type, read: hit[0].replace(/\s+/g, '').replace(/[([]$/, '') };
+        }
+      }
+    }
+    return null;
+  };
+  const exprStmtCallRe = /^\s*(?:await\s+)?[A-Za-z_][\w.]*(?:<[^>]*>)?\s*\(.*\)\s*;\s*$/;
+  const nonCallKeywordRe = /^\s*(?:await\s+)?(?:if|while|for|foreach|switch|using|lock|return|throw|catch|when|nameof|typeof|sizeof|default)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = assignRe.exec(lines[i]);
+    if (!m) {
+      const stmt = lines[i];
+      if (!exprStmtCallRe.test(stmt) || nonCallKeywordRe.test(stmt)) continue;
+      const hit = inlineRead(stmt);
+      if (!hit) continue;
+      const { type, read } = hit;
+      const lineNumber = i + 1;
+      if (sources.some(s => s.line === lineNumber)) continue;
+      // `variable` is the `<inline>` marker (the same one the inline
+      // colocation flow puts on its path steps), never a real name. It
+      // must be set, and must match nothing:
+      //   - with NO variable, `findInitialTaint` seeds every def on the
+      //     FOLLOWING line by adjacency, so `Log(file.FileName);` followed by
+      //     `var x = "/tmp/a";` tainted the constant `x`;
+      //   - with the read text itself (`file.FileName`) as the variable, the
+      //     colocation path treats it as an LHS binding and hands the pair
+      //     to the variable scan, which only looks at strictly later sinks —
+      //     so the same-line flow this exists for was lost.
+      // The marker reaches only a sink on this very statement.
+      const code = stmt.trim();
+      sources.push({
+        type,
+        location: `${read} in ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`,
+        severity: 'high',
+        line: lineNumber,
+        confidence: 1.0,
+        variable: '<inline>',
+        code,
+      });
+      continue;
+    }
+    const [, varName, rhs] = m;
+    const type = classify(rhs);
     if (!type) continue;
     const lineNumber = i + 1;
     if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
