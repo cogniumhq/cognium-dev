@@ -21,13 +21,13 @@
  *    variable rather than the source's own, naming `v` at a line where only
  *    `input` exists.
  *
- * A third defect still blocks the end-to-end finding and is NOT fixed here:
+ * A third defect blocked the end-to-end finding until #328 (see below):
  * `isFalsePositive` vetoes the flow because const-prop tracked the reassigned
  * local with `type: 'unknown'` and never marked it tainted. Removing that veto
  * restores every fixture but costs far more than it buys — measured on the
  * OWASP corpus at +141 true-positive cases against +422 false-positive cases —
- * so it needs a precision decision rather than an unattended change. Tracked
- * separately; the blocked end-to-end cases are the skipped block at the bottom.
+ * so #328 exempts only the self-derived-reassignment shape (reaching-def chain
+ * through `x = f(x)`) from the veto; the end-to-end cases at the bottom now run.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
@@ -196,19 +196,12 @@ describe('#287 sanitizer credit is unaffected', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Still blocked by the const-prop veto described in the file header. These are
-// the four fixtures from #287 plus the true positive it was reported against.
-// The DFG fix above makes every one of them propagate — `propagateTaint`
-// returns the flow — and `isFalsePositive` then discards it because const-prop
-// tracked the reassigned local as `{ value: null, type: 'unknown' }` and never
-// marked it tainted.
-//
-// Kept as `.skip` rather than deleted, and asserting the FIXED expectation, so
-// whoever takes the precision decision can flip one word and see them pass.
-// Do NOT convert these to assert the current (empty) result — that would pin
-// the defect.
+// cognium-dev#328 — the four fixtures from #287 plus the true positive it was
+// reported against. `propagateTaint` returns each flow (DFG fix above), and the
+// const-prop `variable_not_tainted` veto no longer discards it because the
+// variable reaching the sink is a self-derived reassignment.
 // ---------------------------------------------------------------------------
-describe.skip('#287 end-to-end (blocked on the const-prop precision decision)', () => {
+describe('#287 end-to-end (#328 self-reassignment veto exemption)', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
   it('R2 reassignment through concat fires', async () => {
@@ -256,5 +249,85 @@ describe.skip('#287 end-to-end (blocked on the const-prop precision decision)', 
       'csharp'
     );
     expect(sqli(r).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cognium-dev#328 — the bounds of the veto exemption. The positive case is a
+// shape measured on Juliet C#; the negative cases are shapes the global lift got
+// wrong and the scoped exemption must not.
+// ---------------------------------------------------------------------------
+describe('#328 const-prop veto exemption bounds', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const cmdi = (r: Awaited<ReturnType<typeof analyze>>) =>
+    (r.taint.flows ?? []).filter(f => f.sink_type === 'command_injection');
+
+  it('(E) declare-then-assign from a source const-prop has no pattern for fires (Juliet CWE78 Environment_01)', async () => {
+    const r = await analyze(
+      [
+        'using System.Diagnostics;',
+        'public class T {',
+        '  public void Bad() {',
+        '    string data;',
+        '    data = Environment.GetEnvironmentVariable("ADD");',
+        '    Process process = Process.Start("/bin/ls " + data);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'T.cs',
+      'csharp'
+    );
+    expect(cmdi(r).length).toBeGreaterThan(0);
+  });
+
+  it('a same-named variable in a sibling method does not qualify (Juliet *_41 G2B sink)', async () => {
+    const r = await analyze(
+      [
+        'using System.Diagnostics;',
+        'public class T {',
+        '  private static void GoodG2BSink(string data) {',
+        '    Process process = Process.Start("/bin/ls " + data);',
+        '  }',
+        '  public void Bad() {',
+        '    string data;',
+        '    data = Environment.GetEnvironmentVariable("ADD");',
+        '  }',
+        '  private static void GoodG2B() {',
+        '    string data;',
+        '    data = "foo";',
+        '    GoodG2BSink(data);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'T.cs',
+      'csharp'
+    );
+    // The environment read in Bad() (line 8) must never reach the sink in
+    // GoodG2BSink (line 4).
+    expect(cmdi(r).filter(f => f.source_line === 8 && f.sink_line === 4)).toEqual([]);
+  });
+
+  it('a safe-key container read stays vetoed (OWASP BenchmarkTest00288 shape)', async () => {
+    const r = await analyze(
+      [
+        'import javax.servlet.http.*;',
+        'public class E extends HttpServlet {',
+        '  public void doGet(HttpServletRequest request, HttpServletResponse response) throws Exception {',
+        '    String param = request.getParameter("p");',
+        '    String bar = "safe!";',
+        '    java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();',
+        '    map.put("keyA", "a_Value");',
+        '    map.put("keyB", param);',
+        '    bar = (String) map.get("keyB");',
+        '    bar = (String) map.get("keyA");',
+        '    response.getWriter().println(bar);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'E.java',
+      'java'
+    );
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss' && f.source_line === 10)).toEqual([]);
   });
 });
