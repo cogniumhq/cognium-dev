@@ -71,3 +71,46 @@ describe('#343 — Go request body source', () => {
     expect(body.length).toBe(1);
   });
 });
+
+/**
+ * #472 — the Go text-scan sources bind a variable NAME. Without a method tag,
+ * the argument-expression matcher linked a same-named local in a different
+ * function to the source (`b := []byte("x")` in `out()` inherited the body
+ * taint from `h()`). Sources are now tagged with the method of a call on their
+ * line, so the #101 same-method gate applies.
+ */
+describe('#472 — Go text-scan sources stay in their own function', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('io.ReadAll(r.Body) in h() does not taint a same-named literal in out()', async () => {
+    const { flows } = await run(
+      'func h(w http.ResponseWriter, r *http.Request) {', '  b, _ := io.ReadAll(r.Body)', '  _ = len(b)', '}',
+      'func out() {', '  b := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(b), os.O_RDONLY, 0)', '}',
+    );
+    expect(flows).toEqual([]);
+  });
+
+  it('a decoded struct in h() does not taint a same-named struct literal in out()', async () => {
+    const { flows } = await run(
+      'func h(w http.ResponseWriter, r *http.Request) {', '  var in struct{ Cmd string }', '  json.NewDecoder(r.Body).Decode(&in)', '  _ = in', '}',
+      'func out() {', '  in := struct{ Cmd string }{"ls"}', '  exec.Command(in.Cmd).Run()', '}',
+    );
+    expect(flows).toEqual([]);
+  });
+
+  it('a gRPC getter source does not leak across functions either', async () => {
+    const r = await analyze([
+      'package main', 'import ("context";"os";pb "x/pb")', 'type S struct{}',
+      'func (s *S) Put(ctx context.Context, req *pb.PutRequest) (*pb.R, error) {', '  p := req.GetTargetPath()', '  _ = p', '  return nil, nil', '}',
+      'func out() {', '  p := []byte("fixed.txt")', '  os.OpenFile("/data/"+string(p), os.O_RDONLY, 0)', '}',
+    ].join('\n'), 'g.go', 'go');
+    expect((r.taint.flows ?? []).filter((f) => f.sink_type === 'path_traversal')).toEqual([]);
+  });
+
+  it('keeps the same-function flow, including through a conversion and a goroutine closure', async () => {
+    const same = await run('func h(w http.ResponseWriter, r *http.Request) {', '  var in struct{ Cmd string }', '  json.NewDecoder(r.Body).Decode(&in)', '  exec.Command(in.Cmd).Run()', '}');
+    expect(same.flows).toContain('command_injection');
+    const closure = await run('func h(w http.ResponseWriter, r *http.Request) {', '  b, _ := io.ReadAll(r.Body)', '  go func() {', '    os.OpenFile("/data/"+string(b), os.O_RDONLY, 0)', '  }()', '}');
+    expect(closure.flows).toContain('path_traversal');
+  });
+});

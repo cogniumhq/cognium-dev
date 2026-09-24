@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, SourceType, SastFinding, DFG, CallInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import {
   DOM_ASSIGNMENT_SINK_METHODS,
@@ -728,6 +728,18 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // (LLM enrichment, SARIF reporters) can render the offending line without
     // re-reading the file.
     attachSourceLineCode(additionalSources, additionalSinks, code);
+
+    // #472: Go text-scan sources (request body, gRPC getters, argv, archive
+    // entries, multipart) carry a `variable` but no `in_method`, so the
+    // argument-expression matcher's same-method gate (#101) never applied and a
+    // same-named local in ANOTHER function inherited the taint (`b := []byte("x")`
+    // in `out()` linked to `b, _ := io.ReadAll(r.Body)` in `h()`). Take the
+    // method from a call on the source's own line — every one of these sources
+    // is created from a call there — so the tag matches `call.in_method`
+    // exactly, including receiver methods and closures.
+    if (language === 'go') {
+      scopeSourcesToCallingMethod(additionalSources, graph.ir.calls);
+    }
 
     return { additionalSources, additionalSinks, additionalSanitizers, pyTaintedVars, pySanitizedVars, jsTaintedVars };
   }
@@ -1539,6 +1551,25 @@ function findGoGrpcRequestSources(sourceCode: string, language: string): TaintSo
     i = end;
   }
   return sources;
+}
+
+/**
+ * #472 — tag each variable-carrying source that lacks `in_method` with the
+ * method of a call on its line. Sources with no call on their line are left
+ * untagged (the gate then stays permissive, as before).
+ */
+function scopeSourcesToCallingMethod(sources: TaintSource[], calls: readonly CallInfo[]): void {
+  const methodByLine = new Map<number, string>();
+  for (const call of calls) {
+    if (call.in_method && !methodByLine.has(call.location.line)) {
+      methodByLine.set(call.location.line, call.in_method);
+    }
+  }
+  for (const source of sources) {
+    if (!source.variable || source.in_method) continue;
+    const method = methodByLine.get(source.line);
+    if (method) source.in_method = method;
+  }
 }
 
 function findGoRequestBodySources(sourceCode: string, language: string): TaintSource[] {
