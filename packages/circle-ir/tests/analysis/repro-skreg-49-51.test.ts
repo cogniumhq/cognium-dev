@@ -125,7 +125,7 @@ describe('repro skillsregistry#49b: anchored host allow-list reject-guard suppre
   if (!/^https?:\\/\\//.test(userUrl)) throw new Error('bad');
   return await fetch(userUrl);
 }`;
-    expect(ssrfFires(await analyze(code, 's.js', 'javascript'))).toBe(true);
+    expect(ssrfFires(await analyze(code, 's.js', 'javascript', { speculativeParamSources: true }))).toBe(true);
   });
 
   it('STILL fires when the guard is on a different variable than the fetch arg', async () => {
@@ -133,6 +133,6 @@ describe('repro skillsregistry#49b: anchored host allow-list reject-guard suppre
   if (!/^https:\\/\\/ok\\.com\\//.test(a)) throw new Error('bad');
   return await fetch(b);
 }`;
-    expect(ssrfFires(await analyze(code, 't.js', 'javascript'))).toBe(true);
+    expect(ssrfFires(await analyze(code, 't.js', 'javascript', { speculativeParamSources: true }))).toBe(true);
   });
 });

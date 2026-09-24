@@ -236,7 +236,7 @@ function run(code) {
   eval(code);
 }
 `;
-    const r = await analyze(code, 'eval-param.js', 'javascript');
+    const r = await analyze(code, 'eval-param.js', 'javascript', { speculativeParamSources: true });
     const codeInjFlows = (r.taint.flows ?? []).filter(f => f.sink_type === 'code_injection');
     expect(codeInjFlows.length).toBeGreaterThanOrEqual(1);
   });

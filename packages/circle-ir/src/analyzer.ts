@@ -113,6 +113,7 @@ import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
 import { PromptInjectionSafetyGatePass } from './analysis/passes/prompt-injection-safety-gate-pass.js';
 import { SpeculativePromptParamSourcePass, detectPromptConstructionFlows } from './analysis/passes/speculative-prompt-param-source-pass.js';
+import { ParamSourceFlowGatePass } from './analysis/passes/param-source-flow-gate-pass.js';
 import { CliMainReflectionSuppressPass } from './analysis/passes/cli-main-reflection-suppress-pass.js';
 import { LibraryProfileSinkGatePass, LibraryProfileCwe22PathGatePass } from './analysis/passes/library-profile-sink-gate-pass.js';
 import { LibraryProfileXssGatePass } from './analysis/passes/library-profile-xss-gate-pass.js';
@@ -338,6 +339,16 @@ export interface AnalyzerOptions {
    * bounded to prompt-relevant code rather than every function parameter.
    *
    * Added in circle-ir for cognium-dev #267.
+   *
+   * cognium-dev #292: the same flag is the opt-in for every flow whose only
+   * source is a bare function parameter (`interprocedural_param`). Unset,
+   * such flows are dropped from `taint.flows` for languages without an
+   * entry-point-aware parameter model (everything except Java / C#), unless
+   * the enclosing function is a recognised framework handler (route
+   * decorator / attribute, Rust web-response return type). Set it to get
+   * the pre-#292 flow list back, e.g. for library-API or agent-code scans
+   * where the public parameter IS the attack surface. Sources are never
+   * removed — only flows.
    */
   speculativeParamSources?: boolean;
 
@@ -1056,6 +1067,14 @@ export async function analyze(
   pipeline.add(new InterproceduralPass({
     enableEntryPointGate: options.enableEntryPointGate ?? true,
   }));
+  // cognium-dev #292: drop flows whose only source is a bare function
+  // parameter (`interprocedural_param`) unless `speculativeParamSources` is
+  // set — the default path honours the #267 opt-in contract for every sink
+  // type, not only the prompt seeding. Java / C# and recognised framework
+  // handlers are exempt (see the pass header). Runs post-InterproceduralPass
+  // so it filters the authoritative flow list; sources are left intact.
+  if (!disabledPasses.has('param-source-flow-gate'))
+    pipeline.add(new ParamSourceFlowGatePass(options.speculativeParamSources === true));
   // cognium-dev #245 RC1 (belt-and-suspenders): under `library/*`
   // profile, drop CWE-22 (`path_traversal`) flows whose source shape
   // is `interprocedural_param` / `constructor_field` — the same
