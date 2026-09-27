@@ -32,30 +32,8 @@ BUMP=$1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
-report_rollouts() {
-  local service="$1" action="$2" outcome="${3:-}" failure_message="${4:-}"
-  local reporter="$REPO_ROOT/scripts/report-rollouts-deployment.sh" status=0
-  [[ -n "${CURSOR_API_KEY:-}" ]] || {
-    warn "CURSOR_API_KEY is not set; Rollouts will not record this release"
-    return 0
-  }
-  if [[ -z "$service" || "$service" == */* ]]; then
-    warn "Rollouts service must be a single slug (got '$service'); report skipped"
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    warn "curl and jq are required to report this release; Rollouts report skipped"
-    return 0
-  fi
-  CHANGE_MONITOR_ENV="npm" \
-  CHANGE_MONITOR_SERVICE="$service" \
-  DEPLOY_VERSION="$(git rev-parse HEAD)" \
-  DEPLOY_ACTOR="release.sh:$service:npm" \
-  DEPLOY_OUTCOME="$outcome" \
-  DEPLOY_FAILURE_MESSAGE="$failure_message" \
-    bash "$reporter" "$action" || status=$?
-  [[ "$status" -eq 0 ]] || warn "Rollouts deployment report returned $status; release continues"
-}
+# shellcheck source=scripts/report-rollouts.sh
+source "$REPO_ROOT/scripts/report-rollouts.sh"
 
 LIB_DIR="packages/circle-ir"
 CLI_DIR="packages/cli"
@@ -69,6 +47,10 @@ command -v gh   >/dev/null 2>&1 || die "GitHub CLI (gh) not found — brew insta
 gh auth status  >/dev/null 2>&1 || die "Not authenticated with GitHub CLI — run: gh auth login"
 npm whoami      >/dev/null 2>&1 || die "Not logged in to npm — run: npm login"
 success "Prerequisites OK"
+# Tests set this to prove a missing curl or jq does not abort the release.
+if [[ -n "${RELEASE_STOP_AFTER_PREREQ:-}" ]]; then
+  exit 0
+fi
 
 # ── Clean working tree ──────────────────────────────────────────────────────────
 if [[ -n $(git status --porcelain) ]]; then
