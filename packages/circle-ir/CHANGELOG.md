@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **#504: C# source reads inside a single-line `try` block.**
+  `try { data = Console.ReadLine(); } catch { }` now seeds `io_input` on
+  that line, the same as the multi-line form of the assignment. A constant
+  assignment in the same shape stays unseeded.
 - **#501: C# `HttpRequest` sources follow the declared type, not the name `Request`.**
   `req.QueryString`, `req.Params`, `req.Cookies` and the other request
   collections now seed `http_param` when the receiver is declared

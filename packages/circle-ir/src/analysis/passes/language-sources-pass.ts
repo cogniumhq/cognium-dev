@@ -1773,10 +1773,43 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   const exprStmtCallRe = /^\s*(?:await\s+)?[A-Za-z_][\w.]*(?:<[^>]*>)?\s*\(.*\)\s*;\s*$/;
   const nonCallKeywordRe = /^\s*(?:await\s+)?(?:if|while|for|foreach|switch|using|lock|return|throw|catch|when|nameof|typeof|sizeof|default)\b/;
 
+  // cognium-dev#504 — an assignment nested in a same-line block is not the
+  // whole line, so `assignRe` misses it:
+  //   try { data = Console.ReadLine(); } catch (Exception) { }   // was NOT
+  //   data = Console.ReadLine();                                  // bound
+  // `(?!=)` keeps `==` from looking like an assignment. A full-line comment
+  // is skipped; the rest of this scanner already ignores comment text only
+  // when it is not the line's code.
+  const embeddedAssignRe =
+    /(?:^|[{;])\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;{}]+)/;
+
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
     if (!m) {
       const stmt = lines[i];
+      if (stmt.includes('{') && !/^\s*(?:\/\/|\/\*|\*)/.test(stmt)) {
+        const emb = new RegExp(embeddedAssignRe.source, 'g');
+        let em: RegExpExecArray | null;
+        let seeded = false;
+        while ((em = emb.exec(stmt)) !== null) {
+          const varName = em[1];
+          const rhs = em[2];
+          const type = classify(rhs);
+          if (!type) continue;
+          const lineNumber = i + 1;
+          if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
+          sources.push({
+            type,
+            location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+            severity: 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: varName,
+          });
+          seeded = true;
+        }
+        if (seeded) continue;
+      }
       if (!exprStmtCallRe.test(stmt) || nonCallKeywordRe.test(stmt)) continue;
       const hit = inlineRead(stmt);
       if (!hit) continue;
