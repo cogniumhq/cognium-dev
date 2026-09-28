@@ -98,8 +98,8 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.1",
-    "@vitest/coverage-v8": "^5.0.1",
+    "@types/node": "^26.6.2",
+    "@vitest/coverage-v8": "^5.0.2",
     "esbuild": "^0.28.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-html": "^0.23.2",
