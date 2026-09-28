@@ -1682,8 +1682,9 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // the scanner never looked at.
   const assignRe =
     /^\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
-  const requestReadRe =
-    /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
+  // `Request.*` is the inherited controller member. A parameter typed
+  // `HttpRequest` / `HttpRequestBase` is the same surface under whatever
+  // name the method uses (`req` in Juliet) — cognium-dev#501.
   // Console/stdin reads bind their LHS too (dominant source shape in the NIST
   // Juliet C# corpus). Like `Request.*`, a bare `Console.ReadLine()` returns a
   // value that nothing else seeds a variable for, so bind it as `io_input`.
@@ -1703,14 +1704,24 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // `\s+` after the type name keeps `IFormFileCollection files` from matching.
   const formFileParams = new Set<string>();
   const formFileDeclRe = /\bIFormFile\s+([A-Za-z_]\w*)/g;
+  // Inherited `Request` plus any local declared `HttpRequest` / `HttpRequestBase`
+  // (nullable `HttpRequest?` included). `HttpRequestMessage` does not match:
+  // the type token must be followed by whitespace, not more identifier text.
+  const httpRequestReceivers = new Set<string>(['Request']);
+  const httpRequestDeclRe = /\b(?:HttpRequest|HttpRequestBase)\??\s+([A-Za-z_]\w*)/g;
   for (const line of lines) {
-    const re = new RegExp(formFileDeclRe.source, 'g');
+    const formRe = new RegExp(formFileDeclRe.source, 'g');
     let d: RegExpExecArray | null;
-    while ((d = re.exec(line)) !== null) formFileParams.add(d[1]);
+    while ((d = formRe.exec(line)) !== null) formFileParams.add(d[1]);
+    const reqRe = new RegExp(httpRequestDeclRe.source, 'g');
+    while ((d = reqRe.exec(line)) !== null) httpRequestReceivers.add(d[1]);
   }
   const formFileReadRe = formFileParams.size > 0
     ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
     : null;
+  const requestReadRe = new RegExp(
+    `\\b(?:${[...httpRequestReceivers].join('|')})\\s*\\.\\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\\b`,
+  );
 
   const classify = (text: string): TaintSource['type'] | null =>
     requestReadRe.test(text)
