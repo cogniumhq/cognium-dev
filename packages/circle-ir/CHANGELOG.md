@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **#504: C# source reads inside a single-line `try` block.**
+  `try { data = Console.ReadLine(); } catch { }` now seeds `io_input` on
+  that line, the same as the multi-line form of the assignment. A constant
+  assignment in the same shape stays unseeded.
+- **#501: C# `HttpRequest` sources follow the declared type, not the name `Request`.**
+  `req.QueryString`, `req.Params`, `req.Cookies` and the other request
+  collections now seed `http_param` when the receiver is declared
+  `HttpRequest` or `HttpRequestBase`. The inherited `Request.*` member is
+  unchanged. An undeclared `req` is not a request source.
 - **#503: ASP.NET Core `Response.WriteAsync(x)` is now an xss sink (CWE-79).**
   The System.Web row `{ method: 'Write', class: 'Response' }` does not cover the
   `HttpResponseWritingExtensions` extension method ASP.NET Core writes response
