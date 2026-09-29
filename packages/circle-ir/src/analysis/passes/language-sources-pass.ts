@@ -2105,6 +2105,45 @@ function findPythonAssignmentSources(sourceCode: string, language: string): Tain
     const lineNumber = lineNum + 1;
     if (line.trimStart().startsWith('#')) continue;
 
+    // #493 — a `for` target bound from a tainted iterable is a source read,
+    // exactly like the assignment form below. `buildPythonTaintedVars` already
+    // taints the loop variable for this shape, but no `TaintSource` was ever
+    // emitted, so a flow built from it had no source to attribute to.
+    //
+    // BenchmarkPython 00656 is the case: the only source in the file was
+    // `init(app)`'s bare parameter 25 lines above the sink, and the real read
+    //
+    //     for name in request.headers.keys():
+    //         if request.headers.get_all(name): param = name
+    //     flask.session[param] = '12345'        # trust_boundary sink
+    //
+    // produced nothing. The file was detected purely by proximity to an
+    // unrelated parameter.
+    //
+    // Single-target only, matching `buildPythonTaintedVars`; a tuple target
+    // (`for k, v in …`) is left alone rather than guessing which half carries
+    // the taint.
+    const forTargetMatch = line.match(/^\s*for\s+([\p{L}\p{N}_]+)\s+in\s+(.+?)\s*:\s*$/u);
+    if (forTargetMatch) {
+      const [, iterVar, iterExpr] = forTargetMatch;
+      for (const { pattern, type } of PYTHON_TAINTED_PATTERNS) {
+        if (!pattern.test(iterExpr)) continue;
+        const alreadyExists = sources.some(s2 => s2.line === lineNumber && s2.type === type);
+        if (!alreadyExists) {
+          sources.push({
+            type,
+            location: `for ${iterVar} in ${iterExpr.trim().substring(0, 50)}${iterExpr.length > 50 ? '...' : ''}`,
+            severity: 'high',
+            line: lineNumber,
+            confidence: 0.95,
+            variable: iterVar,
+          });
+        }
+        break;
+      }
+      continue;
+    }
+
     const assignmentMatch = line.match(/^(\s*\w[\w.]*)\s*(?::\s*\w[\w\[\], .]*)?\s*=\s*(.+)/);
     if (!assignmentMatch) continue;
     const rhs = assignmentMatch[2];

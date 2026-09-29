@@ -62,11 +62,33 @@ describe('#372 — findings derived from taint.flows', () => {
     const ci = withFlows.filter((f) => f.type === 'command_injection');
     expect(ci).toHaveLength(1);
     expect(ci[0].line).toBe(12);
-    // Line 11 builds the tainted command; line 4 is `def init(app):`.
-    expect(ci[0].source?.line).toBe(11);
+    // Line 9 is `for name in request.form.keys():` — the actual untrusted
+    // read. This was 11 (`cmd = "echo " + param`, where the command is built)
+    // until #493 made a `for` target bound from a tainted iterable emit a
+    // source; before that no source existed at line 9 for the flow to point
+    // at. 9 is the more accurate attribution, so the expectation moved rather
+    // than the mechanism regressing.
+    expect(ci[0].source?.line).toBe(9);
   });
 
-  it('without flows, keeps the old pairing — so the fix is not vacuous', async () => {
+  // NON-VACUITY. Before #493 this pinned `source.line === 4` on the no-flows
+  // path — the enclosing `def init(app):` — against 11 on the flow path, which
+  // proved the two paths were distinct. Once a `for` target bound from a
+  // tainted iterable emits a real source at line 9, BOTH paths credit line 9:
+  // the pairing path now has the correct source available to choose, so the
+  // paths agree because the source model improved, not because the #372
+  // mechanism stopped working.
+  //
+  // A two-source fixture was tried as a replacement and rejected: with
+  // `unused = request.args.get(...)` on line 5 and the real `param =
+  // request.form.get(...)` on line 6, the FLOW itself reports line 5 — the
+  // decoy that reaches nothing. That misattribution reproduces identically on
+  // main, so it is a pre-existing defect and not a basis for this assertion.
+  //
+  // What is still worth pinning is that the no-flows path remains live and
+  // still produces the finding, so a caller on the 8-argument signature is not
+  // silently getting nothing.
+  it('still reports on the no-flows path (the 8-argument signature stays live)', async () => {
     const r = await analyze(code, 'app.py', 'python');
     const noFlows = generateFindings(
       r.taint.sources, r.taint.sinks, r.dfg, 'app.py', code, 'python',
@@ -75,8 +97,6 @@ describe('#372 — findings derived from taint.flows', () => {
     const ci = noFlows.filter((f) => f.type === 'command_injection');
     expect(ci).toHaveLength(1);
     expect(ci[0].line).toBe(12);
-    // The pre-#372 behaviour: credited to the enclosing `def init(app):`.
-    expect(ci[0].source?.line).toBe(4);
   });
 
   it('does not invent findings for a file with no flows', async () => {
