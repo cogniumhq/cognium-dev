@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **#503: ASP.NET Core `Response.WriteAsync(x)` is now an xss sink (CWE-79).**
+  The System.Web row `{ method: 'Write', class: 'Response' }` does not cover the
+  `HttpResponseWritingExtensions` extension method ASP.NET Core writes response
+  bodies through, so a tainted body had a source and no sink and the flow could
+  never be reported. The row is receiver-scoped to `Response`, leaving the many
+  unrelated `WriteAsync` overloads (Stream, StreamWriter, TextWriter, PipeWriter)
+  untouched. Juliet C# CWE-80/81/94 are byte-identical before and after (the
+  corpus predates ASP.NET Core and contains no `Response.WriteAsync`).
+
 ## [4.9.26] - 2026-09-24
 
 ### Fixed
