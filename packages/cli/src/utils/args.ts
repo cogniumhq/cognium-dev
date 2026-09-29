@@ -104,7 +104,10 @@ SCAN OPTIONS:
                                surfaced in output (text warning / JSON / SARIF field).
   --max-project-source-chars <n>
                              Cap the per-file phase by total source characters
-                               [default: 64000000 — 0 = unlimited]
+                               [default: scaled to this process's V8 heap limit
+                               (~7000 chars per MB, so ~29M at Node's default
+                               4 GB heap) — 0 = unlimited. Raise it together
+                               with --max-old-space-size, not on its own.]
                                A project large enough to exhaust the V8 heap would
                                otherwise abort the process with no results at all.
                                On exceed: remaining files skipped, results kept for

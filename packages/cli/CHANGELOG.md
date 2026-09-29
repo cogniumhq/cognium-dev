@@ -11,11 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--max-project-source-chars <n>` (#424).** Caps a project scan by total
   source characters so a project large enough to exhaust the V8 heap returns
   partial results with a warning instead of aborting the process with no
-  output at all. **Default 64,000,000**; `0` disables the cap. Calibration:
-  NIST Juliet Java is ~216M chars over 40,855 files and OOMs at a 12 GB heap,
-  while the largest real repos measured under #366 (geoserver 8029 files,
-  nifi 5435) are ~40M chars and complete, so the default sits above those with
-  headroom and well below the failing case.
+  output at all. `0` disables the cap.
+
+  The default is **derived from the process's own V8 heap limit**
+  (~7,000 chars per MB, so ~29.3M at Node's default 4 GB heap), not a fixed
+  number, because the binding constraint is the heap: `analyzeProject` retains
+  every file's full IR for the whole run, so a character count that is safe
+  under `--max-old-space-size=12288` aborts at the default. Raising the heap
+  raises the cap automatically.
+
+  Measured on NIST Juliet Java (40,845 files, ~216M chars) at a 4,192 MB heap:
+  16M and 32M complete; 48M, 56M and 64M all die with
+  `FATAL ERROR: Ineffective mark-compacts` and SIGABRT. At the derived default
+  the same scan completes, analysing 4,869 files and reporting 9,808 security
+  findings, where it previously produced no output at all.
 
 ### Changed
 - When a scan is truncated by that cap, the text summary now reports
@@ -23,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON output carries `project_size_budget_exceeded`. Previously a truncated
   scan printed the total file count, which reads as a clean scan of files that
   were never opened.
+- Project scans no longer read every file into memory before analysis begins.
+  Files past the cap are never read, so the source itself does not contribute
+  to the peak the cap exists to stay under.
 
 ## [4.9.26] - 2026-09-24
 

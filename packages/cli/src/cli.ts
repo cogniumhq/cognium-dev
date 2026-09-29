@@ -7,6 +7,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { stat, readdir } from 'fs/promises';
 import { join, dirname, extname, resolve, relative, basename } from 'path';
 import { createRequire } from 'module';
+import { getHeapStatistics } from 'v8';
 import {
   initAnalyzer, analyze, analyzeProject,
   setLogLevel, type LogLevel,
@@ -322,7 +323,8 @@ interface ScanOptions {
    * circle-ir `AnalyzerOptions.maxProjectSourceChars` (#424). Caps the
    * per-file phase by total source characters so a project large enough to
    * exhaust the V8 heap returns partial results with a warning instead of
-   * aborting the process. Default 64,000,000; `0` disables the cap.
+   * aborting the process. Defaults to `defaultMaxProjectSourceChars()`, which
+   * scales with this process's V8 heap limit; `0` disables the cap.
    */
   maxProjectSourceChars?: number;
   /**
@@ -602,8 +604,43 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
 /**
  * #424 — default source-size ceiling for a project scan, in characters.
  * `0` disables it. Override with `--max-project-source-chars`.
+ *
+ * Derived from the process's actual V8 heap limit rather than hard-coded,
+ * because the binding constraint IS the heap: `analyzeProject` retains every
+ * file's full IR for the whole run, so the same character count that is safe
+ * under `--max-old-space-size=12288` aborts the process at Node's default.
+ *
+ * Measured on NIST Juliet Java (40,845 files, ~216M chars) at a 4,192 MB
+ * default heap limit:
+ *
+ *   cap 16M -> completes (2,721 files)
+ *   cap 32M -> completes (5,190 files, 9,822 security findings, 54s)
+ *   cap 48M -> FATAL ERROR: Ineffective mark-compacts, SIGABRT
+ *   cap 64M -> FATAL ERROR: Ineffective mark-compacts, SIGABRT
+ *
+ * So ~32M chars is safe per 4,192 MB, i.e. ~7,600 chars per MB of heap. The
+ * factor below is rounded down to 7,000 for margin, since Juliet's ~5.3 KB
+ * average file is denser than typical source and per-file IR size varies by
+ * language. A caller that raises `--max-old-space-size` automatically gets a
+ * proportionally larger cap; one that needs the whole project regardless
+ * passes `--max-project-source-chars 0`.
+ *
+ * Node-only by design. circle-ir itself must run in the browser, which is why
+ * the library option defaults to off and the heap-aware default lives here.
  */
-const DEFAULT_MAX_PROJECT_SOURCE_CHARS = 64_000_000;
+const CHARS_PER_MB_OF_HEAP = 7_000;
+
+function defaultMaxProjectSourceChars(): number {
+  try {
+    const heapMb = getHeapStatistics().heap_size_limit / (1024 * 1024);
+    if (!Number.isFinite(heapMb) || heapMb <= 0) return 32_000_000;
+    return Math.floor(heapMb * CHARS_PER_MB_OF_HEAP);
+  } catch {
+    // v8 module unavailable for any reason — fall back to the measured-safe
+    // value for a default heap rather than to "unlimited".
+    return 32_000_000;
+  }
+}
 
 async function scanProject(
   files: string[],
@@ -612,11 +649,28 @@ async function scanProject(
   crossFileBudgetMs?: number,
   maxProjectSourceChars?: number,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
-  const filesWithCode = files.map(f => ({
-    code: readFileSync(f, 'utf-8'),
-    filePath: f,
-    language: (language || detectLanguage(f)) as SupportedLanguage,
-  }));
+  // #424: the ceiling has to be applied HERE, not only inside analyzeProject.
+  // Reading every file up front materialises the whole project's source before
+  // analysis starts — on Juliet Java that is ~216M chars (~432 MB as UTF-16)
+  // carried for the rest of the run, which is part of the peak the library
+  // ceiling is trying to stay under. Files past the budget are never read.
+  const sourceCap = maxProjectSourceChars ?? defaultMaxProjectSourceChars();
+  const filesWithCode: Array<{ code: string; filePath: string; language: SupportedLanguage }> = [];
+  let sourceChars = 0;
+  let readTruncated = false;
+  for (const f of files) {
+    const code = readFileSync(f, 'utf-8');
+    if (sourceCap > 0 && sourceChars + code.length > sourceCap && filesWithCode.length > 0) {
+      readTruncated = true;
+      break;
+    }
+    sourceChars += code.length;
+    filesWithCode.push({
+      code,
+      filePath: f,
+      language: (language || detectLanguage(f)) as SupportedLanguage,
+    });
+  }
 
   const projectResult = await analyzeProject(filesWithCode, {
     passOptions: analyzeOpts?.passOptions,
@@ -631,7 +685,7 @@ async function scanProject(
     // at a 12 GB heap; the largest real repos measured under #366
     // (geoserver 8029 files, nifi 5435) are ~40M chars and complete. 64M sits
     // above those with headroom and well below the failing case.
-    maxProjectSourceChars: maxProjectSourceChars ?? DEFAULT_MAX_PROJECT_SOURCE_CHARS,
+    maxProjectSourceChars: maxProjectSourceChars ?? defaultMaxProjectSourceChars(),
     // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
     // env. Omitted → library default (300_000 ms / 5 min) applies. 0 →
     // unlimited (legacy pre-3.89.0 behaviour).
@@ -675,9 +729,9 @@ async function scanProject(
       budgetExceeded: projectResult.cross_file_budget_exceeded === true,
       // #424: the per-file phase stopped at the size ceiling, so `results`
       // covers only part of the project.
-      projectSizeBudgetExceeded: projectResult.project_size_budget_exceeded === true,
+      projectSizeBudgetExceeded: readTruncated || projectResult.project_size_budget_exceeded === true,
       filesAnalysed: projectResult.files.length,
-      filesTotal: filesWithCode.length,
+      filesTotal: files.length,
     },
   };
 }
