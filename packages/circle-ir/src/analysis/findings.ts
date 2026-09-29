@@ -565,12 +565,35 @@ function findTaintPath(source: TaintSource, sink: TaintSink, dfg: DFG): PathResu
 
   // Fallback: check for simple proximity-based path
   // If source and sink are close, there might be a direct flow
+  //
+  // cognium-dev#508 — this used to accept ANY variable defined within one line
+  // of the source that was also used within one line of the sink, without ever
+  // checking that the variable had something to do with the source. The
+  // variable carrying the verdict was routinely unrelated: on the C# shape
+  //
+  //     public void Run(string input) {          // source: `input`
+  //       int n = input.Length;
+  //       var cmd = new SqlCommand("SELECT * FROM u", conn);
+  //       cmd.ExecuteReader();                   // sink
+  //     }
+  //
+  // the intersection was `conn` — the SqlConnection — so every C# method with
+  // a string parameter and an ADO.NET execute call reported CWE-89 with
+  // `taint.flows = 0`. It fired with the connection as a field, as a local,
+  // absent entirely, and with the parameter in a DIFFERENT method, because
+  // `pathExists` short-circuits the #361 method scoping in the caller.
+  //
+  // The pair is now accepted only when the shared variable IS the source's
+  // own. When the source does not name a variable there is nothing to compare
+  // against, so the original behaviour is kept rather than dropping those
+  // pairs — this change is strictly tighter, never looser.
   if (Math.abs(source.line - sink.line) <= 10) {
     // Look for common variables
     const sourceVars = new Set(sourceDefs.map(d => d.variable));
     const sinkVars = new Set(sinkUses.map(u => u.variable));
 
     for (const v of sourceVars) {
+      if (source.variable !== undefined && v !== source.variable) continue;
       if (sinkVars.has(v)) {
         hops.push({
           file: '',
