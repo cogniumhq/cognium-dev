@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrected source line on one file (`BenchmarkTest00030` 47 -> 44, which is
   the `request.getParameterMap()` line rather than a derived hop). Juliet C#
   CWE-89 1651 files — zero delta.
+- **#424: `analyzeProject` no longer aborts the process on a very large project.**
+  It retains every file's full `CircleIR` plus a `CodeGraph` per file for the
+  whole run, and `CrossFileResolver` then resolves with all of them live, so
+  NIST Juliet Java (40,855 files, ~216M chars) died with a V8
+  `Ineffective mark-compacts near heap limit` even at a 12 GB heap — no result,
+  no partial findings, and a signal-kill a caller cannot distinguish from a
+  crash in its own code. Two new options bound the per-file phase:
+  `maxProjectSourceChars` (total source characters) and `maxProjectFiles`.
+  **Both default to `0` (off), so no existing caller changes behaviour.** When
+  a ceiling is reached the remaining files are skipped, everything analysed so
+  far is kept including cross-file analysis over that subset, and
+  `ProjectAnalysis.project_size_budget_exceeded` is set. This does not lower
+  the memory peak — only a streaming redesign of `analyzeProject` /
+  `CrossFileResolver` can, and that stays a separate API decision — it
+  converts an abort into a partial result the caller can act on. The count is
+  `String.length`, not bytes, and `process.memoryUsage()` is deliberately not
+  used, so the check stays browser-safe.
 
 - **#504: C# source reads inside a single-line `try` block.**
   `try { data = Console.ReadLine(); } catch { }` now seeds `io_input` on
