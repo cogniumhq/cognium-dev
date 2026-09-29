@@ -660,6 +660,11 @@ async function scanProject(
   let readTruncated = false;
   for (const f of files) {
     const code = readFileSync(f, 'utf-8');
+    // A first file that alone exceeds the cap is KEPT, so a scan is never
+    // silently empty. `maxProjectSourceChars` is therefore not passed to
+    // `analyzeProject` below: its own check has no such exemption and would
+    // drop that file again, analysing zero files while later files were never
+    // read. The cap is enforced here, once.
     if (sourceCap > 0 && sourceChars + code.length > sourceCap && filesWithCode.length > 0) {
       readTruncated = true;
       break;
@@ -675,17 +680,6 @@ async function scanProject(
   const projectResult = await analyzeProject(filesWithCode, {
     passOptions: analyzeOpts?.passOptions,
     disabledPasses: analyzeOpts?.disabledPasses,
-    // #424: heap ceiling for the per-file phase. `analyzeProject` retains
-    // every file's full IR for the whole run, and past a certain project size
-    // V8 aborts the process outright — the CLI's user sees a core dump and
-    // gets no results at all. The ceiling trades completeness for a usable
-    // partial result plus a warning.
-    //
-    // Calibration: NIST Juliet Java is ~216M chars over 40,855 files and OOMs
-    // at a 12 GB heap; the largest real repos measured under #366
-    // (geoserver 8029 files, nifi 5435) are ~40M chars and complete. 64M sits
-    // above those with headroom and well below the failing case.
-    maxProjectSourceChars: maxProjectSourceChars ?? defaultMaxProjectSourceChars(),
     // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
     // env. Omitted → library default (300_000 ms / 5 min) applies. 0 →
     // unlimited (legacy pre-3.89.0 behaviour).
@@ -1061,7 +1055,16 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       }
     }
 
-    if (spin) spin.succeed(`Scanned ${files.length} file(s)`);
+    // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
+    // overstating what was actually analysed.
+    if (spin) {
+      const analysed = crossFileData?.projectSizeBudgetExceeded
+        ? (crossFileData.filesAnalysed ?? files.length)
+        : files.length;
+      spin.succeed(analysed === files.length
+        ? `Scanned ${files.length} file(s)`
+        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`);
+    }
 
     // Apply suppressions from config
     // Use cwd as base path since suppression files are relative to project root
@@ -1172,7 +1175,13 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     // Only output if there are findings, errors, or verbose/output file requested
     // Always output for JSON/SARIF formats (structured output expected)
-    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text';
+    // #424 — a truncated scan must never be silent. Without the last clause,
+    // a project stopped at the size ceiling whose analysed subset happens to
+    // have no findings skips BOTH the ceiling warning and the
+    // `N of M file(s) analysed` summary, and exits 0 — which is precisely the
+    // clean-scan claim over unread files this change exists to prevent.
+    const truncated = crossFileData?.projectSizeBudgetExceeded === true;
+    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated;
 
     // 3.106.0 (#169) — assemble the project-profile summary for output and
     // tag each vulnerability with its file's resolved profile.
