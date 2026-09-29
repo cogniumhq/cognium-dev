@@ -102,6 +102,14 @@ SCAN OPTIONS:
                                On exceed: partial taint paths kept, remaining
                                cross-file phases skipped, cross_file_budget_exceeded
                                surfaced in output (text warning / JSON / SARIF field).
+  --max-project-source-chars <n>
+                             Cap the per-file phase by total source characters
+                               [default: 64000000 — 0 = unlimited]
+                               A project large enough to exhaust the V8 heap would
+                               otherwise abort the process with no results at all.
+                               On exceed: remaining files skipped, results kept for
+                               the analysed subset, project_size_budget_exceeded
+                               surfaced in output (text warning / JSON field).
 
 METRICS OPTIONS:
   -l, --language <lang>      Analyze only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)

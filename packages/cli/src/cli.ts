@@ -317,6 +317,14 @@ interface ScanOptions {
    * cross-file phases skipped. See circle-ir 3.89.0 CHANGELOG.
    */
   crossFileBudgetMs?: number;
+
+  /**
+   * circle-ir `AnalyzerOptions.maxProjectSourceChars` (#424). Caps the
+   * per-file phase by total source characters so a project large enough to
+   * exhaust the V8 heap returns partial results with a warning instead of
+   * aborting the process. Default 64,000,000; `0` disables the cap.
+   */
+  maxProjectSourceChars?: number;
   /**
    * Force project profile (shape/env) for the entire scan. Disables
    * auto-detection. Sourced from `--project-profile=<shape>/<env>` CLI
@@ -591,11 +599,18 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
   }
 }
 
+/**
+ * #424 — default source-size ceiling for a project scan, in characters.
+ * `0` disables it. Override with `--max-project-source-chars`.
+ */
+const DEFAULT_MAX_PROJECT_SOURCE_CHARS = 64_000_000;
+
 async function scanProject(
   files: string[],
   language: string | undefined,
   analyzeOpts?: AnalyzeOptions,
   crossFileBudgetMs?: number,
+  maxProjectSourceChars?: number,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
   const filesWithCode = files.map(f => ({
     code: readFileSync(f, 'utf-8'),
@@ -606,6 +621,17 @@ async function scanProject(
   const projectResult = await analyzeProject(filesWithCode, {
     passOptions: analyzeOpts?.passOptions,
     disabledPasses: analyzeOpts?.disabledPasses,
+    // #424: heap ceiling for the per-file phase. `analyzeProject` retains
+    // every file's full IR for the whole run, and past a certain project size
+    // V8 aborts the process outright — the CLI's user sees a core dump and
+    // gets no results at all. The ceiling trades completeness for a usable
+    // partial result plus a warning.
+    //
+    // Calibration: NIST Juliet Java is ~216M chars over 40,855 files and OOMs
+    // at a 12 GB heap; the largest real repos measured under #366
+    // (geoserver 8029 files, nifi 5435) are ~40M chars and complete. 64M sits
+    // above those with headroom and well below the failing case.
+    maxProjectSourceChars: maxProjectSourceChars ?? DEFAULT_MAX_PROJECT_SOURCE_CHARS,
     // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
     // env. Omitted → library default (300_000 ms / 5 min) applies. 0 →
     // unlimited (legacy pre-3.89.0 behaviour).
@@ -647,6 +673,11 @@ async function scanProject(
       // 3.89.0 (#141): forward the partial-result marker so formatters can
       // warn the user and downstream tooling can treat the path list as a floor.
       budgetExceeded: projectResult.cross_file_budget_exceeded === true,
+      // #424: the per-file phase stopped at the size ceiling, so `results`
+      // covers only part of the project.
+      projectSizeBudgetExceeded: projectResult.project_size_budget_exceeded === true,
+      filesAnalysed: projectResult.files.length,
+      filesTotal: filesWithCode.length,
     },
   };
 }
@@ -939,7 +970,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if ((await stat(absPath)).isDirectory()) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
-      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs);
+      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
     } else {
@@ -1126,15 +1157,25 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       // Summary
       if (!options.quiet && options.format === 'text') {
         console.log();
+        // #424: when the size ceiling truncated the scan, `files` is what was
+        // DISCOVERED, not what was analysed. Reporting the discovered count
+        // here would state a clean scan of files that were never opened —
+        // exactly the confusion `project_size_budget_exceeded` exists to stop.
+        const scanned = crossFileData?.projectSizeBudgetExceeded
+          ? (crossFileData.filesAnalysed ?? files.length)
+          : files.length;
+        const scannedLabel = crossFileData?.projectSizeBudgetExceeded
+          ? `${scanned} of ${crossFileData.filesTotal ?? files.length} file(s) analysed`
+          : `${scanned} file(s)`;
         if (securityCount > 0) {
-          console.log(colors.red(`Found ${securityCount} security finding(s) in ${files.length} file(s)`));
+          console.log(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`));
         }
         if (qualityCount > 0) {
           const label = securityCount > 0 ? 'Also found' : 'Found';
-          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${files.length} file(s)`));
+          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`));
         }
         if (securityCount === 0 && qualityCount === 0 && options.verbose) {
-          console.log(colors.green(`No findings in ${files.length} file(s)`));
+          console.log(colors.green(`No findings in ${scannedLabel}`));
         }
         if (errors > 0) {
           console.log(colors.yellow(`${errors} file(s) had errors during analysis`));
@@ -1525,6 +1566,24 @@ function parseCrossFileBudgetMs(raw: unknown): number | undefined {
   return n;
 }
 
+/**
+ * #424 — `--max-project-source-chars <n>`. Same shape as
+ * `parseCrossFileBudgetMs`: `0` means unlimited, an invalid value warns and
+ * falls back to the default rather than failing the scan.
+ */
+function parseMaxProjectSourceChars(raw: unknown): number | undefined {
+  if (raw === undefined || raw === true || raw === '') return undefined;
+  const s = String(raw);
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n < 0 || String(n) !== s) {
+    console.error(colors.yellow(
+      `Warning: invalid --max-project-source-chars "${s}" (expected non-negative integer, 0 = unlimited); ignoring`,
+    ));
+    return undefined;
+  }
+  return n;
+}
+
 // ─── SBOM command ────────────────────────────────────────────────────────────
 
 /** Manifest basename → the circle-ir parser that turns its text into deps. */
@@ -1766,6 +1825,7 @@ async function main(): Promise<void> {
       profile: (options.profile || options.p) as string | undefined,
       disablePass: (options['disable-pass']) as string | undefined,
       crossFileBudgetMs: parseCrossFileBudgetMs(options['cross-file-budget-ms']),
+      maxProjectSourceChars: parseMaxProjectSourceChars(options['max-project-source-chars']),
       projectProfile: parseProjectProfileArg(options['project-profile']),
       noProjectProfile: options['no-project-profile'] === true,
       projectProfileExplain: options['project-profile-explain'] === true,

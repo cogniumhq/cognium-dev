@@ -274,6 +274,44 @@ export interface AnalyzerOptions {
   perFileBudgetMs?: number;
 
   /**
+   * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
+   * characters summed across the files given (cognium-dev#424). `0` or
+   * omitted disables it — no behaviour change for existing callers.
+   *
+   * This exists because `analyzeProject` retains every file's full `CircleIR`
+   * plus a `CodeGraph` per file for the whole run, and `CrossFileResolver`
+   * then resolves with all of them live at once. On NIST Juliet Java (40,855
+   * files, ~216 MB of source) that peak aborts the process with a V8
+   * `Ineffective mark-compacts near heap limit` even at a 12 GB heap: no
+   * result, no partial findings, and a signal-kill that a caller cannot tell
+   * from a crash in its own code.
+   *
+   * A ceiling does not lower that peak — only the streaming redesign of
+   * `analyzeProject` / `CrossFileResolver` can, and that is a separate API
+   * decision. What it does is convert the failure mode: the caller gets the
+   * files analysed so far, cross-file analysis over that subset, and
+   * `ProjectAnalysis.project_size_budget_exceeded`, instead of a core dump.
+   *
+   * Counted in `String.length` (UTF-16 code units), not bytes, so the check
+   * stays synchronous and allocation-free. `process.memoryUsage()` is
+   * deliberately NOT used — circle-ir must run in the browser.
+   *
+   * Note the ceiling is a blunt proxy, not a predictor: Juliet C# is *more*
+   * files (46,597) and less source (~173 MB) than Juliet Java and completes
+   * fine, because per-file IR size differs by language. Pick a value for the
+   * environment's heap rather than expecting one number to separate them.
+   */
+  maxProjectSourceChars?: number;
+
+  /**
+   * File-count ceiling for the PER-FILE phase of `analyzeProject`
+   * (cognium-dev#424). `0` or omitted disables it. Applied alongside
+   * `maxProjectSourceChars`; whichever is reached first stops the loop and
+   * sets `ProjectAnalysis.project_size_budget_exceeded`.
+   */
+  maxProjectFiles?: number;
+
+  /**
    * Defensive per-file finding cap (#142).
    *
    * A single file producing more than this many findings is treated as a
@@ -1683,7 +1721,33 @@ export async function analyzeProject(
   const perFileBudgetMs = options.perFileBudgetMs ?? 0;
   const perFileStart = Date.now();
   let perFileBudgetExceeded = false;
+  // #424 — size ceiling. Both default to 0 (off), so an existing caller sees
+  // no change. Checked BEFORE `analyze()` so the file that would cross the
+  // ceiling is never added, keeping the retained set within the budget.
+  const maxProjectSourceChars = options.maxProjectSourceChars ?? 0;
+  const maxProjectFiles = options.maxProjectFiles ?? 0;
+  let projectSourceChars = 0;
+  let projectSizeBudgetExceeded = false;
   for (const { code, filePath, language } of files) {
+    if (maxProjectFiles > 0 && fileAnalyses.length >= maxProjectFiles) {
+      projectSizeBudgetExceeded = true;
+      logger.warn('analyzeProject: file-count ceiling reached, skipping remaining files', {
+        analysed: fileAnalyses.length,
+        total: files.length,
+        maxProjectFiles,
+      });
+      break;
+    }
+    if (maxProjectSourceChars > 0 && projectSourceChars + code.length > maxProjectSourceChars) {
+      projectSizeBudgetExceeded = true;
+      logger.warn('analyzeProject: source-size ceiling reached, skipping remaining files', {
+        analysed: fileAnalyses.length,
+        total: files.length,
+        sourceChars: projectSourceChars,
+        maxProjectSourceChars,
+      });
+      break;
+    }
     if (perFileBudgetMs > 0 && Date.now() - perFileStart > perFileBudgetMs) {
       perFileBudgetExceeded = true;
       logger.warn('analyzeProject: per-file budget exceeded, skipping remaining files', {
@@ -1697,6 +1761,7 @@ export async function analyzeProject(
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
     sourceLinesByFile.set(filePath, code.split('\n'));
+    projectSourceChars += code.length;
   }
 
   // 2. Cross-file analysis
@@ -1785,6 +1850,9 @@ export async function analyzeProject(
   }
   if (perFileBudgetExceeded) {
     projectAnalysis.per_file_budget_exceeded = true;
+  }
+  if (projectSizeBudgetExceeded) {
+    projectAnalysis.project_size_budget_exceeded = true;
   }
   return projectAnalysis;
 }

@@ -1052,6 +1052,23 @@ export interface ProjectAnalysis {
    * Added in circle-ir 4.9.15 (cognium-dev#366).
    */
   per_file_budget_exceeded?: boolean;
+  /**
+   * `true` when the PER-FILE phase of `analyzeProject` stopped at a size
+   * ceiling (see `AnalyzerOptions.maxProjectSourceChars` /
+   * `maxProjectFiles`). As with `per_file_budget_exceeded`, files were
+   * skipped: `files` covers only what was analysed, and every downstream
+   * result is over that subset only. A consumer must not report this as a
+   * clean scan.
+   *
+   * Distinct from `per_file_budget_exceeded`, which is a wall-clock bound.
+   * This one is about heap: `analyzeProject` retains every file's full IR for
+   * the whole run, and past a certain project size V8 aborts the process
+   * outright (cognium-dev#424, NIST Juliet Java). The ceiling turns that
+   * abort into a partial result the caller can act on.
+   *
+   * Added in circle-ir 4.9.27 (cognium-dev#424).
+   */
+  project_size_budget_exceeded?: boolean;
 }
 
 export interface FileAnalysis {

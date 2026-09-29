@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`--max-project-source-chars <n>` (#424).** Caps a project scan by total
+  source characters so a project large enough to exhaust the V8 heap returns
+  partial results with a warning instead of aborting the process with no
+  output at all. **Default 64,000,000**; `0` disables the cap. Calibration:
+  NIST Juliet Java is ~216M chars over 40,855 files and OOMs at a 12 GB heap,
+  while the largest real repos measured under #366 (geoserver 8029 files,
+  nifi 5435) are ~40M chars and complete, so the default sits above those with
+  headroom and well below the failing case.
+
+### Changed
+- When a scan is truncated by that cap, the text summary now reports
+  `N of M file(s) analysed` rather than the discovered file count, and the
+  JSON output carries `project_size_budget_exceeded`. Previously a truncated
+  scan printed the total file count, which reads as a clean scan of files that
+  were never opened.
+
 ## [4.9.26] - 2026-09-24
 
 ### Changed
