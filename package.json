@@ -32,7 +32,9 @@
   },
   "overrides": {
     "hono": "4.13.8",
-    "qs": "6.16.0"
+    "qs": "6.16.0",
+    "fast-uri": "3.1.8",
+    "ip-address": "10.7.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
