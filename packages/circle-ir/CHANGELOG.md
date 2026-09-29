@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **#508: the proximity fallback no longer pairs a sink with an unrelated
+  variable.** `findTaintPath` accepted any variable defined within one line of
+  the source that was also used within one line of the sink, without checking
+  that the variable had anything to do with the source. On C# ADO.NET code the
+  variable carrying that verdict was routinely `conn` — the `SqlConnection` —
+  so a method with a `string` parameter and an `ExecuteReader()` call reported
+  CWE-89 with `taint.flows = 0`, including when the parameter was in a
+  different method (the `pathExists` branch short-circuits the #361 method
+  scoping). The shared variable must now be the source's own; when the source
+  names no variable the previous behaviour is kept, so the change is strictly
+  tighter. Gate: OWASP Benchmark Java 2740 files — `removed=2 added=2
+  reattributed=2 tp_loss=0`, `detection-level: lost=0`, both changes being a
+  corrected source line on one file (`BenchmarkTest00030` 47 -> 44, which is
+  the `request.getParameterMap()` line rather than a derived hop). Juliet C#
+  CWE-89 1651 files — zero delta.
 - **#424: `analyzeProject` no longer aborts the process on a very large project.**
   It retains every file's full `CircleIR` plus a `CodeGraph` per file for the
   whole run, and `CrossFileResolver` then resolves with all of them live, so
