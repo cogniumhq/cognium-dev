@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.9.27] - 2026-09-29
 
 ### Added
 - **`--max-project-source-chars <n>` (#424).** Caps a project scan by total
@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   findings, where it previously produced no output at all.
 
 ### Changed
+- Adopts `circle-ir@4.9.27`. C# scans gain `HttpRequest`-typed request sources
+  (#501), sources inside a single-line `try` (#504) and the ASP.NET Core
+  `Response.WriteAsync` xss sink (#503). Findings no longer pair a sink with a
+  variable unrelated to the source (#508). See the circle-ir changelog.
 - When a scan is truncated by that cap, the text summary now reports
   `N of M file(s) analysed` rather than the discovered file count, and the
   JSON output carries `project_size_budget_exceeded`. Previously a truncated
