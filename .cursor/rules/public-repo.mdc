@@ -1,0 +1,19 @@
+---
+description: Keep private security-product context out of this public repository
+alwaysApply: true
+---
+
+# Public repository
+
+This repository is public. Anything committed here is world-readable.
+
+- Do not copy text, code, configs, or notes from any other checkout on this machine.
+- Do not add scan output, customer findings, tokens, private keys, or unpublished internal design.
+- Do not add `.env` files or `*-scan.json` files.
+- If a change needs private context, stop and ask. Do not paraphrase it into this repo.
+
+Examples that must not be committed:
+
+- A GitHub or cloud token, or a private-key block
+- A file named like `repo_model_v1-scan.json`
+- Notes pasted from a different repository's docs or chat

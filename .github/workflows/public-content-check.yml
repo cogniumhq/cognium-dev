@@ -1,0 +1,44 @@
+name: Public content check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-diff:
+    name: Scan diff for private content
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Reject tokens and private files in the diff
+        run: |
+          set -euo pipefail
+          range="origin/${GITHUB_BASE_REF}...HEAD"
+          token_re='ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+          names="$(mktemp)"
+          git diff --name-only --diff-filter=AMR "$range" > "$names"
+          bad_paths="$(grep -E '(^|/)\.env($|\.)|(^|/)[^/]*-scan\.json$' "$names" | grep -vE '(^|/)\.env\.example$' || true)"
+          rm -f "$names"
+          if [ -n "$bad_paths" ]; then
+            echo "These paths must not be added to a public repo:"
+            printf '%s\n' "$bad_paths"
+            exit 1
+          fi
+
+          patch="$(mktemp)"
+          added="$(mktemp)"
+          git diff -U0 --diff-filter=AMR "$range" > "$patch"
+          grep '^+' "$patch" | grep -v '^+++' > "$added" || true
+          rm -f "$patch"
+          if grep -qE "$token_re" "$added"; then
+            rm -f "$added"
+            echo "Added lines contain a token or private key. Remove them before merging."
+            exit 1
+          fi
+          rm -f "$added"
