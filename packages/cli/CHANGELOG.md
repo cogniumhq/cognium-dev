@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.27] - 2026-09-29
+
+### Added
+- **`--max-project-source-chars <n>` (#424).** Caps a project scan by total
+  source characters so a project large enough to exhaust the V8 heap returns
+  partial results with a warning instead of aborting the process with no
+  output at all. `0` disables the cap.
+
+  The default is **derived from the process's own V8 heap limit**
+  (~7,000 chars per MB, so ~29.3M at Node's default 4 GB heap), not a fixed
+  number, because the binding constraint is the heap: `analyzeProject` retains
+  every file's full IR for the whole run, so a character count that is safe
+  under `--max-old-space-size=12288` aborts at the default. Raising the heap
+  raises the cap automatically.
+
+  Measured on NIST Juliet Java (40,845 files, ~216M chars) at a 4,192 MB heap:
+  16M and 32M complete; 48M, 56M and 64M all die with
+  `FATAL ERROR: Ineffective mark-compacts` and SIGABRT. At the derived default
+  the same scan completes, analysing 4,869 files and reporting 9,808 security
+  findings, where it previously produced no output at all.
+
+### Changed
+- Adopts `circle-ir@4.9.27`. C# scans gain `HttpRequest`-typed request sources
+  (#501), sources inside a single-line `try` (#504) and the ASP.NET Core
+  `Response.WriteAsync` xss sink (#503). Findings no longer pair a sink with a
+  variable unrelated to the source (#508). See the circle-ir changelog.
+- When a scan is truncated by that cap, the text summary now reports
+  `N of M file(s) analysed` rather than the discovered file count, and the
+  JSON output carries `project_size_budget_exceeded`. Previously a truncated
+  scan printed the total file count, which reads as a clean scan of files that
+  were never opened.
+- Project scans no longer read every file into memory before analysis begins.
+  Files past the cap are never read, so the source itself does not contribute
+  to the peak the cap exists to stay under.
+
+## [4.9.26] - 2026-09-24
+
+### Changed
+- Adopts `circle-ir@4.9.26`. Go scans lose cross-function false positives
+  (#472) and gain `bufio`-over-request-body sources (#343). C# scans gain bare
+  expression-statement sinks with an inline request read (#339). See the
+  circle-ir changelog.
+- Adopts `@cognium/project-profile-detect@1.1.2`: project-shape detection is
+  about 3.6× faster on many-module Maven repos (#304), with identical results.
+
+### Consumer Impact
+**Findings change for Go and C#; no CLI flag or output-shape changes.** Go
+results drop cross-function false positives, and some keep their sink with a
+corrected source line. C# gains findings for `File.Create(... file.FileName);`-style
+statements.
+
 ## [4.9.25] - 2026-09-23
 
 ### Fixed

@@ -21,7 +21,7 @@ import type {
   DetectionResult, ProjectProfile, ProfileOverrides, ResolvedModule,
 } from './types.js';
 import {
-  discoverBuildModules, enumerateScanFiles, ownerOf,
+  discoverBuildModules, enumerateScanFiles, createOwnerIndex,
 } from './walk.js';
 import { resolveShape } from './shape-resolve.js';
 import { resolveEnv } from './env-resolve.js';
@@ -67,6 +67,7 @@ export async function detectProjectProfiles(
 
   const profileByFile = new Map<string, ProjectProfile>();
   const unknownFiles: string[] = [];
+  const ownerIndex = createOwnerIndex(modules);
 
   for (const file of files) {
     // 1. Glob overrides win over everything.
@@ -87,7 +88,7 @@ export async function detectProjectProfiles(
     }
 
     // 3. Owner-module-driven detection.
-    const owner = ownerOf(file, modules);
+    const owner = ownerIndex(file);
     if (!owner) {
       profileByFile.set(file, 'unknown');
       unknownFiles.push(file);

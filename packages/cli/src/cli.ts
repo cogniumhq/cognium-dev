@@ -7,6 +7,7 @@ import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { stat, readdir } from 'fs/promises';
 import { join, dirname, extname, resolve, relative, basename } from 'path';
 import { createRequire } from 'module';
+import { getHeapStatistics } from 'v8';
 import {
   initAnalyzer, analyze, analyzeProject,
   setLogLevel, type LogLevel,
@@ -317,6 +318,15 @@ interface ScanOptions {
    * cross-file phases skipped. See circle-ir 3.89.0 CHANGELOG.
    */
   crossFileBudgetMs?: number;
+
+  /**
+   * circle-ir `AnalyzerOptions.maxProjectSourceChars` (#424). Caps the
+   * per-file phase by total source characters so a project large enough to
+   * exhaust the V8 heap returns partial results with a warning instead of
+   * aborting the process. Defaults to `defaultMaxProjectSourceChars()`, which
+   * scales with this process's V8 heap limit; `0` disables the cap.
+   */
+  maxProjectSourceChars?: number;
   /**
    * Force project profile (shape/env) for the entire scan. Disables
    * auto-detection. Sourced from `--project-profile=<shape>/<env>` CLI
@@ -591,17 +601,81 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
   }
 }
 
+/**
+ * #424 — default source-size ceiling for a project scan, in characters.
+ * `0` disables it. Override with `--max-project-source-chars`.
+ *
+ * Derived from the process's actual V8 heap limit rather than hard-coded,
+ * because the binding constraint IS the heap: `analyzeProject` retains every
+ * file's full IR for the whole run, so the same character count that is safe
+ * under `--max-old-space-size=12288` aborts the process at Node's default.
+ *
+ * Measured on NIST Juliet Java (40,845 files, ~216M chars) at a 4,192 MB
+ * default heap limit:
+ *
+ *   cap 16M -> completes (2,721 files)
+ *   cap 32M -> completes (5,190 files, 9,822 security findings, 54s)
+ *   cap 48M -> FATAL ERROR: Ineffective mark-compacts, SIGABRT
+ *   cap 64M -> FATAL ERROR: Ineffective mark-compacts, SIGABRT
+ *
+ * So ~32M chars is safe per 4,192 MB, i.e. ~7,600 chars per MB of heap. The
+ * factor below is rounded down to 7,000 for margin, since Juliet's ~5.3 KB
+ * average file is denser than typical source and per-file IR size varies by
+ * language. A caller that raises `--max-old-space-size` automatically gets a
+ * proportionally larger cap; one that needs the whole project regardless
+ * passes `--max-project-source-chars 0`.
+ *
+ * Node-only by design. circle-ir itself must run in the browser, which is why
+ * the library option defaults to off and the heap-aware default lives here.
+ */
+const CHARS_PER_MB_OF_HEAP = 7_000;
+
+function defaultMaxProjectSourceChars(): number {
+  try {
+    const heapMb = getHeapStatistics().heap_size_limit / (1024 * 1024);
+    if (!Number.isFinite(heapMb) || heapMb <= 0) return 32_000_000;
+    return Math.floor(heapMb * CHARS_PER_MB_OF_HEAP);
+  } catch {
+    // v8 module unavailable for any reason — fall back to the measured-safe
+    // value for a default heap rather than to "unlimited".
+    return 32_000_000;
+  }
+}
+
 async function scanProject(
   files: string[],
   language: string | undefined,
   analyzeOpts?: AnalyzeOptions,
   crossFileBudgetMs?: number,
+  maxProjectSourceChars?: number,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
-  const filesWithCode = files.map(f => ({
-    code: readFileSync(f, 'utf-8'),
-    filePath: f,
-    language: (language || detectLanguage(f)) as SupportedLanguage,
-  }));
+  // #424: the ceiling has to be applied HERE, not only inside analyzeProject.
+  // Reading every file up front materialises the whole project's source before
+  // analysis starts — on Juliet Java that is ~216M chars (~432 MB as UTF-16)
+  // carried for the rest of the run, which is part of the peak the library
+  // ceiling is trying to stay under. Files past the budget are never read.
+  const sourceCap = maxProjectSourceChars ?? defaultMaxProjectSourceChars();
+  const filesWithCode: Array<{ code: string; filePath: string; language: SupportedLanguage }> = [];
+  let sourceChars = 0;
+  let readTruncated = false;
+  for (const f of files) {
+    const code = readFileSync(f, 'utf-8');
+    // A first file that alone exceeds the cap is KEPT, so a scan is never
+    // silently empty. `maxProjectSourceChars` is therefore not passed to
+    // `analyzeProject` below: its own check has no such exemption and would
+    // drop that file again, analysing zero files while later files were never
+    // read. The cap is enforced here, once.
+    if (sourceCap > 0 && sourceChars + code.length > sourceCap && filesWithCode.length > 0) {
+      readTruncated = true;
+      break;
+    }
+    sourceChars += code.length;
+    filesWithCode.push({
+      code,
+      filePath: f,
+      language: (language || detectLanguage(f)) as SupportedLanguage,
+    });
+  }
 
   const projectResult = await analyzeProject(filesWithCode, {
     passOptions: analyzeOpts?.passOptions,
@@ -647,6 +721,11 @@ async function scanProject(
       // 3.89.0 (#141): forward the partial-result marker so formatters can
       // warn the user and downstream tooling can treat the path list as a floor.
       budgetExceeded: projectResult.cross_file_budget_exceeded === true,
+      // #424: the per-file phase stopped at the size ceiling, so `results`
+      // covers only part of the project.
+      projectSizeBudgetExceeded: readTruncated || projectResult.project_size_budget_exceeded === true,
+      filesAnalysed: projectResult.files.length,
+      filesTotal: files.length,
     },
   };
 }
@@ -939,7 +1018,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if ((await stat(absPath)).isDirectory()) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
-      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs);
+      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
     } else {
@@ -976,7 +1055,16 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       }
     }
 
-    if (spin) spin.succeed(`Scanned ${files.length} file(s)`);
+    // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
+    // overstating what was actually analysed.
+    if (spin) {
+      const analysed = crossFileData?.projectSizeBudgetExceeded
+        ? (crossFileData.filesAnalysed ?? files.length)
+        : files.length;
+      spin.succeed(analysed === files.length
+        ? `Scanned ${files.length} file(s)`
+        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`);
+    }
 
     // Apply suppressions from config
     // Use cwd as base path since suppression files are relative to project root
@@ -1087,7 +1175,13 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     // Only output if there are findings, errors, or verbose/output file requested
     // Always output for JSON/SARIF formats (structured output expected)
-    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text';
+    // #424 — a truncated scan must never be silent. Without the last clause,
+    // a project stopped at the size ceiling whose analysed subset happens to
+    // have no findings skips BOTH the ceiling warning and the
+    // `N of M file(s) analysed` summary, and exits 0 — which is precisely the
+    // clean-scan claim over unread files this change exists to prevent.
+    const truncated = crossFileData?.projectSizeBudgetExceeded === true;
+    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated;
 
     // 3.106.0 (#169) — assemble the project-profile summary for output and
     // tag each vulnerability with its file's resolved profile.
@@ -1126,15 +1220,25 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       // Summary
       if (!options.quiet && options.format === 'text') {
         console.log();
+        // #424: when the size ceiling truncated the scan, `files` is what was
+        // DISCOVERED, not what was analysed. Reporting the discovered count
+        // here would state a clean scan of files that were never opened —
+        // exactly the confusion `project_size_budget_exceeded` exists to stop.
+        const scanned = crossFileData?.projectSizeBudgetExceeded
+          ? (crossFileData.filesAnalysed ?? files.length)
+          : files.length;
+        const scannedLabel = crossFileData?.projectSizeBudgetExceeded
+          ? `${scanned} of ${crossFileData.filesTotal ?? files.length} file(s) analysed`
+          : `${scanned} file(s)`;
         if (securityCount > 0) {
-          console.log(colors.red(`Found ${securityCount} security finding(s) in ${files.length} file(s)`));
+          console.log(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`));
         }
         if (qualityCount > 0) {
           const label = securityCount > 0 ? 'Also found' : 'Found';
-          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${files.length} file(s)`));
+          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`));
         }
         if (securityCount === 0 && qualityCount === 0 && options.verbose) {
-          console.log(colors.green(`No findings in ${files.length} file(s)`));
+          console.log(colors.green(`No findings in ${scannedLabel}`));
         }
         if (errors > 0) {
           console.log(colors.yellow(`${errors} file(s) had errors during analysis`));
@@ -1525,6 +1629,24 @@ function parseCrossFileBudgetMs(raw: unknown): number | undefined {
   return n;
 }
 
+/**
+ * #424 — `--max-project-source-chars <n>`. Same shape as
+ * `parseCrossFileBudgetMs`: `0` means unlimited, an invalid value warns and
+ * falls back to the default rather than failing the scan.
+ */
+function parseMaxProjectSourceChars(raw: unknown): number | undefined {
+  if (raw === undefined || raw === true || raw === '') return undefined;
+  const s = String(raw);
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n < 0 || String(n) !== s) {
+    console.error(colors.yellow(
+      `Warning: invalid --max-project-source-chars "${s}" (expected non-negative integer, 0 = unlimited); ignoring`,
+    ));
+    return undefined;
+  }
+  return n;
+}
+
 // ─── SBOM command ────────────────────────────────────────────────────────────
 
 /** Manifest basename → the circle-ir parser that turns its text into deps. */
@@ -1766,6 +1888,7 @@ async function main(): Promise<void> {
       profile: (options.profile || options.p) as string | undefined,
       disablePass: (options['disable-pass']) as string | undefined,
       crossFileBudgetMs: parseCrossFileBudgetMs(options['cross-file-budget-ms']),
+      maxProjectSourceChars: parseMaxProjectSourceChars(options['max-project-source-chars']),
       projectProfile: parseProjectProfileArg(options['project-profile']),
       noProjectProfile: options['no-project-profile'] === true,
       projectProfileExplain: options['project-profile-explain'] === true,

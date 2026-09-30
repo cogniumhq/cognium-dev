@@ -135,7 +135,9 @@ export async function initParser(options: ParserOptions = {}): Promise<void> {
     configuredLanguageModules = options.languageModules;
   }
 
-  // Create initialization promise and store it
+  // Create initialization promise and store it. #473: on failure the cached
+  // promise must be cleared, or every later call returns the same rejection
+  // and init can never be retried (bad wasmPath, transient fetch failure).
   parserInitializing = (async () => {
     if (options.wasmModule) {
       // Use pre-compiled module (for Cloudflare Workers where dynamic WASM compilation is blocked)
@@ -157,8 +159,9 @@ export async function initParser(options: ParserOptions = {}): Promise<void> {
       });
     }
     parserInitialized = true;
+  })().finally(() => {
     parserInitializing = null;
-  })();
+  });
 
   return parserInitializing;
 }

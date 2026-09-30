@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.27] - 2026-09-29
+
+### Fixed
+- **#508: the proximity fallback no longer pairs a sink with an unrelated
+  variable.** `findTaintPath` accepted any variable defined within one line of
+  the source that was also used within one line of the sink, without checking
+  that the variable had anything to do with the source. On C# ADO.NET code the
+  variable carrying that verdict was routinely `conn` — the `SqlConnection` —
+  so a method with a `string` parameter and an `ExecuteReader()` call reported
+  CWE-89 with `taint.flows = 0`, including when the parameter was in a
+  different method (the `pathExists` branch short-circuits the #361 method
+  scoping). The shared variable must now be the source's own; when the source
+  names no variable the previous behaviour is kept, so the change is strictly
+  tighter. Gate: OWASP Benchmark Java 2740 files — `removed=2 added=2
+  reattributed=2 tp_loss=0`, `detection-level: lost=0`, both changes being a
+  corrected source line on one file (`BenchmarkTest00030` 47 -> 44, which is
+  the `request.getParameterMap()` line rather than a derived hop). Juliet C#
+  CWE-89 1651 files — zero delta.
+- **#424: `analyzeProject` no longer aborts the process on a very large project.**
+  It retains every file's full `CircleIR` plus a `CodeGraph` per file for the
+  whole run, and `CrossFileResolver` then resolves with all of them live, so
+  NIST Juliet Java (40,855 files, ~216M chars) died with a V8
+  `Ineffective mark-compacts near heap limit` even at a 12 GB heap — no result,
+  no partial findings, and a signal-kill a caller cannot distinguish from a
+  crash in its own code. Two new options bound the per-file phase:
+  `maxProjectSourceChars` (total source characters) and `maxProjectFiles`.
+  **Both default to `0` (off), so no existing caller changes behaviour.** When
+  a ceiling is reached the remaining files are skipped, everything analysed so
+  far is kept including cross-file analysis over that subset, and
+  `ProjectAnalysis.project_size_budget_exceeded` is set. This does not lower
+  the memory peak — only a streaming redesign of `analyzeProject` /
+  `CrossFileResolver` can, and that stays a separate API decision — it
+  converts an abort into a partial result the caller can act on. The count is
+  `String.length`, not bytes, and `process.memoryUsage()` is deliberately not
+  used, so the check stays browser-safe.
+
+- **#504: C# source reads inside a single-line `try` block.**
+  `try { data = Console.ReadLine(); } catch { }` now seeds `io_input` on
+  that line, the same as the multi-line form of the assignment. A constant
+  assignment in the same shape stays unseeded.
+- **#501: C# `HttpRequest` sources follow the declared type, not the name `Request`.**
+  `req.QueryString`, `req.Params`, `req.Cookies` and the other request
+  collections now seed `http_param` when the receiver is declared
+  `HttpRequest` or `HttpRequestBase`. The inherited `Request.*` member is
+  unchanged. An undeclared `req` is not a request source.
+- **#503: ASP.NET Core `Response.WriteAsync(x)` is now an xss sink (CWE-79).**
+  The System.Web row `{ method: 'Write', class: 'Response' }` does not cover the
+  `HttpResponseWritingExtensions` extension method ASP.NET Core writes response
+  bodies through, so a tainted body had a source and no sink and the flow could
+  never be reported. The row is receiver-scoped to `Response`, leaving the many
+  unrelated `WriteAsync` overloads (Stream, StreamWriter, TextWriter, PipeWriter)
+  untouched. Juliet C# CWE-80/81/94 are byte-identical before and after (the
+  corpus predates ASP.NET Core and contains no `Response.WriteAsync`).
+
+## [4.9.26] - 2026-09-24
+
+### Fixed
+- **#472: Go taint no longer leaks to a same-named local in another function.**
+  The argument-expression matcher links a source to a sink by variable name, and
+  its same-method gate compared method *names*. That gate never ran for
+  assignment-shaped sources (`a := os.Args`, `name := f.Name`), and couldn't
+  separate two functions that share a name (`(*A).ServeHTTP` / `(*C).ServeHTTP`).
+  So `b := []byte("x")` in `out()` inherited the taint of
+  `b, _ := io.ReadAll(r.Body)` in `h()`; this shipped in 4.9.23–4.9.25 via the
+  #459 `r.Body` source. Go now compares the enclosing function by line range.
+  Package-level sources stay unscoped, and closures inside a handler share its
+  scope. On 175 Go corpus repos, 36 flows were removed: 33 re-attributed to the
+  source in the sink's own function, 3 cross-function sinks no longer reported.
+- **#343: Go `bufio.NewScanner` / `NewReader` over the request body.**
+  `sc.Text()`, `sc.Bytes()`, `br.ReadString(…)` and related reads over
+  `<req>.Body` now seed `http_body`. An assigned read binds its left-hand side.
+  An inline read (`db.Query("…" + sc.Text())`) reaches only a sink on the same
+  line.
+- **#339: C# bare expression-statement sinks with an inline request read.**
+  `File.Create(Path.Combine(dir, file.FileName));` was silent while the same
+  call assigned to a local fired. Inline `Request.*`, `IFormFile.FileName` /
+  `ContentType`, `Console.ReadLine()` and `Environment.GetEnvironmentVariable`
+  reads inside the call's arguments now seed a source on that statement.
+- **#473: `initParser` recovers after a failed init.** A rejected `Parser.init`
+  (bad `wasmPath`, transient fetch failure) was cached forever, so every later
+  `initParser` / `initAnalyzer` call failed. The cache is now cleared on failure.
+
+### Consumer Impact
+- **Go:** fewer findings (cross-function false positives removed). Some findings
+  keep their sink but report a different, correct **source line**. Baselines
+  keyed on `sink@source->sink` will show those as one removal plus one addition.
+- **Go / C#:** new findings for the bufio-over-body and expression-statement
+  shapes above.
+- No API or output-shape changes.
+
 ## [4.9.25] - 2026-09-23
 
 Lockstep release with `cognium-dev@4.9.25`. No library changes.

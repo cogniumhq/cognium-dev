@@ -97,6 +97,18 @@ export interface CrossFileData {
    * partial results.
    */
   budgetExceeded?: boolean;
+  /**
+   * #424 — set when `analyzeProject` stopped at the source-size ceiling
+   * (`maxProjectSourceChars`). Unlike `budgetExceeded`, which means all files
+   * were analysed but cross-file walks were cut short, this means **files
+   * were skipped entirely**: every result is over the analysed subset only
+   * and must not be reported as a clean scan.
+   */
+  projectSizeBudgetExceeded?: boolean;
+  /** #424 — files actually analysed, when the ceiling truncated the scan. */
+  filesAnalysed?: number;
+  /** #424 — files the scan was asked to cover. */
+  filesTotal?: number;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -557,6 +569,21 @@ export function formatResults(
   // 3.89.0 (#141): warn when the cross-file budget was hit. Partial taint
   // paths are still emitted; downstream tooling should treat them as a
   // floor, not an exhaustive list.
+  // #424: files were skipped outright — a stronger statement than the
+  // cross-file budget warning below, so it goes first.
+  if (crossFileData?.projectSizeBudgetExceeded) {
+    lines.push('');
+    lines.push(colors.yellow(
+      `⚠ Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
+    ));
+    lines.push(colors.yellow(
+      '  Results cover the analysed files only; this is NOT a clean scan of the project.',
+    ));
+    lines.push(colors.yellow(
+      '  Raise or disable the cap with --max-project-source-chars <n> (0 = unlimited).',
+    ));
+  }
+
   if (crossFileData?.budgetExceeded) {
     lines.push('');
     lines.push(colors.yellow(
@@ -588,6 +615,7 @@ export function formatJSON(
     // 3.89.0 (#141): partial-result marker for cross-file phase. `true` →
     // budget exceeded mid-phase, paths above may be incomplete.
     cross_file_budget_exceeded: crossFileData?.budgetExceeded ?? false,
+    project_size_budget_exceeded: crossFileData?.projectSizeBudgetExceeded ?? false,
     // 3.106.0 (#169): project-profile detection summary. Omitted when
     // detection was disabled (`--no-project-profile`) or the scan target
     // was a single file (no module concept).

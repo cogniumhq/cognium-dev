@@ -1602,6 +1602,61 @@ function findGoRequestBodySources(sourceCode: string, language: string): TaintSo
     const cp = copyRe.exec(line);
     if (cp) { push(cp[1].replace(/^&\s*/, ''), n, 'io.Copy(dst, req.Body)'); continue; }
   }
+
+  // `sc := bufio.NewScanner(r.Body)` / `br := bufio.NewReader(r.Body)` — the
+  // wrapper itself is not the data; its reads are. Each `sc.Text()` /
+  // `sc.Bytes()` / `br.ReadString(…)` / `br.ReadBytes(…)` / `br.ReadLine()`
+  // inside the same function body is an http_body source. Scoped to the
+  // wrapper variable's own block, so an unrelated `sc` elsewhere in the file
+  // (e.g. a scanner over os.Stdin) is never seeded.
+  const wrapRe = new RegExp(
+    `^\\s*(?:var\\s+)?([A-Za-z_]\\w*)\\s*:?=\\s*bufio\\s*\\.\\s*New(?:Scanner|Reader|ReaderSize)\\s*\\(.*${bodyRef}`,
+  );
+  const braceDelta = (s: string): number => {
+    // Ignore braces inside string/rune literals and trailing comments.
+    const code = s.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`|'(?:[^'\\]|\\.)*'/g, '""').replace(/\/\/.*$/, '');
+    let d = 0;
+    for (const ch of code) { if (ch === '{') d++; else if (ch === '}') d--; }
+    return d;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const w = wrapRe.exec(lines[i]);
+    if (!w) continue;
+    const wrapper = w[1];
+    if (wrapper === '_') continue;
+    const readRe = new RegExp(
+      `(?<![\\w.])${wrapper}\\s*\\.\\s*(Text|Bytes|ReadString|ReadBytes|ReadLine|ReadSlice)\\s*\\(`,
+    );
+    const assignRe = new RegExp(
+      `^\\s*(?:var\\s+)?([A-Za-z_][\\w\\s,]*?)\\s*:?=(?!=)\\s*(?:string\\s*\\(\\s*)?${wrapper}\\s*\\.\\s*(?:Text|Bytes|ReadString|ReadBytes|ReadLine|ReadSlice)\\s*\\(`,
+    );
+    const rebindRe = new RegExp(`(?<![\\w.])${wrapper}\\s*:?=(?!=)`);
+    // Walk forward until the block holding the declaration closes.
+    let depth = 0;
+    for (let j = i + 1; j < lines.length; j++) {
+      depth += braceDelta(lines[j - 1]);
+      if (depth < 0) break;
+      const line = lines[j];
+      if (/^\s*\/\//.test(line)) continue;
+      if (rebindRe.test(line)) break; // wrapper re-bound to something else
+      const rd = readRe.exec(line);
+      if (!rd) continue;
+      // `line := sc.Text()` binds the LHS. A read used inline as a call
+      // argument (`db.Query("…" + sc.Text())`) gets the `<inline>` marker
+      // (as #339 does for C#): it matches no real name, so only a sink on
+      // this very line is reached. Leaving it with NO variable made
+      // findInitialTaint seed every def on the FOLLOWING line by adjacency,
+      // so `log.Println(sc.Text())` tainted a constant `x := "fixed"`.
+      const as = assignRe.exec(line);
+      let variable = '<inline>';
+      if (as) {
+        const bound = as[1].split(',').map((v) => v.trim()).find((v) => v !== '_' && v !== 'err' && /^[A-Za-z_]\w*$/.test(v));
+        if (!bound) continue;
+        variable = bound;
+      }
+      push(variable, j + 1, `bufio ${wrapper}.${rd[1]}() over req.Body`);
+    }
+  }
   return sources;
 }
 
@@ -1627,8 +1682,9 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // the scanner never looked at.
   const assignRe =
     /^\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
-  const requestReadRe =
-    /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
+  // `Request.*` is the inherited controller member. A parameter typed
+  // `HttpRequest` / `HttpRequestBase` is the same surface under whatever
+  // name the method uses (`req` in Juliet) — cognium-dev#501.
   // Console/stdin reads bind their LHS too (dominant source shape in the NIST
   // Juliet C# corpus). Like `Request.*`, a bare `Console.ReadLine()` returns a
   // value that nothing else seeds a variable for, so bind it as `io_input`.
@@ -1648,28 +1704,143 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // `\s+` after the type name keeps `IFormFileCollection files` from matching.
   const formFileParams = new Set<string>();
   const formFileDeclRe = /\bIFormFile\s+([A-Za-z_]\w*)/g;
+  // Inherited `Request` plus any local declared `HttpRequest` / `HttpRequestBase`
+  // (nullable `HttpRequest?` included). `HttpRequestMessage` does not match:
+  // the type token must be followed by whitespace, not more identifier text.
+  const httpRequestReceivers = new Set<string>(['Request']);
+  const httpRequestDeclRe = /\b(?:HttpRequest|HttpRequestBase)\??\s+([A-Za-z_]\w*)/g;
   for (const line of lines) {
-    const re = new RegExp(formFileDeclRe.source, 'g');
+    const formRe = new RegExp(formFileDeclRe.source, 'g');
     let d: RegExpExecArray | null;
-    while ((d = re.exec(line)) !== null) formFileParams.add(d[1]);
+    while ((d = formRe.exec(line)) !== null) formFileParams.add(d[1]);
+    const reqRe = new RegExp(httpRequestDeclRe.source, 'g');
+    while ((d = reqRe.exec(line)) !== null) httpRequestReceivers.add(d[1]);
   }
   const formFileReadRe = formFileParams.size > 0
     ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
     : null;
+  const requestReadRe = new RegExp(
+    `\\b(?:${[...httpRequestReceivers].join('|')})\\s*\\.\\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\\b`,
+  );
+
+  const classify = (text: string): TaintSource['type'] | null =>
+    requestReadRe.test(text)
+      ? 'http_param'
+      : formFileReadRe?.test(text)
+        ? 'http_param'
+        : consoleReadRe.test(text)
+          ? 'io_input'
+          : envReadRe.test(text)
+            ? 'env_input'
+            : null;
+  // cognium-dev#339 — a bare expression statement reads the request INLINE in
+  // the call, with no local to bind:
+  //
+  //   var s = File.Create(Path.Combine("/uploads", file.FileName));   // bound (LHS `s`)
+  //           File.Create(Path.Combine("/uploads", file.FileName));   // was NOT
+  //
+  // Java/Python/JS already seed such inline reads as call-anchored sources on
+  // the statement line, which the taint pass's inline-colocation step pairs
+  // with a sink on that same line. Mirror that shape here: a source anchored
+  // on the statement (see `variable` below). Scoped to a single-line statement
+  // that opens with a call (`Recv.M(` / `M(`), so a declaration, `return`,
+  // control-flow header or a multi-line fragment is never seeded this way.
+  //
+  // The read must sit INSIDE the statement's argument list. A read that is
+  // the statement's own callee or receiver — `Console.ReadLine();` (value
+  // discarded), `Request.Body.CopyToAsync(ms);` — is not passed to anything
+  // on this line, so there is nothing for it to reach here.
+  const inlineReads: Array<[RegExp | null, TaintSource['type']]> = [
+    [requestReadRe, 'http_param'],
+    [formFileReadRe, 'http_param'],
+    [consoleReadRe, 'io_input'],
+    [envReadRe, 'env_input'],
+  ];
+  const inlineRead = (text: string): { type: TaintSource['type']; read: string } | null => {
+    const argsStart = text.indexOf('(');
+    for (const [re, type] of inlineReads) {
+      if (!re) continue;
+      const g = new RegExp(re.source, 'g');
+      let hit: RegExpExecArray | null;
+      while ((hit = g.exec(text)) !== null) {
+        if (hit.index > argsStart) {
+          return { type, read: hit[0].replace(/\s+/g, '').replace(/[([]$/, '') };
+        }
+      }
+    }
+    return null;
+  };
+  const exprStmtCallRe = /^\s*(?:await\s+)?[A-Za-z_][\w.]*(?:<[^>]*>)?\s*\(.*\)\s*;\s*$/;
+  const nonCallKeywordRe = /^\s*(?:await\s+)?(?:if|while|for|foreach|switch|using|lock|return|throw|catch|when|nameof|typeof|sizeof|default)\b/;
+
+  // cognium-dev#504 — an assignment nested in a same-line block is not the
+  // whole line, so `assignRe` misses it:
+  //   try { data = Console.ReadLine(); } catch (Exception) { }   // was NOT
+  //   data = Console.ReadLine();                                  // bound
+  // `(?!=)` keeps `==` from looking like an assignment. A full-line comment
+  // is skipped; the rest of this scanner already ignores comment text only
+  // when it is not the line's code.
+  const embeddedAssignRe =
+    /(?:^|[{;])\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;{}]+)/;
 
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
-    if (!m) continue;
+    if (!m) {
+      const stmt = lines[i];
+      if (stmt.includes('{') && !/^\s*(?:\/\/|\/\*|\*)/.test(stmt)) {
+        const emb = new RegExp(embeddedAssignRe.source, 'g');
+        let em: RegExpExecArray | null;
+        let seeded = false;
+        while ((em = emb.exec(stmt)) !== null) {
+          const varName = em[1];
+          const rhs = em[2];
+          const type = classify(rhs);
+          if (!type) continue;
+          const lineNumber = i + 1;
+          if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
+          sources.push({
+            type,
+            location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+            severity: 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: varName,
+          });
+          seeded = true;
+        }
+        if (seeded) continue;
+      }
+      if (!exprStmtCallRe.test(stmt) || nonCallKeywordRe.test(stmt)) continue;
+      const hit = inlineRead(stmt);
+      if (!hit) continue;
+      const { type, read } = hit;
+      const lineNumber = i + 1;
+      if (sources.some(s => s.line === lineNumber)) continue;
+      // `variable` is the `<inline>` marker (the same one the inline
+      // colocation flow puts on its path steps), never a real name. It
+      // must be set, and must match nothing:
+      //   - with NO variable, `findInitialTaint` seeds every def on the
+      //     FOLLOWING line by adjacency, so `Log(file.FileName);` followed by
+      //     `var x = "/tmp/a";` tainted the constant `x`;
+      //   - with the read text itself (`file.FileName`) as the variable, the
+      //     colocation path treats it as an LHS binding and hands the pair
+      //     to the variable scan, which only looks at strictly later sinks —
+      //     so the same-line flow this exists for was lost.
+      // The marker reaches only a sink on this very statement.
+      const code = stmt.trim();
+      sources.push({
+        type,
+        location: `${read} in ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`,
+        severity: 'high',
+        line: lineNumber,
+        confidence: 1.0,
+        variable: '<inline>',
+        code,
+      });
+      continue;
+    }
     const [, varName, rhs] = m;
-    const type: TaintSource['type'] | null = requestReadRe.test(rhs)
-      ? 'http_param'
-      : formFileReadRe?.test(rhs)
-        ? 'http_param'
-        : consoleReadRe.test(rhs)
-          ? 'io_input'
-          : envReadRe.test(rhs)
-            ? 'env_input'
-            : null;
+    const type = classify(rhs);
     if (!type) continue;
     const lineNumber = i + 1;
     if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;

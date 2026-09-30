@@ -216,5 +216,33 @@ export function ownerOf(file: string, modules: BuildModule[]): BuildModule | und
   return best;
 }
 
+/**
+ * #304 — `ownerOf` scans every module per file: O(files × modules), with a
+ * string concat per comparison. On a many-module Maven repo (~2k poms, ~26k
+ * files) that was ~50M comparisons and ~70% of detection time. This builds a
+ * root → module map once and walks each file's ancestors instead:
+ * O(files × depth). Same answer as `ownerOf`: the deepest ancestor directory
+ * (or the file itself) that is a module root is the longest matching prefix,
+ * and on duplicate roots the first module wins, as with `ownerOf`'s strict `>`.
+ */
+export function createOwnerIndex(
+  modules: BuildModule[],
+): (file: string) => BuildModule | undefined {
+  const byRoot = new Map<string, BuildModule>();
+  for (const m of modules) {
+    if (!byRoot.has(m.root)) byRoot.set(m.root, m);
+  }
+  return (file: string) => {
+    let p = file;
+    for (;;) {
+      const hit = byRoot.get(p);
+      if (hit) return hit;
+      const slash = p.lastIndexOf('/');
+      if (slash <= 0) return undefined;
+      p = p.slice(0, slash);
+    }
+  };
+}
+
 /** Re-export of `relative` for callers that want a stable import surface. */
 export { relative };

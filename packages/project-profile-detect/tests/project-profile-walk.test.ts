@@ -14,6 +14,7 @@ import {
   discoverBuildModules,
   enumerateScanFiles,
   ownerOf,
+  createOwnerIndex,
 } from '../src/walk.js';
 
 let tmpRoot: string;
@@ -120,5 +121,31 @@ describe('ownerOf', () => {
 
   test('returns undefined for files outside any module root', () => {
     expect(ownerOf('/nowhere/Foo.java', [])).toBeUndefined();
+  });
+});
+
+describe('createOwnerIndex (#304)', () => {
+  const m = (root: string) => ({ root, kind: 'maven' }) as unknown as Parameters<typeof ownerOf>[1][number];
+
+  test('agrees with ownerOf on nested, sibling, prefix-lookalike and outside paths', () => {
+    const mods = [m('/r'), m('/r/a'), m('/r/a/b'), m('/r/ab'), m('/r/c')];
+    const idx = createOwnerIndex(mods);
+    const files = [
+      '/r/x.java', '/r/a/x.java', '/r/a/b/x.java', '/r/a/b/c/d/x.java',
+      '/r/ab/x.java', '/r/abc/x.java', '/r/c', '/r/a', '/other/x.java', '/x.java',
+    ];
+    for (const f of files) expect(idx(f)).toBe(ownerOf(f, mods));
+    expect(idx('/r/abc/x.java')?.root).toBe('/r'); // '/r/ab' must not match '/r/abc'
+  });
+
+  test('first module wins on a duplicate root, like ownerOf', () => {
+    const first = m('/r/a');
+    const mods = [first, m('/r/a')];
+    expect(createOwnerIndex(mods)('/r/a/x.java')).toBe(first);
+    expect(ownerOf('/r/a/x.java', mods)).toBe(first);
+  });
+
+  test('empty module list owns nothing', () => {
+    expect(createOwnerIndex([])('/r/x.java')).toBeUndefined();
   });
 });

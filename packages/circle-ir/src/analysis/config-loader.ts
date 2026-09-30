@@ -3054,6 +3054,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // C# XSS — raw HTML output (CWE-79).
   { method: 'Raw', class: 'Html', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // ASP.NET Core writes the response body through the `HttpResponseWritingExtensions`
+  // extension methods rather than `Response.Write`, so the System.Web row above does
+  // not cover it. Receiver-scoped to `Response` so the many unrelated `WriteAsync`
+  // overloads (Stream, StreamWriter, TextWriter, PipeWriter) are untouched. (#503)
+  { method: 'WriteAsync', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'HtmlString', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   // Blazor `new MarkupString(x)` renders its argument as raw HTML (the framework's
   // documented "trusted markup" escape hatch) — attacker-controlled input is XSS. (ca#275)
