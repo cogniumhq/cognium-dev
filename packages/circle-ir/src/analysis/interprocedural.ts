@@ -168,6 +168,19 @@ const CSHARP_NON_ESCAPE_METHODS = new Set([
   // structured logging (Microsoft.Extensions.Logging, Serilog, NLog, log4net)
   'LogInformation', 'LogWarning', 'LogError', 'LogDebug', 'LogTrace',
   'LogCritical', 'Information', 'Warning', 'Verbose', 'Fatal', 'BeginScope',
+  // Collection stores. A value put into a container has not left the program —
+  // the same reasoning that puts Go's `append` in GO_BUILTIN_CALLS. Measured
+  // on the 10 scored Juliet C# families these were 1,296 of the 2,368 escape
+  // rows remaining after the first pass of this gate (#474): `Add` 864,
+  // `AddLast` 432.
+  //
+  // Project methods are deliberately NOT gated, matching the Go gate's rule
+  // that an unknown call must still escape: Juliet's own `BadSink` /
+  // `GoodB2GSink` / `Action` dispatches account for a further 840 rows and are
+  // left alone, because "the callee is defined in this file" is a different
+  // claim needing its own change.
+  'Add', 'AddLast', 'AddFirst', 'AddRange', 'TryAdd', 'Insert', 'Push',
+  'Enqueue',
 ]);
 
 function isCSharpNonEscapeCall(call: CallInfo): boolean {
