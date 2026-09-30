@@ -195,9 +195,24 @@ export class VariableShadowingPass implements AnalysisPass<VariableShadowingResu
 
             for (let i = 1; i < numDeclLocals; i++) {
               const inner = declLocals[i]!;
+              // A declaration cannot shadow one on the SAME line — that is the
+              // same declaration seen twice. The DFG emits more than one def
+              // for a single declaration under the TypeScript grammar, so
+              // `declLocals[0]` and `declLocals[1]` can share a line and the
+              // pass reported `'success' shadows the outer declaration at line
+              // 32` against line 32 itself.
+              //
+              // Neither guard below catches it: both scan the OPEN range
+              // between the two lines, which is empty when the lines are equal,
+              // so `isInNestedScope` returns its default `true`. Measured on
+              // juice-shop under the TypeScript grammar (#487) this was the
+              // whole of the 70-finding `variable-shadowing` cluster — every
+              // one self-referential.
+              if (inner.def.line <= outerEntry.def.line) continue;
               // Skip if the outer block was already closed before the inner
               // declaration — those are sibling scopes, not nested scopes.
               if (!isInNestedScope(codeLines, outerEntry.def.line, inner.def.line)) continue;
+
               const key = `${variable}-${inner.def.line}`;
               if (reported.has(key)) continue;
               reported.add(key);
