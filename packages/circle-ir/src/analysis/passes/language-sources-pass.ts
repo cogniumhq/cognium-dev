@@ -1710,13 +1710,36 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // the type token must be followed by whitespace, not more identifier text.
   const httpRequestReceivers = new Set<string>(['Request']);
   const httpRequestDeclRe = /\b(?:HttpRequest|HttpRequestBase)\??\s+([A-Za-z_]\w*)/g;
+  // cognium-dev#502 — I/O and database reads, mirroring Java's
+  // `BufferedReader.readLine` (io_input) and `ResultSet.getString` (db_input).
+  // Declared-type scoped for the same reason #501 needed it: the method names
+  // are generic (`ReadLine`, `GetString`), so matching them on any receiver
+  // would fire on unrelated types. A registry row cannot do this — the
+  // receiver's type is not resolved for a `SqlDataReader rdr` parameter — and
+  // binding here also gives the LHS a `variable`, which a bare
+  // `return_tainted` row does not, so the flow can form when the read sits
+  // inside a nested `using` / `try` block (the Juliet shape).
+  const streamReaderVars = new Set<string>();
+  const streamReaderDeclRe = /\b(?:StreamReader|TextReader|BinaryReader)\??\s+([A-Za-z_]\w*)/g;
+  const dbReaderVars = new Set<string>();
+  const dbReaderDeclRe = /\b(?:SqlDataReader|DbDataReader|IDataReader|OdbcDataReader|OleDbDataReader)\??\s+([A-Za-z_]\w*)/g;
   for (const line of lines) {
     const formRe = new RegExp(formFileDeclRe.source, 'g');
     let d: RegExpExecArray | null;
     while ((d = formRe.exec(line)) !== null) formFileParams.add(d[1]);
     const reqRe = new RegExp(httpRequestDeclRe.source, 'g');
     while ((d = reqRe.exec(line)) !== null) httpRequestReceivers.add(d[1]);
+    const srRe = new RegExp(streamReaderDeclRe.source, 'g');
+    while ((d = srRe.exec(line)) !== null) streamReaderVars.add(d[1]);
+    const dbRe = new RegExp(dbReaderDeclRe.source, 'g');
+    while ((d = dbRe.exec(line)) !== null) dbReaderVars.add(d[1]);
   }
+  const streamReadRe = streamReaderVars.size > 0
+    ? new RegExp(`\\b(?:${[...streamReaderVars].join('|')})\\s*\\.\\s*(?:ReadLine|ReadToEnd|ReadLineAsync|ReadToEndAsync|ReadBlock|Read)\\s*\\(`)
+    : null;
+  const dbReadRe = dbReaderVars.size > 0
+    ? new RegExp(`\\b(?:${[...dbReaderVars].join('|')})\\s*\\.\\s*(?:GetString|GetValue|GetInt32|GetInt64|GetDecimal|GetDateTime|GetFieldValue|\\[)`)
+    : null;
   const formFileReadRe = formFileParams.size > 0
     ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
     : null;
@@ -1733,7 +1756,11 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
           ? 'io_input'
           : envReadRe.test(text)
             ? 'env_input'
-            : null;
+            : streamReadRe?.test(text)
+              ? 'io_input'
+              : dbReadRe?.test(text)
+                ? 'db_input'
+                : null;
   // cognium-dev#339 — a bare expression statement reads the request INLINE in
   // the call, with no local to bind:
   //
@@ -1756,6 +1783,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     [formFileReadRe, 'http_param'],
     [consoleReadRe, 'io_input'],
     [envReadRe, 'env_input'],
+    [streamReadRe, 'io_input'],
+    [dbReadRe, 'db_input'],
   ];
   const inlineRead = (text: string): { type: TaintSource['type']; read: string } | null => {
     const argsStart = text.indexOf('(');
@@ -1786,7 +1815,20 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
 
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
-    if (!m) {
+    // cognium-dev#502 — `assignRe` is anchored and greedy, so on a one-line
+    // block header that also contains the real assignment
+    //
+    //   using (StreamReader sr = new StreamReader(tcp.GetStream())) { data = sr.ReadLine(); }
+    //
+    // it captures `sr` with EVERYTHING after `=` as the right-hand side. That
+    // RHS contains `sr.ReadLine()`, so the line was classified as a read and
+    // bound to `sr` — the reader, not `data`. The embedded-assignment path
+    // handles exactly this shape and finds both `sr` and `data`, but it only
+    // ran when `assignRe` failed to match at all. Prefer it whenever the
+    // captured RHS crosses a block boundary. (#504 was the mirror of this:
+    // there `assignRe` did not match and the inner assignment was lost.)
+    const rhsCrossesBlock = m !== null && m[2].includes('{');
+    if (!m || rhsCrossesBlock) {
       const stmt = lines[i];
       if (stmt.includes('{') && !/^\s*(?:\/\/|\/\*|\*)/.test(stmt)) {
         const emb = new RegExp(embeddedAssignRe.source, 'g');
@@ -1802,7 +1844,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
           sources.push({
             type,
             location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-            severity: 'high',
+            // #502 — Java parity: a database row read is medium, I/O is high.
+            severity: type === 'db_input' ? 'medium' : 'high',
             line: lineNumber,
             confidence: 1.0,
             variable: varName,
@@ -1832,7 +1875,7 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
       sources.push({
         type,
         location: `${read} in ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`,
-        severity: 'high',
+        severity: type === 'db_input' ? 'medium' : 'high',
         line: lineNumber,
         confidence: 1.0,
         variable: '<inline>',
@@ -1848,7 +1891,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     sources.push({
       type,
       location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-      severity: 'high',
+      // #502 — Java parity: a database row read is medium, I/O is high.
+      severity: type === 'db_input' ? 'medium' : 'high',
       line: lineNumber,
       confidence: 1.0,
       variable: varName,
@@ -2119,7 +2163,8 @@ function findPythonAssignmentSources(sourceCode: string, language: string): Tain
           sources.push({
             type,
             location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-            severity: 'high',
+            // #502 — Java parity: a database row read is medium, I/O is high.
+            severity: type === 'db_input' ? 'medium' : 'high',
             line: lineNumber,
             confidence: 0.95,
             variable: varName,
