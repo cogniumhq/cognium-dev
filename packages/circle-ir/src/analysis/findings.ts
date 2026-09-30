@@ -164,6 +164,20 @@ export function generateFindings(
       // Try to find a path through the DFG
       const pathResult = findTaintPath(source, sink, dfg);
 
+      // #508 — an argument-less sink (`cmd.ExecuteReader()`) can only be
+      // reached through its receiver, and the sink row is identical whether
+      // that receiver is constant or tainted. Only the taint layer can tell,
+      // so require flow backing rather than accepting a proximity pairing.
+      // Skipped entirely when the caller did not pass `flows` (the 8-argument
+      // signature), so legacy callers keep their previous behaviour.
+      if (
+        flowsKnown &&
+        isArgumentLessSinkCall(sink) &&
+        !isFlowBacked(sink.type, sink.line)
+      ) {
+        continue;
+      }
+
       if (pathResult.pathExists || isProximityVulnerability(source, sink, methodRanges, fieldNames)) {
         // Drop the pair when a sanitizer covers the sink (at the sink line, or
         // on a reaching-def line feeding the sink var) — aligns the scan path
@@ -517,6 +531,33 @@ interface PathResult {
 /**
  * Find a taint path from source to sink through the DFG.
  */
+/**
+ * True when the sink call takes NO arguments, e.g. `cmd.ExecuteReader()`.
+ *
+ * cognium-dev#508 — such a sink cannot carry taint through an argument, so the
+ * tainted value has to ride the RECEIVER (the #302 object-carried model:
+ * `new SqlCommand(q, conn)` then `cmd.ExecuteNonQuery()`). Nothing about the
+ * sink itself distinguishes a dangerous `cmd` from a constant one — both emit
+ * the identical sink row:
+ *
+ *   D4  var cmd = new SqlCommand("SELECT * FROM u", conn); cmd.ExecuteReader();  // safe
+ *   D5  var cmd = new SqlCommand($"SELECT {input}", conn); cmd.ExecuteReader();  // SQLi
+ *
+ * so pairing a source with it by proximity reports CWE-89 for any method that
+ * merely has a `string` parameter and an ADO.NET execute call. Only the taint
+ * layer can tell the two apart, and it does: D4 yields `flows = 0`, D5 yields
+ * `flows = 2`. Hence an argument-less sink requires flow backing.
+ */
+function isArgumentLessSinkCall(sink: TaintSink): boolean {
+  const code = sink.code ?? '';
+  const method = sink.method ?? '';
+  if (!code || !method) return false;
+  // `Method()` / `Method ( )` with nothing between the parentheses. A word
+  // boundary, NOT a negated-class guard: the receiver dot in
+  // `cmd.ExecuteReader()` must be allowed to precede the name.
+  return new RegExp(`\\b${method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(\\s*\\)`).test(code);
+}
+
 function findTaintPath(source: TaintSource, sink: TaintSink, dfg: DFG): PathResult {
   const hops: TaintHop[] = [];
   const variables: string[] = [];
