@@ -4,6 +4,15 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.28`: a C# precision and recall pass that removes roughly
+  3,000 false positives on the scored NIST Juliet C# families and adds three new
+  C# sink shapes (`Response.StatusDescription`, `(MarkupString)x`, tainted
+  `HttpClient.BaseAddress`). TypeScript scans lose 130 false
+  `variable-shadowing` findings. No MCP tool, schema or response-shape changes.
+
 ## [0.1.19] - 2026-09-29
 
 ### Changed

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.28] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.28`, a C# precision and recall pass.
+  **C# scans report substantially fewer findings** — roughly 3,000 fewer on the
+  10 scored NIST Juliet C# families (7,451 files), with zero additions. The
+  removals are false positives: escapes on files with no sink (#474), sinks
+  taint-gated on a compile-time constant such as `new SqlCommand(null, conn)`
+  (#502), argument-less sinks with no flow behind them (#508), one-vulnerability
+  double reports (#509), credited early-return guards (#272), and pairings whose
+  source sat after their sink.
+
+  Newly detected: `Response.StatusDescription`, `(MarkupString)x` and a tainted
+  `HttpClient.BaseAddress` (#503 part 1, #340, #336).
+
+  TypeScript scans lose **130 false `variable-shadowing` findings** — every one
+  was a declaration reported as shadowing itself.
+
+  Where a file's only finding was a mistyped CWE-20 escape it now reports
+  nothing; on Juliet C# that is 174 cross-file pairs whose real detection was
+  never produced (#533). See the circle-ir changelog for the full note.
+
 ## [4.9.27] - 2026-09-29
 
 ### Added
