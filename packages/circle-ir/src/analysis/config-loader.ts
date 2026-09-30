@@ -2630,9 +2630,14 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'deserialize', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'from_str', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'from_str', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  // Generic deserialization patterns
-  { method: 'from_str', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
-  { method: 'from_slice', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
+  // #294/#484: no classless `from_str` / `from_slice` deserialization sink.
+  // Those rows matched EVERY `T::from_str` / `from_slice` — `u32::from_str`,
+  // `Url::from_str`, `PublicKey::from_slice` — i.e. ordinary `FromStr` / byte
+  // parsing, which cannot instantiate an attacker-chosen type. Removing them
+  // was previously blocked because the class-scoped rows below could not match
+  // the IMPORTED call form (`use serde_json::from_str; from_str(&body)`); the
+  // `::` path-separator fix in taint-matcher.ts makes them match, so the
+  // classless rows are no longer load-bearing.
 
   // Rust XSS (actix-web, rocket, axum response body)
   { method: 'body', class: 'HttpResponseBuilder', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
