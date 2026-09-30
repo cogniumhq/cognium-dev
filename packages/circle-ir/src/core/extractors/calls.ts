@@ -422,12 +422,39 @@ function extractCSharpArguments(argsNode: Node): ArgumentInfo[] {
       position: position++,
       expression: text,
       variable: expr?.type === 'identifier' ? text : null,
-      literal: expr?.type === 'string_literal' ? text : null,
+      literal: expr && CSHARP_LITERAL_NODE_TYPES.has(expr.type) ? text : null,
       value: null,
     });
   }
   return args;
 }
+
+/**
+ * C# compile-time literal node types — cognium-dev#502.
+ *
+ * Only `string_literal` was recognised, so `null`, `true`, `42` and `'c'` all
+ * came back with `literal: null` and were indistinguishable from a variable.
+ * A sink taint-gated on that argument therefore registered: the measured case
+ * is Juliet's `new SqlCommand(null, connection)` DB-setup helper, reported as
+ * CWE-89 with a SQL argument that is literally `null` — 1,523 signatures over
+ * the 10 scored CWE families once #502 gave those files a source.
+ *
+ * A compile-time constant cannot carry taint, so registering a sink on one is
+ * always wrong; widening this removes false positives only.
+ *
+ * `interpolated_string_expression` is deliberately ABSENT: `$"SELECT {input}"`
+ * interpolates and is the genuine C# injection shape.
+ */
+const CSHARP_LITERAL_NODE_TYPES: ReadonlySet<string> = new Set([
+  'string_literal',
+  'verbatim_string_literal',
+  'raw_string_literal',
+  'character_literal',
+  'integer_literal',
+  'real_literal',
+  'boolean_literal',
+  'null_literal',
+]);
 
 function extractJavaScriptCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
