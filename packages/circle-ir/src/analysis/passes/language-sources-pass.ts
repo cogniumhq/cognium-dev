@@ -648,6 +648,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'csharp') {
       additionalSanitizers.push(
         ...findCSharpFullPathStartsWithGuardSanitizers(code),
+        ...findCSharpEarlyReturnGuardSanitizers(code, language),
       );
     }
 
@@ -5881,6 +5882,106 @@ function guardRejects(
  * form `if (x.StartsWith(root)) { … }` still reports, and a test pins that so
  * the gap stays visible rather than silently assumed.
  */
+/**
+ * cognium-dev#272 — a validating predicate followed by an EARLY RETURN is a
+ * guard, and the value reaching the sink afterwards is already validated.
+ *
+ *   if (Array.IndexOf(Allowed, u.Host) < 0) return;     // host allow-list
+ *   await client.GetStringAsync(input);                 // reported ssrf
+ *
+ *   if (!input.All(char.IsLetterOrDigit)) return;       // char-class check
+ *   doc.SelectSingleNode("/a[@b='" + input + "']");     // reported xpath
+ *
+ * Both safe mirrors are clean of their *family* finding after #272's earlier
+ * fixes, and both still emit a finding because the guard itself is not
+ * credited. The shape is shared with #286-B and with the Java `Set.contains`
+ * guard in #293, so the recogniser is written around the PREDICATE rather than
+ * around any one sink family.
+ *
+ * Deliberately limited to predicates that are self-evidently validating:
+ * allow-list membership and character-class validation. A user-defined
+ * boolean helper (`if (!IsAllowed(input)) return;`, #286-B) is NOT credited
+ * here — crediting an arbitrary predicate by name would silence a real flow
+ * whenever the helper does not actually validate, which is a false negative no
+ * test would catch. That half needs its own evidence.
+ *
+ * Only the REJECTING direction counts, via `guardRejects`: a guard whose body
+ * falls through has not stopped anything.
+ */
+function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): TaintSanitizer[] {
+  if (language !== 'csharp') return [];
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe = /\b(throw|return)\b/;
+
+  // Allow-list membership, rejecting form:
+  //   if (Array.IndexOf(Allowed, x) < 0) return;
+  //   if (!Allowed.Contains(x)) return;
+  const allowlistRes = [
+    /\bif\s*\(\s*Array\s*\.\s*IndexOf\s*\([^,]+,\s*([A-Za-z_][\w.]*)\s*\)\s*<\s*0\s*\)/,
+    /\bif\s*\(\s*!\s*[A-Za-z_][\w.]*\s*\.\s*Contains\s*\(\s*([A-Za-z_][\w.]*)\s*\)\s*\)/,
+  ];
+  // Character-class validation, rejecting form:
+  //   if (!input.All(char.IsLetterOrDigit)) return;
+  const charClassRe =
+    /\bif\s*\(\s*!\s*([A-Za-z_][\w.]*)\s*\.\s*All\s*\(\s*char\s*\.\s*Is[A-Za-z]+\s*\)\s*\)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    let guardedExpr: string | null = null;
+    for (const re of allowlistRes) {
+      const m = re.exec(lines[i]);
+      if (m) { guardedExpr = m[1]; break; }
+    }
+    if (!guardedExpr) {
+      const m = charClassRe.exec(lines[i]);
+      if (m) guardedExpr = m[1];
+    }
+    if (!guardedExpr) continue;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+
+    // The guarded expression may be a derivation of the tainted value
+    // (`u.Host` guards `u`, and `u` came from `input`), so credit the root
+    // identifier as well as the full expression.
+    const root = guardedExpr.split('.')[0];
+    const guarded = new Set<string>([guardedExpr, root]);
+    const assignRe = /^\s*(?:(?:var|string)\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+    // Walk BACKWARD first: the guard often validates a DERIVATION of the
+    // tainted value while the sink uses the original.
+    //
+    //   var u = new Uri(input);
+    //   if (Array.IndexOf(Allowed, u.Host) < 0) return;   // guards u.Host
+    //   await client.GetStringAsync(input);               // uses input
+    //
+    // Allow-listing the host of the URI built from `input` constrains where
+    // `input` can point, so the original is guarded too. Bounded to the
+    // identifiers that actually fed the guarded root, transitively.
+    for (let b = i - 1; b >= 0; b--) {
+      const a = assignRe.exec(lines[b]);
+      if (!a || !guarded.has(a[1])) continue;
+      for (const id of a[2].match(/[A-Za-z_]\w*/g) ?? []) guarded.add(id);
+    }
+    // Anything assigned FROM a guarded value downstream is guarded too.
+    const mentions = (t: string): boolean => {
+      for (const n of guarded) if (new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t)) return true;
+      return false;
+    };
+    for (let l = i + 1; l < lines.length; l++) {
+      const a = assignRe.exec(lines[l]);
+      if (a && mentions(a[2])) guarded.add(a[1]);
+      if (mentions(lines[l])) {
+        sanitizers.push({
+          type: 'csharp_early_return_guard',
+          method: 'guard',
+          line: l + 1,
+          sanitizes: ['ssrf', 'xpath_injection', 'ldap_injection', 'path_traversal',
+                      'command_injection', 'sql_injection', 'external_taint_escape'],
+        });
+      }
+    }
+  }
+  return sanitizers;
+}
+
 function findCSharpFullPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');
