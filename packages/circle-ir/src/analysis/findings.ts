@@ -208,6 +208,38 @@ export function generateFindings(
       // Try to find a path through the DFG
       const pathResult = findTaintPath(source, sink, dfg);
 
+      // cognium-dev#361 left the DIRECTION of the proximity window open, noting
+      // that a field or `interprocedural_param` source legitimately sits
+      // outside the method body and that a loop can carry a later line's value
+      // back round. Both of those are covered by requiring no flow backing: if
+      // the taint layer can prove the loop-carried or field-carried flow, the
+      // finding is flow-backed and survives this gate untouched.
+      //
+      // What is left is a pairing that claims a value read AFTER the sink
+      // reached it, with nothing proving it. The clearest instance is a read
+      // taken from the very stream the sink opened:
+      //
+      //   using (StreamReader sr = new StreamReader(data))   // path sink, line N
+      //   {   IO.WriteLine(sr.ReadLine());   }               // io_input source, line N+2
+      //
+      // The value read out of the file cannot be the path used to open it.
+      // Measured on Juliet C#, 1,658 such pairings — 1,338 of them
+      // path_traversal, and every one findings-only with no flow behind it.
+      //
+      // Scoped to C#: the same rule wants its own measurement per language,
+      // and #508's Java gate is a standing reminder of what skipping that
+      // costs.
+      if (
+        language === 'csharp' &&
+        flowsKnown &&
+        source.line > sink.line &&
+        !isFlowBacked(sink.type, sink.line) &&
+        source.type !== 'interprocedural_param' &&
+        !(source.variable && fieldNames.has(source.variable))
+      ) {
+        continue;
+      }
+
       // #508 — an argument-less sink (`cmd.ExecuteReader()`) can only be
       // reached through its receiver, and the sink row is identical whether
       // that receiver is constant or tainted. Only the taint layer can tell,
