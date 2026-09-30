@@ -38,3 +38,9 @@ Thumbs.db
 
 # Test
 *.log
+
+# Secrets and local scan output — this repo is public
+.env
+.env.*
+!.env.example
+*-scan.json
