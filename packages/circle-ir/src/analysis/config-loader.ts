@@ -3068,6 +3068,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // Blazor `new MarkupString(x)` renders its argument as raw HTML (the framework's
   // documented "trusted markup" escape hatch) — attacker-controlled input is XSS. (ca#275)
   { method: 'MarkupString', class: 'constructor', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // #503 (part 1): `Response.StatusDescription = "Bad " + data` writes
+  // attacker text into the HTTP status line (CWE-81). Surfaced by the
+  // property-assignment synthesiser in the C# extractor, receiver-gated there.
+  { method: 'StatusDescription', class: 'Response', type: 'xss', cwe: 'CWE-81', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
   // `return Content(html, "text/html")` on a controller writes arg 0 to the
   // response body unescaped (cognium-dev#275). Taint-gated on arg 0; the common
   // `Content(constantString)` and the JSON/plain-text content types are
@@ -3083,6 +3087,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // filter is the constructor argument.
   { method: 'DirectorySearcher', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'DirectoryEntry', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // #336: a tainted `HttpClient.BaseAddress` gives the attacker the scheme,
+  // host and port of every RELATIVE request made on that client, so the
+  // request arguments can all be constant and the destination still be
+  // attacker-chosen. Surfaced by the property-assignment synthesiser, which
+  // class-gates it to a resolved `HttpClient`.
+  { method: 'BaseAddress', class: 'HttpClient', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# open redirect — ASP.NET MVC / Minimal API redirect helpers (CWE-601,
   // cognium-dev#273/#275). Classless: `return Redirect(url)` on a controller is
