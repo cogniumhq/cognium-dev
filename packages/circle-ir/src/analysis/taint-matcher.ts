@@ -2788,9 +2788,31 @@ function matchesSinkPattern(
       // qualified target whose tail is `<pattern.class>.<pattern.method>`.
       // Handles `from urllib.request import urlopen; urlopen(x)` against
       // sink pattern { method: 'urlopen', class: 'urllib.request' }.
+      //
+      // cognium-dev#484/#294 — the expected tail is built with a DOT, and the
+      // motivating case (`from urllib.request import urlopen`) is Python, which
+      // is dot-separated. Rust resolution stores the path with `::`, so
+      //
+      //     use serde_json::from_str;  from_str(&body)
+      //       -> resolution.target = "serde_json::from_str"
+      //
+      // never matched `{ method: 'from_str', class: 'serde_json' }`: the
+      // resolution was correct and complete, the comparison simply could not
+      // see it. Every imported serde_json / serde_yaml / toml form was silent
+      // and only the path-qualified `serde_json::from_str(...)` matched — which
+      // is why #294 could not drop the classless `from_str` rows without
+      // opening a false negative.
+      //
+      // Normalised for Rust only. `::` is also PHP static-call and C++ scope
+      // resolution, and widening this needs its own measurement on those
+      // ecosystems rather than an assumption.
       const target = call.resolution?.target;
+      const normalisedTarget = language === 'rust' ? target?.replace(/::/g, '.') : target;
       const expectedTail = `${pattern.class}.${pattern.method}`;
-      if (target && (target === expectedTail || target.endsWith('.' + expectedTail))) {
+      if (
+        normalisedTarget &&
+        (normalisedTarget === expectedTail || normalisedTarget.endsWith('.' + expectedTail))
+      ) {
         // accept
       } else {
         // If no receiver and no resolved type but class is required, don't match
