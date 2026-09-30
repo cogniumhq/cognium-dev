@@ -365,6 +365,42 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       });
       continue;
     }
+    // cognium-dev#336 — inside an OBJECT INITIALIZER the assignment's left side
+    // is a bare identifier, not a member access:
+    //
+    //   new HttpClient { BaseAddress = new Uri(input) }
+    //     object_creation_expression
+    //       initializer_expression
+    //         assignment_expression   left = identifier 'BaseAddress'
+    //
+    // so the member-access branch below skipped it entirely. Surface it with
+    // the CONSTRUCTED TYPE as the receiver, which is what the class-scoped
+    // registry row needs to match.
+    if (left?.type === 'identifier' && asn.parent?.type === 'initializer_expression') {
+      const creation = asn.parent.parent;
+      if (creation?.type !== 'object_creation_expression') continue;
+      const ctorType = creation.childForFieldName('type');
+      const right = asn.childForFieldName('right');
+      if (!ctorType || !right) continue;
+      const typeName = csharpBareName(ctorType);
+      const rhsText = getNodeText(right);
+      calls.push({
+        method_name: getNodeText(left),
+        receiver: typeName,
+        receiver_type: typeName,
+        receiver_type_fqn: null,
+        arguments: [{
+          position: 0,
+          expression: rhsText,
+          variable: right.type === 'identifier' ? rhsText : null,
+          literal: CSHARP_LITERAL_NODE_TYPES.has(right.type) ? rhsText : null,
+          value: null,
+        }],
+        location: { line: asn.startPosition.row + 1, column: asn.startPosition.column },
+        in_method: findEnclosingMethod(asn),
+      });
+      continue;
+    }
     if (left?.type !== 'member_access_expression') continue;
     const nameNode = left.childForFieldName('name');
     if (!nameNode) continue;
@@ -378,6 +414,21 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       const recv = exprNode ? getNodeText(exprNode) : null;
       const recvType = recv ? typeMap.get(recv) : undefined;
       if (recvType !== 'DirectorySearcher') continue;
+    } else if (propName === 'StatusDescription') {
+      // cognium-dev#503 (part 1) — `Response.StatusDescription = "Bad " + data`
+      // writes attacker text into the status line (CWE-81). Receiver-gated to
+      // a Response-shaped name so an unrelated `.StatusDescription =` on some
+      // other type is not surfaced.
+      const recv = exprNode ? getNodeText(exprNode) : '';
+      if (!/(^|\.)(Response|HttpResponse|Context\.Response)$/.test(recv)) continue;
+    } else if (propName === 'BaseAddress') {
+      // cognium-dev#336 — `new HttpClient { BaseAddress = new Uri(input) }`
+      // hands the attacker the scheme, host and port of every relative request
+      // on that client (CWE-918). Class-gated to a resolved HttpClient so an
+      // unrelated `.BaseAddress =` is not surfaced.
+      const recv = exprNode ? getNodeText(exprNode) : null;
+      const recvType = recv ? typeMap.get(recv) : undefined;
+      if (recvType !== 'HttpClient') continue;
     } else if (propName !== 'CommandText') {
       continue;
     }
@@ -401,8 +452,51 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     });
   }
 
+  // cognium-dev#340 — a C# CAST is not a call node, so `(MarkupString)html`
+  // could not be reached by any registry row while `new MarkupString(html)`
+  // could. The two are interchangeable in Blazor and the cast is the more
+  // common of the pair, since `@((MarkupString)html)` in a `.razor` component
+  // compiles from it. Emitted as a constructor-shaped call so the EXISTING
+  // `{ method: 'MarkupString', class: 'constructor' }` row matches, which keeps
+  // the taint engine in charge: a constant operand carries no taint and so
+  // still reports nothing.
+  //
+  // Restricted to an allowlist rather than surfacing every cast: `(string)x`,
+  // `(int)x` and friends are ubiquitous and must not become synthetic calls.
+  const casts = getNodesFromCache(tree.rootNode, 'cast_expression', cache);
+  for (const cast of casts) {
+    const typeNode = cast.childForFieldName('type');
+    const valueNode = cast.childForFieldName('value');
+    if (!typeNode || !valueNode) continue;
+    const typeName = csharpBareName(typeNode);
+    if (!CSHARP_RAW_MARKUP_CAST_TYPES.has(typeName)) continue;
+    const valueText = getNodeText(valueNode);
+    calls.push({
+      method_name: typeName,
+      receiver: null,
+      receiver_type: null,
+      receiver_type_fqn: null,
+      arguments: [{
+        position: 0,
+        expression: valueText,
+        variable: valueNode.type === 'identifier' ? valueText : null,
+        literal: CSHARP_LITERAL_NODE_TYPES.has(valueNode.type) ? valueText : null,
+        value: null,
+      }],
+      location: { line: cast.startPosition.row + 1, column: cast.startPosition.column },
+      in_method: findEnclosingMethod(cast),
+      is_constructor: true,
+    });
+  }
+
   return calls;
 }
+
+/**
+ * Cast target types whose cast renders its operand as raw markup, so the cast
+ * is exactly as dangerous as the constructor. Deliberately tiny — see #340.
+ */
+const CSHARP_RAW_MARKUP_CAST_TYPES: ReadonlySet<string> = new Set(['MarkupString']);
 
 /** Extract args from a C# `argument_list` (each child is an `argument` wrapper). */
 function extractCSharpArguments(argsNode: Node): ArgumentInfo[] {
