@@ -153,9 +153,53 @@ export function generateFindings(
     ? sources.filter(s => !isNonExecutableSourceLine(sourceCode, s.line, language))
     : sources;
 
+  // cognium-dev#509 — one C# SQL injection emitted TWO findings, because both
+  // the command constructor and the execute call are registered sinks and the
+  // same source pairs with each:
+  //
+  //   var cmd = new SqlCommand(q, conn);   // sink: method 'SqlCommand'
+  //   cmd.ExecuteReader();                 // sink: class  'SqlCommand'
+  //
+  // That is one vulnerability reported twice — 2x inflation on C# SQL true
+  // positives and 2x verification spend. #302 stated the intent ("one finding,
+  // at the Execute* call") but the dedup below groups by (sink.line, type), so
+  // two different lines survive as two findings.
+  //
+  // Suppress the CONSTRUCTOR sink when an execute-style sink of the same type
+  // is class-scoped to that same command type in this file, keeping the
+  // execute call as the reported location. When there is no execute sink —
+  // `new SqlCommand(tainted)` with nothing run on it — the constructor is the
+  // only sink and still reports.
+  const constructorSinkLinesToSkip = new Set<number>();
+  if (language === 'csharp') {
+    const classScopedTypes = new Map<string, Set<string>>();
+    for (const sk of sinks) {
+      if (!sk.class) continue;
+      const set = classScopedTypes.get(sk.class) ?? new Set<string>();
+      set.add(sk.type);
+      classScopedTypes.set(sk.class, set);
+    }
+    for (const sk of sinks) {
+      if (!sk.method) continue;
+      if (classScopedTypes.get(sk.method)?.has(sk.type)) {
+        constructorSinkLinesToSkip.add(sk.line);
+      }
+    }
+  }
+
   // For each source, find potential paths to sinks
   for (const source of gatedSources) {
     for (const sink of sinks) {
+      // #509 — the constructor half of a constructor+execute pair. The
+      // constructor sink has `method` set and no `class`; the execute sink is
+      // class-scoped to the command type.
+      if (
+        constructorSinkLinesToSkip.has(sink.line) &&
+        sink.method !== undefined &&
+        sink.class === undefined
+      ) {
+        continue;
+      }
       // Check if this source type can reach this sink type
       if (!canSourceReachSink(source.type, sink.type)) {
         continue;
@@ -255,6 +299,16 @@ export function generateFindings(
     if (fl.sanitized) continue;
     const sink = sinks.find(sk => sk.line === fl.sink_line && sk.type === fl.sink_type);
     if (!sink) continue;
+    // #509 — the constructor half of a C# constructor+execute pair. The taint
+    // layer proves a flow to BOTH sinks, so this loop emits both unless the
+    // constructor is suppressed here as well as in the pairing loop above.
+    if (
+      constructorSinkLinesToSkip.has(sink.line) &&
+      sink.method !== undefined &&
+      sink.class === undefined
+    ) {
+      continue;
+    }
     const src = sources.find(sc => sc.line === fl.source_line)
       ?? { type: fl.source_type, location: `${fl.source_type} at line ${fl.source_line}`,
            severity: 'high' as const, line: fl.source_line, confidence: fl.confidence };
