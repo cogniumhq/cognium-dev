@@ -170,7 +170,19 @@ export function generateFindings(
       // so require flow backing rather than accepting a proximity pairing.
       // Skipped entirely when the caller did not pass `flows` (the 8-argument
       // signature), so legacy callers keep their previous behaviour.
+      //
+      // MEASURED AND SCOPED TO C#. Applied to Java this costs real detections:
+      // OWASP Benchmark, 2740 files, `--surface both` — removed=244, added=0,
+      // **tp_loss=133** on `real=true` files (e.g. BenchmarkTest02632
+      // `F:sql_injection@68->79 expected=true/sqli`). Java's
+      // `stmt.executeQuery()` shape does carry genuine object-carried flows
+      // that the taint layer does not prove but the pairing did, so requiring
+      // flow backing there silences them. On Juliet C# the same rule removes
+      // 502 findings with zero recall change (13/123 -> unchanged, and 97/123
+      // when stacked with #502), so it is right for C# and wrong for Java.
+      // Widening it needs the Java object-carried gap fixed first (#387).
       if (
+        language === 'csharp' &&
         flowsKnown &&
         isArgumentLessSinkCall(sink) &&
         !isFlowBacked(sink.type, sink.line)
