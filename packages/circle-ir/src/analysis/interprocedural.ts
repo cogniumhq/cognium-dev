@@ -132,6 +132,52 @@ const GO_PURE_PACKAGES = new Set([
   'sort', 'slices', 'maps', 'time', 'regexp', 'url', 'hex', 'base64',
 ]);
 
+// C# — the #455 gate ported (cognium-dev#474). Same failure shape as Go: once a
+// real sink is correctly credited as safe, the catch-all
+// `external_taint_escape` (CWE-20) reports the tainted value "escaping" into
+// the safe call instead, so fixing a false positive converts it rather than
+// removing it. #272's now-clean safe mirrors all emit escapes.
+//
+// Discipline copied deliberately from the Go gate: receiver-gate the static
+// BCL classes, and match by NAME only for verbs that are unambiguous.
+//
+// `Write` / `WriteLine` / `WriteAsync` are NOT name-matched. `Response.Write`
+// and ASP.NET Core `Response.WriteAsync` are the reflected-XSS sinks (#503),
+// exactly the hazard that keeps `fmt` out of the Go gate — so console and
+// trace writing is reached through the receiver list below instead.
+const CSHARP_PURE_STATIC_RECEIVERS = new Set([
+  // formatting / conversion / parsing — return a derived value
+  'string', 'String', 'Convert', 'Encoding', 'BitConverter', 'Math',
+  'Int16', 'Int32', 'Int64', 'UInt16', 'UInt32', 'UInt64', 'Double', 'Single',
+  'Decimal', 'Boolean', 'Byte', 'SByte', 'Char', 'Guid', 'DateTime',
+  'DateTimeOffset', 'TimeSpan', 'Enum', 'Array', 'Buffer', 'Nullable',
+  'CultureInfo', 'StringComparer', 'Comparer', 'EqualityComparer',
+  // logging / diagnostics receivers
+  'Console', 'Debug', 'Trace', 'Logger', 'logger', '_logger', 'Log',
+]);
+// Unambiguous derived-value and logging verbs. A method with one of these
+// names on any receiver has not sent the value out of the program.
+const CSHARP_NON_ESCAPE_METHODS = new Set([
+  // string / value derivation
+  'ToString', 'ToArray', 'ToList', 'ToCharArray', 'GetHashCode', 'Equals',
+  'CompareTo', 'Trim', 'TrimStart', 'TrimEnd', 'Substring', 'Split', 'Join',
+  'Concat', 'PadLeft', 'PadRight', 'ToLower', 'ToUpper', 'ToLowerInvariant',
+  'ToUpperInvariant', 'StartsWith', 'EndsWith', 'Contains', 'IndexOf',
+  'LastIndexOf', 'Insert', 'Remove', 'Normalize', 'Append', 'AppendLine',
+  'AppendFormat', 'TryParse', 'Parse',
+  // structured logging (Microsoft.Extensions.Logging, Serilog, NLog, log4net)
+  'LogInformation', 'LogWarning', 'LogError', 'LogDebug', 'LogTrace',
+  'LogCritical', 'Information', 'Warning', 'Verbose', 'Fatal', 'BeginScope',
+]);
+
+function isCSharpNonEscapeCall(call: CallInfo): boolean {
+  const name = call.method_name;
+  const recv = (call.receiver ?? '').split('.').pop() ?? '';
+  if (CSHARP_PURE_STATIC_RECEIVERS.has(recv)) return true;
+  if (CSHARP_NON_ESCAPE_METHODS.has(name)) return true;
+  return false;
+}
+
 function isGoNonEscapeCall(call: CallInfo): boolean {
   const name = call.method_name;
   const recv = (call.receiver ?? '').split('.').pop() ?? '';
@@ -359,6 +405,10 @@ export function analyzeInterprocedural(
         // `len` alone at 709 — so a handler file with a single request read
         // produced a page of CWE-668 before any real sink was reached.
         if (graph.ir.meta.language === 'go' && isGoNonEscapeCall(call)) {
+          continue;
+        }
+        // C# — same gate, same reason (#474, sibling of #455/#468).
+        if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
           continue;
         }
         const bashSafeBuiltins = new Set([
