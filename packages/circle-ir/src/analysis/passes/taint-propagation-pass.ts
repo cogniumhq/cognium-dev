@@ -27,6 +27,94 @@ export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
 }
 
+/**
+ * cognium-dev#328 — the const-prop per-step veto, with two scoped exemptions.
+ *
+ * `isFalsePositive`'s `variable_not_tainted` reason discards a flow when
+ * const-prop tracked the step variable (value `unknown`) but never marked it
+ * tainted. On Java that verdict is usually informed — const-prop does its own
+ * key-aware collection / safe-overwrite reasoning, and lifting the veto
+ * globally measured +1 on-category TP vs +311 FP files on OWASP. But const-prop
+ * only seeds taint from its own narrow pattern list, so a variable fed by a
+ * parameter or by a registered source it has no pattern for is "untainted"
+ * purely for lack of information.
+ *
+ * Walking the step variable's reaching-def chain back (through self-derived
+ * reassignments only), the veto is skipped when:
+ *   (A) the chain crosses at least one `x = f(x)` / `x op= y` and ends inside
+ *       the source..sink span — the #287 shape (`v = v.Trim()`); or
+ *   (E) the chain ends at the source's own assignment line, and that source is
+ *       not a container read (`plugin_param` / `config_param`), where const-prop
+ *       is key-aware and its verdict is informed.
+ * Reaching defs are per method, so a same-named variable in a sibling method
+ * (Juliet `*_41` / `*_45` G2B sinks) never qualifies. Reasons 1 and 2 (dead
+ * code, resolved constant) are unaffected.
+ */
+const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'config_param']);
+
+function makeConstPropVeto(
+  constProp: ConstantPropagatorResult,
+  graph: PassContext['graph'],
+  sources: SinkFilterResult['sources'],
+  code: string | undefined,
+): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number) => boolean {
+  const lines = typeof code === 'string' ? code.split('\n') : [];
+  const selfReassign = new Map<string, number[]>();
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [line, defs] of graph.defsByLine) {
+    const text = lines[line - 1];
+    if (!text) continue;
+    for (const d of defs) {
+      if (d.kind !== 'local' && d.kind !== 'param') continue;
+      const v = escape(d.variable);
+      // `v op= …` or `v = …v…` (RHS reads the variable being assigned).
+      const m = new RegExp(`(?:^|[^\\w.$])${v}\\s*(?:([-+*/%&|^]|<<|>>)=|=(?!=))(.*)$`).exec(text);
+      if (!m) continue;
+      if (m[1] || new RegExp(`(?:^|[^\\w.$])${v}\\b`).test(m[2])) {
+        const arr = selfReassign.get(d.variable) ?? [];
+        arr.push(line);
+        selfReassign.set(d.variable, arr);
+      }
+    }
+  }
+  const reassignedAt = (v: string, line: number) => (selfReassign.get(v) ?? []).includes(line);
+  /** Reaching def of `v` as read on `line` (a def on that line wins: it is the value after the line). */
+  const defAt = (v: string, line: number) => {
+    const own = (graph.defsByLine.get(line) ?? []).find(d => d.variable === v);
+    if (own) return own;
+    const use = (graph.usesByLine.get(line) ?? []).find(u => u.variable === v && u.def_id != null);
+    return use ? graph.defById.get(use.def_id!) : undefined;
+  };
+  return (step, sourceLine, sinkLine) => {
+    const r = isFalsePositive(constProp, step.line, step.variable);
+    if (!r.isFalsePositive) return false;
+    if (r.reason !== 'variable_not_tainted') return true;
+    const lo = Math.min(sourceLine, sinkLine);
+    // Walk the reaching-def chain back from this step, stepping through
+    // self-derived reassignments only. Reaching defs are per method, so a
+    // same-named variable in a sibling method can never be picked up.
+    let d = defAt(step.variable, step.line);
+    let selfHops = 0;
+    for (let guard = 0; d && d.line > lo && reassignedAt(d.variable, d.line) && guard < 32; guard++) {
+      const here: number = d.id;
+      const prior = (graph.usesByLine.get(d.line) ?? [])
+        .find(u => u.variable === d!.variable && u.def_id != null && u.def_id !== here);
+      if (!prior) break;
+      selfHops++;
+      d = graph.defById.get(prior.def_id!);
+    }
+    if (!d) return true;
+    // (E) the chain ends at the source's own assignment, so const-prop's
+    // "untainted" can only mean it has no pattern for this source. Container
+    // reads are excluded: const-prop tracks collection keys, and there its
+    // verdict is informed (`bar = map.get("safeKey")` — 10 OWASP FP files).
+    if (d.line === sourceLine && sources.some(s => s.line === sourceLine && !CONTAINER_READ_SOURCES.has(s.type))) return false;
+    // (A) the chain crossed at least one `x = f(x)` and ends inside the span.
+    if (selfHops > 0 && d.line >= lo) return false;
+    return true;
+  };
+}
+
 export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassResult> {
   readonly name = 'taint-propagation';
   readonly category = 'security' as const;
@@ -53,13 +141,16 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // DFG-based taint propagation
     const propagationResult = propagateTaint(graph, sources, sinks, sanitizers);
 
+    // cognium-dev#328 — scoped exemption from const-prop's `variable_not_tainted`
+    // veto for self-derived reassignment (`x = f(x)`, `x += y`), the #287 shape.
+    const isVetoed = makeConstPropVeto(constProp, graph, sources, ctx.code);
+
     // Filter flows: eliminate dead-code paths and constant-propagation FPs
     const verifiedFlows = propagationResult.flows.filter(flow => {
       if (constProp.unreachableLines.has(flow.sink.line)) return false;
 
       for (const step of flow.path) {
-        const fpCheck = isFalsePositive(constProp, step.line, step.variable);
-        if (fpCheck.isFalsePositive) return false;
+        if (isVetoed(step, flow.source.line, flow.sink.line)) return false;
       }
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
@@ -232,7 +323,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
       let isFP = false;
       for (const step of f.path) {
-        if (isFalsePositive(constProp, step.line, step.variable).isFalsePositive) { isFP = true; break; }
+        if (isVetoed(step, f.source_line, f.sink_line)) { isFP = true; break; }
       }
       if (isFP) continue;
 
@@ -276,7 +367,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
       let isFP = false;
       for (const step of f.path) {
-        if (isFalsePositive(constProp, step.line, step.variable).isFalsePositive) { isFP = true; break; }
+        if (isVetoed(step, f.source_line, f.sink_line)) { isFP = true; break; }
       }
       if (isFP) continue;
 
