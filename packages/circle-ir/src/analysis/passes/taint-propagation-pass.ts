@@ -1521,6 +1521,37 @@ export function maskStringLiteralsForTokenScan(expr: string): string {
   return out;
 }
 
+/**
+ * Does `expr` reference one of `sources`' variables in a CODE position?
+ *
+ * String-literal bodies are stripped first, so a tainted variable NAME that
+ * merely appears as text inside the SQL or markup — `id` in
+ * `"… WHERE id=@id"`, which is the parameterized, safe form — does not count.
+ * Interpolation holes are kept, because `$"… {id}"` really does splice the
+ * value in. Shared by the #271 CommandText seeding and the #530 builder
+ * seeding, which need exactly the same judgement.
+ */
+function argsReferenceTaintedVar(
+  expr: string,
+  sources: ReadonlyArray<{ variable: string }>,
+): boolean {
+  const codePart = expr
+    .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
+      ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+    .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+    // Comments are not code. A trailing `// pass `id` through` would otherwise
+    // seed taint on the strength of prose. Literals are stripped first, so a
+    // `//` inside a string (a URL, say) is already gone by this point.
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ');
+  return sources.some(s =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_])${s.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`,
+      'u',
+    ).test(codePart),
+  );
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -1538,17 +1569,28 @@ function detectExpressionScanFlows(
   // start line of the outermost function containing `line`, or -1 when the
   // line is at package level (no scoping then, so package-level sources still
   // reach every function).
-  const goFnRanges: Array<[number, number]> = language === 'go' && types
-    ? types.flatMap((t) => t.methods.map((m): [number, number] => [m.start_line, m.end_line]))
-    : [];
-  const goFnStart = (line: number): number => {
+  const methodRanges = (langs: string[]): Array<[number, number]> =>
+    language && langs.includes(language) && types
+      ? types.flatMap((t) => t.methods.map((m): [number, number] => [m.start_line, m.end_line]))
+      : [];
+  const enclosingStart = (ranges: Array<[number, number]>, line: number): number => {
     let best = -1;
     let bestSpan = -1;
-    for (const [start, end] of goFnRanges) {
+    for (const [start, end] of ranges) {
       if (line >= start && line <= end && end - start > bestSpan) { best = start; bestSpan = end - start; }
     }
     return best;
   };
+
+  const goFnRanges = methodRanges(['go']);
+  const goFnStart = (line: number): number => enclosingStart(goFnRanges, line);
+
+  // cognium-dev#530 — the same gate for C#, used by the builder seeding below.
+  // Available only since #539 made C# method ranges actually populate; before
+  // that `types[].methods` was empty for any file with a `#if` directive, which
+  // is every Juliet C# file.
+  const csFnRanges = methodRanges(['csharp']);
+  const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
 
   // Variable-name scan path: only consider sources that carry an explicit
   // variable name. The colocation path below (cognium-dev #83) runs even
@@ -1982,20 +2024,78 @@ function detectExpressionScanFlows(
         if (!m) continue;
         const [, obj, rhs] = m;
         if (known.has(obj)) continue;
-        // Reduce the RHS to code positions: keep interpolation `{…}` contents,
-        // drop plain string-literal bodies — so a tainted var NAME appearing as
-        // a substring inside the SQL text (e.g. `id` in `"… WHERE id=@id"`, a
-        // parameterized/safe query) does NOT spuriously taint the command.
-        const codePart = rhs
-          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
-            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
-          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ');
-        const rhsTainted = sourcesWithVar.some(s =>
-          new RegExp(`(?<![\\p{L}\\p{N}_])${s.variable.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(codePart),
-        );
-        if (!rhsTainted) continue;
+        if (!argsReferenceTaintedVar(rhs, sourcesWithVar)) continue;
         sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
         added = true;
+      }
+    }
+  }
+
+  // Keys (`variable@line`) of sources synthesised by the #530 builder seeding
+  // below. These need a tighter match rule than a real source: see the gate in
+  // the candidate loop.
+  const builderSeeds = new Set<string>();
+
+  // cognium-dev#530: builder-carried taint. `sb.Append(<tainted>)` leaves the
+  // taint inside the StringBuilder, and `sb.ToString()` reads it back out — so
+  // without this, a statement accumulated across several calls is invisible
+  // while the same statement concatenated in one expression is caught. That is
+  // not a corner case: a StringBuilder is the idiomatic way to build anything
+  // multi-line in C#, and NIST Juliet's entire CWE-94 family uses it, which is
+  // why that family scored 0.0% for want of propagation rather than a sink.
+  //
+  // Same shape as #271 above: taint enters an object, is read back later, so it
+  // has to ride the object. Seeding the receiver as a tainted var at the append
+  // line lets the existing argument scan link `sb.ToString()` to its sink.
+  //
+  // Receiver-gated to variables declared as a StringBuilder. `Insert` and
+  // `Append` are far too common as names to match on a bare receiver — gating
+  // on the declared type is what keeps this from tainting arbitrary objects.
+  if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0) {
+    const lines = code.split('\n');
+
+    // `StringBuilder sb` covers locals, fields and parameters; the second form
+    // covers `var sb = new StringBuilder(...)`, where the type is on the right.
+    const builders = new Set<string>();
+    for (const line of lines) {
+      for (const m of line.matchAll(/\bStringBuilder\s+([\p{L}_][\p{L}\p{N}_]*)/gu)) builders.add(m[1]);
+      for (const m of line.matchAll(/\b([\p{L}_][\p{L}\p{N}_]*)\s*=\s*new\s+StringBuilder\b/gu)) builders.add(m[1]);
+    }
+
+    if (builders.size > 0) {
+      // `Append`, `AppendLine`, `AppendFormat` and `Insert` all write through to
+      // the builder's contents. `Replace` is deliberately absent: it can just as
+      // easily be removing the tainted text as adding it, so crediting it either
+      // way would be a guess.
+      const appendRe =
+        /([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*(?:Append|AppendLine|AppendFormat|Insert)\s*\(([\s\S]*)/u;
+      const anchor = sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+      let added = true;
+      let guard = 0;
+      while (added && guard < lines.length + 2) {
+        added = false;
+        guard++;
+        const known = new Set(sourcesWithVar.map(s => s.variable));
+        for (let i = 0; i < lines.length; i++) {
+          const m = appendRe.exec(lines[i]);
+          if (!m) continue;
+          const [, obj, args] = m;
+          if (!builders.has(obj) || known.has(obj)) continue;
+          // Same-method gate. `sourcesWithVar` is file-wide, so without this a
+          // source named `data` in one method taints a builder appended to in
+          // another method that happens to use the same local name — which is
+          // precisely the Juliet `Bad` / `GoodG2B` pair, and measured as 186
+          // false positives against 82 true ones before the gate.
+          const appendFn = csFnStart(i + 1);
+          const reachable = sourcesWithVar.filter(
+            (sv) => appendFn === -1 || csFnStart(sv.line) === -1 || csFnStart(sv.line) === appendFn,
+          );
+          if (reachable.length > 0 && argsReferenceTaintedVar(args, reachable)) {
+            sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
+            builderSeeds.add(`${obj}@${i + 1}`);
+            added = true;
+          }
+        }
       }
     }
   }
@@ -2129,6 +2229,24 @@ function detectExpressionScanFlows(
             const srcFn = goFnStart(source.line);
             const sinkFn = goFnStart(sink.line);
             if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
+          }
+
+          // cognium-dev#530: a builder-seeded source must not escape its method.
+          // The seed stands for "this StringBuilder now holds tainted text",
+          // which is true only of the one object in the one method where the
+          // append happened. The scan above matches by NAME across the whole
+          // file, and Juliet reuses `sourceCode` in `Bad` and in every `Good*`
+          // variant — so without this, a seed created correctly inside `Bad`
+          // linked to the sink inside `GoodG2B1`, whose own `data` is a
+          // hardcoded constant. Measured as 160 false positives.
+          //
+          // Scoped to seeded sources deliberately. Applying a line-range gate
+          // to every C# source would very likely help too, but that changes
+          // matching for all C# consumers and deserves its own measurement.
+          if (csFnRanges.length > 0 && builderSeeds.has(`${source.variable}@${source.line}`)) {
+            const srcFn = csFnStart(source.line);
+            const sinkFn = csFnStart(sink.line);
+            if (srcFn !== sinkFn) continue;
           }
 
           // Simple-identifier sources are already confirmed present by the

@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **#530: taint rides a `StringBuilder` from `Append` through `ToString()`.**
+  Appending a tainted value did not taint the builder, so reading it back
+  produced an untainted value — a statement accumulated across several calls was
+  invisible while the identical statement concatenated in one expression was
+  caught. Not tied to one sink family: it hid SQL injection as readily as code
+  injection, and a `StringBuilder` is the idiomatic way to build anything
+  multi-line in C#.
+
+  Same shape as #271's ADO.NET command-object taint: taint enters an object and
+  is read back later, so it has to ride the object. `Append`, `AppendLine`,
+  `AppendFormat` and `Insert` all write through; `Replace` is deliberately
+  excluded, since it can as easily be removing the tainted text as adding it.
+
+  Receiver-gated to variables declared as a `StringBuilder` — `Append` and
+  `Insert` are far too common as names to match on a bare receiver.
+
+  Two scoping rules keep it honest, both measured rather than assumed:
+  - the referenced variable must appear in a **code** position: a name occurring
+    only inside a string literal (`"… WHERE id=@id"`, the safe parameterized
+    form) or inside a comment does not count;
+  - a seeded builder **cannot escape its method**. The variable scan matches by
+    name across the whole file and Juliet reuses `sourceCode` in `Bad` and in
+    every `Good*` variant, so without this a seed created correctly inside
+    `Bad` linked to the sink inside `GoodG2B`, whose own `data` is a hardcoded
+    constant. That one gate removed **160 of 241** false positives.
+
+### Added
+
+- **#503 part 2: CodeDOM and Roslyn runtime compilation are code-injection
+  sinks** (CWE-94) — `CompileAssemblyFromSource`, `CompileAssemblyFromSourceBatch`
+  and `CSharpSyntaxTree.ParseText`. The source arguments begin at position 1,
+  since position 0 is the `CompilerParameters`. These land **with** #530 rather
+  than before it: the Juliet CWE-94 corpus accumulates the compiled source
+  through `Append`, so until taint crossed the builder the sink registered and
+  nothing ever reached it.
+
+  **Measured** — csharp-juliet recall over the 123 `_01` baseline files of the 10
+  scored CWEs, default taint config:
+
+  | | CWE-94 | total |
+  | --- | --- | --- |
+  | 4.9.29 | **0 / 10** | 105 / 123 (85.4%) |
+  | with these | **10 / 10** | **115 / 123 (93.5%)** |
+
+  CWE-94 was the last scored family at zero. Three are now at 100%: CWE-89,
+  CWE-643 and CWE-94.
+
+  **Precision cost, stated plainly.** Across the ten families: **0 lost, 157
+  gained — 76 true positives and 81 false positives**, hand-attributed rather
+  than read off a gate verdict. Every one of the method-attributed false
+  positives is `GoodB2G*`: a tainted value reaching a **sanitized** sink, which
+  is #518 / #286-A, pre-existing and separately tracked. Worth reading the ~1:1
+  ratio carefully — Juliet pairs each `Bad` case with a sanitized twin by
+  construction, so any newly-detectable family shows roughly 1:1 until
+  sanitizers are credited on the flow surface. Crediting them (#518) would clear
+  this entire set.
+
 ## [4.9.29] - 2026-09-30
 
 ### Added
