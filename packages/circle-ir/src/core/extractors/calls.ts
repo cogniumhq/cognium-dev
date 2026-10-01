@@ -165,6 +165,18 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
 function buildCSharpReceiverTypeMap(tree: Tree, cache?: NodeCache): Map<string, string> {
   const map = new Map<string, string>();
   const simple = (t: string) => t.replace(/<[^>]*>/g, '').split('.').pop()?.trim() ?? t;
+  // cognium-dev#542 — method/constructor parameters. A receiver is just as often a parameter as a
+  // local — `void Bad(HttpRequest req, HttpResponse resp)` is the canonical
+  // ASP.NET handler shape — and omitting them meant every receiver gate keyed on
+  // a declared type silently failed for parameters. Locals below win on a name
+  // clash, since an inner declaration shadows the parameter.
+  for (const prm of getNodesFromCache(tree.rootNode, 'parameter', cache)) {
+    const nameNode = prm.childForFieldName('name');
+    const typeNode = prm.childForFieldName('type');
+    if (nameNode?.type !== 'identifier' || !typeNode) continue;
+    const t = getNodeText(typeNode);
+    if (t && t !== 'var') map.set(getNodeText(nameNode), simple(t));
+  }
   for (const vd of getNodesFromCache(tree.rootNode, 'variable_declaration', cache)) {
     const typeNode = vd.childForFieldName('type');
     const declaredType = typeNode ? getNodeText(typeNode) : null;
@@ -196,6 +208,13 @@ function findFirstDescendant(node: Node, type: string): Node | null {
   }
   return null;
 }
+
+/**
+ * Declared types that make a receiver an HTTP response. `HttpResponse` is
+ * classic ASP.NET and ASP.NET Core; `HttpResponseBase` is the testable
+ * abstraction MVC hands controllers.
+ */
+const CSHARP_RESPONSE_TYPES = new Set(['HttpResponse', 'HttpResponseBase']);
 
 /** ADO.NET command-execution methods whose taint rides the receiver object. */
 const CSHARP_COMMAND_EXECUTE_METHODS = new Set([
@@ -420,7 +439,15 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       // a Response-shaped name so an unrelated `.StatusDescription =` on some
       // other type is not surfaced.
       const recv = exprNode ? getNodeText(exprNode) : '';
-      if (!/(^|\.)(Response|HttpResponse|Context\.Response)$/.test(recv)) continue;
+      const recvType = recv ? typeMap.get(recv) : undefined;
+      // cognium-dev#542 — two ways to be a response: named like the ASP.NET
+      // intrinsic (`Response`, `Context.Response`), which has no declaration to
+      // resolve, or *declared* as one. Juliet names the parameter `resp`, so the
+      // name test alone scored CWE-81 at 0/9 — the same defect #501 fixed on the
+      // source side, where `HttpRequest req` was missed because it was not
+      // spelled `Request`.
+      if (!/(^|\.)(Response|HttpResponse|Context\.Response)$/.test(recv)
+          && !(recvType && CSHARP_RESPONSE_TYPES.has(recvType))) continue;
     } else if (propName === 'BaseAddress') {
       // cognium-dev#336 — `new HttpClient { BaseAddress = new Uri(input) }`
       // hands the attacker the scheme, host and port of every relative request
