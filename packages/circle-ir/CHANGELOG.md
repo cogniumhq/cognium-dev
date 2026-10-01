@@ -70,7 +70,7 @@ detections.**
   (OWASP Java 2740 files with `--surface both`; BenchmarkPython 1230 files),
   and Juliet C# baseline recall goes 13 → 16 of 123.
 
-- **#502: `null`, numeric, boolean and character arguments are recognised as C#
+- **#522: `null`, numeric, boolean and character arguments are recognised as C#
   literals.** `extractCSharpArguments` populated `literal` only for
   `string_literal`, so `null`, `true`, `42`, `'c'` and `@"verbatim"` were
   indistinguishable from a variable and a sink taint-gated on that position
@@ -79,6 +79,11 @@ detections.**
   that is literally `null`. Removes 653 findings on the 10 scored Juliet C#
   families, adds none; `interpolated_string_expression` is deliberately
   excluded, since `$"SELECT {input}"` is the genuine injection shape.
+
+  Published as "#502" in the 4.9.28 release notes on npm — that was wrong.
+  **#502 (C# network / file / database reads as taint sources) did not ship in
+  4.9.28 and remains open**; it is the prerequisite that gives these files a
+  source in the first place.
 
 - **#474: the `external_taint_escape` gate is ported to C#, then widened to
   collection stores.** Once a real sink is correctly credited as safe, the
