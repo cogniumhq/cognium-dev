@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.9.28] - 2026-09-30
 
 A C# precision and recall pass. **Read the "Consumer impact" note below before
-upgrading: C# scans report substantially fewer findings.**
+upgrading: C# scans report substantially fewer findings — all of the removals
+are `external_taint_escape` noise, and the release also adds 74 classical
+detections.**
 
 ### Fixed
 
@@ -126,14 +128,45 @@ upgrading: C# scans report substantially fewer findings.**
 
 ### Consumer impact
 
-**C# scans report substantially fewer findings.** Across the changes above the
-net effect on the 10 scored NIST Juliet C# families is roughly **3,000 fewer
-findings** on 7,451 files, with **zero** additions. Every removal was checked
-individually rather than inferred from a gate verdict: escapes on files with no
-sink, sinks taint-gated on a compile-time constant, argument-less sinks with no
-flow behind them, and pairings whose source sat after their sink.
+**C# scans report substantially fewer findings, and the size of the drop
+depends on which surface you read.** Measured 4.9.27 vs 4.9.28 over ten NIST
+Juliet C# taint families (150-file strided sample each, 1,500 files):
 
-Two consequences worth knowing before you upgrade:
+| surface | 4.9.27 | 4.9.28 | change |
+| --- | --- | --- | --- |
+| `taint.flows` — what `cognium-dev scan` and the MCP server report | 506 | 355 | −30% |
+| `generateFindings` — the library-only findings surface | 1,021 | 624 | −39% |
+| C# sinks registered | 4,158 | 3,489 | −16% |
+
+On the three largest families the two surfaces move by different amounts, because
+#508, #509 and the backwards-pairing gate all live in `generateFindings`, which
+the CLI never calls:
+
+| family | `taint.flows` | `generateFindings` |
+| --- | --- | --- |
+| CWE89 SQL injection | 126 → 108 | 302 → 138 |
+| CWE78 command injection | 30 → 23 | 80 → 60 |
+| CWE81 XSS error message | 14 → 5 | 14 → 5 |
+
+**Removals are confined to one type.** All **225** removed flows in that sample
+are `external_taint_escape` (CWE-668) — the 506 → 355 net of −151 is those 225
+removals against the 74 additions below. No `sql_injection`, `command_injection`,
+`xss`, `xpath_injection` or other classical flow is lost in any family.
+
+Every removal was checked individually rather than inferred from a gate verdict:
+escapes on files with no sink, sinks taint-gated on a compile-time constant,
+argument-less sinks with no flow behind them, and pairings whose source sat
+after their sink.
+
+**There are additions, and they are classical detections.** The sample gains
+**74 flows** — 48 `xpath_injection`, 8 `ldap_injection`, 8 `command_injection`,
+6 `xss`, 3 `format_string`, 1 `crlf` — from the literal-recognition (#502) and
+source-binding work. CWE643 Xpath injection nets *upward*, 72 → 90. Of those 74,
+44 land in Juliet `Bad` methods (true positives) and 30 in `GoodB2G*` variants,
+where the sink is sanitized; the latter are the long-standing consequence of the
+flows surface not consulting `TaintSanitizers`, not a new defect in this release.
+
+Three consequences worth knowing before you upgrade:
 
 - **Some files that were flagged are now silent.** Where a file's only finding
   was a mistyped CWE-20 escape, it now reports nothing. On Juliet C# that is
@@ -143,6 +176,11 @@ Two consequences worth knowing before you upgrade:
   because those escapes never scored; file-level localization does.
 - **The `source_after_sink` attribution metric goes to 0** on that corpus,
   which matters for consumers that key on reported source position.
+- **A duplicated C# SQL injection still appears twice in `scan` output.** #509
+  collapses the constructor/execute pair on the `generateFindings` surface only.
+  A `new SqlCommand(tainted, conn)` followed by `cmd.ExecuteReader()` yields one
+  finding there and still two flows in `taint.flows`, so CLI and MCP users see
+  the pair. Deduplicating the flows surface is separate work.
 
 ### Known issues
 

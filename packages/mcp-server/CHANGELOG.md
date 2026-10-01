@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.20] - 2026-09-30
 
 ### Changed
-- Adopts `circle-ir@4.9.28`: a C# precision and recall pass that removes roughly
-  3,000 false positives on the scored NIST Juliet C# families and adds three new
-  C# sink shapes (`Response.StatusDescription`, `(MarkupString)x`, tainted
-  `HttpClient.BaseAddress`). TypeScript scans lose 130 false
+- Adopts `circle-ir@4.9.28`, a C# precision and recall pass. C# scans report
+  about **30% fewer** security findings (506 → 355 flows over ten NIST Juliet C#
+  taint families, 1,500 files); all 225 removals are `external_taint_escape`
+  (CWE-668) noise and **no classical flow type is lost**. The release also adds
+  **74 classical detections** in that sample (48 `xpath_injection`, 8
+  `ldap_injection`, 8 `command_injection`, 6 `xss`, 3 `format_string`, 1 `crlf`)
+  plus three new C# sink shapes (`Response.StatusDescription`, `(MarkupString)x`,
+  tainted `HttpClient.BaseAddress`). TypeScript scans lose 130 false
   `variable-shadowing` findings. No MCP tool, schema or response-shape changes.
 
 ## [0.1.19] - 2026-09-29
