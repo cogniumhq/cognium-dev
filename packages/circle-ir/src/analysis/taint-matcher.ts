@@ -1528,6 +1528,40 @@ const TYPE_TOKEN_RE = /^new\s+(?:TypeReference|TypeToken)\s*<[\s\S]*>\s*\(\s*\)\
  * JDBC `JdbcTemplate` query-family sinks that carry `?` placeholders
  * (parameterised queries cannot be tainted at the SQL layer).
  */
+/**
+ * Returns true when the call's argument at `position` is recognisably a
+ * STREAM-valued expression (not a filesystem path).
+ *
+ * Used by `SinkPattern.safe_if_stream_arg_at` — cognium-dev#502. `StreamReader`
+ * and `StreamWriter` are registered as path_traversal sinks for their
+ * `(string path)` overload; the `(Stream)` overload takes no path at all, so
+ * `new StreamReader(tcp.GetStream())` reporting CWE-22 is a false positive.
+ * That FP was latent while C# had no socket/file source model and became live
+ * with #502.
+ *
+ * Positive evidence only — an expression this does not recognise still fires,
+ * so the gate cannot remove a detection it was not written for.
+ */
+function argIsStreamExpression(call: CallInfo, position: number): boolean {
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg) return false;
+  const expr = (arg.expression ?? '').trim();
+  if (!expr) return false;
+  return (
+    // `new MemoryStream(...)`, `new FileStream(...)`, `new GZipStream(...)`
+    /^new\s+[A-Za-z_][\w.]*Stream\s*\(/.test(expr) ||
+    // `tcp.GetStream()`, `resp.GetResponseStream()`, `file.OpenReadStream()`
+    /\.\s*Get(?:Response)?Stream\s*\(/.test(expr) ||
+    /\.\s*OpenReadStream\s*\(/.test(expr) ||
+    // `wc.OpenRead(url)` returns a Stream (WebClient), as does `File.OpenRead`
+    /\.\s*OpenRead\s*\(/.test(expr) ||
+    // `Request.Body`, `x.BaseStream`
+    /\.\s*(?:Body|BaseStream)\s*$/.test(expr) ||
+    // a local whose name is stream-ish and is not a path string
+    /^(?:[A-Za-z_]\w*\.)*[A-Za-z_]*[sS]tream\d*$/.test(expr)
+  );
+}
+
 function argIsStringLiteral(call: CallInfo, position: number): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
@@ -2179,6 +2213,16 @@ function findSinks(
         if (
           pattern.safe_if_string_literal_at !== undefined &&
           argIsStringLiteral(call, pattern.safe_if_string_literal_at)
+        ) {
+          continue;
+        }
+
+        // #502 — the `(Stream)` overload of a path-taking constructor is not a
+        // path sink. Positive-evidence only, so an unrecognised argument still
+        // matches and no existing detection is lost.
+        if (
+          pattern.safe_if_stream_arg_at !== undefined &&
+          argIsStreamExpression(call, pattern.safe_if_stream_arg_at)
         ) {
           continue;
         }

@@ -108,6 +108,20 @@ export interface SinkPattern {
    */
   safe_if_string_literal_at?: number;
   /**
+   * Suppress the sink when the argument at the given 0-indexed position is a
+   * STREAM-valued expression rather than a path. Used by the C#
+   * `new StreamReader(...)` / `new StreamWriter(...)` path_traversal sinks,
+   * which are correct for the `(string path)` overload and wrong for the
+   * `(Stream)` one — `new StreamReader(tcp.GetStream())` reads a socket, and
+   * reporting CWE-22 on it is a false positive (cognium-dev#502).
+   *
+   * Deliberately positive-evidence only: the sink is suppressed when the
+   * argument can be IDENTIFIED as a stream, not whenever it fails to look like
+   * a path. An unrecognised expression keeps firing, so this cannot lose an
+   * existing detection.
+   */
+  safe_if_stream_arg_at?: number;
+  /**
    * When true, the sink matches even if `receiver_type` is unresolved at the
    * call site, provided the receiver expression is a dotted property chain
    * (e.g. `req.db.query`, `ctx.app.db.execute`). This handles Express-style

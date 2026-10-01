@@ -176,6 +176,23 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'nextInt', class: 'Scanner', type: 'io_input', severity: 'high', return_tainted: true },
 
   // Database result sources
+  // C# I/O, network and database reads (cognium-dev#502). Mirrors the Java
+  // rows above one-for-one, including the severity split: console/file I/O is
+  // `io_input` at high, a database row read is `db_input` at medium. There is
+  // no separate confidence tier — `type` + `severity` IS the tier, exactly as
+  // for `BufferedReader.readLine` vs `ResultSet.getString`.
+  { method: 'ReadLine', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadLineAsync', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadToEnd', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadToEndAsync', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  // Socket and HTTP-client reads. `GetStream` / `AcceptTcpClient` /
+  // `OpenRead` return the channel; the read off it is covered by the
+  // StreamReader rows above, and seeding the channel too lets a flow form when
+  // the read is inlined.
+  { method: 'GetStream', class: 'TcpClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'AcceptTcpClient', class: 'TcpListener', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'OpenRead', class: 'WebClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'DownloadString', class: 'WebClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
   { method: 'getString', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
   { method: 'getObject', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
   { method: 'getInt', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
@@ -2975,8 +2992,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'OpenRead', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'OpenWrite', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'FileStream', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // #502: the `(Stream)` overload takes no path — `new StreamReader(tcp.GetStream())`
+  // is not CWE-22. The `(string path)` overload still matches.
+  { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], safe_if_stream_arg_at: 0, languages: ['csharp'] },
+  // #502: the `(Stream)` overload takes no path — `new StreamWriter(tcp.GetStream())`
+  // is not CWE-22. The `(string path)` overload still matches.
+  { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], safe_if_stream_arg_at: 0, languages: ['csharp'] },
   // Remaining System.IO.File path APIs — class-scoped so they don't collide
   // with unrelated methods. Copy/Move take a source AND destination path (both
   // attacker-controllable → read-anywhere / write-anywhere), hence [0, 1].
