@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **#409: `.ts` files are parsed with the TypeScript grammar.** The CLI passed
+  `circle-ir` an explicit grammar map that loaded the JavaScript grammar for
+  `typescript`, in both the npm and the standalone build, overriding the
+  library's own default. TypeScript-only syntax then parsed as error-recovered
+  garbage: an interface method signature `query(text: string): Promise<T>;`
+  became a `query(...)` call and was reported as `sql_injection` and
+  `missing-await` on the signature line. `.js` files are unaffected, and `.tsx`
+  already used its own grammar.
+
+#### Consumer Impact
+- **`cognium-dev scan` results for TypeScript files change, in both directions,
+  with no error.** On 20,988 `.ts` files from public repositories, comparing the
+  two grammars: **550 taint flows removed and 502 added**; sinks 1,433 removed
+  and 1,953 added. Sampled removals were misparses of casts, generics and type
+  annotations read as calls. They were not all labelled, so a removed flow is
+  not guaranteed to have been a false positive.
+- **Many more note-level findings on TypeScript**: 38,437 added against 2,432
+  removed on that corpus, mostly `missing-public-doc`, `variable-shadowing` and
+  `leaked-global`. The JavaScript grammar dropped whole functions and classes
+  that used TypeScript-only syntax, so those passes never saw them.
+- A CI job that gates on a TypeScript finding count or a stored baseline should
+  regenerate it. JavaScript, and every other language, is unchanged.
+
 ## [4.9.29] - 2026-09-30
 
 ### Changed
