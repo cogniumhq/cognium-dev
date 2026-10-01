@@ -42,7 +42,7 @@ export interface LicencePayload {
   readonly tier: string;
   /** Issued-at, ISO-8601. */
   readonly iat: string;
-  /** Expiry, ISO-8601. */
+  /** Expiry, ISO-8601. A date with no time is good through that whole UTC day. */
   readonly expiry: string;
   /** Issuer-defined entitlement names. The server never branches on these. */
   readonly entitlements?: readonly string[];
@@ -150,6 +150,30 @@ function isIsoDate(value: string): boolean {
   return !Number.isNaN(new Date(value).getTime());
 }
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The first instant at which a token is no longer in date.
+ *
+ * A date-only `expiry` names a day, and the token is good for the whole of
+ * it: `Date` reads `2026-10-15` as that day's UTC midnight, which would end
+ * the licence a day before the date it prints. A full timestamp is the
+ * instant it says.
+ */
+function expiryInstant(expiry: string): number {
+  const at = new Date(expiry).getTime();
+  return DATE_ONLY.test(expiry) ? at + DAY_MS : at;
+}
+
+/**
+ * Read the payload segment.
+ *
+ * Returns the object **as parsed**, unknown members included: the signature
+ * covers everything the issuer signed, so a field this version does not know
+ * has to still be there when the canonical form is rebuilt. A known field of
+ * the wrong shape is malformed rather than quietly dropped.
+ */
 function parsePayload(segment: string): LicencePayload | null {
   const raw = decodeBase64Url(segment);
   if (!raw) return null;
@@ -172,17 +196,14 @@ function parsePayload(segment: string): LicencePayload | null {
     return null;
   }
   if (!isIsoDate(iat) || !isIsoDate(expiry)) return null;
+  if (
+    entitlements !== undefined &&
+    !(Array.isArray(entitlements) && entitlements.every((e) => typeof e === 'string'))
+  ) {
+    return null;
+  }
 
-  return {
-    kid,
-    org,
-    tier,
-    iat,
-    expiry,
-    ...(Array.isArray(entitlements) && entitlements.every((e) => typeof e === 'string')
-      ? { entitlements: entitlements as string[] }
-      : {}),
-  };
+  return parsed as LicencePayload;
 }
 
 export interface VerifyOptions {
@@ -238,7 +259,8 @@ export function verifyLicence(token: string | undefined, opts: VerifyOptions = {
 
   let signatureOk = false;
   try {
-    // Over the canonical payload, not the segment as it arrived.
+    // Over the canonical form of everything that arrived, not the segment's
+    // own bytes and not just the fields this version reads.
     signatureOk = verifySignature(null, canonicalBytes(payload), key, signature);
   } catch {
     signatureOk = false;
@@ -251,7 +273,7 @@ export function verifyLicence(token: string | undefined, opts: VerifyOptions = {
   }
 
   const now = opts.now ?? new Date();
-  if (new Date(payload.expiry).getTime() <= now.getTime()) {
+  if (expiryInstant(payload.expiry) <= now.getTime()) {
     return {
       status: 'expired',
       payload,

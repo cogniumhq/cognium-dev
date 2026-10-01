@@ -40,7 +40,10 @@ on a default install is the same eleven tools it was on 0.1.21.
   the signing key and is itself signed, so keys rotate without invalidating
   tokens already issued — a verifier keeps the retired key while tokens signed
   by it are in date. The prefix is versioned, so a change to the shape is a
-  prefix bump rather than a silent break.
+  prefix bump rather than a silent break. The signature covers every member of
+  the payload, including ones this version does not read, so an issuer can add
+  a field without breaking verifiers already installed. A date-only `expiry`
+  is in date through the whole of that UTC day.
 - **`canonicalise()`** — RFC 8785 JSON canonicalisation, forty lines and no new
   dependency, tested against the RFC's own key-ordering vector.
 - **One startup line** on stderr naming the version, the `circle-ir` it is

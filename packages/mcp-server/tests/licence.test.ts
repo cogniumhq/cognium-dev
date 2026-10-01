@@ -55,6 +55,45 @@ describe('verifyLicence', () => {
     expect(verdict.status).toBe('expired');
   });
 
+  it('keeps a date-only expiry in date through the whole of the named day', () => {
+    // `Date` reads a bare date as that day's UTC midnight. Taken literally the
+    // licence would lapse a day before the date its own detail line prints.
+    const key = testKey();
+    const token = mint(key, { expiry: '2026-10-15' });
+    const at = (iso: string) => verifyLicence(token, { publicKeys: keyMap(key), now: new Date(iso) });
+
+    expect(at('2026-10-15T00:00:00.000Z').status).toBe('valid');
+    expect(at('2026-10-15T23:59:59.999Z').status).toBe('valid');
+    expect(at('2026-10-15T00:00:00.000Z').detail).toContain('valid to 2026-10-15');
+    expect(at('2026-10-16T00:00:00.000Z').status).toBe('expired');
+  });
+
+  it('verifies a token carrying a field this version does not know', () => {
+    // The issuer signed the whole payload. Rebuilding it from the known
+    // fields alone would drop the extra one and fail a genuine token.
+    const key = testKey();
+    const payload = { ...payloadFor(key), seats: 25, region: { code: 'eu' } };
+    const token = encodeLicence(payload, (b) => sign(null, b, key.privateKey));
+
+    const verdict = verifyLicence(token, { publicKeys: keyMap(key), now: NOW });
+    expect(verdict.status).toBe('valid');
+    expect(verdict.payload).toEqual(payload);
+  });
+
+  it('rejects a token whose unknown field was removed after signing', () => {
+    // The other half of the above: an unknown field is covered, not ignored.
+    const key = testKey();
+    const signed = { ...payloadFor(key), seats: 25 };
+    const [prefix, , signature] = encodeLicence(signed, (b) => sign(null, b, key.privateKey)).split('.');
+    const stripped = canonicalBytes(payloadFor(key)).toString('base64url');
+
+    const verdict = verifyLicence(`${prefix}.${stripped}.${signature}`, {
+      publicKeys: keyMap(key),
+      now: NOW,
+    });
+    expect(verdict.status).toBe('invalid-signature');
+  });
+
   it('rejects a token signed by a different key', () => {
     const issuer = testKey('test-1');
     const impostor = { ...testKey('test-1'), kid: 'test-1' };
@@ -153,6 +192,8 @@ describe('malformed input', () => {
     ['org', { org: undefined }],
     ['a readable iat', { iat: 'whenever' }],
     ['a readable expiry', { expiry: 'soon' }],
+    ['a list for entitlements', { entitlements: 'commercial-use' }],
+    ['string entitlements', { entitlements: ['commercial-use', 7] }],
   ])('refuses a payload missing %s', (_label, over) => {
     const key = testKey();
     const payload = { ...payloadFor(key), ...over } as never;

@@ -41,8 +41,14 @@ export function startupLines(found: Discovery): string[] {
     }
   }
 
+  // A refusal costs only the module that was refused: say what is left, which
+  // is the floor alone unless another module did load.
+  const stillServing =
+    found.modules.length === 0
+      ? 'Serving the deterministic floor only.'
+      : `Still serving the deterministic floor and ${found.modules.map((m) => m.id).join(', ')}.`;
   for (const refusal of found.refusals) {
-    lines.push(`${tag} refused ${refusal.specifier}: ${refusal.reason}. Serving the deterministic floor only.`);
+    lines.push(`${tag} refused ${refusal.specifier}: ${refusal.reason}. ${stillServing}`);
   }
 
   return lines;

@@ -193,6 +193,20 @@ describe('the floor survives a bad module', () => {
     expect(lines[1]).toContain('refused circle-ir-ai/mcp');
     expect(lines[1]).toContain('Serving the deterministic floor only');
   });
+
+  it('does not claim floor-only when another module did load', () => {
+    const found: Discovery = {
+      ...discoveryFor({ ...NO_CONFIG_DIR }, true),
+      refusals: [{ specifier: 'other/mcp', reason: 'could not be loaded' }],
+    };
+    const lines = startupLines(found);
+    const refusal = lines.find((l) => l.includes('refused other/mcp'));
+    // The first line already names the loaded module and the extended state;
+    // the refusal must not contradict it.
+    expect(lines[0]).toContain('licence extended');
+    expect(refusal).toContain('Still serving the deterministic floor and fixture/mcp');
+    expect(refusal).not.toContain('floor only');
+  });
 });
 
 describe('server identity', () => {

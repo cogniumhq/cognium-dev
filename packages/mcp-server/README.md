@@ -152,7 +152,9 @@ The payload is `{ kid, org, tier, iat, expiry, entitlements? }` and the
 signature covers its **canonical** form (RFC 8785), so a token survives being
 re-encoded in transit. `kid` names the signing key, so keys rotate without
 invalidating tokens already issued: a verifier holds the old key as long as
-tokens signed by it are still in date.
+tokens signed by it are still in date. An `expiry` given as a bare date is good
+through the whole of that UTC day. A field the verifier does not know is still
+covered by the signature; a known field of the wrong shape is `malformed`.
 
 Verification is offline — a published key, no network, nothing cached or
 written. No key is baked in yet, so tokens currently report `no-key`.
