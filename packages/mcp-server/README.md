@@ -96,12 +96,65 @@ The same stdio config is bundled in the [Cognium SAST plugin](../../plugins/cogn
 4. `find_similar` to catch the same pattern elsewhere.
 5. Before proposing a fix, `check_sanitizer` any proposed wrapper against the target sink type.
 
+## Using it as a library
+
+The package is side-effect free to import: nothing is built, read or connected
+until you ask for it. The stdio binary is a separate file, so mounting the
+server over your own transport does not spawn a subprocess.
+
+```ts
+import { createServer } from '@cognium/mcp-server';
+
+// Floor plus whatever optional modules this install has.
+const { server, discovery } = await createServer();
+console.error(discovery.enablement.state); // 'floor' | 'extended' | 'commercial'
+await server.connect(myTransport);
+```
+
+`buildServer(options)` is the synchronous form: it registers exactly what you
+pass and resolves nothing.
+
+## Optional tool modules
+
+The eleven tools above are always present. A separate package may add more by
+exporting a `ToolModule`:
+
+```ts
+export default {
+  id: 'example/mcp',
+  version: '1.0.0',
+  licence: 'MIT',
+  circleIrRange: '4.9',           // the circle-ir major.minor it was built against
+  register(server, ctx) {
+    // ctx.cache      — the server's analysis cache, shared with every tool
+    // ctx.enablement — what this install may offer; the module decides what
+    //                  to register, and checks again at call time
+  },
+};
+```
+
+Set `COGNIUM_MCP_MODULES` to a comma-separated list of specifiers to control
+what is looked for, or to `none` to look for nothing.
+
+**The server comes up either way.** A module that is absent, broken, wrongly
+shaped or built against a different `circle-ir` minor is refused on one line of
+stderr, and the eleven built-in tools serve as normal.
+
+| Variable | Effect |
+|---|---|
+| `COGNIUM_MCP_MODULES` | Which module specifiers to look for. `none` disables. |
+| `COGNIUM_ENDPOINT` | An opaque endpoint passed through to modules. The server never parses or connects to it. |
+| `COGNIUM_LICENSE` | A licence token, verified offline. Also read from `$COGNIUM_CONFIG_DIR/license`, default `~/.cognium/license`. |
+
+No telemetry, no phone-home, and no feature is locked behind a token: the state
+decides what is *listed*, and the terms carry the grant.
+
 ## Development
 
 ```bash
-npm run build       # tsc + chmod +x dist/index.js
+npm run build       # tsc + chmod +x dist/bin.js
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run (unit + smoke)
+npm test            # vitest run (unit, three-state matrix, stdio smoke)
 ```
 
 ## License

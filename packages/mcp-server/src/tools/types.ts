@@ -3,9 +3,18 @@
  */
 
 import type { ProjectCache } from '../cache.js';
+import type { Enablement } from '../enablement.js';
 
 export interface ToolContext {
+  /** One analysis cache for the whole server, shared by every tool. */
   cache: ProjectCache;
+  /**
+   * What this install may offer. Present so an optional module can decide,
+   * at registration time, which of its own tools to register, and check
+   * again at call time before doing anything an endpoint or a licence is
+   * needed for. The floor tools never consult it.
+   */
+  enablement: Enablement;
 }
 
 /**

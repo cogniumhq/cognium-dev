@@ -7,7 +7,8 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: [
-        'src/index.ts',        // Bin entry point — wires stdio transport, nothing to assert
+        'src/bin.ts',          // Bin entry point — wires stdio transport, nothing to assert
+        'src/index.ts',        // Library barrel (re-exports only)
         'src/resources/index.ts', // Barrel file (re-exports only)
         'src/tools/types.ts',  // Type definitions only
       ],
@@ -20,13 +21,16 @@ export default defineConfig({
       // filesystem error paths in util/files:
       // 92.81 stmts / 80.64 branches / 95.69 funcs / 95.50 lines.
       //
-      // What remains is mostly describe-source.ts (75/53.84) and the
-      // list-entry-points framework branches (57.14).
+      // Re-measured 2026-10-01 with the optional-module seam and its tests:
+      // 93.68 stmts / 83.89 branches / 96.74 funcs / 96.05 lines. Ratcheted.
+      //
+      // What remains is mostly describe-source.ts, attack-surface-summary's
+      // roll-up branches and the list-entry-points framework branches.
       thresholds: {
-        statements: 91,
-        branches: 78,
-        functions: 94,
-        lines: 94,
+        statements: 93,
+        branches: 83,
+        functions: 96,
+        lines: 95,
       },
     },
   },
