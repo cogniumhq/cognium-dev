@@ -3043,6 +3043,23 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // infrastructure. Ctor arg 0, taint-gated.
   { method: 'RestClient', class: 'constructor', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
+  // C# code injection — CodeDOM runtime compilation (CWE-94), cognium-dev#503
+  // part 2. `provider.CompileAssemblyFromSource(parameters, source)` compiles
+  // and can then execute attacker-supplied C#, so the source argument is the
+  // injection point. The signature is
+  // `CompileAssemblyFromSource(CompilerParameters, params string[] sources)`,
+  // so the sources begin at position 1 — position 0 is the options object.
+  //
+  // These rows are only useful together with the #530 StringBuilder
+  // propagation fix: the Juliet CWE-94 corpus accumulates the compiled source
+  // through `sb.Append(...)` and reads it back with `ToString()`, so before
+  // that fix the sink registered but no taint ever reached it.
+  { method: 'CompileAssemblyFromSource', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1, 2], languages: ['csharp'] },
+  { method: 'CompileAssemblyFromSourceBatch', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1, 2], languages: ['csharp'] },
+  // Roslyn's equivalent pair. `ParseText` turns text into a syntax tree and
+  // `Create` compiles it; either is the point where attacker text becomes code.
+  { method: 'ParseText', class: 'CSharpSyntaxTree', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ParseText', class: 'SyntaxFactory', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   // C# code injection — dynamic script/assembly loading (CWE-94).
   { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'RunAsync', class: 'CSharpScript', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
