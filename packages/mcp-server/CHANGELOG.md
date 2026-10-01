@@ -4,6 +4,72 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-01
+
+Tested against `circle-ir` **4.9.29** (range `4.9`) and MCP SDK **^1.30.1**. No
+tool was added, removed or renamed, and no response schema changed: `tools/list`
+on a default install is the same eleven tools it was on 0.1.21.
+
+### Added
+- **The package is importable.** `dist/index.js` is now a side-effect-free
+  library entry exporting `buildServer`, `createServer`, `ProjectCache` and the
+  types below. A host can build a server and mount it over its own transport
+  without spawning a subprocess.
+- **Optional tool modules.** `buildServer({ modules })` takes an array of
+  `ToolModule` — `{ id, version, licence, circleIrRange, register(server, ctx) }`
+  — and registers each after the eleven built-in tools. A module receives
+  `ctx = { cache, enablement }`: the server's own analysis cache, so a module
+  need not parse a project twice, and what the install is allowed to offer.
+- **`createServer()`** resolves the optional modules, computes enablement once
+  per process, and returns both the server and what it found.
+- **Three states, reported not enforced.** `floor` (this package alone),
+  `extended` (an optional module loaded) and `commercial` (a licence token that
+  verified). The state is computed once from the environment and the user config
+  directory, and it decides what is *listed*; it locks no feature, and a module
+  that is installed stays installed whatever the state.
+- **Offline licence verification** (`verifyLicence`): Ed25519 over a compact
+  signed token, with no network, no cache and nothing written. Verdicts are
+  `valid`, `expired`, `invalid-signature`, `malformed`, `no-key` and `absent`.
+  A wrong key and an altered payload are indistinguishable offline and both
+  report `invalid-signature`, which the tests assert rather than paper over.
+  No verification key is published yet, so tokens currently report `no-key`.
+- **The token format.** `cognium-lic-v1.<base64url payload>.<base64url
+  signature>`, payload `{ kid, org, tier, iat, expiry, entitlements? }`. The
+  signature covers the payload's **canonical** form (RFC 8785), not the bytes
+  it arrived in, so a token survives being re-encoded in transit. `kid` names
+  the signing key and is itself signed, so keys rotate without invalidating
+  tokens already issued — a verifier keeps the retired key while tokens signed
+  by it are in date. The prefix is versioned, so a change to the shape is a
+  prefix bump rather than a silent break. The signature covers every member of
+  the payload, including ones this version does not read, so an issuer can add
+  a field without breaking verifiers already installed. A date-only `expiry`
+  is in date through the whole of that UTC day.
+- **`canonicalise()`** — RFC 8785 JSON canonicalisation, forty lines and no new
+  dependency, tested against the RFC's own key-ordering vector.
+- **One startup line** on stderr naming the version, the `circle-ir` it is
+  running against, the state, and any module loaded. Never the token, and never
+  the endpoint's value.
+
+### Changed
+- **The bin moved from `dist/index.js` to `dist/bin.js`.** The bin *name*,
+  `mcp-server-cognium-dev`, is unchanged, so `npx @cognium/mcp-server` and every
+  existing client configuration keep working. This is the breaking part of the
+  minor bump: anything that executed the file path directly must point at
+  `dist/bin.js`. Importing the package no longer attaches a transport to the
+  importing process's stdin and stdout.
+- **Server name and version come from the manifest.** They were string literals
+  and had drifted to `0.1.0` while the package was at `0.1.21`, so the
+  `initialize` handshake under-reported the version. It now reports the real one.
+- Coverage thresholds ratcheted to the newly measured values (94 statements,
+  84 branches, 96 functions, 96 lines).
+
+### Fixed
+- A module that is absent, broken, wrongly shaped, built against another
+  `circle-ir` minor, or throwing from `register` can no longer take the server
+  down. Each case is refused on one stderr line and the eleven built-in tools
+  serve as normal. A patch-level `circle-ir` difference is accepted on purpose:
+  that is the release-time pin check's job, not the loader's.
+
 ## [0.1.21] - 2026-09-30
 
 ### Changed

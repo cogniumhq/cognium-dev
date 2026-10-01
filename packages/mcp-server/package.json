@@ -1,12 +1,12 @@
 {
   "name": "@cognium/mcp-server",
-  "version": "0.1.21",
+  "version": "0.2.0",
   "description": "Model Context Protocol server exposing the circle-ir SAST engine as structured tools for LLM agents (Claude Desktop, Claude Code, Cursor, cognium-ai).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "bin": {
-    "mcp-server-cognium-dev": "dist/index.js"
+    "mcp-server-cognium-dev": "dist/bin.js"
   },
   "exports": {
     ".": {
@@ -21,7 +21,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/index.js",
+    "build": "tsc && chmod +x dist/bin.js",
     "clean": "rm -rf dist *.tsbuildinfo",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

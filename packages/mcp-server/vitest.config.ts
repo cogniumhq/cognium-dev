@@ -7,7 +7,8 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: [
-        'src/index.ts',        // Bin entry point — wires stdio transport, nothing to assert
+        'src/bin.ts',          // Bin entry point — wires stdio transport, nothing to assert
+        'src/index.ts',        // Library barrel (re-exports only)
         'src/resources/index.ts', // Barrel file (re-exports only)
         'src/tools/types.ts',  // Type definitions only
       ],
@@ -20,13 +21,23 @@ export default defineConfig({
       // filesystem error paths in util/files:
       // 92.81 stmts / 80.64 branches / 95.69 funcs / 95.50 lines.
       //
-      // What remains is mostly describe-source.ts (75/53.84) and the
-      // list-entry-points framework branches (57.14).
+      // Re-measured 2026-10-01 with the optional-module seam, the canonical
+      // token format and their tests:
+      // 94.27 stmts / 84.83 branches / 96.96 funcs / 96.38 lines. Ratcheted.
+      //
+      // That measurement did not reproduce in CI (93.99 stmts): the
+      // unreadable-directory test relied on `chmod 000`, which root ignores,
+      // so CI skipped two statements a laptop covered. The test no longer
+      // depends on permissions; measured the same day at
+      // 94.33 stmts / 85.18 branches / 97.01 funcs / 96.42 lines.
+      //
+      // What remains is mostly describe-source.ts, attack-surface-summary's
+      // roll-up branches and the list-entry-points framework branches.
       thresholds: {
-        statements: 91,
-        branches: 78,
-        functions: 94,
-        lines: 94,
+        statements: 94,
+        branches: 84,
+        functions: 96,
+        lines: 96,
       },
     },
   },
