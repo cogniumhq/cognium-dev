@@ -5,35 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- **#530: taint rides a `StringBuilder` from `Append` through `ToString()`.**
-  Appending a tainted value did not taint the builder, so reading it back
-  produced an untainted value — a statement accumulated across several calls was
-  invisible while the identical statement concatenated in one expression was
-  caught. Not tied to one sink family: it hid SQL injection as readily as code
-  injection, and a `StringBuilder` is the idiomatic way to build anything
-  multi-line in C#.
-
-  Same shape as #271's ADO.NET command-object taint: taint enters an object and
-  is read back later, so it has to ride the object. `Append`, `AppendLine`,
-  `AppendFormat` and `Insert` all write through; `Replace` is deliberately
-  excluded, since it can as easily be removing the tainted text as adding it.
-
-  Receiver-gated to variables declared as a `StringBuilder` — `Append` and
-  `Insert` are far too common as names to match on a bare receiver.
-
-  Two scoping rules keep it honest, both measured rather than assumed:
-  - the referenced variable must appear in a **code** position: a name occurring
-    only inside a string literal (`"… WHERE id=@id"`, the safe parameterized
-    form) or inside a comment does not count;
-  - a seeded builder **cannot escape its method**. The variable scan matches by
-    name across the whole file and Juliet reuses `sourceCode` in `Bad` and in
-    every `Good*` variant, so without this a seed created correctly inside
-    `Bad` linked to the sink inside `GoodG2B`, whose own `data` is a hardcoded
-    constant. That one gate removed **160 of 241** false positives.
+## [4.9.29] - 2026-09-30
 
 ### Added
 
@@ -66,9 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sanitizers are credited on the flow surface. Crediting them (#518) would clear
   this entire set.
 
-## [4.9.29] - 2026-09-30
-
-### Added
 
 - **#502: C# I/O, network and database reads are taint sources.** Mirrors the
   Java model one for one — `io_input`/high for console and file reads
@@ -108,6 +77,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `new StreamReader(path)` still is. Latent until C# had socket sources.
 
 ### Fixed
+
+- **#530: taint rides a `StringBuilder` from `Append` through `ToString()`.**
+  Appending a tainted value did not taint the builder, so reading it back
+  produced an untainted value — a statement accumulated across several calls was
+  invisible while the identical statement concatenated in one expression was
+  caught. Not tied to one sink family: it hid SQL injection as readily as code
+  injection, and a `StringBuilder` is the idiomatic way to build anything
+  multi-line in C#.
+
+  Same shape as #271's ADO.NET command-object taint: taint enters an object and
+  is read back later, so it has to ride the object. `Append`, `AppendLine`,
+  `AppendFormat` and `Insert` all write through; `Replace` is deliberately
+  excluded, since it can as easily be removing the tainted text as adding it.
+
+  Receiver-gated to variables declared as a `StringBuilder` — `Append` and
+  `Insert` are far too common as names to match on a bare receiver.
+
+  Two scoping rules keep it honest, both measured rather than assumed:
+  - the referenced variable must appear in a **code** position: a name occurring
+    only inside a string literal (`"… WHERE id=@id"`, the safe parameterized
+    form) or inside a comment does not count;
+  - a seeded builder **cannot escape its method**. The variable scan matches by
+    name across the whole file and Juliet reuses `sourceCode` in `Bad` and in
+    every `Good*` variant, so without this a seed created correctly inside
+    `Bad` linked to the sink inside `GoodG2B`, whose own `data` is a hardcoded
+    constant. That one gate removed **160 of 241** false positives.
+
 
 - **`assignRe` bound the wrong variable on a single-line `using` block.**
   `using (StreamReader sr = …) { data = sr.ReadLine(); }` — anchored and greedy,

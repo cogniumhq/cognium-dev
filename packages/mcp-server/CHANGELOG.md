@@ -13,8 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the default taint config, CWE-81 goes 0/9 → **8/9**, and cross-file paths on
   the Juliet `_5xx`/`_7xx` sets go from 0 to 505 (272 true positives), with
   nothing lost. Driven by #539 (a `#if` directive hid every class member), #502
-  (I/O, network and database reads as sources) and #542 (response sinks follow
-  the declared type, not the receiver name). No MCP tool, schema or
+  (I/O, network and database reads as sources), #542 (response sinks follow the
+  declared type, not the receiver name) and #530 + #503 part 2 (taint crosses a
+  `StringBuilder`, and CodeDOM/Roslyn compilation are code-injection sinks —
+  CWE-94 goes 0/10 to **10/10**, taking the 10 scored families to **115/123**,
+  93.5%). No scored C# family is at zero any more. No MCP tool, schema or
   response-shape changes.
 
 ## [0.1.20] - 2026-09-30
