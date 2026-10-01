@@ -88,6 +88,49 @@ export function extractTypes(tree: Tree, cache?: NodeCache, language?: Supported
  * parameters as interprocedural taint sources; fields/inheritance/attributes
  * are left minimal for the spike.
  */
+/**
+ * Direct members of a C# `declaration_list`, with conditional-compilation
+ * wrappers flattened (cognium-dev#539).
+ *
+ * tree-sitter's C# grammar keeps a member declared inside `#if …/#endif` in the
+ * tree, but nests it one level down under a `preproc_*` node:
+ *
+ *     declaration_list
+ *       preproc_if            [#if, parenthesized_expression, method_declaration, #endif]
+ *
+ * A loop over `body.child(i)` therefore sees `preproc_if` instead of the
+ * method and skips it, so a class whose members are all guarded contributes
+ * **zero** methods and fields. That is not a corner case: `#if DEBUG` /
+ * `#if NET6_0_OR_GREATER` are ordinary C#, and every NIST Juliet C# file wraps
+ * its members in `#if (!OMITBAD)` / `#if (!OMITGOOD)`.
+ *
+ * The consequence was silent and wide: `ir.types[].methods[].start_line` /
+ * `end_line` is what the #361 method-scoping gate scopes a source→sink pairing
+ * against, so with no ranges the gate cannot refuse a pairing that crosses a
+ * method boundary.
+ *
+ * Both arms of a `#if`/`#else` are yielded. Which arm a given build would
+ * compile depends on symbols defined outside the file, and for taint analysis
+ * the sound choice is to consider every member that could be compiled rather
+ * than guess a configuration. Nesting recurses, so `#if` inside `#if` works.
+ */
+function csharpMemberNodes(body: Node | null): Node[] {
+  if (!body) return [];
+  const out: Node[] = [];
+  const visit = (parent: Node, depth: number): void => {
+    // Guard against a pathological grammar nesting; real code never approaches this.
+    if (depth > 32) return;
+    for (let i = 0; i < parent.childCount; i++) {
+      const c = parent.child(i);
+      if (!c) continue;
+      if (c.type.startsWith('preproc_')) visit(c, depth + 1);
+      else out.push(c);
+    }
+  };
+  visit(body, 0);
+  return out;
+}
+
 function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   const types: TypeInfo[] = [];
   const KINDS: Record<string, 'class' | 'interface' | 'enum'> = {
@@ -104,9 +147,8 @@ function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
       const methods: MethodInfo[] = [];
       const fields: FieldInfo[] = extractCSharpFields(body);
       if (body) {
-        for (let i = 0; i < body.childCount; i++) {
-          const m = body.child(i);
-          if (!m || m.type !== 'method_declaration') continue;
+        for (const m of csharpMemberNodes(body)) {
+          if (m.type !== 'method_declaration') continue;
           const mName = m.childForFieldName('name');
           const paramList = m.childForFieldName('parameters');
           const parameters: ParameterInfo[] = [];
@@ -165,9 +207,7 @@ function extractCSharpTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
 function extractCSharpFields(body: Node | null): FieldInfo[] {
   const fields: FieldInfo[] = [];
   if (!body) return fields;
-  for (let i = 0; i < body.childCount; i++) {
-    const c = body.child(i);
-    if (!c) continue;
+  for (const c of csharpMemberNodes(body)) {
     if (c.type === 'field_declaration') {
       let varDecl: Node | null = null;
       for (let k = 0; k < c.childCount; k++) {

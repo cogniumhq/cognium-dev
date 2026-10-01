@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **#539: a C# conditional-compilation directive no longer hides every member
+  of its class.** tree-sitter keeps a member declared inside `#if …/#endif` in
+  the tree but nests it one level down under `preproc_if`. The type extractor
+  looped over the class body's *direct* children looking for
+  `method_declaration`, saw `preproc_if`, and skipped it — so a class whose
+  members are all guarded contributed **zero** methods and fields. `#if DEBUG`
+  and `#if NET6_0_OR_GREATER` are ordinary C#, and every NIST Juliet C# file
+  wraps its members in `#if (!OMITBAD)` / `#if (!OMITGOOD)`.
+
+  The damage was silent and structural rather than cosmetic:
+  `ir.types[].methods[].start_line`/`end_line` is what the #361 method-scoping
+  gate uses to refuse a source→sink pairing that crosses a method boundary, and
+  it is what seeds method parameters as interprocedural sources. With no ranges,
+  both stopped working — on `CWE89_…_CommandText_01.cs` a sink inside
+  `GoodG2B` (whose source is a hardcoded string) was paired with a line inside
+  `Bad` that is not a registered source at all.
+
+  Both arms of an `#if`/`#else` are yielded: which arm a build compiles depends
+  on symbols defined outside the file, so for taint analysis the sound choice is
+  to consider every member that could be compiled rather than guess a
+  configuration. Nesting recurses.
+
+  **Measured, project mode** (`analyzeProject`, what `scan` and the MCP server
+  use) over the 154 Juliet C# `_5xx` cross-file files of CWE113:
+
+  | | 4.9.28 | with this fix |
+  | --- | --- | --- |
+  | cross-file taint paths | **0** | **84** |
+  | in a `Bad*` method (true positives) | 0 | **42** |
+  | in a `Good*` method | 0 | 42 |
+
+  All 42 false positives are `GoodB2G*` — bad source into a *sanitized* sink,
+  which is the known consequence of the flows surface not consulting
+  `TaintSanitizers`, not a new defect. Nothing is lost: 4.9.28 reported no
+  cross-file C# path at all on this corpus.
+
+  Per-file analysis additionally surfaces 130 `GoodG2BSink` pairings that
+  project mode does not, because only the caller shows the argument is a
+  constant. Consumers calling `analyze()` one file at a time will see those;
+  `analyzeProject()` resolves them.
+
 ## [4.9.28] - 2026-09-30
 
 A C# precision and recall pass. **Read the "Consumer impact" note below before
