@@ -153,9 +153,53 @@ export function generateFindings(
     ? sources.filter(s => !isNonExecutableSourceLine(sourceCode, s.line, language))
     : sources;
 
+  // cognium-dev#509 — one C# SQL injection emitted TWO findings, because both
+  // the command constructor and the execute call are registered sinks and the
+  // same source pairs with each:
+  //
+  //   var cmd = new SqlCommand(q, conn);   // sink: method 'SqlCommand'
+  //   cmd.ExecuteReader();                 // sink: class  'SqlCommand'
+  //
+  // That is one vulnerability reported twice — 2x inflation on C# SQL true
+  // positives and 2x verification spend. #302 stated the intent ("one finding,
+  // at the Execute* call") but the dedup below groups by (sink.line, type), so
+  // two different lines survive as two findings.
+  //
+  // Suppress the CONSTRUCTOR sink when an execute-style sink of the same type
+  // is class-scoped to that same command type in this file, keeping the
+  // execute call as the reported location. When there is no execute sink —
+  // `new SqlCommand(tainted)` with nothing run on it — the constructor is the
+  // only sink and still reports.
+  const constructorSinkLinesToSkip = new Set<number>();
+  if (language === 'csharp') {
+    const classScopedTypes = new Map<string, Set<string>>();
+    for (const sk of sinks) {
+      if (!sk.class) continue;
+      const set = classScopedTypes.get(sk.class) ?? new Set<string>();
+      set.add(sk.type);
+      classScopedTypes.set(sk.class, set);
+    }
+    for (const sk of sinks) {
+      if (!sk.method) continue;
+      if (classScopedTypes.get(sk.method)?.has(sk.type)) {
+        constructorSinkLinesToSkip.add(sk.line);
+      }
+    }
+  }
+
   // For each source, find potential paths to sinks
   for (const source of gatedSources) {
     for (const sink of sinks) {
+      // #509 — the constructor half of a constructor+execute pair. The
+      // constructor sink has `method` set and no `class`; the execute sink is
+      // class-scoped to the command type.
+      if (
+        constructorSinkLinesToSkip.has(sink.line) &&
+        sink.method !== undefined &&
+        sink.class === undefined
+      ) {
+        continue;
+      }
       // Check if this source type can reach this sink type
       if (!canSourceReachSink(source.type, sink.type)) {
         continue;
@@ -163,6 +207,64 @@ export function generateFindings(
 
       // Try to find a path through the DFG
       const pathResult = findTaintPath(source, sink, dfg);
+
+      // cognium-dev#361 left the DIRECTION of the proximity window open, noting
+      // that a field or `interprocedural_param` source legitimately sits
+      // outside the method body and that a loop can carry a later line's value
+      // back round. Both of those are covered by requiring no flow backing: if
+      // the taint layer can prove the loop-carried or field-carried flow, the
+      // finding is flow-backed and survives this gate untouched.
+      //
+      // What is left is a pairing that claims a value read AFTER the sink
+      // reached it, with nothing proving it. The clearest instance is a read
+      // taken from the very stream the sink opened:
+      //
+      //   using (StreamReader sr = new StreamReader(data))   // path sink, line N
+      //   {   IO.WriteLine(sr.ReadLine());   }               // io_input source, line N+2
+      //
+      // The value read out of the file cannot be the path used to open it.
+      // Measured on Juliet C#, 1,658 such pairings — 1,338 of them
+      // path_traversal, and every one findings-only with no flow behind it.
+      //
+      // Scoped to C#: the same rule wants its own measurement per language,
+      // and #508's Java gate is a standing reminder of what skipping that
+      // costs.
+      if (
+        language === 'csharp' &&
+        flowsKnown &&
+        source.line > sink.line &&
+        !isFlowBacked(sink.type, sink.line) &&
+        source.type !== 'interprocedural_param' &&
+        !(source.variable && fieldNames.has(source.variable))
+      ) {
+        continue;
+      }
+
+      // #508 — an argument-less sink (`cmd.ExecuteReader()`) can only be
+      // reached through its receiver, and the sink row is identical whether
+      // that receiver is constant or tainted. Only the taint layer can tell,
+      // so require flow backing rather than accepting a proximity pairing.
+      // Skipped entirely when the caller did not pass `flows` (the 8-argument
+      // signature), so legacy callers keep their previous behaviour.
+      //
+      // MEASURED AND SCOPED TO C#. Applied to Java this costs real detections:
+      // OWASP Benchmark, 2740 files, `--surface both` — removed=244, added=0,
+      // **tp_loss=133** on `real=true` files (e.g. BenchmarkTest02632
+      // `F:sql_injection@68->79 expected=true/sqli`). Java's
+      // `stmt.executeQuery()` shape does carry genuine object-carried flows
+      // that the taint layer does not prove but the pairing did, so requiring
+      // flow backing there silences them. On Juliet C# the same rule removes
+      // 502 findings with zero recall change (13/123 -> unchanged, and 97/123
+      // when stacked with #502), so it is right for C# and wrong for Java.
+      // Widening it needs the Java object-carried gap fixed first (#387).
+      if (
+        language === 'csharp' &&
+        flowsKnown &&
+        isArgumentLessSinkCall(sink) &&
+        !isFlowBacked(sink.type, sink.line)
+      ) {
+        continue;
+      }
 
       if (pathResult.pathExists || isProximityVulnerability(source, sink, methodRanges, fieldNames)) {
         // Drop the pair when a sanitizer covers the sink (at the sink line, or
@@ -255,6 +357,16 @@ export function generateFindings(
     if (fl.sanitized) continue;
     const sink = sinks.find(sk => sk.line === fl.sink_line && sk.type === fl.sink_type);
     if (!sink) continue;
+    // #509 — the constructor half of a C# constructor+execute pair. The taint
+    // layer proves a flow to BOTH sinks, so this loop emits both unless the
+    // constructor is suppressed here as well as in the pairing loop above.
+    if (
+      constructorSinkLinesToSkip.has(sink.line) &&
+      sink.method !== undefined &&
+      sink.class === undefined
+    ) {
+      continue;
+    }
     const src = sources.find(sc => sc.line === fl.source_line)
       ?? { type: fl.source_type, location: `${fl.source_type} at line ${fl.source_line}`,
            severity: 'high' as const, line: fl.source_line, confidence: fl.confidence };
@@ -517,6 +629,33 @@ interface PathResult {
 /**
  * Find a taint path from source to sink through the DFG.
  */
+/**
+ * True when the sink call takes NO arguments, e.g. `cmd.ExecuteReader()`.
+ *
+ * cognium-dev#508 — such a sink cannot carry taint through an argument, so the
+ * tainted value has to ride the RECEIVER (the #302 object-carried model:
+ * `new SqlCommand(q, conn)` then `cmd.ExecuteNonQuery()`). Nothing about the
+ * sink itself distinguishes a dangerous `cmd` from a constant one — both emit
+ * the identical sink row:
+ *
+ *   D4  var cmd = new SqlCommand("SELECT * FROM u", conn); cmd.ExecuteReader();  // safe
+ *   D5  var cmd = new SqlCommand($"SELECT {input}", conn); cmd.ExecuteReader();  // SQLi
+ *
+ * so pairing a source with it by proximity reports CWE-89 for any method that
+ * merely has a `string` parameter and an ADO.NET execute call. Only the taint
+ * layer can tell the two apart, and it does: D4 yields `flows = 0`, D5 yields
+ * `flows = 2`. Hence an argument-less sink requires flow backing.
+ */
+function isArgumentLessSinkCall(sink: TaintSink): boolean {
+  const code = sink.code ?? '';
+  const method = sink.method ?? '';
+  if (!code || !method) return false;
+  // `Method()` / `Method ( )` with nothing between the parentheses. A word
+  // boundary, NOT a negated-class guard: the receiver dot in
+  // `cmd.ExecuteReader()` must be allowed to precede the name.
+  return new RegExp(`\\b${method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(\\s*\\)`).test(code);
+}
+
 function findTaintPath(source: TaintSource, sink: TaintSink, dfg: DFG): PathResult {
   const hops: TaintHop[] = [];
   const variables: string[] = [];
@@ -565,12 +704,35 @@ function findTaintPath(source: TaintSource, sink: TaintSink, dfg: DFG): PathResu
 
   // Fallback: check for simple proximity-based path
   // If source and sink are close, there might be a direct flow
+  //
+  // cognium-dev#508 — this used to accept ANY variable defined within one line
+  // of the source that was also used within one line of the sink, without ever
+  // checking that the variable had something to do with the source. The
+  // variable carrying the verdict was routinely unrelated: on the C# shape
+  //
+  //     public void Run(string input) {          // source: `input`
+  //       int n = input.Length;
+  //       var cmd = new SqlCommand("SELECT * FROM u", conn);
+  //       cmd.ExecuteReader();                   // sink
+  //     }
+  //
+  // the intersection was `conn` — the SqlConnection — so every C# method with
+  // a string parameter and an ADO.NET execute call reported CWE-89 with
+  // `taint.flows = 0`. It fired with the connection as a field, as a local,
+  // absent entirely, and with the parameter in a DIFFERENT method, because
+  // `pathExists` short-circuits the #361 method scoping in the caller.
+  //
+  // The pair is now accepted only when the shared variable IS the source's
+  // own. When the source does not name a variable there is nothing to compare
+  // against, so the original behaviour is kept rather than dropping those
+  // pairs — this change is strictly tighter, never looser.
   if (Math.abs(source.line - sink.line) <= 10) {
     // Look for common variables
     const sourceVars = new Set(sourceDefs.map(d => d.variable));
     const sinkVars = new Set(sinkUses.map(u => u.variable));
 
     for (const v of sourceVars) {
+      if (source.variable !== undefined && v !== source.variable) continue;
       if (sinkVars.has(v)) {
         hops.push({
           file: '',

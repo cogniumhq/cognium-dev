@@ -6,6 +6,12 @@
 
 ## In Progress
 
+- **`@cognium/mcp-server` 0.2.0 — merged to `main` (#550, `1338cae`), admin-merged past the code-owner review requirement. Not published.** The package becomes importable as a library (`dist/index.js` is side-effect-free; the stdio bin moves to `dist/bin.js`, bin name unchanged) and gains an optional tool-module seam, three reported states (`floor` / `extended` / `commercial`) and offline Ed25519 licence verification. `tools/list` on a default install is the same eleven tools as 0.1.21.
+  - **Breaking:** anything executing `dist/index.js` by file path must point at `dist/bin.js`.
+  - **Review fixes (`c3b6cd5`):** a date-only `expiry` is in date through that whole UTC day; the signature covers every payload member, including ones the verifier does not read; a refusal no longer claims floor-only next to a loaded module.
+  - **Coverage:** thresholds 94 / 84 / 96 / 96, measured identically in CI and locally (94.33 statements) once the unreadable-directory test stopped depending on `chmod`, which root ignores.
+  - **Owner actions:** publish 0.2.0; generate the production verification key (until then every token reports `no-key`).
+
 - **Go recall + precision batch — merged, unreleased on `main` (4.9.23 candidates). All four consumer-visible, Go-only, each measured on the 214-repo vuln-localization Go corpus this session built.** They interlock: #455 clears the CWE-668 noise floor, #447/#459 add sources whose escapes would have landed in it, #457 turns the residual `Fprintf` escapes into real xss.
   - **#455** (`c25b19f`) — builtins, error construction, formatters, loggers, pure stdlib helpers are no longer `external_taint_escape`. **78% of all Go taint flows were CWE-668** (9,469 vs 2,742 to modelled sinks); removes 4,099, **0 classical lost**, +1 sound `redos` the escape had masked. Admin-merged (branch protection #450 requires a code-owner review; author cannot self-approve).
   - **#447** (`66681c5`, coreteam-approved) — gRPC request messages are `http_body` sources, scoped to the unary-handler parameter. Azure secrets-store CVE 0 → exact cross-file path. Only `analyzeProject` consumers can credit it; #394 is really 3 + 1 (vault reads `pflag` CLI flags, not gRPC) so it stays open.

@@ -5,6 +5,478 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **#541: the serde data formats that #484 silently uncovered are registered
+  again.** 4.9.28 removed the classless `from_str` / `from_slice`
+  deserialization rows, which had been matching every `T::from_str` —
+  `u32::from_str`, `Url::from_str`, `PublicKey::from_slice`, i.e. ordinary
+  `FromStr` and byte parsing that cannot instantiate an attacker-chosen type.
+  That removal was right and stays.
+
+  What was missed is that the same classless rows had also been the **only**
+  thing covering every serde data format without an explicit entry. Four formats
+  had class-scoped rows and kept working; the rest lost their sink silently. The
+  reported case was `rmp_serde::from_slice` on bytes read straight off a
+  `TcpStream` — a genuine CWE-502 — which took the Rust synthetic suite from
+  **92.3% to 89.6%** (deserialization 6 TP / 0 FN → 5 TP / 1 FN).
+
+  Class-scoped rows added for `rmp_serde`, `postcard`, `serde_cbor`, `ciborium`,
+  `quick_xml` and `serde_xml_rs`, plus the missing entry points of formats that
+  were already present (`serde_yaml::from_slice`, `toml::from_slice`,
+  `ron::from_reader`, `bincode::from_slice` / `deserialize_from`). Each is a
+  serde *data format* entry point, whose whole job is to build a typed value out
+  of untrusted bytes or text.
+
+  Both directions are now pinned by tests: the data formats register (including
+  the imported `use rmp_serde::from_slice;` form, which only matches because of
+  #484's `::` separator fix), and `u32::from_str` / `Url::from_str` /
+  `PublicKey::from_slice` / `IpAddr::from_str` stay clean.
+
+  **Lesson recorded with the fix:** 4.9.28's changelog claimed "the class-scoped
+  rows cover both call forms". They covered both call forms *of the four crates
+  that had rows* — which was verified — but nothing checked the set of crates the
+  classless row had been reaching. Removing a classless pattern needs an
+  inventory of what it was matching, not only a check that the replacements work.
+
+## [4.9.29] - 2026-09-30
+
+### Added
+
+- **#503 part 2: CodeDOM and Roslyn runtime compilation are code-injection
+  sinks** (CWE-94) — `CompileAssemblyFromSource`, `CompileAssemblyFromSourceBatch`
+  and `CSharpSyntaxTree.ParseText`. The source arguments begin at position 1,
+  since position 0 is the `CompilerParameters`. These land **with** #530 rather
+  than before it: the Juliet CWE-94 corpus accumulates the compiled source
+  through `Append`, so until taint crossed the builder the sink registered and
+  nothing ever reached it.
+
+  **Measured** — csharp-juliet recall over the 123 `_01` baseline files of the 10
+  scored CWEs, default taint config:
+
+  | | CWE-94 | total |
+  | --- | --- | --- |
+  | 4.9.29 | **0 / 10** | 105 / 123 (85.4%) |
+  | with these | **10 / 10** | **115 / 123 (93.5%)** |
+
+  CWE-94 was the last scored family at zero. Three are now at 100%: CWE-89,
+  CWE-643 and CWE-94.
+
+  **Precision cost, stated plainly.** Across the ten families: **0 lost, 157
+  gained — 76 true positives and 81 false positives**, hand-attributed rather
+  than read off a gate verdict. Every one of the method-attributed false
+  positives is `GoodB2G*`: a tainted value reaching a **sanitized** sink, which
+  is #518 / #286-A, pre-existing and separately tracked. Worth reading the ~1:1
+  ratio carefully — Juliet pairs each `Bad` case with a sanitized twin by
+  construction, so any newly-detectable family shows roughly 1:1 until
+  sanitizers are credited on the flow surface. Crediting them (#518) would clear
+  this entire set.
+
+
+- **#502: C# I/O, network and database reads are taint sources.** Mirrors the
+  Java model one for one — `io_input`/high for console and file reads
+  (`StreamReader.ReadLine` / `ReadToEnd`), `network_input`/high for socket and
+  HTTP-client reads (`TcpClient.GetStream`, `TcpListener.AcceptTcpClient`,
+  `WebClient.OpenRead` / `DownloadString`), and `db_input`/**medium** for a
+  database row read (`SqlDataReader`), the same severity split Java draws
+  between `BufferedReader.readLine` and `ResultSet.getString`.
+
+  Seven of the ten scored Juliet C# families previously scored **0.0%** because
+  their sources are exactly these reads, and the `Connect_tcp` → `CommandText`
+  family detected nothing at all.
+
+  **Measured in project mode** (`analyzeProject`, what `scan` and the MCP server
+  use), on the Juliet C# `_5xx` cross-file sets, 378 files each, on top of #539:
+
+  | | CWE113 (TP / FP) | CWE89 (TP / FP) |
+  | --- | --- | --- |
+  | without this change | 44 / 44 | 60 / 48 |
+  | with it | **110** / 110 | **162** / 123 |
+
+  **Nothing is lost** — no removals in any configuration, on either surface.
+  Every project-mode false positive is `GoodB2G*`: a bad source reaching a
+  *sanitized* sink. That is sanitizer credit not being applied (#518, #286-A),
+  pre-existing and tracked, not introduced here.
+
+  Per-file `analyze()` additionally reports pairings that project mode does not,
+  because only the caller shows an argument is a constant. On the per-file
+  surface the classical additions across ten families are 115 true positives to
+  96 false positives, with `xss`, `ldap_injection`, `command_injection` and
+  `format_string` **100% true positive**; the false positives are confined to
+  `sql_injection` and `xpath_injection`. Consumers scanning a project rather
+  than a file at a time see the project-mode numbers.
+
+- **`SinkPattern.safe_if_stream_arg_at` applied to `StreamReader` /
+  `StreamWriter`.** `new StreamReader(tcp.GetStream())` is not CWE-22 while
+  `new StreamReader(path)` still is. Latent until C# had socket sources.
+
+### Fixed
+
+- **#530: taint rides a `StringBuilder` from `Append` through `ToString()`.**
+  Appending a tainted value did not taint the builder, so reading it back
+  produced an untainted value — a statement accumulated across several calls was
+  invisible while the identical statement concatenated in one expression was
+  caught. Not tied to one sink family: it hid SQL injection as readily as code
+  injection, and a `StringBuilder` is the idiomatic way to build anything
+  multi-line in C#.
+
+  Same shape as #271's ADO.NET command-object taint: taint enters an object and
+  is read back later, so it has to ride the object. `Append`, `AppendLine`,
+  `AppendFormat` and `Insert` all write through; `Replace` is deliberately
+  excluded, since it can as easily be removing the tainted text as adding it.
+
+  Receiver-gated to variables declared as a `StringBuilder` — `Append` and
+  `Insert` are far too common as names to match on a bare receiver.
+
+  Two scoping rules keep it honest, both measured rather than assumed:
+  - the referenced variable must appear in a **code** position: a name occurring
+    only inside a string literal (`"… WHERE id=@id"`, the safe parameterized
+    form) or inside a comment does not count;
+  - a seeded builder **cannot escape its method**. The variable scan matches by
+    name across the whole file and Juliet reuses `sourceCode` in `Bad` and in
+    every `Good*` variant, so without this a seed created correctly inside
+    `Bad` linked to the sink inside `GoodG2B`, whose own `data` is a hardcoded
+    constant. That one gate removed **160 of 241** false positives.
+
+
+- **`assignRe` bound the wrong variable on a single-line `using` block.**
+  `using (StreamReader sr = …) { data = sr.ReadLine(); }` — anchored and greedy,
+  the pattern captured `sr` with the whole remainder as its right-hand side, so
+  the read bound to the reader instead of `data`. The embedded-assignment path
+  handles this shape but only ran when `assignRe` failed outright; it now also
+  runs when the captured right-hand side crosses a block boundary. (#504 was the
+  mirror of this in the other direction.)
+
+- **#542: a C# response sink follows the receiver's declared type, not its
+  name.** `Response.StatusDescription = … + data` registered a CWE-81 sink while
+  `resp.StatusDescription = … + data` registered nothing, because the property
+  gate tested the receiver's spelling. This is the sink-side twin of #501, which
+  fixed the same mistake on the source side (`HttpRequest req` was missed for not
+  being spelled `Request`); #526 is the Java version.
+
+  The more consequential half was underneath it: `buildCSharpReceiverTypeMap`
+  walked only `variable_declaration`, so **method parameters had no resolvable
+  type at all** — and `void Bad(HttpRequest req, HttpResponse resp)` is the
+  canonical ASP.NET handler shape. Every receiver gate keyed on a declared type
+  therefore failed silently for a parameter; `BaseAddress` (#336) had the same
+  latent hole for an `HttpClient` passed in rather than constructed locally.
+
+  **Measured** — csharp-juliet recall over the 123 `_01` baseline files of the 10
+  scored CWEs, default taint config:
+
+  | | CWE-81 | total |
+  | --- | --- | --- |
+  | before | 0 / 9 | 97 / 123 (78.9%) |
+  | after | **8 / 9** | **105 / 123 (85.4%)** |
+
+  Ten-family flow comparison: **0 lost, 36 gained** — 29 in `Bad` methods, 7 in
+  `Good`. All 36 are `xss`, so adding parameters to the type map caused no
+  collateral matching in other sink families. In project mode
+  (`analyzeProject`) on the CWE-81 `_7xx` cross-file pairs it is pure gain:
+  **7 → 20 paths, all true positives, zero false positives**.
+
+  Known limitation, locked in a test rather than papered over: the receiver type
+  map is keyed by name with no scope tracking, so a local declaration of a given
+  name replaces a parameter's type for the whole file.
+
+- **#539: a C# conditional-compilation directive no longer hides every member
+  of its class.** tree-sitter keeps a member declared inside `#if …/#endif` in
+  the tree but nests it one level down under `preproc_if`. The type extractor
+  looped over the class body's *direct* children looking for
+  `method_declaration`, saw `preproc_if`, and skipped it — so a class whose
+  members are all guarded contributed **zero** methods and fields. `#if DEBUG`
+  and `#if NET6_0_OR_GREATER` are ordinary C#, and every NIST Juliet C# file
+  wraps its members in `#if (!OMITBAD)` / `#if (!OMITGOOD)`.
+
+  The damage was silent and structural rather than cosmetic:
+  `ir.types[].methods[].start_line`/`end_line` is what the #361 method-scoping
+  gate uses to refuse a source→sink pairing that crosses a method boundary, and
+  it is what seeds method parameters as interprocedural sources. With no ranges,
+  both stopped working — on `CWE89_…_CommandText_01.cs` a sink inside
+  `GoodG2B` (whose source is a hardcoded string) was paired with a line inside
+  `Bad` that is not a registered source at all.
+
+  Both arms of an `#if`/`#else` are yielded: which arm a build compiles depends
+  on symbols defined outside the file, so for taint analysis the sound choice is
+  to consider every member that could be compiled rather than guess a
+  configuration. Nesting recurses.
+
+  **Measured, project mode** (`analyzeProject`, what `scan` and the MCP server
+  use) over the 154 Juliet C# `_5xx` cross-file files of CWE113:
+
+  | | 4.9.28 | with this fix |
+  | --- | --- | --- |
+  | cross-file taint paths | **0** | **84** |
+  | in a `Bad*` method (true positives) | 0 | **42** |
+  | in a `Good*` method | 0 | 42 |
+
+  All 42 false positives are `GoodB2G*` — bad source into a *sanitized* sink,
+  which is the known consequence of the flows surface not consulting
+  `TaintSanitizers`, not a new defect. Nothing is lost: 4.9.28 reported no
+  cross-file C# path at all on this corpus.
+
+  Per-file analysis additionally surfaces 130 `GoodG2BSink` pairings that
+  project mode does not, because only the caller shows the argument is a
+  constant. Consumers calling `analyze()` one file at a time will see those;
+  `analyzeProject()` resolves them.
+
+## [4.9.28] - 2026-09-30
+
+A C# precision and recall pass. **Read the "Consumer impact" note below before
+upgrading: C# scans report substantially fewer findings — all of the removals
+are `external_taint_escape` noise, and the release also adds 74 classical
+detections.**
+
+### Fixed
+
+- **#328 / #287: the const-prop `variable_not_tainted` veto gains two scoped
+  exemptions.** The predicate discarded a flow whenever const-prop had tracked
+  the step variable without marking it tainted — treating absence of
+  information as proof of cleanliness. Two narrow exemptions now apply: a chain
+  crossing a self-reassignment (`v = v.Trim()`) that ends inside the
+  source→sink span, and a chain ending at the source's own assignment. Lifting
+  the veto globally was measured and rejected: +1 on-category true positive for
+  +311 false positives on OWASP Benchmark Java. Both gates are zero-delta
+  (OWASP Java 2740 files with `--surface both`; BenchmarkPython 1230 files),
+  and Juliet C# baseline recall goes 13 → 16 of 123.
+
+- **#522: `null`, numeric, boolean and character arguments are recognised as C#
+  literals.** `extractCSharpArguments` populated `literal` only for
+  `string_literal`, so `null`, `true`, `42`, `'c'` and `@"verbatim"` were
+  indistinguishable from a variable and a sink taint-gated on that position
+  fired on a compile-time constant. The measured case is
+  `new SqlCommand(null, connection)` reported as CWE-89 with a SQL argument
+  that is literally `null`. Removes 653 findings on the 10 scored Juliet C#
+  families, adds none; `interpolated_string_expression` is deliberately
+  excluded, since `$"SELECT {input}"` is the genuine injection shape.
+
+  Published as "#502" in the 4.9.28 release notes on npm — that was wrong.
+  **#502 (C# network / file / database reads as taint sources) did not ship in
+  4.9.28 and remains open**; it is the prerequisite that gives these files a
+  source in the first place.
+
+- **#474: the `external_taint_escape` gate is ported to C#, then widened to
+  collection stores.** Once a real sink is correctly credited as safe, the
+  CWE-20 catch-all reported the tainted value escaping into the safe call
+  instead, so every false positive #272 fixed came back in another form.
+  Receiver-gates the static BCL classes and matches unambiguous derived-value
+  and logging verbs; a second pass adds `Add` / `AddLast` / `Insert` / `Push` /
+  `Enqueue`, since a value placed in a container has not left the program.
+  `Write` / `WriteLine` / `WriteAsync` are deliberately NOT name-matched —
+  `Response.Write` and ASP.NET Core `Response.WriteAsync` are the reflected-XSS
+  sinks. Removes 1,770 escape rows across the two passes, adds none, and loses
+  no classical flow.
+
+- **#508: an argument-less C# sink requires flow backing.**
+  `cmd.ExecuteReader()` takes no arguments, so it can only be reached through
+  its receiver, and the sink row is identical whether that receiver is constant
+  or tainted. Pairing a source with it by proximity reported CWE-89 for any
+  method with a `string` parameter and an ADO.NET execute call — with the
+  connection as a field, as a local, absent entirely, or with the parameter in
+  a different method. **Scoped to C# after measurement:** applied to Java the
+  same rule removed 133 real SQL injections on labelled-true OWASP files.
+  Removes 502 findings on Juliet C#, all on argument-less calls.
+
+- **#509: one C# SQL injection yields one finding.** Both the command
+  constructor and the execute call are registered sinks and the same source
+  paired with each, so one vulnerability surfaced twice — 2× inflation on C#
+  SQL true positives. The constructor is suppressed when an execute-style sink
+  of the same type is class-scoped to that command in the same file; when
+  nothing is executed on it, the constructor still reports.
+
+- **#272: a validating predicate followed by an early return is credited.**
+  `if (Array.IndexOf(Allowed, u.Host) < 0) return;` and
+  `if (!input.All(char.IsLetterOrDigit)) return;` left their sinks reporting.
+  The recogniser walks backward as well as forward, because the guard often
+  validates a derivation (`u.Host`) while the sink uses the original (`input`).
+  Only the rejecting direction counts. A user-defined boolean helper
+  (`if (!IsAllowed(input)) return;`, #286-B) is deliberately NOT credited —
+  trusting an arbitrary predicate by name would silence a real flow whenever
+  the helper does not validate.
+
+- **An unproven pairing whose source sits after its sink is dropped (C#).**
+  #361 left the direction of the proximity window open. A value read out of a
+  file cannot be the path used to open it:
+  `using (StreamReader sr = new StreamReader(data))` paired against
+  `sr.ReadLine()` two lines below. Field and `interprocedural_param` sources
+  are excluded and flow-backed findings pass through untouched, so a
+  loop-carried flow the taint layer can prove is unaffected. Removes 352
+  findings, all source-after-sink, and takes the `source_after_sink`
+  attribution metric from 352 to **0**.
+
+- **variable-shadowing: a declaration cannot shadow one on the same line.**
+  Every finding on juice-shop's `validateConfig.ts` read
+  `'success' shadows the outer declaration at line 32` — reported at line 32.
+  The DFG emits more than one def per declaration, and the existing nested-scope
+  guard scans the open range between the two lines, which is empty when they
+  are equal. Removes **130 false positives** on a 400-file TypeScript corpus,
+  adds none. Known cost: shadowing written entirely on one line is no longer
+  reported.
+
+- **#484 / #294: the `::` path separator is normalised for Rust sink matching.**
+  `matchesSinkPattern`'s bare-call branch built its expected tail with a dot —
+  its motivating case was Python's `from urllib.request import urlopen` — while
+  Rust resolution stores `serde_json::from_str`. Every *imported* form
+  (`use serde_json::from_str; from_str(&body)`, and the same for `serde_yaml`,
+  `toml`, `from_slice`) was therefore matched only by the classless
+  `from_str` / `from_slice` rows, which is why those rows could not be removed
+  without opening a false negative. With the separator normalised the
+  class-scoped rows cover both call forms and the classless rows are removed,
+  so ordinary `u32::from_str` / `Url::from_str` / `PublicKey::from_slice`
+  parsing is no longer CWE-502.
+
+### Added
+
+- **#503 (part 1), #340, #336: property assignments, casts and object
+  initialisers are surfaced as calls.** Three sink shapes no registry row could
+  reach, because the extractor emitted no call for them:
+  `Response.StatusDescription = data` (CWE-81), `(MarkupString)html` — Blazor's
+  raw-markup escape hatch, and the more common of the pair since
+  `@((MarkupString)html)` compiles from it — and
+  `new HttpClient { BaseAddress = new Uri(input) }` (CWE-918), where the
+  attacker controls the host of every relative request while the request
+  arguments stay constant. The cast is emitted as a constructor-shaped call so
+  the existing `MarkupString` row matches and the taint engine stays in charge:
+  a constant operand still reports nothing.
+
+- **`SinkPattern.safe_if_stream_arg_at`**, alongside the existing
+  `safe_if_class_literal_at` / `safe_if_string_literal_at`. Suppresses a sink
+  when the argument at that position is a stream-valued expression rather than
+  a path — `new StreamReader(tcp.GetStream())` is not CWE-22, while
+  `new StreamReader(path)` still is. Positive evidence only: an unrecognised
+  argument keeps firing, so it cannot remove an existing detection.
+
+### Consumer impact
+
+**C# scans report substantially fewer findings, and the size of the drop
+depends on which surface you read.** Measured 4.9.27 vs 4.9.28 over ten NIST
+Juliet C# taint families (150-file strided sample each, 1,500 files):
+
+| surface | 4.9.27 | 4.9.28 | change |
+| --- | --- | --- | --- |
+| `taint.flows` — what `cognium-dev scan` and the MCP server report | 506 | 355 | −30% |
+| `generateFindings` — the library-only findings surface | 1,021 | 624 | −39% |
+| C# sinks registered | 4,158 | 3,489 | −16% |
+
+On the three largest families the two surfaces move by different amounts, because
+#508, #509 and the backwards-pairing gate all live in `generateFindings`, which
+the CLI never calls:
+
+| family | `taint.flows` | `generateFindings` |
+| --- | --- | --- |
+| CWE89 SQL injection | 126 → 108 | 302 → 138 |
+| CWE78 command injection | 30 → 23 | 80 → 60 |
+| CWE81 XSS error message | 14 → 5 | 14 → 5 |
+
+**Removals are confined to one type.** All **225** removed flows in that sample
+are `external_taint_escape` (CWE-668) — the 506 → 355 net of −151 is those 225
+removals against the 74 additions below. No `sql_injection`, `command_injection`,
+`xss`, `xpath_injection` or other classical flow is lost in any family.
+
+Every removal was checked individually rather than inferred from a gate verdict:
+escapes on files with no sink, sinks taint-gated on a compile-time constant,
+argument-less sinks with no flow behind them, and pairings whose source sat
+after their sink.
+
+**There are additions, and they are classical detections.** The sample gains
+**74 flows** — 48 `xpath_injection`, 8 `ldap_injection`, 8 `command_injection`,
+6 `xss`, 3 `format_string`, 1 `crlf` — from the literal-recognition (#522) and
+source-binding work. CWE643 Xpath injection nets *upward*, 72 → 90. Of those 74,
+44 land in Juliet `Bad` methods (true positives) and 30 in `GoodB2G*` variants,
+where the sink is sanitized; the latter are the long-standing consequence of the
+flows surface not consulting `TaintSanitizers`, not a new defect in this release.
+
+Three consequences worth knowing before you upgrade:
+
+- **Some files that were flagged are now silent.** Where a file's only finding
+  was a mistyped CWE-20 escape, it now reports nothing. On Juliet C# that is
+  **174 `_7xa`/`_7xb` pairs** whose real cross-file detection was never
+  produced — the `a` half reads the source and the `b` half holds the sink, and
+  neither is resolved. Tracked as **#533**. CWE-exact scoring does not move,
+  because those escapes never scored; file-level localization does.
+- **The `source_after_sink` attribution metric goes to 0** on that corpus,
+  which matters for consumers that key on reported source position.
+- **A duplicated C# SQL injection still appears twice in `scan` output.** #509
+  collapses the constructor/execute pair on the `generateFindings` surface only.
+  A `new SqlCommand(tainted, conn)` followed by `cmd.ExecuteReader()` yields one
+  finding there and still two flows in `taint.flows`, so CLI and MCP users see
+  the pair. Deduplicating the flows surface is separate work.
+
+### Known issues
+
+- **#530: constant propagation never visits C# method calls.**
+  `invocation_expression` appears zero times in the whole const-prop module,
+  while Java's `method_invocation` appears ten times, so every const-prop rule
+  keyed on a method call is inert for C#. The existing StringBuilder taint rule
+  is one symptom: `sb.Append(tainted)` does not taint the builder, so
+  `sb.ToString()` at a sink is clean and Juliet C# CWE-94 scores 0.0% for want
+  of propagation rather than for want of a sink.
+- **#526: Java source detection is parameter-name sensitive.**
+  `HttpServletRequest req` reports; renaming it to `q` reports nothing. This is
+  #501's defect in Java.
+- **#515: a flow can credit the wrong source** when two sources of a compatible
+  type exist in one handler — it takes the first rather than the one the DFG
+  connects to the sink.
+- **#503 part 2** (the `CodeDomProvider.CompileAssemblyFromSource` rows) is not
+  shipped: it adds zero correctly-typed findings until #530 is fixed, because
+  Juliet always accumulates the program through a StringBuilder.
+
+## [4.9.27] - 2026-09-29
+
+### Fixed
+- **#508: the proximity fallback no longer pairs a sink with an unrelated
+  variable.** `findTaintPath` accepted any variable defined within one line of
+  the source that was also used within one line of the sink, without checking
+  that the variable had anything to do with the source. On C# ADO.NET code the
+  variable carrying that verdict was routinely `conn` — the `SqlConnection` —
+  so a method with a `string` parameter and an `ExecuteReader()` call reported
+  CWE-89 with `taint.flows = 0`, including when the parameter was in a
+  different method (the `pathExists` branch short-circuits the #361 method
+  scoping). The shared variable must now be the source's own; when the source
+  names no variable the previous behaviour is kept, so the change is strictly
+  tighter. Gate: OWASP Benchmark Java 2740 files — `removed=2 added=2
+  reattributed=2 tp_loss=0`, `detection-level: lost=0`, both changes being a
+  corrected source line on one file (`BenchmarkTest00030` 47 -> 44, which is
+  the `request.getParameterMap()` line rather than a derived hop). Juliet C#
+  CWE-89 1651 files — zero delta.
+- **#424: `analyzeProject` no longer aborts the process on a very large project.**
+  It retains every file's full `CircleIR` plus a `CodeGraph` per file for the
+  whole run, and `CrossFileResolver` then resolves with all of them live, so
+  NIST Juliet Java (40,855 files, ~216M chars) died with a V8
+  `Ineffective mark-compacts near heap limit` even at a 12 GB heap — no result,
+  no partial findings, and a signal-kill a caller cannot distinguish from a
+  crash in its own code. Two new options bound the per-file phase:
+  `maxProjectSourceChars` (total source characters) and `maxProjectFiles`.
+  **Both default to `0` (off), so no existing caller changes behaviour.** When
+  a ceiling is reached the remaining files are skipped, everything analysed so
+  far is kept including cross-file analysis over that subset, and
+  `ProjectAnalysis.project_size_budget_exceeded` is set. This does not lower
+  the memory peak — only a streaming redesign of `analyzeProject` /
+  `CrossFileResolver` can, and that stays a separate API decision — it
+  converts an abort into a partial result the caller can act on. The count is
+  `String.length`, not bytes, and `process.memoryUsage()` is deliberately not
+  used, so the check stays browser-safe.
+
+- **#504: C# source reads inside a single-line `try` block.**
+  `try { data = Console.ReadLine(); } catch { }` now seeds `io_input` on
+  that line, the same as the multi-line form of the assignment. A constant
+  assignment in the same shape stays unseeded.
+- **#501: C# `HttpRequest` sources follow the declared type, not the name `Request`.**
+  `req.QueryString`, `req.Params`, `req.Cookies` and the other request
+  collections now seed `http_param` when the receiver is declared
+  `HttpRequest` or `HttpRequestBase`. The inherited `Request.*` member is
+  unchanged. An undeclared `req` is not a request source.
+- **#503: ASP.NET Core `Response.WriteAsync(x)` is now an xss sink (CWE-79).**
+  The System.Web row `{ method: 'Write', class: 'Response' }` does not cover the
+  `HttpResponseWritingExtensions` extension method ASP.NET Core writes response
+  bodies through, so a tainted body had a source and no sink and the flow could
+  never be reported. The row is receiver-scoped to `Response`, leaving the many
+  unrelated `WriteAsync` overloads (Stream, StreamWriter, TextWriter, PipeWriter)
+  untouched. Juliet C# CWE-80/81/94 are byte-identical before and after (the
+  corpus predates ASP.NET Core and contains no `Response.WriteAsync`).
+
 ## [4.9.26] - 2026-09-24
 
 ### Fixed

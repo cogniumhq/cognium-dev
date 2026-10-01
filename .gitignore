@@ -38,3 +38,14 @@ Thumbs.db
 
 # Test
 *.log
+
+# Secrets and local scan output — this repo is public
+.env
+.env.*
+!.env.example
+*-scan.json
+
+# Local benchmark scratch — corpus probes and scoring scripts written while
+# measuring a change. Never part of the published packages, and this repo is
+# public, so keep them out of it.
+bench/

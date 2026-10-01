@@ -9,8 +9,8 @@
  * first.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync, symlinkSync } from 'fs';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ProjectCache } from '../src/cache.js';
@@ -18,6 +18,20 @@ import type { ToolContext } from '../src/tools/types.js';
 import { makeScanHandler } from '../src/tools/scan.js';
 import { makeRefreshHandler } from '../src/tools/refresh.js';
 import { collectFiles, indexMtimes, mtimesEqual, detectLanguage } from '../src/util/files.js';
+
+// A directory that cannot be listed, made so by the reader rather than by
+// permissions: `chmod 000` does nothing for root, which is who CI runs as, so
+// a permission-based test covers the catch on a laptop and skips it in CI.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  const readdirSync = ((path: import('fs').PathLike, ...rest: unknown[]) => {
+    if (String(path).endsWith('unlistable')) {
+      throw Object.assign(new Error('EACCES: permission denied, scandir'), { code: 'EACCES' });
+    }
+    return (actual.readdirSync as (...args: unknown[]) => unknown)(path, ...rest);
+  }) as typeof actual.readdirSync;
+  return { ...actual, readdirSync, default: { ...actual, readdirSync } };
+});
 
 interface ToolResultLike { content: Array<{ text: string }>; isError?: boolean }
 const parseText = (r: ToolResultLike): any => JSON.parse(r.content[0].text);
@@ -239,25 +253,15 @@ describe('util/files', () => {
   // readdirSync throws on an unreadable directory; the walk must `continue`
   // past it rather than abort the whole collection.
   it('an unreadable directory is skipped, not fatal', () => {
-    const blocked = join(root, 'blocked');
+    const blocked = join(root, 'unlistable');
     mkdirSync(blocked, { recursive: true });
     writeFileSync(join(blocked, 'x.js'), 'module.exports = 1;\n', 'utf8');
-    let restricted = false;
-    try {
-      chmodSync(blocked, 0o000);
-      restricted = true;
-    } catch {
-      // Some filesystems/CI users cannot drop permissions; the assertion
-      // below still holds, it just no longer exercises the catch.
-    }
 
-    try {
-      expect(() => collectFiles(root)).not.toThrow();
-      expect(() => indexMtimes(root)).not.toThrow();
-      expect(collectFiles(root).length).toBeGreaterThan(0);
-    } finally {
-      if (restricted) chmodSync(blocked, 0o755);
-    }
+    const files = collectFiles(root).map(f => f.filePath);
+    expect(files.length).toBeGreaterThan(0);
+    // Its contents are not collected, which is what shows the walk hit it.
+    expect(files.some(f => f.includes('unlistable'))).toBe(false);
+    expect([...indexMtimes(root).keys()].some(f => f.includes('unlistable'))).toBe(false);
   });
 
   it('a broken symlink does not abort the walk', () => {

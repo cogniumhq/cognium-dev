@@ -165,6 +165,18 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
 function buildCSharpReceiverTypeMap(tree: Tree, cache?: NodeCache): Map<string, string> {
   const map = new Map<string, string>();
   const simple = (t: string) => t.replace(/<[^>]*>/g, '').split('.').pop()?.trim() ?? t;
+  // cognium-dev#542 — method/constructor parameters. A receiver is just as often a parameter as a
+  // local — `void Bad(HttpRequest req, HttpResponse resp)` is the canonical
+  // ASP.NET handler shape — and omitting them meant every receiver gate keyed on
+  // a declared type silently failed for parameters. Locals below win on a name
+  // clash, since an inner declaration shadows the parameter.
+  for (const prm of getNodesFromCache(tree.rootNode, 'parameter', cache)) {
+    const nameNode = prm.childForFieldName('name');
+    const typeNode = prm.childForFieldName('type');
+    if (nameNode?.type !== 'identifier' || !typeNode) continue;
+    const t = getNodeText(typeNode);
+    if (t && t !== 'var') map.set(getNodeText(nameNode), simple(t));
+  }
   for (const vd of getNodesFromCache(tree.rootNode, 'variable_declaration', cache)) {
     const typeNode = vd.childForFieldName('type');
     const declaredType = typeNode ? getNodeText(typeNode) : null;
@@ -196,6 +208,13 @@ function findFirstDescendant(node: Node, type: string): Node | null {
   }
   return null;
 }
+
+/**
+ * Declared types that make a receiver an HTTP response. `HttpResponse` is
+ * classic ASP.NET and ASP.NET Core; `HttpResponseBase` is the testable
+ * abstraction MVC hands controllers.
+ */
+const CSHARP_RESPONSE_TYPES = new Set(['HttpResponse', 'HttpResponseBase']);
 
 /** ADO.NET command-execution methods whose taint rides the receiver object. */
 const CSHARP_COMMAND_EXECUTE_METHODS = new Set([
@@ -365,6 +384,42 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       });
       continue;
     }
+    // cognium-dev#336 — inside an OBJECT INITIALIZER the assignment's left side
+    // is a bare identifier, not a member access:
+    //
+    //   new HttpClient { BaseAddress = new Uri(input) }
+    //     object_creation_expression
+    //       initializer_expression
+    //         assignment_expression   left = identifier 'BaseAddress'
+    //
+    // so the member-access branch below skipped it entirely. Surface it with
+    // the CONSTRUCTED TYPE as the receiver, which is what the class-scoped
+    // registry row needs to match.
+    if (left?.type === 'identifier' && asn.parent?.type === 'initializer_expression') {
+      const creation = asn.parent.parent;
+      if (creation?.type !== 'object_creation_expression') continue;
+      const ctorType = creation.childForFieldName('type');
+      const right = asn.childForFieldName('right');
+      if (!ctorType || !right) continue;
+      const typeName = csharpBareName(ctorType);
+      const rhsText = getNodeText(right);
+      calls.push({
+        method_name: getNodeText(left),
+        receiver: typeName,
+        receiver_type: typeName,
+        receiver_type_fqn: null,
+        arguments: [{
+          position: 0,
+          expression: rhsText,
+          variable: right.type === 'identifier' ? rhsText : null,
+          literal: CSHARP_LITERAL_NODE_TYPES.has(right.type) ? rhsText : null,
+          value: null,
+        }],
+        location: { line: asn.startPosition.row + 1, column: asn.startPosition.column },
+        in_method: findEnclosingMethod(asn),
+      });
+      continue;
+    }
     if (left?.type !== 'member_access_expression') continue;
     const nameNode = left.childForFieldName('name');
     if (!nameNode) continue;
@@ -378,6 +433,29 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
       const recv = exprNode ? getNodeText(exprNode) : null;
       const recvType = recv ? typeMap.get(recv) : undefined;
       if (recvType !== 'DirectorySearcher') continue;
+    } else if (propName === 'StatusDescription') {
+      // cognium-dev#503 (part 1) — `Response.StatusDescription = "Bad " + data`
+      // writes attacker text into the status line (CWE-81). Receiver-gated to
+      // a Response-shaped name so an unrelated `.StatusDescription =` on some
+      // other type is not surfaced.
+      const recv = exprNode ? getNodeText(exprNode) : '';
+      const recvType = recv ? typeMap.get(recv) : undefined;
+      // cognium-dev#542 — two ways to be a response: named like the ASP.NET
+      // intrinsic (`Response`, `Context.Response`), which has no declaration to
+      // resolve, or *declared* as one. Juliet names the parameter `resp`, so the
+      // name test alone scored CWE-81 at 0/9 — the same defect #501 fixed on the
+      // source side, where `HttpRequest req` was missed because it was not
+      // spelled `Request`.
+      if (!/(^|\.)(Response|HttpResponse|Context\.Response)$/.test(recv)
+          && !(recvType && CSHARP_RESPONSE_TYPES.has(recvType))) continue;
+    } else if (propName === 'BaseAddress') {
+      // cognium-dev#336 — `new HttpClient { BaseAddress = new Uri(input) }`
+      // hands the attacker the scheme, host and port of every relative request
+      // on that client (CWE-918). Class-gated to a resolved HttpClient so an
+      // unrelated `.BaseAddress =` is not surfaced.
+      const recv = exprNode ? getNodeText(exprNode) : null;
+      const recvType = recv ? typeMap.get(recv) : undefined;
+      if (recvType !== 'HttpClient') continue;
     } else if (propName !== 'CommandText') {
       continue;
     }
@@ -401,8 +479,51 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     });
   }
 
+  // cognium-dev#340 — a C# CAST is not a call node, so `(MarkupString)html`
+  // could not be reached by any registry row while `new MarkupString(html)`
+  // could. The two are interchangeable in Blazor and the cast is the more
+  // common of the pair, since `@((MarkupString)html)` in a `.razor` component
+  // compiles from it. Emitted as a constructor-shaped call so the EXISTING
+  // `{ method: 'MarkupString', class: 'constructor' }` row matches, which keeps
+  // the taint engine in charge: a constant operand carries no taint and so
+  // still reports nothing.
+  //
+  // Restricted to an allowlist rather than surfacing every cast: `(string)x`,
+  // `(int)x` and friends are ubiquitous and must not become synthetic calls.
+  const casts = getNodesFromCache(tree.rootNode, 'cast_expression', cache);
+  for (const cast of casts) {
+    const typeNode = cast.childForFieldName('type');
+    const valueNode = cast.childForFieldName('value');
+    if (!typeNode || !valueNode) continue;
+    const typeName = csharpBareName(typeNode);
+    if (!CSHARP_RAW_MARKUP_CAST_TYPES.has(typeName)) continue;
+    const valueText = getNodeText(valueNode);
+    calls.push({
+      method_name: typeName,
+      receiver: null,
+      receiver_type: null,
+      receiver_type_fqn: null,
+      arguments: [{
+        position: 0,
+        expression: valueText,
+        variable: valueNode.type === 'identifier' ? valueText : null,
+        literal: CSHARP_LITERAL_NODE_TYPES.has(valueNode.type) ? valueText : null,
+        value: null,
+      }],
+      location: { line: cast.startPosition.row + 1, column: cast.startPosition.column },
+      in_method: findEnclosingMethod(cast),
+      is_constructor: true,
+    });
+  }
+
   return calls;
 }
+
+/**
+ * Cast target types whose cast renders its operand as raw markup, so the cast
+ * is exactly as dangerous as the constructor. Deliberately tiny — see #340.
+ */
+const CSHARP_RAW_MARKUP_CAST_TYPES: ReadonlySet<string> = new Set(['MarkupString']);
 
 /** Extract args from a C# `argument_list` (each child is an `argument` wrapper). */
 function extractCSharpArguments(argsNode: Node): ArgumentInfo[] {
@@ -422,12 +543,39 @@ function extractCSharpArguments(argsNode: Node): ArgumentInfo[] {
       position: position++,
       expression: text,
       variable: expr?.type === 'identifier' ? text : null,
-      literal: expr?.type === 'string_literal' ? text : null,
+      literal: expr && CSHARP_LITERAL_NODE_TYPES.has(expr.type) ? text : null,
       value: null,
     });
   }
   return args;
 }
+
+/**
+ * C# compile-time literal node types — cognium-dev#502.
+ *
+ * Only `string_literal` was recognised, so `null`, `true`, `42` and `'c'` all
+ * came back with `literal: null` and were indistinguishable from a variable.
+ * A sink taint-gated on that argument therefore registered: the measured case
+ * is Juliet's `new SqlCommand(null, connection)` DB-setup helper, reported as
+ * CWE-89 with a SQL argument that is literally `null` — 1,523 signatures over
+ * the 10 scored CWE families once #502 gave those files a source.
+ *
+ * A compile-time constant cannot carry taint, so registering a sink on one is
+ * always wrong; widening this removes false positives only.
+ *
+ * `interpolated_string_expression` is deliberately ABSENT: `$"SELECT {input}"`
+ * interpolates and is the genuine C# injection shape.
+ */
+const CSHARP_LITERAL_NODE_TYPES: ReadonlySet<string> = new Set([
+  'string_literal',
+  'verbatim_string_literal',
+  'raw_string_literal',
+  'character_literal',
+  'integer_literal',
+  'real_literal',
+  'boolean_literal',
+  'null_literal',
+]);
 
 function extractJavaScriptCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];

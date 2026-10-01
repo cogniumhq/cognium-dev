@@ -27,6 +27,94 @@ export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
 }
 
+/**
+ * cognium-dev#328 — the const-prop per-step veto, with two scoped exemptions.
+ *
+ * `isFalsePositive`'s `variable_not_tainted` reason discards a flow when
+ * const-prop tracked the step variable (value `unknown`) but never marked it
+ * tainted. On Java that verdict is usually informed — const-prop does its own
+ * key-aware collection / safe-overwrite reasoning, and lifting the veto
+ * globally measured +1 on-category TP vs +311 FP files on OWASP. But const-prop
+ * only seeds taint from its own narrow pattern list, so a variable fed by a
+ * parameter or by a registered source it has no pattern for is "untainted"
+ * purely for lack of information.
+ *
+ * Walking the step variable's reaching-def chain back (through self-derived
+ * reassignments only), the veto is skipped when:
+ *   (A) the chain crosses at least one `x = f(x)` / `x op= y` and ends inside
+ *       the source..sink span — the #287 shape (`v = v.Trim()`); or
+ *   (E) the chain ends at the source's own assignment line, and that source is
+ *       not a container read (`plugin_param` / `config_param`), where const-prop
+ *       is key-aware and its verdict is informed.
+ * Reaching defs are per method, so a same-named variable in a sibling method
+ * (Juliet `*_41` / `*_45` G2B sinks) never qualifies. Reasons 1 and 2 (dead
+ * code, resolved constant) are unaffected.
+ */
+const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'config_param']);
+
+function makeConstPropVeto(
+  constProp: ConstantPropagatorResult,
+  graph: PassContext['graph'],
+  sources: SinkFilterResult['sources'],
+  code: string | undefined,
+): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number) => boolean {
+  const lines = typeof code === 'string' ? code.split('\n') : [];
+  const selfReassign = new Map<string, number[]>();
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [line, defs] of graph.defsByLine) {
+    const text = lines[line - 1];
+    if (!text) continue;
+    for (const d of defs) {
+      if (d.kind !== 'local' && d.kind !== 'param') continue;
+      const v = escape(d.variable);
+      // `v op= …` or `v = …v…` (RHS reads the variable being assigned).
+      const m = new RegExp(`(?:^|[^\\w.$])${v}\\s*(?:([-+*/%&|^]|<<|>>)=|=(?!=))(.*)$`).exec(text);
+      if (!m) continue;
+      if (m[1] || new RegExp(`(?:^|[^\\w.$])${v}\\b`).test(m[2])) {
+        const arr = selfReassign.get(d.variable) ?? [];
+        arr.push(line);
+        selfReassign.set(d.variable, arr);
+      }
+    }
+  }
+  const reassignedAt = (v: string, line: number) => (selfReassign.get(v) ?? []).includes(line);
+  /** Reaching def of `v` as read on `line` (a def on that line wins: it is the value after the line). */
+  const defAt = (v: string, line: number) => {
+    const own = (graph.defsByLine.get(line) ?? []).find(d => d.variable === v);
+    if (own) return own;
+    const use = (graph.usesByLine.get(line) ?? []).find(u => u.variable === v && u.def_id != null);
+    return use ? graph.defById.get(use.def_id!) : undefined;
+  };
+  return (step, sourceLine, sinkLine) => {
+    const r = isFalsePositive(constProp, step.line, step.variable);
+    if (!r.isFalsePositive) return false;
+    if (r.reason !== 'variable_not_tainted') return true;
+    const lo = Math.min(sourceLine, sinkLine);
+    // Walk the reaching-def chain back from this step, stepping through
+    // self-derived reassignments only. Reaching defs are per method, so a
+    // same-named variable in a sibling method can never be picked up.
+    let d = defAt(step.variable, step.line);
+    let selfHops = 0;
+    for (let guard = 0; d && d.line > lo && reassignedAt(d.variable, d.line) && guard < 32; guard++) {
+      const here: number = d.id;
+      const prior = (graph.usesByLine.get(d.line) ?? [])
+        .find(u => u.variable === d!.variable && u.def_id != null && u.def_id !== here);
+      if (!prior) break;
+      selfHops++;
+      d = graph.defById.get(prior.def_id!);
+    }
+    if (!d) return true;
+    // (E) the chain ends at the source's own assignment, so const-prop's
+    // "untainted" can only mean it has no pattern for this source. Container
+    // reads are excluded: const-prop tracks collection keys, and there its
+    // verdict is informed (`bar = map.get("safeKey")` — 10 OWASP FP files).
+    if (d.line === sourceLine && sources.some(s => s.line === sourceLine && !CONTAINER_READ_SOURCES.has(s.type))) return false;
+    // (A) the chain crossed at least one `x = f(x)` and ends inside the span.
+    if (selfHops > 0 && d.line >= lo) return false;
+    return true;
+  };
+}
+
 export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassResult> {
   readonly name = 'taint-propagation';
   readonly category = 'security' as const;
@@ -53,13 +141,16 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // DFG-based taint propagation
     const propagationResult = propagateTaint(graph, sources, sinks, sanitizers);
 
+    // cognium-dev#328 — scoped exemption from const-prop's `variable_not_tainted`
+    // veto for self-derived reassignment (`x = f(x)`, `x += y`), the #287 shape.
+    const isVetoed = makeConstPropVeto(constProp, graph, sources, ctx.code);
+
     // Filter flows: eliminate dead-code paths and constant-propagation FPs
     const verifiedFlows = propagationResult.flows.filter(flow => {
       if (constProp.unreachableLines.has(flow.sink.line)) return false;
 
       for (const step of flow.path) {
-        const fpCheck = isFalsePositive(constProp, step.line, step.variable);
-        if (fpCheck.isFalsePositive) return false;
+        if (isVetoed(step, flow.source.line, flow.sink.line)) return false;
       }
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
@@ -232,7 +323,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
       let isFP = false;
       for (const step of f.path) {
-        if (isFalsePositive(constProp, step.line, step.variable).isFalsePositive) { isFP = true; break; }
+        if (isVetoed(step, f.source_line, f.sink_line)) { isFP = true; break; }
       }
       if (isFP) continue;
 
@@ -276,7 +367,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
       let isFP = false;
       for (const step of f.path) {
-        if (isFalsePositive(constProp, step.line, step.variable).isFalsePositive) { isFP = true; break; }
+        if (isVetoed(step, f.source_line, f.sink_line)) { isFP = true; break; }
       }
       if (isFP) continue;
 
@@ -1430,6 +1521,37 @@ export function maskStringLiteralsForTokenScan(expr: string): string {
   return out;
 }
 
+/**
+ * Does `expr` reference one of `sources`' variables in a CODE position?
+ *
+ * String-literal bodies are stripped first, so a tainted variable NAME that
+ * merely appears as text inside the SQL or markup — `id` in
+ * `"… WHERE id=@id"`, which is the parameterized, safe form — does not count.
+ * Interpolation holes are kept, because `$"… {id}"` really does splice the
+ * value in. Shared by the #271 CommandText seeding and the #530 builder
+ * seeding, which need exactly the same judgement.
+ */
+function argsReferenceTaintedVar(
+  expr: string,
+  sources: ReadonlyArray<{ variable: string }>,
+): boolean {
+  const codePart = expr
+    .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
+      ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+    .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+    // Comments are not code. A trailing `// pass `id` through` would otherwise
+    // seed taint on the strength of prose. Literals are stripped first, so a
+    // `//` inside a string (a URL, say) is already gone by this point.
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ');
+  return sources.some(s =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_])${s.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`,
+      'u',
+    ).test(codePart),
+  );
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -1447,17 +1569,28 @@ function detectExpressionScanFlows(
   // start line of the outermost function containing `line`, or -1 when the
   // line is at package level (no scoping then, so package-level sources still
   // reach every function).
-  const goFnRanges: Array<[number, number]> = language === 'go' && types
-    ? types.flatMap((t) => t.methods.map((m): [number, number] => [m.start_line, m.end_line]))
-    : [];
-  const goFnStart = (line: number): number => {
+  const methodRanges = (langs: string[]): Array<[number, number]> =>
+    language && langs.includes(language) && types
+      ? types.flatMap((t) => t.methods.map((m): [number, number] => [m.start_line, m.end_line]))
+      : [];
+  const enclosingStart = (ranges: Array<[number, number]>, line: number): number => {
     let best = -1;
     let bestSpan = -1;
-    for (const [start, end] of goFnRanges) {
+    for (const [start, end] of ranges) {
       if (line >= start && line <= end && end - start > bestSpan) { best = start; bestSpan = end - start; }
     }
     return best;
   };
+
+  const goFnRanges = methodRanges(['go']);
+  const goFnStart = (line: number): number => enclosingStart(goFnRanges, line);
+
+  // cognium-dev#530 — the same gate for C#, used by the builder seeding below.
+  // Available only since #539 made C# method ranges actually populate; before
+  // that `types[].methods` was empty for any file with a `#if` directive, which
+  // is every Juliet C# file.
+  const csFnRanges = methodRanges(['csharp']);
+  const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
 
   // Variable-name scan path: only consider sources that carry an explicit
   // variable name. The colocation path below (cognium-dev #83) runs even
@@ -1891,20 +2024,78 @@ function detectExpressionScanFlows(
         if (!m) continue;
         const [, obj, rhs] = m;
         if (known.has(obj)) continue;
-        // Reduce the RHS to code positions: keep interpolation `{…}` contents,
-        // drop plain string-literal bodies — so a tainted var NAME appearing as
-        // a substring inside the SQL text (e.g. `id` in `"… WHERE id=@id"`, a
-        // parameterized/safe query) does NOT spuriously taint the command.
-        const codePart = rhs
-          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, (lit) =>
-            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
-          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ');
-        const rhsTainted = sourcesWithVar.some(s =>
-          new RegExp(`(?<![\\p{L}\\p{N}_])${s.variable.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(codePart),
-        );
-        if (!rhsTainted) continue;
+        if (!argsReferenceTaintedVar(rhs, sourcesWithVar)) continue;
         sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
         added = true;
+      }
+    }
+  }
+
+  // Keys (`variable@line`) of sources synthesised by the #530 builder seeding
+  // below. These need a tighter match rule than a real source: see the gate in
+  // the candidate loop.
+  const builderSeeds = new Set<string>();
+
+  // cognium-dev#530: builder-carried taint. `sb.Append(<tainted>)` leaves the
+  // taint inside the StringBuilder, and `sb.ToString()` reads it back out — so
+  // without this, a statement accumulated across several calls is invisible
+  // while the same statement concatenated in one expression is caught. That is
+  // not a corner case: a StringBuilder is the idiomatic way to build anything
+  // multi-line in C#, and NIST Juliet's entire CWE-94 family uses it, which is
+  // why that family scored 0.0% for want of propagation rather than a sink.
+  //
+  // Same shape as #271 above: taint enters an object, is read back later, so it
+  // has to ride the object. Seeding the receiver as a tainted var at the append
+  // line lets the existing argument scan link `sb.ToString()` to its sink.
+  //
+  // Receiver-gated to variables declared as a StringBuilder. `Insert` and
+  // `Append` are far too common as names to match on a bare receiver — gating
+  // on the declared type is what keeps this from tainting arbitrary objects.
+  if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0) {
+    const lines = code.split('\n');
+
+    // `StringBuilder sb` covers locals, fields and parameters; the second form
+    // covers `var sb = new StringBuilder(...)`, where the type is on the right.
+    const builders = new Set<string>();
+    for (const line of lines) {
+      for (const m of line.matchAll(/\bStringBuilder\s+([\p{L}_][\p{L}\p{N}_]*)/gu)) builders.add(m[1]);
+      for (const m of line.matchAll(/\b([\p{L}_][\p{L}\p{N}_]*)\s*=\s*new\s+StringBuilder\b/gu)) builders.add(m[1]);
+    }
+
+    if (builders.size > 0) {
+      // `Append`, `AppendLine`, `AppendFormat` and `Insert` all write through to
+      // the builder's contents. `Replace` is deliberately absent: it can just as
+      // easily be removing the tainted text as adding it, so crediting it either
+      // way would be a guess.
+      const appendRe =
+        /([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*(?:Append|AppendLine|AppendFormat|Insert)\s*\(([\s\S]*)/u;
+      const anchor = sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+      let added = true;
+      let guard = 0;
+      while (added && guard < lines.length + 2) {
+        added = false;
+        guard++;
+        const known = new Set(sourcesWithVar.map(s => s.variable));
+        for (let i = 0; i < lines.length; i++) {
+          const m = appendRe.exec(lines[i]);
+          if (!m) continue;
+          const [, obj, args] = m;
+          if (!builders.has(obj) || known.has(obj)) continue;
+          // Same-method gate. `sourcesWithVar` is file-wide, so without this a
+          // source named `data` in one method taints a builder appended to in
+          // another method that happens to use the same local name — which is
+          // precisely the Juliet `Bad` / `GoodG2B` pair, and measured as 186
+          // false positives against 82 true ones before the gate.
+          const appendFn = csFnStart(i + 1);
+          const reachable = sourcesWithVar.filter(
+            (sv) => appendFn === -1 || csFnStart(sv.line) === -1 || csFnStart(sv.line) === appendFn,
+          );
+          if (reachable.length > 0 && argsReferenceTaintedVar(args, reachable)) {
+            sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
+            builderSeeds.add(`${obj}@${i + 1}`);
+            added = true;
+          }
+        }
       }
     }
   }
@@ -2038,6 +2229,24 @@ function detectExpressionScanFlows(
             const srcFn = goFnStart(source.line);
             const sinkFn = goFnStart(sink.line);
             if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
+          }
+
+          // cognium-dev#530: a builder-seeded source must not escape its method.
+          // The seed stands for "this StringBuilder now holds tainted text",
+          // which is true only of the one object in the one method where the
+          // append happened. The scan above matches by NAME across the whole
+          // file, and Juliet reuses `sourceCode` in `Bad` and in every `Good*`
+          // variant — so without this, a seed created correctly inside `Bad`
+          // linked to the sink inside `GoodG2B1`, whose own `data` is a
+          // hardcoded constant. Measured as 160 false positives.
+          //
+          // Scoped to seeded sources deliberately. Applying a line-range gate
+          // to every C# source would very likely help too, but that changes
+          // matching for all C# consumers and deserves its own measurement.
+          if (csFnRanges.length > 0 && builderSeeds.has(`${source.variable}@${source.line}`)) {
+            const srcFn = csFnStart(source.line);
+            const sinkFn = csFnStart(sink.line);
+            if (srcFn !== sinkFn) continue;
           }
 
           // Simple-identifier sources are already confirmed present by the

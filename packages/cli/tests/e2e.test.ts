@@ -417,3 +417,42 @@ describe('output file', () => {
     unlinkSync(outFile);
   }, 30_000);
 });
+
+// ─── #424: project size ceiling ─────────────────────────────────────────────
+
+describe('#424 project size ceiling', () => {
+  test('a truncated scan is never silent, even when the kept subset is clean', async () => {
+    // The hole this locks: `shouldOutput` is false unless there are findings,
+    // errors, --verbose, --output or a non-text format. Without the truncation
+    // clause, a project stopped at the ceiling whose analysed subset happens to
+    // have no findings skips BOTH the warning and the summary, and exits 0 —
+    // a clean-scan claim over files that were never read.
+    const r = await run('scan', '.', '--max-project-source-chars', '120');
+    expect(r.stdout).toContain('Project size ceiling reached');
+    expect(r.stdout).toContain('NOT a clean scan');
+  });
+
+  test('reports analysed-of-discovered, not the discovered count alone', async () => {
+    const r = await run('scan', '.', '--max-project-source-chars', '120');
+    expect(r.stdout).toMatch(/\d+ of \d+ file\(s\) analysed|analysed \d+ of \d+ files/);
+  });
+
+  test('a first file that alone exceeds the cap is still analysed', async () => {
+    // The read loop keeps it so a scan is never silently empty. The cap is
+    // therefore enforced only there — passing it to analyzeProject as well
+    // would drop that same file and analyse zero files.
+    const r = await run('scan', '.', '--max-project-source-chars', '1');
+    expect(r.stdout).toContain('Project size ceiling reached');
+    expect(r.stdout).not.toMatch(/analysed 0 of/);
+  });
+
+  test('0 disables the cap and restores the plain summary', async () => {
+    const r = await run('scan', '.', '--max-project-source-chars', '0');
+    expect(r.stdout).not.toContain('Project size ceiling reached');
+  });
+
+  test('an invalid value warns and does not fail the scan', async () => {
+    const r = await run('scan', '.', '--max-project-source-chars', 'abc');
+    expect(r.stderr).toContain('invalid --max-project-source-chars');
+  });
+});

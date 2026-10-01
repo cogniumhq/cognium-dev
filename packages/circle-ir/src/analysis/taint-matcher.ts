@@ -1528,6 +1528,40 @@ const TYPE_TOKEN_RE = /^new\s+(?:TypeReference|TypeToken)\s*<[\s\S]*>\s*\(\s*\)\
  * JDBC `JdbcTemplate` query-family sinks that carry `?` placeholders
  * (parameterised queries cannot be tainted at the SQL layer).
  */
+/**
+ * Returns true when the call's argument at `position` is recognisably a
+ * STREAM-valued expression (not a filesystem path).
+ *
+ * Used by `SinkPattern.safe_if_stream_arg_at` — cognium-dev#502. `StreamReader`
+ * and `StreamWriter` are registered as path_traversal sinks for their
+ * `(string path)` overload; the `(Stream)` overload takes no path at all, so
+ * `new StreamReader(tcp.GetStream())` reporting CWE-22 is a false positive.
+ * That FP was latent while C# had no socket/file source model and became live
+ * with #502.
+ *
+ * Positive evidence only — an expression this does not recognise still fires,
+ * so the gate cannot remove a detection it was not written for.
+ */
+function argIsStreamExpression(call: CallInfo, position: number): boolean {
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg) return false;
+  const expr = (arg.expression ?? '').trim();
+  if (!expr) return false;
+  return (
+    // `new MemoryStream(...)`, `new FileStream(...)`, `new GZipStream(...)`
+    /^new\s+[A-Za-z_][\w.]*Stream\s*\(/.test(expr) ||
+    // `tcp.GetStream()`, `resp.GetResponseStream()`, `file.OpenReadStream()`
+    /\.\s*Get(?:Response)?Stream\s*\(/.test(expr) ||
+    /\.\s*OpenReadStream\s*\(/.test(expr) ||
+    // `wc.OpenRead(url)` returns a Stream (WebClient), as does `File.OpenRead`
+    /\.\s*OpenRead\s*\(/.test(expr) ||
+    // `Request.Body`, `x.BaseStream`
+    /\.\s*(?:Body|BaseStream)\s*$/.test(expr) ||
+    // a local whose name is stream-ish and is not a path string
+    /^(?:[A-Za-z_]\w*\.)*[A-Za-z_]*[sS]tream\d*$/.test(expr)
+  );
+}
+
 function argIsStringLiteral(call: CallInfo, position: number): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
@@ -2183,6 +2217,16 @@ function findSinks(
           continue;
         }
 
+        // #502 — the `(Stream)` overload of a path-taking constructor is not a
+        // path sink. Positive-evidence only, so an unrecognised argument still
+        // matches and no existing detection is lost.
+        if (
+          pattern.safe_if_stream_arg_at !== undefined &&
+          argIsStreamExpression(call, pattern.safe_if_stream_arg_at)
+        ) {
+          continue;
+        }
+
         // #129 — CWE-78 receiver-class allowlist gate.
         // Suppress command_injection emissions on receivers known NOT
         // to invoke OS commands. Constructors check method_name (which
@@ -2788,9 +2832,31 @@ function matchesSinkPattern(
       // qualified target whose tail is `<pattern.class>.<pattern.method>`.
       // Handles `from urllib.request import urlopen; urlopen(x)` against
       // sink pattern { method: 'urlopen', class: 'urllib.request' }.
+      //
+      // cognium-dev#484/#294 — the expected tail is built with a DOT, and the
+      // motivating case (`from urllib.request import urlopen`) is Python, which
+      // is dot-separated. Rust resolution stores the path with `::`, so
+      //
+      //     use serde_json::from_str;  from_str(&body)
+      //       -> resolution.target = "serde_json::from_str"
+      //
+      // never matched `{ method: 'from_str', class: 'serde_json' }`: the
+      // resolution was correct and complete, the comparison simply could not
+      // see it. Every imported serde_json / serde_yaml / toml form was silent
+      // and only the path-qualified `serde_json::from_str(...)` matched — which
+      // is why #294 could not drop the classless `from_str` rows without
+      // opening a false negative.
+      //
+      // Normalised for Rust only. `::` is also PHP static-call and C++ scope
+      // resolution, and widening this needs its own measurement on those
+      // ecosystems rather than an assumption.
       const target = call.resolution?.target;
+      const normalisedTarget = language === 'rust' ? target?.replace(/::/g, '.') : target;
       const expectedTail = `${pattern.class}.${pattern.method}`;
-      if (target && (target === expectedTail || target.endsWith('.' + expectedTail))) {
+      if (
+        normalisedTarget &&
+        (normalisedTarget === expectedTail || normalisedTarget.endsWith('.' + expectedTail))
+      ) {
         // accept
       } else {
         // If no receiver and no resolved type but class is required, don't match

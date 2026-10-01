@@ -648,6 +648,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'csharp') {
       additionalSanitizers.push(
         ...findCSharpFullPathStartsWithGuardSanitizers(code),
+        ...findCSharpEarlyReturnGuardSanitizers(code, language),
       );
     }
 
@@ -1682,8 +1683,9 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // the scanner never looked at.
   const assignRe =
     /^\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
-  const requestReadRe =
-    /\bRequest\s*\.\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\b/;
+  // `Request.*` is the inherited controller member. A parameter typed
+  // `HttpRequest` / `HttpRequestBase` is the same surface under whatever
+  // name the method uses (`req` in Juliet) — cognium-dev#501.
   // Console/stdin reads bind their LHS too (dominant source shape in the NIST
   // Juliet C# corpus). Like `Request.*`, a bare `Console.ReadLine()` returns a
   // value that nothing else seeds a variable for, so bind it as `io_input`.
@@ -1703,14 +1705,47 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // `\s+` after the type name keeps `IFormFileCollection files` from matching.
   const formFileParams = new Set<string>();
   const formFileDeclRe = /\bIFormFile\s+([A-Za-z_]\w*)/g;
+  // Inherited `Request` plus any local declared `HttpRequest` / `HttpRequestBase`
+  // (nullable `HttpRequest?` included). `HttpRequestMessage` does not match:
+  // the type token must be followed by whitespace, not more identifier text.
+  const httpRequestReceivers = new Set<string>(['Request']);
+  const httpRequestDeclRe = /\b(?:HttpRequest|HttpRequestBase)\??\s+([A-Za-z_]\w*)/g;
+  // cognium-dev#502 — I/O and database reads, mirroring Java's
+  // `BufferedReader.readLine` (io_input) and `ResultSet.getString` (db_input).
+  // Declared-type scoped for the same reason #501 needed it: the method names
+  // are generic (`ReadLine`, `GetString`), so matching them on any receiver
+  // would fire on unrelated types. A registry row cannot do this — the
+  // receiver's type is not resolved for a `SqlDataReader rdr` parameter — and
+  // binding here also gives the LHS a `variable`, which a bare
+  // `return_tainted` row does not, so the flow can form when the read sits
+  // inside a nested `using` / `try` block (the Juliet shape).
+  const streamReaderVars = new Set<string>();
+  const streamReaderDeclRe = /\b(?:StreamReader|TextReader|BinaryReader)\??\s+([A-Za-z_]\w*)/g;
+  const dbReaderVars = new Set<string>();
+  const dbReaderDeclRe = /\b(?:SqlDataReader|DbDataReader|IDataReader|OdbcDataReader|OleDbDataReader)\??\s+([A-Za-z_]\w*)/g;
   for (const line of lines) {
-    const re = new RegExp(formFileDeclRe.source, 'g');
+    const formRe = new RegExp(formFileDeclRe.source, 'g');
     let d: RegExpExecArray | null;
-    while ((d = re.exec(line)) !== null) formFileParams.add(d[1]);
+    while ((d = formRe.exec(line)) !== null) formFileParams.add(d[1]);
+    const reqRe = new RegExp(httpRequestDeclRe.source, 'g');
+    while ((d = reqRe.exec(line)) !== null) httpRequestReceivers.add(d[1]);
+    const srRe = new RegExp(streamReaderDeclRe.source, 'g');
+    while ((d = srRe.exec(line)) !== null) streamReaderVars.add(d[1]);
+    const dbRe = new RegExp(dbReaderDeclRe.source, 'g');
+    while ((d = dbRe.exec(line)) !== null) dbReaderVars.add(d[1]);
   }
+  const streamReadRe = streamReaderVars.size > 0
+    ? new RegExp(`\\b(?:${[...streamReaderVars].join('|')})\\s*\\.\\s*(?:ReadLine|ReadToEnd|ReadLineAsync|ReadToEndAsync|ReadBlock|Read)\\s*\\(`)
+    : null;
+  const dbReadRe = dbReaderVars.size > 0
+    ? new RegExp(`\\b(?:${[...dbReaderVars].join('|')})\\s*\\.\\s*(?:GetString|GetValue|GetInt32|GetInt64|GetDecimal|GetDateTime|GetFieldValue|\\[)`)
+    : null;
   const formFileReadRe = formFileParams.size > 0
     ? new RegExp(`\\b(?:${[...formFileParams].join('|')})\\s*\\.\\s*(?:FileName|ContentType)\\b`)
     : null;
+  const requestReadRe = new RegExp(
+    `\\b(?:${[...httpRequestReceivers].join('|')})\\s*\\.\\s*(?:Query|Form|Headers|Cookies|QueryString|RouteValues|Body|Files|Params)\\b`,
+  );
 
   const classify = (text: string): TaintSource['type'] | null =>
     requestReadRe.test(text)
@@ -1721,7 +1756,11 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
           ? 'io_input'
           : envReadRe.test(text)
             ? 'env_input'
-            : null;
+            : streamReadRe?.test(text)
+              ? 'io_input'
+              : dbReadRe?.test(text)
+                ? 'db_input'
+                : null;
   // cognium-dev#339 — a bare expression statement reads the request INLINE in
   // the call, with no local to bind:
   //
@@ -1744,6 +1783,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     [formFileReadRe, 'http_param'],
     [consoleReadRe, 'io_input'],
     [envReadRe, 'env_input'],
+    [streamReadRe, 'io_input'],
+    [dbReadRe, 'db_input'],
   ];
   const inlineRead = (text: string): { type: TaintSource['type']; read: string } | null => {
     const argsStart = text.indexOf('(');
@@ -1762,10 +1803,57 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   const exprStmtCallRe = /^\s*(?:await\s+)?[A-Za-z_][\w.]*(?:<[^>]*>)?\s*\(.*\)\s*;\s*$/;
   const nonCallKeywordRe = /^\s*(?:await\s+)?(?:if|while|for|foreach|switch|using|lock|return|throw|catch|when|nameof|typeof|sizeof|default)\b/;
 
+  // cognium-dev#504 — an assignment nested in a same-line block is not the
+  // whole line, so `assignRe` misses it:
+  //   try { data = Console.ReadLine(); } catch (Exception) { }   // was NOT
+  //   data = Console.ReadLine();                                  // bound
+  // `(?!=)` keeps `==` from looking like an assignment. A full-line comment
+  // is skipped; the rest of this scanner already ignores comment text only
+  // when it is not the line's code.
+  const embeddedAssignRe =
+    /(?:^|[{;])\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;{}]+)/;
+
   for (let i = 0; i < lines.length; i++) {
     const m = assignRe.exec(lines[i]);
-    if (!m) {
+    // cognium-dev#502 — `assignRe` is anchored and greedy, so on a one-line
+    // block header that also contains the real assignment
+    //
+    //   using (StreamReader sr = new StreamReader(tcp.GetStream())) { data = sr.ReadLine(); }
+    //
+    // it captures `sr` with EVERYTHING after `=` as the right-hand side. That
+    // RHS contains `sr.ReadLine()`, so the line was classified as a read and
+    // bound to `sr` — the reader, not `data`. The embedded-assignment path
+    // handles exactly this shape and finds both `sr` and `data`, but it only
+    // ran when `assignRe` failed to match at all. Prefer it whenever the
+    // captured RHS crosses a block boundary. (#504 was the mirror of this:
+    // there `assignRe` did not match and the inner assignment was lost.)
+    const rhsCrossesBlock = m !== null && m[2].includes('{');
+    if (!m || rhsCrossesBlock) {
       const stmt = lines[i];
+      if (stmt.includes('{') && !/^\s*(?:\/\/|\/\*|\*)/.test(stmt)) {
+        const emb = new RegExp(embeddedAssignRe.source, 'g');
+        let em: RegExpExecArray | null;
+        let seeded = false;
+        while ((em = emb.exec(stmt)) !== null) {
+          const varName = em[1];
+          const rhs = em[2];
+          const type = classify(rhs);
+          if (!type) continue;
+          const lineNumber = i + 1;
+          if (sources.some(s => s.line === lineNumber && s.variable === varName)) continue;
+          sources.push({
+            type,
+            location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+            // #502 — Java parity: a database row read is medium, I/O is high.
+            severity: type === 'db_input' ? 'medium' : 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: varName,
+          });
+          seeded = true;
+        }
+        if (seeded) continue;
+      }
       if (!exprStmtCallRe.test(stmt) || nonCallKeywordRe.test(stmt)) continue;
       const hit = inlineRead(stmt);
       if (!hit) continue;
@@ -1787,7 +1875,7 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
       sources.push({
         type,
         location: `${read} in ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`,
-        severity: 'high',
+        severity: type === 'db_input' ? 'medium' : 'high',
         line: lineNumber,
         confidence: 1.0,
         variable: '<inline>',
@@ -1803,7 +1891,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     sources.push({
       type,
       location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-      severity: 'high',
+      // #502 — Java parity: a database row read is medium, I/O is high.
+      severity: type === 'db_input' ? 'medium' : 'high',
       line: lineNumber,
       confidence: 1.0,
       variable: varName,
@@ -2074,7 +2163,8 @@ function findPythonAssignmentSources(sourceCode: string, language: string): Tain
           sources.push({
             type,
             location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-            severity: 'high',
+            // #502 — Java parity: a database row read is medium, I/O is high.
+            severity: type === 'db_input' ? 'medium' : 'high',
             line: lineNumber,
             confidence: 0.95,
             variable: varName,
@@ -5837,6 +5927,106 @@ function guardRejects(
  * form `if (x.StartsWith(root)) { … }` still reports, and a test pins that so
  * the gap stays visible rather than silently assumed.
  */
+/**
+ * cognium-dev#272 — a validating predicate followed by an EARLY RETURN is a
+ * guard, and the value reaching the sink afterwards is already validated.
+ *
+ *   if (Array.IndexOf(Allowed, u.Host) < 0) return;     // host allow-list
+ *   await client.GetStringAsync(input);                 // reported ssrf
+ *
+ *   if (!input.All(char.IsLetterOrDigit)) return;       // char-class check
+ *   doc.SelectSingleNode("/a[@b='" + input + "']");     // reported xpath
+ *
+ * Both safe mirrors are clean of their *family* finding after #272's earlier
+ * fixes, and both still emit a finding because the guard itself is not
+ * credited. The shape is shared with #286-B and with the Java `Set.contains`
+ * guard in #293, so the recogniser is written around the PREDICATE rather than
+ * around any one sink family.
+ *
+ * Deliberately limited to predicates that are self-evidently validating:
+ * allow-list membership and character-class validation. A user-defined
+ * boolean helper (`if (!IsAllowed(input)) return;`, #286-B) is NOT credited
+ * here — crediting an arbitrary predicate by name would silence a real flow
+ * whenever the helper does not actually validate, which is a false negative no
+ * test would catch. That half needs its own evidence.
+ *
+ * Only the REJECTING direction counts, via `guardRejects`: a guard whose body
+ * falls through has not stopped anything.
+ */
+function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): TaintSanitizer[] {
+  if (language !== 'csharp') return [];
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe = /\b(throw|return)\b/;
+
+  // Allow-list membership, rejecting form:
+  //   if (Array.IndexOf(Allowed, x) < 0) return;
+  //   if (!Allowed.Contains(x)) return;
+  const allowlistRes = [
+    /\bif\s*\(\s*Array\s*\.\s*IndexOf\s*\([^,]+,\s*([A-Za-z_][\w.]*)\s*\)\s*<\s*0\s*\)/,
+    /\bif\s*\(\s*!\s*[A-Za-z_][\w.]*\s*\.\s*Contains\s*\(\s*([A-Za-z_][\w.]*)\s*\)\s*\)/,
+  ];
+  // Character-class validation, rejecting form:
+  //   if (!input.All(char.IsLetterOrDigit)) return;
+  const charClassRe =
+    /\bif\s*\(\s*!\s*([A-Za-z_][\w.]*)\s*\.\s*All\s*\(\s*char\s*\.\s*Is[A-Za-z]+\s*\)\s*\)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    let guardedExpr: string | null = null;
+    for (const re of allowlistRes) {
+      const m = re.exec(lines[i]);
+      if (m) { guardedExpr = m[1]; break; }
+    }
+    if (!guardedExpr) {
+      const m = charClassRe.exec(lines[i]);
+      if (m) guardedExpr = m[1];
+    }
+    if (!guardedExpr) continue;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+
+    // The guarded expression may be a derivation of the tainted value
+    // (`u.Host` guards `u`, and `u` came from `input`), so credit the root
+    // identifier as well as the full expression.
+    const root = guardedExpr.split('.')[0];
+    const guarded = new Set<string>([guardedExpr, root]);
+    const assignRe = /^\s*(?:(?:var|string)\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.*)$/;
+    // Walk BACKWARD first: the guard often validates a DERIVATION of the
+    // tainted value while the sink uses the original.
+    //
+    //   var u = new Uri(input);
+    //   if (Array.IndexOf(Allowed, u.Host) < 0) return;   // guards u.Host
+    //   await client.GetStringAsync(input);               // uses input
+    //
+    // Allow-listing the host of the URI built from `input` constrains where
+    // `input` can point, so the original is guarded too. Bounded to the
+    // identifiers that actually fed the guarded root, transitively.
+    for (let b = i - 1; b >= 0; b--) {
+      const a = assignRe.exec(lines[b]);
+      if (!a || !guarded.has(a[1])) continue;
+      for (const id of a[2].match(/[A-Za-z_]\w*/g) ?? []) guarded.add(id);
+    }
+    // Anything assigned FROM a guarded value downstream is guarded too.
+    const mentions = (t: string): boolean => {
+      for (const n of guarded) if (new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t)) return true;
+      return false;
+    };
+    for (let l = i + 1; l < lines.length; l++) {
+      const a = assignRe.exec(lines[l]);
+      if (a && mentions(a[2])) guarded.add(a[1]);
+      if (mentions(lines[l])) {
+        sanitizers.push({
+          type: 'csharp_early_return_guard',
+          method: 'guard',
+          line: l + 1,
+          sanitizes: ['ssrf', 'xpath_injection', 'ldap_injection', 'path_traversal',
+                      'command_injection', 'sql_injection', 'external_taint_escape'],
+        });
+      }
+    }
+  }
+  return sanitizers;
+}
+
 function findCSharpFullPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');

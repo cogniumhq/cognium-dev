@@ -5,6 +5,122 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.29] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.29`, a C# recall release. **C# scans report
+  substantially more**, and for the first time report **cross-file** C# taint
+  flows at all — 4.9.28 produced none.
+
+  Measured over the NIST Juliet C# baselines, 123 `_01` files across the 10
+  scored CWEs, on the default taint config:
+
+  | | 4.9.28 | 4.9.29 |
+  | --- | --- | --- |
+  | families detected | 97 / 123 (78.9%) | **105 / 123 (85.4%)** |
+  | CWE-81 XSS error message | 0 / 9 | **8 / 9** |
+
+  In project mode — which is what `scan` does — cross-file C# detection on the
+  Juliet `_5xx` and `_7xx` cross-file sets goes from **0** paths to 505, of which
+  272 are true positives. Nothing is lost: no detection present in 4.9.28 is
+  removed on any corpus measured.
+
+  What changed underneath:
+  - **#539** — a `#if` directive was dropping every method from the IR, which
+    silently disabled method-scoped pairing *and* parameter-derived sources. Any
+    C# using `#if DEBUG` or `#if NET6_0_OR_GREATER` was affected.
+  - **#502** — console, file, socket, HTTP-client and database reads are now
+    taint sources, mirroring the Java model.
+  - **#542** — a response sink now follows the receiver's declared type rather
+    than its name, so `resp.StatusDescription = …` reports where previously only
+    a receiver literally named `Response` did.
+
+  Also in this release: **CWE-94 code injection goes from undetectable to
+  complete.** Taint now rides a `StringBuilder` from `Append` through
+  `ToString()` (#530), and CodeDOM/Roslyn runtime compilation are code-injection
+  sinks (#503 part 2). Those land together because the two are useless apart —
+  the sink had nothing reaching it while taint could not cross the builder.
+
+  | | 4.9.28 | 4.9.29 |
+  | --- | --- | --- |
+  | CWE-94 code generation | 0 / 10 | **10 / 10** |
+  | all 10 scored families | 97 / 123 (78.9%) | **115 / 123 (93.5%)** |
+
+  **No scored C# family is at zero any more**, and three are at 100%: CWE-89,
+  CWE-643, CWE-94. Building a statement with a `StringBuilder` is idiomatic C#,
+  so this affects ordinary code and not only the benchmark.
+
+  **Expect more C# findings after upgrading.** False positives on these corpora
+  are concentrated in one known shape — a tainted value reaching a *sanitized*
+  sink, because the reported flow surface does not consult sanitizers.
+
+## [4.9.28] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.28`, a C# precision and recall pass.
+  **C# scans report about 30% fewer security findings** — measured 506 → 355
+  reported flows over ten NIST Juliet C# taint families (1,500 files). All 225
+  removed flows are `external_taint_escape` (CWE-668) noise: escapes on files
+  with no sink (#474), sinks taint-gated on a compile-time constant such as
+  `new SqlCommand(null, conn)` (#502), and credited early-return guards (#272).
+  **No `sql_injection`, `command_injection`, `xss` or `xpath_injection` flow is
+  lost.**
+
+  The release also **adds 74 classical detections** in that sample — 48
+  `xpath_injection`, 8 `ldap_injection`, 8 `command_injection`, 6 `xss`, 3
+  `format_string`, 1 `crlf` — 44 of them in Juliet `Bad` methods. CWE643 Xpath
+  injection nets upward, 72 → 90.
+
+  Two fixes in this release (#508 argument-less sink flow backing, #509
+  one-vulnerability-one-finding) apply to the library's `generateFindings`
+  surface, which the CLI does not call. **A tainted `new SqlCommand(...)`
+  followed by `cmd.ExecuteReader()` is still reported twice by `scan`.**
+
+  Newly detected: `Response.StatusDescription`, `(MarkupString)x` and a tainted
+  `HttpClient.BaseAddress` (#503 part 1, #340, #336).
+
+  TypeScript scans lose **130 false `variable-shadowing` findings** — every one
+  was a declaration reported as shadowing itself.
+
+  Where a file's only finding was a mistyped CWE-20 escape it now reports
+  nothing; on Juliet C# that is 174 cross-file pairs whose real detection was
+  never produced (#533). See the circle-ir changelog for the full note.
+
+## [4.9.27] - 2026-09-29
+
+### Added
+- **`--max-project-source-chars <n>` (#424).** Caps a project scan by total
+  source characters so a project large enough to exhaust the V8 heap returns
+  partial results with a warning instead of aborting the process with no
+  output at all. `0` disables the cap.
+
+  The default is **derived from the process's own V8 heap limit**
+  (~7,000 chars per MB, so ~29.3M at Node's default 4 GB heap), not a fixed
+  number, because the binding constraint is the heap: `analyzeProject` retains
+  every file's full IR for the whole run, so a character count that is safe
+  under `--max-old-space-size=12288` aborts at the default. Raising the heap
+  raises the cap automatically.
+
+  Measured on NIST Juliet Java (40,845 files, ~216M chars) at a 4,192 MB heap:
+  16M and 32M complete; 48M, 56M and 64M all die with
+  `FATAL ERROR: Ineffective mark-compacts` and SIGABRT. At the derived default
+  the same scan completes, analysing 4,869 files and reporting 9,808 security
+  findings, where it previously produced no output at all.
+
+### Changed
+- Adopts `circle-ir@4.9.27`. C# scans gain `HttpRequest`-typed request sources
+  (#501), sources inside a single-line `try` (#504) and the ASP.NET Core
+  `Response.WriteAsync` xss sink (#503). Findings no longer pair a sink with a
+  variable unrelated to the source (#508). See the circle-ir changelog.
+- When a scan is truncated by that cap, the text summary now reports
+  `N of M file(s) analysed` rather than the discovered file count, and the
+  JSON output carries `project_size_budget_exceeded`. Previously a truncated
+  scan printed the total file count, which reads as a clean scan of files that
+  were never opened.
+- Project scans no longer read every file into memory before analysis begins.
+  Files past the cap are never read, so the source itself does not contribute
+  to the peak the cap exists to stay under.
+
 ## [4.9.26] - 2026-09-24
 
 ### Changed

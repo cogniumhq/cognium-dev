@@ -176,6 +176,23 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'nextInt', class: 'Scanner', type: 'io_input', severity: 'high', return_tainted: true },
 
   // Database result sources
+  // C# I/O, network and database reads (cognium-dev#502). Mirrors the Java
+  // rows above one-for-one, including the severity split: console/file I/O is
+  // `io_input` at high, a database row read is `db_input` at medium. There is
+  // no separate confidence tier — `type` + `severity` IS the tier, exactly as
+  // for `BufferedReader.readLine` vs `ResultSet.getString`.
+  { method: 'ReadLine', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadLineAsync', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadToEnd', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'ReadToEndAsync', class: 'StreamReader', type: 'io_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  // Socket and HTTP-client reads. `GetStream` / `AcceptTcpClient` /
+  // `OpenRead` return the channel; the read off it is covered by the
+  // StreamReader rows above, and seeding the channel too lets a flow form when
+  // the read is inlined.
+  { method: 'GetStream', class: 'TcpClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'AcceptTcpClient', class: 'TcpListener', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'OpenRead', class: 'WebClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
+  { method: 'DownloadString', class: 'WebClient', type: 'network_input', severity: 'high', return_tainted: true, languages: ['csharp'] },
   { method: 'getString', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
   { method: 'getObject', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
   { method: 'getInt', class: 'ResultSet', type: 'db_input', severity: 'medium', return_tainted: true },
@@ -2630,9 +2647,38 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'deserialize', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'from_str', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'from_str', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
-  // Generic deserialization patterns
-  { method: 'from_str', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
-  { method: 'from_slice', type: 'deserialization', cwe: 'CWE-502', severity: 'medium', arg_positions: [0] },
+  // cognium-dev#541 — the crates the removed classless rows were silently
+  // covering. #484 replaced a classless `from_str` / `from_slice` with
+  // class-scoped rows, but only for the four formats that already had entries;
+  // every other serde data format lost its sink, and `rmp_serde::from_slice`
+  // on bytes read straight off a `TcpStream` stopped being reported. Each row
+  // below is a serde *data format* entry point — a function whose whole job is
+  // to build a typed value out of untrusted bytes or text.
+  { method: 'from_slice', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_read', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_read_ref', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'serde_yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_bytes', class: 'postcard', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'serde_cbor', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'serde_cbor', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'ciborium', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_str', class: 'serde_xml_rs', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'serde_xml_rs', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_str', class: 'quick_xml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'quick_xml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+  { method: 'deserialize_from', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+
+  // #294/#484: no classless `from_str` / `from_slice` deserialization sink.
+  // Those rows matched EVERY `T::from_str` / `from_slice` — `u32::from_str`,
+  // `Url::from_str`, `PublicKey::from_slice` — i.e. ordinary `FromStr` / byte
+  // parsing, which cannot instantiate an attacker-chosen type. Removing them
+  // was previously blocked because the class-scoped rows below could not match
+  // the IMPORTED call form (`use serde_json::from_str; from_str(&body)`); the
+  // `::` path-separator fix in taint-matcher.ts makes them match, so the
+  // classless rows are no longer load-bearing.
 
   // Rust XSS (actix-web, rocket, axum response body)
   { method: 'body', class: 'HttpResponseBuilder', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
@@ -2970,8 +3016,12 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'OpenRead', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'OpenWrite', class: 'File', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'FileStream', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
-  { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // #502: the `(Stream)` overload takes no path — `new StreamReader(tcp.GetStream())`
+  // is not CWE-22. The `(string path)` overload still matches.
+  { method: 'StreamReader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], safe_if_stream_arg_at: 0, languages: ['csharp'] },
+  // #502: the `(Stream)` overload takes no path — `new StreamWriter(tcp.GetStream())`
+  // is not CWE-22. The `(string path)` overload still matches.
+  { method: 'StreamWriter', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], safe_if_stream_arg_at: 0, languages: ['csharp'] },
   // Remaining System.IO.File path APIs — class-scoped so they don't collide
   // with unrelated methods. Copy/Move take a source AND destination path (both
   // attacker-controllable → read-anywhere / write-anywhere), hence [0, 1].
@@ -3017,6 +3067,23 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // infrastructure. Ctor arg 0, taint-gated.
   { method: 'RestClient', class: 'constructor', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
+  // C# code injection — CodeDOM runtime compilation (CWE-94), cognium-dev#503
+  // part 2. `provider.CompileAssemblyFromSource(parameters, source)` compiles
+  // and can then execute attacker-supplied C#, so the source argument is the
+  // injection point. The signature is
+  // `CompileAssemblyFromSource(CompilerParameters, params string[] sources)`,
+  // so the sources begin at position 1 — position 0 is the options object.
+  //
+  // These rows are only useful together with the #530 StringBuilder
+  // propagation fix: the Juliet CWE-94 corpus accumulates the compiled source
+  // through `sb.Append(...)` and reads it back with `ToString()`, so before
+  // that fix the sink registered but no taint ever reached it.
+  { method: 'CompileAssemblyFromSource', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1, 2], languages: ['csharp'] },
+  { method: 'CompileAssemblyFromSourceBatch', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [1, 2], languages: ['csharp'] },
+  // Roslyn's equivalent pair. `ParseText` turns text into a syntax tree and
+  // `Create` compiles it; either is the point where attacker text becomes code.
+  { method: 'ParseText', class: 'CSharpSyntaxTree', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
+  { method: 'ParseText', class: 'SyntaxFactory', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   // C# code injection — dynamic script/assembly loading (CWE-94).
   { method: 'EvaluateAsync', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
   { method: 'RunAsync', class: 'CSharpScript', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0], languages: ['csharp'] },
@@ -3054,10 +3121,19 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // C# XSS — raw HTML output (CWE-79).
   { method: 'Raw', class: 'Html', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'Write', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // ASP.NET Core writes the response body through the `HttpResponseWritingExtensions`
+  // extension methods rather than `Response.Write`, so the System.Web row above does
+  // not cover it. Receiver-scoped to `Response` so the many unrelated `WriteAsync`
+  // overloads (Stream, StreamWriter, TextWriter, PipeWriter) are untouched. (#503)
+  { method: 'WriteAsync', class: 'Response', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'HtmlString', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   // Blazor `new MarkupString(x)` renders its argument as raw HTML (the framework's
   // documented "trusted markup" escape hatch) — attacker-controlled input is XSS. (ca#275)
   { method: 'MarkupString', class: 'constructor', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+  // #503 (part 1): `Response.StatusDescription = "Bad " + data` writes
+  // attacker text into the HTTP status line (CWE-81). Surfaced by the
+  // property-assignment synthesiser in the C# extractor, receiver-gated there.
+  { method: 'StatusDescription', class: 'Response', type: 'xss', cwe: 'CWE-81', severity: 'medium', arg_positions: [0], languages: ['csharp'] },
   // `return Content(html, "text/html")` on a controller writes arg 0 to the
   // response body unescaped (cognium-dev#275). Taint-gated on arg 0; the common
   // `Content(constantString)` and the JSON/plain-text content types are
@@ -3073,6 +3149,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // filter is the constructor argument.
   { method: 'DirectorySearcher', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
   { method: 'DirectoryEntry', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['csharp'] },
+
+  // #336: a tainted `HttpClient.BaseAddress` gives the attacker the scheme,
+  // host and port of every RELATIVE request made on that client, so the
+  // request arguments can all be constant and the destination still be
+  // attacker-chosen. Surfaced by the property-assignment synthesiser, which
+  // class-gates it to a resolved `HttpClient`.
+  { method: 'BaseAddress', class: 'HttpClient', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['csharp'] },
 
   // C# open redirect — ASP.NET MVC / Minimal API redirect helpers (CWE-601,
   // cognium-dev#273/#275). Classless: `return Redirect(url)` on a controller is
