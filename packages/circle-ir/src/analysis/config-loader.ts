@@ -2647,6 +2647,30 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'deserialize', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
   { method: 'from_str', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
   { method: 'from_str', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  // cognium-dev#541 — the crates the removed classless rows were silently
+  // covering. #484 replaced a classless `from_str` / `from_slice` with
+  // class-scoped rows, but only for the four formats that already had entries;
+  // every other serde data format lost its sink, and `rmp_serde::from_slice`
+  // on bytes read straight off a `TcpStream` stopped being reported. Each row
+  // below is a serde *data format* entry point — a function whose whole job is
+  // to build a typed value out of untrusted bytes or text.
+  { method: 'from_slice', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_read', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_read_ref', class: 'rmp_serde', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'serde_yaml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'toml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'ron', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_bytes', class: 'postcard', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'serde_cbor', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'serde_cbor', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'ciborium', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_str', class: 'serde_xml_rs', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'serde_xml_rs', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_str', class: 'quick_xml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_reader', class: 'quick_xml', type: 'deserialization', cwe: 'CWE-502', severity: 'high', arg_positions: [0] },
+  { method: 'from_slice', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+  { method: 'deserialize_from', class: 'bincode', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0] },
+
   // #294/#484: no classless `from_str` / `from_slice` deserialization sink.
   // Those rows matched EVERY `T::from_str` / `from_slice` — `u32::from_str`,
   // `Url::from_str`, `PublicKey::from_slice` — i.e. ordinary `FromStr` / byte

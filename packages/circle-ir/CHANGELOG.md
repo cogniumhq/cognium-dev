@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **#541: the serde data formats that #484 silently uncovered are registered
+  again.** 4.9.28 removed the classless `from_str` / `from_slice`
+  deserialization rows, which had been matching every `T::from_str` —
+  `u32::from_str`, `Url::from_str`, `PublicKey::from_slice`, i.e. ordinary
+  `FromStr` and byte parsing that cannot instantiate an attacker-chosen type.
+  That removal was right and stays.
+
+  What was missed is that the same classless rows had also been the **only**
+  thing covering every serde data format without an explicit entry. Four formats
+  had class-scoped rows and kept working; the rest lost their sink silently. The
+  reported case was `rmp_serde::from_slice` on bytes read straight off a
+  `TcpStream` — a genuine CWE-502 — which took the Rust synthetic suite from
+  **92.3% to 89.6%** (deserialization 6 TP / 0 FN → 5 TP / 1 FN).
+
+  Class-scoped rows added for `rmp_serde`, `postcard`, `serde_cbor`, `ciborium`,
+  `quick_xml` and `serde_xml_rs`, plus the missing entry points of formats that
+  were already present (`serde_yaml::from_slice`, `toml::from_slice`,
+  `ron::from_reader`, `bincode::from_slice` / `deserialize_from`). Each is a
+  serde *data format* entry point, whose whole job is to build a typed value out
+  of untrusted bytes or text.
+
+  Both directions are now pinned by tests: the data formats register (including
+  the imported `use rmp_serde::from_slice;` form, which only matches because of
+  #484's `::` separator fix), and `u32::from_str` / `Url::from_str` /
+  `PublicKey::from_slice` / `IpAddr::from_str` stay clean.
+
+  **Lesson recorded with the fix:** 4.9.28's changelog claimed "the class-scoped
+  rows cover both call forms". They covered both call forms *of the four crates
+  that had rows* — which was verified — but nothing checked the set of crates the
+  classless row had been reaching. Removing a classless pattern needs an
+  inventory of what it was matching, not only a check that the replacements work.
+
 ## [4.9.29] - 2026-09-30
 
 ### Added
