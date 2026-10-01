@@ -56,6 +56,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs when the captured right-hand side crosses a block boundary. (#504 was the
   mirror of this in the other direction.)
 
+- **#542: a C# response sink follows the receiver's declared type, not its
+  name.** `Response.StatusDescription = … + data` registered a CWE-81 sink while
+  `resp.StatusDescription = … + data` registered nothing, because the property
+  gate tested the receiver's spelling. This is the sink-side twin of #501, which
+  fixed the same mistake on the source side (`HttpRequest req` was missed for not
+  being spelled `Request`); #526 is the Java version.
+
+  The more consequential half was underneath it: `buildCSharpReceiverTypeMap`
+  walked only `variable_declaration`, so **method parameters had no resolvable
+  type at all** — and `void Bad(HttpRequest req, HttpResponse resp)` is the
+  canonical ASP.NET handler shape. Every receiver gate keyed on a declared type
+  therefore failed silently for a parameter; `BaseAddress` (#336) had the same
+  latent hole for an `HttpClient` passed in rather than constructed locally.
+
+  **Measured** — csharp-juliet recall over the 123 `_01` baseline files of the 10
+  scored CWEs, default taint config:
+
+  | | CWE-81 | total |
+  | --- | --- | --- |
+  | before | 0 / 9 | 97 / 123 (78.9%) |
+  | after | **8 / 9** | **105 / 123 (85.4%)** |
+
+  Ten-family flow comparison: **0 lost, 36 gained** — 29 in `Bad` methods, 7 in
+  `Good`. All 36 are `xss`, so adding parameters to the type map caused no
+  collateral matching in other sink families. In project mode
+  (`analyzeProject`) on the CWE-81 `_7xx` cross-file pairs it is pure gain:
+  **7 → 20 paths, all true positives, zero false positives**.
+
+  Known limitation, locked in a test rather than papered over: the receiver type
+  map is keyed by name with no scope tracking, so a local declaration of a given
+  name replaces a parameter's type for the whole file.
+
 - **#539: a C# conditional-compilation directive no longer hides every member
   of its class.** tree-sitter keeps a member declared inside `#if …/#endif` in
   the tree but nests it one level down under `preproc_if`. The type extractor
