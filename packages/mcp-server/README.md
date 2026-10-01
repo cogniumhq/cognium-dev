@@ -145,6 +145,17 @@ stderr, and the eleven built-in tools serve as normal.
 | `COGNIUM_MCP_MODULES` | Which module specifiers to look for. `none` disables. |
 | `COGNIUM_ENDPOINT` | An opaque endpoint passed through to modules. The server never parses or connects to it. |
 | `COGNIUM_LICENSE` | A licence token, verified offline. Also read from `$COGNIUM_CONFIG_DIR/license`, default `~/.cognium/license`. |
+| `COGNIUM_LICENSE_PUBKEY` | Extra verification keys as `kid=key[,kid=key]`, base64url raw Ed25519, merged over the published ones. A bare key with no `kid=` matches any token, which is a development convenience and not for production. |
+
+A token is `cognium-lic-v1.<base64url payload>.<base64url Ed25519 signature>`.
+The payload is `{ kid, org, tier, iat, expiry, entitlements? }` and the
+signature covers its **canonical** form (RFC 8785), so a token survives being
+re-encoded in transit. `kid` names the signing key, so keys rotate without
+invalidating tokens already issued: a verifier holds the old key as long as
+tokens signed by it are still in date.
+
+Verification is offline — a published key, no network, nothing cached or
+written. No key is baked in yet, so tokens currently report `no-key`.
 
 No telemetry, no phone-home, and no feature is locked behind a token: the state
 decides what is *listed*, and the terms carry the grant.

@@ -15,11 +15,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateKeyPairSync, sign } from 'node:crypto';
 import { buildServer, SERVER_NAME, SERVER_VERSION, type Discovery } from '../src/server.js';
 import { computeEnablement, ENV_ENDPOINT, ENV_LICENSE, ENV_LICENSE_PUBKEY, ENV_CONFIG_DIR } from '../src/enablement.js';
 import { startupLines } from '../src/startup.js';
-import { TOKEN_PREFIX } from '../src/licence.js';
+import { testKey, mint } from './fixtures/licence.js';
 import { fakeModule, DETERMINISTIC_TOOL, ENDPOINT_BACKED_TOOL } from './fixtures/fake-module.js';
 
 const FLOOR_TOOLS = [
@@ -41,16 +40,10 @@ function toolNames(server: ReturnType<typeof buildServer>): string[] {
   return Object.keys(registered).sort();
 }
 
-/** A token that verifies, plus the public key to verify it with. */
-function commercialToken(): { token: string; publicKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('base64url');
-  const payload = Buffer.from(
-    JSON.stringify({ org: 'Example Ltd', tier: 'team', expiry: '2099-01-01' }),
-    'utf8',
-  ).toString('base64url');
-  const signature = sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64url');
-  return { token: `${TOKEN_PREFIX}.${payload}.${signature}`, publicKey: raw };
+/** A token that verifies, plus the `kid=key` the verifier needs for it. */
+function commercialToken(expiry = '2099-01-01'): { token: string; publicKey: string } {
+  const key = testKey('matrix-1');
+  return { token: mint(key, { expiry }), publicKey: `${key.kid}=${key.publicKey}` };
 }
 
 /**
@@ -142,16 +135,9 @@ describe('three-state matrix', () => {
 
 describe('what the licence does not do', () => {
   it('an expired token serves as extended, not as floor, and says so once', () => {
-    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('base64url');
-    const payload = Buffer.from(
-      JSON.stringify({ org: 'Example Ltd', tier: 'team', expiry: '2020-01-01' }),
-      'utf8',
-    ).toString('base64url');
-    const signature = sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64url');
-
+    const { token, publicKey } = commercialToken('2020-01-01');
     const found = discoveryFor(
-      { ...NO_CONFIG_DIR, [ENV_LICENSE]: `${TOKEN_PREFIX}.${payload}.${signature}`, [ENV_LICENSE_PUBKEY]: raw },
+      { ...NO_CONFIG_DIR, [ENV_LICENSE]: token, [ENV_LICENSE_PUBKEY]: publicKey },
       true,
     );
     expect(found.enablement.state).toBe('extended');

@@ -3,33 +3,46 @@
  *
  * A token is a compact, signed, self-describing string:
  *
- *   cognium-lic-v1.<base64url(payload JSON)>.<base64url(Ed25519 signature)>
+ *   cognium-lic-v1.<base64url(JCS payload)>.<base64url(Ed25519 signature)>
  *
- * The signature covers the exact bytes of the payload segment as it appears
- * in the token, so verification never depends on re-serializing JSON.
+ * The signature covers the **canonical** payload (RFC 8785, `./jcs.ts`), not
+ * the bytes the payload happened to arrive in, so a token survives being
+ * re-encoded on the way. The same token is the api.cognium.net key and the
+ * hosted proxy credential, so the format is a cross-surface contract: the
+ * prefix is versioned, and a change to the shape is a prefix bump.
+ *
+ * `kid` names the key that signed it, so keys can be rotated without
+ * invalidating tokens signed by the previous one — a verifier simply keeps
+ * both. It is inside the payload, and therefore signed.
  *
  * Verification is **offline and read-only**: an Ed25519 public key, no
  * network, no cache, no state written anywhere. Nothing here phones home,
- * and nothing here is secret — the private half of the key pair never
- * appears in this repository or in any published package.
+ * and nothing here is secret — a verification key is published on purpose.
+ * The private half never appears in this repository or in any published
+ * package.
  *
  * Deliberately *not* here: entitlement enforcement, metering and revocation.
- * Those live at the token issuer and the hosted endpoints, never in a binary
- * the user runs.
+ * Those live at the issuer and the hosted endpoints, never in a binary the
+ * user runs.
  */
 
 import { verify as verifySignature, createPublicKey, type KeyObject } from 'node:crypto';
+import { canonicalBytes } from './jcs.js';
 
 /** Token prefix. A version bump here is a format break, not a key rotation. */
 export const TOKEN_PREFIX = 'cognium-lic-v1';
 
 /** What a verified token asserts. Unknown fields are preserved but ignored. */
 export interface LicencePayload {
+  /** Identifies the signing key, so keys can be rotated. */
+  readonly kid: string;
   /** Organisation the token was issued to. */
   readonly org: string;
   /** Issuer-defined tier name. The server never branches on this. */
   readonly tier: string;
-  /** Expiry as an ISO-8601 date or date-time. */
+  /** Issued-at, ISO-8601. */
+  readonly iat: string;
+  /** Expiry, ISO-8601. */
   readonly expiry: string;
   /** Issuer-defined entitlement names. The server never branches on these. */
   readonly entitlements?: readonly string[];
@@ -49,7 +62,7 @@ export type LicenceStatus =
   | 'invalid-signature'
   /** Not a token of this format: wrong prefix, bad base64url, or bad JSON. */
   | 'malformed'
-  /** No verification key is configured, so no verdict is possible. */
+  /** No key is known for this token's `kid`, so no verdict is possible. */
   | 'no-key'
   /** No token was configured at all. */
   | 'absent';
@@ -63,24 +76,55 @@ export interface LicenceVerdict {
 }
 
 /**
- * The verification key, as a base64url-encoded raw 32-byte Ed25519 public
- * key. `null` until the production key pair exists: generating and publishing
- * it is a credential operation, so it is the owner's to do, and shipping a
- * placeholder that looked real would be worse than shipping none.
+ * The published verification keys, by `kid`, as base64url-encoded raw 32-byte
+ * Ed25519 public keys.
  *
- * `COGNIUM_LICENSE_PUBKEY` overrides it — which is also how the tests supply
- * a throwaway key.
+ * Empty until the production key pair exists. Generating it is a credential
+ * operation, done by hand on the owner's machine — a placeholder that looked
+ * real would be worse than none, so every token verifies to `no-key` until a
+ * key is added here. Rotation adds a `kid` and keeps the old one as long as
+ * tokens signed by it are still in date.
+ *
+ * `COGNIUM_LICENSE_PUBKEY` adds to this map at runtime, which is how a key is
+ * rotated ahead of a release and how the tests supply a throwaway key.
  */
-export const BUILTIN_PUBLIC_KEY: string | null = null;
+export const BUILTIN_PUBLIC_KEYS: Readonly<Record<string, string>> = Object.freeze({});
+
+/**
+ * A `kid` of `*` in the key map matches any token.
+ *
+ * For development and tests only: it defeats the point of `kid`, so it is
+ * never written into `BUILTIN_PUBLIC_KEYS`.
+ */
+export const ANY_KID = '*';
 
 const RAW_ED25519_PUBLIC_KEY_BYTES = 32;
 /** DER prefix for an Ed25519 SubjectPublicKeyInfo wrapping a raw 32-byte key. */
 const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
+/**
+ * Parse `COGNIUM_LICENSE_PUBKEY`.
+ *
+ * Either `kid=key,kid=key` for real rotation, or a bare key, which registers
+ * under `*` and matches any token — the development form.
+ */
+export function parsePublicKeyEnv(raw: string | undefined): Record<string, string> {
+  if (!raw || raw.trim() === '') return {};
+  const out: Record<string, string> = {};
+  for (const part of raw.split(',')) {
+    const entry = part.trim();
+    if (entry === '') continue;
+    const eq = entry.indexOf('=');
+    if (eq === -1) out[ANY_KID] = entry;
+    else out[entry.slice(0, eq).trim()] = entry.slice(eq + 1).trim();
+  }
+  return out;
+}
+
 function decodeBase64Url(segment: string): Buffer | null {
   // Reject anything outside the base64url alphabet up front: Buffer's decoder
   // is lenient and would silently accept padding and '+/' characters, which
-  // would make two different strings verify as the same token.
+  // would make two different strings decode to the same token.
   if (!/^[A-Za-z0-9_-]+$/.test(segment)) return null;
   const buf = Buffer.from(segment, 'base64url');
   if (buf.length === 0) return null;
@@ -102,6 +146,10 @@ function publicKeyFrom(encoded: string): KeyObject | null {
   }
 }
 
+function isIsoDate(value: string): boolean {
+  return !Number.isNaN(new Date(value).getTime());
+}
+
 function parsePayload(segment: string): LicencePayload | null {
   const raw = decodeBase64Url(segment);
   if (!raw) return null;
@@ -111,15 +159,25 @@ function parsePayload(segment: string): LicencePayload | null {
   } catch {
     return null;
   }
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const { org, tier, expiry } = parsed as Record<string, unknown>;
-  if (typeof org !== 'string' || typeof tier !== 'string' || typeof expiry !== 'string') {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+
+  const { kid, org, tier, iat, expiry, entitlements } = parsed as Record<string, unknown>;
+  if (
+    typeof kid !== 'string' || kid === '' ||
+    typeof org !== 'string' ||
+    typeof tier !== 'string' ||
+    typeof iat !== 'string' ||
+    typeof expiry !== 'string'
+  ) {
     return null;
   }
-  const entitlements = (parsed as Record<string, unknown>).entitlements;
+  if (!isIsoDate(iat) || !isIsoDate(expiry)) return null;
+
   return {
+    kid,
     org,
     tier,
+    iat,
     expiry,
     ...(Array.isArray(entitlements) && entitlements.every((e) => typeof e === 'string')
       ? { entitlements: entitlements as string[] }
@@ -128,8 +186,12 @@ function parsePayload(segment: string): LicencePayload | null {
 }
 
 export interface VerifyOptions {
-  /** base64url raw Ed25519 public key. Defaults to the built-in key. */
-  readonly publicKey?: string | null;
+  /**
+   * Verification keys by `kid`, base64url raw Ed25519. Merged over the
+   * built-in map, so a caller can add a key without replacing the published
+   * ones. Pass `{}` explicitly to verify against nothing.
+   */
+  readonly publicKeys?: Readonly<Record<string, string>>;
   /** Clock injection point for the expiry test. */
   readonly now?: Date;
 }
@@ -158,18 +220,26 @@ export function verifyLicence(token: string | undefined, opts: VerifyOptions = {
     return { status: 'malformed', detail: 'licence signature is not readable' };
   }
 
-  const encodedKey = opts.publicKey === undefined ? BUILTIN_PUBLIC_KEY : opts.publicKey;
+  const keys = { ...BUILTIN_PUBLIC_KEYS, ...(opts.publicKeys ?? {}) };
+  const encodedKey = keys[payload.kid] ?? keys[ANY_KID];
   if (!encodedKey) {
-    return { status: 'no-key', detail: 'no licence verification key is configured' };
+    return {
+      status: 'no-key',
+      detail: `no verification key for licence key id "${payload.kid}"`,
+    };
   }
   const key = publicKeyFrom(encodedKey);
   if (!key) {
-    return { status: 'no-key', detail: 'the configured licence verification key is unusable' };
+    return {
+      status: 'no-key',
+      detail: `the verification key for key id "${payload.kid}" is unusable`,
+    };
   }
 
   let signatureOk = false;
   try {
-    signatureOk = verifySignature(null, Buffer.from(payloadSegment, 'utf8'), key, signature);
+    // Over the canonical payload, not the segment as it arrived.
+    signatureOk = verifySignature(null, canonicalBytes(payload), key, signature);
   } catch {
     signatureOk = false;
   }
@@ -180,12 +250,8 @@ export function verifyLicence(token: string | undefined, opts: VerifyOptions = {
     };
   }
 
-  const expiry = new Date(payload.expiry);
-  if (Number.isNaN(expiry.getTime())) {
-    return { status: 'malformed', detail: 'licence expiry is not a date' };
-  }
   const now = opts.now ?? new Date();
-  if (expiry.getTime() <= now.getTime()) {
+  if (new Date(payload.expiry).getTime() <= now.getTime()) {
     return {
       status: 'expired',
       payload,
@@ -198,4 +264,15 @@ export function verifyLicence(token: string | undefined, opts: VerifyOptions = {
     payload,
     detail: `licence for ${payload.org} (${payload.tier}) valid to ${payload.expiry}`,
   };
+}
+
+/**
+ * Mint a token. Exported for the issuer and the tests; the server itself
+ * never calls it, and the private key it needs lives only where tokens are
+ * issued.
+ */
+export function encodeLicence(payload: LicencePayload, sign: (bytes: Buffer) => Buffer): string {
+  const canonical = canonicalBytes(payload);
+  const segment = canonical.toString('base64url');
+  return `${TOKEN_PREFIX}.${segment}.${sign(canonical).toString('base64url')}`;
 }

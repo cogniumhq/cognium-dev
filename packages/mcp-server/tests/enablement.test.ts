@@ -7,7 +7,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generateKeyPairSync, sign } from 'node:crypto';
 import {
   computeEnablement,
   enablementForProcess,
@@ -19,7 +18,7 @@ import {
   ENV_LICENSE_PUBKEY,
   ENV_CONFIG_DIR,
 } from '../src/enablement.js';
-import { TOKEN_PREFIX } from '../src/licence.js';
+import { testKey, mint } from './fixtures/licence.js';
 
 const tempDirs: string[] = [];
 
@@ -34,12 +33,12 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+let keyCounter = 0;
+
+/** A token and the `kid=key` entry a verifier needs for it. */
 function mintToken(expiry = '2099-01-01'): { token: string; publicKey: string } {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({ org: 'Example Ltd', tier: 'team', expiry }), 'utf8').toString('base64url');
-  const signature = sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64url');
-  return { token: `${TOKEN_PREFIX}.${payload}.${signature}`, publicKey: raw };
+  const key = testKey(`enablement-${++keyCounter}`);
+  return { token: mint(key, { expiry }), publicKey: `${key.kid}=${key.publicKey}` };
 }
 
 const MISSING_DIR = { [ENV_CONFIG_DIR]: join(tmpdir(), 'cognium-does-not-exist') };
@@ -70,17 +69,39 @@ describe('where the token comes from', () => {
 
   it('prefers the environment over the file', () => {
     const dir = tempConfigDir();
-    const fromFile = mintToken();
-    const fromEnv = mintToken();
-    writeFileSync(join(dir, 'license'), fromFile.token);
+    // Both tokens claim the same key id, and the verifier is given only the
+    // file token's key. So the file token would verify and the env one
+    // cannot: `invalid-signature` proves the env token is the one that was
+    // read, and nothing else produces that outcome here.
+    const onDisk = testKey('contested');
+    const inEnv = testKey('contested');
+    writeFileSync(join(dir, 'license'), mint(onDisk));
 
-    // The env token is signed by a different key than the one configured, so
-    // if the file won we would see `valid` instead of a failed signature.
     const enablement = computeEnablement({
       installed: true,
-      env: { [ENV_CONFIG_DIR]: dir, [ENV_LICENSE]: fromEnv.token, [ENV_LICENSE_PUBKEY]: fromFile.publicKey },
+      env: {
+        [ENV_CONFIG_DIR]: dir,
+        [ENV_LICENSE]: mint(inEnv),
+        [ENV_LICENSE_PUBKEY]: `${onDisk.kid}=${onDisk.publicKey}`,
+      },
     });
     expect(enablement.licence.status).toBe('invalid-signature');
+  });
+
+  it('falls back to the file when the environment variable is blank', () => {
+    const dir = tempConfigDir();
+    const key = testKey('from-disk');
+    writeFileSync(join(dir, 'license'), mint(key));
+
+    const enablement = computeEnablement({
+      installed: true,
+      env: {
+        [ENV_CONFIG_DIR]: dir,
+        [ENV_LICENSE]: '   ',
+        [ENV_LICENSE_PUBKEY]: `${key.kid}=${key.publicKey}`,
+      },
+    });
+    expect(enablement.licence.status).toBe('valid');
   });
 
   it('is absent when there is no token anywhere', () => {

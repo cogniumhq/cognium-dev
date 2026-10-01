@@ -1,57 +1,44 @@
 /**
- * Licence verification — the four cases `spec.md` §7 names (valid, expired,
- * wrong key, tampered), plus the ones a user hits by accident.
+ * Licence verification.
  *
- * Keys are generated here and thrown away. No key material is committed, and
- * the production key does not exist yet by design.
+ * `spec.md` §7 names four cases — valid, expired, wrong key, tampered. Those
+ * are four *inputs*; offline they produce three distinguishable *outcomes*,
+ * because a token signed by another key and a token whose payload was
+ * altered cannot be told apart without the issuer. The tests assert the
+ * outcomes that exist rather than a distinction the verifier cannot make.
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
-import { verifyLicence, TOKEN_PREFIX, BUILTIN_PUBLIC_KEY } from '../src/licence.js';
+import { sign } from 'node:crypto';
+import {
+  verifyLicence,
+  encodeLicence,
+  parsePublicKeyEnv,
+  TOKEN_PREFIX,
+  BUILTIN_PUBLIC_KEYS,
+  ANY_KID,
+} from '../src/licence.js';
+import { canonicalBytes } from '../src/jcs.js';
+import { testKey, mint, keyMap, payloadFor } from './fixtures/licence.js';
 
-/** The DER SubjectPublicKeyInfo prefix in front of a raw Ed25519 key. */
-const SPKI_PREFIX_BYTES = 12;
-
-function keypair(): { publicKey: string; privateKey: KeyObject } {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const der = publicKey.export({ format: 'der', type: 'spki' });
-  return {
-    publicKey: der.subarray(SPKI_PREFIX_BYTES).toString('base64url'),
-    privateKey,
-  };
-}
-
-function mint(payload: unknown, privateKey: KeyObject): string {
-  const segment = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = sign(null, Buffer.from(segment, 'utf8'), privateKey).toString('base64url');
-  return `${TOKEN_PREFIX}.${segment}.${signature}`;
-}
-
-const PAYLOAD = {
-  org: 'Example Ltd',
-  tier: 'team',
-  expiry: '2027-01-01',
-  entitlements: ['commercial-use'],
-};
+const NOW = new Date('2026-10-15T00:00:00.000Z');
 
 describe('verifyLicence', () => {
-  it('accepts a token signed by the configured key', () => {
-    const { publicKey, privateKey } = keypair();
-    const verdict = verifyLicence(mint(PAYLOAD, privateKey), {
-      publicKey,
-      now: new Date('2026-10-01'),
-    });
+  it('accepts a token signed by the key its kid names', () => {
+    const key = testKey();
+    const verdict = verifyLicence(mint(key), { publicKeys: keyMap(key), now: NOW });
     expect(verdict.status).toBe('valid');
     expect(verdict.payload?.org).toBe('Example Ltd');
-    expect(verdict.payload?.tier).toBe('team');
+    expect(verdict.payload?.kid).toBe('test-1');
+    expect(verdict.payload?.iat).toBe('2026-10-01T00:00:00.000Z');
+    expect(verdict.payload?.entitlements).toEqual(['commercial-use']);
   });
 
   it('reports a well-signed token past its expiry as expired, not invalid', () => {
-    const { publicKey, privateKey } = keypair();
-    const verdict = verifyLicence(mint({ ...PAYLOAD, expiry: '2026-09-01' }, privateKey), {
-      publicKey,
-      now: new Date('2026-10-01'),
+    const key = testKey();
+    const verdict = verifyLicence(mint(key, { expiry: '2026-09-01' }), {
+      publicKeys: keyMap(key),
+      now: NOW,
     });
     expect(verdict.status).toBe('expired');
     // The payload is still trustworthy — the signature verified.
@@ -60,58 +47,117 @@ describe('verifyLicence', () => {
   });
 
   it('treats the expiry boundary as expired', () => {
-    const { publicKey, privateKey } = keypair();
-    const verdict = verifyLicence(mint({ ...PAYLOAD, expiry: '2026-10-01T00:00:00.000Z' }, privateKey), {
-      publicKey,
-      now: new Date('2026-10-01T00:00:00.000Z'),
+    const key = testKey();
+    const verdict = verifyLicence(mint(key, { expiry: NOW.toISOString() }), {
+      publicKeys: keyMap(key),
+      now: NOW,
     });
     expect(verdict.status).toBe('expired');
   });
 
   it('rejects a token signed by a different key', () => {
-    const { privateKey } = keypair();
-    const other = keypair();
-    const verdict = verifyLicence(mint(PAYLOAD, privateKey), {
-      publicKey: other.publicKey,
-      now: new Date('2026-10-01'),
-    });
+    const issuer = testKey('test-1');
+    const impostor = { ...testKey('test-1'), kid: 'test-1' };
+    const token = mint(impostor);
+    const verdict = verifyLicence(token, { publicKeys: keyMap(issuer), now: NOW });
     expect(verdict.status).toBe('invalid-signature');
     expect(verdict.payload).toBeUndefined();
   });
 
   it('rejects a token whose payload was altered after signing', () => {
-    const { publicKey, privateKey } = keypair();
-    const token = mint(PAYLOAD, privateKey);
-    const [prefix, , signature] = token.split('.');
-    const forged = Buffer.from(
-      JSON.stringify({ ...PAYLOAD, org: 'Someone Else', expiry: '2099-01-01' }),
-      'utf8',
-    ).toString('base64url');
+    const key = testKey();
+    const [prefix, , signature] = mint(key).split('.');
+    const forged = canonicalBytes(payloadFor(key, { org: 'Someone Else', expiry: '2099-01-01' }))
+      .toString('base64url');
 
     const verdict = verifyLicence(`${prefix}.${forged}.${signature}`, {
-      publicKey,
-      now: new Date('2026-10-01'),
+      publicKeys: keyMap(key),
+      now: NOW,
     });
-    // Offline, a wrong key and an altered payload are the same observation.
-    // The test asserts the honest outcome rather than a distinction the
-    // verifier cannot make.
     expect(verdict.status).toBe('invalid-signature');
   });
 
+  it('verifies a token whose payload was re-encoded but not changed', () => {
+    // The whole point of signing the canonical form: a payload that arrives
+    // with its keys in another order is the same token, not a broken one.
+    const key = testKey();
+    const payload = payloadFor(key);
+    const reordered = JSON.stringify({
+      expiry: payload.expiry,
+      entitlements: payload.entitlements,
+      tier: payload.tier,
+      iat: payload.iat,
+      org: payload.org,
+      kid: payload.kid,
+    });
+    const signature = sign(null, canonicalBytes(payload), key.privateKey).toString('base64url');
+    const token = `${TOKEN_PREFIX}.${Buffer.from(reordered, 'utf8').toString('base64url')}.${signature}`;
+
+    expect(verifyLicence(token, { publicKeys: keyMap(key), now: NOW }).status).toBe('valid');
+  });
+});
+
+describe('key rotation', () => {
+  it('keeps verifying tokens signed by a retired key while they are in date', () => {
+    const oldKey = testKey('2026-10');
+    const newKey = testKey('2027-04');
+    const keys = keyMap(oldKey, newKey);
+
+    expect(verifyLicence(mint(oldKey), { publicKeys: keys, now: NOW }).status).toBe('valid');
+    expect(verifyLicence(mint(newKey), { publicKeys: keys, now: NOW }).status).toBe('valid');
+  });
+
+  it('cannot give a verdict for a kid it holds no key for, and says which', () => {
+    const key = testKey('2028-01');
+    const verdict = verifyLicence(mint(key), { publicKeys: keyMap(testKey('2026-10')), now: NOW });
+    expect(verdict.status).toBe('no-key');
+    expect(verdict.detail).toContain('2028-01');
+  });
+
+  it('will not accept a token for one kid against another kid\'s key', () => {
+    // Without the kid lookup, any key in the map would verify any token.
+    const a = testKey('key-a');
+    const b = testKey('key-b');
+    const token = mint(a, { kid: 'key-b' });
+    expect(verifyLicence(token, { publicKeys: keyMap(b), now: NOW }).status).toBe('invalid-signature');
+  });
+
+  it('merges caller keys over the built-in map rather than replacing it', () => {
+    const key = testKey();
+    expect(verifyLicence(mint(key), { publicKeys: keyMap(key), now: NOW }).status).toBe('valid');
+    // Nothing published yet, so the built-in map contributes nothing — but it
+    // is still consulted, which is what makes a baked-in key work.
+    expect(Object.keys(BUILTIN_PUBLIC_KEYS)).toEqual([]);
+  });
+});
+
+describe('malformed input', () => {
   it.each([
     ['empty', ''],
     ['no prefix', 'abc.def'],
     ['wrong prefix', 'cognium-lic-v9.abc.def'],
     ['non-base64url payload', `${TOKEN_PREFIX}.not+valid/base64.AAAA`],
     ['payload that is not JSON', `${TOKEN_PREFIX}.${Buffer.from('nope').toString('base64url')}.AAAA`],
-    [
-      'payload missing required fields',
-      `${TOKEN_PREFIX}.${Buffer.from(JSON.stringify({ org: 'x' })).toString('base64url')}.AAAA`,
-    ],
+    ['a JSON array, not an object', `${TOKEN_PREFIX}.${Buffer.from('[]').toString('base64url')}.AAAA`],
   ])('refuses a %s token before looking at any key', (_label, token) => {
-    const verdict = verifyLicence(token, { publicKey: keypair().publicKey });
+    const verdict = verifyLicence(token, { publicKeys: { [ANY_KID]: testKey().publicKey } });
     expect(['malformed', 'absent']).toContain(verdict.status);
     expect(verdict.payload).toBeUndefined();
+  });
+
+  it.each([
+    ['kid', { kid: undefined }],
+    ['an empty kid', { kid: '' }],
+    ['iat', { iat: undefined }],
+    ['expiry', { expiry: undefined }],
+    ['org', { org: undefined }],
+    ['a readable iat', { iat: 'whenever' }],
+    ['a readable expiry', { expiry: 'soon' }],
+  ])('refuses a payload missing %s', (_label, over) => {
+    const key = testKey();
+    const payload = { ...payloadFor(key), ...over } as never;
+    const token = encodeLicence(payload, (b) => sign(null, b, key.privateKey));
+    expect(verifyLicence(token, { publicKeys: keyMap(key), now: NOW }).status).toBe('malformed');
   });
 
   it('says so when no token is configured', () => {
@@ -119,31 +165,60 @@ describe('verifyLicence', () => {
     expect(verifyLicence('   ').status).toBe('absent');
   });
 
-  it('cannot give a verdict with no verification key, and says that instead of guessing', () => {
-    const { privateKey } = keypair();
-    const verdict = verifyLicence(mint(PAYLOAD, privateKey), { publicKey: null });
-    expect(verdict.status).toBe('no-key');
-  });
-
   it('rejects a key of the wrong length rather than throwing', () => {
-    const { privateKey } = keypair();
-    const verdict = verifyLicence(mint(PAYLOAD, privateKey), {
-      publicKey: Buffer.alloc(16).toString('base64url'),
+    const key = testKey();
+    const verdict = verifyLicence(mint(key), {
+      publicKeys: { [key.kid]: Buffer.alloc(16).toString('base64url') },
+      now: NOW,
     });
     expect(verdict.status).toBe('no-key');
   });
 
-  it('ships no built-in key yet, so a real token cannot be forged against a placeholder', () => {
-    // Generating and publishing the production key pair is a credential
-    // operation and therefore the owner's. Until it exists, the honest
-    // verdict for any token is `no-key`.
-    expect(BUILTIN_PUBLIC_KEY).toBeNull();
-  });
-
   it('never throws, whatever it is handed', () => {
+    const key = testKey();
     const inputs = ['.', '..', `${TOKEN_PREFIX}..`, `${TOKEN_PREFIX}.a.`, 'x'.repeat(10_000)];
     for (const input of inputs) {
-      expect(() => verifyLicence(input, { publicKey: keypair().publicKey })).not.toThrow();
+      expect(() => verifyLicence(input, { publicKeys: keyMap(key) })).not.toThrow();
     }
+  });
+});
+
+describe('BUILTIN_PUBLIC_KEYS', () => {
+  it('is empty and frozen, so no token verifies against a placeholder', () => {
+    // Generating the production key pair is a credential operation and so the
+    // owner's. Until a key is published here, every real token is `no-key`.
+    expect(BUILTIN_PUBLIC_KEYS).toEqual({});
+    expect(Object.isFrozen(BUILTIN_PUBLIC_KEYS)).toBe(true);
+  });
+
+  it('holds no wildcard, which is a development form only', () => {
+    expect(BUILTIN_PUBLIC_KEYS[ANY_KID]).toBeUndefined();
+  });
+});
+
+describe('parsePublicKeyEnv', () => {
+  it('reads kid=key pairs', () => {
+    expect(parsePublicKeyEnv('a=AAA,b=BBB')).toEqual({ a: 'AAA', b: 'BBB' });
+  });
+
+  it('tolerates spacing and empty entries', () => {
+    expect(parsePublicKeyEnv(' a = AAA , , b=BBB ')).toEqual({ a: 'AAA', b: 'BBB' });
+  });
+
+  it('reads a bare key as the development wildcard', () => {
+    expect(parsePublicKeyEnv('AAA')).toEqual({ [ANY_KID]: 'AAA' });
+  });
+
+  it.each([[undefined], [''], ['   ']])('reads %o as no keys', (raw) => {
+    expect(parsePublicKeyEnv(raw)).toEqual({});
+  });
+
+  it('lets the wildcard verify a token of any kid, for development', () => {
+    const key = testKey('whatever');
+    const verdict = verifyLicence(mint(key), {
+      publicKeys: parsePublicKeyEnv(key.publicKey),
+      now: NOW,
+    });
+    expect(verdict.status).toBe('valid');
   });
 });

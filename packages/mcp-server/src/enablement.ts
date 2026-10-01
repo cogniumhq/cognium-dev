@@ -31,7 +31,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { verifyLicence, type LicenceVerdict } from './licence.js';
+import { verifyLicence, parsePublicKeyEnv, type LicenceVerdict } from './licence.js';
 
 export type LicenceState = 'floor' | 'extended' | 'commercial';
 
@@ -84,7 +84,7 @@ export function computeEnablement(input: ComputeEnablementInput): Enablement {
 
   const token = env[ENV_LICENSE]?.trim() || tokenFromDisk(env);
   const licence = verifyLicence(token, {
-    ...(env[ENV_LICENSE_PUBKEY] ? { publicKey: env[ENV_LICENSE_PUBKEY] } : {}),
+    publicKeys: parsePublicKeyEnv(env[ENV_LICENSE_PUBKEY]),
     ...(input.now ? { now: input.now } : {}),
   });
 

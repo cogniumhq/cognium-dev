@@ -51,13 +51,18 @@ export {
 
 export {
   verifyLicence,
+  encodeLicence,
+  parsePublicKeyEnv,
   TOKEN_PREFIX,
-  BUILTIN_PUBLIC_KEY,
+  BUILTIN_PUBLIC_KEYS,
+  ANY_KID,
   type LicencePayload,
   type LicenceStatus,
   type LicenceVerdict,
   type VerifyOptions,
 } from './licence.js';
+
+export { canonicalise, canonicalBytes, JcsError } from './jcs.js';
 
 export { ProjectCache, type ProjectScanOptions } from './cache.js';
 export { type ToolContext, type ToolResult } from './tools/types.js';

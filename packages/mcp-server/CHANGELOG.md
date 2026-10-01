@@ -32,7 +32,17 @@ on a default install is the same eleven tools it was on 0.1.21.
   `valid`, `expired`, `invalid-signature`, `malformed`, `no-key` and `absent`.
   A wrong key and an altered payload are indistinguishable offline and both
   report `invalid-signature`, which the tests assert rather than paper over.
-  No verification key ships yet, so every token currently verifies to `no-key`.
+  No verification key is published yet, so tokens currently report `no-key`.
+- **The token format.** `cognium-lic-v1.<base64url payload>.<base64url
+  signature>`, payload `{ kid, org, tier, iat, expiry, entitlements? }`. The
+  signature covers the payload's **canonical** form (RFC 8785), not the bytes
+  it arrived in, so a token survives being re-encoded in transit. `kid` names
+  the signing key and is itself signed, so keys rotate without invalidating
+  tokens already issued — a verifier keeps the retired key while tokens signed
+  by it are in date. The prefix is versioned, so a change to the shape is a
+  prefix bump rather than a silent break.
+- **`canonicalise()`** — RFC 8785 JSON canonicalisation, forty lines and no new
+  dependency, tested against the RFC's own key-ordering vector.
 - **One startup line** on stderr naming the version, the `circle-ir` it is
   running against, the state, and any module loaded. Never the token, and never
   the endpoint's value.
@@ -47,8 +57,8 @@ on a default install is the same eleven tools it was on 0.1.21.
 - **Server name and version come from the manifest.** They were string literals
   and had drifted to `0.1.0` while the package was at `0.1.21`, so the
   `initialize` handshake under-reported the version. It now reports the real one.
-- Coverage thresholds ratcheted to the newly measured values (93 statements,
-  83 branches, 96 functions, 95 lines).
+- Coverage thresholds ratcheted to the newly measured values (94 statements,
+  84 branches, 96 functions, 96 lines).
 
 ### Fixed
 - A module that is absent, broken, wrongly shaped, built against another
