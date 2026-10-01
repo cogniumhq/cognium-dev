@@ -9,13 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Adopts `circle-ir@4.9.28`, a C# precision and recall pass.
-  **C# scans report substantially fewer findings** — roughly 3,000 fewer on the
-  10 scored NIST Juliet C# families (7,451 files), with zero additions. The
-  removals are false positives: escapes on files with no sink (#474), sinks
-  taint-gated on a compile-time constant such as `new SqlCommand(null, conn)`
-  (#502), argument-less sinks with no flow behind them (#508), one-vulnerability
-  double reports (#509), credited early-return guards (#272), and pairings whose
-  source sat after their sink.
+  **C# scans report about 30% fewer security findings** — measured 506 → 355
+  reported flows over ten NIST Juliet C# taint families (1,500 files). All 225
+  removed flows are `external_taint_escape` (CWE-668) noise: escapes on files
+  with no sink (#474), sinks taint-gated on a compile-time constant such as
+  `new SqlCommand(null, conn)` (#502), and credited early-return guards (#272).
+  **No `sql_injection`, `command_injection`, `xss` or `xpath_injection` flow is
+  lost.**
+
+  The release also **adds 74 classical detections** in that sample — 48
+  `xpath_injection`, 8 `ldap_injection`, 8 `command_injection`, 6 `xss`, 3
+  `format_string`, 1 `crlf` — 44 of them in Juliet `Bad` methods. CWE643 Xpath
+  injection nets upward, 72 → 90.
+
+  Two fixes in this release (#508 argument-less sink flow backing, #509
+  one-vulnerability-one-finding) apply to the library's `generateFindings`
+  surface, which the CLI does not call. **A tainted `new SqlCommand(...)`
+  followed by `cmd.ExecuteReader()` is still reported twice by `scan`.**
 
   Newly detected: `Response.StatusDescription`, `(MarkupString)x` and a tainted
   `HttpClient.BaseAddress` (#503 part 1, #340, #336).
