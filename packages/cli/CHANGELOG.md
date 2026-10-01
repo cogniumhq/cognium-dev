@@ -35,6 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     than its name, so `resp.StatusDescription = …` reports where previously only
     a receiver literally named `Response` did.
 
+  Also in this release: **CWE-94 code injection goes from undetectable to
+  complete.** Taint now rides a `StringBuilder` from `Append` through
+  `ToString()` (#530), and CodeDOM/Roslyn runtime compilation are code-injection
+  sinks (#503 part 2). Those land together because the two are useless apart —
+  the sink had nothing reaching it while taint could not cross the builder.
+
+  | | 4.9.28 | 4.9.29 |
+  | --- | --- | --- |
+  | CWE-94 code generation | 0 / 10 | **10 / 10** |
+  | all 10 scored families | 97 / 123 (78.9%) | **115 / 123 (93.5%)** |
+
+  **No scored C# family is at zero any more**, and three are at 100%: CWE-89,
+  CWE-643, CWE-94. Building a statement with a `StringBuilder` is idiomatic C#,
+  so this affects ordinary code and not only the benchmark.
+
   **Expect more C# findings after upgrading.** False positives on these corpora
   are concentrated in one known shape — a tainted value reaching a *sanitized*
   sink, because the reported flow surface does not consult sanitizers.
