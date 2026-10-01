@@ -27,7 +27,9 @@ export async function ensureAnalyzer(): Promise<void> {
         go: wasmBase + 'tree-sitter-go.wasm',
         java: wasmBase + 'tree-sitter-java.wasm',
         javascript: wasmBase + 'tree-sitter-javascript.wasm',
-        typescript: wasmBase + 'tree-sitter-javascript.wasm',
+        // TypeScript grammar, not JavaScript: TS-only syntax (interfaces,
+        // type annotations) otherwise parses as error-recovered calls (#409).
+        typescript: wasmBase + 'tree-sitter-typescript.wasm',
         python: wasmBase + 'tree-sitter-python.wasm',
         rust: wasmBase + 'tree-sitter-rust.wasm',
         html: wasmBase + 'tree-sitter-html.wasm',

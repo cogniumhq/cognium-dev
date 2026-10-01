@@ -69,6 +69,34 @@ on a default install is the same eleven tools it was on 0.1.21.
   down. Each case is refused on one stderr line and the eleven built-in tools
   serve as normal. A patch-level `circle-ir` difference is accepted on purpose:
   that is the release-time pin check's job, not the loader's.
+- **#409: `.ts` files are parsed with the TypeScript grammar.** The server passed
+  `circle-ir` an explicit grammar map that loaded the JavaScript grammar for
+  `typescript`, overriding the library's own default. TypeScript-only syntax then
+  parsed as error-recovered garbage: an interface method signature
+  `query(text: string): Promise<T>;` became a `query(...)` call and was reported
+  as `sql_injection` and `missing-await` on the signature line. `.js` files are
+  unaffected, and `.tsx` already used its own grammar.
+
+  This also removes an order dependence. Another library in the same process
+  that initialised `circle-ir` first, with the TypeScript grammar, decided how
+  every later tool parsed `.ts` — so the same call could answer differently
+  depending on what had run before it.
+
+#### Consumer Impact
+- **Results for TypeScript files change, in both directions, with no error.**
+  Applies to every tool that analyses a project: `scan`, `taint_paths`,
+  `list_entry_points`, `attack_surface_summary`, `list_reachable_sinks`,
+  `explain_finding`, `find_similar`. On 20,988 `.ts` files from public
+  repositories, comparing the two grammars: **550 taint flows removed and 502
+  added**; sinks 1,433 removed and 1,953 added. Sampled removals were misparses
+  of casts, generics and type annotations read as calls. They were not all
+  labelled, so a removed flow is not guaranteed to have been a false positive.
+- **Many more note-level findings on TypeScript**: 38,437 added against 2,432
+  removed on that corpus, mostly `missing-public-doc`, `variable-shadowing` and
+  `leaked-global`. The JavaScript grammar dropped whole functions and classes
+  that used TypeScript-only syntax, so those passes never saw them.
+- A consumer holding a baseline of TypeScript findings should regenerate it.
+  JavaScript, and every other language, is unchanged.
 
 ## [0.1.21] - 2026-09-30
 
