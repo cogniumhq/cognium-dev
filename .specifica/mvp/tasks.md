@@ -9,6 +9,7 @@
 - **`@cognium/mcp-server` 0.2.0 — merged to `main` (#550, `1338cae`), admin-merged past the code-owner review requirement. Not published.** The package becomes importable as a library (`dist/index.js` is side-effect-free; the stdio bin moves to `dist/bin.js`, bin name unchanged) and gains an optional tool-module seam, three reported states (`floor` / `extended` / `commercial`) and offline Ed25519 licence verification. `tools/list` on a default install is the same eleven tools as 0.1.21.
   - **Breaking:** anything executing `dist/index.js` by file path must point at `dist/bin.js`.
   - **Review fixes (`c3b6cd5`):** a date-only `expiry` is in date through that whole UTC day; the signature covers every payload member, including ones the verifier does not read; a refusal no longer claims floor-only next to a loaded module.
+  - **TypeScript grammar (#487, `de219ae`, admin-merged):** the server and the CLI parse `.ts` with the TypeScript grammar instead of the JavaScript one (#409). Results for TypeScript files change in both directions; both changelogs carry a Consumer Impact section. The server half ships in 0.2.0; the CLI half is unreleased.
   - **Coverage:** thresholds 94 / 84 / 96 / 96, measured identically in CI and locally (94.33 statements) once the unreadable-directory test stopped depending on `chmod`, which root ignores.
   - **Owner actions:** publish 0.2.0; generate the production verification key (until then every token reports `no-key`).
 
