@@ -4,6 +4,19 @@ All notable changes to `@cognium/mcp-server` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.29`, a C# recall release. C# scans report substantially
+  more, and report **cross-file** C# taint flows for the first time — 4.9.28
+  produced none. Juliet C# baseline detection goes 97 → **105 of 123** (85.4%)
+  on the default taint config, CWE-81 goes 0/9 → **8/9**, and cross-file paths on
+  the Juliet `_5xx`/`_7xx` sets go from 0 to 505 (272 true positives), with
+  nothing lost. Driven by #539 (a `#if` directive hid every class member), #502
+  (I/O, network and database reads as sources) and #542 (response sinks follow
+  the declared type, not the receiver name). No MCP tool, schema or
+  response-shape changes.
+
 ## [0.1.20] - 2026-09-30
 
 ### Changed

@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.29] - 2026-09-30
+
+### Changed
+- Adopts `circle-ir@4.9.29`, a C# recall release. **C# scans report
+  substantially more**, and for the first time report **cross-file** C# taint
+  flows at all — 4.9.28 produced none.
+
+  Measured over the NIST Juliet C# baselines, 123 `_01` files across the 10
+  scored CWEs, on the default taint config:
+
+  | | 4.9.28 | 4.9.29 |
+  | --- | --- | --- |
+  | families detected | 97 / 123 (78.9%) | **105 / 123 (85.4%)** |
+  | CWE-81 XSS error message | 0 / 9 | **8 / 9** |
+
+  In project mode — which is what `scan` does — cross-file C# detection on the
+  Juliet `_5xx` and `_7xx` cross-file sets goes from **0** paths to 505, of which
+  272 are true positives. Nothing is lost: no detection present in 4.9.28 is
+  removed on any corpus measured.
+
+  What changed underneath:
+  - **#539** — a `#if` directive was dropping every method from the IR, which
+    silently disabled method-scoped pairing *and* parameter-derived sources. Any
+    C# using `#if DEBUG` or `#if NET6_0_OR_GREATER` was affected.
+  - **#502** — console, file, socket, HTTP-client and database reads are now
+    taint sources, mirroring the Java model.
+  - **#542** — a response sink now follows the receiver's declared type rather
+    than its name, so `resp.StatusDescription = …` reports where previously only
+    a receiver literally named `Response` did.
+
+  **Expect more C# findings after upgrading.** False positives on these corpora
+  are concentrated in one known shape — a tainted value reaching a *sanitized*
+  sink, because the reported flow surface does not consult sanitizers.
+
 ## [4.9.28] - 2026-09-30
 
 ### Changed
