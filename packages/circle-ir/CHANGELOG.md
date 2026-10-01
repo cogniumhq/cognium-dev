@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **#502: C# I/O, network and database reads are taint sources.** Mirrors the
+  Java model one for one — `io_input`/high for console and file reads
+  (`StreamReader.ReadLine` / `ReadToEnd`), `network_input`/high for socket and
+  HTTP-client reads (`TcpClient.GetStream`, `TcpListener.AcceptTcpClient`,
+  `WebClient.OpenRead` / `DownloadString`), and `db_input`/**medium** for a
+  database row read (`SqlDataReader`), the same severity split Java draws
+  between `BufferedReader.readLine` and `ResultSet.getString`.
+
+  Seven of the ten scored Juliet C# families previously scored **0.0%** because
+  their sources are exactly these reads, and the `Connect_tcp` → `CommandText`
+  family detected nothing at all.
+
+  **Measured in project mode** (`analyzeProject`, what `scan` and the MCP server
+  use), on the Juliet C# `_5xx` cross-file sets, 378 files each, on top of #539:
+
+  | | CWE113 (TP / FP) | CWE89 (TP / FP) |
+  | --- | --- | --- |
+  | without this change | 44 / 44 | 60 / 48 |
+  | with it | **110** / 110 | **162** / 123 |
+
+  **Nothing is lost** — no removals in any configuration, on either surface.
+  Every project-mode false positive is `GoodB2G*`: a bad source reaching a
+  *sanitized* sink. That is sanitizer credit not being applied (#518, #286-A),
+  pre-existing and tracked, not introduced here.
+
+  Per-file `analyze()` additionally reports pairings that project mode does not,
+  because only the caller shows an argument is a constant. On the per-file
+  surface the classical additions across ten families are 115 true positives to
+  96 false positives, with `xss`, `ldap_injection`, `command_injection` and
+  `format_string` **100% true positive**; the false positives are confined to
+  `sql_injection` and `xpath_injection`. Consumers scanning a project rather
+  than a file at a time see the project-mode numbers.
+
+- **`SinkPattern.safe_if_stream_arg_at` applied to `StreamReader` /
+  `StreamWriter`.** `new StreamReader(tcp.GetStream())` is not CWE-22 while
+  `new StreamReader(path)` still is. Latent until C# had socket sources.
+
 ### Fixed
+
+- **`assignRe` bound the wrong variable on a single-line `using` block.**
+  `using (StreamReader sr = …) { data = sr.ReadLine(); }` — anchored and greedy,
+  the pattern captured `sr` with the whole remainder as its right-hand side, so
+  the read bound to the reader instead of `data`. The embedded-assignment path
+  handles this shape but only ran when `assignRe` failed outright; it now also
+  runs when the captured right-hand side crosses a block boundary. (#504 was the
+  mirror of this in the other direction.)
 
 - **#539: a C# conditional-compilation directive no longer hides every member
   of its class.** tree-sitter keeps a member declared inside `#if …/#endif` in
@@ -210,7 +257,7 @@ after their sink.
 
 **There are additions, and they are classical detections.** The sample gains
 **74 flows** — 48 `xpath_injection`, 8 `ldap_injection`, 8 `command_injection`,
-6 `xss`, 3 `format_string`, 1 `crlf` — from the literal-recognition (#502) and
+6 `xss`, 3 `format_string`, 1 `crlf` — from the literal-recognition (#522) and
 source-binding work. CWE643 Xpath injection nets *upward*, 72 → 90. Of those 74,
 44 land in Juliet `Bad` methods (true positives) and 30 in `GoodB2G*` variants,
 where the sink is sanitized; the latter are the long-standing consequence of the
