@@ -124,3 +124,58 @@ public class Use { String run() { return Builder.of().step("a").done(); } }`,
     expect(byName.size).toBe(a.answers.length);          // the name key does not
   });
 });
+
+describe('symbolAt — asking by line of code instead of by name', () => {
+  const files = {
+    'app/A.java': `package app;
+public class A { public String go() { return "a"; } }`,
+    'app/B.java': `package app;
+public class B {
+  String call() { A a = new A(); return a.go(); }
+}`,
+  };
+
+  it('a callers query from a site resolves to what that line calls', async () => {
+    const idx = await indexOf(files);
+    expect(idx.symbolAt('app/B.java', 3, 'go', 'callers')).toBe('app.A.go');
+  });
+
+  it('a callees query from a site resolves to the method holding the line', async () => {
+    const idx = await indexOf(files);
+    expect(idx.symbolAt('app/B.java', 3, 'go', 'callees')).toBe('app.B.call');
+  });
+
+  it('separates calls a column cannot, in a chained expression', async () => {
+    const idx = await indexOf({
+      'app/Builder.java': `package app;
+public class Builder {
+  public static Builder of() { return new Builder(); }
+  public Builder step(String s) { return this; }
+  public String done() { return "x"; }
+}`,
+      'app/Use.java': `package app;
+public class Use { String run() { return Builder.of().step("a").done(); } }`,
+    });
+    expect(idx.symbolAt('app/Use.java', 2, 'done', 'callers')).toBe('app.Builder.done');
+    expect(idx.symbolAt('app/Use.java', 2, 'step', 'callers')).toBe('app.Builder.step');
+    expect(idx.symbolAt('app/Use.java', 2, 'of', 'callers')).toBe('app.Builder.of');
+  });
+
+  it('answers nothing when the same name appears twice on one line', async () => {
+    // The key cannot separate them, and picking one would be a guess
+    // presented as an answer.
+    const idx = await indexOf({
+      'app/A.java': `package app;
+public class A { public String go() { return "a"; } }`,
+      'app/Twice.java': `package app;
+public class Twice { String run() { A a = new A(); return a.go() + a.go(); } }`,
+    });
+    expect(idx.symbolAt('app/Twice.java', 2, 'go', 'callers')).toBeUndefined();
+  });
+
+  it('answers nothing for a file or a name that is not there', async () => {
+    const idx = await indexOf(files);
+    expect(idx.symbolAt('app/Nope.java', 1, 'go', 'callers')).toBeUndefined();
+    expect(idx.symbolAt('app/B.java', 3, 'absent', 'callers')).toBeUndefined();
+  });
+});

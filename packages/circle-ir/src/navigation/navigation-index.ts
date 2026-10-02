@@ -282,6 +282,47 @@ export class NavigationIndex {
     return this.finish('callees', query, answers, unresolved, t0, opts);
   }
 
+  /**
+   * The symbol a call site names, so a caller holding a line of code can ask
+   * the same question as a caller holding a name.
+   *
+   * Keyed on `(file, line, methodName)` and **not** on a column: a chained
+   * expression reports several calls at one line and column, so a column
+   * cannot address one of them. The method name is what completes the key.
+   *
+   * For `callers` the symbol is the call's own target — "who else calls what
+   * this line calls". For `callees` it is the method whose body holds the
+   * line — "what does the method I am looking at call". Returns nothing when
+   * the site names no call, when the call cannot be bound to a target, or
+   * when the name is written twice on one line, which the key cannot separate.
+   */
+  symbolAt(
+    file: string,
+    line: number,
+    methodName: string,
+    kind: QueryKind,
+  ): string | undefined {
+    const rec = this.files.get(file);
+    if (!rec) return undefined;
+
+    if (kind === 'callees') {
+      const t = this.enclosingTypeAt(rec, line);
+      if (!t) return undefined;
+      for (const [name, m] of t.methods) {
+        if (line >= m.startLine && line <= m.endLine) return `${t.fqn}.${name}`;
+      }
+      return undefined;
+    }
+
+    const at = rec.calls.filter(
+      (c) => c.location.line === line && c.method_name === methodName,
+    );
+    // The same name twice on one line is beyond this key, and picking one of
+    // them would be a guess presented as an answer.
+    if (at.length !== 1) return undefined;
+    return this.bind(at[0], rec)?.target;
+  }
+
   // ------------------------------------------------------------ the binding
 
   /**
