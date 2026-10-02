@@ -29,7 +29,7 @@ npm ci
 # `build:all`, not `build`: plain `build` is tsc-only and leaves
 # packages/circle-ir/dist/wasm empty, which makes every circle-ir test abort on
 # a missing tree-sitter grammar. build:all also produces the browser/core
-# bundles and copies the grammars into dist/wasm. Downstream packages
-# (cli, mcp-server) resolve circle-ir / project-profile-detect through their
-# built dist entrypoints, so this must run before their suites work.
+# bundles and copies the grammars into dist/wasm. The cli package resolves
+# circle-ir / project-profile-detect through their built dist entrypoints, so
+# this must run before its suite works.
 npm run build:all

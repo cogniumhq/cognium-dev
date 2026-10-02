@@ -13,7 +13,15 @@ Published packages and the Cursor plugin maintain their own detailed changelogs:
   ([npm](https://www.npmjs.com/package/circle-ir))
 - **cognium-dev** (CLI) — [`packages/cli/CHANGELOG.md`](packages/cli/CHANGELOG.md)
   ([npm](https://www.npmjs.com/package/cognium-dev))
-- **Cursor plugin** — [`plugins/cognium-dev/CHANGELOG.md`](plugins/cognium-dev/CHANGELOG.md)
+
+`@cognium/mcp-server` and the Cursor / Claude plugin moved to
+[cogniumhq/cognium-mcp](https://github.com/cogniumhq/cognium-mcp) after
+`@cognium/mcp-server` 0.2.0, with their history. Their changelogs continue
+there:
+
+- **@cognium/mcp-server** — [`packages/mcp-server/CHANGELOG.md`](https://github.com/cogniumhq/cognium-mcp/blob/main/packages/mcp-server/CHANGELOG.md)
+  ([npm](https://www.npmjs.com/package/@cognium/mcp-server))
+- **Cursor / Claude plugin** — [`plugins/cognium-dev/CHANGELOG.md`](https://github.com/cogniumhq/cognium-mcp/blob/main/plugins/cognium-dev/CHANGELOG.md)
 
 Both packages ship in lockstep from this monorepo. The version in a
 release tag (`vX.Y.Z`) applies to both.

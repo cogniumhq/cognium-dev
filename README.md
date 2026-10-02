@@ -103,22 +103,30 @@ cognium-dev list-passes security
 |---------|-------------|--------------|
 | [`cognium-dev`](./packages/cli) | CLI for scanning and metrics | [![npm](https://img.shields.io/npm/v/cognium-dev.svg)](https://www.npmjs.com/package/cognium-dev) |
 | [`circle-ir`](./packages/circle-ir) | Core SAST library | [![npm](https://img.shields.io/npm/v/circle-ir.svg)](https://www.npmjs.com/package/circle-ir) |
-| [`@cognium/mcp-server`](./packages/mcp-server) | MCP server (Cursor, Claude Desktop, Claude Code) | [![npm](https://img.shields.io/npm/v/@cognium/mcp-server.svg)](https://www.npmjs.com/package/@cognium/mcp-server) |
-| [Cursor / Claude plugin](./plugins/cognium-dev) | Cognium SAST plugin (skills, rules, commands, agent + MCP) | Cursor Marketplace, Claude Code community, OpenAI skills-only (not listed until submitted) |
+
+The MCP server and the editor plugin are built on these packages and live in
+their own repository, [cogniumhq/cognium-mcp](https://github.com/cogniumhq/cognium-mcp):
+
+| Package | Description | Distribution |
+|---------|-------------|--------------|
+| [`@cognium/mcp-server`](https://github.com/cogniumhq/cognium-mcp/tree/main/packages/mcp-server) | MCP server (Cursor, Claude Desktop, Claude Code) | [![npm](https://img.shields.io/npm/v/@cognium/mcp-server.svg)](https://www.npmjs.com/package/@cognium/mcp-server) |
+| [Cursor / Claude plugin](https://github.com/cogniumhq/cognium-mcp/tree/main/plugins/cognium-dev) | Cognium SAST plugin (skills, rules, commands, agent + MCP) | Cursor and Claude Code marketplaces, from that repository |
 
 ---
 
 ## Cursor / Claude Code plugin
 
-Scan a project from Cursor or Claude Code through the existing MCP server, then explain findings and propose defensive fixes.
+Scan a project from Cursor or Claude Code through the MCP server, then explain findings and propose defensive fixes.
 
-- Plugin package: [`plugins/cognium-dev`](./plugins/cognium-dev) (identifier `cognium-dev`, MIT)
-- Cursor marketplace: [`.cursor-plugin/marketplace.json`](./.cursor-plugin/marketplace.json)
-- Claude marketplace: [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) (`/plugin marketplace add cogniumhq/cognium-dev` then `/plugin install cognium-dev@cognium`)
-- OpenAI: skills-only until a public HTTPS MCP exists — [`plugins/cognium-dev/openai/README.md`](./plugins/cognium-dev/openai/README.md)
-- Submit: [Cursor](https://cursor.com/marketplace/publish) · [Claude community](https://platform.claude.com/plugins/submit) · [OpenAI](https://developers.openai.com/plugins/guides/submit-claude-plugin)
+The plugin and its marketplace manifests moved to [cogniumhq/cognium-mcp](https://github.com/cogniumhq/cognium-mcp), next to the server they drive. The plugin's name (`cognium-dev`) and the marketplace name (`cognium`) are unchanged.
 
-Requires **Node.js ≥ 20.19.0**. No API keys. Listings are not live until Cognium Labs submits them.
+- Claude Code: `/plugin marketplace add cogniumhq/cognium-mcp`, then `/plugin install cognium-dev@cognium`
+- Cursor: import `https://github.com/cogniumhq/cognium-mcp` as a team marketplace
+- Details: [plugin README](https://github.com/cogniumhq/cognium-mcp/tree/main/plugins/cognium-dev)
+
+**If you added this repository as a marketplace, add the new one instead.** The manifests are no longer here, so a marketplace pointing at `cogniumhq/cognium-dev` stops receiving the plugin.
+
+Requires **Node.js ≥ 20.19.0**. No API keys.
 
 ---
 
@@ -200,9 +208,8 @@ console.log(project.taint_paths);
 
 - [CLI Documentation](./packages/cli/README.md)
 - [Library Documentation](./packages/circle-ir/README.md)
-- [MCP server](./packages/mcp-server/README.md)
-- [Cognium SAST plugin](./plugins/cognium-dev/README.md)
-- [OpenAI skills-only notes](./plugins/cognium-dev/openai/README.md)
+- [MCP server](https://github.com/cogniumhq/cognium-mcp/tree/main/packages/mcp-server) (in cogniumhq/cognium-mcp)
+- [Cognium SAST plugin](https://github.com/cogniumhq/cognium-mcp/tree/main/plugins/cognium-dev) (in cogniumhq/cognium-mcp)
 - [Analysis Passes](./packages/circle-ir/docs/PASSES.md)
 - [Circle-IR Specification](./packages/circle-ir/docs/SPEC.md)
 - [Architecture](./packages/circle-ir/docs/ARCHITECTURE.md)
