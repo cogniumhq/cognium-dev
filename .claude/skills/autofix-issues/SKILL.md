@@ -252,8 +252,9 @@ cognium-ai's pipeline, harness, or scoring to observe, it is **not** pure SAST: 
 
 **OUT of boundary → `autofix-skip` + comment the reason (home repo only):**
 - Anything that is not analysis correctness: packaging/release/versioning, CI, npm
-  publishing, marketplace/plugin listings, docs, `packages/mcp-server`,
-  `packages/project-profile-detect`, build tooling, dependency bumps.
+  publishing, marketplace/plugin listings, docs, the MCP server (now in
+  `cogniumhq/cognium-mcp`), `packages/project-profile-detect`, build tooling,
+  dependency bumps.
 - LLM/AI *infrastructure or product features*: hosted/streamable MCP servers, any LLM/AI
   dependency, `--llm-*` flags, "LLM verify/adjudicate", ChatGPT/Codex hosting (e.g. #296).
 - Tracking / umbrella / meta issues (label `tracking`, or title `[tracking]`/`[umbrella]`).
@@ -329,8 +330,9 @@ git checkout -b agent/fix-12-15-18     # the issue numbers, joined by -
 Before touching code, for each package an issue will affect, capture a baseline:
 
 - Map issue → package. Nearly all are `packages/circle-ir`; findings-rendering issues →
-  `packages/cli`. (`packages/mcp-server` and `packages/project-profile-detect` are out of
-  boundary per §2 — an issue that maps there should already have been skipped.)
+  `packages/cli`. (`packages/project-profile-detect` is out of boundary per §2, and the
+  MCP server is in another repository — an issue that maps to either should already have
+  been skipped.)
 - Run that package's suite and save the failing-test set to a scratch file, e.g.
   `cd packages/circle-ir && npm test 2>&1 | tee "$SCRATCH/autofix-baseline-circle-ir.txt"`
   (`$SCRATCH` = the session scratchpad directory; never `/tmp`).

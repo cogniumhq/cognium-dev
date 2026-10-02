@@ -92,13 +92,18 @@ node -e "
 success "CLI dep pinned to $NEW_VERSION (exact)"
 
 # ── Update companion packages' circle-ir dep ────────────────────────────────────
-# mcp-server and project-profile-detect keep their own independent version streams,
-# but their circle-ir dependency range must track the monorepo lib version — otherwise
-# it rots a major behind and an external install pulls a stale circle-ir (cognium-dev#279).
+# project-profile-detect keeps its own independent version stream, but its circle-ir
+# dependency range must track the monorepo lib version — otherwise it rots a major
+# behind and an external install pulls a stale circle-ir (cognium-dev#279).
+#
+# @cognium/mcp-server used to be bumped here too. It now lives in
+# cogniumhq/cognium-mcp and pins circle-ir on its own release: after a circle-ir
+# MINOR bump it needs a release there before it will load modules built on the
+# new minor.
 info "Updating companion packages: circle-ir → $NEW_VERSION"
 node -e "
   const fs = require('fs');
-  for (const p of ['packages/mcp-server/package.json', 'packages/project-profile-detect/package.json']) {
+  for (const p of ['packages/project-profile-detect/package.json']) {
     if (!fs.existsSync(p)) continue;
     const j = JSON.parse(fs.readFileSync(p, 'utf8'));
     // Runtime deps ship to consumers → exact pin (lockstep). Dev deps resolve to

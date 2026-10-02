@@ -103,7 +103,7 @@ jobs:
       # test steps with `if: !cancelled()`.
       fail-fast: false
       matrix:
-        package: [circle-ir, cli, mcp-server, project-profile-detect]
+        package: [circle-ir, cli, project-profile-detect]
 
     steps:
       - uses: actions/checkout@v7
@@ -121,11 +121,11 @@ jobs:
 
       - run: npm ci
 
-      # The build is what makes the downstream suites work at all:
-      # packages/cli resolves `@cognium/project-profile-detect` and
-      # packages/mcp-server resolves `circle-ir` through their `main`/`dist`
-      # entries. Without this step those two suites fail with module-resolution
-      # errors that look like 47 unrelated test failures (see #290).
+      # The build is what makes the downstream suite work at all:
+      # packages/cli resolves `@cognium/project-profile-detect` through its
+      # `main`/`dist` entry. Without this step that suite fails with
+      # module-resolution errors that look like 47 unrelated test failures
+      # (see #290).
       - run: npm run build:all
 
       # `test:coverage`, not `test`, so each package's thresholds actually
