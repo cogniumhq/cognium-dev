@@ -73,11 +73,33 @@ export type UnresolvedReason =
   | 'unknown';
 
 export interface AnswerEntry {
-  /** Fully-qualified name of the target. A constructor is `<Type>.<init>`. */
+  /**
+   * Fully-qualified name of the target. A constructor is `<Type>.<init>`.
+   *
+   * On `polymorphic` this is the **declaring** member — the one the receiver's
+   * static type resolves to, which for an interface-typed receiver is the
+   * interface's member, not an implementation. `candidates` holds the bodies
+   * that could run.
+   */
   target: string;
   tier: Tier;
-  /** Every implementor found, on `polymorphic`. */
+  /**
+   * The bodies that could run, on `polymorphic`. Implementations only: the
+   * declaring member is in `target`, and an interface's declaration is not a
+   * body, so listing it here would be a candidate that cannot be reached.
+   */
   candidates?: string[];
+  /**
+   * The method name as written at the call site.
+   *
+   * It is not always `target`'s last segment and cannot be derived from it: a
+   * constructor's target ends `.<init>` while the call is written as the type
+   * name. It is the third part of the only sound key for a call site —
+   * `(file, line, methodName)` — because a chained expression reports several
+   * calls at one line and column. `unresolved[].methodName` is the same field
+   * for the same reason.
+   */
+  methodName: string;
   /** How the tier was arrived at, in one readable line. */
   evidence?: string;
   /** The call site this answer is about. */

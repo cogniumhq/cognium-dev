@@ -334,6 +334,8 @@ public class B { String call() { A a = new A(); return a.go(); } }`,
     const a = idx.resolveCallers({ symbol: 'app.A.go' });
     const site = a.answers[0].site;
     expect(Object.keys(site).sort()).toEqual(['col', 'file', 'inMethod', 'line', 'text']);
+    // the called name belongs to the answer, not to the site
+    expect(a.answers[0].methodName).toBe('go');
     expect(site.file).toBe('app/B.java');
     expect(site.line).toBe(2);
     expect(typeof site.col).toBe('number');

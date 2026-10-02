@@ -84,6 +84,9 @@ export interface BuildOptions {
  * answer and a scope reason. A receiver with no type at all is a different
  * situation, and the floor tier exists for it.
  */
+/** What `bind` decides: everything in an answer that is not about the site. */
+type BoundTarget = Omit<AnswerEntry, 'site' | 'methodName'>;
+
 type ReceiverType =
   | { kind: 'project'; fqn: string; evidence: string }
   | { kind: 'foreign'; name: string; evidence: string };
@@ -231,7 +234,7 @@ export class NavigationIndex {
         if (!this.nameCouldMatch(call, wantedName, symbol, rec)) continue;
         const bound = this.bind(call, rec);
         if (bound && bound.target === symbol) {
-          answers.push({ ...bound, site: this.siteOf(call, rec) });
+          answers.push({ ...bound, methodName: call.method_name, site: this.siteOf(call, rec) });
         } else if (!bound) {
           unresolved.push({
             site: this.siteOf(call, rec),
@@ -267,7 +270,7 @@ export class NavigationIndex {
       const line = call.location.line;
       if (line < method.startLine || line > method.endLine) continue;
       const bound = this.bind(call, rec);
-      if (bound) answers.push({ ...bound, site: this.siteOf(call, rec) });
+      if (bound) answers.push({ ...bound, methodName: call.method_name, site: this.siteOf(call, rec) });
       else {
         unresolved.push({
           site: this.siteOf(call, rec),
@@ -288,7 +291,7 @@ export class NavigationIndex {
    * first, and only when none can be had does a name-only bind happen, which
    * is labelled `inferred` and never anything better.
    */
-  private bind(call: CallInfo, rec: FileRecord): Omit<AnswerEntry, 'site'> | undefined {
+  private bind(call: CallInfo, rec: FileRecord): BoundTarget | undefined {
     // A constructor arrives as a call named after the type, with no receiver.
     const ctor = this.asConstructor(call, rec);
     if (ctor) return ctor;
@@ -372,10 +375,7 @@ export class NavigationIndex {
   }
 
   /** `new Widget()` → `app.Widget.<init>`. */
-  private asConstructor(
-    call: CallInfo,
-    rec: FileRecord,
-  ): Omit<AnswerEntry, 'site'> | undefined {
+  private asConstructor(call: CallInfo, rec: FileRecord): BoundTarget | undefined {
     const looksCtor =
       call.is_constructor === true ||
       (call.receiver === null &&
