@@ -219,6 +219,19 @@ export interface AnalyzerOptions {
   languageModules?: Partial<Record<SupportedLanguage, WebAssembly.Module>>;
 
   /**
+   * Emit the extra type information the navigation API needs: Java `record`
+   * declarations, which the default extraction omits entirely, and
+   * `TypeInfo.enclosing_type` for a nested type, whose nesting the default
+   * extraction flattens. See `TypeExtractionOptions`.
+   *
+   * **Off by default, and the default output is unchanged.** `ir.types` is
+   * read by the SAST passes and by the method-scoping gate, so adding a type
+   * or changing one's identity changes their results; that belongs behind the
+   * SAST corpora gates, not in a navigation change.
+   */
+  navigationTypes?: boolean;
+
+  /**
    * Custom taint configuration.
    */
   taintConfig?: TaintConfig;
@@ -952,7 +965,7 @@ export async function analyze(
   }
 
   const tTypes = phaseStart();
-  const types   = extractTypes(tree, nodeCache, language);
+  const types   = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   phaseEnd('extractTypes', tTypes);
   const tCalls = phaseStart();
   const calls   = extractCalls(tree, nodeCache, language);

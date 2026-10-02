@@ -45,7 +45,9 @@ Thumbs.db
 !.env.example
 *-scan.json
 
-# Local benchmark scratch — corpus probes and scoring scripts written while
-# measuring a change. Never part of the published packages, and this repo is
-# public, so keep them out of it.
-bench/
+# `bench/` is tracked. The scripts there are how the resolver's numbers are
+# produced, and a number nobody else can reproduce is not a measurement — so
+# they are reviewed like any other code. They are not part of any published
+# package (no `files` entry references them) and they carry no scan output.
+# Anything genuinely scratch goes in bench/local/, which stays ignored.
+bench/local/

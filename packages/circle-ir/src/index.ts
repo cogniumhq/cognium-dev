@@ -213,6 +213,29 @@ export {
   buildCrossFileResolver,
 } from './resolution/index.js';
 
+// Navigation queries — callers and callees, each answer carrying its tier and
+// each non-answer its reason. Additive: nothing in the resolution path above
+// changes, because the SAST passes and the taint corpora depend on it exactly.
+export {
+  buildNavigationIndex,
+  NavigationIndex,
+} from './navigation/index.js';
+export type {
+  NavigationFile,
+  BuildOptions as NavigationBuildOptions,
+  NavigationAnswer,
+  AnswerEntry,
+  UnresolvedEntry,
+  UnresolvedReason,
+  CallSite,
+  Tier,
+  Query as NavigationQuery,
+  QueryKind,
+  QueryOptions as NavigationQueryOptions,
+  Scope as NavigationScope,
+  Timing as NavigationTiming,
+} from './navigation/index.js';
+
 // Language plugins
 export {
   getLanguageRegistry,
