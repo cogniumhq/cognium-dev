@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-10-02
+
+### Changes
+
+- track/engine resolve/4 (#559)
+- navigation: callers and callees, each answer stating how it was reached (#558)
+- fix(cli,mcp): parse .ts with the TypeScript grammar, not JavaScript (#409) (#487)
+- fix(rust): re-register the serde data formats #484 silently uncovered (#541) (#547)
+- docs: fold #530 and #503 part 2 into the 4.9.29 entry (#546)
+- fix(csharp): taint rides a StringBuilder through ToString (#530), + CodeDom sinks (#503 pt2) (#545)
+- chore: release circle-ir@4.9.29, cognium-dev@4.9.29, @cognium/mcp-server@0.1.21 (#544)
+- fix(csharp): a response sink follows the declared type, not the name (#542) (#543)
+- feat(csharp): model I/O, network and database reads as taint sources (#502) (#521)
+- docs: the C# literal fix is #522, not #502 (#538)
+- fix(csharp): a preprocessor directive no longer hides every class member (#539) (#540)
+- docs: correct the 4.9.28 consumer-impact numbers against measurement (#537)
+- chore: release circle-ir@4.9.28, cognium-dev@4.9.28, @cognium/mcp-server@0.1.20 (#536)
+- fix(csharp): drop an unproven pairing whose source sits after its sink (#534)
+- fix(shadowing): a declaration cannot shadow one on the same line (#535)
+- fix(findings): an argument-less C# sink requires flow backing (#508) (#527)
+- fix(csharp): one SQL injection yields one finding (#509) (#525)
+- feat(csharp): surface property assignments, casts and object initialisers as calls (#503 pt1, #340, #336) (#529)
+- fix(csharp): credit a validating predicate followed by an early return (#272) (#532)
+- fix(csharp): collection stores are not taint escapes (#474 follow-up) (#524)
+- fix(rust): normalise the `::` path separator when matching resolved sink targets (#484, #294) (#528)
+- fix(csharp): port the #455 external_taint_escape gate to C# (#474) (#523)
+- fix(csharp): treat null, numeric, boolean and char arguments as literals (#522)
+- exp(taint): scoped exemption from the const-prop variable_not_tainted veto (#328, #287) (#488)
+- chore: release circle-ir@4.9.27, cognium-dev@4.9.27, @cognium/mcp-server@0.1.19 (#519)
+- fix(analyzer,cli): bound the analyzeProject per-file phase by project size (#424) (#512)
+- fix(findings): require the proximity fallback to match the source own variable (#508) (#514)
+- fix(csharp): register ASP.NET Core Response.WriteAsync as an xss sink (#503) (#510)
+- chore(deps-dev): bump the dev-tooling group with 3 updates (#498)
+- agent: fix #501, #504 (#505)
+
 ## [Unreleased]
 
 ### Fixed

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-10-02
+
+### Changes
+
+- fix(cli,mcp): parse .ts with the TypeScript grammar, not JavaScript (#409) (#487)
+- docs: fold #530 and #503 part 2 into the 4.9.29 entry (#546)
+- chore: release circle-ir@4.9.29, cognium-dev@4.9.29, @cognium/mcp-server@0.1.21 (#544)
+- docs: correct the 4.9.28 consumer-impact numbers against measurement (#537)
+- chore: release circle-ir@4.9.28, cognium-dev@4.9.28, @cognium/mcp-server@0.1.20 (#536)
+- chore: release circle-ir@4.9.27, cognium-dev@4.9.27, @cognium/mcp-server@0.1.19 (#519)
+- fix(analyzer,cli): bound the analyzeProject per-file phase by project size (#424) (#512)
+- chore(deps-dev): bump the dev-tooling group with 3 updates (#498)
+
 ## [Unreleased]
 
 ### Fixed
