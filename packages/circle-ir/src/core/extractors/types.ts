@@ -53,9 +53,42 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' | 'python' | 'rust' {
 }
 
 /**
+ * Extra type information the navigation API needs and no existing consumer
+ * expects. Every field it adds is optional and absent unless asked for, so
+ * `extractTypes(tree, cache, language)` returns exactly what it always did.
+ *
+ * Two things are missing from the default Java extraction, both found by
+ * auditing the call sites the resolver cannot bind:
+ *
+ *   - **A `record` yields no type at all.** `extractJavaTypes` walks
+ *     `class_declaration`, `interface_declaration` and `enum_declaration`;
+ *     `record_declaration` is not among them, so a record is invisible — not
+ *     in `ir.types`, and its body's calls are not in `ir.calls` either.
+ *     Records are ordinary Java 17+ code and cost 182 of 455 bindable misses
+ *     in the 405-file sample, the single largest cause.
+ *   - **Nesting is lost.** `Outer.Inner` is emitted as a type named `Inner`,
+ *     so its fully-qualified name collides with a top-level `Inner` and an
+ *     `import static app.Outer.Inner.make` cannot be matched to it.
+ *
+ * Both are fixed here rather than in the default path because `ir.types` is
+ * read by the SAST passes and by the method-scoping gate: adding a type, or
+ * changing one's identity, changes their results and belongs behind the SAST
+ * corpora gates, not in a navigation change.
+ */
+export interface TypeExtractionOptions {
+  /** Emit `record_declaration` types, and set `enclosing_type` on nested types. */
+  navigationTypes?: boolean;
+}
+
+/**
  * Extract all type definitions from the tree.
  */
-export function extractTypes(tree: Tree, cache?: NodeCache, language?: SupportedLanguage): TypeInfo[] {
+export function extractTypes(
+  tree: Tree,
+  cache?: NodeCache,
+  language?: SupportedLanguage,
+  options?: TypeExtractionOptions,
+): TypeInfo[] {
   const effectiveLanguage = language ?? detectLanguage(tree);
   const isJavaScript = effectiveLanguage === 'javascript' || effectiveLanguage === 'typescript' || effectiveLanguage === 'tsx';
   const isPython = effectiveLanguage === 'python';
@@ -76,7 +109,7 @@ export function extractTypes(tree: Tree, cache?: NodeCache, language?: Supported
   if (effectiveLanguage === 'csharp') {
     return extractCSharpTypes(tree, cache);
   }
-  return extractJavaTypes(tree, cache);
+  return extractJavaTypes(tree, cache, options);
 }
 
 /**
@@ -272,7 +305,11 @@ function extractCSharpModifiers(node: Node): string[] {
 /**
  * Extract Java types.
  */
-function extractJavaTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
+function extractJavaTypes(
+  tree: Tree,
+  cache?: NodeCache,
+  options?: TypeExtractionOptions,
+): TypeInfo[] {
   const types: TypeInfo[] = [];
 
   // Extract classes
@@ -293,7 +330,90 @@ function extractJavaTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
     types.push(extractEnumInfo(enumDecl));
   }
 
+  if (!options?.navigationTypes) return types;
+
+  // Records, which the default path omits entirely. A record's body holds
+  // ordinary method declarations, so `extractClassInfo` reads it unchanged;
+  // only the node type and the `is_record` marker differ.
+  for (const rec of getNodesFromCache(tree.rootNode, 'record_declaration', cache)) {
+    const info = extractClassInfo(rec);
+    info.is_record = true;
+    // A record's components are its fields and its accessors. Both are
+    // declared by the header, not written in the body, so neither
+    // `extractFields` nor `extractMethods` can see them.
+    for (const comp of recordComponents(rec)) {
+      if (!info.fields.some(f => f.name === comp.name)) {
+        info.fields.push({
+          name: comp.name,
+          type: comp.type,
+          modifiers: ['private', 'final'],
+          annotations: [],
+        });
+      }
+      if (!info.methods.some(m => m.name === comp.name)) {
+        info.methods.push({
+          name: comp.name,
+          return_type: comp.type,
+          parameters: [],
+          annotations: [],
+          modifiers: ['public'],
+          start_line: rec.startPosition.row + 1,
+          end_line: rec.startPosition.row + 1,
+        });
+      }
+    }
+    types.push(info);
+  }
+
+  // Nesting, which the default path flattens. Walking every emitted type's
+  // ancestors is cheaper than threading the path through five extractors.
+  const declNodes = [
+    ...classes,
+    ...interfaces,
+    ...enums,
+    ...getNodesFromCache(tree.rootNode, 'record_declaration', cache),
+  ];
+  for (const t of types) {
+    const node = declNodes.find(
+      n => n.startPosition.row + 1 === t.start_line && getIdentifier(n, 'name') === t.name,
+    );
+    const path = node ? enclosingTypePath(node) : [];
+    if (path.length > 0) t.enclosing_type = path.join('.');
+  }
+
   return types;
+}
+
+/** The `(String host, int port)` header of a `record_declaration`. */
+function recordComponents(node: Node): Array<{ name: string; type: string | null }> {
+  const out: Array<{ name: string; type: string | null }> = [];
+  const params = node.childForFieldName('parameters');
+  if (!params) return out;
+  for (let i = 0; i < params.childCount; i++) {
+    const c = params.child(i);
+    if (!c || c.type !== 'formal_parameter') continue;
+    const name = c.childForFieldName('name');
+    const type = c.childForFieldName('type');
+    if (name) out.push({ name: getNodeText(name), type: type ? getNodeText(type) : null });
+  }
+  return out;
+}
+
+/** The names of the types a declaration sits inside, outermost first. */
+function enclosingTypePath(node: Node): string[] {
+  const DECLS = new Set([
+    'class_declaration',
+    'interface_declaration',
+    'enum_declaration',
+    'record_declaration',
+  ]);
+  const path: string[] = [];
+  for (let p = node.parent; p; p = p.parent) {
+    if (!DECLS.has(p.type)) continue;
+    const n = getIdentifier(p, 'name');
+    if (n) path.unshift(n);
+  }
+  return path;
 }
 
 /**

@@ -50,6 +50,25 @@ export interface TypeInfo {
   fields: FieldInfo[];
   start_line: number;
   end_line: number;
+  /**
+   * Dotted path of the types this one is declared inside, outermost first —
+   * `"Outer"` for `Outer.Inner`, `"A.B"` for `A.B.C`. Absent for a top-level
+   * type, and absent entirely unless `AnalyzerOptions.navigationTypes` is set.
+   *
+   * Without it a nested type's fully-qualified name is indistinguishable from
+   * a top-level one (`app.Inner`, not `app.Outer.Inner`), which is why a
+   * `import static app.Outer.Inner.make` cannot be bound to the method it
+   * names. Off by default because every consumer of `ir.types[].name` would
+   * otherwise see a changed identity.
+   */
+  enclosing_type?: string;
+  /**
+   * `true` when this type was declared as a Java `record`. `kind` stays
+   * `"class"`, because a record is a class to every consumer that reads
+   * `kind`. Present only under `AnalyzerOptions.navigationTypes`, which is
+   * also the only way a record appears in `ir.types` at all.
+   */
+  is_record?: boolean;
 }
 
 export interface MethodInfo {
