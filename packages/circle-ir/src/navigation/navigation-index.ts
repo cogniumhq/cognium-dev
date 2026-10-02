@@ -104,7 +104,7 @@ interface TypeRecord {
   /** Field names carrying a field-level `@Getter` / `@Setter`. */
   getterFields: string[];
   setterFields: string[];
-  methods: Map<string, { returnType: string | null; startLine: number; endLine: number }>;
+  methods: Map<string, { returnType: string | null; startLine: number; endLine: number; modifiers: string[] }>;
   startLine: number;
   endLine: number;
 }
@@ -350,20 +350,34 @@ export class NavigationIndex {
       const hit = this.lookupThroughHierarchy(recv.fqn, call.method_name);
       if (hit) {
         const impls = this.implementorsWith(hit.owner.fqn, call.method_name);
+        const bodyless = this.isBodyless(hit.owner, call.method_name);
         // Dispatch is open when the declaring type has subtypes that override
-        // it, or when it carries no body of its own to run.
-        if (impls.length > 1 || (hit.owner.kind === 'interface' && impls.length >= 1)) {
+        // the method, or when the declaration carries no body to run.
+        //
+        // The second half is not a refinement, it is the `exact` promise. An
+        // abstract member — an interface method without `default`, or a method
+        // marked `abstract` — has no body, so what runs at such a site is
+        // never the target named here: it is an implementation, or a lambda
+        // that this index cannot see as a type at all. Labelling it `exact`
+        // would be a claim about a shape rather than about a method, and that
+        // is the one thing `exact` must never be. The target stays the
+        // declaring member, which is what a static resolver answers; only the
+        // tier changes, and an empty `candidates` says plainly that no body
+        // for it was found in the searched tree.
+        if (impls.length > 1 || bodyless) {
           return {
             target: `${hit.owner.fqn}.${call.method_name}`,
             tier: 'polymorphic',
             candidates: impls.map(t => `${t}.${call.method_name}`),
-            evidence: `${recv.evidence}; ${call.method_name} is declared on ${hit.owner.kind} ${hit.owner.fqn} with ${impls.length} implementor(s) in the searched tree`,
+            evidence: bodyless && impls.length === 0
+              ? `${recv.evidence}; ${call.method_name} is declared without a body on ${hit.owner.kind} ${hit.owner.fqn} and nothing in the searched tree implements it — what runs is an implementation or a lambda outside this index`
+              : `${recv.evidence}; ${call.method_name} is declared on ${hit.owner.kind} ${hit.owner.fqn} with ${impls.length} implementor(s) in the searched tree`,
           };
         }
         return {
           target: `${hit.owner.fqn}.${call.method_name}`,
           tier: 'exact',
-          evidence: `${recv.evidence}; ${call.method_name} is the unique method of that name on ${hit.owner.fqn}`,
+          evidence: `${recv.evidence}; ${call.method_name} is the unique method of that name on ${hit.owner.fqn}, and it has a body`,
         };
       }
       // The receiver's type is known and does not have this method. Binding by
@@ -590,14 +604,50 @@ export class NavigationIndex {
     return undefined;
   }
 
-  /** Types in the tree that declare `method` and are `fqn` or below it. */
+  /**
+   * Whether a declaration carries no body, so nothing it names can run.
+   *
+   * A class method says so itself: `abstract` is in its modifiers. An
+   * interface method does not — the Java extraction reports no modifiers for
+   * either an abstract member or a `default` one — so the declaration line is
+   * read from the source, where `default` and `static` are the only two ways
+   * an interface member can have a body. `default` and `static` precede the
+   * return type, so they are on the declaration's first line.
+   *
+   * With no source supplied, an interface member is treated as body-less.
+   * That is the conservative direction: it costs an answer its `exact` label
+   * and never grants one.
+   */
+  private isBodyless(owner: TypeRecord, method: string): boolean {
+    const m = owner.methods.get(method);
+    if (!m) return false;
+    if (m.modifiers.includes('abstract')) return true;
+    if (owner.kind !== 'interface') return false;
+    if (m.modifiers.includes('static') || m.modifiers.includes('default')) return false;
+    const line = this.files.get(owner.file)?.lines?.[m.startLine - 1];
+    if (line === undefined) return true;
+    return !/\b(default|static)\b/.test(line);
+  }
+
+  /**
+   * Types in the tree that declare a **runnable** `method` and are `fqn` or
+   * below it.
+   *
+   * "Runnable" is the whole of it: `candidates` answers "which body could
+   * run", so an abstract declaration does not belong there even when it is
+   * the type the walk started from. An `abstract class Base { abstract step(); }`
+   * with nothing overriding `step` has no candidates, and saying so is the
+   * honest answer — listing `Base.step` would name a body that does not exist.
+   */
   private implementorsWith(fqn: string, method: string): string[] {
     const out: string[] = [];
     const walk = (f: string, seen: Set<string>): void => {
       if (seen.has(f)) return;
       seen.add(f);
       const t = this.typesByFqn.get(f);
-      if (t && t.methods.has(method) && t.kind !== 'interface') out.push(f);
+      if (t && t.methods.has(method) && t.kind !== 'interface' && !this.isBodyless(t, method)) {
+        out.push(f);
+      }
       for (const sub of this.subtypes.get(f) ?? []) walk(sub, seen);
     };
     walk(fqn, new Set());
@@ -862,7 +912,7 @@ function buildFileRecord(f: NavigationFile): FileRecord {
   for (const t of f.ir.types ?? []) {
     const tpkg = t.package ?? pkg;
     const path = [tpkg, t.enclosing_type, t.name].filter(Boolean).join('.');
-    const methods = new Map<string, { returnType: string | null; startLine: number; endLine: number }>();
+    const methods = new Map<string, { returnType: string | null; startLine: number; endLine: number; modifiers: string[] }>();
     for (const m of t.methods ?? []) {
       // A later overload does not replace an earlier one's range; the widest
       // range wins, so a callee query over the method's body sees all of it.
@@ -871,6 +921,7 @@ function buildFileRecord(f: NavigationFile): FileRecord {
         returnType: m.return_type ?? prev?.returnType ?? null,
         startLine: prev ? Math.min(prev.startLine, m.start_line) : m.start_line,
         endLine: prev ? Math.max(prev.endLine, m.end_line) : m.end_line,
+        modifiers: [...new Set([...(prev?.modifiers ?? []), ...(m.modifiers ?? [])])],
       });
     }
     types.push({

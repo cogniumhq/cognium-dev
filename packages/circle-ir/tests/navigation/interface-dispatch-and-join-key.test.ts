@@ -179,3 +179,111 @@ public class Twice { String run() { A a = new A(); return a.go() + a.go(); } }`,
     expect(idx.symbolAt('app/B.java', 3, 'absent', 'callers')).toBeUndefined();
   });
 });
+
+describe('`exact` requires a body — a target that is a shape is never exact', () => {
+  /**
+   * Found by the evaluation side, from the other direction: their static
+   * oracles were naming a *binding* — a variable, a parameter, a property, an
+   * element of an array of callables — as though it were the function that
+   * would run, on 15 of 1,500 labels, and both of their hosts agreed on every
+   * one, so two-host stability never caught it. Two-host agreement proves
+   * agreement; it cannot prove correctness.
+   *
+   * The same class exists here wherever a declaration has no body. An
+   * interface member without `default`, or a method marked `abstract`, names
+   * nothing that can run: what runs is an implementation, or a lambda this
+   * index cannot see as a type at all. The target stays the declaring member,
+   * which is what a static resolver answers — only the tier may not say
+   * `exact`, and `candidates` must not list a body that does not exist.
+   */
+  it('an interface implemented only by a lambda is not exact', async () => {
+    const idx = await indexOf({
+      'app/Handler.java': `package app;
+public interface Handler { String run(String s); }`,
+      'app/Use.java': `package app;
+public class Use {
+  private final Handler h = s -> s;
+  String go() { return h.run("a"); }
+}`,
+    });
+    const a = idx.resolveCallees({ symbol: 'app.Use.go' });
+    expect(a.answers).toHaveLength(1);
+    expect(a.answers[0].target).toBe('app.Handler.run');
+    expect(a.answers[0].tier).toBe('polymorphic');
+    expect(a.answers[0].candidates).toEqual([]);
+    expect(a.answers[0].evidence).toContain('without a body');
+  });
+
+  it('an abstract method nothing overrides is not exact, and is not its own candidate', async () => {
+    const idx = await indexOf({
+      'app/Base.java': `package app;
+public abstract class Base { public abstract String step(); }`,
+      'app/Use.java': `package app;
+public class Use { String go(Base b) { return b.step(); } }`,
+    });
+    const a = idx.resolveCallees({ symbol: 'app.Use.go' });
+    expect(a.answers[0].tier).toBe('polymorphic');
+    // Listing `Base.step` here would name a body that does not exist.
+    expect(a.answers[0].candidates).toEqual([]);
+  });
+
+  it('a `default` interface method DOES have a body, so it is exact', async () => {
+    const idx = await indexOf({
+      'app/Greet.java': `package app;
+public interface Greet {
+  String name();
+  default String hello() { return "hi"; }
+}`,
+      'app/Use.java': `package app;
+public class Use {
+  private final Greet g = () -> "n";
+  String viaDefault() { return g.hello(); }
+  String viaAbstract() { return g.name(); }
+}`,
+    });
+    const viaDefault = idx.resolveCallees({ symbol: 'app.Use.viaDefault' }).answers[0];
+    const viaAbstract = idx.resolveCallees({ symbol: 'app.Use.viaAbstract' }).answers[0];
+    expect(viaDefault.tier).toBe('exact');
+    expect(viaAbstract.tier).toBe('polymorphic');
+  });
+
+  it('an overridden abstract method lists only the overriding bodies', async () => {
+    const idx = await indexOf({
+      'app/Base.java': `package app;
+public abstract class Base { public abstract String step(); }`,
+      'app/Real.java': `package app;
+public class Real extends Base { public String step() { return "r"; } }`,
+      'app/Use.java': `package app;
+public class Use { String go(Base b) { return b.step(); } }`,
+    });
+    const a = idx.resolveCallees({ symbol: 'app.Use.go' });
+    expect(a.answers[0].tier).toBe('polymorphic');
+    expect(a.answers[0].candidates).toEqual(['app.Real.step']);
+  });
+
+  it('a JDK functional interface is external, not an exact answer about ours', async () => {
+    const idx = await indexOf({
+      'app/Use.java': `package app;
+import java.util.function.Function;
+public class Use {
+  private final Function<String,String> fn = x -> x;
+  String go() { return fn.apply("a"); }
+}`,
+    });
+    const a = idx.resolveCallees({ symbol: 'app.Use.go' });
+    expect(a.answers).toHaveLength(0);
+    expect(a.unresolved.find((u) => u.methodName === 'apply')?.reason).toBe('external');
+  });
+
+  it('a concrete class method with no subtype is still exact', async () => {
+    const idx = await indexOf({
+      'app/Solid.java': `package app;
+public class Solid { public String run() { return "s"; } }`,
+      'app/Use.java': `package app;
+public class Use { String go(Solid s) { return s.run(); } }`,
+    });
+    const a = idx.resolveCallees({ symbol: 'app.Use.go' });
+    expect(a.answers[0].tier).toBe('exact');
+    expect(a.answers[0].evidence).toContain('has a body');
+  });
+});
