@@ -477,6 +477,19 @@ Three consequences worth knowing before you upgrade:
   untouched. Juliet C# CWE-80/81/94 are byte-identical before and after (the
   corpus predates ASP.NET Core and contains no `Response.WriteAsync`).
 
+## [Unreleased]
+
+### Fixed
+- **#493: a Python `for` target bound from a tainted iterable now emits a
+  source.** `buildPythonTaintedVars` already tainted the loop variable for
+  `for name in request.headers.keys():`, but no `TaintSource` was emitted, so a
+  flow built from it had no source to attribute to. On
+  BenchmarkPython `BenchmarkTest00656.py` the only source in the file was
+  `init(app)`'s bare parameter 25 lines above the sink, and the file was
+  detected purely by proximity to it; it now reports
+  `http_header@34 -> trust_boundary@46`. Single-target only, matching
+  `buildPythonTaintedVars`; a tuple target (`for k, v in …`) is left alone.
+
 ## [4.9.26] - 2026-09-24
 
 ### Fixed
