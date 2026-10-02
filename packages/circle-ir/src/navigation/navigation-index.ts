@@ -164,7 +164,18 @@ export class NavigationIndex {
 
   constructor(input: NavigationFile[], options: BuildOptions) {
     const t0 = now();
+    // A file in a language this index cannot resolve is **not searched**, and
+    // the scope must say so. Reporting it as searched was the first graded
+    // record's `:denominator-stated` deviation: four languages named, one
+    // resolved, and a file count a caller could divide an answer by and get
+    // a ratio that means nothing. The decline is recorded by language name,
+    // with the vocabulary reason, on every answer.
+    const declined = new Set<string>();
     for (const f of input) {
+      if (!this.parses(f.language)) {
+        declined.add(f.language);
+        continue;
+      }
       const key = f.contentHash ?? (f.source !== undefined ? cheapHash(f.source) : undefined);
       const cacheKey = key ? `${CACHE_VERSION}:${f.path}:${key}` : undefined;
       let rec = options.cache && cacheKey ? fileCache.get(cacheKey) : undefined;
@@ -201,7 +212,13 @@ export class NavigationIndex {
     const languages = [...new Set([...this.files.values()].map(f => f.language))].sort();
     this.scope = {
       searched: { files: this.files.size, languages },
-      excluded: options.excluded ?? [],
+      excluded: [
+        ...(options.excluded ?? []),
+        ...[...declined].sort().map(lang => ({
+          pattern: lang,
+          reason: `unsupported-language: this index resolves ${languages.join(', ') || 'no language'}`,
+        })),
+      ],
     };
     this.indexMs = now() - t0;
     this.parseMs = options.parseMs ?? 0;
@@ -348,38 +365,7 @@ export class NavigationIndex {
 
     if (recv?.kind === 'project') {
       const hit = this.lookupThroughHierarchy(recv.fqn, call.method_name);
-      if (hit) {
-        const impls = this.implementorsWith(hit.owner.fqn, call.method_name);
-        const bodyless = this.isBodyless(hit.owner, call.method_name);
-        // Dispatch is open when the declaring type has subtypes that override
-        // the method, or when the declaration carries no body to run.
-        //
-        // The second half is not a refinement, it is the `exact` promise. An
-        // abstract member — an interface method without `default`, or a method
-        // marked `abstract` — has no body, so what runs at such a site is
-        // never the target named here: it is an implementation, or a lambda
-        // that this index cannot see as a type at all. Labelling it `exact`
-        // would be a claim about a shape rather than about a method, and that
-        // is the one thing `exact` must never be. The target stays the
-        // declaring member, which is what a static resolver answers; only the
-        // tier changes, and an empty `candidates` says plainly that no body
-        // for it was found in the searched tree.
-        if (impls.length > 1 || bodyless) {
-          return {
-            target: `${hit.owner.fqn}.${call.method_name}`,
-            tier: 'polymorphic',
-            candidates: impls.map(t => `${t}.${call.method_name}`),
-            evidence: bodyless && impls.length === 0
-              ? `${recv.evidence}; ${call.method_name} is declared without a body on ${hit.owner.kind} ${hit.owner.fqn} and nothing in the searched tree implements it — what runs is an implementation or a lambda outside this index`
-              : `${recv.evidence}; ${call.method_name} is declared on ${hit.owner.kind} ${hit.owner.fqn} with ${impls.length} implementor(s) in the searched tree`,
-          };
-        }
-        return {
-          target: `${hit.owner.fqn}.${call.method_name}`,
-          tier: 'exact',
-          evidence: `${recv.evidence}; ${call.method_name} is the unique method of that name on ${hit.owner.fqn}, and it has a body`,
-        };
-      }
+      if (hit) return this.tierFor(hit.owner, call.method_name, recv.evidence);
       // The receiver's type is known and does not have this method. Binding by
       // name here would be the contradiction the audit found 78 of, so no.
       return undefined;
@@ -389,28 +375,20 @@ export class NavigationIndex {
     const owner = this.staticOwnerFor(call, rec);
     if (owner) {
       const hit = this.lookupThroughHierarchy(owner.fqn, call.method_name);
-      if (hit) {
-        return {
-          target: `${hit.owner.fqn}.${call.method_name}`,
-          tier: 'exact',
-          evidence: `${owner.evidence}; ${call.method_name} is declared on ${hit.owner.fqn}`,
-        };
-      }
+      if (hit) return this.tierFor(hit.owner, call.method_name, owner.evidence);
     }
 
     // No receiver at all: an unqualified call is `this` or the enclosing type's
     // own static method. The enclosing type is known exactly, so this is not a
-    // guess.
+    // guess — but it is still only a *declaration*, and the first graded record
+    // caught this path handing out `exact` on an abstract member whose body
+    // lives in a subclass. Every path to a target now goes through `tierFor`.
     if (call.receiver === null && !call.receiver_type) {
       const encl = this.enclosingTypeOf(call, rec);
       if (encl) {
         const hit = this.lookupThroughHierarchy(encl.fqn, call.method_name);
         if (hit) {
-          return {
-            target: `${hit.owner.fqn}.${call.method_name}`,
-            tier: 'exact',
-            evidence: `unqualified call inside ${encl.fqn}; ${call.method_name} is declared on ${hit.owner.fqn}`,
-          };
+          return this.tierFor(hit.owner, call.method_name, `unqualified call inside ${encl.fqn}`);
         }
       }
     }
@@ -427,6 +405,38 @@ export class NavigationIndex {
       };
     }
     return undefined;
+  }
+
+  /**
+   * The tier for a target, once the declaring type is known.
+   *
+   * Every path to an answer goes through here, which is the point: the
+   * body-required rule was added in one place and the first graded record
+   * found it missing from another. `exact` is a promise that the target named
+   * is the code that runs, so it needs two things — the declaring type known,
+   * and the declaration **having a body**. An abstract member satisfies only
+   * the first; what runs there is a subclass's body or a lambda, never the
+   * member named. The target stays the declaring member, which is what a
+   * static resolver answers; only the tier changes.
+   */
+  private tierFor(owner: TypeRecord, method: string, evidence: string): BoundTarget {
+    const impls = this.implementorsWith(owner.fqn, method);
+    const bodyless = this.isBodyless(owner, method);
+    if (impls.length > 1 || bodyless) {
+      return {
+        target: `${owner.fqn}.${method}`,
+        tier: 'polymorphic',
+        candidates: impls.map(t => `${t}.${method}`),
+        evidence: bodyless && impls.length === 0
+          ? `${evidence}; ${method} is declared without a body on ${owner.kind} ${owner.fqn} and nothing in the searched tree implements it — what runs is an implementation or a lambda outside this index`
+          : `${evidence}; ${method} is declared on ${owner.kind} ${owner.fqn} with ${impls.length} implementor(s) in the searched tree`,
+      };
+    }
+    return {
+      target: `${owner.fqn}.${method}`,
+      tier: 'exact',
+      evidence: `${evidence}; ${method} is the unique method of that name on ${owner.fqn}, and it has a body`,
+    };
   }
 
   /** `new Widget()` → `app.Widget.<init>`. */
