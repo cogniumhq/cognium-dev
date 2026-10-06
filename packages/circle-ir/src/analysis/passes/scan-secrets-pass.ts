@@ -8,9 +8,9 @@
  *
  *   1. Provider-specific regex patterns. ~16 high-confidence prefixes /
  *      shapes (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`,
- *      Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`,
- *      Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`, PEM private
- *      keys, npm `npm_`). Each match emits a finding with
+ *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`,
+ *      Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`,
+ *      PEM private keys, npm `npm_`). Each match emits a finding with
  *      `rule_id: 'hardcoded-credential'` (matches the legacy Bash
  *      detection in LanguageSourcesPass).
  *
@@ -152,6 +152,15 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     regex: /\bghr_[A-Za-z0-9]{36}\b/,
     severity: 'critical', level: 'error',
     fix: 'Revoke the GitHub refresh token and store secrets outside source control.',
+  },
+  // GitLab personal / project / group access tokens use the `glpat-` prefix.
+  // Length is not fixed (legacy bodies are about 20 characters; routable
+  // tokens are longer), so the floor is 20 and there is no max. (#577)
+  {
+    name: 'GitLab personal access token',
+    regex: /\bglpat-[A-Za-z0-9_-]{20,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the GitLab personal access token and store it outside source control.',
   },
   {
     name: 'Stripe live secret key',
@@ -700,11 +709,15 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         const m = pattern.regex.exec(lineText);
         if (!m) continue;
 
-        // Restricted-key bodies that are obvious placeholders
-        // (`rk_live_placeholder…`) are not credentials. Length alone does
-        // not reject a padded placeholder. Scoped to this pattern so the
-        // AWS example key (`AKIA…EXAMPLE`) is unchanged. (#574)
-        if (pattern.name === 'Stripe live restricted key' && PLACEHOLDER_RE.test(m[0])) {
+        // Padded placeholders (`rk_live_placeholder…`, `glpat-placeholder…`)
+        // are not credentials. Length alone does not reject them. Scoped to
+        // these patterns so the AWS example key (`AKIA…EXAMPLE`) is unchanged.
+        // (#574, #577)
+        if (
+          (pattern.name === 'Stripe live restricted key' ||
+            pattern.name === 'GitLab personal access token') &&
+          PLACEHOLDER_RE.test(m[0])
+        ) {
           continue;
         }
 

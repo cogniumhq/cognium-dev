@@ -121,6 +121,28 @@ describe('ScanSecretsPass — provider patterns', () => {
     ]);
   });
 
+  it('detects GitLab glpat- personal access token as critical (#577)', () => {
+    // Floor of 20, not a fixed length. Literal split avoids push protection.
+    const code = 'token = "glpat-' + 'abcdefghijklmnopqrst' + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('GitLab personal access token');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder glpat- body, or collide with ghp_ (#577)', () => {
+    const shortTok = 't = "glpat-' + 'short' + '"';
+    expect(runPass('app.py', shortTok, 'python')).toHaveLength(0);
+    const placeholder = 't = "glpat-' + 'placeholderplaceholder' + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
+    const github = 't = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"';
+    const gh = runPass('app.py', github, 'python');
+    expect(gh).toHaveLength(1);
+    expect(gh[0].evidence?.provider).toBe('GitHub personal access token');
+  });
+
   it('detects Stripe sk_live_ secret key in Go', () => {
     // Literal split to avoid tripping GitHub push protection while still
     // exercising the runtime Stripe-key regex.
