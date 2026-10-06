@@ -8,7 +8,7 @@
  *
  *   1. Provider-specific regex patterns. ~16 high-confidence prefixes /
  *      shapes (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`,
- *      Stripe `sk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`,
+ *      Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`,
  *      Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`, PEM private
  *      keys, npm `npm_`). Each match emits a finding with
  *      `rule_id: 'hardcoded-credential'` (matches the legacy Bash
@@ -158,6 +158,16 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     regex: /\bsk_live_[A-Za-z0-9]{24,}\b/,
     severity: 'critical', level: 'error',
     fix: 'Rotate the Stripe secret key in the Stripe Dashboard and load it from a secrets manager.',
+  },
+  // Restricted keys (`rk_live_`) authorize live API calls the same way secret
+  // keys do. Length floor matches `sk_live_` ({24,}): Stripe documents both
+  // as a prefix plus a long alphanumeric secret, and does not publish a
+  // shorter live form. (#574)
+  {
+    name: 'Stripe live restricted key',
+    regex: /\brk_live_[A-Za-z0-9]{24,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Rotate the Stripe restricted key in the Stripe Dashboard and load it from a secrets manager.',
   },
   {
     name: 'Stripe live publishable key',
@@ -689,6 +699,14 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       for (const pattern of PROVIDER_PATTERNS) {
         const m = pattern.regex.exec(lineText);
         if (!m) continue;
+
+        // Restricted-key bodies that are obvious placeholders
+        // (`rk_live_placeholder…`) are not credentials. Length alone does
+        // not reject a padded placeholder. Scoped to this pattern so the
+        // AWS example key (`AKIA…EXAMPLE`) is unchanged. (#574)
+        if (pattern.name === 'Stripe live restricted key' && PLACEHOLDER_RE.test(m[0])) {
+          continue;
+        }
 
         // #176 — PEM delimiter without adjacent base64 body is a parser
         // constant / error message / contains() argument, not embedded

@@ -131,6 +131,24 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out[0].severity).toBe('critical');
   });
 
+  it('detects Stripe rk_live_ restricted key as critical (#574)', () => {
+    // Same length floor as sk_live_. Literal split avoids push protection.
+    const code = 'STRIPE_RESTRICTED_KEY = "rk_' + 'live_' + 'B'.repeat(24) + '"';
+    const out = runPass('config.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('Stripe live restricted key');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder rk_live_ body (#574)', () => {
+    const shortKey = 'k = "rk_' + 'live_' + 'B'.repeat(8) + '"';
+    expect(runPass('config.py', shortKey, 'python')).toHaveLength(0);
+    const placeholder = 'k = "rk_' + 'live_' + 'placeholder' + 'x'.repeat(13) + '"';
+    expect(runPass('config.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects Stripe pk_live_ publishable key as warning (lower severity)', () => {
     const code = `const key = "pk_live_abcdef0123456789ABCDEFGH";`;
     const out = runPass('app.js', code, 'javascript');
