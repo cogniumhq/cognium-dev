@@ -32,6 +32,14 @@ function toolDir({ curl = false, jq = false, releaseTools = false } = {}) {
     for (const name of ['bun', 'node', 'npm', 'gh']) {
       writeFileSync(join(dir, name), stub, { mode: 0o755 });
     }
+    // release.sh resolves its root with dirname before RELEASE_STOP_AFTER_PREREQ.
+    // cd and pwd are bash builtins; dirname is the external command that path must provide.
+    const dirnameBin = execFileSync(BASH, ['-c', 'command -v dirname'], { encoding: 'utf8' }).trim();
+    writeFileSync(
+      join(dir, 'dirname'),
+      `#!/bin/sh\nexec ${JSON.stringify(dirnameBin)} "$@"\n`,
+      { mode: 0o755 },
+    );
   }
   return dir;
 }
@@ -165,6 +173,7 @@ test('missing curl and jq do not abort release.sh', () => {
   }
   assert.equal(code, 0, `${stdout}\n${stderr}`);
   assert.match(stdout, /Prerequisites OK/);
+  assert.doesNotMatch(`${stdout}\n${stderr}`, /command not found|null directory/);
 });
 
 test('a reporter failure does not fail the caller', () => {
