@@ -167,7 +167,7 @@ against the legacy Bash `hardcoded-credential` detection in
 
 | # | rule_id | CWE | level | status | Description |
 |---|---------|-----|-------|--------|-------------|
-| 90a | `hardcoded-credential` | CWE-798 | error | shipped | Provider-specific regex hits (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, Stripe `sk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT, PEM private key, npm `npm_`). (sprint 78: Rust `pub const <NAME>: &str = "<literal>"` where NAME ~ `/api[_]?key|secret|token|password|passwd|pwd|auth/i` and literal ≥ 8 chars / non-placeholder) |
+| 90a | `hardcoded-credential` | CWE-798 | error | shipped | Provider-specific regex hits (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`, GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT, PEM private key, npm `npm_`). (sprint 78: Rust `pub const <NAME>: &str = "<literal>"` where NAME ~ `/api[_]?key|secret|token|password|passwd|pwd|auth/i` and literal ≥ 8 chars / non-placeholder) |
 | 90b | `hardcoded-credential-entropy` | CWE-798 | warning | shipped | Shannon-entropy ≥ 4.3 bits/char (base64) or ≥ 3.5 bits/char (hex) on string literals 20–200 chars; UUID/hash/placeholder/base64-JSON denylisted; threshold lowered by 0.2 when surrounding line names a credential variable |
 
 ### A5. Spring4Shell Pass (category = `security`, Java only)

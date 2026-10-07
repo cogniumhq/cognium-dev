@@ -8,9 +8,9 @@
  *
  *   1. Provider-specific regex patterns. ~16 high-confidence prefixes /
  *      shapes (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`,
- *      Stripe `sk_live_`/`pk_live_`, OpenAI `sk-`, Anthropic `sk-ant-`,
- *      Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`, PEM private
- *      keys, npm `npm_`). Each match emits a finding with
+ *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`,
+ *      Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`,
+ *      PEM private keys, npm `npm_`). Each match emits a finding with
  *      `rule_id: 'hardcoded-credential'` (matches the legacy Bash
  *      detection in LanguageSourcesPass).
  *
@@ -153,11 +153,30 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Revoke the GitHub refresh token and store secrets outside source control.',
   },
+  // GitLab personal / project / group access tokens use the `glpat-` prefix.
+  // Length is not fixed (legacy bodies are about 20 characters; routable
+  // tokens are longer), so the floor is 20 and there is no max. (#577)
+  {
+    name: 'GitLab personal access token',
+    regex: /\bglpat-[A-Za-z0-9_-]{20,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the GitLab personal access token and store it outside source control.',
+  },
   {
     name: 'Stripe live secret key',
     regex: /\bsk_live_[A-Za-z0-9]{24,}\b/,
     severity: 'critical', level: 'error',
     fix: 'Rotate the Stripe secret key in the Stripe Dashboard and load it from a secrets manager.',
+  },
+  // Restricted keys (`rk_live_`) authorize live API calls the same way secret
+  // keys do. Length floor matches `sk_live_` ({24,}): Stripe documents both
+  // as a prefix plus a long alphanumeric secret, and does not publish a
+  // shorter live form. (#574)
+  {
+    name: 'Stripe live restricted key',
+    regex: /\brk_live_[A-Za-z0-9]{24,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Rotate the Stripe restricted key in the Stripe Dashboard and load it from a secrets manager.',
   },
   {
     name: 'Stripe live publishable key',
@@ -689,6 +708,18 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
       for (const pattern of PROVIDER_PATTERNS) {
         const m = pattern.regex.exec(lineText);
         if (!m) continue;
+
+        // Padded placeholders (`rk_live_placeholder…`, `glpat-placeholder…`)
+        // are not credentials. Length alone does not reject them. Scoped to
+        // these patterns so the AWS example key (`AKIA…EXAMPLE`) is unchanged.
+        // (#574, #577)
+        if (
+          (pattern.name === 'Stripe live restricted key' ||
+            pattern.name === 'GitLab personal access token') &&
+          PLACEHOLDER_RE.test(m[0])
+        ) {
+          continue;
+        }
 
         // #176 — PEM delimiter without adjacent base64 body is a parser
         // constant / error message / contains() argument, not embedded

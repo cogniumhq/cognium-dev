@@ -121,6 +121,25 @@ describe('ScanSecretsPass — provider patterns', () => {
     ]);
   });
 
+  it('detects GitLab glpat- personal access token as critical (#577)', () => {
+    // Floor of 20, not a fixed length. Literal split avoids push protection.
+    const code = 'token = "glpat-' + 'abcdefghijklmnopqrst' + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('GitLab personal access token');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  // That ghp_ still resolves to GitHub alone is covered by the ghp_ test above.
+  it('does not flag a short or placeholder glpat- body (#577)', () => {
+    const shortTok = 't = "glpat-' + 'short' + '"';
+    expect(runPass('app.py', shortTok, 'python')).toHaveLength(0);
+    const placeholder = 't = "glpat-' + 'placeholderplaceholder' + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects Stripe sk_live_ secret key in Go', () => {
     // Literal split to avoid tripping GitHub push protection while still
     // exercising the runtime Stripe-key regex.
@@ -129,6 +148,24 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out).toHaveLength(1);
     expect(out[0].evidence?.provider).toBe('Stripe live secret key');
     expect(out[0].severity).toBe('critical');
+  });
+
+  it('detects Stripe rk_live_ restricted key as critical (#574)', () => {
+    // Same length floor as sk_live_. Literal split avoids push protection.
+    const code = 'STRIPE_RESTRICTED_KEY = "rk_' + 'live_' + 'B'.repeat(24) + '"';
+    const out = runPass('config.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('Stripe live restricted key');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder rk_live_ body (#574)', () => {
+    const shortKey = 'k = "rk_' + 'live_' + 'B'.repeat(8) + '"';
+    expect(runPass('config.py', shortKey, 'python')).toHaveLength(0);
+    const placeholder = 'k = "rk_' + 'live_' + 'placeholder' + 'x'.repeat(13) + '"';
+    expect(runPass('config.py', placeholder, 'python')).toHaveLength(0);
   });
 
   it('detects Stripe pk_live_ publishable key as warning (lower severity)', () => {
