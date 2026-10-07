@@ -70,7 +70,7 @@ class HttpClient:
     def fetch(self):
         return requests.get(self.get_url())
 `;
-    const r = await analyze(code, 'oop_ssrf_getter.py', 'python');
+    const r = await analyze(code, 'oop_ssrf_getter.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ssrf').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -92,7 +92,7 @@ class HttpClient:
     def fetch(self):
         return requests.get(self._maybe_cached())
 `;
-    const r = await analyze(code, 'guard_noisy.py', 'python');
+    const r = await analyze(code, 'guard_noisy.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ssrf').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -112,7 +112,7 @@ class HttpClient:
     def fetch(self):
         return requests.get(self.url)
 `;
-    const r = await analyze(code, 'oop_ssrf.py', 'python');
+    const r = await analyze(code, 'oop_ssrf.py', 'python', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'ssrf').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -140,7 +140,7 @@ class HttpClient:
   }
 }
 `;
-    const r = await analyze(code, 'oop_nosql.js', 'javascript');
+    const r = await analyze(code, 'oop_nosql.js', 'javascript', { speculativeParamSources: true });
     expect(flowsByType(r.taint.flows, 'nosql_injection').length).toBeGreaterThanOrEqual(1);
   });
 

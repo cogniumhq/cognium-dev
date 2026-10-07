@@ -122,7 +122,7 @@ describe('#216 Sprint 77a — mixed in-corpus sanitizer recognition', () => {
       'pub fn run(prog: &str) { let _ = Command::new(prog).arg("/var/log/app.log").status(); }',
       '',
     ].join('\n');
-    const r: any = await analyze(code, 'unsafe_exec_prog.rs', 'rust');
+    const r: any = await analyze(code, 'unsafe_exec_prog.rs', 'rust', { speculativeParamSources: true });
     const ci = (r.taint?.flows ?? []).filter(
       (f: any) => f.sink_type === 'command_injection',
     );
@@ -139,7 +139,7 @@ describe('#216 Sprint 77a — mixed in-corpus sanitizer recognition', () => {
       '    return env.get_template("hello.html").render(name=name)',
       '',
     ].join('\n');
-    const r: any = await analyze(code, 'unsafe_noautoescape.py', 'python');
+    const r: any = await analyze(code, 'unsafe_noautoescape.py', 'python', { speculativeParamSources: true });
     const xss = (r.taint?.flows ?? []).filter(
       (f: any) => f.sink_type === 'xss',
     );
