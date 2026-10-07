@@ -12,7 +12,7 @@ const targets = ['org.owasp.webgoat.container.assignments.AttackResultBuilder.fa
 const rows=[];
 for (const fqn of targets) {
   const name = fqn.split('.').pop(); const cls = fqn.split('.').slice(-2)[0];
-  const t1=performance.now(); let out=''; try { out=execFileSync(RG,['-n','--no-heading',`\\b${name}\\s*\\(`,ROOT,'-g','*.java'],{encoding:'utf8',maxBuffer:1<<26}); } catch(e){out=e.stdout||'';} const rg_ms=performance.now()-t1;
+  const t1=performance.now(); let out; try { out=execFileSync(RG,['-n','--no-heading',`\\b${name}\\s*\\(`,ROOT,'-g','*.java'],{encoding:'utf8',maxBuffer:1<<26}); } catch(e){out=e.stdout||'';} const rg_ms=performance.now()-t1;
   const lines=out.split('\n').filter(Boolean);
   const t2=performance.now(); const callers=res.findCallers(fqn); const q_ms=performance.now()-t2;
   const kinds={}; let recv_same=0, recv_unknown=0, recv_other=0;

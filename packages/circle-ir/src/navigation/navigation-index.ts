@@ -521,7 +521,7 @@ export class NavigationIndex {
     if (!chain) return undefined;
 
     let current: TypeRecord | undefined;
-    let evidence = '';
+    let evidence: string;
 
     // The root is a type name used statically, `this`, or a call on the
     // enclosing type (a statically imported factory, or its own method).

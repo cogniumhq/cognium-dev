@@ -117,6 +117,7 @@ export function loadConfig(profilePath?: string): CogniumConfig | null {
     throw new Error(
       `Failed to parse ${configPath}: ${err instanceof Error ? err.message : String(err)}. ` +
       'Fix the JSON or remove the file.',
+      { cause: err },
     );
   }
 }
