@@ -132,15 +132,12 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out[0].level).toBe('error');
   });
 
-  it('does not flag a short or placeholder glpat- body, or collide with ghp_ (#577)', () => {
+  // That ghp_ still resolves to GitHub alone is covered by the ghp_ test above.
+  it('does not flag a short or placeholder glpat- body (#577)', () => {
     const shortTok = 't = "glpat-' + 'short' + '"';
     expect(runPass('app.py', shortTok, 'python')).toHaveLength(0);
     const placeholder = 't = "glpat-' + 'placeholderplaceholder' + '"';
     expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
-    const github = 't = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"';
-    const gh = runPass('app.py', github, 'python');
-    expect(gh).toHaveLength(1);
-    expect(gh[0].evidence?.provider).toBe('GitHub personal access token');
   });
 
   it('detects Stripe sk_live_ secret key in Go', () => {
