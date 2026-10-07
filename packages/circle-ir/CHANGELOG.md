@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.11.0] - 2026-10-07
+
+### Changes
+
+- fix(circle-ir): drop bare-parameter-only flows by default; opt back in with speculativeParamSources (#292) (#493)
+- fix(python): emit a source for a `for` target bound from a tainted iterable (#493) (#516)
+- chore(deps-dev): bump the eslint group across 1 directory with 3 updates (#499)
+- agent: fix #574, #577 (#601)
+- chore(deps-dev): bump the dev-tooling group with 3 updates
+
+### Changed
+- **#292: flows whose only source is a bare function parameter are dropped by
+  default.** The new `param-source-flow-gate` pass removes them after
+  interprocedural analysis. Java and C# entry points, route-decorated handlers
+  and lines that also carry a real source are exempt. Pass
+  `speculativeParamSources: true` to keep them, or disable the pass with
+  `disabledPasses: ['param-source-flow-gate']`.
 
 ### Fixed
 - **#493: a Python `for` target bound from a tainted iterable now emits a
