@@ -15,7 +15,7 @@ console.log('incremental re-parse(largest file, '+big.n+' calls)+rebuild index a
 const targets = ['org.owasp.webgoat.container.assignments.AttackResultBuilder.failed','org.owasp.webgoat.container.i18n.Messages.getMessage','org.owasp.webgoat.container.LessonDataSource.getConnection','org.owasp.webgoat.lessons.challenges.challenge7.MD5.decode','org.owasp.webgoat.container.users.WebGoatUser.equals','org.owasp.webgoat.lessons.clientsidefiltering.CheckoutCodes.get','org.owasp.webgoat.container.lessons.Lesson.getName','org.owasp.webgoat.container.session.LessonSession.getValue'];
 const rows=[];
 for (const fqn of targets){ const name=fqn.split('.').pop(); const cls=fqn.split('.').slice(-2)[0];
-  let out=''; try{ out=execFileSync(RG,['-n','--no-heading',`\\b${name}\\s*\\(`,ROOT,'-g','*.java'],{encoding:'utf8',maxBuffer:1<<26}); }catch(e){out=e.stdout||'';}
+  let out; try{ out=execFileSync(RG,['-n','--no-heading',`\\b${name}\\s*\\(`,ROOT,'-g','*.java'],{encoding:'utf8',maxBuffer:1<<26}); }catch(e){out=e.stdout||'';}
   const rg=out.split('\n').filter(Boolean).length;
   const all=res.findCallers(fqn);
   const exact=all.filter(c=>c.resolution==='exact').length;

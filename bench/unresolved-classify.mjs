@@ -229,7 +229,7 @@ const out = audit.sample.map(s => {
     || /\bgetClass\s*\(\s*\)\s*\.\s*$|\.class\s*\.\s*$|Class\.forName/.test(String(s.receiver ?? ''))
     || ['forName', 'setAccessible', 'getDeclaredMethod', 'getDeclaredField', 'getDeclaredConstructor'].includes(s.method_name);
 
-  let reason = 'unknown', why = [], ambiguous = false;
+  let reason, why = [], ambiguous = false;
   if (s.parse_ok === false) { reason = 'parse-error'; why.push('the file\'s parse_status.success is false'); }
   else if (reflectRecv) { reason = 'dynamic'; why.push(`reflective invocation (receiver type ${s.receiver_type ?? 'n/a'}, receiver ${JSON.stringify(s.receiver)?.slice(0, 50)})`); }
   else if (looksCtor && types.has(s.method_name)) { reason = 'unknown'; why.push(`constructor of project type ${types.get(s.method_name).fqn} — the target is inside the searched scope; the resolver has no constructor path`); }
