@@ -74,9 +74,18 @@ describe('#286 D: the suppression must not swallow a real SSRF', () => {
     expect(ssrf(r).length).toBeGreaterThan(0);
   });
 
-  it('an absolute literal prefix still fires', async () => {
-    const r = await withConstBase('"https://evil.example/" + input');
+  // .NET ignores BaseAddress for an absolute request URI, so the BaseAddress
+  // rule must not be what clears these. Whether they fire is decided by the
+  // literal itself (#518): input appended to an unterminated authority can
+  // extend the host name, and a literal that ends the authority cannot.
+  it('an absolute literal with an open authority still fires', async () => {
+    const r = await withConstBase('"https://evil.example" + input');
     expect(ssrf(r).length).toBeGreaterThan(0);
+  });
+
+  it('an absolute literal with a complete, constant host is not ssrf', async () => {
+    const r = await withConstBase('"https://api.example.com/" + input');
+    expect(ssrf(r)).toHaveLength(0);
   });
 
   it('a protocol-relative literal prefix still fires', async () => {
