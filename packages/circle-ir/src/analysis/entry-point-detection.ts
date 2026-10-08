@@ -435,7 +435,20 @@ function annotationsInclude(
  * Strip generic parameters from a type reference (`Foo<Bar>` → `Foo`).
  */
 function simpleTypeName(ref: string): string {
-  return ref.replace(/<.*$/, '').trim();
+  const name = ref.replace(/<.*$/, '').trim();
+  // `extends javax.servlet.http.HttpServlet` names the same supertype as
+  // `extends HttpServlet`; the lifecycle table is keyed by simple name.
+  return name.substring(name.lastIndexOf('.') + 1);
+}
+
+/**
+ * True when `methodName` is a lifecycle entry point of the framework
+ * supertype `supertype` (`HttpServlet` + `doGet`, `Filter` + `doFilter`, …).
+ * Exposed for the project-level gate, which can see a supertype reached
+ * through in-project base classes that the per-type check cannot.
+ */
+export function isSupertypeLifecycleMethod(supertype: string, methodName: string): boolean {
+  return TIER_1_BY_SUPERTYPE.get(simpleTypeName(supertype))?.has(methodName) ?? false;
 }
 
 /**

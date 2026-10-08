@@ -74,7 +74,7 @@ import type {
   TaintHop,
   TypeInfo,
 } from '../types/index.js';
-import { classifyEntryPointTier } from './entry-point-detection.js';
+import { classifyEntryPointTier, isSupertypeLifecycleMethod } from './entry-point-detection.js';
 
 // ---------------------------------------------------------------------------
 // Public rule id + constants
@@ -208,7 +208,7 @@ export function applyRequireEntryPath(
   const fileContext = buildFileContext(fileAnalyses);
 
   // Classify entry points once — reused for every finding.
-  const entryPointKeys = collectEntryPointKeys(graph, fileContext);
+  const entryPointKeys = collectEntryPointKeys(graph, fileContext, indexTypesByName(fileAnalyses));
 
   // Per-language entry-point-key count — used by the safety guard
   // (#237): if a language has ZERO classified entry points across the
@@ -513,6 +513,7 @@ function resolveCalleeKeys(
 function collectEntryPointKeys(
   graph: ProjectMethodGraph,
   fileContext: Map<string, FileClassifierContext>,
+  typesByName: Map<string, TypeInfo[]>,
 ): Set<string> {
   const entryPoints = new Set<string>();
   for (const rec of graph.methodsByKey.values()) {
@@ -524,9 +525,61 @@ function collectEntryPointKeys(
       calls: fileCtx?.calls ?? null,
       runtimeRegistrations: fileCtx?.runtimeRegistrations ?? null,
     });
-    if (tier === 'TIER_1_ENTRY_POINT') entryPoints.add(rec.key);
+    if (tier === 'TIER_1_ENTRY_POINT' || inheritsLifecycleEntry(rec.method.name, rec.enclosingType, typesByName)) {
+      entryPoints.add(rec.key);
+    }
   }
   return entryPoints;
+}
+
+/** Every type in the scan, by simple name (several when packages differ). */
+function indexTypesByName(
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
+): Map<string, TypeInfo[]> {
+  const byName = new Map<string, TypeInfo[]>();
+  for (const fa of fileAnalyses) {
+    for (const t of fa.analysis.types ?? []) {
+      const list = byName.get(t.name) ?? [];
+      list.push(t);
+      byName.set(t.name, list);
+    }
+  }
+  return byName;
+}
+
+const simpleName = (ref: string): string => {
+  const name = ref.replace(/<.*$/, '').trim();
+  return name.substring(name.lastIndexOf('.') + 1);
+};
+
+/**
+ * True when `methodName` is a lifecycle entry of a framework supertype that
+ * the enclosing type reaches through in-project base classes:
+ * `Basic1 extends BasicTestCase` where `BasicTestCase extends HttpServlet`
+ * makes `Basic1.doGet` a servlet entry point. The per-type classifier sees
+ * only the direct parent, so before this every handler behind a project base
+ * servlet was gated as unreachable and its findings dropped.
+ */
+function inheritsLifecycleEntry(
+  methodName: string,
+  enclosingType: TypeInfo | undefined,
+  typesByName: Map<string, TypeInfo[]>,
+): boolean {
+  if (!methodName || !enclosingType?.extends) return false;
+  const seen = new Set<TypeInfo>([enclosingType]);
+  let frontier = typesByName.get(simpleName(enclosingType.extends)) ?? [];
+  for (let depth = 0; depth < 8 && frontier.length > 0; depth++) {
+    const next: TypeInfo[] = [];
+    for (const ancestor of frontier) {
+      if (seen.has(ancestor)) continue;
+      seen.add(ancestor);
+      const supers = [ancestor.extends, ...(ancestor.implements ?? [])].filter((x): x is string => !!x);
+      if (supers.some(sup => isSupertypeLifecycleMethod(sup, methodName))) return true;
+      if (ancestor.extends) next.push(...(typesByName.get(simpleName(ancestor.extends)) ?? []));
+    }
+    frontier = next;
+  }
+  return false;
 }
 
 /**
