@@ -36,24 +36,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sibling is in dead code. Also fixes multi-line `if`/`else` in Java and Go.
 - **C#: a statement wrapped over several lines is one assignment** for alias
   derivation, including in CRLF files.
+- **C#: sanitizer and guard credit (#518, #520, #286 A).** A sink is no longer
+  reported when the value reaching it was made safe by one of:
+  - a same-file helper whose every `return` is a sanitized expression
+    (`static string Clean(string x) { return HtmlEncode(x); }`);
+  - `HtmlEncoder.Default.Encode` (xss), `SecurityElement.Escape` (xpath), an
+    RFC 4515 escape or strip of both parentheses (ldap), or
+    `new string(x.Where(char.IsLetterOrDigit).ToArray())`;
+  - a check that dominates the sink: an anchored `Regex.IsMatch(x,
+    "^[A-Za-z0-9_]+$")`, `x.All(char.IsLetterOrDigit)`, `int.TryParse(x, …)`,
+    or `p != null` after `p = int.Parse(x)`, as an enclosing `if` or an early
+    return. A `StringBuilder` written only with literals and such values is
+    covered too;
+  - for ssrf, a request URL whose literal fixes the host
+    (`"https://api.example.com/?x=" + v`), a host compared to a constant or
+    allowlist (`new Uri(x).Host == "…"`, directly, in a variable or in a
+    helper), or `BaseAddress` set alongside constructor arguments.
+  A literal that leaves the authority open (`"https://api.example.com" + x`)
+  is still reported.
+- **C#: a tainted argument must reach the callee's sink.** Passing a tainted
+  value to a method reported every sink in it, including a parameterised query
+  and a constructor with constant arguments. The parameter, or a value derived
+  from it, now has to be what the sink receives. A name inside a string
+  literal (`"… WHERE name = @name"`) is not a use of the variable.
+- **C#: encoders are not external calls.** `Uri.EscapeDataString(x)` and the
+  HTML encoders no longer produce an `external_taint_escape` entry, and that
+  fallback honours the credit above.
 
 Juliet C# 1.3, ten injection families, `analyze()` flows
 (`bench/sast/score-juliet-csharp.mjs`):
 
 | Variant | Rule | 4.12.0 | Now |
 |---|---|---|---|
-| `_01` | method level, TPR / FPR | 93.5% / 27.1% | **100% / 11.8%** |
-| `_01` | cross-method name leaks | 27 | **0** |
-| `_02`–`_13` conditional wrappers | method level, TPR / FPR | 38.2% / 27.1% | **100% / 11.8%** |
-| `_15` `switch` | method level, TPR / FPR | 22.8% / 15.9% | **100% / 11.8%** |
-| `_21` flag-gated helper | files detected | 38.2% | **100%** |
-| `_42` return-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 16.3%** |
-| `_45` field-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 16.3%** |
+| `_01` straight line | method level, TPR / FPR | 93.5% / 27.1% | **100% / 0%** |
+| `_02`–`_13` conditional wrappers | method level, TPR / FPR | 38.2% / 27.1% | **100% / 0%** |
+| `_15` `switch` | method level, TPR / FPR | 22.8% / 15.9% | **100% / 0%** |
+| `_16`, `_17` loops | method level, TPR / FPR | 93.5% / 27.1% | **100% / 0%** |
+| `_21`, `_41` sink in a helper | files detected / with a `Good*` hit | 38.2%, 100% / 38.2% | **100% / 0%** |
+| `_42` return-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 0%** |
+| `_45` field-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 0%** |
 
-The remaining `Good*` hits are the same 20 files in every variant: XPath and
-CWE-94 `GoodB2G`, where the validation or escaping is not credited (#518).
-
-OWASP BenchmarkJava, SecuriBench Micro and Juliet Java are unchanged.
+No cross-method name leaks in any variant (27 on `_01` before). On a labelled
+C# corpus of 414 vulnerable and 312 safe files, safe files flagged go from 30
+to 1 with the same 267 detected. OWASP BenchmarkJava, SecuriBench Micro and
+Juliet Java are unchanged.
 
 ## [4.12.0] - 2026-10-07
 

@@ -19,6 +19,7 @@
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
+import { CSHARP_SANITIZER_RES, CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
@@ -650,34 +651,6 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
   }
   return covered;
 }
-// C# sanitizers (Phase-1) and the sink types each neutralises. A tainted value
-// that flows through one of these before reaching a sink of the matching type
-// is safe. Method names are C#-distinctive (see config-loader C# sanitizers).
-/**
- * `Regex.Replace(x, "[^<allowlist>]", "")` — an allowlist character strip
- * (cognium-dev#272, the LDAP-strip cluster).
- *
- * A **negated** class is the whole point: `[^a-zA-Z0-9]` deletes everything
- * *not* in the set, so the surviving characters are exactly the set. That makes
- * the result provably inert for the metacharacter-driven injection families
- * below. A blacklist replace (`"[<>]"`) proves nothing — it enumerates what to
- * remove and silently misses the rest — and must not match.
- *
- * Two conditions, both load-bearing:
- *
- *  (a) the pattern is a string literal beginning `[^`. A computed pattern could
- *      be anything, including attacker-influenced.
- *  (b) the surviving set contains **no metacharacters**. `[^a-zA-Z0-9']` would
- *      keep the single quote alive, which breaks SQL and LDAP escaping outright
- *      — so the class body is restricted to alphanumerics, `\w`, `\d`, `\s`,
- *      underscore, hyphen and spaces. Anything else (quote, paren, backslash,
- *      dot, asterisk, semicolon) fails the match and the sink still fires.
- *
- * The replacement must be empty or a single safe character, so
- * `Regex.Replace(x, "[^a-z]", "';DROP")` cannot qualify.
- */
-const CSHARP_ALLOWLIST_STRIP_RE =
-  /\bRegex\s*\.\s*Replace\s*\([^,]*,\s*@?"\[\^(?:[A-Za-z0-9_\- ]|\\w|\\d|\\s)+\]"\s*,\s*@?"[A-Za-z0-9_]?"\s*\)/;
 
 /**
  * Is this `plugin_param` source a map read of a key that was never written, on
@@ -735,18 +708,6 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
   return true;
 }
 
-const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
-  { re: /\b(?:HtmlEncode|JavaScriptStringEncode)\s*\(/, type: 'xss' },
-  { re: /\bHtmlEncoder\s*\.\s*Encode\s*\(/, type: 'xss' },
-  { re: /\bPath\s*\.\s*GetFileName\s*\(/, type: 'path_traversal' },
-  // An allowlist strip leaves only inert characters, so it covers every family
-  // whose exploitation needs a metacharacter. Each has a fixture; see
-  // `issue-272-csharp-allowlist-strip.test.ts`.
-  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'ldap_injection' },
-  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'xpath_injection' },
-  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'command_injection' },
-  { re: CSHARP_ALLOWLIST_STRIP_RE, type: 'sql_injection' },
-];
 
 /**
  * Compute, per sink type, the set of C# variables whose value has passed through
@@ -796,44 +757,6 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
     }
   }
   return byType;
-}
-
-/**
- * The C# variables sanitized for `sinkType` at `sinkLine`, judged inside the
- * method that contains the sink (cognium-dev#579).
- *
- * `csharpSanitizedVarsByType` is file-wide and only ever adds, so `s` encoded in
- * one action credited every `s` in the file, and a later `s = q` did not take
- * the credit back. Here the method body is read top to bottom up to the sink
- * and the last assignment to a name decides: a sanitizer call or a derivation
- * from a sanitized name credits it, anything else removes it.
- *
- * `scopeStart` is the first line of the enclosing method, or 1 when the sink is
- * outside any method. Class fields are not handled here: a field can be
- * sanitized in one method and read in another, so the caller keeps the
- * file-wide answer for those.
- */
-function csharpSanitizedVarsAt(
-  lines: string[],
-  sinkType: string,
-  scopeStart: number,
-  sinkLine: number,
-): Set<string> {
-  const sanitizers = CSHARP_SANITIZER_RES.filter(r => r.type === sinkType).map(r => r.re);
-  const sanitized = new Set<string>();
-  if (sanitizers.length === 0) return sanitized;
-  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
-  for (let i = Math.max(scopeStart, 1); i < sinkLine; i++) {
-    const m = assignRe.exec(lines[i - 1] ?? '');
-    if (!m) continue;
-    const [, lhs, rhs] = m;
-    const credited =
-      sanitizers.some(re => re.test(rhs)) ||
-      [...sanitized].some(v => new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(rhs));
-    if (credited) sanitized.add(lhs);
-    else sanitized.delete(lhs);
-  }
-  return sanitized;
 }
 
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
@@ -2177,20 +2100,8 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     if (language === 'csharp') {
       const sourceLines = ctx.code.split('\n');
       const sanitizedByType = csharpSanitizedVarsByType(ctx.code);
-      const csMethods = ctx.graph.ir.types.flatMap(t => t.methods);
       const csFields = new Set(ctx.graph.ir.types.flatMap(t => (t.fields ?? []).map(f => f.name)));
-      // First line of the innermost method containing `line`; 1 when none does.
-      const csMethodStart = (line: number): number => {
-        let best = 1;
-        let span = Infinity;
-        for (const m of csMethods) {
-          if (line >= m.start_line && line <= m.end_line && m.end_line - m.start_line < span) {
-            best = m.start_line;
-            span = m.end_line - m.start_line;
-          }
-        }
-        return best;
-      };
+      const credit = new CSharpCredit(ctx.code, ctx.graph.ir.types.flatMap(t => t.methods));
       // File-level XXE hardening (cognium-dev#272). `XmlResolver = null` and
       // `DtdProcessing = Prohibit|Ignore` are the documented XXE mitigations —
       // an external entity cannot resolve once either is set. Deterministic
@@ -2203,10 +2114,11 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type === 'xxe' && xxeHardened) return false;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        // (a) inline sanitizer on the sink line, e.g. Html.Raw(HtmlEncode(x)).
-        for (const { re, type } of CSHARP_SANITIZER_RES) {
-          if (type === sink.type && re.test(sinkLineText)) return false;
-        }
+        // (a) inline sanitizer on the sink line, e.g. Html.Raw(HtmlEncode(x)),
+        // built in or a same-file helper that returns a sanitized value (#518).
+        if (credit.sanitizes(sink.type, sinkLineText)) return false;
+        // (a') the request goes to a constant host: input cannot move it (#518).
+        if (sink.type === 'ssrf' && credit.fixedHostRequest(sink.line)) return false;
         // (b) a sink-line variable is sanitized-for-this-type upstream. Tested
         // per-var (not via extractSourceIdentifiers, which skips single-char
         // names) so `Html.Raw(s)` with a 1-letter var is covered.
@@ -2214,12 +2126,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Locals are judged inside the sink's own method, in statement order
         // (#579). Fields keep the file-wide answer: they are the one kind of
         // name that can be sanitized in one method and read in another.
-        const scoped = csharpSanitizedVarsAt(sourceLines, sink.type, csMethodStart(sink.line), sink.line);
+        const scoped = credit.sanitizedVarsAt(sink.type, sink.line);
         const fileWide = sanitizedByType.get(sink.type);
         const sanitizedVars = new Set(scoped);
         if (fileWide) for (const v of fileWide) if (csFields.has(v)) sanitizedVars.add(v);
+        // (c) a check that dominates the sink proves the value inert: an
+        // allowlist or numeric check, or for ssrf a host allowlist (#518).
+        for (const v of credit.guardedVarsAt(sink.type, sink.line)) sanitizedVars.add(v);
+        // (d) a StringBuilder written only with literals and credited values.
+        for (const v of credit.safeBuilders(sanitizedVars, sink.line)) sanitizedVars.add(v);
+        // Match against what the sink receives, not a guard condition in
+        // front of it on the same line.
+        const received = credit.sinkText(sink.line);
         for (const v of sanitizedVars) {
-          if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(sinkLineText)) return false;
+          if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(received)) return false;
         }
         return true;
       });
@@ -2254,8 +2174,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
 
       // (a) client variables whose BaseAddress is a constant Uri.
       const constBaseClients = new Set<string>();
+      // `new HttpClient(handler) { BaseAddress = new System.Uri("…") }` counts
+      // too: constructor arguments and the qualified `System.Uri` (#518).
       const declRe =
-        /\b(?:var|HttpClient)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*\{[^}]*\bBaseAddress\s*=\s*new\s+Uri\s*\(\s*(?:@?"[^"]*"|\$?"[^"{}]*")\s*\)/;
+        /\b(?:var|HttpClient)\s+([A-Za-z_]\w*)\s*=\s*new\s+HttpClient\s*(?:\([^)]*\)\s*)?\{[^}]*\bBaseAddress\s*=\s*new\s+(?:System\s*\.\s*)?Uri\s*\(\s*(?:@?"[^"]*"|\$?"[^"{}]*")\s*\)/;
       for (const line of sourceLines) {
         const m = declRe.exec(line);
         if (m) constBaseClients.add(m[1]);
@@ -2275,7 +2197,17 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           }
           if (!onConstClient) return true;
 
-          const m = relativeLiteralArgRe.exec(text);
+          let m = relativeLiteralArgRe.exec(text);
+          if (!m) {
+            // The path was built into a variable first:
+            //   var relative = "lookup/" + Uri.EscapeDataString(input);
+            //   await client.GetAsync(relative);
+            const arg = /Async\s*\(\s*([A-Za-z_]\w*)\s*[,)]/.exec(text)?.[1];
+            if (arg) {
+              const assigned = new RegExp(`\\b${escapeRegex(arg)}\\s*=\\s*(?:@?\\$?)"([^"]*)"`);
+              for (let i = sink.line - 2; i >= 0 && !m; i--) m = assigned.exec(sourceLines[i] ?? '');
+            }
+          }
           if (!m) return true;                       // no leading literal — keep
           const lit = m[1];
           if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(lit)) return true;  // absolute URI

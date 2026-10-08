@@ -15,6 +15,7 @@
 
 import type { TaintSink, TaintFlowInfo, InterproceduralInfo, TypeInfo, MethodInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
+import { CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
@@ -99,6 +100,10 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     }
     const language = graph.ir.meta.language;
 
+    const csCredit = language === 'csharp' && typeof ctx.code === 'string'
+      ? new CSharpCredit(ctx.code, graph.ir.types.flatMap(t => t.methods))
+      : null;
+
     // --- Scenario A: sources AND sinks present --------------------------------
     if (sinks.length > 0) {
       const interProc = analyzeInterprocedural(graph, sources, sinks, sanitizers, {
@@ -133,6 +138,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
             if (!method) continue;
             if (sink.line < method.startLine || sink.line > method.endLine) continue;
             if (sanitizerMethodNames.has(method.name)) continue;
+            // cognium-dev#518 / #286 A: a tainted argument reaches a sink in
+            // the callee only if the parameter, or something derived from it,
+            // is what the sink receives.
+            if (language === 'csharp' && typeof ctx.code === 'string' &&
+                !csharpParamReachesSink(ctx.code, method, edge.taintedArgs, sink, csCredit)) {
+              continue;
+            }
 
             for (const source of sources) {
               if (source.line > edge.callLine) continue;
@@ -333,6 +345,90 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       });
     }
 
+    // cognium-dev#518: the escape fallback has no sink type, so the typed C#
+    // credit in SinkFilterPass never sees it. A value that was encoded,
+    // validated or sent to a constant host is not an unvalidated escape.
+    if (csCredit) {
+      const credited = new Set<number>();
+      filteredAdditionalFlows = filteredAdditionalFlows.filter(f => {
+        if (f.sink_type !== 'external_taint_escape' || !csCredit.creditedOnLine(f.sink_line)) return true;
+        credited.add(f.sink_line);
+        return false;
+      });
+      filteredAdditionalSinks = filteredAdditionalSinks.filter(
+        s => !(s.type === 'external_taint_escape' && credited.has(s.line)),
+      );
+    }
+
     return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };
   }
+}
+
+/**
+ * Does a tainted argument passed to a C# callee reach `sink` inside it?
+ *
+ * Scenario A used to emit a flow for every sink in a method that received a
+ * tainted argument, whatever the sink was given. That flagged a parameterised
+ * query (`cmd.Parameters.AddWithValue("@name", name); cmd.ExecuteNonQuery();`)
+ * and a constructor with constant arguments in a method that escapes its
+ * parameter before using it.
+ *
+ * Reads the callee top to bottom up to the sink. A name is derived from the
+ * parameter when it is assigned an expression that mentions a derived name, or
+ * is an object written through a property or a mutating call with one
+ * (`cmd.CommandText = … + name`, `sb.Append(name)`). A nested member such as
+ * `cmd.Parameters.AddWithValue(…)` binds a value and does not taint `cmd`.
+ * The sink is reached when its statement mentions a derived name that is not
+ * sanitized or guarded there.
+ */
+function csharpParamReachesSink(
+  code: string,
+  method: { parameters: Array<{ name: string; position: number }>; startLine: number },
+  taintedArgs: number[],
+  sink: { line: number; type: string },
+  credit: CSharpCredit | null,
+): boolean {
+  // CRLF files leave `\r` on every line, which `.` and `$` will not cross.
+  const lines = code.split(/\r?\n/);
+  const params = taintedArgs.length > 0
+    ? method.parameters.filter(p => taintedArgs.includes(p.position))
+    : method.parameters;
+  if (params.length === 0) return true;
+  const derived = new Set(params.map(p => p.name));
+  // A name inside a string literal is text, not a use: `"… WHERE name = @name"`
+  // does not mention the parameter `name`. Interpolation holes are real uses.
+  const codeOf = (text: string): string =>
+    text
+      .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit => ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+      .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+  const mentionsDerived = (text: string): string[] => {
+    const bare = codeOf(text);
+    return [...derived].filter(v => new RegExp(`(?<![\\w.])${v}(?![\\w])`).test(bare));
+  };
+
+  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>[\]?]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$/;
+  const objectWriteRe = /^\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*\s*(?:\+?=(?!=)|\()(.*)$/;
+  for (let i = method.startLine + 1; i < sink.line; i++) {
+    const text = lines[i - 1] ?? '';
+    const assign = assignRe.exec(text);
+    if (assign) {
+      if (mentionsDerived(assign[2]).length > 0) derived.add(assign[1]);
+      else if (!params.some(p => p.name === assign[1])) derived.delete(assign[1]);
+      continue;
+    }
+    const write = objectWriteRe.exec(text);
+    if (write && mentionsDerived(write[2]).length > 0) derived.add(write[1]);
+  }
+
+  // The sink statement, joined when it wraps over several lines.
+  let statement = lines[sink.line - 1] ?? '';
+  for (let i = sink.line; i < lines.length && i < sink.line + 6 && !/[;{}]\s*$/.test(statement.trimEnd()); i++) {
+    statement += ' ' + (lines[i] ?? '').trim();
+  }
+  const reaching = mentionsDerived(statement);
+  if (reaching.length === 0) return false;
+  if (!credit) return true;
+  const safe = new Set([...credit.sanitizedVarsAt(sink.type, sink.line), ...credit.guardedVarsAt(sink.type, sink.line)]);
+  return reaching.some(v => !safe.has(v));
 }
