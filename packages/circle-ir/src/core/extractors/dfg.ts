@@ -129,6 +129,9 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
         }
       }
       // Assignment target defs: `x = …;` → assignment_expression.left.
+      // `plainTargets` collects the targets of plain `=` assignments: the name
+      // on the left is written, not read (`x += …` does read it).
+      const plainTargets: Array<{ name: string; line: number }> = [];
       for (const asn of findNodes(body, 'assignment_expression')) {
         const left = asn.childForFieldName('left');
         if (left?.type === 'identifier') {
@@ -136,10 +139,23 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
           const def: DFGDef = { id: defIdCounter++, variable: name, line: asn.startPosition.row + 1, kind: 'local' };
           defs.push(def);
           currentScope(scopeStack).set(name, def.id);
+          if (asn.children.some(c => c?.type === '=')) {
+            plainTargets.push({ name, line: left.startPosition.row + 1 });
+          }
         }
       }
       // Uses: all identifier references, reaching defs resolved from scope.
       const bodyUses = extractUses(body, useIdCounter, scopeStack, false);
+      // `extractUses` reports the left-hand name of `s = q;` as a read of `s`,
+      // which chains the previous `s` into the new one although nothing flows
+      // between them. A sanitizer on the old value was then credited to the
+      // new one (cognium-dev#579: encode, reassign to raw input, write). Uses
+      // arrive in source order, so the target is the first use of that name on
+      // its line.
+      for (const target of plainTargets) {
+        const idx = bodyUses.uses.findIndex(u => u.variable === target.name && u.line === target.line);
+        if (idx !== -1) bodyUses.uses.splice(idx, 1);
+      }
       resolveReassignedUses(defs.slice(methodDefStart), bodyUses.uses);
       uses.push(...bodyUses.uses);
       useIdCounter = bodyUses.nextId;

@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **C#: taint is scoped to the declaring method (#548).** Sources, the ADO.NET
+  `CommandText` object carry and `StringBuilder` seeds were matched to sinks by
+  variable name across the whole file, so `cmd.CommandText = … + data` in
+  `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`. A C# source now reaches
+  a sink in another method only through a class field or a return value, both
+  of which are modelled. Object-carry seeds are made once per method instead
+  of once per file, so a second method that reuses the name is no longer missed.
+- **C#: sanitizer credit is per method and follows the last assignment (#579).**
+  `s` encoded in one action no longer silences an unencoded `s` in another, and
+  `s = q;` after `s = HtmlEncode(q)` takes the credit back. Class fields keep
+  file-wide credit.
+- **C#: a plain reassignment carries taint.** `s = q;` produced no flow where
+  `var s = q;` did. Constant propagation has no C# source model, so its "not
+  tainted" verdict vetoed every flow through a tracked reassignment; that
+  reason no longer applies to C#. The C# DFG also counted the left-hand name of
+  `s = q;` as a read of `s`, which let a sanitizer on the old value cover the
+  new one.
+
+Juliet C# 1.3, ten injection families, `analyze()` flows
+(`bench/sast/score-juliet-csharp.mjs`):
+
+| Variant | Rule | 4.12.0 | Now |
+|---|---|---|---|
+| `_01` | method level, TPR / FPR | 93.5% / 27.1% | **100% / 11.8%** |
+| `_01` | cross-method name leaks | 27 | **0** |
+| `_21` flag-gated helper | files detected | 38.2% | **100%** |
+| `_42` return-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **91.9% / 8.1%** |
+| `_45` field-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **91.9% / 8.1%** |
+
+OWASP BenchmarkJava, SecuriBench Micro and Juliet Java are unchanged.
+
 ## [4.12.0] - 2026-10-07
 
 ### Changes

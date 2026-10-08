@@ -6,9 +6,11 @@
 // TPR credits a partial at 0.5, as the published harness does.
 // Usage: node score-securibench.mjs <micro dir> <scan.json> [--list fn|fp|partial]
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 
-const [microDir, scanPath, ...rest] = process.argv.slice(2);
+const [microArg, scanPath, ...rest] = process.argv.slice(2);
+// Scan reports carry absolute paths, so `.` must resolve before files are matched.
+const microDir = resolve(microArg);
 const listKind = rest.includes('--list') ? rest[rest.indexOf('--list') + 1] : null;
 const scan = JSON.parse(readFileSync(scanPath, 'utf8'));
 const foundByFile = new Map();
