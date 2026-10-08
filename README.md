@@ -21,11 +21,21 @@ Full inventory of passes and metrics: [`packages/circle-ir/docs/PASSES.md`](./pa
 
 ### Benchmark Results
 
+cognium-dev **4.12.0**:
+
+| Benchmark | Language | TPR | FPR |
+|-----------|----------|-----|-----|
+| OWASP BenchmarkJava 1.2: all 2,740 cases, scorecard rule | Java | **90.0%** | **3.0%** |
+| Juliet Test Suite 1.3: `_01` cases of 9 injection CWEs, method level | Java | **99.4%** (155/156) | **21.9%** |
+| SecuriBench Micro: 123 annotated cases | Java | **88.0%** | **6.7%** |
+| CWE-Bench-Java: 120 real CVEs, finding inside the fix method | Java | **32.5%** (39/120) | n/a |
+
+Measured with the published CLI (`cognium-dev scan <dir> --format json --category security -l java`). Each rule and the command to reproduce it are in [`bench/README.md`](./bench/README.md#sast-accuracy-benchsast). Juliet runs with the `require-entry-path` gate disabled, because the suite reaches `bad()` only through reflection; `bench/README.md` explains why.
+
+Not yet re-measured on 4.12.0:
+
 | Benchmark | Language | Score |
 |-----------|----------|-------|
-| OWASP Benchmark | Java | **100% TPR, 0% FPR** |
-| Juliet Test Suite | Java | **100%** (156/156 cases) |
-| SecuriBench Micro | Java | **97.7% TPR** |
 | OWASP BenchmarkPython | Python | 81.2% TPR, 14.8% FPR (3.23.3 — over-flagging on safe sinks, [#4](https://github.com/cogniumhq/cognium-dev/issues/4)) |
 
 ---

@@ -9,7 +9,7 @@ A high-performance Static Application Security Testing (SAST) library for detect
 
 - **Taint Analysis**: Track data flow from sources (user input) to sinks (dangerous operations)
 - **Multi-language Support**: Java, JavaScript/TypeScript, Python, Go, Rust, Bash/Shell, HTML, and **C#/.NET (experimental)**
-- **High Accuracy**: 100% on OWASP Benchmark, 100% on Juliet Test Suite, 97.7% TPR on SecuriBench Micro
+- **Measured accuracy** (cognium-dev 4.12.0): OWASP BenchmarkJava 90.0% TPR / 3.0% FPR on all 2,740 cases, SecuriBench Micro 88.0% / 6.7%; see [Benchmark Results](#benchmark-results)
 - **36-Pass Pipeline**: 19 security taint passes + 17 reliability/performance/maintainability/architecture quality passes
 - **Metrics Engine**: 24 software quality metrics (cyclomatic complexity, Halstead, CBO, RFC, LCOM, DIT, and 4 composite scores)
 - **Cross-File Analysis**: `analyzeProject()` surfaces taint flows that span multiple files
@@ -416,15 +416,15 @@ interface FileMetrics {
 
 ## Benchmark Results
 
-All scores below are for **circle-ir static analysis only** (no LLM).
+Measured through cognium-dev **4.12.0** (circle-ir 4.12.0), static analysis only. Rules and commands: [`bench/README.md`](https://github.com/cogniumhq/cognium-dev/blob/main/bench/README.md#sast-accuracy-benchsast).
 
-| Benchmark | Score | Details |
-|-----------|-------|---------|
-| **OWASP Benchmark** | +100% | TPR 100%, FPR 0% (1415 test cases) |
-| **Juliet Test Suite** | +100% | 156/156 test cases, 9 CWEs |
-| **SecuriBench Micro** | 97.7% TPR | 105/108 vulns detected, 6.7% FPR |
-| **CWE-Bench-Java** | 42.5% | 51/120 real-world CVEs (vs CodeQL 22.5%, IRIS+GPT-4 45.8%) |
-| **Bash Synthetic** | 68.2% TPR | 15 TP, 9 TN, 0 FP on 31 synthetic test cases |
+| Benchmark | TPR | FPR | Scope and rule |
+|-----------|-----|-----|----------------|
+| **OWASP BenchmarkJava 1.2** | 90.0% | 3.0% | All 2,740 cases; scorecard rule |
+| **Juliet Test Suite 1.3** | 99.4% | 21.9% | `_01` cases of 9 injection CWEs; method level; `require-entry-path` disabled |
+| **SecuriBench Micro** | 88.0% | 6.7% | 123 annotated cases |
+| **CWE-Bench-Java** | 32.5% (39/120) | n/a | 120 real CVEs; a finding of the CVE's CWE inside the fix method |
+| **Bash Synthetic** | 68.2% | 0% | 31 synthetic cases; April 2026 snapshot, not re-measured |
 
 ## Documentation
 

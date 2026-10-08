@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/cognium-dev.svg)](https://www.npmjs.com/package/cognium-dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/cogniumhq/cognium-dev/blob/main/LICENSE)
-[![OWASP Benchmark](https://img.shields.io/badge/OWASP%20Benchmark-100%25%20TPR%2C%200%25%20FPR-brightgreen)](https://github.com/cogniumhq/cognium-dev#benchmark-results)
+[![OWASP Benchmark](https://img.shields.io/badge/OWASP%20BenchmarkJava-90.0%25%20TPR%2C%203.0%25%20FPR-green)](https://github.com/cogniumhq/cognium-dev#benchmark-results)
 [![GitHub Action](https://img.shields.io/badge/GitHub%20Action-available-blue?logo=github)](https://github.com/marketplace/actions/cognium-dev-scan)
 ![Trust Score](https://raw.githubusercontent.com/cogniumhq/cognium-dev/badges/trust-badge.svg)
 ![Quality Score](https://raw.githubusercontent.com/cogniumhq/cognium-dev/badges/quality-badge.svg)
@@ -467,35 +467,28 @@ For details on LLM integration and benchmark improvements (42.5% → 78.3% on CW
 
 ## Benchmark Results
 
-**All scores below are from the static analysis engine** — fully deterministic, no LLM required:
+Measured on cognium-dev **4.12.0**, the CLI as published. Fully deterministic.
 
-| Benchmark | Score | Details |
-|-----------|-------|---------|
-| OWASP Benchmark | +100% | TPR 100%, FPR 0% (1415 test cases) |
-| Juliet Test Suite | +100% | 156/156 test cases, 9 CWEs |
-| SecuriBench Micro | 97.7% TPR | 105/108 vulns detected, 6.7% FPR |
-| CWE-Bench-Java | 42.5% | 51/120 real-world CVEs |
+| Benchmark | TPR | FPR | Scope and rule |
+|-----------|-----|-----|----------------|
+| OWASP BenchmarkJava 1.2 | 90.0% | 3.0% | All 2,740 cases; scorecard rule (file-level CWE match) |
+| Juliet Test Suite 1.3 | 99.4% | 21.9% | `_01` cases of 9 injection CWEs; `bad()` vs `good*()` methods; `require-entry-path` disabled |
+| SecuriBench Micro | 88.0% | 6.7% | 123 annotated cases; found sink lines vs `vuln_count` |
+| CWE-Bench-Java | 32.5% (39/120) | n/a | 120 real CVEs; a finding of the CVE's CWE inside the fix method |
 
 ### Reproducing Benchmarks
 
-The benchmark scores are verifiable and reproducible:
+Each number above comes from a `cognium-dev scan` JSON report and a scoring script in this repository. For example, OWASP:
 
 ```bash
-# Install cognium
-npm install -g cognium
-
-# Clone benchmark repositories
+npm install -g cognium-dev
 git clone https://github.com/OWASP-Benchmark/BenchmarkJava
-git clone https://github.com/juliet-test-suite/juliet-test-suite-for-java
-git clone https://github.com/CWE-Bench/cwe-bench-java
-
-# Run scans
-cognium-dev scan BenchmarkJava/src --format json -o owasp-results.json
-cognium-dev scan juliet-test-suite-for-java --format json -o juliet-results.json
-cognium-dev scan cwe-bench-java --format json -o cwe-bench-results.json
+cd BenchmarkJava
+cognium-dev scan . --format json --category security -l java > owasp.json
+node <cognium-dev repo>/bench/sast/score-owasp.mjs expectedresults-1.2.csv owasp.json
 ```
 
-For detailed benchmark methodology and comparison with other tools, see [cognium.dev](https://cognium.dev).
+The scoring rule and command for every benchmark are in [`bench/README.md`](https://github.com/cogniumhq/cognium-dev/blob/main/bench/README.md#sast-accuracy-benchsast).
 
 ## Links
 

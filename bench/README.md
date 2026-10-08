@@ -38,3 +38,74 @@ One rule worth knowing: "is the target inside the searched tree?" is answered
 twice, once from `circle-ir`'s symbol table and once from a regex index built
 without it. Where the two disagree, the extractor has a gap — which is how the
 missing `record` support was found.
+
+## SAST accuracy (`bench/sast/`)
+
+The scripts behind the published detection numbers. Each one scores a
+`cognium-dev scan` JSON report, so it measures the CLI users install, not a
+library call with extra configuration. Every number in the READMEs states its
+version and comes from these commands.
+
+    npm install -g cognium-dev@<version>
+    export CIRCLE_IR=$(npm root -g)/cognium-dev/node_modules/circle-ir/dist/index.js
+
+### OWASP BenchmarkJava 1.2: all 2,740 cases
+
+    cd BenchmarkJava
+    cognium-dev scan . --format json --category security -l java > owasp.json
+    node bench/sast/score-owasp.mjs expectedresults-1.2.csv owasp.json
+
+Scorecard rule: a test case is flagged when any finding in its file carries the
+category's CWE. TPR over the 1,415 vulnerable cases, FPR over the 1,325 safe
+ones. `--list fp|fn --cat <category>` names the cases.
+
+### Juliet Test Suite for Java 1.3: `_01` cases, method level
+
+    mkdir juliet01 && find juliet/src/testcases -name '*_01.java' -exec cp {} juliet01/ \;
+    cd juliet01
+    cognium-dev scan . --format json --category security -l java \
+      --disable-pass require-entry-path > juliet.json
+    node bench/sast/score-juliet.mjs juliet.json \
+      --cwes CWE78,CWE80,CWE81,CWE83,CWE89,CWE90,CWE643,CWE23,CWE36
+
+`bad()` is a true positive when a finding with the directory's CWE lands inside
+it. Each `good*()` method (`goodG2B`, `goodB2G`, `goodN`; not the `good()`
+dispatcher) is a false positive when one does. Omit `--cwes` for all fourteen
+supported CWEs.
+
+`require-entry-path` is disabled because every Juliet `_01` file has a `main()`,
+which counts as an entry point, and `main` reaches `bad()` only through
+reflection in the harness base class. With the gate on, the CLI drops every
+`bad()` flow, so it measures the harness rather than the engine.
+
+### SecuriBench Micro: 123 annotated cases
+
+    cd securibench-micro/src/securibench/micro
+    cognium-dev scan . --format json --category security -l java > sb.json
+    node bench/sast/score-securibench.mjs . sb.json
+
+Expected count: the file's `@servlet vuln_count`. A vulnerable file is a TP when
+its distinct taint-finding sink lines reach that count, and a partial (credited
+0.5) when some but not all are found. A file with `vuln_count = "0"` is a false
+positive when anything fires.
+
+### CWE-Bench-Java: 120 real CVEs
+
+    node bench/sast/score-cwe-bench-java.mjs "$(npm root -g)/cognium-dev/dist/cli.js" \
+      cwe-bench-java projects out --concurrency 4 --timeout-min 15
+
+`projects/<project_slug>` is each project checked out at the vulnerable tag in
+`data/project_info.csv`. A project is detected when a finding with its CWE lands
+inside a fix method's line range (`data/fix_info.csv`, re-anchored by method
+name). A project that is missing, times out, or fails to scan counts as a miss.
+
+The April 2026 figure (50.8%) used a weaker rule: a *sink-shaped call* of the
+expected type inside the fix method, with no source or flow required, on the
+fix file alone. Held to that rule, circle-ir 3.19.4 scores 68/120 and 4.12.0
+67/120. Requiring a flow, both score 49/120, so the lower published number is
+the stricter rule, not an engine regression.
+
+At flow level, 10 CVEs were lost and 10 gained between those versions. Each
+loss bisects to one precision change and is tracked in #617–#626. The CLI's
+remaining gap to single-file analysis comes from require-entry-path (#613),
+the project size ceiling (#615) and two timeouts (#616).
