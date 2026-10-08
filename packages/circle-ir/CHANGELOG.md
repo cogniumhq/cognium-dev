@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Properties.getProperty` is a `config_param` source**, the same as
   `Properties.get` already was. Values read from a properties file were
   invisible to taint, which the response-writer pattern had masked for xss.
+- **require-entry-path: servlet handlers behind an in-project base class are
+  entry points.** The classifier matched only a direct `extends HttpServlet`,
+  so `Handler extends BaseServlet extends HttpServlet` left `Handler.doGet`
+  unclassified, and the project gate dropped every finding under it as
+  unreachable. The gate now walks the in-project `extends` chain to a
+  framework supertype. A supertype named with its package
+  (`extends javax.servlet.http.HttpServlet`) also matches now. On SecuriBench
+  Micro (`Basic1 extends BasicTestCase extends HttpServlet`) the default CLI
+  goes from 7.4% to 88.0% TPR, the same as with the gate disabled; OWASP
+  BenchmarkJava is unchanged.
 
 On OWASP BenchmarkJava 1.2 (2,740 cases, scorecard rule, CLI scan) these move
 the full suite from 91.0% TPR / 17.4% FPR to 90.0% TPR / 3.0% FPR, and xss from
