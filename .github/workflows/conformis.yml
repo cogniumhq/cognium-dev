@@ -26,6 +26,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Require static and dynamic checks
+        # Exact check-run names from .github/workflows/ci.yml.
+        # STATIC is the name of the self-scan job.
+        # DYNAMIC is `test — ${{ matrix.package }}` for each package in
+        # [circle-ir, cli, project-profile-detect].
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

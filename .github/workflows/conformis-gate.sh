@@ -1,12 +1,36 @@
 #!/usr/bin/env bash
 # Exit 0 only when every named check on $SHA succeeded.
+# A check that is still running stays pending and is polled until the deadline.
+# A name that never appears stays missing and fails after a short grace period,
+# so a typo, a blank entry, or a renamed ci.yml job does not wait out the deadline.
 set -euo pipefail
 
 deadline=$((SECONDS + 2400))
+missing_grace=$((SECONDS + 180))
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+# Split a comma-separated list. Whitespace around each entry is removed.
+# An empty entry is kept so a blank STATIC or DYNAMIC value fails as missing.
 split() {
   local IFS=','
-  read -r -a "$2" <<< "$1"
+  local -a raw=()
+  local -n dest="$2"
+  local part
+  read -r -a raw <<< "$1"
+  dest=()
+  if ((${#raw[@]} == 0)); then
+    dest+=("")
+    return
+  fi
+  for part in "${raw[@]}"; do
+    dest+=("$(trim "$part")")
+  done
 }
 
 split "$STATIC" static_checks
@@ -29,12 +53,14 @@ conclusion_of() {
 
 while true; do
   pending=()
+  missing=()
   failed=()
   for name in "${wanted[@]}"; do
     result="$(conclusion_of "$name")"
     case "$result" in
       success) ;;
-      missing|pending) pending+=("$name ($result)") ;;
+      pending) pending+=("$name") ;;
+      missing) missing+=("${name:-<empty>}") ;;
       *) failed+=("$name ($result)") ;;
     esac
   done
@@ -44,7 +70,12 @@ while true; do
     printf '  %s\n' "${failed[@]}"
     exit 1
   fi
-  if ((${#pending[@]} == 0)); then
+  if ((${#missing[@]} > 0 && SECONDS >= missing_grace)); then
+    echo "Conformis failed: check name never reported:"
+    printf '  %s\n' "${missing[@]}"
+    exit 1
+  fi
+  if ((${#pending[@]} == 0 && ${#missing[@]} == 0)); then
     echo "Conformis passed."
     printf '  static: %s\n' "${static_checks[@]}"
     printf '  dynamic: %s\n' "${dynamic_checks[@]}"
@@ -55,6 +86,12 @@ while true; do
     printf '  %s\n' "${pending[@]}"
     exit 1
   fi
-  echo "Waiting: ${pending[*]}"
+  echo "Waiting:"
+  if ((${#pending[@]} > 0)); then
+    printf '  pending: %s\n' "${pending[@]}"
+  fi
+  if ((${#missing[@]} > 0)); then
+    printf '  missing: %s\n' "${missing[@]}"
+  fi
   sleep 30
 done
