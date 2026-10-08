@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.12.0] - 2026-10-07
+
+### Changes
+
+- Bundles circle-ir 4.12.0: Java response-writer xss defers to taint (OWASP
+  BenchmarkJava FPR 17.4% -> 3.0%), and the entry-path gate follows servlets
+  behind an in-project base class, so `scan <dir>` no longer drops their
+  findings (#608, #609). See the circle-ir CHANGELOG.
+
 ## [4.11.0] - 2026-10-07
 
 ### Changes
