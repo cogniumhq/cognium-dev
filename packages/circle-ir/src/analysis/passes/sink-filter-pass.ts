@@ -798,6 +798,44 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
   return byType;
 }
 
+/**
+ * The C# variables sanitized for `sinkType` at `sinkLine`, judged inside the
+ * method that contains the sink (cognium-dev#579).
+ *
+ * `csharpSanitizedVarsByType` is file-wide and only ever adds, so `s` encoded in
+ * one action credited every `s` in the file, and a later `s = q` did not take
+ * the credit back. Here the method body is read top to bottom up to the sink
+ * and the last assignment to a name decides: a sanitizer call or a derivation
+ * from a sanitized name credits it, anything else removes it.
+ *
+ * `scopeStart` is the first line of the enclosing method, or 1 when the sink is
+ * outside any method. Class fields are not handled here: a field can be
+ * sanitized in one method and read in another, so the caller keeps the
+ * file-wide answer for those.
+ */
+function csharpSanitizedVarsAt(
+  lines: string[],
+  sinkType: string,
+  scopeStart: number,
+  sinkLine: number,
+): Set<string> {
+  const sanitizers = CSHARP_SANITIZER_RES.filter(r => r.type === sinkType).map(r => r.re);
+  const sanitized = new Set<string>();
+  if (sanitizers.length === 0) return sanitized;
+  const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+  for (let i = Math.max(scopeStart, 1); i < sinkLine; i++) {
+    const m = assignRe.exec(lines[i - 1] ?? '');
+    if (!m) continue;
+    const [, lhs, rhs] = m;
+    const credited =
+      sanitizers.some(re => re.test(rhs)) ||
+      [...sanitized].some(v => new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(rhs));
+    if (credited) sanitized.add(lhs);
+    else sanitized.delete(lhs);
+  }
+  return sanitized;
+}
+
 // Recognises Java `String.matches("regex")` — implicitly anchored ^…$.
 const JAVA_INLINE_MATCHES_RE = /\.\s*matches\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g;
 
@@ -2139,6 +2177,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     if (language === 'csharp') {
       const sourceLines = ctx.code.split('\n');
       const sanitizedByType = csharpSanitizedVarsByType(ctx.code);
+      const csMethods = ctx.graph.ir.types.flatMap(t => t.methods);
+      const csFields = new Set(ctx.graph.ir.types.flatMap(t => (t.fields ?? []).map(f => f.name)));
+      // First line of the innermost method containing `line`; 1 when none does.
+      const csMethodStart = (line: number): number => {
+        let best = 1;
+        let span = Infinity;
+        for (const m of csMethods) {
+          if (line >= m.start_line && line <= m.end_line && m.end_line - m.start_line < span) {
+            best = m.start_line;
+            span = m.end_line - m.start_line;
+          }
+        }
+        return best;
+      };
       // File-level XXE hardening (cognium-dev#272). `XmlResolver = null` and
       // `DtdProcessing = Prohibit|Ignore` are the documented XXE mitigations —
       // an external entity cannot resolve once either is set. Deterministic
@@ -2158,11 +2210,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // (b) a sink-line variable is sanitized-for-this-type upstream. Tested
         // per-var (not via extractSourceIdentifiers, which skips single-char
         // names) so `Html.Raw(s)` with a 1-letter var is covered.
-        const sanitizedVars = sanitizedByType.get(sink.type);
-        if (sanitizedVars && sanitizedVars.size > 0) {
-          for (const v of sanitizedVars) {
-            if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(sinkLineText)) return false;
-          }
+        //
+        // Locals are judged inside the sink's own method, in statement order
+        // (#579). Fields keep the file-wide answer: they are the one kind of
+        // name that can be sanitized in one method and read in another.
+        const scoped = csharpSanitizedVarsAt(sourceLines, sink.type, csMethodStart(sink.line), sink.line);
+        const fileWide = sanitizedByType.get(sink.type);
+        const sanitizedVars = new Set(scoped);
+        if (fileWide) for (const v of fileWide) if (csFields.has(v)) sanitizedVars.add(v);
+        for (const v of sanitizedVars) {
+          if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(sinkLineText)) return false;
         }
         return true;
       });

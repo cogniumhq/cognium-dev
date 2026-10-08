@@ -57,6 +57,7 @@ function makeConstPropVeto(
   graph: PassContext['graph'],
   sources: SinkFilterResult['sources'],
   code: string | undefined,
+  language?: string,
 ): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number) => boolean {
   const lines = typeof code === 'string' ? code.split('\n') : [];
   const selfReassign = new Map<string, number[]>();
@@ -89,6 +90,12 @@ function makeConstPropVeto(
     const r = isFalsePositive(constProp, step.line, step.variable);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
+    // cognium-dev#579: const-prop has no C# source model, so its tainted set is
+    // empty for C# and "not tainted" there means "never looked", not "clean".
+    // It still records a plain reassignment (`s = q;`) as a tracked symbol,
+    // which vetoed every C# flow through one while `var s = q;` passed. Dead
+    // code and resolved constants (the reasons above) still apply.
+    if (language === 'csharp') return false;
     const lo = Math.min(sourceLine, sinkLine);
     // Walk the reaching-def chain back from this step, stepping through
     // self-derived reassignments only. Reaching defs are per method, so a
@@ -143,7 +150,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
     // cognium-dev#328 — scoped exemption from const-prop's `variable_not_tainted`
     // veto for self-derived reassignment (`x = f(x)`, `x += y`), the #287 shape.
-    const isVetoed = makeConstPropVeto(constProp, graph, sources, ctx.code);
+    const isVetoed = makeConstPropVeto(constProp, graph, sources, ctx.code, ctx.language);
 
     // Filter flows: eliminate dead-code paths and constant-propagation FPs
     const verifiedFlows = propagationResult.flows.filter(flow => {
@@ -1315,6 +1322,108 @@ function detectParameterSinkFlows(
 // whole file on every call — O(lines) per call, O(n²) across a large file
 // (cognium-ai#305). Within a single analysis all calls pass the same `code`
 // reference, so a 1-slot cache collapses the repeated splits to one.
+/**
+ * C# alias expansion that respects method boundaries (cognium-dev#548).
+ *
+ * `buildJavaTaintedVars` is file-wide and keyed by name, so a local `data`
+ * tainted in one method tainted every `data` in the file. Here a derivation
+ * `lhs = …tainted…` only counts inside the method where the tainted name lives.
+ * Taint crosses methods in exactly two ways, both real data flow:
+ *   - a class field: `dataBad = data;` in one method, `x = dataBad;` in another;
+ *   - a return value: `return data;` in `Source()`, `x = Source();` in a caller.
+ *
+ * Returns one entry per derived name. `carried` entries entered their method
+ * through a field read or a call, so their `line` (the derivation) is where
+ * the taint starts in that method; the others derive from a source in the
+ * same method.
+ */
+function csharpMethodScopedAliases(
+  code: string,
+  seeds: ReadonlyArray<{ variable: string; line: number }>,
+  methods: ReadonlyArray<{ name: string; start_line: number; end_line: number }>,
+  fieldNames: ReadonlySet<string>,
+): Array<{ variable: string; line: number; carried: boolean }> {
+  const lines = code.split('\n');
+  const methodOf = (line: number): number => {
+    let best = -1;
+    let span = Infinity;
+    methods.forEach((m, i) => {
+      if (line >= m.start_line && line <= m.end_line && m.end_line - m.start_line < span) {
+        best = i;
+        span = m.end_line - m.start_line;
+      }
+    });
+    return best;
+  };
+  const declRe =
+    /^\s*(?:public|private|protected|internal|static|readonly|const|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*\??)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const assignRe = /^\s*(?:this\s*\.\s*)?([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const returnRe = /^\s*return\s+(.+?);\s*$/;
+  const KEYWORDS = new Set(['return', 'throw', 'new', 'await', 'yield', 'else', 'case', 'using', 'var']);
+  const codeOf = (rhs: string): string =>
+    rhs
+      .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit => ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+      .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+
+  const local = new Map<number, Set<string>>();   // method index -> tainted locals
+  const taintedFields = new Set<string>();
+  const returnsTainted = new Set<string>();       // method names
+  const localsOf = (m: number): Set<string> => {
+    let set = local.get(m);
+    if (!set) { set = new Set(); local.set(m, set); }
+    return set;
+  };
+  for (const seed of seeds) {
+    const base = seed.variable.replace(/^this\./, '');
+    if (fieldNames.has(base)) taintedFields.add(base);
+    else localsOf(methodOf(seed.line)).add(seed.variable);
+  }
+
+  const out: Array<{ variable: string; line: number; carried: boolean }> = [];
+  let changed = true;
+  for (let guard = 0; changed && guard < lines.length + 2; guard++) {
+    changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const text = lines[i];
+      const trimmed = text.trimStart();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      const m = methodOf(i + 1);
+      const here = localsOf(m);
+
+      const ret = returnRe.exec(text);
+      if (ret && m !== -1 && !returnsTainted.has(methods[m].name)) {
+        const idents = codeOf(ret[1]).match(/[\p{L}\p{N}_]+/gu) ?? [];
+        if (idents.some(t => here.has(t) || taintedFields.has(t))) {
+          returnsTainted.add(methods[m].name);
+          changed = true;
+        }
+        continue;
+      }
+
+      const d = declRe.exec(text) ?? assignRe.exec(text);
+      if (!d) continue;
+      const [, lhs, rhs] = d;
+      if (KEYWORDS.has(lhs)) continue;
+      const isField = fieldNames.has(lhs) && !declRe.test(text);
+      if (isField ? taintedFields.has(lhs) : here.has(lhs)) continue;
+
+      const rhsCode = codeOf(rhs);
+      const idents = rhsCode.match(/[\p{L}\p{N}_]+/gu) ?? [];
+      const viaLocal = idents.some(t => here.has(t));
+      const viaField = idents.some(t => taintedFields.has(t) && !here.has(t));
+      const viaCall = [...rhsCode.matchAll(/([\p{L}_][\p{L}\p{N}_]*)\s*\(/gu)].some(c => returnsTainted.has(c[1]));
+      if (!viaLocal && !viaField && !viaCall) continue;
+
+      if (isField) taintedFields.add(lhs);
+      else here.add(lhs);
+      out.push({ variable: lhs, line: i + 1, carried: !viaLocal });
+      changed = true;
+    }
+  }
+  return out;
+}
+
 let _reassignSplitCode: string | undefined;
 let _reassignSplitLines: string[] | undefined;
 function splitLinesCached(code: string): string[] {
@@ -1642,6 +1751,22 @@ function detectExpressionScanFlows(
   // is every Juliet C# file.
   const csFnRanges = methodRanges(['csharp']);
   const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
+  // cognium-dev#548 — names declared as class fields. A field is the one kind
+  // of variable whose value legitimately crosses from one method to another, so
+  // the per-method gate below must not apply to it.
+  const csFieldNames = new Set<string>();
+  if (language === 'csharp') {
+    for (const t of types ?? []) for (const f of t.fields ?? []) csFieldNames.add(f.name);
+  }
+  /** True when a C# source and a later line can only be linked by a reused local name. */
+  const csDifferentMethod = (variable: string, sourceLine: number, otherLine: number): boolean => {
+    if (csFnRanges.length === 0) return false;
+    const a = csFnStart(sourceLine);
+    const b = csFnStart(otherLine);
+    if (a === -1 || b === -1 || a === b) return false;
+    const base = variable.replace(/^this\./, '').split('.')[0];
+    return !csFieldNames.has(base);
+  };
 
   // Variable-name scan path: only consider sources that carry an explicit
   // variable name. The colocation path below (cognium-dev #83) runs even
@@ -2003,7 +2128,37 @@ function detectExpressionScanFlows(
   // the array literal defeats the sink-arg colocation heuristic. Seeds
   // with real source variables (HTTP source `arg` or the now-populated
   // interprocedural_param parameter name) and iterates to a fixpoint.
-  if ((language === 'java' || language === 'csharp') && typeof code === 'string' && sourcesWithVar.length > 0) {
+  if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0 && csFnRanges.length > 0) {
+    // cognium-dev#548: derive aliases per method. A name tainted in one method
+    // says nothing about the same name in another; taint reaches another
+    // method only through a field or a return value.
+    const csMethods = (types ?? []).flatMap(t => t.methods);
+    const seeds = sourcesWithVar.map(sv => ({ variable: sv.variable, line: sv.line }));
+    const methodStartOf = (line: number): number => csFnStart(line);
+    const aliases = csharpMethodScopedAliases(code, seeds, csMethods, csFieldNames);
+    const fileAnchor = sourcesWithVar.reduce((a, sv) => (sv.line < a.line ? sv : a), sourcesWithVar[0]);
+    const have = new Set(sourcesWithVar.map(sv => `${sv.variable}@${methodStartOf(sv.line)}`));
+    for (const alias of aliases) {
+      const fn = methodStartOf(alias.line);
+      const isField = csFieldNames.has(alias.variable);
+      const key = `${alias.variable}@${isField ? 'field' : fn}`;
+      if (have.has(key)) continue;
+      have.add(key);
+      // A same-method derivation reports the source it derives from. A carried
+      // one starts where the value enters this method (the field read or the
+      // call), which also keeps it ahead of a sink in a method declared
+      // earlier in the file than the method holding the source.
+      const inMethod = sourcesWithVar.filter(sv => methodStartOf(sv.line) === fn && sv.line <= alias.line);
+      const from = !alias.carried && inMethod.length > 0
+        ? inMethod.reduce((a, sv) => (sv.line < a.line ? sv : a), inMethod[0])
+        : fileAnchor;
+      sourcesWithVar.push({
+        ...from,
+        variable: alias.variable,
+        ...(alias.carried || inMethod.length === 0 ? { line: alias.line } : {}),
+      });
+    }
+  } else if ((language === 'java' || language === 'csharp') && typeof code === 'string' && sourcesWithVar.length > 0) {
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
     const derived = buildJavaTaintedVars(code, seedVars);
     if (derived.size > 0) {
@@ -2063,20 +2218,30 @@ function detectExpressionScanFlows(
   if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0) {
     const lines = code.split('\n');
     const ctRe = /(\w+)\s*\.\s*CommandText\s*\+?=\s*(.+)/;
-    const anchor = sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+    // cognium-dev#548: seed per method, from sources in that method. The seed
+    // used to be made once per file and matched by name, so `cmd.CommandText =
+    // … + data` in `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`, whose
+    // own `data` is a constant: all 27 Juliet CWE-89 false positives. Once per
+    // file also meant a second vulnerable method reusing the name got no seed.
+    const seeded = new Set<string>();
     let added = true;
     let guard = 0;
     while (added && guard < lines.length + 2) {
       added = false;
       guard++;
-      const known = new Set(sourcesWithVar.map(s => s.variable));
       for (let i = 0; i < lines.length; i++) {
         const m = ctRe.exec(lines[i]);
         if (!m) continue;
         const [, obj, rhs] = m;
-        if (known.has(obj)) continue;
-        if (!argsReferenceTaintedVar(rhs, sourcesWithVar)) continue;
-        sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
+        const key = `${obj}@${csFnStart(i + 1)}`;
+        if (seeded.has(key)) continue;
+        const reachable = sourcesWithVar.filter(
+          sv => sv.line <= i + 1 && !csDifferentMethod(sv.variable, sv.line, i + 1),
+        );
+        if (reachable.length === 0 || !argsReferenceTaintedVar(rhs, reachable)) continue;
+        const from = reachable.reduce((a, sv) => (sv.line < a.line ? sv : a), reachable[0]);
+        sourcesWithVar.push({ ...from, variable: obj, line: i + 1 });
+        seeded.add(key);
         added = true;
       }
     }
@@ -2121,17 +2286,20 @@ function detectExpressionScanFlows(
       const appendRe =
         /([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*(?:Append|AppendLine|AppendFormat|Insert)\s*\(([\s\S]*)/u;
       const anchor = sourcesWithVar.reduce((a, s) => (s.line < a.line ? s : a), sourcesWithVar[0]);
+      const builderSeeded = new Set<string>();
       let added = true;
       let guard = 0;
       while (added && guard < lines.length + 2) {
         added = false;
         guard++;
-        const known = new Set(sourcesWithVar.map(s => s.variable));
         for (let i = 0; i < lines.length; i++) {
           const m = appendRe.exec(lines[i]);
           if (!m) continue;
           const [, obj, args] = m;
-          if (!builders.has(obj) || known.has(obj)) continue;
+          // Keyed per method (#548): one seed per file skipped a second
+          // method that appends tainted text to a builder of the same name.
+          const seedKey = `${obj}@${csFnStart(i + 1)}`;
+          if (!builders.has(obj) || builderSeeded.has(seedKey)) continue;
           // Same-method gate. `sourcesWithVar` is file-wide, so without this a
           // source named `data` in one method taints a builder appended to in
           // another method that happens to use the same local name — which is
@@ -2144,6 +2312,7 @@ function detectExpressionScanFlows(
           if (reachable.length > 0 && argsReferenceTaintedVar(args, reachable)) {
             sourcesWithVar.push({ ...anchor, variable: obj, line: i + 1 });
             builderSeeds.add(`${obj}@${i + 1}`);
+            builderSeeded.add(seedKey);
             added = true;
           }
         }
@@ -2299,6 +2468,12 @@ function detectExpressionScanFlows(
             const sinkFn = csFnStart(sink.line);
             if (srcFn !== sinkFn) continue;
           }
+
+          // cognium-dev#548: the same gate for every C# source. Two locals of
+          // the same name in different methods are different variables; a
+          // value that really crosses methods does so through a field
+          // (exempt), a parameter or a return, never through a name match.
+          if (csDifferentMethod(source.variable, source.line, sink.line)) continue;
 
           // Simple-identifier sources are already confirmed present by the
           // token index; only complex (attribute-path) sources need the

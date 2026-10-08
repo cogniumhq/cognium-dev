@@ -109,3 +109,17 @@ At flow level, 10 CVEs were lost and 10 gained between those versions. Each
 loss bisects to one precision change and is tracked in #617–#626. The CLI's
 remaining gap to single-file analysis comes from require-entry-path (#613),
 the project size ceiling (#615) and two timeouts (#616).
+
+### Juliet Test Suite for C# 1.3: ten injection families
+
+    export CIRCLE_IR=$PWD/packages/circle-ir/dist/index.js
+    node bench/sast/score-juliet-csharp.mjs <juliet-csharp root>            # _01, method level
+    node bench/sast/score-juliet-csharp.mjs <juliet-csharp root> 45 --files # field-carried variant
+
+Scored on `analyze()` taint flows per file (C# has no project-level harness
+yet). Method level for `_01`: `Bad()` is a TP when an on-family flow's sink is
+inside it, and each `Good*()` method is an FP when one is. `xLeak` counts flows
+whose source and sink sit in different methods; on `_01` each one is a name
+collision (#548). `--files` scores variants whose sink lives in a helper
+(`_21`, `_41`, `_42` return-carried, `_45` field-carried): a file is a TP when
+a flow lands in any `Bad*` method and an FP when one lands in any `Good*`.
