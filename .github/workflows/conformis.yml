@@ -1,0 +1,35 @@
+name: Conformis
+
+# The reviewer adds the label conformis-ready. This job then waits for the
+# static and dynamic checks already running in CI and fails if either one
+# did not succeed on this commit.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: conformis-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Conformis
+    if: contains(github.event.pull_request.labels.*.name, 'conformis-ready')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require static and dynamic checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          STATIC: self-scan (SAST)
+          DYNAMIC: test — circle-ir,test — cli,test — project-profile-detect
+        run: bash .github/workflows/conformis-gate.sh
