@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.0] - 2026-10-08
+
+### Changes
+
+- Bundles circle-ir 4.13.0: C# taint and sanitizer credit are scoped to the
+  declaring method, C# `switch` and sibling-branch assignments keep their
+  taint, and sanitizers, dominating guards and constant hosts are credited, so
+  C# scans report more real flows and far fewer safe ones (#631, #632, #634).
+  See the circle-ir CHANGELOG.
+
 ## [4.12.0] - 2026-10-07
 
 ### Changes
