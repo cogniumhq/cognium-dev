@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.13.0] - 2026-10-08
 
 ### Fixed
 - **C#: taint is scoped to the declaring method (#548).** Sources, the ADO.NET
@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Juliet C# 1.3, ten injection families, `analyze()` flows
 (`bench/sast/score-juliet-csharp.mjs`):
 
-| Variant | Rule | 4.12.0 | Now |
+| Variant | Rule | 4.12.0 | 4.13.0 |
 |---|---|---|---|
 | `_01` straight line | method level, TPR / FPR | 93.5% / 27.1% | **100% / 0%** |
 | `_02`–`_13` conditional wrappers | method level, TPR / FPR | 38.2% / 27.1% | **100% / 0%** |
