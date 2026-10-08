@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.12.0] - 2026-10-07
+
+### Changes
+
+- fix(circle-ir): require-entry-path follows in-project base servlets (#609)
+- fix(circle-ir): Java response-writer xss defers to taint; varargs and switch taint (#598) (#608)
 
 ### Changed
 - **Java response-writer xss: the getWriter() pattern defers to taint (#585,
