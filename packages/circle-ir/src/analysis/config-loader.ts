@@ -1223,8 +1223,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'checkout', class: 'SCM', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'retrieve', class: 'LibraryAdder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'add', class: 'LibraryAdder', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
-  // Jenkins CPS Flow Execution (constructor)
-  { method: 'CpsFlowExecution', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
+  // Jenkins CPS compiles the script argument. That is code injection (CWE-94),
+  // the same class as GroovyShell.evaluate. Registered as command_injection it
+  // was dropped by the CWE-78 constructor allowlist (#129). cognium-dev#619.
+  { method: 'CpsFlowExecution', class: 'constructor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'CpsFlowDefinition', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   { method: 'FlowExecution', class: 'constructor', type: 'command_injection', cwe: 'CWE-78', severity: 'critical', arg_positions: [0] },
   // ActiveMQ control commands
