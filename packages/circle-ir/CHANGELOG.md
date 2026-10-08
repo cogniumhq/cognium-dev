@@ -28,11 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal-reassignment guard treated `default: bar = "safe";` as an overwrite
   even when another case assigns the tainted value. A switch that assigns a
   literal in every case (#101) is still not a flow.
+- **`Properties.getProperty` is a `config_param` source**, the same as
+  `Properties.get` already was. Values read from a properties file were
+  invisible to taint, which the response-writer pattern had masked for xss.
 
 On OWASP BenchmarkJava 1.2 (2,740 cases, scorecard rule, CLI scan) these move
 the full suite from 91.0% TPR / 17.4% FPR to 90.0% TPR / 3.0% FPR, and xss from
 96.3% / 91.9% to 89.4% / 0.5%. No other category's FPR moves; pathtraver and
-trustbound each gain true positives from the switch fix.
+trustbound each gain true positives from the switch fix. On Juliet Java 1.3
+(`_01` files of the nine injection CWEs, method level, entry-path gate off)
+`bad()` recall goes from 94.2% to 99.4% and `good*()` false positives from
+33.8% to 21.9%.
 
 ## [4.11.0] - 2026-10-07
 

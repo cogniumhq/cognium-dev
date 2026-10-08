@@ -150,3 +150,18 @@ describe('taint assigned inside a switch case', () => {
     expect(barDefs.length).toBeGreaterThanOrEqual(5);
   });
 });
+
+describe('Properties.getProperty is a config source, like Properties.get', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('a value read from a properties file reaches an xss sink', async () => {
+    const r = await run(`
+    java.util.Properties props = new java.util.Properties();
+    props.load(new java.io.FileInputStream("../common/config.properties"));
+    String data = props.getProperty("data");
+    response.getWriter().println("<br>bad(): data = " + data);`);
+    expect(xssFlows(r).length).toBeGreaterThanOrEqual(1);
+  });
+});

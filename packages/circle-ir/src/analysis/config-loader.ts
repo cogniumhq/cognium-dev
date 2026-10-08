@@ -385,6 +385,7 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'get', class: 'ConcurrentHashMap', type: 'plugin_param', severity: 'high', return_tainted: true },
   { method: 'get', class: 'Hashtable', type: 'plugin_param', severity: 'high', return_tainted: true },
   { method: 'get', class: 'Properties', type: 'config_param', severity: 'high', return_tainted: true },
+  { method: 'getProperty', class: 'Properties', type: 'config_param', severity: 'high', return_tainted: true },
 
   // Message/Event sources
   { method: 'getText', class: 'Message', type: 'io_input', severity: 'high', return_tainted: true },
