@@ -1657,8 +1657,24 @@ export class ConstantPropagator {
         break;
       }
     }
+    // C# (cognium-dev#513): `switch (6)` carries the value as a `value` field
+    // with no parenthesized wrapper, and its literals are `integer_literal`.
+    // Read the literal here rather than teaching the shared evaluator a node
+    // name other grammars reuse.
+    if (!switchValue) {
+      const valueNode = node.childForFieldName('value');
+      if (valueNode) {
+        const literal = this.literalValue(valueNode);
+        switchValue = literal !== null
+          ? { type: typeof literal === 'number' ? 'int' : 'string', value: literal, sourceLine: getNodeLine(valueNode) } as ConstantValue
+          : this.evaluateExpression(valueNode);
+      }
+    }
 
-    const switchBlock = node.children.find((c: Node) => c.type === 'switch_block');
+    // Java: switch_block of statement groups / `->` rules. C#: switch_body of sections.
+    const switchBlock = node.children.find(
+      (c: Node) => c.type === 'switch_block' || c.type === 'switch_body'
+    );
     if (!switchBlock) {
       for (const child of node.children) {
         this.visit(child);
@@ -1667,7 +1683,7 @@ export class ConstantPropagator {
     }
 
     const caseGroups = switchBlock.children.filter(
-      (c: Node) => c.type === 'switch_block_statement_group' || c.type === 'switch_rule'
+      (c: Node) => c.type === 'switch_block_statement_group' || c.type === 'switch_rule' || c.type === 'switch_section'
     );
 
     if (switchValue && isKnown(switchValue)) {
@@ -1683,6 +1699,17 @@ export class ConstantPropagator {
               defaultIdx = i;
             } else {
               const caseValue = this.extractCaseValue(child);
+              if (caseValue !== null && caseValue === switchValue.value) {
+                matchingIdx = i;
+              }
+            }
+          } else if (caseGroup.type === 'switch_section') {
+            // C#: bare `default` / `case <constant_pattern>` tokens in the section.
+            if (child.type === 'default') {
+              defaultIdx = i;
+            } else if (child.type === 'constant_pattern') {
+              const inner = child.children.find((c: Node) => c.isNamed);
+              const caseValue = inner ? this.literalValue(inner) : null;
               if (caseValue !== null && caseValue === switchValue.value) {
                 matchingIdx = i;
               }
@@ -1787,6 +1814,19 @@ export class ConstantPropagator {
       }
     }
     return false;
+  }
+
+  /** The value of an integer, character or string literal node; null for anything else. */
+  private literalValue(node: Node): string | number | null {
+    const text = getNodeText(node, this.source);
+    if (node.type === 'integer_literal' || node.type === 'decimal_integer_literal') {
+      const n = Number(text.replace(/_/g, '').replace(/[uUlL]+$/, ''));
+      return Number.isInteger(n) ? n : null;
+    }
+    if (node.type === 'character_literal' || node.type === 'string_literal') {
+      return text.slice(1, -1);
+    }
+    return null;
   }
 
   private extractCaseValue(labelNode: Node): string | number | null {

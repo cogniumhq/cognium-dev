@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason no longer applies to C#. The C# DFG also counted the left-hand name of
   `s = q;` as a read of `s`, which let a sanitizer on the old value cover the
   new one.
+- **A literal in one branch no longer overwrites a sibling branch's taint
+  (#513, #582).** `switch (6) { case 6: data = input; break; default: data =
+  "foo"; break; }` and `if (c) { data = input; } else { data = "foo"; }` lost
+  the flow. Constant propagation did not know the C# `switch` shape, visited
+  every arm in order and kept the last assignment; it now selects the arm for
+  a constant value, as it does for Java. The literal-reassignment guard now
+  ignores a literal when a sibling arm or branch of the same `switch` or
+  `if`/`else` chain assigns something else, in either brace style, unless that
+  sibling is in dead code. Also fixes multi-line `if`/`else` in Java and Go.
+- **C#: a statement wrapped over several lines is one assignment** for alias
+  derivation, including in CRLF files.
 
 Juliet C# 1.3, ten injection families, `analyze()` flows
 (`bench/sast/score-juliet-csharp.mjs`):
@@ -33,9 +44,14 @@ Juliet C# 1.3, ten injection families, `analyze()` flows
 |---|---|---|---|
 | `_01` | method level, TPR / FPR | 93.5% / 27.1% | **100% / 11.8%** |
 | `_01` | cross-method name leaks | 27 | **0** |
+| `_02`–`_13` conditional wrappers | method level, TPR / FPR | 38.2% / 27.1% | **100% / 11.8%** |
+| `_15` `switch` | method level, TPR / FPR | 22.8% / 15.9% | **100% / 11.8%** |
 | `_21` flag-gated helper | files detected | 38.2% | **100%** |
-| `_42` return-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **91.9% / 8.1%** |
-| `_45` field-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **91.9% / 8.1%** |
+| `_42` return-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 16.3%** |
+| `_45` field-carried | files detected / with a `Good*` hit | 22.0% / 22.0% | **100% / 16.3%** |
+
+The remaining `Good*` hits are the same 20 files in every variant: XPath and
+CWE-94 `GoodB2G`, where the validation or escaping is not credited (#518).
 
 OWASP BenchmarkJava, SecuriBench Micro and Juliet Java are unchanged.
 
