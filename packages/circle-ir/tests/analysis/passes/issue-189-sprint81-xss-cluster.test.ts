@@ -21,8 +21,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../../src/index.js';
 
+// Pattern findings plus taint flows: a getWriter() write the taint matcher
+// resolves as an xss sink is reported as a flow, not a pattern finding.
 const countXss = (r: any) =>
-  (r.findings ?? []).filter((f: any) => f.rule_id === 'xss').length;
+  (r.findings ?? []).filter((f: any) => f.rule_id === 'xss').length +
+  (r.taint?.flows ?? []).filter((f: any) => f.sink_type === 'xss').length;
 
 describe('#189 Sprint 81 — xss cluster pattern detectors (6 new)', () => {
   beforeAll(async () => {

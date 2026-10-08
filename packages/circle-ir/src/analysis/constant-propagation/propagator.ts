@@ -1713,9 +1713,23 @@ export class ConstantPropagator {
         }
       }
     } else {
+      // The value is unknown, so any one case may run. Visit each as a branch,
+      // the way handleIfStatement visits an unknown condition: from the taint
+      // state before the switch, with constant assignments weakened to unknown,
+      // then union what the cases leave tainted. Visiting them in sequence let
+      // the last case (usually `default: bar = "safe"`) overwrite a taint an
+      // earlier case assigned, so `case 'A': bar = param;` was lost.
+      const taintedBefore = new Set(this.tainted);
+      const taintedAfter = new Set(taintedBefore);
+      const wasInConditional = this.inConditionalBranch;
+      this.inConditionalBranch = true;
       for (const caseGroup of caseGroups) {
+        this.tainted = new Set(taintedBefore);
         this.visit(caseGroup);
+        for (const v of this.tainted) taintedAfter.add(v);
       }
+      this.inConditionalBranch = wasInConditional;
+      this.tainted = taintedAfter;
     }
   }
 

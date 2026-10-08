@@ -591,6 +591,38 @@ function processStatement(
       break;
     }
 
+    case 'switch_expression':
+    case 'switch_statement': {
+      // Java parses a switch statement as `switch_expression` (condition +
+      // switch_block of statement groups / `->` rules); JS as
+      // `switch_statement` (value + switch_body of switch_case). Without this
+      // case a switch fell to `default` and only had its uses extracted, so
+      // `case 'A': bar = param;` recorded no def of `bar` and its taint never
+      // reached a later sink.
+      const value = stmt.childForFieldName('condition') ?? stmt.childForFieldName('value');
+      if (value) {
+        const valueUses = extractUses(value, useId, scopeStack, isJavaScript);
+        uses.push(...valueUses.uses);
+        useId = valueUses.nextId;
+      }
+      const body = stmt.childForFieldName('body');
+      if (body) {
+        // One scope for the whole body: Java and JS cases share it.
+        scopeStack.push(new Map());
+        for (let i = 0; i < body.childCount; i++) {
+          const group = body.child(i);
+          if (!group) continue;
+          const result = processBlock(group, defId, useId, scopeStack, isJavaScript);
+          defs.push(...result.defs);
+          uses.push(...result.uses);
+          defId = result.nextDefId;
+          useId = result.nextUseId;
+        }
+        scopeStack.pop();
+      }
+      break;
+    }
+
     case 'block':
     case 'statement_block': {
       // New scope for block

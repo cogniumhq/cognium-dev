@@ -682,7 +682,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // Sprint 81 (#189): Java xss — HttpServletResponse.getWriter().{print,
       // println,write} receiver-chain that the configured PrintWriter sink
       // doesn't resolve.
-      for (const finding of findJavaResponseWriterXssFindings(code, graph.ir.meta.file)) {
+      // A write the taint matcher already recognized as an xss sink is the
+      // taint engine's to judge: it reports a flow when one exists, and its
+      // silence there is a verdict, not a gap.
+      const xssSinkLines = new Set(
+        ctx.getResult<TaintMatcherResult>('taint-matcher').sinks
+          .filter(s => s.type === 'xss')
+          .map(s => s.line),
+      );
+      for (const finding of findJavaResponseWriterXssFindings(code, graph.ir.meta.file, xssSinkLines)) {
         ctx.addFinding(finding);
       }
       // Sprint 84 (#189): Java nosql_injection — MongoCollection find / insert /
@@ -7468,10 +7476,16 @@ export function findGoXssFindings(code: string, file: string): SastFinding[] {
  * Conservative: only fires when the receiver token matches a parameter
  * named with the `HttpServletResponse` type AND no recognized HTML
  * encoder wraps the argument.
+ *
+ * Lines in `taintSinkLines` are skipped: the taint matcher resolved the
+ * write as an xss sink there, so taint propagation decides whether user
+ * input reaches it. Firing on shape alone at those lines flagged every
+ * write of a constant or an encoded value.
  */
 export function findJavaResponseWriterXssFindings(
   code: string,
   file: string,
+  taintSinkLines: ReadonlySet<number> = new Set(),
 ): SastFinding[] {
   const out: SastFinding[] = [];
   const lines = code.split('\n');
@@ -7511,6 +7525,7 @@ export function findJavaResponseWriterXssFindings(
       /\b([A-Za-z_]\w*)\s*\.\s*getWriter\s*\(\s*\)\s*\.\s*(print|println|write|printf|format|append)\s*\(([\s\S]*)\)\s*;?\s*(?:\/\/.*)?$/;
     const m = trimmed.match(chainRe);
     if (!m) continue;
+    if (taintSinkLines.has(i + 1)) continue;
     const recv = m[1];
     if (!respNames.has(recv)) continue;
     const args = m[3];

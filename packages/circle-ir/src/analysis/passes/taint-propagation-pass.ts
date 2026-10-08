@@ -1367,7 +1367,58 @@ function isReassignedToLiteralBetween(
   for (let i = lo; i < hi; i++) {
     const line = lines[i];
     if (!line) continue;
-    if (reNaked.test(line) || reGuarded.test(line) || reSwitchCase.test(line)) return true;
+    if (reGuarded.test(line)) return true;
+    if (!reNaked.test(line) && !reSwitchCase.test(line)) continue;
+    // A literal assigned in one case of a switch only overwrites the value
+    // when no case gives the variable anything else. `case 'A': bar = param;`
+    // next to `default: bar = "safe";` leaves `bar` tainted on the 'A' path.
+    if (switchAlsoAssignsNonLiteral(lines, i, variable, strLit)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when line `idx` sits inside a `switch` block in which some line
+ * assigns `variable` a value that is not a string literal. Brace counting on
+ * raw text: good enough for the brace-delimited switch bodies of Java, JS/TS
+ * and Go, and it answers false (keeping the literal as an overwrite) whenever
+ * no enclosing switch is found.
+ */
+function switchAlsoAssignsNonLiteral(
+  lines: string[],
+  idx: number,
+  variable: string,
+  strLit: string,
+): boolean {
+  let depth = 0;
+  let start = -1;
+  for (let i = idx; i >= 0; i--) {
+    const line = lines[i];
+    for (let c = line.length - 1; c >= 0; c--) {
+      if (line[c] === '}') depth++;
+      else if (line[c] === '{') depth--;
+    }
+    if (depth < 0) {
+      if (/\bswitch\b/.test(line)) start = i;
+      break;
+    }
+  }
+  if (start < 0) return false;
+  const assign = new RegExp(`(?:^|[^\\w.$])${variable}\\s*(?::?=)(?!=)\\s*(.*?)\\s*;?\\s*(?:break\\s*;?)?\\s*$`);
+  const literalOnly = new RegExp(`^${strLit}$`);
+  depth = 0;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (i > start || line.includes('{')) {
+      const m = assign.exec(line);
+      if (m && m[1] && !literalOnly.test(m[1])) return true;
+    }
+    for (const ch of line) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+    if (i > start && depth <= 0) break;
   }
   return false;
 }

@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Java response-writer xss: the getWriter() pattern defers to taint (#585,
+  #600).** The `response.getWriter().print/println/write/printf/format/append`
+  pattern fired on the shape of the call, so it flagged every write of a
+  constant or an already-encoded value: 191 of the 209 safe xss cases in OWASP
+  BenchmarkJava 1.2. It now skips any write the taint matcher already resolved
+  as an xss sink, and taint propagation decides those. For library consumers,
+  an xss on such a write is reported in `taint.flows` rather than as a
+  `findings` entry; the CLI shows both, so its output is unchanged in form.
+
+### Fixed
+- **#598: `PrintWriter.format` / `printf` are xss sinks at every argument.**
+  They were sinks at positions 0 and 1 only, which missed the `Locale`
+  overload (`printf(Locale.US, "%s", tainted)`) and any later vararg.
+- **Taint assigned in a `switch` case reaches a later sink.** Three gaps, each
+  enough to lose it: the DFG recorded no defs inside switch cases (the switch
+  fell to the uses-only default), constant propagation visited the cases in
+  sequence so the last case's literal overwrote an earlier taint, and the
+  literal-reassignment guard treated `default: bar = "safe";` as an overwrite
+  even when another case assigns the tainted value. A switch that assigns a
+  literal in every case (#101) is still not a flow.
+- **`Properties.getProperty` is a `config_param` source**, the same as
+  `Properties.get` already was. Values read from a properties file were
+  invisible to taint, which the response-writer pattern had masked for xss.
+
+On OWASP BenchmarkJava 1.2 (2,740 cases, scorecard rule, CLI scan) these move
+the full suite from 91.0% TPR / 17.4% FPR to 90.0% TPR / 3.0% FPR, and xss from
+96.3% / 91.9% to 89.4% / 0.5%. No other category's FPR moves; pathtraver and
+trustbound each gain true positives from the switch fix. On Juliet Java 1.3
+(`_01` files of the nine injection CWEs, method level, entry-path gate off)
+`bad()` recall goes from 94.2% to 99.4% and `good*()` false positives from
+33.8% to 21.9%.
+
 ## [4.11.0] - 2026-10-07
 
 ### Changes
