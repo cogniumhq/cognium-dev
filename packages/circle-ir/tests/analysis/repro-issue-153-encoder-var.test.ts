@@ -21,8 +21,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 import type { SastFinding } from '../../src/types/index.js';
 
-const xssHigh = (findings: SastFinding[]): SastFinding[] =>
-  findings.filter((f) => f.rule_id === 'xss' && f.severity === 'high');
+// A response write the taint matcher recognizes as an xss sink is reported as
+// a taint flow; the response-writer pattern covers only the writes it does not.
+// Count both channels so a verdict is visible whichever one carries it.
+const xssHigh = (res: Awaited<ReturnType<typeof analyze>>): unknown[] => [
+  ...res.findings.filter((f: SastFinding) => f.rule_id === 'xss' && f.severity === 'high'),
+  ...(res.taint.flows ?? []).filter((f) => f.sink_type === 'xss'),
+];
 
 describe('Issue #153 — same-file encoder-var suppresses response-writer xss FP', () => {
   beforeAll(async () => {
@@ -45,7 +50,7 @@ public class V01BaselineSafe {
 }
 `;
     const res = await analyze(code, 'V01BaselineSafe.java', 'java');
-    expect(xssHigh(res.findings)).toEqual([]);
+    expect(xssHigh(res)).toEqual([]);
   });
 
   it('FP suppressed: OWASP Encode.forHtml on prev line → no xss', async () => {
@@ -60,7 +65,7 @@ public class E {
 }
 `;
     const res = await analyze(code, 'E.java', 'java');
-    expect(xssHigh(res.findings)).toEqual([]);
+    expect(xssHigh(res)).toEqual([]);
   });
 
   it('recall: no sanitizer wrap → xss still fires', async () => {
@@ -76,7 +81,7 @@ public class V01BaselineTp {
 }
 `;
     const res = await analyze(code, 'V01BaselineTp.java', 'java');
-    expect(xssHigh(res.findings).length).toBeGreaterThanOrEqual(1);
+    expect(xssHigh(res).length).toBeGreaterThanOrEqual(1);
   });
 
   it('recall: mixed sanitized + tainted → xss still fires', async () => {
@@ -93,6 +98,6 @@ public class Mixed {
 }
 `;
     const res = await analyze(code, 'Mixed.java', 'java');
-    expect(xssHigh(res.findings).length).toBeGreaterThanOrEqual(1);
+    expect(xssHigh(res).length).toBeGreaterThanOrEqual(1);
   });
 });

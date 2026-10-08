@@ -1488,8 +1488,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'write', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'println', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'print', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'format', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
-  { method: 'printf', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
+  // format/printf take `(String fmt, Object... args)` or `(Locale l, String
+  // fmt, Object... args)`. Every argument after the format can reach the page,
+  // and the Locale overload shifts them all one place right, so `[0, 1]` missed
+  // `printf(Locale.US, "%s", tainted)` and any second vararg. Enumerated, not
+  // `[]` — see the ProcessBuilder note above.
+  { method: 'format', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1, 2, 3, 4, 5, 6, 7] },
+  { method: 'printf', class: 'PrintWriter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1, 2, 3, 4, 5, 6, 7] },
   // ServletOutputStream
   { method: 'write', class: 'ServletOutputStream', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'print', class: 'ServletOutputStream', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
