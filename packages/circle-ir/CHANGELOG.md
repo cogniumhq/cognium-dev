@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **C#: a sanitizer helper inside a property-assignment sink is credited
+  again (#643, regression in 4.13.1).** `searcher.Filter = "(uid=" +
+  EscapeFilter(input) + ")";` was reported: the 4.13.1 raw-operand check read
+  the arguments of the last call on the line, which here is the sanitizer
+  itself. A property sink now receives its right-hand side, and a trailing
+  call is the sink only when it is not a sanitizer.
+
 ## [4.13.1] - 2026-10-08
 
 ### Fixed
