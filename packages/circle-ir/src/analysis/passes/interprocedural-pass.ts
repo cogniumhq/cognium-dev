@@ -349,9 +349,10 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     // credit in SinkFilterPass never sees it. A value that was encoded,
     // validated or sent to a constant host is not an unvalidated escape.
     if (csCredit) {
+      const csSeeds = sources.flatMap(s => (s.variable ? [{ variable: s.variable, line: s.line }] : []));
       const credited = new Set<number>();
       filteredAdditionalFlows = filteredAdditionalFlows.filter(f => {
-        if (f.sink_type !== 'external_taint_escape' || !csCredit.creditedOnLine(f.sink_line)) return true;
+        if (f.sink_type !== 'external_taint_escape' || !csCredit.creditedOnLine(f.sink_line, csSeeds)) return true;
         credited.add(f.sink_line);
         return false;
       });
