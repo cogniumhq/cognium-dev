@@ -68,9 +68,11 @@ Analysis passes (security, reliability, performance, maintainability, architectu
 **Languages** — Java, JavaScript/TypeScript, Python, Go, Rust, Bash, HTML, C# (experimental).
 
 **Benchmark scores:**
-- OWASP Benchmark (Java): 100% TPR, 0% FPR
-- Juliet Test Suite (Java): 100% (156/156 cases)
-- SecuriBench Micro (Java): 97.7% TPR
+Measured on published cognium-dev 4.12.0 with the scripts in `bench/sast/` (method in `bench/README.md`). Do not quote a number without its version and method.
+- OWASP BenchmarkJava 1.2, all 2,740 cases, scorecard rule: 90.0% TPR, 3.0% FPR
+- Juliet Java 1.3, `_01` cases of 9 injection CWEs, method level, entry-path gate off: 99.4% TPR (155/156), 21.9% FPR
+- SecuriBench Micro, 123 cases, default CLI: 88.0% TPR, 6.7% FPR
+- CWE-Bench-Java, 120 CVEs, finding inside the fix method: 32.5% (39/120) on the default CLI; 2 projects time out at 15 min and count as misses
 - OWASP BenchmarkPython: 81.2% TPR, **12.6% FPR** (was 14.8% on 3.23.3) — Issue #4. The `yaml.safe_load` CWE-502 mis-registration is fixed (3.23.5): `safe_load` is no longer a deserialization sink (it cannot instantiate arbitrary objects), and `yaml.unsafe_load`/`full_load` were added as proper sinks. Deserialization FP 24 → 7, overall 58.3% → 61.7%. The residual FPs (codeinj/xpathi/xxe/redirect/etc.) are **not** core sink-model bugs: the engine emits `taint.flows: []` for them, but the circle-ir-ai benchmark harness flags on file-level `hasSink && hasSource` co-occurrence without consulting flows (run-benchmark-python.ts:579). That is a harness-methodology artifact tracked on the circle-ir-ai side.
 
 ### CLI
