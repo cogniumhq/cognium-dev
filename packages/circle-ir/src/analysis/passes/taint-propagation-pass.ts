@@ -1029,7 +1029,7 @@ function detectCollectionFlows(
               // demonstrably rewritten to a literal between source and sink.
               if (
                 typeof code === 'string' &&
-                isReassignedToLiteralBetween(code, varName, source.line, sink.line)
+                isReassignedToLiteralBetween(code, varName, source.line, sink.line, unreachableLines)
               ) {
                 continue;
               }
@@ -1083,7 +1083,7 @@ function detectCollectionFlows(
                   }
                   if (
                     typeof code === 'string' &&
-                    isReassignedToLiteralBetween(code, collectionVar, source.line, sink.line)
+                    isReassignedToLiteralBetween(code, collectionVar, source.line, sink.line, unreachableLines)
                   ) {
                     continue;
                   }
@@ -1227,7 +1227,7 @@ function detectParameterSinkFlows(
             if (!exists) {
               if (
                 typeof code === 'string' &&
-                isReassignedToLiteralBetween(code, arg.variable, paramSource.line, sink.line)
+                isReassignedToLiteralBetween(code, arg.variable, paramSource.line, sink.line, unreachableLines)
               ) {
                 continue;
               }
@@ -1385,9 +1385,19 @@ function csharpMethodScopedAliases(
   for (let guard = 0; changed && guard < lines.length + 2; guard++) {
     changed = false;
     for (let i = 0; i < lines.length; i++) {
-      const text = lines[i];
+      let text = lines[i];
       const trimmed = text.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      // A statement wrapped over several lines (`string q = "…" + user +` /
+      // `"…" + pass;`) is one assignment: join it up to its `;` so the names
+      // on the continuation lines count (cognium-dev#513).
+      if (/^\s*(?:[\w.<>\[\]?]+\s+)?[A-Za-z_]\w*\s*=(?!=)/.test(text) && !/;\s*(?:\/\/.*)?$/.test(text)) {
+        for (let j = i + 1; j < lines.length && j <= i + 12; j++) {
+          // trimEnd: a CRLF file leaves `\r` on each line, which `.` will not cross.
+          text = text.trimEnd() + ' ' + lines[j].trim();
+          if (/;\s*(?:\/\/.*)?$/.test(lines[j])) break;
+        }
+      }
       const m = methodOf(i + 1);
       const here = localsOf(m);
 
@@ -1438,6 +1448,7 @@ function isReassignedToLiteralBetween(
   variable: string,
   srcLine: number,
   sinkLine: number,
+  unreachableLines?: ReadonlySet<number>,
 ): boolean {
   if (!variable || sinkLine - srcLine < 2) return false;
   // Bare identifiers only — attribute paths like `obj.attr` are not
@@ -1481,53 +1492,141 @@ function isReassignedToLiteralBetween(
     // A literal assigned in one case of a switch only overwrites the value
     // when no case gives the variable anything else. `case 'A': bar = param;`
     // next to `default: bar = "safe";` leaves `bar` tainted on the 'A' path.
-    if (switchAlsoAssignsNonLiteral(lines, i, variable, strLit)) continue;
+    if (siblingBranchAssignsNonLiteral(lines, i, variable, strLit, unreachableLines)) continue;
     return true;
   }
   return false;
 }
 
+/** The `{` that encloses position `(line, col)`, with the statement that opens it. */
+function enclosingBrace(
+  lines: string[],
+  line: number,
+  col: number,
+): { line: number; col: number; header: string; headerLine: number } | null {
+  let depth = 0;
+  for (let i = line; i >= 0; i--) {
+    const text = lines[i];
+    for (let c = i === line ? Math.min(col, text.length) - 1 : text.length - 1; c >= 0; c--) {
+      if (text[c] === '}') depth++;
+      else if (text[c] === '{') {
+        if (depth === 0) {
+          // K&R: the statement precedes the brace on this line. Allman: the
+          // brace stands alone and the statement is the line above it.
+          let header = text.slice(0, c).trim();
+          let headerLine = i;
+          for (let h = i - 1; header === '' && h >= 0; h--) {
+            header = lines[h].trim();
+            headerLine = h;
+          }
+          return { line: i, col: c, header, headerLine };
+        }
+        depth--;
+      }
+    }
+  }
+  return null;
+}
+
+/** The `}` matching the `{` at `(line, col)`. */
+function matchingClose(lines: string[], line: number, col: number): { line: number; col: number } | null {
+  let depth = 0;
+  for (let i = line; i < lines.length; i++) {
+    const text = lines[i];
+    for (let c = i === line ? col : 0; c < text.length; c++) {
+      if (text[c] === '{') depth++;
+      else if (text[c] === '}' && --depth === 0) return { line: i, col: c };
+    }
+  }
+  return null;
+}
+
 /**
- * True when line `idx` sits inside a `switch` block in which some line
- * assigns `variable` a value that is not a string literal. Brace counting on
- * raw text: good enough for the brace-delimited switch bodies of Java, JS/TS
- * and Go, and it answers false (keeping the literal as an overwrite) whenever
- * no enclosing switch is found.
+ * True when line `idx` assigns `variable` in one arm of a `switch` or one
+ * branch of an `if`/`else` chain, and a sibling arm or branch assigns it a
+ * value that is not a string literal.
+ *
+ * A literal in one branch does not overwrite what a sibling branch assigned:
+ * `if (c) { data = input; } else { data = "foo"; }` leaves `data` tainted on
+ * one path, so the literal must not suppress the flow (cognium-dev#513, #582).
+ * A sibling assignment on a line constant propagation proved unreachable does
+ * not count, which keeps `if (false) { x = input; } else { x = "safe"; }` clean.
+ *
+ * Works on raw text by brace matching, for brace-delimited bodies in either
+ * brace style. It answers false, keeping the literal as an overwrite, when
+ * the line is not inside such a construct or a branch has no braces.
  */
-function switchAlsoAssignsNonLiteral(
+function siblingBranchAssignsNonLiteral(
   lines: string[],
   idx: number,
   variable: string,
   strLit: string,
+  unreachableLines?: ReadonlySet<number>,
 ): boolean {
-  let depth = 0;
-  let start = -1;
-  for (let i = idx; i >= 0; i--) {
-    const line = lines[i];
-    for (let c = line.length - 1; c >= 0; c--) {
-      if (line[c] === '}') depth++;
-      else if (line[c] === '{') depth--;
-    }
-    if (depth < 0) {
-      if (/\bswitch\b/.test(line)) start = i;
-      break;
-    }
+  let block = enclosingBrace(lines, idx, 0);
+  // A braced `case 6: { … }` arm: step out to the switch body.
+  if (block && /^(?:case\b.*|default\s*):$/.test(block.header)) {
+    block = enclosingBrace(lines, block.line, block.col);
   }
-  if (start < 0) return false;
+  if (!block) return false;
+
+  let first = block.headerLine;
+  let last: number;
+  const end = matchingClose(lines, block.line, block.col);
+  if (!end) return false;
+  last = end.line;
+
+  if (/\bswitch\b/.test(block.header)) {
+    // the whole switch body
+  } else if (/^(?:\}\s*)?else\b/.test(block.header) || /^(?:\}\s*)?(?:else\s+)?if\s*\(/.test(block.header)) {
+    // Walk up through `else` / `else if` to the opening `if`.
+    let cur = block;
+    for (let guard = 0; guard < 64 && /^(?:\}\s*)?else\b/.test(cur.header); guard++) {
+      // The previous branch closes on the header line (`} else {`) or on the
+      // last non-blank line above it.
+      let closeLine = cur.headerLine;
+      let closeCol = lines[closeLine].indexOf('}');
+      if (closeCol === -1 || closeCol > lines[closeLine].search(/\belse\b/)) {
+        closeLine--;
+        while (closeLine >= 0 && lines[closeLine].trim() === '') closeLine--;
+        if (closeLine < 0 || !lines[closeLine].trimEnd().endsWith('}')) return false;
+        closeCol = lines[closeLine].lastIndexOf('}');
+      }
+      const prev = enclosingBrace(lines, closeLine, closeCol);
+      if (!prev) return false;
+      cur = prev;
+      first = prev.headerLine;
+    }
+    // Walk down through following `else` branches.
+    let close = end;
+    for (let guard = 0; guard < 64; guard++) {
+      let l = close.line;
+      let rest = lines[l].slice(close.col + 1).trim();
+      while (rest === '' && l + 1 < lines.length) { l++; rest = lines[l].trim(); }
+      if (!/^else\b/.test(rest)) break;
+      let openLine = l;
+      let openCol = lines[l].indexOf('{', l === close.line ? close.col + 1 : 0);
+      if (openCol === -1) {
+        openLine = l + 1;
+        while (openLine < lines.length && lines[openLine].trim() === '') openLine++;
+        if (openLine >= lines.length || !lines[openLine].trimStart().startsWith('{')) break;
+        openCol = lines[openLine].indexOf('{');
+      }
+      const next = matchingClose(lines, openLine, openCol);
+      if (!next) break;
+      close = next;
+      last = next.line;
+    }
+  } else {
+    return false;
+  }
+
   const assign = new RegExp(`(?:^|[^\\w.$])${variable}\\s*(?::?=)(?!=)\\s*(.*?)\\s*;?\\s*(?:break\\s*;?)?\\s*$`);
   const literalOnly = new RegExp(`^${strLit}$`);
-  depth = 0;
-  for (let i = start; i < lines.length; i++) {
-    const line = lines[i];
-    if (i > start || line.includes('{')) {
-      const m = assign.exec(line);
-      if (m && m[1] && !literalOnly.test(m[1])) return true;
-    }
-    for (const ch of line) {
-      if (ch === '{') depth++;
-      else if (ch === '}') depth--;
-    }
-    if (i > start && depth <= 0) break;
+  for (let i = first; i <= last; i++) {
+    if (i === idx || unreachableLines?.has(i + 1)) continue;
+    const m = assign.exec(lines[i]);
+    if (m && m[1] && !literalOnly.test(m[1])) return true;
   }
   return false;
 }
@@ -2513,7 +2612,7 @@ function detectExpressionScanFlows(
           // no longer reaches the sink — suppress the flow.
           if (
             typeof code === 'string' &&
-            isReassignedToLiteralBetween(code, source.variable, source.line, sink.line)
+            isReassignedToLiteralBetween(code, source.variable, source.line, sink.line, unreachableLines)
           ) {
             break;
           }
