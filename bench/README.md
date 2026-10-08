@@ -98,3 +98,14 @@ positive when anything fires.
 `data/project_info.csv`. A project is detected when a finding with its CWE lands
 inside a fix method's line range (`data/fix_info.csv`, re-anchored by method
 name). A project that is missing, times out, or fails to scan counts as a miss.
+
+The April 2026 figure (50.8%) used a weaker rule: a *sink-shaped call* of the
+expected type inside the fix method, with no source or flow required, on the
+fix file alone. Held to that rule, circle-ir 3.19.4 scores 68/120 and 4.12.0
+67/120. Requiring a flow, both score 49/120, so the lower published number is
+the stricter rule, not an engine regression.
+
+At flow level, 10 CVEs were lost and 10 gained between those versions. Each
+loss bisects to one precision change and is tracked in #617–#626. The CLI's
+remaining gap to single-file analysis comes from require-entry-path (#613),
+the project size ceiling (#615) and two timeouts (#616).
