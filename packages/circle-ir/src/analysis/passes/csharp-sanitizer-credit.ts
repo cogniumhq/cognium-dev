@@ -100,6 +100,10 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function withoutStringLiterals(text: string): string {
+  return text.replace(/@"(?:[^"]|"")*"|"(?:[^"\\]|\\.)*"/g, '""');
+}
+
 function mentions(text: string, name: string): boolean {
   return new RegExp(`(?<![\\w])${escapeRegex(name)}(?![\\w])`).test(text);
 }
@@ -110,6 +114,18 @@ function insideParens(text: string, open: number): string | null {
   for (let i = open; i < text.length; i++) {
     if (text[i] === '(') depth++;
     else if (text[i] === ')' && --depth === 0) return text.slice(open + 1, i);
+  }
+  return null;
+}
+
+/** The argument text of the last call on a line: `a.B(c).D(e + f);` gives `e + f`. */
+function lastCallArguments(text: string): string | null {
+  const close = text.lastIndexOf(')');
+  if (close < 0) return null;
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    if (text[i] === ')') depth++;
+    else if (text[i] === '(' && --depth === 0) return text.slice(i + 1, close);
   }
   return null;
 }
@@ -258,6 +274,77 @@ export class CSharpCredit {
    */
   sanitizedVarsAt(type: string, sinkLine: number): Set<string> {
     return this.sanitizedVarsIn(type, this.methodAt(sinkLine)?.start_line ?? 1, sinkLine, true);
+  }
+
+  /**
+   * True when the sink on `sinkLine` also receives a tainted value that no
+   * sanitizer covers. In `Write(HtmlEncode(a) + b)` the encoder covers `a`
+   * only: `b` arrives raw, so the sanitizer on the line must not clear the
+   * sink. `credited` are the names already known safe for `type` there;
+   * `seeds` are the taint sources that name a variable.
+   *
+   * Taint is followed through the sink's method top to bottom, last
+   * assignment wins. The sink text is then read without its string literals
+   * and without the sanitizer calls for `type`; a tainted, uncredited name
+   * left over is a raw operand.
+   */
+  rawTaintReaches(
+    type: string,
+    sinkLine: number,
+    credited: ReadonlySet<string>,
+    seeds: ReadonlyArray<{ variable: string; line: number }>,
+  ): boolean {
+    if (seeds.length === 0) return false;
+    const method = this.methodAt(sinkLine);
+    const from = method?.start_line ?? 1;
+    const tainted = new Set<string>();
+    const stmts = this.statements(from, sinkLine);
+    for (let i = 0; i < stmts.length; i++) {
+      const st = stmts[i];
+      const end = i + 1 < stmts.length ? stmts[i + 1].line : sinkLine;
+      const m = ASSIGN_RE.exec(st.text);
+      if (m) {
+        const rhs = withoutStringLiterals(m[2]);
+        if ([...tainted].some(v => mentions(rhs, v))) tainted.add(m[1]);
+        else tainted.delete(m[1]);
+      }
+      for (const s of seeds) if (s.line >= st.line && s.line < end) tainted.add(s.variable);
+    }
+    if (tainted.size === 0) return false;
+    // Only what the call is given counts: a tainted receiver or cast target
+    // (`((XmlDocument)ctx).SelectSingleNode(q)`) is not an operand.
+    const call = withoutStringLiterals(this.sinkText(sinkLine));
+    const rest = this.withoutSanitizerCalls(type, lastCallArguments(call) ?? call);
+    // A sanitizer spelled as a chain or a ternary on the name itself
+    // (`x.Replace("(", …)`, `p.StartsWith(root) ? p : null`) is not a call
+    // that can be cut out; it covers the name it is written on.
+    if (this.builtinSanitizes(type, rest)) return false;
+    for (const v of tainted) if (!credited.has(v) && mentions(rest, v)) return true;
+    return false;
+  }
+
+  /** `text` with every sanitizer call for `type`, arguments included, removed. */
+  private withoutSanitizerCalls(type: string, text: string): string {
+    const res: RegExp[] = [];
+    for (const { re, type: t } of CSHARP_SANITIZER_RES) if (t === type) res.push(re);
+    for (const name of this.helpers(type)) res.push(new RegExp(`(?<![\\w.])${escapeRegex(name)}\\s*\\(`));
+    let out = text;
+    for (const re of res) {
+      for (let guard = 0; guard < 16; guard++) {
+        const m = re.exec(out);
+        if (!m) break;
+        if (!m[0].endsWith('(')) {
+          // The pattern matched the whole call.
+          out = out.slice(0, m.index) + out.slice(m.index + m[0].length);
+          continue;
+        }
+        const open = m.index + m[0].length - 1;
+        const inner = insideParens(out, open);
+        if (inner === null) break;
+        out = out.slice(0, m.index) + out.slice(open + inner.length + 2);
+      }
+    }
+    return out;
   }
 
   /**
@@ -510,16 +597,16 @@ export class CSharpCredit {
    * sink type. Used for the untyped "tainted data reaches an external call"
    * fallback, which has no sink type of its own to ask about.
    */
-  creditedOnLine(line: number): boolean {
+  creditedOnLine(line: number, seeds: ReadonlyArray<{ variable: string; line: number }> = []): boolean {
     const text = this.sinkText(line);
     const types = new Set(CSHARP_SANITIZER_RES.map(r => r.type));
     for (const t of INERT_WHEN_ALPHANUMERIC) types.add(t);
     types.add('ssrf');
     for (const type of types) {
-      if (this.sanitizes(type, text)) return true;
       const credited = new Set([...this.sanitizedVarsAt(type, line), ...this.guardedVarsAt(type, line)]);
       for (const v of this.safeBuilders(credited, line)) credited.add(v);
-      for (const v of credited) if (mentions(text, v)) return true;
+      const covered = this.sanitizes(type, text) || [...credited].some(v => mentions(text, v));
+      if (covered && !this.rawTaintReaches(type, line, credited, seeds)) return true;
     }
     return this.fixedHostRequest(line);
   }

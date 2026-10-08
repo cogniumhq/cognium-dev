@@ -1471,7 +1471,13 @@ export class ConstantPropagator {
       return;
     }
 
-    const condValue = this.evaluateExpression(condition);
+    let condValue = this.evaluateExpression(condition);
+    if (!(isKnown(condValue) && condValue.type === 'bool')) {
+      const literal = this.literalCondition(condition);
+      if (literal !== null) {
+        condValue = { type: 'bool', value: literal, sourceLine: getNodeLine(condition) } as ConstantValue;
+      }
+    }
 
     if (isKnown(condValue) && condValue.type === 'bool') {
       if (condValue.value === true) {
@@ -1684,7 +1690,14 @@ export class ConstantPropagator {
 
     const caseGroups = switchBlock.children.filter(
       (c: Node) => c.type === 'switch_block_statement_group' || c.type === 'switch_rule' || c.type === 'switch_section'
+        || c.type === 'switch_case' || c.type === 'switch_default'
     );
+    // A grammar whose arms are none of the above: visit the body in order, as
+    // any other block. Skipping it would leave every assignment inside unseen.
+    if (caseGroups.length === 0) {
+      this.visit(switchBlock);
+      return;
+    }
 
     if (switchValue && isKnown(switchValue)) {
       let matchingIdx = -1;
@@ -1692,6 +1705,17 @@ export class ConstantPropagator {
 
       for (let i = 0; i < caseGroups.length; i++) {
         const caseGroup = caseGroups[i];
+        // JavaScript / TypeScript: the arm itself is the label.
+        if (caseGroup.type === 'switch_default') {
+          defaultIdx = i;
+          continue;
+        }
+        if (caseGroup.type === 'switch_case') {
+          const label = caseGroup.childForFieldName('value');
+          const caseValue = label ? this.literalValue(label) : null;
+          if (caseValue !== null && caseValue === switchValue.value) matchingIdx = i;
+          continue;
+        }
         for (const child of caseGroup.children) {
           if (child.type === 'switch_label') {
             const labelText = getNodeText(child, this.source);
@@ -1814,6 +1838,34 @@ export class ConstantPropagator {
       }
     }
     return false;
+  }
+
+  /**
+   * A condition written with literals only, in the C# grammar's node names:
+   * `true`, `false`, `5 == 5`, `5 != 5`. Null when it is anything else. The
+   * shared evaluator does not know `boolean_literal` / `integer_literal`.
+   */
+  private literalCondition(node: Node): boolean | null {
+    if (node.type === 'parenthesized_expression') {
+      const inner = node.children.find((c: Node) => c.isNamed);
+      return inner ? this.literalCondition(inner) : null;
+    }
+    if (node.type === 'boolean_literal') {
+      const text = getNodeText(node, this.source);
+      return text === 'true' ? true : text === 'false' ? false : null;
+    }
+    if (node.type === 'binary_expression') {
+      const left = node.childForFieldName('left');
+      const right = node.childForFieldName('right');
+      const op = node.childForFieldName('operator');
+      const opText = op ? getNodeText(op, this.source) : '';
+      if (!left || !right || (opText !== '==' && opText !== '!=')) return null;
+      const l = this.literalValue(left);
+      const r = this.literalValue(right);
+      if (l === null || r === null) return null;
+      return opText === '==' ? l === r : l !== r;
+    }
+    return null;
   }
 
   /** The value of an integer, character or string literal node; null for anything else. */

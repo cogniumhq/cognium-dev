@@ -2102,6 +2102,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       const sanitizedByType = csharpSanitizedVarsByType(ctx.code);
       const csFields = new Set(ctx.graph.ir.types.flatMap(t => (t.fields ?? []).map(f => f.name)));
       const credit = new CSharpCredit(ctx.code, ctx.graph.ir.types.flatMap(t => t.methods));
+      const csSeeds = mergedSources.flatMap(s => (s.variable ? [{ variable: s.variable, line: s.line }] : []));
       // File-level XXE hardening (cognium-dev#272). `XmlResolver = null` and
       // `DtdProcessing = Prohibit|Ignore` are the documented XXE mitigations —
       // an external entity cannot resolve once either is set. Deterministic
@@ -2116,7 +2117,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         // (a) inline sanitizer on the sink line, e.g. Html.Raw(HtmlEncode(x)),
         // built in or a same-file helper that returns a sanitized value (#518).
-        if (credit.sanitizes(sink.type, sinkLineText)) return false;
+        const inlineSanitized = credit.sanitizes(sink.type, sinkLineText);
         // (a') the request goes to a constant host: input cannot move it (#518).
         if (sink.type === 'ssrf' && credit.fixedHostRequest(sink.line)) return false;
         // (b) a sink-line variable is sanitized-for-this-type upstream. Tested
@@ -2138,10 +2139,11 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Match against what the sink receives, not a guard condition in
         // front of it on the same line.
         const received = credit.sinkText(sink.line);
-        for (const v of sanitizedVars) {
-          if (new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(received)) return false;
-        }
-        return true;
+        const covered = inlineSanitized ||
+          [...sanitizedVars].some(v => new RegExp(`(?<![\\w])${escapeRegex(v)}(?![\\w])`).test(received));
+        // A sanitizer covers the operand it is applied to, not the whole
+        // call: `Write(HtmlEncode(a) + b)` still receives `b` raw.
+        return !covered || credit.rawTaintReaches(sink.type, sink.line, sanitizedVars, csSeeds);
       });
     }
 

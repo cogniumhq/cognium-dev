@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+Three defects found by re-testing the published 4.13.0.
+- **C#: a sanitizer covers its own operand, not the whole sink call.**
+  `Response.WriteAsync(HtmlEncoder.Default.Encode(a) + b)` was not reported:
+  an encoder anywhere in the call, or one credited variable among the
+  operands, cleared the sink although `b` arrived raw. The sink is now kept
+  when a tainted, uncredited value is among the arguments once the sanitizer
+  calls are set aside. 4.13.0 had widened this by crediting more encoders.
+- **JS/TS: a `switch` whose arms assign only literals is constant again.**
+  4.13.0 stopped visiting the body of a JavaScript `switch` in constant
+  propagation, so `switch (req.query.a) { case 'x': cmd = 'ls'; break;
+  default: cmd = 'pwd'; } exec(cmd)` was reported as command injection.
+  JavaScript arms are now handled like Java and C# ones.
+- **C#: `if (false)`, `if (true)`, `if (5 == 5)` and `if (5 != 5)` are
+  evaluated**, so a source assigned in the dead branch no longer survives the
+  literal assigned in the live one.
+
+Juliet C# (all single-file variants 100% / 0%), the labelled C# corpus, OWASP
+BenchmarkJava, SecuriBench Micro and Juliet Java are unchanged.
+
 ## [4.13.0] - 2026-10-08
 
 ### Fixed
