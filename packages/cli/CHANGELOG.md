@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.1] - 2026-10-08
+
+### Changes
+
+- Bundles circle-ir 4.13.1: fixes three defects found re-testing 4.13.0. A C#
+  sanitizer on one operand no longer clears a sink that also receives a raw
+  value; a JS/TS `switch` whose arms assign only literals is no longer
+  reported; C# `if (false)` / `if (5 != 5)` branches are treated as dead
+  (#640). See the circle-ir CHANGELOG.
+
 ## [4.13.0] - 2026-10-08
 
 ### Changes

@@ -1,6 +1,6 @@
 {
   "name": "cognium-dev",
-  "version": "4.13.0",
+  "version": "4.13.1",
   "description": "Static Application Security Testing CLI for detecting security vulnerabilities via taint tracking",
   "bin": {
     "cognium-dev": "dist/cli.js"
@@ -65,7 +65,7 @@
   },
   "dependencies": {
     "@cognium/project-profile-detect": "1.1.2",
-    "circle-ir": "4.13.0"
+    "circle-ir": "4.13.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
