@@ -345,6 +345,9 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   // entry.getName() returns a path that may contain ../ — flowing into File()/FileOutputStream()
   // is a classic Zip-Slip vulnerability.
   { method: 'getName', class: 'ZipEntry', type: 'file_input', severity: 'high', return_tainted: true },
+  // JarEntry extends ZipEntry. A declared JarEntry does not match the ZipEntry
+  // row, and a receiver not named `entry` misses the name heuristic. cognium-dev#620.
+  { method: 'getName', class: 'JarEntry', type: 'file_input', severity: 'high', return_tainted: true },
   { method: 'getName', class: 'ZipArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
   { method: 'getName', class: 'TarArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
   { method: 'getName', class: 'ArchiveEntry', type: 'file_input', severity: 'high', return_tainted: true },
