@@ -129,3 +129,33 @@ describe('C#: taint assigned in dead code does not survive a literal in the live
     expect((await flows(xpath(cond, a, b), 'C.cs', 'csharp', 'xpath_injection')).length).toBeGreaterThan(0);
   });
 });
+
+describe('C#: a sanitizer helper inside a property sink is credited (#643)', () => {
+  const ldap = (assign: string) => [
+    'using System.DirectoryServices;',
+    'public class V {',
+    '  public void Run(string input) {',
+    '    var searcher = new DirectorySearcher(new DirectoryEntry("LDAP://corp"));',
+    `    ${assign}`,
+    '    searcher.FindOne();',
+    '  }',
+    '  static string EscapeFilter(string raw) {',
+    '    return raw.Replace("\\\\", "\\\\5c").Replace("*", "\\\\2a").Replace("(", "\\\\28").Replace(")", "\\\\29");',
+    '  }',
+    '}',
+  ].join('\n');
+
+  it.each([
+    'searcher.Filter = "(uid=" + EscapeFilter(input) + ")";',
+    'searcher.Filter = EscapeFilter(input);',
+  ])('%s is clean', async line => {
+    expect(await flows(ldap(line), 'V.cs', 'csharp', 'ldap_injection')).toEqual([]);
+  });
+
+  it.each([
+    'searcher.Filter = "(uid=" + input + ")";',
+    'searcher.Filter = "(&(uid=" + EscapeFilter(input) + ")(cn=" + input + "))";',
+  ])('%s is reported', async line => {
+    expect((await flows(ldap(line), 'V.cs', 'csharp', 'ldap_injection')).length).toBeGreaterThan(0);
+  });
+});

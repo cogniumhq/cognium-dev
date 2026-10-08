@@ -311,16 +311,35 @@ export class CSharpCredit {
       for (const s of seeds) if (s.line >= st.line && s.line < end) tainted.add(s.variable);
     }
     if (tainted.size === 0) return false;
-    // Only what the call is given counts: a tainted receiver or cast target
-    // (`((XmlDocument)ctx).SelectSingleNode(q)`) is not an operand.
-    const call = withoutStringLiterals(this.sinkText(sinkLine));
-    const rest = this.withoutSanitizerCalls(type, lastCallArguments(call) ?? call);
+    const rest = this.withoutSanitizerCalls(type, this.receivedOperands(type, sinkLine));
     // A sanitizer spelled as a chain or a ternary on the name itself
     // (`x.Replace("(", …)`, `p.StartsWith(root) ? p : null`) is not a call
     // that can be cut out; it covers the name it is written on.
     if (this.builtinSanitizes(type, rest)) return false;
     for (const v of tainted) if (!credited.has(v) && mentions(rest, v)) return true;
     return false;
+  }
+
+  /**
+   * The operands a sink on `sinkLine` receives, string literals blanked. For a
+   * property sink (`searcher.Filter = rhs;`) that is the right-hand side. For
+   * a call sink it is the call's arguments, so a tainted receiver or cast
+   * target (`((XmlDocument)ctx).SelectSingleNode(q)`) is not an operand. The
+   * last call on the line is the sink only when it is not itself a sanitizer:
+   * in `x.Filter = Escape(input);` it is the sanitizer (cognium-dev#643).
+   */
+  private receivedOperands(type: string, sinkLine: number): string {
+    const text = withoutStringLiterals(this.sinkText(sinkLine)).replace(/\s*;?\s*(?:\/\/.*)?$/, '');
+    const property = /^\s*[A-Za-z_][\w.]*\.[A-Za-z_]\w*\s*=(?!=)\s*(.*)$/.exec(text);
+    if (property) return property[1];
+    if (!text.endsWith(')')) return text;
+    const args = lastCallArguments(text);
+    if (args === null) return text;
+    const open = text.length - args.length - 2;
+    const callStart = text.slice(0, open).search(/[A-Za-z_][\w.]*\s*$/);
+    const lastCall = callStart < 0 ? '' : text.slice(callStart);
+    if (lastCall && this.withoutSanitizerCalls(type, lastCall).trim() === '') return text;
+    return args;
   }
 
   /** `text` with every sanitizer call for `type`, arguments included, removed. */
