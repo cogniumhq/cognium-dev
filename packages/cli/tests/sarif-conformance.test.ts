@@ -118,6 +118,35 @@ describe('SARIF 2.1.0 conformance', () => {
     ];
     expect(validate(JSON.parse(formatSARIF(results)))).toEqual([]);
   });
+
+  // #615 — text output already says the ceiling was hit. SARIF must too,
+  // or a CI consumer treats a truncated scan as a complete successful run.
+  test('a project size ceiling is a warning and marks the run unsuccessful', () => {
+    const doc = JSON.parse(formatSARIF([], {
+      taintPaths: [],
+      crossFileCalls: [],
+      projectSizeBudgetExceeded: true,
+      filesAnalysed: 7,
+      filesTotal: 18,
+    }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(false);
+    expect(invocation.toolExecutionNotifications).toEqual([
+      {
+        level: 'warning',
+        message: {
+          text: 'Project size ceiling reached — analysed 7 of 18 files.',
+        },
+      },
+    ]);
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('a complete scan does not emit a project size ceiling notification', () => {
+    const doc = JSON.parse(formatSARIF([]));
+    expect(doc.runs[0].invocations).toBeUndefined();
+    expect(validate(doc)).toEqual([]);
+  });
 });
 
 describe('GitHub code scanning requirements', () => {
