@@ -2874,6 +2874,23 @@ function extractGoCallInfo(node: Node): CallInfo | null {
       if (operand.type === 'identifier') {
         const resolved = resolveGoLocalReceiverType(opText, node);
         receiver = resolved !== null ? resolved : opText;
+      } else if (operand.type === 'selector_expression' && methodName === 'Get') {
+        // cognium-dev #492 — `r.PostForm.Get` / `r.Form.Get` on a declared
+        // `*http.Request`. The operand is `url.Values`, so a type-resolved
+        // receiver would be `Values` and would also match a plain
+        // `url.Values.Get`. Rewrite only this shape to a synthetic class
+        // the Go plugin registers. Index form `r.Form[k][0]` is not a call;
+        // LanguageSourcesPass covers it.
+        const fieldNode = operand.childForFieldName('field');
+        const inner = operand.childForFieldName('operand');
+        const fieldName = fieldNode ? getNodeText(fieldNode) : '';
+        const innerName = inner && inner.type === 'identifier' ? getNodeText(inner) : null;
+        const innerType = innerName !== null ? resolveGoLocalReceiverType(innerName, node) : null;
+        if (innerType === 'Request' && (fieldName === 'PostForm' || fieldName === 'Form')) {
+          receiver = fieldName === 'PostForm' ? 'RequestPostForm' : 'RequestForm';
+        } else {
+          receiver = opText;
+        }
       } else {
         receiver = opText;
       }

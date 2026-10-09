@@ -255,6 +255,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findGoMultipartUploadSources(code, language));
     additionalSources.push(...findGoGrpcRequestSources(code, language));
     additionalSources.push(...findGoRequestBodySources(code, language));
+    additionalSources.push(...findGoFormIndexSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -1546,6 +1547,53 @@ function findGoGrpcRequestSources(sourceCode: string, language: string): TaintSo
       });
     }
     i = end;
+  }
+  return sources;
+}
+
+/**
+ * cognium-dev #492 — index reads of request form maps.
+ *
+ * `r.PostForm.Get` / `r.Form.Get` are calls and are registered in the Go
+ * plugin. `r.Form[k][0]`, `r.PostForm[k][0]`, and `r.MultipartForm.Value[k]`
+ * are index expressions, so they never become a call. Seed the LHS when the
+ * receiver is a name declared as `*http.Request`. A local `url.Values` does
+ * not match that declaration.
+ */
+function findGoFormIndexSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!/\.(?:PostForm|Form|MultipartForm)\b/.test(sourceCode)) return [];
+  const lines = sourceCode.split('\n');
+  const reqNames = new Set<string>();
+  const paramRe = /([A-Za-z_]\w*)\s+\*http\.Request\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    paramRe.lastIndex = 0;
+    while ((m = paramRe.exec(line)) !== null) reqNames.add(m[1]);
+  }
+  if (reqNames.size === 0) return [];
+  const alt = [...reqNames].map((n) => n.replace(/\$/g, '\\$')).join('|');
+  // Group 3 is PostForm|Form. MultipartForm.Value leaves it unset.
+  const indexRe = new RegExp(
+    `^\\s*(?:var\\s+)?([A-Za-z_]\\w*)\\s*(?:,\\s*\\w+\\s*)?:?=\\s*(?:${alt})\\s*\\.\\s*(?:(PostForm|Form)|MultipartForm\\s*\\.\\s*Value)\\s*\\[`,
+  );
+  const sources: TaintSource[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\/\//.test(line)) continue;
+    const m = indexRe.exec(line);
+    if (!m) continue;
+    const variable = m[1];
+    if (variable === '_' || variable === '') continue;
+    const kind = m[2];
+    sources.push({
+      type: kind === 'Form' ? 'http_param' : 'http_body',
+      location: 'HTTP request form index',
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
+      variable,
+    });
   }
   return sources;
 }
