@@ -190,6 +190,16 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Revoke the OpenAI key at https://platform.openai.com/api-keys and load from environment.',
   },
+  // Project keys (`sk-proj-`) are a different prefix from the legacy 48-char
+  // secret. OpenAI does not publish one length, so the body floor is 48 and
+  // there is no max and no entropy gate. The hyphen after `proj` keeps this
+  // from matching the legacy pattern. (#551)
+  {
+    name: 'OpenAI project API key',
+    regex: /\bsk-proj-[A-Za-z0-9_-]{48,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the OpenAI project key at https://platform.openai.com/api-keys and load from environment.',
+  },
   {
     name: 'Anthropic API key',
     regex: /\bsk-ant-[A-Za-z0-9_-]{90,}\b/,
@@ -715,7 +725,8 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         // (#574, #577)
         if (
           (pattern.name === 'Stripe live restricted key' ||
-            pattern.name === 'GitLab personal access token') &&
+            pattern.name === 'GitLab personal access token' ||
+            pattern.name === 'OpenAI project API key') &&
           PLACEHOLDER_RE.test(m[0])
         ) {
           continue;

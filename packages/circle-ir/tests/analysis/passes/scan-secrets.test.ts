@@ -184,6 +184,24 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out[0].evidence?.provider).toBe('OpenAI API key');
   });
 
+  it('detects OpenAI sk-proj- project key by prefix and length (#551)', () => {
+    // Floor of 48, not a pinned length. Literal split avoids push protection.
+    const code = 'key = "sk-proj-' + 'A'.repeat(48) + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('OpenAI project API key');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder sk-proj- body (#551)', () => {
+    const shortKey = 'key = "sk-proj-' + 'A'.repeat(20) + '"';
+    expect(runPass('app.py', shortKey, 'python')).toHaveLength(0);
+    const placeholder = 'key = "sk-proj-' + 'placeholder' + 'A'.repeat(40) + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects Anthropic API key sk-ant-', () => {
     const code = `key = "sk-ant-` + 'A'.repeat(95) + `"`;
     const out = runPass('app.py', code, 'python');
