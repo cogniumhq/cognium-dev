@@ -183,6 +183,16 @@ gh issue list --repo cogniumhq/cognium-dev --state open --limit 100 \
   --json number,title,labels,body \
   --jq '[.[] | select(.labels|map(.name)|((index("autofix-skip")) or (index("agent-declined")) or (index("agent-blocked")) or (index("agent-in-progress")))|not)]'
 ```
+**Weekly re-check of declines.** Once per 7 days (track the last run in the §9 report), also
+list open issues carrying `agent-declined` or `autofix-skip` and re-triage any whose recorded
+blocker has cleared: the `needs-decision` label was removed, the named corpus now exists
+under `$CORPUS_ROOT`, a "minimal slice" section was added (§2), or there is no `autofix:`
+reason comment at all. Remove the stale labels with a one-line comment before re-triaging.
+
+**Only this loop sets `autofix-skip` / `agent-declined` / `agent-blocked` in cognium-dev.**
+Humans and other agents opt an issue out with `needs-decision` or a comment; a skip label
+added by anyone else without an `autofix:` reason comment is treated as absent.
+
 An issue labeled **`agent-ok`** is pre-cleared: still apply the §2 boundary test (the SAST
 boundary is not negotiable), but do not defer it for being merely *unfamiliar* — a human has
 already vouched that it is wanted.
@@ -285,18 +295,28 @@ fails no existing test. They may proceed only when the language has a local corp
 Juliet-C#; JS/TS: nodegoat + juice-shop + dvna). A precision fix for a language with no
 local corpus is NOT minor → skip with reason "no local benchmark gate".
 
+**Slices of large issues are eligible.** A "needs design / too large" issue may still yield one
+minor fix when its body (or a later comment) has a `## Minimal slice` section that names a
+single mechanism **and** supplies a fixture whose file, class and property names differ from
+any benchmark test (renamed-file or renamed-property variant) **plus a negative (safe) case**
+that must stay clean. Fix only that slice, reference the parent with `Refs #<n>` (not
+`Fixes`), and leave the parent open. A slice with no renamed fixture or no negative case is
+NOT minor — a fix that only passes on benchmark names is not an engine fix.
+
 **When unsure whether it is minor, treat it as NOT minor and skip.** Bias toward leaving
 hard or ambiguous issues for humans. It is always acceptable for a sweep to fix nothing.
 
 To skip, record WHICH kind of skip it is — a review of all 20 skipped issues on 2026-09-10 was
 slowed badly by `autofix-skip` alone not distinguishing these:
 ```
-# never attempted (out of boundary / not minor):
-gh issue comment <n> -b "<one-line reason>" && gh issue edit <n> --add-label agent-declined --add-label autofix-skip
+# never attempted (out of boundary / not minor) — comment FIRST, label only if the comment posted:
+gh issue comment <n> -b "autofix: <one-line reason>" && gh issue edit <n> --add-label agent-declined --add-label autofix-skip
 # attempted, could not land (see §7):
 gh issue comment <n> -b "<failure summary>" && gh issue edit <n> --add-label agent-blocked --add-label autofix-skip --remove-label agent-in-progress
 ```
-Always state the reason in the comment. A future sweep — or a human review — re-reads these, and
+Always state the reason in the comment. **A label with no `autofix:` reason comment is invalid**:
+never apply `agent-declined` / `autofix-skip` / `agent-blocked` unless the reason comment
+succeeded, and §1a treats any such label that has no `autofix:` comment as absent (re-triage it). A future sweep — or a human review — re-reads these, and
 **a skip reason can go stale**: several written 2026-09-01 said "precision-risky" before the §7
 benchmark differential existed, and four of them were fixable once it did. Cite the *specific*
 blocker (a missing fixture, an absent corpus, a pending decision), never a general vibe.
