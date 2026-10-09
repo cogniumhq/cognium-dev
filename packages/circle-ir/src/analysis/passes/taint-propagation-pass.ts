@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -303,6 +303,38 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             sanitized: false,
           });
         }
+      }
+    }
+
+    // Supplement: Java Spring return-XSS (CWE-79) flows — cognium-dev#566.
+    // Same wiring gap as #368. The sink has no call arguments, so connect the
+    // latest source at or before the return. An xss sanitizer in that range
+    // suppresses the flow.
+    if (ctx.language === 'java' && typeof ctx.code === 'string') {
+      const xssSanitizerLines = sanitizers
+        .filter(sa => sa.sanitizes.includes('xss'))
+        .map(sa => sa.line);
+      for (const rx of findJavaSpringReturnXSSSinks(ctx.code, types)) {
+        if (constProp.unreachableLines.has(rx.sinkLine)) continue;
+        const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === 'xss');
+        if (!sink) continue;
+        const src = sources
+          .filter(sc => sc.line <= rx.sinkLine)
+          .sort((a, b) => b.line - a.line)[0];
+        if (!src) continue;
+        if (xssSanitizerLines.some(l => l >= src.line && l <= rx.sinkLine)) continue;
+        pushIfNew({
+          source_line: src.line,
+          sink_line: rx.sinkLine,
+          source_type: src.type,
+          sink_type: 'xss',
+          path: [
+            { variable: src.variable ?? 'param', line: src.line, type: 'source' as const },
+            { variable: src.variable ?? 'param', line: rx.sinkLine, type: 'sink' as const },
+          ],
+          confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
+          sanitized: false,
+        });
       }
     }
 

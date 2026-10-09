@@ -328,6 +328,22 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
     }
 
+    // -- Java: Spring handler return of markup is reflected XSS (#566) --
+    if (language === 'java') {
+      for (const r of findJavaSpringReturnXSSSinks(code, types)) {
+        const alreadyExists = additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss');
+        if (!alreadyExists) {
+          additionalSinks.push({
+            type: 'xss',
+            cwe: 'CWE-79',
+            line: r.sinkLine,
+            location: `return HTML with request parameter at line ${r.sinkLine}`,
+            confidence: 0.9,
+          });
+        }
+      }
+    }
+
     const jsTaintedVars = buildJavaScriptTaintedVars(code, language);
 
     // -- Bash/Shell: taint sources + pattern-based findings --
@@ -2784,6 +2800,79 @@ export function findPythonReturnXSSSinks(
     sinks.push({ sinkLine: i + 1 });
   }
 
+  return sinks;
+}
+
+const JAVA_MAPPING_ANNS = new Set([
+  'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping',
+]);
+const JAVA_CONTROLLER_ANNS = new Set(['RestController', 'Controller']);
+const JAVA_REQUEST_PARAM_ANNS = new Set([
+  'RequestParam', 'RequestBody', 'RequestHeader', 'PathVariable',
+  'RequestPart', 'CookieValue', 'MatrixVariable',
+]);
+// Calls that encode a value for HTML. Stripped before the tainted-name check
+// so `return "<p>" + escapeHtml4(msg)` does not become a sink.
+const JAVA_HTML_ESCAPER_RE =
+  /\b(?:StringEscapeUtils\s*\.\s*escapeHtml4|HtmlUtils\s*\.\s*htmlEscape|escapeHtml4|escapeHtml|htmlEscape|encodeForHTML)\s*\([^)]*\)/g;
+
+function javaAnnBase(annotation: string): string {
+  let head = annotation.trim();
+  if (head.startsWith('@')) head = head.slice(1);
+  head = head.split('(')[0].trim();
+  const dot = head.lastIndexOf('.');
+  return dot >= 0 ? head.slice(dot + 1) : head;
+}
+
+/**
+ * cognium-dev #566 — Spring handler `return "<p>" + msg` is reflected XSS,
+ * the Java shape of #368. A mapping (or a controller class) plus a request
+ * parameter annotation marks the handler. A return is a sink only when it
+ * contains `<` and still names that parameter after HTML escapers are
+ * removed, so `return "index"` and `return msg` stay view names.
+ */
+export function findJavaSpringReturnXSSSinks(
+  sourceCode: string,
+  types: TypeInfo[],
+): Array<{ sinkLine: number }> {
+  if (!sourceCode.includes('return') || !sourceCode.includes('<')) return [];
+  const lines = sourceCode.split('\n');
+  const sinks: Array<{ sinkLine: number }> = [];
+  const seen = new Set<number>();
+
+  for (const t of types) {
+    const classIsHandler = t.annotations.some((a) => {
+      const name = javaAnnBase(a);
+      return JAVA_MAPPING_ANNS.has(name) || JAVA_CONTROLLER_ANNS.has(name);
+    });
+    for (const m of t.methods) {
+      const methodMaps = m.annotations.some((a) => JAVA_MAPPING_ANNS.has(javaAnnBase(a)));
+      if (!methodMaps && !classIsHandler) continue;
+      const tainted: string[] = [];
+      for (const p of m.parameters) {
+        if (p.annotations.some((a) => JAVA_REQUEST_PARAM_ANNS.has(javaAnnBase(a)))) {
+          tainted.push(p.name);
+        }
+      }
+      if (tainted.length === 0) continue;
+      const start = Math.max(0, m.start_line - 1);
+      const end = Math.min(lines.length, m.end_line);
+      for (let i = start; i < end; i++) {
+        const line = lines[i];
+        if (line.trimStart().startsWith('//')) continue;
+        const ret = line.match(/\breturn\s+(.+);/);
+        if (!ret) continue;
+        const expr = ret[1];
+        if (!expr.includes('<')) continue;
+        const stripped = expr.replace(JAVA_HTML_ESCAPER_RE, '""');
+        if (!tainted.some((v) => new RegExp(`\\b${v}\\b`).test(stripped))) continue;
+        const lineNum = i + 1;
+        if (seen.has(lineNum)) continue;
+        seen.add(lineNum);
+        sinks.push({ sinkLine: lineNum });
+      }
+    }
+  }
   return sinks;
 }
 
