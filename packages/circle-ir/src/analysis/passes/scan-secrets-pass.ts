@@ -153,6 +153,13 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Revoke the GitHub refresh token and store secrets outside source control.',
   },
+  // Fine-grained PATs: `github_pat_` + 22 chars + `_` + 59 chars. (#553)
+  {
+    name: 'GitHub fine-grained personal access token',
+    regex: /\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the fine-grained personal access token at https://github.com/settings/tokens and store secrets outside source control.',
+  },
   // GitLab personal / project / group access tokens use the `glpat-` prefix.
   // Length is not fixed (legacy bodies are about 20 characters; routable
   // tokens are longer), so the floor is 20 and there is no max. (#577)
@@ -728,7 +735,8 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         if (
           (pattern.name === 'Stripe live restricted key' ||
             pattern.name === 'GitLab personal access token' ||
-            pattern.name === 'OpenAI project API key') &&
+            pattern.name === 'OpenAI project API key' ||
+            pattern.name === 'GitHub fine-grained personal access token') &&
           PLACEHOLDER_RE.test(m[0])
         ) {
           continue;

@@ -121,6 +121,27 @@ describe('ScanSecretsPass — provider patterns', () => {
     ]);
   });
 
+  it('detects GitHub fine-grained PAT github_pat_ (#553)', () => {
+    // 22 chars, underscore, 59 chars. Literal split avoids push protection.
+    const code = 'token = "github_' + 'pat_' + 'A'.repeat(22) + '_' + 'B'.repeat(59) + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('GitHub fine-grained personal access token');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder github_pat_ body (#553)', () => {
+    const shortTok = 't = "github_' + 'pat_' + 'A'.repeat(21) + '_' + 'B'.repeat(59) + '"';
+    expect(runPass('app.py', shortTok, 'python')).toHaveLength(0);
+    const shortTail = 't = "github_' + 'pat_' + 'A'.repeat(22) + '_' + 'B'.repeat(58) + '"';
+    expect(runPass('app.py', shortTail, 'python')).toHaveLength(0);
+    const placeholder =
+      't = "github_' + 'pat_' + 'placeholderplaceholder' + '_' + 'B'.repeat(59) + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects GitLab glpat- personal access token as critical (#577)', () => {
     // Floor of 20, not a fixed length. Literal split avoids push protection.
     const code = 'token = "glpat-' + 'abcdefghijklmnopqrst' + '"';
