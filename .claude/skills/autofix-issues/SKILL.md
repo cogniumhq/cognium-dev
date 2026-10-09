@@ -197,6 +197,17 @@ An issue labeled **`agent-ok`** is pre-cleared: still apply the §2 boundary tes
 boundary is not negotiable), but do not defer it for being merely *unfamiliar* — a human has
 already vouched that it is wanted.
 
+**Post-release re-sweep.** After each release or merge to `main`, re-check **every** open
+issue against the new `main` / published version, not only the unlabelled ones: retry autofix
+where the blocker has cleared; close (with the commit, release or probe output as evidence)
+any that are now resolved, updating docs if the fix changed documented behaviour; for each one
+still blocked post **one** one-line `autofix: blocked on <specific blocker>` summary, without
+repeating an unchanged earlier one.
+
+**Backlog target.** Keep the issues that need human review manageable: aim for **< 20**. Prefer
+closing (already fixed, duplicate, stale, documented as expected) or routing (back to the loop,
+to a slice, to `needs-decision`) over leaving an item open with no next step.
+
 ### 1b. cognium-ai (cross-repo triage: pure-SAST vs. mixed vs. not ours)
 
 ```
@@ -270,6 +281,11 @@ cognium-ai's pipeline, harness, or scoring to observe, it is **not** pure SAST: 
 - Tracking / umbrella / meta issues (label `tracking`, or title `[tracking]`/`[umbrella]`).
 - `question`, `needs-decision`, `wontfix`, `duplicate`, `invalid`, `documentation`-only.
 
+**Exception, docs and expected behaviour.** Do not decline a docs-only issue or one that
+describes accepted/expected behaviour as out of boundary. Either fix the docs (small, no
+engine change; the full suite must stay green) or add an entry to `docs/KNOWN_ISSUES.md`
+(the shape, why it is expected, the issue number) and close the ticket via the PR.
+
 **Hard out-of-boundary, from the techspec spec — any one of these disqualifies regardless of
 how small the diff looks.** Label `agent-declined` + `autofix-skip`, comment one sentence, move on:
 - A schema change or data migration.
@@ -288,6 +304,15 @@ how small the diff looks.** Label `agent-declined` + `autofix-skip`, comment one
 - No reproducible signal (no fixture, no concrete expected-vs-actual).
 - Requires a product/scope/severity-policy decision.
 
+**Re-review before declining "needs design / too large".** The decline comment must state the
+**concrete design question** (what choice, between which options). New code shapes or language
+constructs the analyzer does not yet model (a new sink form, receiver style, container,
+branch shape) are in boundary: attempt them, or slice them per below, rather than decline.
+"Large" without a named question is not a valid reason.
+
+**Human decisions.** When a real choice is needed, post the options **plus a recommendation**
+in one comment and label `needs-decision`. Never pick an option silently in a fix.
+
 **Precision fixes (sink narrowing, sanitizer credit, FP removal) are eligible** — but
 "no new test failures" is NOT a sufficient gate for them, because dropping a true positive
 fails no existing test. They may proceed only when the language has a local corpus for the
@@ -302,6 +327,10 @@ any benchmark test (renamed-file or renamed-property variant) **plus a negative 
 that must stay clean. Fix only that slice, reference the parent with `Refs #<n>` (not
 `Fixes`), and leave the parent open. A slice with no renamed fixture or no negative case is
 NOT minor — a fix that only passes on benchmark names is not an engine fix.
+
+**Partial fixes.** When part of an issue is fixed (one language, some fixtures), comment
+narrowing it to the remaining scope, citing the fix and a probe of what still fails, and
+retitle it if the title no longer matches. Do not leave a partly fixed issue as-is.
 
 **When unsure whether it is minor, treat it as NOT minor and skip.** Bias toward leaving
 hard or ambiguous issues for humans. It is always acceptable for a sweep to fix nothing.
@@ -514,7 +543,9 @@ Print a compact summary:
 - Never merge when the full suite has any failure not present in the baseline.
 - Never merge a precision fix without the §7 benchmark differential showing zero TP loss.
 - Never fix a `needs-sast` parent directly — only its cognium-dev children.
-- Never close/edit an issue you didn't fix, beyond adding `autofix-skip` + a reason comment.
+- Never close/edit an issue you didn't fix, beyond adding `autofix-skip` + a reason comment,
+  except as §1a (post-release re-sweep) and §2 (docs / known issues, partial fixes) allow,
+  always with evidence.
 - Never ask the user a question — skip the issue instead.
 - Never leave `agent-in-progress` on an issue at exit; it halts every later sweep.
 - Never clear an `agent-in-progress` lock that is **younger than 2 h** — that is a live run, and
