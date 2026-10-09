@@ -303,7 +303,7 @@ blocker (a missing fixture, an absent corpus, a pending decision), never a gener
 
 ## 3. Select a batch
 
-From the eligible set, take **up to 3**, oldest first, then smallest and clearest. Fewer is
+From the eligible set, take **up to 5**, oldest first, then smallest and clearest. Fewer is
 fine. (Was 5; the techspec spec sets 3 and a smaller batch keeps the benchmark differential in
 §7 attributable — with five fixes in one branch a single corpus delta cannot be pinned to a
 commit.) If none are eligible, go straight to §9 and report "no eligible issues".
