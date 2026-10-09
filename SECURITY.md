@@ -45,6 +45,12 @@ Include:
 - **Credit:** we will credit you in the release notes and the
   published advisory unless you request otherwise.
 
+## Data handling: where your code goes
+
+- **cognium-dev (this repo)**: analysis runs entirely on the machine that runs the CLI or library. Source code is not sent to Cognium or to any third-party service, and the default `scan` path needs no network access.
+- **cognium-ai (separate package)**: its optional AI-assisted mode sends code snippets to the model endpoint you configure, and cloud/engine scans may clone a repository onto Cognium infrastructure. See the cognium-ai documentation for details.
+- **Air-gapped use**: run `cognium-dev`, or `cognium-ai --no-llm` with no remote engine configured. Nothing leaves the machine.
+
 ## Scope
 
 In scope:

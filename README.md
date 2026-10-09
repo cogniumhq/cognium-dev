@@ -40,6 +40,12 @@ Not yet re-measured on 4.12.0:
 
 ---
 
+## Data handling: where your code goes
+
+- **cognium-dev (this repo)**: analysis runs entirely on the machine that runs the CLI or library. Source code is not sent to Cognium or to any third-party service, and the default `scan` path needs no network access.
+- **cognium-ai (separate package)**: its optional AI-assisted mode sends code snippets to the model endpoint you configure, and cloud/engine scans may clone a repository onto Cognium infrastructure. See the cognium-ai documentation for details.
+- **Air-gapped use**: run `cognium-dev`, or `cognium-ai --no-llm` with no remote engine configured. Nothing leaves the machine.
+
 ## Installation
 
 ### CLI (recommended)
@@ -104,6 +110,7 @@ cognium-dev list-passes security
 | Rust | ✅ Production | Actix-web, Rocket, Axum |
 | Bash | ✅ Production | Shell scripts |
 | HTML | ✅ Production | Security attributes |
+| C#/.NET | 🧪 Preview | ASP.NET Core, ADO.NET (EF Core not yet verified, see [#599](https://github.com/cogniumhq/cognium-dev/issues/599)) |
 
 ---
 
@@ -215,6 +222,8 @@ console.log(project.taint_paths);
 ---
 
 ## Documentation
+
+- [Known issues and accepted limitations](./docs/KNOWN_ISSUES.md)
 
 - [CLI Documentation](./packages/cli/README.md)
 - [Library Documentation](./packages/circle-ir/README.md)
