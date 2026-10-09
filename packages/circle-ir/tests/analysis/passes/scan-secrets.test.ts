@@ -168,13 +168,13 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(runPass('config.py', placeholder, 'python')).toHaveLength(0);
   });
 
-  it('detects Stripe pk_live_ publishable key as warning (lower severity)', () => {
+  it('detects Stripe pk_live_ publishable key as informational (#552)', () => {
     const code = `const key = "pk_live_abcdef0123456789ABCDEFGH";`;
     const out = runPass('app.js', code, 'javascript');
     expect(out).toHaveLength(1);
     expect(out[0].evidence?.provider).toBe('Stripe live publishable key');
-    expect(out[0].severity).toBe('high');
-    expect(out[0].level).toBe('warning');
+    expect(out[0].severity).toBe('low');
+    expect(out[0].level).toBe('note');
   });
 
   it('detects OpenAI API key', () => {

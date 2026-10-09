@@ -178,11 +178,13 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Rotate the Stripe restricted key in the Stripe Dashboard and load it from a secrets manager.',
   },
+  // Publishable keys are meant to be embedded in a client. Keep the finding
+  // so the key is still visible, but at informational severity. (#552)
   {
     name: 'Stripe live publishable key',
     regex: /\bpk_live_[A-Za-z0-9]{24,}\b/,
-    severity: 'high', level: 'warning',
-    fix: 'Publishable keys are not secret but should still not be checked in to back-end source files; verify front-end vs back-end context.',
+    severity: 'low', level: 'note',
+    fix: 'Publishable keys are not secret. Prefer loading them from configuration rather than a backend source file.',
   },
   {
     name: 'OpenAI API key',
