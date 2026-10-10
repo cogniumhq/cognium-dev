@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Docs: `library-profile-source-gate` counts speculative sources and does not delete them (#571).** `docs/PASSES.md` row 111, `docs/ARCHITECTURE.md`, and the pass header now match #288 option A (`dropped` stays 0; `droppedByType` is the count). The Rust entry-point gap stays on #496.
+
 ## [4.13.2] - 2026-10-08
 
 ### Fixed
