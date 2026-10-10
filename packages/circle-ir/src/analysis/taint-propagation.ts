@@ -102,6 +102,11 @@ function buildSanitizersByLine(sanitizers: TaintSanitizer[]): Map<number, TaintS
  * Accepts either a CodeGraph (preferred) or the legacy (dfg, calls, ...) signature
  * for backward compatibility with existing call sites and tests.
  */
+/** True when `+` appears outside string literals. */
+function concatOutsideStrings(expression: string): boolean {
+  return expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').includes('+');
+}
+
 export function propagateTaint(
   graphOrDfg: CodeGraph | DFG,
   callsOrSources: CallInfo[] | TaintSource[],
@@ -137,6 +142,7 @@ export function propagateTaint(
 
   const taintedVars: TaintedVariable[] = [];
   const flows: TaintFlow[] = [];
+  const javaConcat = graph.ir.meta.language === 'java';
   const reachableSinks = new Map<TaintSink, TaintSource[]>();
 
   // Use pre-computed indexes from CodeGraph — no local map building needed
@@ -206,7 +212,12 @@ export function propagateTaint(
         //     the compound expression cannot be reduced to a single variable
         //     name but its constituent identifiers appear in usesAtSink.
         //     (cognium-dev #243 — Go loop-carried range / helper-var shapes.)
-        const candidateUses = arg.variable
+        //   - `cmd + bar` still has arg.variable set to the first identifier.
+        //     A constant prefix must not hide a later tainted operand
+        //     (cognium-dev#627).
+        const expr = typeof arg.expression === 'string' ? arg.expression : '';
+        const compoundConcat = javaConcat && !!arg.variable && expr !== arg.variable && concatOutsideStrings(expr);
+        const candidateUses = arg.variable && !compoundConcat
           ? usesAtSink.filter(u => u.variable === arg.variable)
           : usesAtSink;
         {
@@ -218,7 +229,7 @@ export function propagateTaint(
                 // in this arg's expression text (word-boundary) so we don't
                 // credit uses that belong to sibling args or unrelated call
                 // parts on the same line.
-                if (!arg.variable) {
+                if (!arg.variable || compoundConcat) {
                   if (typeof arg.expression !== 'string' || arg.expression.length === 0) continue;
                   const re = new RegExp(`(?:^|[^A-Za-z0-9_$])${use.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`);
                   if (!re.test(arg.expression)) continue;
