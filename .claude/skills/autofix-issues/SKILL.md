@@ -94,6 +94,45 @@ into `$CORPUS_ROOT` (§7). A runner where that check fails must skip precision f
    done
    ```
 
+## 0a. Address review on open agent PRs — before the cap check and discovery
+
+An open `agent-pr` PR with requested changes otherwise sits forever, counts toward the §0b cap,
+and blocks new work (seen on #652 and #654). Clear review debt first. This step is **not** the
+batch: when it finishes, continue with §0b and discovery as normal.
+
+1. List candidates — PRs labelled `agent-pr` **and** open PRs whose head branch starts with
+   `agent/fix-` — with review state and unresolved threads:
+   ```
+   R=cogniumhq/cognium-dev
+   gh pr list --repo $R --state open --json number,headRefName,labels,reviewDecision,updatedAt \
+     --jq '.[] | select((.labels|map(.name)|index("agent-pr")) or (.headRefName|startswith("agent/fix-")))'
+   gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){
+     pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved
+     comments(first:20){nodes{databaseId author{login} body path line}}}}}}}' \
+     -f o=cogniumhq -f r=cognium-dev -F n=<n>
+   ```
+2. Act on a PR if `reviewDecision == CHANGES_REQUESTED` or it has unresolved threads from a human
+   or the Cursor reviewer. Read **every** requested change (review bodies + all thread comments)
+   before touching code.
+3. **Concrete and inside the §2 boundary** → fix it on the PR's own branch:
+   - `gh pr checkout <n>`; make normal commits. To drop a commit use `git revert <sha>`.
+     **Never force-push, rebase, amend, or otherwise rewrite the PR's history.**
+   - Re-run the §7 tests; for precision changes also the §7 benchmark gate (zero TP loss).
+     If either fails, do not push — treat it as the "needs a human" case below.
+   - `git push`, then reply to each review comment / thread saying what changed (commit sha):
+     `gh api repos/$R/pulls/<n>/comments/<id>/replies -f body="..."` (or `gh pr comment` for
+     review-body feedback), and re-request review: `gh pr edit <n> --add-reviewer <login>`.
+4. **One fix in a multi-issue PR rejected** → prefer dropping just that fix over holding the PR:
+   `git revert` its commit, remove its `Closes #<m>` from the body and retitle (`gh pr edit <n>
+   --title ... --body ...`), remove `agent-pr` from issue #<m>, and comment on #<m> with the
+   reviewer's guidance so the next attempt starts from it.
+5. **Needs a human decision, or out of boundary** → post **one** PR comment summarizing the
+   options and a recommendation, then leave the PR (do not repeat the comment on later sweeps
+   unless new review arrives). If the PR has been blocked **> 7 days** with no path forward,
+   comment with the reason and close it, releasing its issues (remove `agent-pr` /
+   `agent-in-progress` from each linked issue) so it stops occupying the cap.
+6. Record each PR handled here for the §9 "Review follow-ups" line, then `git checkout main`.
+
 ## 0b. Guardrails — check these before discovering anything
 
 From the techspec spec. Each is a hard exit, not a warning; report the reason and stop.
@@ -553,6 +592,8 @@ Print a compact summary:
 - **Skipped:** issue → reason (labeled `autofix-skip`).
 - **Abandoned:** issue → reason (fix attempted but couldn't land), labelled `agent-blocked`.
 - **Declined:** issue → reason (never attempted, out of boundary), labelled `agent-declined`.
+- **Review follow-ups:** `#n -> action` for each PR handled in §0a (fixed + re-requested,
+  fix reverted, options posted, or closed), or "none".
 - **Lock state:** confirm no issue still carries `agent-in-progress`, and report the open
   `agent-pr` count so the next run's §0b cap is predictable.
 - If nothing was eligible: say so in one line.
