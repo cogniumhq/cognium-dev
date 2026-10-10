@@ -168,6 +168,32 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(runPass('config.py', placeholder, 'python')).toHaveLength(0);
   });
 
+  it('detects Stripe sk_test_ and rk_test_ as high (#576)', () => {
+    const secret = 'k = "sk_' + 'test_' + 'C'.repeat(24) + '"';
+    const secretOut = runPass('pay.py', secret, 'python');
+    expect(secretOut).toHaveLength(1);
+    expect(secretOut[0].rule_id).toBe('hardcoded-credential');
+    expect(secretOut[0].evidence?.provider).toBe('Stripe test secret key');
+    expect(secretOut[0].severity).toBe('high');
+    expect(secretOut[0].level).toBe('warning');
+
+    const restricted = 'k = "rk_' + 'test_' + 'D'.repeat(24) + '"';
+    const restrictedOut = runPass('pay.py', restricted, 'python');
+    expect(restrictedOut).toHaveLength(1);
+    expect(restrictedOut[0].evidence?.provider).toBe('Stripe test restricted key');
+    expect(restrictedOut[0].severity).toBe('high');
+    expect(restrictedOut[0].level).toBe('warning');
+  });
+
+  it('does not flag a short or placeholder sk_test_ / rk_test_ body (#576)', () => {
+    const shortSecret = 'k = "sk_' + 'test_' + 'C'.repeat(8) + '"';
+    expect(runPass('pay.py', shortSecret, 'python')).toHaveLength(0);
+    const shortRestricted = 'k = "rk_' + 'test_' + 'D'.repeat(8) + '"';
+    expect(runPass('pay.py', shortRestricted, 'python')).toHaveLength(0);
+    const placeholder = 'k = "sk_' + 'test_' + 'placeholder' + 'x'.repeat(13) + '"';
+    expect(runPass('pay.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects Stripe pk_live_ publishable key as warning (lower severity)', () => {
     const code = `const key = "pk_live_abcdef0123456789ABCDEFGH";`;
     const out = runPass('app.js', code, 'javascript');

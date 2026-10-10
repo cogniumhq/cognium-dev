@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Docs: `library-profile-source-gate` counts speculative sources and does not delete them (#571).** `docs/PASSES.md` row 111, `docs/ARCHITECTURE.md`, and the pass header now match #288 option A (`dropped` stays 0; `droppedByType` is the count). The Rust entry-point gap stays on #496.
 
+### Fixed
+- **Stripe test-mode secret and restricted keys are reported (#576).** `sk_test_` and `rk_test_` (24+ alphanumeric characters) are `hardcoded-credential` at high severity. Short and placeholder bodies stay quiet. `sk_live_` / `rk_live_` stay critical; `pk_*` is unchanged.
+
 ## [4.13.2] - 2026-10-08
 
 ### Fixed
