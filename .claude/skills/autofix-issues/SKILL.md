@@ -483,7 +483,14 @@ Only if §7 passed and at least one fix survived:
 
 1. `git push -u origin <branch>`.
 2. Open the PR (base `main`), labelled `agent-pr` so the §0b cap can see it. Title and body
-   shape from the techspec spec:
+   shape from the techspec spec.
+   **PR author.** Open the PR with Cursor's built-in pull-request tool so it is authored by
+   `cursor[bot]` (the Cursor GitHub App), not with `gh pr create` under a personal token: a PR
+   authored by the maintainer's own account cannot be approved by that maintainer, which stalls
+   the required code-owner review. Fall back to `gh pr create` only when the built-in tool is
+   unavailable in the run, and say so in the PR body. Apply the `agent-pr` label (e.g.
+   `gh pr edit <pr> --add-label agent-pr`) and the same body sections either way.
+   Fallback only:
    ```
    gh pr create --repo cogniumhq/cognium-dev --base main --head <branch> --label agent-pr \
      --title "agent: fix #a, #b, #c" \
