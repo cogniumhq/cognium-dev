@@ -307,9 +307,9 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: Java Spring return-XSS (CWE-79) flows — cognium-dev#566.
-    // Same wiring gap as #368. The sink has no call arguments, so connect the
-    // latest source at or before the return. An xss sanitizer in that range
-    // suppresses the flow.
+    // The sink has no call arguments. Connect the parameter named in the
+    // return, not whichever source happens to sit above it. An xss sanitizer
+    // in that range suppresses the flow.
     if (ctx.language === 'java' && typeof ctx.code === 'string') {
       const xssSanitizerLines = sanitizers
         .filter(sa => sa.sanitizes.includes('xss'))
@@ -318,9 +318,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         if (constProp.unreachableLines.has(rx.sinkLine)) continue;
         const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === 'xss');
         if (!sink) continue;
-        const src = sources
-          .filter(sc => sc.line <= rx.sinkLine)
-          .sort((a, b) => b.line - a.line)[0];
+        const src = sources.find(sc => sc.variable === rx.variable && sc.line <= rx.sinkLine);
         if (!src) continue;
         if (xssSanitizerLines.some(l => l >= src.line && l <= rx.sinkLine)) continue;
         pushIfNew({
@@ -329,8 +327,8 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           source_type: src.type,
           sink_type: 'xss',
           path: [
-            { variable: src.variable ?? 'param', line: src.line, type: 'source' as const },
-            { variable: src.variable ?? 'param', line: rx.sinkLine, type: 'sink' as const },
+            { variable: rx.variable, line: src.line, type: 'source' as const },
+            { variable: rx.variable, line: rx.sinkLine, type: 'sink' as const },
           ],
           confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
           sanitized: false,

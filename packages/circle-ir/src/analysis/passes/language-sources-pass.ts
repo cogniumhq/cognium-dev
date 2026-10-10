@@ -2806,10 +2806,13 @@ export function findPythonReturnXSSSinks(
 const JAVA_MAPPING_ANNS = new Set([
   'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping',
 ]);
-const JAVA_CONTROLLER_ANNS = new Set(['RestController', 'Controller']);
 const JAVA_REQUEST_PARAM_ANNS = new Set([
   'RequestParam', 'RequestBody', 'RequestHeader', 'PathVariable',
   'RequestPart', 'CookieValue', 'MatrixVariable',
+]);
+const JAVA_NON_STRING_TYPES = new Set([
+  'int', 'long', 'short', 'byte', 'float', 'double', 'boolean',
+  'Integer', 'Long', 'Short', 'Byte', 'Float', 'Double', 'Boolean',
 ]);
 // Calls that encode a value for HTML. Stripped before the tainted-name check
 // so `return "<p>" + escapeHtml4(msg)` does not become a sink.
@@ -2824,32 +2827,69 @@ function javaAnnBase(annotation: string): string {
   return dot >= 0 ? head.slice(dot + 1) : head;
 }
 
+function javaWritesResponseBody(annotations: string[]): boolean {
+  return annotations.some((a) => {
+    const name = javaAnnBase(a);
+    return name === 'RestController' || name === 'ResponseBody';
+  });
+}
+
+function javaHasMapping(annotations: string[]): boolean {
+  return annotations.some((a) => JAVA_MAPPING_ANNS.has(javaAnnBase(a)));
+}
+
+/** `<` that sits inside a `"..."` literal, not in a generic or a comparison. */
+function javaLiteralContainsMarkup(expr: string): boolean {
+  for (let i = 0; i < expr.length; i++) {
+    if (expr[i] !== '"') continue;
+    let j = i + 1;
+    let body = '';
+    while (j < expr.length && expr[j] !== '"') {
+      if (expr[j] === '\\' && j + 1 < expr.length) {
+        body += expr[j + 1];
+        j += 2;
+        continue;
+      }
+      body += expr[j];
+      j++;
+    }
+    if (body.includes('<')) return true;
+    i = j;
+  }
+  return false;
+}
+
+function javaParamIsNonString(type: string | null): boolean {
+  if (!type) return false;
+  const simple = type.trim().replace(/\[\]/g, '').split('.').pop() ?? '';
+  return JAVA_NON_STRING_TYPES.has(simple);
+}
+
 /**
- * cognium-dev #566 — Spring handler `return "<p>" + msg` is reflected XSS,
- * the Java shape of #368. A mapping (or a controller class) plus a request
- * parameter annotation marks the handler. A return is a sink only when it
- * contains `<` and still names that parameter after HTML escapers are
- * removed, so `return "index"` and `return msg` stay view names.
+ * cognium-dev #566 — Spring handler `return "<p>" + msg` is reflected XSS
+ * when the handler writes the body (`@RestController` or `@ResponseBody`).
+ * A plain `@Controller` return is a view name. `<` counts only inside a
+ * string literal, and numeric or boolean parameters are not markup.
+ * `variable` is the parameter named in that return.
  */
 export function findJavaSpringReturnXSSSinks(
   sourceCode: string,
   types: TypeInfo[],
-): Array<{ sinkLine: number }> {
+): Array<{ sinkLine: number; variable: string }> {
   if (!sourceCode.includes('return') || !sourceCode.includes('<')) return [];
   const lines = sourceCode.split('\n');
-  const sinks: Array<{ sinkLine: number }> = [];
-  const seen = new Set<number>();
+  const sinks: Array<{ sinkLine: number; variable: string }> = [];
+  const seen = new Set<string>();
 
   for (const t of types) {
-    const classIsHandler = t.annotations.some((a) => {
-      const name = javaAnnBase(a);
-      return JAVA_MAPPING_ANNS.has(name) || JAVA_CONTROLLER_ANNS.has(name);
-    });
+    const classWritesBody = javaWritesResponseBody(t.annotations);
+    const classMaps = javaHasMapping(t.annotations);
     for (const m of t.methods) {
-      const methodMaps = m.annotations.some((a) => JAVA_MAPPING_ANNS.has(javaAnnBase(a)));
-      if (!methodMaps && !classIsHandler) continue;
+      if (!classWritesBody && !javaWritesResponseBody(m.annotations)) continue;
+      if (!classMaps && !javaHasMapping(m.annotations)) continue;
       const tainted: string[] = [];
       for (const p of m.parameters) {
+        if (javaParamIsNonString(p.type)) continue;
         if (p.annotations.some((a) => JAVA_REQUEST_PARAM_ANNS.has(javaAnnBase(a)))) {
           tainted.push(p.name);
         }
@@ -2862,14 +2902,16 @@ export function findJavaSpringReturnXSSSinks(
         if (line.trimStart().startsWith('//')) continue;
         const ret = line.match(/\breturn\s+(.+);/);
         if (!ret) continue;
-        const expr = ret[1];
-        if (!expr.includes('<')) continue;
-        const stripped = expr.replace(JAVA_HTML_ESCAPER_RE, '""');
-        if (!tainted.some((v) => new RegExp(`\\b${v}\\b`).test(stripped))) continue;
+        const stripped = ret[1].replace(JAVA_HTML_ESCAPER_RE, '""');
+        if (!javaLiteralContainsMarkup(stripped)) continue;
         const lineNum = i + 1;
-        if (seen.has(lineNum)) continue;
-        seen.add(lineNum);
-        sinks.push({ sinkLine: lineNum });
+        for (const variable of tainted) {
+          if (!new RegExp(`\\b${variable}\\b`).test(stripped)) continue;
+          const key = `${lineNum}:${variable}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          sinks.push({ sinkLine: lineNum, variable });
+        }
       }
     }
   }
