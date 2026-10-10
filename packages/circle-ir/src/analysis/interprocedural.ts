@@ -337,7 +337,7 @@ export function analyzeInterprocedural(
     // shape. Without this, parameterised queries fall through to
     // external_taint_escape. (cognium-dev #102 FP-19a)
     'Query', 'QueryRow', 'QueryContext', 'QueryRowContext',
-    'Exec', 'ExecContext',
+    'Exec', 'ExecContext', 'Prepare', 'PrepareContext',
     // Go html/template escape helpers — explicit safe utilities.
     // Belt-and-suspenders with the sanitizer config so external_taint_escape
     // is suppressed regardless of class-prefix matching. (cognium-dev #102 FP-27)
