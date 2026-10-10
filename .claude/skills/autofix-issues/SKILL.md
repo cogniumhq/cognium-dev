@@ -479,7 +479,14 @@ Only if §7 passed and at least one fix survived:
    ```
    gh pr merge <pr> --repo cogniumhq/cognium-dev --squash --delete-branch
    ```
-4. If the merge is refused (permission/classifier): leave the PR open (it keeps `agent-pr`, so
+4. If the merge is refused because a review is required (`mergeStateStatus: BLOCKED`,
+   `reviewDecision: REVIEW_REQUIRED`), queue auto-merge so it lands as soon as it is approved.
+   Always pass the merge method; without it `gh` prompts and fails when non-interactive:
+   ```
+   gh pr merge <pr> --repo cogniumhq/cognium-dev --auto --squash --delete-branch
+   ```
+   Then continue with the steps below; the PR keeps `agent-pr` until it merges.
+   If the merge is refused for any other reason (permission/classifier): leave the PR open (it keeps `agent-pr`, so
    §0b's cap counts it), comment "ready — auto-merge blocked, needs a manual merge", remove
    `agent-in-progress` from the issues, and report it in §9.
 
