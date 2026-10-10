@@ -5841,6 +5841,85 @@ function findJavaPathNormalizeStartsWithGuardSanitizers(
  * bound variable (mirrors the `normalize()+startsWith()` emitter shape).
  */
 /**
+ * Argument of the call whose `(` is at `openParen`, respecting strings.
+ * Returns null when the call is unclosed.
+ */
+function readBalancedCallArg(text: string, openParen: number): string | null {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let i = openParen; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (escaped) { escaped = false; continue; }
+      if (c === '\\') { escaped = true; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return text.slice(openParen + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * True when a `startsWith` base is separator-anchored: `File.separator`,
+ * `File.separatorChar`, `+ "/"`, `+ '\\'`, or a string literal that itself
+ * ends in `/` or `\`. A bare canonical path does not (cognium-dev#618):
+ * `/safe/dir-evil` passes `startsWith("/safe/dir")`.
+ */
+function canonicalArgAnchored(arg: string): boolean {
+  if (/\bFile\s*\.\s*separator(?:Char)?\b/.test(arg)) return true;
+  if (/\+\s*(?:"\/"|'\/'|"\\\\"|'\\\\')/.test(arg)) return true;
+  const lit = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = lit.exec(arg)) !== null) {
+    const raw = (m[1] ?? m[2] ?? '').replace(/\\(.)/g, '$1');
+    if (raw.endsWith('/') || raw.endsWith('\\')) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `text` contains a canonical-path `startsWith` whose base is
+ * separator-anchored (cognium-dev#618).
+ *
+ * Canonical means the receiver is `….getCanonicalPath()` or the argument
+ * itself calls `getCanonicalPath(`. Anchored means the base ends in a
+ * separator (`File.separator`, `+ "/"`, or a literal ending in `/` or `\`).
+ * `dir.getCanonicalPath().startsWith(parent.getCanonicalPath())` is the
+ * ESAPI CVE-2022-23457 bypass and returns false.
+ */
+export function canonicalStartsWithArgAnchored(text: string): boolean {
+  const re = /\.startsWith\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const open = m.index + m[0].length - 1;
+    const arg = readBalancedCallArg(text, open);
+    if (arg === null) continue;
+    const head = text.slice(Math.max(0, m.index - 80), m.index + 1);
+    const onCanonical = /getCanonicalPath\s*\(\s*\)\s*\.\s*$/.test(head);
+    const argCanonical = /getCanonicalPath\s*\(/.test(arg);
+    if ((onCanonical || argCanonical) && canonicalArgAnchored(arg)) return true;
+  }
+  return false;
+}
+
+/** Text of the `if (...)` condition that opens on `lines[i]`, arguments included. */
+function guardConditionText(lines: string[], i: number): string {
+  const blob = lines.slice(i, Math.min(lines.length, i + 8)).join('\n');
+  const open = blob.indexOf('(');
+  if (open < 0) return lines[i] ?? '';
+  const arg = readBalancedCallArg(blob, open);
+  if (arg === null) return lines[i] ?? '';
+  return blob.slice(0, open + arg.length + 2);
+}
+
+/**
  * Java: `if (!<file>.getCanonicalPath().startsWith(<base>)) throw/return`
  * canonical-path containment guard (cognium-dev#269). The OWASP-recommended
  * java.io.File defence: resolve the file to its canonical (symlink- and
@@ -5849,7 +5928,10 @@ function findJavaPathNormalizeStartsWithGuardSanitizers(
  * handled by the sibling detector; this covers the java.io.File API.
  *
  * Reject polarity only (`!<file>.getCanonicalPath().startsWith(...)` with a
- * throwing/returning body). Credits the guarded File variable and its one-hop
+ * throwing/returning body). The base must be separator-anchored (#618):
+ * `File.separator`, `+ "/"`, or a literal that ends in `/` or `\`. A bare
+ * `startsWith(parent.getCanonicalPath())` is the ESAPI prefix bypass and is
+ * not credited. Credits the guarded File variable and its one-hop
  * derivations from the guard line forward.
  */
 function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
@@ -5864,6 +5946,7 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
     const m = guardRe.exec(lines[i]);
     if (!m) continue;
     if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+    if (!canonicalStartsWithArgAnchored(guardConditionText(lines, i))) continue;
 
     const guarded = new Set<string>([m[1]]);
     const mentions = (t: string): boolean => {
