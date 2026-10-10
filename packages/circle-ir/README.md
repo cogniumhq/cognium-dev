@@ -209,12 +209,12 @@ const response = await analyzeForAPI(code, 'File.java', 'java');
 | **Rust** | tree-sitter-rust | Actix-web, Rocket, Axum |
 | **Bash/Shell** | tree-sitter-bash | Shell scripts (.sh, .bash, .zsh, .ksh) |
 | **HTML** | tree-sitter-html | Web extraction preprocessor (.html, .htm, .xhtml) |
-| **C#/.NET** _(experimental)_ | tree-sitter-c-sharp | ASP.NET Core, ADO.NET, EF Core |
+| **C#/.NET** _(Preview)_ | tree-sitter-c-sharp | ASP.NET Core, ADO.NET (EF Core not yet verified) |
 
-**C#/.NET support is experimental / preview** (since 4.0.0). It performs
+**C#/.NET support is Preview** (since 4.0.0). It performs
 straight-line taint analysis across 10 CWE families — SQL injection, command
 injection, path traversal, SSRF, code injection, XSS, insecure deserialization,
-LDAP, XPath, XXE — on ASP.NET Core / ADO.NET / EF Core / BCL, handling string
+LDAP, XPath, XXE — on ASP.NET Core / ADO.NET / BCL (EF Core sinks are registered but have no measured true positive yet), handling string
 concatenation and `$"…{tainted}…"` interpolation, with sink-type-aware
 sanitizer recognition (`HtmlEncode`, `Path.GetFileName`). It is **not yet
 benchmark-verified** (no published TPR/FPR); expect gaps in branch/alias
