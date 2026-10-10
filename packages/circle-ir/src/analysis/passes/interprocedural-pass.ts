@@ -23,6 +23,7 @@ import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js'
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
 
 export interface InterproceduralPassResult {
   /** Additional sinks surfaced by inter-procedural analysis. */
@@ -329,10 +330,19 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         }
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (!sansAtSink || sansAtSink.length === 0) return true;
+        const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
+        const sinkVar = f.path.length > 0 ? f.path[f.path.length - 1]?.variable : undefined;
         for (const san of sansAtSink) {
-          if (sanitizerCoversSink(san, f.sink_type)) {
-            return false;
+          if (!sanitizerCoversSink(san, f.sink_type)) continue;
+          // A sanitizer on the sink line covers its own operand. A raw
+          // operand beside it still flows (#641).
+          if (
+            sinkVar &&
+            identifierOutsideSanitizerCalls(sinkVar, callsAtSink, sansAtSink, f.sink_type)
+          ) {
+            continue;
           }
+          return false;
         }
         return true;
       });

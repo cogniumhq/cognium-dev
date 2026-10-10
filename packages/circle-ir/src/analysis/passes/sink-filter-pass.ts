@@ -26,6 +26,7 @@ import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
 import {
   resolveIdentifierType,
   resolveCallReturnType,
@@ -1122,8 +1123,9 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       dfg, constProp.sanitizedVars, constProp.synchronizedLines, language,
     );
 
-    // Stage 4 — sanitized sinks
-    filtered = filterSanitizedSinks(filtered, sanitizers, calls);
+    // Stage 4 — sanitized sinks. A sanitizer on one operand does not drop
+    // the sink while another source operand is still raw (#641).
+    filtered = filterSanitizedSinks(filtered, sanitizers, calls, sources);
 
     // Stage 5 — Python XPath FP reduction
     if (language === 'python') {
@@ -1231,8 +1233,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'xss') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
 
-        // 6a. If a sanitizer is used on this line, suppress the finding
-        if (JS_XSS_SANITIZERS.some(p => p.test(sinkLineText))) return false;
+        // 6a. If a sanitizer is used on this line, suppress the finding.
+        // The sanitizer covers its own operand. A source operand that is
+        // still outside that call keeps the sink (#641).
+        if (JS_XSS_SANITIZERS.some(p => p.test(sinkLineText))) {
+          const callsAtSink = callsByLine.get(sink.line) ?? [];
+          const covering = sanitizers.filter(
+            s => s.line === sink.line && sanitizerCoversSink(s, sink.type),
+          );
+          const rawOperand = sources.some(s =>
+            !!s.variable &&
+            identifierOutsideSanitizerCalls(s.variable, callsAtSink, covering, sink.type),
+          );
+          if (!rawOperand) return false;
+        }
 
         // 6b. If the RHS is a pure string literal, suppress (e.g., `.innerHTML = "<div>Hello</div>"`)
         //     Match: `.innerHTML = "..."` or `.innerHTML = '...'` or `.innerHTML = `...``
@@ -2889,8 +2903,14 @@ export function filterSanitizedSinks(
   sinks: CircleIR['taint']['sinks'],
   sanitizers: CircleIR['taint']['sanitizers'],
   calls: CircleIR['calls'],
+  sources?: CircleIR['taint']['sources'],
 ): CircleIR['taint']['sinks'] {
   if (!sanitizers || sanitizers.length === 0) return sinks;
+
+  const sourceVars: string[] = [];
+  for (const source of sources ?? []) {
+    if (source.variable && /^[A-Za-z_$][\w$]*$/.test(source.variable)) sourceVars.push(source.variable);
+  }
 
   const sanitizersByLine = new Map<number, typeof sanitizers>();
   for (const san of sanitizers) {
@@ -2910,22 +2930,29 @@ export function filterSanitizedSinks(
     const lineSanitizers = sanitizersByLine.get(sink.line);
     if (!lineSanitizers || lineSanitizers.length === 0) return true;
 
-    for (const san of lineSanitizers) {
-      if (sanitizerCoversSink(san, sink.type)) {
-        const lineCalls = callsByLine.get(sink.line) ?? [];
-        for (const call of lineCalls) {
-          for (const arg of call.arguments) {
-            const expr = arg.expression || '';
-            const sanMethodMatch = san.method.match(/(?:(\w+)\.)?(\w+)\(\)/);
-            if (sanMethodMatch) {
-              const sanMethodName = sanMethodMatch[2];
-              const sanClassName  = sanMethodMatch[1];
-              if (sanClassName) {
-                if (expr.includes(`${sanClassName}.${sanMethodName}(`)) return false;
-              } else if (expr.includes(`${sanMethodName}(`)) {
-                return false;
-              }
-            }
+    const lineCalls = callsByLine.get(sink.line) ?? [];
+    const covering = lineSanitizers.filter(san => sanitizerCoversSink(san, sink.type));
+    if (covering.length === 0) return true;
+
+    // A raw source operand keeps the sink (#641). The fully wrapped twin,
+    // and a sanitizer call with no known source operand, still drops it.
+    for (const variable of sourceVars) {
+      if (identifierOutsideSanitizerCalls(variable, lineCalls, covering, sink.type)) return true;
+    }
+
+    for (const san of covering) {
+      const sanMethodMatch = san.method.match(/(?:(\w+)\.)?(\w+)\(\)/);
+      if (!sanMethodMatch) continue;
+      const sanMethodName = sanMethodMatch[2];
+      const sanClassName = sanMethodMatch[1];
+      for (const call of lineCalls) {
+        if (call.method_name === sanMethodName) continue;
+        for (const arg of call.arguments) {
+          const expr = arg.expression || '';
+          if (sanClassName) {
+            if (expr.includes(`${sanClassName}.${sanMethodName}(`)) return false;
+          } else if (expr.includes(`${sanMethodName}(`)) {
+            return false;
           }
         }
       }

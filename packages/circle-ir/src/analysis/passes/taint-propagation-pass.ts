@@ -16,7 +16,7 @@ import type { CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
-import { propagateTaint } from '../taint-propagation.js';
+import { identifierOutsideSanitizerCalls, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, canonicalStartsWithArgAnchored, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
@@ -464,9 +464,18 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (sansAtSink && sansAtSink.length > 0) {
           for (const san of sansAtSink) {
-            if (sanitizerCoversSink(san, f.sink_type)) {
-              return false;
+            if (!sanitizerCoversSink(san, f.sink_type)) continue;
+            // A sanitizer on the sink line covers its own operand. A raw
+            // source operand beside it still flows (#641).
+            const sinkVar = f.path.length > 0 ? f.path[f.path.length - 1].variable : undefined;
+            const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
+            if (
+              sinkVar &&
+              identifierOutsideSanitizerCalls(sinkVar, callsAtSink, sansAtSink, f.sink_type)
+            ) {
+              continue;
             }
+            return false;
           }
         }
         // cognium-dev #239 C4 residual — DFG-walk sanitizer credit for
