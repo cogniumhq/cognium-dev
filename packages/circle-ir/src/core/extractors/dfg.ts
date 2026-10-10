@@ -900,6 +900,41 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
   const defs: DFGDef[] = [];
   let id = startId;
 
+  // TypeScript wraps every parameter in required_parameter / optional_parameter.
+  // The pattern may be an identifier or a destructuring pattern (`{ id }`,
+  // `{ a: { b } }`, `{ id } = default`). Bound names are param defs, matching
+  // the JavaScript object_pattern / array_pattern branches. (cognium-dev#664)
+  const addPatternDefs = (patternNode: Node, line: number): void => {
+    if (patternNode.type === 'identifier' || patternNode.type === 'shorthand_property_identifier_pattern') {
+      defs.push({
+        id: id++,
+        variable: getNodeText(patternNode),
+        line,
+        kind: 'param',
+      });
+      return;
+    }
+    if (patternNode.type === 'rest_pattern' || patternNode.type === 'rest_element') {
+      const nameNode = patternNode.namedChildCount > 0 ? patternNode.namedChild(0) : null;
+      if (!nameNode) return;
+      addPatternDefs(nameNode, line);
+      return;
+    }
+    if (patternNode.type === 'assignment_pattern') {
+      const leftNode = patternNode.childForFieldName('left');
+      if (leftNode) addPatternDefs(leftNode, line);
+      return;
+    }
+    if (patternNode.type === 'object_pattern' || patternNode.type === 'array_pattern') {
+      const destructDefs = extractDestructuringDefs(patternNode, id);
+      for (const def of destructDefs) {
+        def.kind = 'param';
+        defs.push(def);
+        id++;
+      }
+    }
+  };
+
   for (let i = 0; i < params.childCount; i++) {
     const param = params.child(i);
     if (!param) continue;
@@ -960,14 +995,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
     // TypeScript formal parameters
     else if (param.type === 'required_parameter' || param.type === 'optional_parameter') {
       const patternNode = param.childForFieldName('pattern');
-      if (patternNode && patternNode.type === 'identifier') {
-        defs.push({
-          id: id++,
-          variable: getNodeText(patternNode),
-          line: param.startPosition.row + 1,
-          kind: 'param',
-        });
-      }
+      if (patternNode) addPatternDefs(patternNode, param.startPosition.row + 1);
     }
   }
 

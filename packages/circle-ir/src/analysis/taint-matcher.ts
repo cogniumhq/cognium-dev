@@ -466,11 +466,18 @@ function findSources(
         const hasCSharpBindingAttr =
           language === 'csharp' &&
           param.annotations.some((a) => CSHARP_BINDING_ATTRS.has(a));
+        // A destructuring pattern binds values. `{ id }: { id: string }` is
+        // the same parameter as JavaScript `{ id }`; the object type on the
+        // pattern must not drop the seed. (cognium-dev#664)
+        const isDestructureBinding =
+          param.name.startsWith('{') || param.name.startsWith('[');
         const isTaintable = hasCSharpBindingAttr
           ? true
-          : param.type
-            ? isInterproceduralTaintableType(param.type, language)
-            : true; // JavaScript/Python - no type means any value
+          : isDestructureBinding
+            ? true
+            : param.type
+              ? isInterproceduralTaintableType(param.type, language)
+              : true; // JavaScript/Python - no type means any value
 
         if (isTaintable) {
           // Use parameter line if available, fallback to method start line
