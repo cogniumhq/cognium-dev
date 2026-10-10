@@ -8,7 +8,7 @@ import { initAnalyzer, analyze } from '../../../src/analyzer.js';
 describe('insecure-cookie pass (#43)', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
-  const insecureCookieFindings = (r: { findings?: Array<{ rule_id: string }> }) =>
+  const insecureCookieFindings = (r: { findings?: Array<{ rule_id: string; line: number }> }) =>
     (r.findings ?? []).filter(f => f.rule_id === 'insecure-cookie');
 
   it('JS: res.cookie() with no options is flagged', async () => {
@@ -248,6 +248,51 @@ public class A {
 `;
     const r = await analyze(code, 'C.java', 'java');
     expect(insecureCookieFindings(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // cognium-dev#595 — file-wide setSecure(true) must not cover a sibling cookie.
+  it('Java: setSecure(true) on one cookie does not cover a sibling with setSecure(false)', async () => {
+    const code = `
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse res) {
+    Cookie session = new Cookie("session", "value");
+    session.setSecure(true);
+    session.setHttpOnly(true);
+    res.addCookie(session);
+    Cookie other = new Cookie("other", "value");
+    other.setSecure(false);
+    other.setHttpOnly(false);
+    res.addCookie(other);
+  }
+}
+`;
+    const r = await analyze(code, 'Mix.java', 'java');
+    const f = insecureCookieFindings(r);
+    const otherLine = code.split('\n').findIndex(l => l.includes('new Cookie("other"')) + 1;
+    expect(f.map(x => x.line)).toEqual([otherLine]);
+  });
+
+  it('Java: a sibling that never calls setSecure is still flagged', async () => {
+    const code = `
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse res) {
+    Cookie session = new Cookie("session", "value");
+    session.setSecure(true);
+    session.setHttpOnly(true);
+    res.addCookie(session);
+    Cookie bare = new Cookie("bare", "value");
+    res.addCookie(bare);
+  }
+}
+`;
+    const r = await analyze(code, 'Bare.java', 'java');
+    const f = insecureCookieFindings(r);
+    const bareLine = code.split('\n').findIndex(l => l.includes('new Cookie("bare"')) + 1;
+    expect(f.map(x => x.line)).toEqual([bareLine]);
   });
 
   it('emits one finding per call site (no duplicates)', async () => {

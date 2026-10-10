@@ -17,10 +17,10 @@
  *       present in the call expression text.
  *   Java:
  *     - `new javax.servlet.http.Cookie("name", "value")` — flag the
- *       construction site if no `.setSecure(true)` AND `.setHttpOnly(true)`
- *       calls appear in the same source file (text-based heuristic; a
- *       full DFG-based version would require tracking the assigned
- *       variable through CFG).
+ *       construction site unless that cookie variable (or the constructor
+ *       statement, when it is not assigned) calls `.setSecure(true)` and
+ *       `.setHttpOnly(true)`. A sibling cookie's setters do not count
+ *       (cognium-dev#595).
  *
  * Excluded (intentionally not flagged):
  *   - `res.clearCookie(...)` — clears, not sets.
@@ -50,8 +50,9 @@ const PY_SECURE_TRUE_RE   = /\bsecure\s*=\s*True\b/;
 const PY_HTTPONLY_TRUE_RE = /\bhttponly\s*=\s*True\b/i;
 
 // ---------- Java ----------
-const JAVA_SET_SECURE_TRUE_RE   = /\.setSecure\s*\(\s*true\s*\)/;
-const JAVA_SET_HTTPONLY_TRUE_RE = /\.setHttpOnly\s*\(\s*true\s*\)/;
+// Per cookie variable, not file-wide (#595). A file that sets Secure on one
+// cookie must still flag a sibling that calls setSecure(false) or never
+// calls it.
 
 // ---------- Go ----------
 // `http.SetCookie(w, &http.Cookie{..., Secure: true, HttpOnly: true})` —
@@ -113,13 +114,12 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
         this.emit(ctx, file, det, 'python');
       }
     } else if (language === 'java') {
-      // Java text-based heuristic: detect `new Cookie(...)` constructor calls,
-      // then look in the file source for `.setSecure(true)` and `.setHttpOnly(true)`
-      // anywhere. Misses only when those setters exist in another file.
-      const hasSetSecureTrue   = JAVA_SET_SECURE_TRUE_RE.test(code);
-      const hasSetHttpOnlyTrue = JAVA_SET_HTTPONLY_TRUE_RE.test(code);
+      // Per-cookie text heuristic (#595): `new Cookie(...)` is secure only
+      // when THAT variable calls setSecure(true) / setHttpOnly(true). A
+      // sibling cookie in the same file does not clear it. Setters that
+      // live in another file are still missed.
       for (const call of graph.ir.calls) {
-        const det = this.detectJavaCookieCtor(call, hasSetSecureTrue, hasSetHttpOnlyTrue);
+        const det = this.detectJavaCookieCtor(call, code);
         if (!det) continue;
         insecureCookies.push(det);
         this.emit(ctx, file, det, 'java');
@@ -214,10 +214,25 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
   }
 
   // ---------------- Java ----------------
+  /**
+   * True when this cookie construction is followed by `var.setX(true)`.
+   * The variable is the name assigned on the constructor line. An
+   * unassigned `new Cookie(...)` only looks at that statement, so another
+   * cookie's setter cannot cover it.
+   */
+  private javaCookieSetterTrue(code: string, call: CallInfo, setter: 'setSecure' | 'setHttpOnly'): boolean {
+    const line = code.split('\n')[(call.location.line ?? 1) - 1] ?? '';
+    const assign = /\b([A-Za-z_]\w*)\s*=\s*new\s+(?:[\w.]+\.)?Cookie\b/.exec(line);
+    const varName = assign?.[1];
+    const re = varName
+      ? new RegExp(`\\b${varName}\\.${setter}\\s*\\(\\s*true\\s*\\)`)
+      : new RegExp(`\\.${setter}\\s*\\(\\s*true\\s*\\)`);
+    return re.test(varName ? code : line);
+  }
+
   private detectJavaCookieCtor(
     call: CallInfo,
-    hasSetSecureTrue: boolean,
-    hasSetHttpOnlyTrue: boolean,
+    code: string,
   ): InsecureCookieResult['insecureCookies'][number] | null {
     // Java constructor: method_name === 'Cookie' for unqualified `new Cookie(...)`,
     // or a fully-qualified form like `javax.servlet.http.Cookie` /
@@ -237,8 +252,8 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
     // Need at least (name, value).
     if (call.arguments.length < 2) return null;
 
-    const missingSecure   = !hasSetSecureTrue;
-    const missingHttpOnly = !hasSetHttpOnlyTrue;
+    const missingSecure   = !this.javaCookieSetterTrue(code, call, 'setSecure');
+    const missingHttpOnly = !this.javaCookieSetterTrue(code, call, 'setHttpOnly');
     if (!missingSecure && !missingHttpOnly) return null;
 
     return {

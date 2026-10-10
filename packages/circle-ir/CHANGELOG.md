@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs: `library-profile-source-gate` counts speculative sources and does not delete them (#571).** `docs/PASSES.md` row 111, `docs/ARCHITECTURE.md`, and the pass header now match #288 option A (`dropped` stays 0; `droppedByType` is the count). The Rust entry-point gap stays on #496.
 
 ### Fixed
+- **Java: `setSecure(true)` credits that cookie only (#595).** A second cookie that calls `setSecure(false)`, or never sets the flag, is still insecure-cookie. One cookie with both flags set stays clean.
 - **C#: `new BinaryFormatter().Deserialize(x)` is a CWE-502 sink (#630).**
   The receiver-type map only knew variables, so an inline `new T()` receiver
   never matched `BinaryFormatter`, `LosFormatter`, `SoapFormatter`, or
