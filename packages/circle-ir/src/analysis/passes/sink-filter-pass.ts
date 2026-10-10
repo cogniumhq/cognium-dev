@@ -2744,6 +2744,25 @@ function evaluateSimpleExpression(expr: string, symbols: Symbols): string {
   return expr;
 }
 
+const ARGUMENT_IDENT_SKIP = new Set(['new', 'true', 'false', 'null', 'this', 'super']);
+
+/** True when `+` appears outside string literals (a concatenation, not a quoted plus). */
+function isStringConcat(expression: string): boolean {
+  return expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').includes('+');
+}
+
+/** Identifiers in an argument, ignoring text inside string literals. */
+function argumentIdentifiers(expression: string): string[] {
+  const stripped = expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ');
+  const found = stripped.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? [];
+  const out: string[] = [];
+  for (const id of found) {
+    if (ARGUMENT_IDENT_SKIP.has(id)) continue;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 function isStringLiteralExpression(expr: string): boolean {
   const trimmed = expr.trim();
   if (trimmed.length < 2) return false;
@@ -2860,17 +2879,28 @@ export function filterCleanVariableSinks(
         if (language === 'bash' && arg.expression === call.method_name && !arg.variable && arg.literal == null) continue;
 
         if (arg.variable && !arg.expression?.includes('[')) {
-          const varName = arg.variable;
-          const scopedName = methodName ? `${methodName}:${varName}` : varName;
+          // A string concat is clean only when every operand is. The call
+          // extractor records the first identifier (`cmd` in `cmd + bar`),
+          // and a constant prefix used to mark the whole argument clean
+          // (cognium-dev#627).
+          const expr = arg.expression ?? '';
+          const concatNames = isStringConcat(expr) ? argumentIdentifiers(expr) : [];
+          const names = concatNames.length > 0 ? concatNames : [arg.variable];
+          let argClean = true;
+          for (const varName of names) {
+            const scopedName = methodName ? `${methodName}:${varName}` : varName;
 
-          if (fieldNames.has(varName) && !isInSynchronizedBlock) { allArgsAreClean = false; continue; }
-          if (sanitizedVars?.has(scopedName) || sanitizedVars?.has(varName)) continue;
-          if (taintedVars.has(scopedName) || taintedVars.has(varName)) { allArgsAreClean = false; continue; }
+            if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
+            if (sanitizedVars?.has(scopedName) || sanitizedVars?.has(varName)) continue;
+            if (taintedVars.has(scopedName) || taintedVars.has(varName)) { argClean = false; break; }
 
-          const symbolValue = symbols.get(scopedName) ?? symbols.get(varName);
-          if (symbolValue && symbolValue.type !== 'unknown') continue;
+            const symbolValue = symbols.get(scopedName) ?? symbols.get(varName);
+            if (symbolValue && symbolValue.type !== 'unknown') continue;
 
-          allArgsAreClean = false;
+            argClean = false;
+            break;
+          }
+          if (!argClean) allArgsAreClean = false;
         } else {
           if (arg.literal != null) continue;
           if (arg.expression && !arg.variable && isStringLiteralExpression(arg.expression)) continue;
