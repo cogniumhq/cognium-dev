@@ -88,6 +88,21 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out[0].rule_id).toBe('hardcoded-credential');
   });
 
+  it('detects AWS temporary STS key (ASIA) in JavaScript (#648)', () => {
+    const code = `const accessKeyId = "ASIAQQQQQQQQQQQQQQQQ";`;
+    const out = runPass('creds.js', code, 'javascript');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].evidence?.provider).toBe('AWS access key');
+  });
+
+  it('does not flag an ASIA prefix that is not a 16-character key', () => {
+    const code = `const accessKeyId = "ASIAQQQQQQQQQQQQQQQ";`;
+    const out = runPass('creds.js', code, 'javascript');
+    expect(out.filter((f) => f.evidence?.provider === 'AWS access key')).toHaveLength(0);
+  });
+
   it('detects AWS access key in Java', () => {
     const code = `String key = "AKIAIOSFODNN7EXAMPLE";`;
     const out = runPass('App.java', code, 'java');

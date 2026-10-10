@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The receiver-type map only knew variables, so an inline `new T()` receiver
   never matched `BinaryFormatter`, `LosFormatter`, `SoapFormatter`, or
   `NetDataContractSerializer`. The creation expression's type is used directly.
+- **scan-secrets: AWS temporary STS keys (`ASIA` + 16) are hardcoded
+  credentials (#648).** The provider pattern matched only `AKIA`.
 
 ## [4.13.2] - 2026-10-08
 
