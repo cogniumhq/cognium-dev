@@ -780,11 +780,15 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
   // Only applies to SQL injection sinks
   if (pattern.type !== 'sql_injection') return false;
 
-  // Check arg[0] — the query string — for placeholder patterns.
-  // If the query is a string literal containing SQL placeholders and no
-  // concatenation, it's a parameterized query regardless of how the params
-  // are passed (array, varargs, tuple, etc.).
-  const queryArg = call.arguments.find(a => a.position === 0);
+  // The query string is arg[0] for the usual forms and arg[1] for Go
+  // `*Context` methods (`QueryContext(ctx, query, args...)`, #583).
+  // Arg-0 behaviour is unchanged: a placeholder literal plus any further
+  // argument is parameterized. Context forms look at the query argument
+  // the sink names, and require a bound argument after it.
+  const queryPos = pattern.arg_positions.length > 0
+    ? Math.min(...pattern.arg_positions)
+    : 0;
+  const queryArg = call.arguments.find(a => a.position === queryPos);
   if (queryArg) {
     const queryText = queryArg.literal ?? queryArg.expression ?? '';
     // SQL placeholders: ?, $1, $2, :name, %s
@@ -792,7 +796,10 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
     const hasPlaceholders = /(\?(?:\s|,|$|\))|\$\d+|:\w+|%s)/.test(queryText);
     // String concatenation indicators (unsafe even with placeholders)
     const hasConcatenation = /\+\s*[^+]/.test(queryText) || queryText.includes('${');
-    if (hasPlaceholders && !hasConcatenation && call.arguments.length >= 2) {
+    const hasBoundArg = queryPos === 0
+      ? call.arguments.length >= 2
+      : call.arguments.some(a => a.position > queryPos);
+    if (hasPlaceholders && !hasConcatenation && hasBoundArg) {
       return true;
     }
   }

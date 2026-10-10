@@ -2,6 +2,8 @@ import { describe, test, expect } from 'bun:test';
 import {
   applySuppressionsToResults,
   applySuppressionsToTaintPaths,
+  reportStaleSuppressions,
+  staleSuppressions,
   type Suppression,
 } from '../src/cli.js';
 import type { ScanResult } from '../src/formatters.js';
@@ -110,6 +112,60 @@ describe('applySuppressionsToResults', () => {
     expect(out[0].vulnerabilities[0].type).toBe('sql_injection');
   });
 
+  test('snippet suppresses a finding that moved off the hinted line', () => {
+    const results = [makeResult('/app/src/A.java', [{ type: 'sql_injection', line: 40 }])];
+    const suppressions: Suppression[] = [{
+      pass: 'sql_injection',
+      file: 'src/A.java',
+      line: 12,
+      snippet: 'stmt.execute(q)',
+    }];
+    const matched = new Set<number>();
+    const out = applySuppressionsToResults(results, suppressions, '/app', {
+      lineAt: () => '    stmt.execute(q);',
+      matched,
+    });
+    expect(out[0].vulnerabilities).toHaveLength(0);
+    expect(matched.has(0)).toBe(true);
+  });
+
+  test('snippet does not suppress a different statement', () => {
+    const results = [makeResult('/app/src/A.java', [{ type: 'sql_injection', line: 12 }])];
+    const out = applySuppressionsToResults(results, [{
+      pass: 'sql_injection',
+      file: 'src/A.java',
+      line: 12,
+      snippet: 'stmt.execute(q)',
+    }], '/app', { lineAt: () => '    Runtime.exec(cmd);' });
+    expect(out[0].vulnerabilities).toHaveLength(1);
+  });
+
+  test('a snippet that matches nothing is stale', () => {
+    const suppressions: Suppression[] = [{
+      pass: 'sql_injection',
+      file: 'src/A.java',
+      snippet: 'gone',
+    }];
+    const matched = new Set<number>();
+    applySuppressionsToResults(
+      [makeResult('/app/src/A.java', [{ type: 'sql_injection', line: 3 }])],
+      suppressions,
+      '/app',
+      { lineAt: () => 'stmt.execute(q)', matched },
+    );
+    expect(staleSuppressions(suppressions, matched)).toHaveLength(1);
+    const lines: string[] = [];
+    const orig = console.error;
+    console.error = (msg: unknown) => { lines.push(String(msg)); };
+    try {
+      reportStaleSuppressions(suppressions, matched);
+    } finally {
+      console.error = orig;
+    }
+    expect(lines[0]).toContain('sql_injection');
+    expect(lines[0]).toContain('matched no finding');
+  });
+
   test('handles file with ./prefix in suppression', () => {
     const results = [
       makeResult('/app/src/A.java', [{ type: 'dead-code', line: 5 }]),
@@ -186,6 +242,26 @@ describe('applySuppressionsToTaintPaths (#412)', () => {
       [{ pass: 'sql_injection', file: 'src/B.java', line: 99 }],
       '/app',
     )).toHaveLength(1);
+  });
+
+  test('snippet suppresses a cross-file path by the sink line text', () => {
+    const paths = [makePath('/app/src/B.java', 30)];
+    const out = applySuppressionsToTaintPaths(paths, [{
+      pass: 'sql_injection',
+      file: 'src/B.java',
+      line: 8,
+      snippet: 'stmt.execute(q)',
+    }], '/app', { lineAt: () => '    stmt.execute(q);' });
+    expect(out).toHaveLength(0);
+  });
+
+  test('snippet uses sink code when the file line cannot be read', () => {
+    const paths = [makePath('/app/src/B.java', 30)];
+    const out = applySuppressionsToTaintPaths(paths, [{
+      pass: 'sql_injection',
+      snippet: 'stmt.execute(q)',
+    }], '/app', { lineAt: () => undefined });
+    expect(out).toHaveLength(0);
   });
 
   test('does not suppress a different sink type', () => {

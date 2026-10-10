@@ -842,6 +842,29 @@ function longestLineLength(code: string): number {
 // source; taint analysis of it is both pathological (O(line²)) and valueless.
 const MAX_ANALYZABLE_LINE_LENGTH = 10_000;
 
+/**
+ * Replace each line longer than {@link MAX_ANALYZABLE_LINE_LENGTH} with an
+ * empty line, preserving the newline so later lines keep their numbers.
+ * A file that is one enormous line becomes empty (#460). A hand-written
+ * file with one oversized literal keeps every other line (#593).
+ */
+function neutralizeOverlongLines(code: string): { code: string; dropped: number } {
+  if (longestLineLength(code) <= MAX_ANALYZABLE_LINE_LENGTH) {
+    return { code, dropped: 0 };
+  }
+  let out = '';
+  let start = 0;
+  let dropped = 0;
+  for (let i = 0; i <= code.length; i++) {
+    if (i !== code.length && code.charCodeAt(i) !== 10) continue;
+    if (i - start > MAX_ANALYZABLE_LINE_LENGTH) dropped++;
+    else if (i > start) out += code.slice(start, i);
+    if (i < code.length) out += '\n';
+    start = i + 1;
+  }
+  return { code: out, dropped };
+}
+
 export async function analyze(
   code: string,
   filePath: string,
@@ -889,6 +912,17 @@ export async function analyze(
     if (lower.endsWith('.tsx') || lower.endsWith('.jsx')) {
       parseGrammar = 'tsx';
     }
+  }
+
+  // #593 — blank only the over-long lines, then analyse what remains. Doing
+  // this before parse means a 73 KB one-line bundle (#460) never reaches the
+  // DFG, and a sibling sink on the next line still does.
+  const neutralized = neutralizeOverlongLines(code);
+  if (neutralized.dropped > 0) {
+    logger.warn('Neutralized over-long lines before analysis', {
+      filePath, language, droppedLines: neutralized.dropped,
+    });
+    code = neutralized.code;
   }
 
   logger.debug('Analyzing file', { filePath, language, parseGrammar, codeLength: code.length });
@@ -950,17 +984,10 @@ export async function analyze(
   }
   phaseEnd('extractMeta', tMeta);
 
-  // cognium-dev#460 — a minified / bundled file is one enormous line, and the
-  // DFG chain builder plus taint propagation are super-linear in defs-per-line
-  // (`computeChains` pairs every def with every use on the same line). On a
-  // 73 KB single-line webpack bundle that is O(n²) and wedges the process
-  // synchronously (100 % CPU, no timer fires — the project-path `crossFile
-  // BudgetMs` is inert), while producing no meaningful taint result on
-  // generated code. Detect a pathological longest line and return a minimal IR
-  // — real meta and parse status, empty analysis — so both `analyze()` and, by
-  // extension, `analyzeProject()` stay bounded. Threshold is far past any
-  // hand-written source line; consumers that already skip minified inputs
-  // (cognium-ai preFlightSkip) see no change.
+  // cognium-dev#460 — residual backstop. Over-long lines are already blanked
+  // above; this still returns a minimal IR if one remains, so a minified
+  // bundle cannot reach the super-linear DFG. A file whose only long line was
+  // blanked is analysed normally (#593).
   if (longestLineLength(code) > MAX_ANALYZABLE_LINE_LENGTH) {
     logger.warn('Skipping analysis of a minified / single-line file', {
       filePath, language, codeLength: code.length,

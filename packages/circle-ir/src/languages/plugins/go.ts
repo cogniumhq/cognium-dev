@@ -19,6 +19,18 @@ import type {
 } from '../types.js';
 import { BaseLanguagePlugin } from './base.js';
 
+/** database/sql sinks that share one CWE and severity (#583). */
+function sqlSinks(cls: string, methods: Array<[string, number[]]>): TaintSinkPattern[] {
+  return methods.map(([method, argPositions]) => ({
+    method,
+    class: cls,
+    type: 'sql_injection',
+    cwe: 'CWE-89',
+    severity: 'critical',
+    argPositions,
+  }));
+}
+
 /**
  * Go language plugin implementation.
  */
@@ -264,6 +276,35 @@ export class GoPlugin extends BaseLanguagePlugin {
         severity: 'critical',
         argPositions: [0],
       },
+      // database/sql context and transaction forms (#583). The query is
+      // argument 0 for the plain forms and argument 1 for the *Context
+      // forms (argument 0 is the context). Conn is the same shape as DB.
+      ...sqlSinks('DB', [
+        ['QueryContext', [1]],
+        ['QueryRowContext', [1]],
+        ['ExecContext', [1]],
+        ['Prepare', [0]],
+        ['PrepareContext', [1]],
+      ]),
+      ...sqlSinks('Tx', [
+        ['Exec', [0]],
+        ['QueryRow', [0]],
+        ['QueryContext', [1]],
+        ['QueryRowContext', [1]],
+        ['ExecContext', [1]],
+        ['Prepare', [0]],
+        ['PrepareContext', [1]],
+      ]),
+      ...sqlSinks('Conn', [
+        ['Query', [0]],
+        ['QueryRow', [0]],
+        ['Exec', [0]],
+        ['QueryContext', [1]],
+        ['QueryRowContext', [1]],
+        ['ExecContext', [1]],
+        ['Prepare', [0]],
+        ['PrepareContext', [1]],
+      ]),
 
       // Command Injection — argPositions intentionally empty so all variadic
       // positions are scanned. `exec.Command("sh", "-c", taintedCmd)` puts the

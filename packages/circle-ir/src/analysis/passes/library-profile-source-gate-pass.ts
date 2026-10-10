@@ -1,9 +1,10 @@
 /**
  * LibraryProfileSourceGatePass — cognium-dev #236
  *
- * Under the `library/*` project profile, drops speculative
- * `interprocedural_param` sources from `graph.ir.taint.sources`
- * before flow generation. Rationale:
+ * Under the `library/*` project profile, counts speculative
+ * `interprocedural_param` and `constructor_field` sources and does
+ * not remove them (#288 option A, #571). Rationale for the original
+ * drop, which this pass no longer performs:
  *
  *   `TaintMatcher` emits an `interprocedural_param` source for every
  *   public method parameter — the semantics are "this parameter MIGHT
@@ -18,10 +19,10 @@
  *   mismatch surfaces most (35% of Tier 2 H+C findings in the 22-repo
  *   audit), because Scenario B in `InterproceduralPass` synthesises
  *   an `external_taint_escape` sink for every external call carrying
- *   an `interprocedural_param`-tainted argument. Dropping the source
- *   also drops every `interprocedural_param → *` flow that
+ *   an `interprocedural_param`-tainted argument. Deleting the seed
+ *   would also delete every `interprocedural_param → *` flow that
  *   `TaintPropagationPass.detectParameterSinkFlows` would otherwise
- *   emit.
+ *   emit. This pass does not do that deletion (#288 option A).
  *
  * This pass is the source-side companion to the entry-point gate
  * (#128) and the source-semantics gate (#138). Where #128 attempts to
@@ -33,21 +34,21 @@
  *
  * Pipeline slot: runs after `SourceSemanticsPass` (so speculative
  * tagging is preserved for observability) and before `SinkFilterPass`
- * / `TaintPropagationPass` (so no dropped source ever reaches the
- * flow generators or Scenario B in `InterproceduralPass`).
+ * / `TaintPropagationPass`. It reads the authoritative source list
+ * and leaves that list intact.
  *
- * Dropped sources are **not** re-emitted or silently reclassified —
- * they are removed outright. The pass returns a small diagnostic
- * result recording the profile that triggered it and the number of
- * sources dropped, so downstream consumers (and unit tests) can
- * observe the gate without having to reconstruct the reason.
+ * Speculative sources are counted and left in place. `dropped` is
+ * always 0; `droppedByType` is the count of speculative sources
+ * seen. The library-shape judgement is a tag on the flow, not a
+ * deletion. The diagnostic lets a consumer tell a clean file from
+ * a gated one.
  *
  * Guardrails:
  *   - Pass is a no-op when `graph.ir.meta.projectProfile` is absent,
  *     `'unknown'`, or does not start with `library/`. Callers that do
  *     not opt in to profile detection get the unmodified source list.
  *   - Only `interprocedural_param` and `constructor_field` sources
- *     are eligible for the drop. Every other `SourceType` is a
+ *     are eligible for the count. Every other `SourceType` is a
  *     concrete taint anchor (`http_param`, `env_input`, `db_input`,
  *     …) and is preserved unconditionally.
  *   - Guarded on `disabledPasses.has('library-profile-source-gate')`
@@ -59,7 +60,7 @@ import type { ProjectProfile, SourceType, TaintSource } from '../../types/index.
 import type { SinkFilterResult } from './sink-filter-pass.js';
 
 /**
- * Source types eligible for the library-profile drop. These are the
+ * Source types eligible for the library-profile count. These are the
  * SPECULATIVE seeds — sources that represent "this parameter/field
  * MIGHT carry taint from a caller we cannot see", not concrete taint
  * anchors.
@@ -83,13 +84,13 @@ export interface LibraryProfileSourceGateResult {
    */
   applied: boolean;
   /**
-   * Number of speculative sources removed from
-   * `graph.ir.taint.sources`. Zero when `applied === false`.
+   * Always 0. Speculative sources are not removed (#288 option A).
+   * The count of sources seen is `droppedByType`.
    */
   dropped: number;
   /**
-   * Breakdown of drops by `SourceType`. Empty object when
-   * `applied === false`.
+   * How many speculative sources were seen, by `SourceType`. Empty
+   * object when `applied === false`. Nothing is removed.
    */
   droppedByType: Partial<Record<SourceType, number>>;
 }

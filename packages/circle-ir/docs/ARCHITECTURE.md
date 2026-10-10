@@ -705,20 +705,22 @@ having to reconstruct the resolver externally.
 `Meta.projectProfile` now populated on every per-file IR, the
 pipeline gained two profile-driven gates that complement the
 post-hoc `applyProjectProfileTransform` severity downgrade with
-upstream drops before flow generation:
+upstream scoping before flow generation:
 
 - `LibraryProfileSourceGatePass` (#236, 3.151.0, rule_id
   `library-profile-source-gate`, category `security`) — **source-side**.
 - `LibraryProfileSinkGatePass` (#232, 3.152.0, rule_id
   `library-profile-sink-gate`, category `security`) — **sink-side**.
 
-**Source-side gate (#236).** Runs between `SourceSemanticsPass` and
-`SinkFilterPass` and, when `graph.ir.meta.projectProfile` begins
-with `library/`, drops speculative sources — `interprocedural_param`
-and `constructor_field` — from `graph.ir.taint.sources` before any
-flow generator sees them. Concrete anchors (`http_param`,
+**Source-side gate (#236, #288 option A, #571).** Runs between
+`SourceSemanticsPass` and `SinkFilterPass` and, when
+`graph.ir.meta.projectProfile` begins with `library/`, counts
+speculative sources — `interprocedural_param` and
+`constructor_field` — and does not remove them. `dropped` stays 0;
+`droppedByType` is the count. Concrete anchors (`http_param`,
 `env_input`, `db_input`, `file_input`, etc.) are preserved
-unconditionally.
+unconditionally. The library-shape judgement is the
+`library-api-surface:caller-responsibility` tag, not a deletion.
 
 Motivation. `TaintMatcher` emits an `interprocedural_param` source
 for every public method parameter (the "this parameter MIGHT receive
@@ -730,9 +732,12 @@ consumers, and the correct trust-boundary answer is "the consumer's
 threat model, not ours". In the 22-repo harness audit
 `external_taint_escape` (CWE-668) alone accounted for ~35% of Tier 2
 H+C findings; those flows are synthesised in Scenario B of
-`InterproceduralPass` from `interprocedural_param` seeds, so removing
-the seeds removes the whole class of finding at the source-side
-without touching the sink pipeline.
+`InterproceduralPass` from `interprocedural_param` seeds. #288
+option A stopped deleting those seeds: a deletion is invisible in
+the output (a gated file looks clean) and disagrees with the
+tag-and-downgrade path used everywhere else. The count remains so
+a consumer can tell the two apart. #496 (the Rust entry-point
+gate) is a separate gap; this pass does not close it.
 
 **Sink-side gate (#232).** Runs between
 `CliMainReflectionSuppressPass` and `TaintPropagationPass` and, when
@@ -763,8 +768,8 @@ Interaction with existing gates:
   unavailable or insufficient.
 - **#138 source-semantics gate** — per-source tagger (constant / SPI
   / demoPath) that runs immediately before #236. Its tags are
-  preserved for observability even when the source is subsequently
-  dropped.
+  preserved for observability. The source-side gate counts those
+  sources and does not delete them (#288 option A).
 - **#139 sink-semantics gate** — per-signature sink classifier
   (`configs/sink-semantics.json`) that fires before #232. Its curated
   drops (e.g. `Jedis#executeCommand`) are preserved for the residual
@@ -780,13 +785,14 @@ Guardrails:
 
 - Both gates are no-ops when profile is absent, `'unknown'`, or
   non-library shape. Callers that skip profile detection get the
-  exact 3.151.0 (source-gate-only) output from the sink-gate; the
-  source-gate itself remains identical to 3.151.0.
+  exact pre-sink-gate output from the sink-gate. The source-gate
+  counts speculative sources and does not delete them (#288 option A);
+  it is not the 3.151.0 deletion.
 - Each gate is independently guardable via
   `disabledPasses.has('library-profile-source-gate' |
   'library-profile-sink-gate')`.
 - Only speculative source types are eligible for the source-side
-  drop; only `log_injection` is eligible for the sink-side drop.
+  count; only `log_injection` is eligible for the sink-side drop.
   Extending either set is a deliberate change reviewed against the
   Pillar I trust-boundary rationale.
 
@@ -1039,7 +1045,8 @@ row #113.
 **Context.** ADR-008 established the `library/*` project profile as
 the axis along which "downstream consumer decides trust boundary"
 false positives are dropped. Pass #111
-(`library-profile-source-gate`, 3.151.0) drops speculative
+(`library-profile-source-gate`, 3.151.0; #288 option A counts
+those sources and does not delete them) applies to speculative
 `interprocedural_param` / `constructor_field` sources under
 `library/*`, and Pass #112 (`library-profile-sink-gate`, 3.152.0)
 drops the entire `log_injection` (CWE-117) sink class. A 10-repo
@@ -1149,8 +1156,9 @@ the CWE-22 exploit primitive (traversal escape). Registering them
 as CWE-22 sinks produces load-bearing false positives with no
 matching true-positive signal.
 
-**Context (RC1).** Pass #111 (`library-profile-source-gate`) drops
-speculative sources from `graph.ir.taint.sources` under `library/*`.
+**Context (RC1).** Pass #111 (`library-profile-source-gate`) counts
+speculative sources on `graph.ir.taint.sources` under `library/*`
+and does not remove them (#288 option A).
 Empirically, 170/246 CWE-22 H+C findings on the Tier 2 cohort
 (`cognium-ai#189` §4, 2026-07) carried an `interprocedural_param`
 source with empty `source.code` — meaning the source-list mutation

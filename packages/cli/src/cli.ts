@@ -52,10 +52,72 @@ export interface Suppression {
   pass: string;
   /** File path (relative or absolute) — if omitted, applies to all files */
   file?: string;
-  /** Specific line number — if omitted, applies to all lines in the file */
+  /**
+   * Specific line number — if omitted, applies to all lines in the file.
+   * When `snippet` is set, the line is only a hint: a finding whose own
+   * line text contains the snippet is suppressed even if it has moved.
+   */
   line?: number;
+  /**
+   * Source text that identifies the finding. Whitespace is collapsed.
+   * The finding's own line must contain this text. A line number, if
+   * present, does not have to match.
+   */
+  snippet?: string;
   /** Reason for suppression (for documentation) */
   reason?: string;
+}
+
+/** Optional line reader and the set of suppression indexes that matched. */
+export interface SuppressionMatch {
+  lineAt?: (file: string, line: number) => string | undefined;
+  matched?: Set<number>;
+}
+
+function collapseWs(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function fileMatches(suppFile: string, findingFile: string, basePath: string): boolean {
+  const wanted = suppFile.replace(/^\.\//, '');
+  const relativeFile = relative(basePath, findingFile) || findingFile;
+  return wanted === relativeFile || wanted === findingFile;
+}
+
+function findingMatchesSuppression(
+  supp: Suppression,
+  finding: { pass: string; alsoPass?: string; file: string; line: number; lineText?: string },
+  basePath: string,
+  lineAt?: (file: string, line: number) => string | undefined,
+): boolean {
+  if (supp.pass !== finding.pass && supp.pass !== finding.alsoPass) return false;
+  if (supp.file && !fileMatches(supp.file, finding.file, basePath)) return false;
+  const snippet = supp.snippet ? collapseWs(supp.snippet) : '';
+  if (snippet) {
+    const fromFile = lineAt?.(finding.file, finding.line);
+    const text = fromFile !== undefined ? fromFile : finding.lineText;
+    return text !== undefined && collapseWs(text).includes(snippet);
+  }
+  if (supp.line !== undefined && supp.line !== finding.line) return false;
+  return true;
+}
+
+/**
+ * Suppressions that matched no finding. The caller warns; the scan still succeeds.
+ */
+export function staleSuppressions(suppressions: Suppression[], matched: Set<number>): Suppression[] {
+  return suppressions.filter((_, i) => !matched.has(i));
+}
+
+export function reportStaleSuppressions(suppressions: Suppression[], matched: Set<number>): void {
+  for (const supp of staleSuppressions(suppressions, matched)) {
+    const where = [supp.file, supp.snippet ? 'snippet' : '', supp.line !== undefined && !supp.snippet ? `line ${supp.line}` : '']
+      .filter(Boolean)
+      .join(' ');
+    console.error(colors.dim(
+      `Suppression for ${supp.pass}${where ? ` (${where})` : ''} matched no finding`,
+    ));
+  }
 }
 
 /**
@@ -186,28 +248,20 @@ export function applySuppressionsToResults(
   results: ScanResult[],
   suppressions: Suppression[],
   basePath: string,
+  match?: SuppressionMatch,
 ): ScanResult[] {
   if (suppressions.length === 0) return results;
 
   return results.map(result => {
-    const relativeFile = relative(basePath, result.file) || result.file;
-
     const filteredVulns = result.vulnerabilities.filter(vuln => {
-      // Check each suppression
-      for (const supp of suppressions) {
-        // Pass must match
-        if (supp.pass !== vuln.type) continue;
-
-        // If file specified, it must match
-        if (supp.file) {
-          const suppFile = supp.file.replace(/^\.\//, ''); // normalize
-          if (suppFile !== relativeFile && suppFile !== result.file) continue;
-        }
-
-        // If line specified, it must match
-        if (supp.line !== undefined && supp.line !== vuln.line) continue;
-
-        // All conditions matched — suppress this finding
+      for (let i = 0; i < suppressions.length; i++) {
+        if (!findingMatchesSuppression(
+          suppressions[i],
+          { pass: vuln.type, file: result.file, line: vuln.line },
+          basePath,
+          match?.lineAt,
+        )) continue;
+        match?.matched?.add(i);
         return false;
       }
       return true;
@@ -232,22 +286,25 @@ export function applySuppressionsToTaintPaths(
   paths: TaintPath[],
   suppressions: Suppression[],
   basePath: string,
+  match?: SuppressionMatch,
 ): TaintPath[] {
   if (suppressions.length === 0) return paths;
 
   return paths.filter(path => {
-    for (const supp of suppressions) {
-      const sinkType = path.sink.type;
-      if (supp.pass !== sinkType && supp.pass !== `cross-file-${sinkType}`) continue;
-
-      if (supp.file) {
-        const suppFile = supp.file.replace(/^\.\//, '');
-        const relativeFile = relative(basePath, path.sink.file) || path.sink.file;
-        if (suppFile !== relativeFile && suppFile !== path.sink.file) continue;
-      }
-
-      if (supp.line !== undefined && supp.line !== path.sink.line) continue;
-
+    for (let i = 0; i < suppressions.length; i++) {
+      if (!findingMatchesSuppression(
+        suppressions[i],
+        {
+          pass: path.sink.type,
+          alsoPass: `cross-file-${path.sink.type}`,
+          file: path.sink.file,
+          line: path.sink.line,
+          lineText: path.sink.code,
+        },
+        basePath,
+        match?.lineAt,
+      )) continue;
+      match?.matched?.add(i);
       return false;
     }
     return true;
@@ -1078,12 +1135,32 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     if (suppressions.length > 0) {
       const beforeCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0)
         + (crossFileData?.taintPaths.length ?? 0);
-      results = applySuppressionsToResults(results, suppressions, process.cwd());
+      const matched = new Set<number>();
+      const needsLines = suppressions.some(s => s.snippet && collapseWs(s.snippet).length > 0);
+      const lineCache = new Map<string, string[] | null>();
+      const lineAt = needsLines
+        ? (file: string, line: number): string | undefined => {
+            let lines = lineCache.get(file);
+            if (lines === undefined) {
+              try {
+                lines = readFileSync(file, 'utf-8').split('\n');
+              } catch {
+                lines = null;
+              }
+              lineCache.set(file, lines);
+            }
+            if (!lines || line < 1) return undefined;
+            return lines[line - 1];
+          }
+        : undefined;
+      const match: SuppressionMatch = { lineAt, matched };
+      results = applySuppressionsToResults(results, suppressions, process.cwd(), match);
       if (crossFileData) {
         crossFileData.taintPaths = applySuppressionsToTaintPaths(
           crossFileData.taintPaths,
           suppressions,
           process.cwd(),
+          match,
         );
       }
       const afterCount = results.reduce((sum, r) => sum + r.vulnerabilities.length, 0)
@@ -1092,6 +1169,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         // 3.89.2: status to stderr (stdout reserved for payload).
         console.error(colors.dim(`Suppressed ${beforeCount - afterCount} finding(s) via config`));
       }
+      if (!options.quiet) reportStaleSuppressions(suppressions, matched);
     }
 
     // Filter by severity if specified

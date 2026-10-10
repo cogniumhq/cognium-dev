@@ -6,9 +6,9 @@
  *
  * Two detection layers:
  *
- *   1. Provider-specific regex patterns. ~16 high-confidence prefixes /
+ *   1. Provider-specific regex patterns. ~18 high-confidence prefixes /
  *      shapes (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`,
- *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`, OpenAI `sk-`,
+ *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`/`sk_test_`/`rk_test_`, OpenAI `sk-`,
  *      Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`,
  *      PEM private keys, npm `npm_`). Each match emits a finding with
  *      `rule_id: 'hardcoded-credential'` (matches the legacy Bash
@@ -183,6 +183,20 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     regex: /\bpk_live_[A-Za-z0-9]{24,}\b/,
     severity: 'high', level: 'warning',
     fix: 'Publishable keys are not secret but should still not be checked in to back-end source files; verify front-end vs back-end context.',
+  },
+  // Test-mode secret and restricted keys still authorize the test account.
+  // Same length floor as the live forms. Severity is high, not critical (#576).
+  {
+    name: 'Stripe test secret key',
+    regex: /\bsk_test_[A-Za-z0-9]{24,}\b/,
+    severity: 'high', level: 'warning',
+    fix: 'Rotate the Stripe test secret key in the Stripe Dashboard and load it from a secrets manager.',
+  },
+  {
+    name: 'Stripe test restricted key',
+    regex: /\brk_test_[A-Za-z0-9]{24,}\b/,
+    severity: 'high', level: 'warning',
+    fix: 'Rotate the Stripe test restricted key in the Stripe Dashboard and load it from a secrets manager.',
   },
   {
     name: 'OpenAI API key',
@@ -709,12 +723,14 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         const m = pattern.regex.exec(lineText);
         if (!m) continue;
 
-        // Padded placeholders (`rk_live_placeholder…`, `glpat-placeholder…`)
-        // are not credentials. Length alone does not reject them. Scoped to
-        // these patterns so the AWS example key (`AKIA…EXAMPLE`) is unchanged.
-        // (#574, #577)
+        // Padded placeholders (`rk_live_placeholder…`, `sk_test_placeholder…`,
+        // `glpat-placeholder…`) are not credentials. Length alone does not
+        // reject them. Scoped to these patterns so the AWS example key
+        // (`AKIA…EXAMPLE`) is unchanged. (#574, #576, #577)
         if (
           (pattern.name === 'Stripe live restricted key' ||
+            pattern.name === 'Stripe test secret key' ||
+            pattern.name === 'Stripe test restricted key' ||
             pattern.name === 'GitLab personal access token') &&
           PLACEHOLDER_RE.test(m[0])
         ) {
