@@ -119,7 +119,7 @@ interface ProviderPattern {
 const PROVIDER_PATTERNS: ProviderPattern[] = [
   {
     name: 'AWS access key',
-    regex: /\bAKIA[0-9A-Z]{16}\b/,
+    regex: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
     severity: 'critical', level: 'error',
     fix: 'Rotate the AWS access key immediately and move it to an environment variable or AWS Secrets Manager.',
   },

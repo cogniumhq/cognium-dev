@@ -271,6 +271,19 @@ function csharpBareName(node: Node): string {
   return getNodeText(node);
 }
 
+/**
+ * Simple type of `new T(...)`. `new BinaryFormatter().Deserialize(s)` has no
+ * variable for the receiver-type map, so the creation expression itself is
+ * the type (#630).
+ */
+function csharpCreatedSimpleType(creation: Node): string | null {
+  const typeNode = creation.childForFieldName('type');
+  if (!typeNode) return null;
+  const bare = csharpBareName(typeNode).replace(/<[^>]*>/g, '');
+  const simple = bare.split('.').pop()?.trim() ?? '';
+  return simple && simple !== 'var' ? simple : null;
+}
+
 function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
   const typeMap = buildCSharpReceiverTypeMap(tree, cache);
@@ -280,11 +293,15 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     const fn = inv.childForFieldName('function');
     let methodName = 'unknown';
     let receiver: string | null = null;
+    let receiverTypeFromCreation: string | null = null;
     if (fn?.type === 'member_access_expression') {
       const nameNode = fn.childForFieldName('name');
       const exprNode = fn.childForFieldName('expression');
       methodName = nameNode ? csharpBareName(nameNode) : 'unknown';
       receiver = exprNode ? getNodeText(exprNode) : null;
+      if (exprNode?.type === 'object_creation_expression') {
+        receiverTypeFromCreation = csharpCreatedSimpleType(exprNode);
+      }
     } else if (fn) {
       methodName = csharpBareName(fn);
     }
@@ -315,7 +332,7 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     calls.push({
       method_name: methodName,
       receiver,
-      receiver_type: receiver ? (typeMap.get(receiver) ?? null) : null,
+      receiver_type: receiverTypeFromCreation ?? (receiver ? (typeMap.get(receiver) ?? null) : null),
       receiver_type_fqn: null,
       arguments: args,
       location: { line: inv.startPosition.row + 1, column: inv.startPosition.column },

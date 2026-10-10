@@ -2119,6 +2119,31 @@ function isSafeJinjaRenderCall(
 }
 
 /**
+ * cognium-dev#629 — `res.status(400).end()` writes nothing. The call still
+ * matched the Express `Response.end` XSS sink (`arg_positions: [0]`), and a
+ * sibling call on the same line (`.test(name)`) then supplied argument 0, so
+ * the guard variable was reported as flowing into `.end()`.
+ *
+ * A response writer is an XSS sink only when one of its dangerous argument
+ * positions is actually present. `res.end(name)` and `res.send(html)` keep
+ * the sink; a zero-argument `.end()` / `.send()` / `.write()` does not.
+ * Scoped to the `class: 'Response'` XSS rows so receiver-carried sinks
+ * (an argument-less `ExecuteReader()`) stay untouched.
+ */
+function isArgumentlessJsResponseWriter(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language?: SupportedLanguage,
+): boolean {
+  if (pattern.type !== 'xss' || pattern.class !== 'Response') return false;
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  const positions = pattern.arg_positions;
+  if (!positions || positions.length === 0) return false;
+  const argc = call.arguments?.length ?? 0;
+  return positions.every((pos) => pos >= argc);
+}
+
+/**
  * Find taint sinks in method calls.
  * Deduplicates sinks at the same location+line+cwe, keeping highest confidence.
  */
@@ -2300,6 +2325,11 @@ function findSinks(
           if (rhs && isProvablyLiteralExpression(rhs.expression ?? '')) {
             continue;
           }
+        }
+
+        // cognium-dev#629 — no-argument response writers are not XSS sinks.
+        if (isArgumentlessJsResponseWriter(call, pattern, language)) {
+          continue;
         }
 
         // cognium-dev#358 extends this to `sql_injection`: the JS/TS
