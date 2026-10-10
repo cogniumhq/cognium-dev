@@ -16,9 +16,9 @@ import type { CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
-import { propagateTaint } from '../taint-propagation.js';
+import { identifierOutsideSanitizerCalls, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, canonicalStartsWithArgAnchored, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -464,9 +464,18 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (sansAtSink && sansAtSink.length > 0) {
           for (const san of sansAtSink) {
-            if (sanitizerCoversSink(san, f.sink_type)) {
-              return false;
+            if (!sanitizerCoversSink(san, f.sink_type)) continue;
+            // A sanitizer on the sink line covers its own operand. A raw
+            // source operand beside it still flows (#641).
+            const sinkVar = f.path.length > 0 ? f.path[f.path.length - 1].variable : undefined;
+            const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
+            if (
+              sinkVar &&
+              identifierOutsideSanitizerCalls(sinkVar, callsAtSink, sansAtSink, f.sink_type)
+            ) {
+              continue;
             }
+            return false;
           }
         }
         // cognium-dev #239 C4 residual — DFG-walk sanitizer credit for
@@ -526,7 +535,8 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // sanitizer idioms:
     //   - path_traversal: canonical-path-startsWith-throw guard
     //     (`new File(base, x)` followed by `x.getCanonicalPath().startsWith(
-    //      base.getCanonicalPath() + File.separator)` + `throw`)
+    //      base.getCanonicalPath() + File.separator)` + `throw`). The base
+    //     must end in a separator (#618); a bare canonical startsWith does not.
     //   - xxe: DocumentBuilderFactory hardening
     //     (`setFeature(...disallow-doctype-decl..., true)` or
     //      `setFeature(...external-general-entities..., false)`)
@@ -803,9 +813,10 @@ function isInJavaSanitizedMethod(
   // Lines are 1-indexed; slice is 0-indexed [start, end).
   const body = lines.slice(methodStart - 1, methodEnd).join('\n');
   if (sinkType === 'path_traversal') {
-    // Canonical-path-startsWith-throw idiom.
-    if (!/\.getCanonicalPath\s*\(/.test(body)) return false;
-    if (!/\.startsWith\s*\([^)]*getCanonicalPath/.test(body)) return false;
+    // Canonical-path-startsWith-throw idiom. The base must be
+    // separator-anchored (#618); `startsWith(parent.getCanonicalPath())`
+    // without `File.separator` is a known prefix bypass.
+    if (!canonicalStartsWithArgAnchored(body)) return false;
     if (!/\bthrow\s+new\b/.test(body)) return false;
     return true;
   }

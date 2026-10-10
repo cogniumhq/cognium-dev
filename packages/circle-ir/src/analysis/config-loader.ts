@@ -1476,8 +1476,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'setExpireTimeSeconds', class: 'StaticFilesConfiguration', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
   { method: 'configureJarCase', class: 'StaticFilesConfiguration', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'toString', class: 'StringUtils', type: 'path_traversal', cwe: 'CWE-22', severity: 'medium', arg_positions: [0] },
-  // Wildfly/Undertow servlet resource manager
-  { method: 'getResource', class: 'ServletResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
+  // Wildfly/Undertow servlet resource manager.
+  // ResourceManager / PathResourceManager / FileResourceManager /
+  // ClassPathResourceManager are the interface and implementations WildFly
+  // calls through (cognium-dev#622, CVE-2018-1047). Class-qualified only.
+  { method: 'getResource', class: 'ServletResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'getResource', class: 'ResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'getResource', class: 'PathResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'getResource', class: 'FileResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'getResource', class: 'ClassPathResourceManager', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
   // Yamcs file system bucket
   { method: 'deleteObject', class: 'FileSystemBucket', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   // RocketMQ validators

@@ -232,18 +232,37 @@ export function propagateTaint(
                   // use's reaching def, crediting sanitizers along the
                   // sanitize-then-sink chain (`safe = escape(x); sink(safe)`).
                   // Cycle-safe + bounded (hop cap 32).
+                  // A sanitizer on the sink line covers its own operand, not
+                  // every operand (#641). `escape(a) + b` still reaches the
+                  // sink through `b`. An earlier `b = escape(b)` still credits.
+                  let sanMap = sanitizersByLine;
+                  if (
+                    identifierOutsideSanitizerCalls(
+                      use.variable,
+                      callsAtSink,
+                      sanitizersByLine.get(sink.line) ?? [],
+                      sink.type,
+                    )
+                  ) {
+                    const stripped = new Map(sanitizersByLine);
+                    const kept = (sanitizersByLine.get(sink.line) ?? []).filter(
+                      s => !sanitizerCoversSink(s, sink.type),
+                    );
+                    if (kept.length === 0) stripped.delete(sink.line);
+                    else stripped.set(sink.line, kept);
+                    sanMap = stripped;
+                  }
                   const isSanitized = checkSanitized(
                     taintInfo.line,
                     sink.line,
                     sink.type,
-                    sanitizersByLine,
+                    sanMap,
                     {
                       startDefId: use.def_id,
                       chainsByToDef: graph.chainsByToDef,
                       defById,
                     }
                   );
-
                   if (!isSanitized.sanitized) {
                     // Find the source
                     const source = sources.find(s => s.line === taintInfo.sourceLine);
@@ -485,6 +504,107 @@ const KNOWN_SINK_TYPES = new Set<string>([
  *     later flows to a SQL sink) but eliminates false positives for correctly
  *     sanitized code.
  */
+function readBalancedArg(text: string, openParen: number): string | null {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let i = openParen; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (escaped) { escaped = false; continue; }
+      if (c === '\\') { escaped = true; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return text.slice(openParen + 1, i);
+    }
+  }
+  return null;
+}
+
+interface SanitizerCallRef {
+  receiver?: string;
+  methodName: string;
+}
+
+function sanitizerCallRefs(sanitizers: TaintSanitizer[], sinkType: string): SanitizerCallRef[] {
+  const refs: SanitizerCallRef[] = [];
+  for (const san of sanitizers) {
+    if (!sanitizerCoversSink(san, sinkType)) continue;
+    const m = /(?:(\w+)\.)?(\w+)\(\)/.exec(san.method);
+    if (!m?.[2]) continue;
+    refs.push({ receiver: m[1], methodName: m[2] });
+  }
+  return refs;
+}
+
+function maskSanitizerCalls(expr: string, refs: SanitizerCallRef[]): string {
+  let out = expr;
+  for (const ref of refs) {
+    const needles = ref.receiver
+      ? [`${ref.receiver}.${ref.methodName}`, ref.methodName]
+      : [ref.methodName];
+    for (const needle of needles) {
+      const re = new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
+      for (let guard = 0; guard < 8; guard++) {
+        const m = re.exec(out);
+        if (!m) break;
+        const open = m.index + m[0].length - 1;
+        const arg = readBalancedArg(out, open);
+        if (arg === null) break;
+        out = out.slice(0, m.index) + ' ' + out.slice(open + arg.length + 2);
+      }
+    }
+  }
+  return out;
+}
+
+function blankStringLiterals(expr: string): string {
+  return expr
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+}
+
+/**
+ * True when `variable` still appears in a sink-call argument after covering
+ * sanitizer calls on that line are removed (cognium-dev#641).
+ *
+ * `println(escapeHtml4(a) + b)` keeps `b`. `escapeHtml4(a) + escapeHtml4(b)`
+ * keeps nothing. The sanitizer call itself is skipped, so its own argument
+ * is not a raw operand.
+ */
+export function identifierOutsideSanitizerCalls(
+  variable: string,
+  calls: CallInfo[],
+  sanitizers: TaintSanitizer[],
+  sinkType: string,
+): boolean {
+  if (!/^[A-Za-z_$][\w$]*$/.test(variable)) return false;
+  const refs = sanitizerCallRefs(sanitizers, sinkType);
+  if (refs.length === 0) return false;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`,
+  );
+  for (const call of calls) {
+    if (refs.some(r => r.methodName === call.method_name)) continue;
+    for (const arg of call.arguments) {
+      const expr = arg.expression ?? '';
+      if (!expr) continue;
+      // A same-line guard (`IsLocalUrl(next); Redirect(next)`) is not a
+      // partial wrap. Only an argument that itself contains the sanitizer
+      // call can leave a raw sibling operand.
+      const masked = maskSanitizerCalls(expr, refs);
+      if (masked === expr) continue;
+      if (re.test(blankStringLiterals(masked))) return true;
+    }
+  }
+  return false;
+}
+
 function checkSanitized(
   fromLine: number,
   toLine: number,

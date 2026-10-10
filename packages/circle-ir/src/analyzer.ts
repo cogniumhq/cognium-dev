@@ -1532,7 +1532,7 @@ export async function analyzeForAPI(
   );
 
   // Filter sinks wrapped by sanitizers on the same line
-  filteredSinks = filterSanitizedSinks(filteredSinks, taint.sanitizers ?? [], calls);
+  filteredSinks = filterSanitizedSinks(filteredSinks, taint.sanitizers ?? [], calls, taint.sources);
 
   // Python: reduce XPath false-positives using forward taint propagation +
   // apostrophe-guard sanitizer detection.
