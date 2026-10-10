@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Stripe test-mode secret and restricted keys are reported (#576).** `sk_test_` and `rk_test_` (24+ alphanumeric characters) are `hardcoded-credential` at high severity. Short and placeholder bodies stay quiet. `sk_live_` / `rk_live_` stay critical; `pk_*` is unchanged.
 - **Go `database/sql` context, transaction, and prepare calls are SQL sinks (#583).** `QueryContext` / `QueryRowContext` / `ExecContext` / `PrepareContext` (query at argument 1) and `Tx.Exec` / `Tx.QueryRow` / `Prepare`, on `DB`, `Tx`, and `Conn`. A placeholder query with a bound argument stays clean. `Prepare` and `PrepareContext` are on the non-escape list with the other query methods.
+- **One over-long line no longer drops the rest of the file (#593).** Lines longer than 10 000 characters are blanked before parse, and every other line is still analysed. A file that is a single minified line stays empty (#460).
 
 ## [4.13.2] - 2026-10-08
 
