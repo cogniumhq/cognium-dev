@@ -255,6 +255,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     additionalSources.push(...findGoMultipartUploadSources(code, language));
     additionalSources.push(...findGoGrpcRequestSources(code, language));
     additionalSources.push(...findGoRequestBodySources(code, language));
+    additionalSources.push(...findGoFormIndexSources(code, language));
 
     const jsDOMSinks = findJavaScriptDOMSinks(code, language);
     for (const s of jsDOMSinks) {
@@ -322,6 +323,22 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
             location: `reflection invocation (getattr result called) with tainted attribute name at line ${r.sinkLine}`,
             method: r.method,
             confidence: 0.85,
+          });
+        }
+      }
+    }
+
+    // -- Java: Spring handler return of markup is reflected XSS (#566) --
+    if (language === 'java') {
+      for (const r of findJavaSpringReturnXSSSinks(code, types)) {
+        const alreadyExists = additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss');
+        if (!alreadyExists) {
+          additionalSinks.push({
+            type: 'xss',
+            cwe: 'CWE-79',
+            line: r.sinkLine,
+            location: `return HTML with request parameter at line ${r.sinkLine}`,
+            confidence: 0.9,
           });
         }
       }
@@ -1550,6 +1567,53 @@ function findGoGrpcRequestSources(sourceCode: string, language: string): TaintSo
   return sources;
 }
 
+/**
+ * cognium-dev #492 — index reads of request form maps.
+ *
+ * `r.PostForm.Get` / `r.Form.Get` are calls and are registered in the Go
+ * plugin. `r.Form[k][0]`, `r.PostForm[k][0]`, and `r.MultipartForm.Value[k]`
+ * are index expressions, so they never become a call. Seed the LHS when the
+ * receiver is a name declared as `*http.Request`. A local `url.Values` does
+ * not match that declaration.
+ */
+function findGoFormIndexSources(sourceCode: string, language: string): TaintSource[] {
+  if (language !== 'go') return [];
+  if (!/\.(?:PostForm|Form|MultipartForm)\b/.test(sourceCode)) return [];
+  const lines = sourceCode.split('\n');
+  const reqNames = new Set<string>();
+  const paramRe = /([A-Za-z_]\w*)\s+\*http\.Request\b/g;
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+    paramRe.lastIndex = 0;
+    while ((m = paramRe.exec(line)) !== null) reqNames.add(m[1]);
+  }
+  if (reqNames.size === 0) return [];
+  const alt = [...reqNames].map((n) => n.replace(/\$/g, '\\$')).join('|');
+  // Group 3 is PostForm|Form. MultipartForm.Value leaves it unset.
+  const indexRe = new RegExp(
+    `^\\s*(?:var\\s+)?([A-Za-z_]\\w*)\\s*(?:,\\s*\\w+\\s*)?:?=\\s*(?:${alt})\\s*\\.\\s*(?:(PostForm|Form)|MultipartForm\\s*\\.\\s*Value)\\s*\\[`,
+  );
+  const sources: TaintSource[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*\/\//.test(line)) continue;
+    const m = indexRe.exec(line);
+    if (!m) continue;
+    const variable = m[1];
+    if (variable === '_' || variable === '') continue;
+    const kind = m[2];
+    sources.push({
+      type: kind === 'Form' ? 'http_param' : 'http_body',
+      location: 'HTTP request form index',
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
+      variable,
+    });
+  }
+  return sources;
+}
+
 function findGoRequestBodySources(sourceCode: string, language: string): TaintSource[] {
   if (language !== 'go') return [];
   if (!sourceCode.includes('.Body')) return [];
@@ -2736,6 +2800,121 @@ export function findPythonReturnXSSSinks(
     sinks.push({ sinkLine: i + 1 });
   }
 
+  return sinks;
+}
+
+const JAVA_MAPPING_ANNS = new Set([
+  'GetMapping', 'PostMapping', 'PutMapping', 'DeleteMapping', 'PatchMapping', 'RequestMapping',
+]);
+const JAVA_REQUEST_PARAM_ANNS = new Set([
+  'RequestParam', 'RequestBody', 'RequestHeader', 'PathVariable',
+  'RequestPart', 'CookieValue', 'MatrixVariable',
+]);
+const JAVA_NON_STRING_TYPES = new Set([
+  'int', 'long', 'short', 'byte', 'float', 'double', 'boolean',
+  'Integer', 'Long', 'Short', 'Byte', 'Float', 'Double', 'Boolean',
+]);
+// Calls that encode a value for HTML. Stripped before the tainted-name check
+// so `return "<p>" + escapeHtml4(msg)` does not become a sink.
+const JAVA_HTML_ESCAPER_RE =
+  /\b(?:StringEscapeUtils\s*\.\s*escapeHtml4|HtmlUtils\s*\.\s*htmlEscape|escapeHtml4|escapeHtml|htmlEscape|encodeForHTML)\s*\([^)]*\)/g;
+
+function javaAnnBase(annotation: string): string {
+  let head = annotation.trim();
+  if (head.startsWith('@')) head = head.slice(1);
+  head = head.split('(')[0].trim();
+  const dot = head.lastIndexOf('.');
+  return dot >= 0 ? head.slice(dot + 1) : head;
+}
+
+function javaWritesResponseBody(annotations: string[]): boolean {
+  return annotations.some((a) => {
+    const name = javaAnnBase(a);
+    return name === 'RestController' || name === 'ResponseBody';
+  });
+}
+
+function javaHasMapping(annotations: string[]): boolean {
+  return annotations.some((a) => JAVA_MAPPING_ANNS.has(javaAnnBase(a)));
+}
+
+/** `<` that sits inside a `"..."` literal, not in a generic or a comparison. */
+function javaLiteralContainsMarkup(expr: string): boolean {
+  for (let i = 0; i < expr.length; i++) {
+    if (expr[i] !== '"') continue;
+    let j = i + 1;
+    let body = '';
+    while (j < expr.length && expr[j] !== '"') {
+      if (expr[j] === '\\' && j + 1 < expr.length) {
+        body += expr[j + 1];
+        j += 2;
+        continue;
+      }
+      body += expr[j];
+      j++;
+    }
+    if (body.includes('<')) return true;
+    i = j;
+  }
+  return false;
+}
+
+function javaParamIsNonString(type: string | null): boolean {
+  if (!type) return false;
+  const simple = type.trim().replace(/\[\]/g, '').split('.').pop() ?? '';
+  return JAVA_NON_STRING_TYPES.has(simple);
+}
+
+/**
+ * cognium-dev #566 — Spring handler `return "<p>" + msg` is reflected XSS
+ * when the handler writes the body (`@RestController` or `@ResponseBody`).
+ * A plain `@Controller` return is a view name. `<` counts only inside a
+ * string literal, and numeric or boolean parameters are not markup.
+ * `variable` is the parameter named in that return.
+ */
+export function findJavaSpringReturnXSSSinks(
+  sourceCode: string,
+  types: TypeInfo[],
+): Array<{ sinkLine: number; variable: string }> {
+  if (!sourceCode.includes('return') || !sourceCode.includes('<')) return [];
+  const lines = sourceCode.split('\n');
+  const sinks: Array<{ sinkLine: number; variable: string }> = [];
+  const seen = new Set<string>();
+
+  for (const t of types) {
+    const classWritesBody = javaWritesResponseBody(t.annotations);
+    const classMaps = javaHasMapping(t.annotations);
+    for (const m of t.methods) {
+      if (!classWritesBody && !javaWritesResponseBody(m.annotations)) continue;
+      if (!classMaps && !javaHasMapping(m.annotations)) continue;
+      const tainted: string[] = [];
+      for (const p of m.parameters) {
+        if (javaParamIsNonString(p.type)) continue;
+        if (p.annotations.some((a) => JAVA_REQUEST_PARAM_ANNS.has(javaAnnBase(a)))) {
+          tainted.push(p.name);
+        }
+      }
+      if (tainted.length === 0) continue;
+      const start = Math.max(0, m.start_line - 1);
+      const end = Math.min(lines.length, m.end_line);
+      for (let i = start; i < end; i++) {
+        const line = lines[i];
+        if (line.trimStart().startsWith('//')) continue;
+        const ret = line.match(/\breturn\s+(.+);/);
+        if (!ret) continue;
+        const stripped = ret[1].replace(JAVA_HTML_ESCAPER_RE, '""');
+        if (!javaLiteralContainsMarkup(stripped)) continue;
+        const lineNum = i + 1;
+        for (const variable of tainted) {
+          if (!new RegExp(`\\b${variable}\\b`).test(stripped)) continue;
+          const key = `${lineNum}:${variable}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          sinks.push({ sinkLine: lineNum, variable });
+        }
+      }
+    }
+  }
   return sinks;
 }
 

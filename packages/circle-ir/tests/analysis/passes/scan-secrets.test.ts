@@ -121,6 +121,27 @@ describe('ScanSecretsPass — provider patterns', () => {
     ]);
   });
 
+  it('detects GitHub fine-grained PAT github_pat_ (#553)', () => {
+    // 22 chars, underscore, 59 chars. Literal split avoids push protection.
+    const code = 'token = "github_' + 'pat_' + 'A'.repeat(22) + '_' + 'B'.repeat(59) + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('GitHub fine-grained personal access token');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder github_pat_ body (#553)', () => {
+    const shortTok = 't = "github_' + 'pat_' + 'A'.repeat(21) + '_' + 'B'.repeat(59) + '"';
+    expect(runPass('app.py', shortTok, 'python')).toHaveLength(0);
+    const shortTail = 't = "github_' + 'pat_' + 'A'.repeat(22) + '_' + 'B'.repeat(58) + '"';
+    expect(runPass('app.py', shortTail, 'python')).toHaveLength(0);
+    const placeholder =
+      't = "github_' + 'pat_' + 'placeholderplaceholder' + '_' + 'B'.repeat(59) + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
+  });
+
   it('detects GitLab glpat- personal access token as critical (#577)', () => {
     // Floor of 20, not a fixed length. Literal split avoids push protection.
     const code = 'token = "glpat-' + 'abcdefghijklmnopqrst' + '"';
@@ -168,13 +189,13 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(runPass('config.py', placeholder, 'python')).toHaveLength(0);
   });
 
-  it('detects Stripe pk_live_ publishable key as warning (lower severity)', () => {
+  it('detects Stripe pk_live_ publishable key as informational (#552)', () => {
     const code = `const key = "pk_live_abcdef0123456789ABCDEFGH";`;
     const out = runPass('app.js', code, 'javascript');
     expect(out).toHaveLength(1);
     expect(out[0].evidence?.provider).toBe('Stripe live publishable key');
-    expect(out[0].severity).toBe('high');
-    expect(out[0].level).toBe('warning');
+    expect(out[0].severity).toBe('low');
+    expect(out[0].level).toBe('note');
   });
 
   it('detects OpenAI API key', () => {
@@ -182,6 +203,24 @@ describe('ScanSecretsPass — provider patterns', () => {
     const out = runPass('app.py', code, 'python');
     expect(out).toHaveLength(1);
     expect(out[0].evidence?.provider).toBe('OpenAI API key');
+  });
+
+  it('detects OpenAI sk-proj- project key by prefix and length (#551)', () => {
+    // Floor of 48, not a pinned length. Literal split avoids push protection.
+    const code = 'key = "sk-proj-' + 'A'.repeat(48) + '"';
+    const out = runPass('app.py', code, 'python');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('OpenAI project API key');
+    expect(out[0].severity).toBe('critical');
+    expect(out[0].level).toBe('error');
+  });
+
+  it('does not flag a short or placeholder sk-proj- body (#551)', () => {
+    const shortKey = 'key = "sk-proj-' + 'A'.repeat(20) + '"';
+    expect(runPass('app.py', shortKey, 'python')).toHaveLength(0);
+    const placeholder = 'key = "sk-proj-' + 'placeholder' + 'A'.repeat(40) + '"';
+    expect(runPass('app.py', placeholder, 'python')).toHaveLength(0);
   });
 
   it('detects Anthropic API key sk-ant-', () => {

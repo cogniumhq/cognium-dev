@@ -153,6 +153,13 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Revoke the GitHub refresh token and store secrets outside source control.',
   },
+  // Fine-grained PATs: `github_pat_` + 22 chars + `_` + 59 chars. (#553)
+  {
+    name: 'GitHub fine-grained personal access token',
+    regex: /\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the fine-grained personal access token at https://github.com/settings/tokens and store secrets outside source control.',
+  },
   // GitLab personal / project / group access tokens use the `glpat-` prefix.
   // Length is not fixed (legacy bodies are about 20 characters; routable
   // tokens are longer), so the floor is 20 and there is no max. (#577)
@@ -178,17 +185,29 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
     severity: 'critical', level: 'error',
     fix: 'Rotate the Stripe restricted key in the Stripe Dashboard and load it from a secrets manager.',
   },
+  // Publishable keys are meant to be embedded in a client. Keep the finding
+  // so the key is still visible, but at informational severity. (#552)
   {
     name: 'Stripe live publishable key',
     regex: /\bpk_live_[A-Za-z0-9]{24,}\b/,
-    severity: 'high', level: 'warning',
-    fix: 'Publishable keys are not secret but should still not be checked in to back-end source files; verify front-end vs back-end context.',
+    severity: 'low', level: 'note',
+    fix: 'Publishable keys are not secret. Prefer loading them from configuration rather than a backend source file.',
   },
   {
     name: 'OpenAI API key',
     regex: /\bsk-[A-Za-z0-9]{48}\b/,
     severity: 'critical', level: 'error',
     fix: 'Revoke the OpenAI key at https://platform.openai.com/api-keys and load from environment.',
+  },
+  // Project keys (`sk-proj-`) are a different prefix from the legacy 48-char
+  // secret. OpenAI does not publish one length, so the body floor is 48 and
+  // there is no max and no entropy gate. The hyphen after `proj` keeps this
+  // from matching the legacy pattern. (#551)
+  {
+    name: 'OpenAI project API key',
+    regex: /\bsk-proj-[A-Za-z0-9_-]{48,}\b/,
+    severity: 'critical', level: 'error',
+    fix: 'Revoke the OpenAI project key at https://platform.openai.com/api-keys and load from environment.',
   },
   {
     name: 'Anthropic API key',
@@ -715,7 +734,9 @@ export class ScanSecretsPass implements AnalysisPass<ScanSecretsPassResult> {
         // (#574, #577)
         if (
           (pattern.name === 'Stripe live restricted key' ||
-            pattern.name === 'GitLab personal access token') &&
+            pattern.name === 'GitLab personal access token' ||
+            pattern.name === 'OpenAI project API key' ||
+            pattern.name === 'GitHub fine-grained personal access token') &&
           PLACEHOLDER_RE.test(m[0])
         ) {
           continue;

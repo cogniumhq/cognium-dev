@@ -166,6 +166,25 @@ export class GoPlugin extends BaseLanguagePlugin {
         confidence: 0.9,
         returnTainted: true,
       },
+      // #492 — `r.PostForm.Get` / `r.Form.Get`. The extractor rewrites only
+      // those selectors on a declared `*http.Request` to these synthetic
+      // classes, so `url.Values.Get` stays unmatched.
+      {
+        method: 'Get',
+        class: 'RequestPostForm',
+        type: 'http_body',
+        severity: 'high',
+        confidence: 0.9,
+        returnTainted: true,
+      },
+      {
+        method: 'Get',
+        class: 'RequestForm',
+        type: 'http_param',
+        severity: 'high',
+        confidence: 0.9,
+        returnTainted: true,
+      },
 
       // Gin framework
       // NOTE: `Context.Query` (http_param) and `Context.Param` (http_path) are
