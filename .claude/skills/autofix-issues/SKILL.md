@@ -16,7 +16,7 @@ sweep. Designed to run unattended on a schedule.
 
 Two specs merged 2026-09-10: this repo's running skill (SAST boundary, benchmark differential,
 cross-repo cognium-ai triage, auto-merge) and `techspec/skills/cognium-dev-autofix.md`
-(Eyal, 2026-09-10 — `agent-*` labels, pending-PR cap, concurrency lock, batch of 3,
+(2026-09-10 — `agent-*` labels, pending-PR cap, concurrency lock, batch of 3,
 `agent/fix-N` branches, rebase-conflict abort, explicit boundary exclusions, Buzz notify).
 `techspec` is read-only from here per `CLAUDE.md`; nothing was written back to it. One
 deliberate divergence is flagged inline at §8 step 4 (auto-merge).
@@ -25,8 +25,9 @@ deliberate divergence is flagged inline at §8 step 4 (auto-merge).
 to `.claude/*` + `!.claude/skills/`, so this file and the §7 scorer `bench-diff.mts` travel with a
 clone while `settings.local.json` stays per-user. Before that, a session had to be handed the whole
 procedure verbatim in its prompt and a fresh clone could not run §7 at all. A scheduled run now
-only needs: *run the `autofix-issues` skill*. The corpora the scorer reads are still local-only
-(`circle-ir-ai`), so a runner without them must skip precision fixes per §2.
+only needs: *run the `autofix-issues` skill*. The corpora the scorer reads are public and are
+not committed here: `fetch-corpora.sh` (next to this file) clones each one at a pinned commit
+into `$CORPUS_ROOT` (§7). A runner where that check fails must skip precision fixes per §2.
 
 ## Autonomy contract
 
@@ -41,8 +42,10 @@ only needs: *run the `autofix-issues` skill*. The corpora the scorer reads are s
   eligible only if it is a defect in the *deterministic analysis* (see §2). Anything else —
   however small — is out of boundary and must **not** be picked up. Do not stretch the
   definition to fill a batch; an empty sweep is the correct outcome when nothing is SAST-only.
-- **Repo boundary (CRITICAL):** never modify any *file* outside
-  `/Users/eyal/work/cogniumhq/cognium-dev`. The **only** permitted action on
+- **Repo boundary (CRITICAL):** never modify any *file* outside this repository's checkout
+  (the directory that contains this `.claude/`). The one exception is `$CORPUS_ROOT`, and only
+  through `fetch-corpora.sh fetch`, which creates missing corpus directories there and never
+  changes an existing one. The **only** permitted action on
   `cogniumhq/cognium-ai` is GitHub issue metadata via `gh`: adding the `sast-only` /
   `needs-sast` labels and comments. Never clone, edit, branch, push, open PRs, or run
   installs there.
@@ -61,7 +64,7 @@ only needs: *run the `autofix-issues` skill*. The corpora the scorer reads are s
    `git branch --merged main | grep -E '^\s+(agent/fix-|autofix/)' | xargs -r git branch -d`
 4. `gh auth status` must be logged in.
 5. Ensure the lane + run-state labels exist (idempotent). The `agent-*` set comes from
-   the techspec spec (`techspec/skills/cognium-dev-autofix.md`, Eyal 2026-09-10) and is
+   the techspec spec (`techspec/skills/cognium-dev-autofix.md`, 2026-09-10) and is
    **home-repo only** — never apply an `agent-*` label to cognium-ai.
    ```
    R=cogniumhq/cognium-dev
@@ -315,10 +318,13 @@ in one comment and label `needs-decision`. Never pick an option silently in a fi
 
 **Precision fixes (sink narrowing, sanitizer credit, FP removal) are eligible** — but
 "no new test failures" is NOT a sufficient gate for them, because dropping a true positive
-fails no existing test. They may proceed only when the language has a local corpus for the
-§7 benchmark differential (Java: OWASP + SecuriBench; Python: BenchmarkPython; C#:
-Juliet-C#; JS/TS: nodegoat + juice-shop + dvna). A precision fix for a language with no
-local corpus is NOT minor → skip with reason "no local benchmark gate".
+fails no existing test. They may proceed only when the language has a pinned corpus for the
+§7 benchmark differential (Java: OWASP + SecuriBench; Python: BenchmarkPython; JS/TS:
+nodegoat + juice-shop + dvna) and `fetch-corpora.sh check <language>` exits 0. Run
+`fetch-corpora.sh fetch <language>` first if the corpus is merely not downloaded yet. If the
+check still fails, the fix is NOT minor → skip with reason "no benchmark gate: <the
+MISSING / DRIFT / DIRTY line the check printed>". Do not skip for a missing corpus without
+having run the fetch.
 
 **Slices of large issues are eligible.** A "needs design / too large" issue may still yield one
 minor fix when its body (or a later comment) has a `## Minimal slice` section that names a
@@ -417,16 +423,26 @@ and move on.
 - **Benchmark differential (mandatory for any precision fix).** Use the scorer that ships
   with this skill — do not reinvent it:
   `bun .claude/skills/autofix-issues/bench-diff.mts` (`pretree` / `snapshot` / `diff`).
-  Corpora live read-only under `/Users/eyal/work/cogniumhq/cognium-ai/circle-ir-ai/`
-  (never write there). Pick by language of the fix:
+  Corpora live under `$CORPUS_ROOT`, an absolute path to a directory outside this
+  repository that the runner sets in its environment. There is no default: the step fails
+  when it is unset. Before any snapshot, fetch and verify the corpora for the fix's language:
+  ```
+  .claude/skills/autofix-issues/fetch-corpora.sh fetch <language>   # clones what is missing, at the pinned commit
+  .claude/skills/autofix-issues/fetch-corpora.sh check <language>   # read-only; must exit 0
+  ```
+  `check` exits non-zero and names the corpus when one is missing, at a different commit, or
+  has local changes. Never snapshot a corpus that did not pass it, and never edit files
+  under `$CORPUS_ROOT`. The pins are the table at the top of `fetch-corpora.sh`
+  (`fetch-corpora.sh list`); changing a pin is a human decision, not part of a fix. Pick by
+  language of the fix:
 
-  | language | corpus dir (under circle-ir-ai/) | expected CSV | note |
+  | language | corpus dir (under `$CORPUS_ROOT/`) | expected CSV | note |
   |---|---|---|---|
   | java | `.owasp-benchmark-java/src/main/java/org/owasp/benchmark/testcode` + `securibench-micro` | `.owasp-benchmark-java/expectedresults-1.2.csv` | OWASP ≈ 22 min per snapshot |
   | python | `benchmark-python/testcode` | `benchmark-python/expectedresults-0.1.csv` | |
-  | csharp | `juliet-csharp` with `--filter 'CWE<nn>_'` for the fix's CWE (46k files total) | none | |
+  | csharp | `juliet-csharp` with `--filter 'CWE<nn>_'` for the fix's CWE (46k files total) | none | not pinned yet (a NIST archive, not a git repository), so `check csharp` fails and C# precision fixes are **not eligible** until a pin is added |
   | javascript / typescript | `nodegoat`, `juice-shop`, `dvna` | none | small; no TP labels → treat every removal as review |
-  | go / rust / bash / html | none local | — | **not eligible for a precision auto-fix** |
+  | go / rust / bash / html | none | — | **not eligible for a precision auto-fix** |
 
   Procedure (BASE = the main SHA the branch started from):
   ```
@@ -442,7 +458,9 @@ and move on.
   The scorer exits 0 and prints `GATE: PASS` only when there is **no removal on a
   real=true file** and **every removal matches `--allow`**. Corpora without an expected CSV
   pass only when every removal matches `--allow`. Paste the `summary:` line and every
-  `REMOVED`/`ADDED` row into the PR body. On `GATE: FAIL`: revert that commit, `autofix-skip`
+  `REMOVED`/`ADDED` row into the PR body. Next to it paste the `ok` lines that
+  `fetch-corpora.sh check <language>` printed, so the corpus commits behind the result are
+  on record. On `GATE: FAIL`: revert that commit, `autofix-skip`
   the issue with reason "benchmark gate: <summary line>", and continue. Signature = one
   `sink_type@source_line->sink_line` per `ir.taint.flows` entry, so this measures exactly
   what the CLI reports; it is a delta tool, not the official TPR/FPR number.
@@ -531,7 +549,7 @@ Print a compact summary:
 - **Merged:** issues + PR number (prefix cognium-ai ones as `cognium-ai#<n>`).
 - **Labeled on cognium-ai:** `sast-only` → numbers; `needs-sast` → numbers with their new
   cognium-dev child issues (or "none").
-- **Benchmark differentials:** per precision fix, corpus + removed/added signature counts.
+- **Benchmark differentials:** per precision fix, corpus (with its pinned commit) + removed/added signature counts.
 - **Skipped:** issue → reason (labeled `autofix-skip`).
 - **Abandoned:** issue → reason (fix attempted but couldn't land), labelled `agent-blocked`.
 - **Declined:** issue → reason (never attempted, out of boundary), labelled `agent-declined`.
