@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NetDataContractSerializer`. The creation expression's type is used directly.
 - **scan-secrets: AWS temporary STS keys (`ASIA` + 16) are hardcoded
   credentials (#648).** The provider pattern matched only `AKIA`.
+- **Java: `new CpsFlowExecution(script)` is code injection again (#619).**
+  The constructor was registered as command injection, and the CWE-78
+  receiver allowlist then dropped it. It is now `code_injection` / CWE-94,
+  with `GroovyShell.evaluate`.
+- **Java: `JarEntry.getName()` is an archive-entry source (#620).**
+  `ZipEntry.getName()` already was. A `JarEntry` variable whose name is not
+  `entry` produced no zip-slip flow. `File.getName()` stays clean.
 
 ## [4.13.2] - 2026-10-08
 
