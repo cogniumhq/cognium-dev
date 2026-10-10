@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Suppressions can anchor on source text (#575).** An optional `snippet`
+  matches the finding's own line (whitespace collapsed), so a moved finding
+  stays suppressed. `line` is a hint in that case. `{pass}`, `{pass,file}`,
+  and `{pass,file,line}` are unchanged. A suppression that matches nothing
+  is warned on stderr and does not fail the scan. Cross-file taint paths
+  use the same anchor.
+
 ## [4.13.2] - 2026-10-08
 
 ### Changes
