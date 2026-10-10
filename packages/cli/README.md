@@ -307,9 +307,9 @@ Filter to security findings only: `cognium-dev scan ./src --category security`
 | Rust | `.rs` | Actix-web, Rocket, Axum |
 | Bash | `.sh`, `.bash` | Shell scripts |
 | HTML | `.html`, `.htm` | Web extraction preprocessor |
-| C#/.NET _(experimental)_ | `.cs` | ASP.NET Core, ADO.NET, EF Core |
+| C#/.NET _(Preview)_ | `.cs` | ASP.NET Core, ADO.NET (EF Core not yet verified) |
 
-> **C#/.NET is experimental / preview** (since 4.0.0). Straight-line taint
+> **C#/.NET is Preview** (since 4.0.0). Straight-line taint
 > analysis across 10 CWE families (SQLi, command injection, path traversal,
 > SSRF, code injection, XSS, deserialization, LDAP, XPath, XXE). Not yet
 > benchmark-verified — expect gaps in branch/alias precision and detector breadth.
@@ -455,15 +455,9 @@ Cognium is built for speed:
 - **Core Engine**: [circle-ir](https://github.com/cogniumhq/cognium-dev/tree/main/packages/circle-ir) - High-performance SAST library
 - **Dependencies**: Only 1 runtime dependency (circle-ir)
 
-## LLM Enhancement (Optional)
+## Data handling
 
-The core static analysis engine runs deterministically without any LLM. Optionally, you can enable LLM-based discovery modes for enhanced detection:
-
-- **Discovery Mode**: LLM reads source code to locate vulnerable methods from scratch
-- **Verification Mode**: Confirms whether static findings are actually exploitable
-- **Semantic Extraction**: Extracts design intent for automated gap analysis
-
-For details on LLM integration and benchmark improvements (42.5% → 78.3% on CWE-Bench with Claude Opus), visit [cognium.net](https://cognium.net).
+cognium-dev is fully deterministic and runs entirely on your machine: source code is not sent to Cognium or any third-party service. Optional AI-assisted analysis is a separate product, [cognium-ai](https://cognium.net), which can send code snippets to a configured model endpoint; use cognium-dev (or cognium-ai with AI-assisted mode off and no remote engine configured) for air-gapped scanning.
 
 ## Benchmark Results
 
