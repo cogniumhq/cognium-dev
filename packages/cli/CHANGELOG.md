@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SARIF reports a truncated project scan (#615).** When the project size
+  ceiling skips files, the run carries a `warning` tool notification
+  (`Project size ceiling reached — analysed X of Y files.`) and
+  `executionSuccessful: false`. A complete scan is unchanged.
 - **Suppressions can anchor on source text (#575).** An optional `snippet`
   matches the finding's own line (whitespace collapsed), so a moved finding
   stays suppressed. `line` is a hint in that case. `{pass}`, `{pass,file}`,

@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NetDataContractSerializer`. The creation expression's type is used directly.
 - **scan-secrets: AWS temporary STS keys (`ASIA` + 16) are hardcoded
   credentials (#648).** The provider pattern matched only `AKIA`.
+- **Java: `new CpsFlowExecution(script)` is code injection again (#619).**
+  The constructor was registered as command injection, and the CWE-78
+  receiver allowlist then dropped it. It is now `code_injection` / CWE-94,
+  with `GroovyShell.evaluate`.
+- **Java: `JarEntry.getName()` is an archive-entry source (#620).**
+  `ZipEntry.getName()` already was. A `JarEntry` variable whose name is not
+  `entry` produced no zip-slip flow. `File.getName()` stays clean.
 - **Stripe test-mode secret and restricted keys are reported (#576).** `sk_test_` and `rk_test_` (24+ alphanumeric characters) are `hardcoded-credential` at high severity. Short and placeholder bodies stay quiet. `sk_live_` / `rk_live_` stay critical; `pk_*` is unchanged.
 - **Go `database/sql` context, transaction, and prepare calls are SQL sinks (#583).** `QueryContext` / `QueryRowContext` / `ExecContext` / `PrepareContext` (query at argument 1) and `Tx.Exec` / `Tx.QueryRow` / `Prepare`, on `DB`, `Tx`, and `Conn`. A placeholder query with a bound argument stays clean. `Prepare` and `PrepareContext` are on the non-escape list with the other query methods.
 - **One over-long line no longer drops the rest of the file (#593).** Lines longer than 10 000 characters are blanked before parse, and every other line is still analysed. A file that is a single minified line stays empty (#460).

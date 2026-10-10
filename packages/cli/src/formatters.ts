@@ -676,6 +676,26 @@ export function formatSARIF(
           },
         },
         results: generateSarifResults(results, crossFileData),
+        // #615: a truncated scan must not look complete. Text output already
+        // warns; SARIF consumers (code scanning) only see the run, so the
+        // ceiling is a tool notification and the invocation is unsuccessful.
+        ...(crossFileData?.projectSizeBudgetExceeded
+          ? {
+              invocations: [
+                {
+                  executionSuccessful: false,
+                  toolExecutionNotifications: [
+                    {
+                      level: 'warning' as const,
+                      message: {
+                        text: `Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
+                      },
+                    },
+                  ],
+                },
+              ],
+            }
+          : {}),
         // 3.106.0 (#169): per-run project-profile summary. Surfaced under
         // `run.properties.projectProfile` so SARIF consumers (Code
         // Scanning, Defect Dojo, custom dashboards) can attribute results
