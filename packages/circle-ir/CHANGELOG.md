@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **C#: `new BinaryFormatter().Deserialize(x)` is a CWE-502 sink (#630).**
+  The receiver-type map only knew variables, so an inline `new T()` receiver
+  never matched `BinaryFormatter`, `LosFormatter`, `SoapFormatter`, or
+  `NetDataContractSerializer`. The creation expression's type is used directly.
+
 ## [4.13.2] - 2026-10-08
 
 ### Fixed
