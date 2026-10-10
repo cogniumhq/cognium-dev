@@ -44,7 +44,7 @@ Not yet re-measured on 4.12.0:
 
 - **cognium-dev (this repo)**: analysis runs entirely on the machine that runs the CLI or library. Source code is not sent to Cognium or to any third-party service, and the default `scan` path needs no network access.
 - **cognium-ai (separate package)**: its optional AI-assisted mode sends code snippets to the model endpoint you configure, and cloud/engine scans may clone a repository onto Cognium infrastructure. See the cognium-ai documentation for details.
-- **Air-gapped use**: run `cognium-dev`, or `cognium-ai --no-llm` with no remote engine configured. Nothing leaves the machine.
+- **Air-gapped use**: run `cognium-dev`, or cognium-ai with AI-assisted mode off and no remote engine configured. Nothing leaves the machine.
 
 ## Installation
 
