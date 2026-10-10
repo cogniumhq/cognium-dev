@@ -32,6 +32,9 @@ BUMP=$1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=scripts/report-rollouts.sh
+source "$REPO_ROOT/scripts/report-rollouts.sh"
+
 LIB_DIR="packages/circle-ir"
 CLI_DIR="packages/cli"
 
@@ -44,6 +47,10 @@ command -v gh   >/dev/null 2>&1 || die "GitHub CLI (gh) not found — brew insta
 gh auth status  >/dev/null 2>&1 || die "Not authenticated with GitHub CLI — run: gh auth login"
 npm whoami      >/dev/null 2>&1 || die "Not logged in to npm — run: npm login"
 success "Prerequisites OK"
+# Tests set this to prove a missing curl or jq does not abort the release.
+if [[ -n "${RELEASE_STOP_AFTER_PREREQ:-}" ]]; then
+  exit 0
+fi
 
 # ── Clean working tree ──────────────────────────────────────────────────────────
 if [[ -n $(git status --porcelain) ]]; then
@@ -218,15 +225,35 @@ warn "If 2FA is on, you'll be prompted for an OTP per publish."
 echo ""
 
 confirm "Publish circle-ir@$NEW_VERSION to npm?" || die "Aborted before publish"
-(cd "$LIB_DIR" && npm publish)
-success "circle-ir@$NEW_VERSION published"
+LIB_SERVICE="$(node -p "require('./$LIB_DIR/package.json').name")"
+report_rollouts "$LIB_SERVICE" bootstrap
+report_rollouts "$LIB_SERVICE" start
+publish_status=0
+(cd "$LIB_DIR" && npm publish) || publish_status=$?
+if [[ "$publish_status" -eq 0 ]]; then
+  report_rollouts "$LIB_SERVICE" finish succeeded
+  success "circle-ir@$NEW_VERSION published"
+else
+  report_rollouts "$LIB_SERVICE" finish failed "npm publish exited $publish_status"
+  die "circle-ir publish failed"
+fi
 
 # Brief pause so the npm registry catches up before CLI publishes
 sleep 5
 
 confirm "Publish cognium-dev@$NEW_VERSION to npm?" || die "Aborted before CLI publish — circle-ir already live; run 'cd $CLI_DIR && npm publish' manually"
-(cd "$CLI_DIR" && npm publish)
-success "cognium-dev@$NEW_VERSION published"
+CLI_SERVICE="$(node -p "require('./$CLI_DIR/package.json').name")"
+report_rollouts "$CLI_SERVICE" bootstrap
+report_rollouts "$CLI_SERVICE" start
+publish_status=0
+(cd "$CLI_DIR" && npm publish) || publish_status=$?
+if [[ "$publish_status" -eq 0 ]]; then
+  report_rollouts "$CLI_SERVICE" finish succeeded
+  success "cognium-dev@$NEW_VERSION published"
+else
+  report_rollouts "$CLI_SERVICE" finish failed "npm publish exited $publish_status"
+  die "cognium-dev publish failed — circle-ir already live; run 'cd $CLI_DIR && npm publish' manually"
+fi
 
 # ── Done ────────────────────────────────────────────────────────────────────────
 echo ""

@@ -47,8 +47,7 @@ jobs:
 
       # Repo tooling under scripts/ is not part of any workspace, so no package
       # suite covers it. Node's built-in runner keeps this dependency-free.
-      # It guards the pack dry-run checker, whose contract is its exit code and
-      # its ::warning:: output — both of which have been wrong once already.
+      # It guards the pack dry-run checker and the Rollouts release reporter.
       - name: test — repo scripts
         run: npm run test:scripts
 
