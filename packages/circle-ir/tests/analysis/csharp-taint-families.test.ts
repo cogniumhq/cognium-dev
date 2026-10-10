@@ -961,4 +961,46 @@ public class C {
 }`;
     expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(false);
   });
+
+  // cognium-dev#630 — the receiver is the creation expression, not a variable.
+  it('new BinaryFormatter().Deserialize(stream) fires', async () => {
+    const code = `
+using System.IO;
+using System.Runtime.Serialization.Formatters.Binary;
+public class Sorter {
+  public static object FromBytes(byte[] data) {
+    return new BinaryFormatter().Deserialize(new MemoryStream(data));
+  }
+}`;
+    expect(has(await analyze(code, 'Sorter.cs', 'csharp'), 'deserialization')).toBe(true);
+  });
+
+  it('inline LosFormatter, SoapFormatter, and NetDataContractSerializer fire', async () => {
+    for (const cls of ['LosFormatter', 'SoapFormatter', 'NetDataContractSerializer']) {
+      const code = `
+using System.IO;
+public class C {
+  public object M(Stream s) { return new ${cls}().Deserialize(s); }
+}`;
+      expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(true);
+    }
+  });
+
+  it('does not flag an inline deserializer that is not a registered sink', async () => {
+    const code = `
+public class C {
+  public object M(string json) { return new JsonSerializer().Deserialize(json); }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(false);
+  });
+
+  it('does not flag Deserialize of a stream that is not tainted', async () => {
+    const code = `
+using System.IO;
+using System.Runtime.Serialization.Formatters.Binary;
+public class C {
+  public object M() { return new BinaryFormatter().Deserialize(new MemoryStream()); }
+}`;
+    expect(has(await analyze(code, 'C.cs', 'csharp'), 'deserialization')).toBe(false);
+  });
 });
