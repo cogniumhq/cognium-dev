@@ -2884,7 +2884,10 @@ export function filterCleanVariableSinks(
           // and a constant prefix used to mark the whole argument clean
           // (cognium-dev#627).
           const expr = arg.expression ?? '';
-          const concatNames = isStringConcat(expr) ? argumentIdentifiers(expr) : [];
+          // Java only. The same `+` test on other languages kept sinks in
+          // minified scripts (a numeric add whose first identifier is a
+          // constant). #627 is the Java `exec(cmd + tainted)` shape.
+          const concatNames = language === 'java' && isStringConcat(expr) ? argumentIdentifiers(expr) : [];
           const names = concatNames.length > 0 ? concatNames : [arg.variable];
           let argClean = true;
           for (const varName of names) {

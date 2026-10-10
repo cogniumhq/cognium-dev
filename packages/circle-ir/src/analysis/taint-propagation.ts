@@ -142,6 +142,7 @@ export function propagateTaint(
 
   const taintedVars: TaintedVariable[] = [];
   const flows: TaintFlow[] = [];
+  const javaConcat = graph.ir.meta.language === 'java';
   const reachableSinks = new Map<TaintSink, TaintSource[]>();
 
   // Use pre-computed indexes from CodeGraph — no local map building needed
@@ -215,7 +216,7 @@ export function propagateTaint(
         //     A constant prefix must not hide a later tainted operand
         //     (cognium-dev#627).
         const expr = typeof arg.expression === 'string' ? arg.expression : '';
-        const compoundConcat = !!arg.variable && expr !== arg.variable && concatOutsideStrings(expr);
+        const compoundConcat = javaConcat && !!arg.variable && expr !== arg.variable && concatOutsideStrings(expr);
         const candidateUses = arg.variable && !compoundConcat
           ? usesAtSink.filter(u => u.variable === arg.variable)
           : usesAtSink;
