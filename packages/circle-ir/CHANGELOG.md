@@ -5,12 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.14.0] - 2026-10-11
 
 ### Changed
 - **Docs: `library-profile-source-gate` counts speculative sources and does not delete them (#571).** `docs/PASSES.md` row 111, `docs/ARCHITECTURE.md`, and the pass header now match #288 option A (`dropped` stays 0; `droppedByType` is the count). The Rust entry-point gap stays on #496.
 
 ### Fixed
+- **JS/TS: a response call with no arguments is not an xss sink (#629).**
+  `res.status(400).end()` was paired with a tainted value that only appeared
+  in a validation test on the same line. `res.end(x)` and `res.send(html)`
+  still report.
 - **C#: `new BinaryFormatter().Deserialize(x)` is a CWE-502 sink (#630).**
   The receiver-type map only knew variables, so an inline `new T()` receiver
   never matched `BinaryFormatter`, `LosFormatter`, `SoapFormatter`, or
