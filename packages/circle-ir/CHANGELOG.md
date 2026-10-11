@@ -5,9 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.14.1] - 2026-10-11
 
 ### Fixed
+- **Java: `exec(cmd + tainted)` flows when `cmd` is a local string constant (#627).**
+  The call extractor recorded only the first identifier of a concatenation, so a
+  constant prefix marked the whole argument clean. Every operand is now checked.
+  A concatenation of constants only stays clean.
 - **TypeScript: a destructured function parameter binds taint (#664).** `{ id }`, nested `{ a: { b } }`, and `{ id }: T = default` in a parameter list emit `param` definitions, and the type annotation on the pattern no longer drops the parameter seed. A local destructure of a literal stays clean. A typed object parameter (`args: T`) is unchanged.
 
 ## [4.14.0] - 2026-10-11
