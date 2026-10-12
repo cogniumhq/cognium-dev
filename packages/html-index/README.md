@@ -2,7 +2,11 @@
 
 A static index of built HTML. It reads a folder of pages without a browser and reports facts about the markup: which elements there are, what role and accessible name each has, which IDREFs resolve, what the stylesheets say. It reports observations only and never a verdict.
 
-Version 0.1.0 is not published to npm yet.
+```bash
+npm install @cognium/html-index
+```
+
+ESM only, Node.js 20.19 or later.
 
 ## What it observes
 
@@ -29,16 +33,30 @@ Both return an envelope with `schemaVersion` (`"0.1"`), an `inputDigest` per obs
 
 The role and name algorithms follow the W3C specifications (ARIA 1.2, ARIA in HTML, Accessible Name 1.2). The tables they read are passed in by the caller as `views`; none ships with the package.
 
+`aria` holds `role-names`, `global-attributes`, `name-from-contents` and `required-owned`. `html` holds `row-match`, `tag-row`, `implicit-role-by-row` and `implicit-role-by-tag-default`. The types are `AriaViews` and `HtmlAriaViews`; [`tests/fixtures/views.ts`](https://github.com/cogniumhq/cognium-dev/blob/main/packages/html-index/tests/fixtures/views.ts) in the repository is a small sample.
+
+## Usage
+
 ```ts
-import { runHtmlIndex } from '@cognium/html-index';
+import { readFileSync } from 'node:fs';
+import { runHtmlIndex, SCHEMA_VERSION, type AriaViews, type HtmlAriaViews, type PageObservation } from '@cognium/html-index';
+
+// Your own tables, built from the W3C specifications.
+const aria: AriaViews = JSON.parse(readFileSync('aria-views.json', 'utf8'));
+const html: HtmlAriaViews = JSON.parse(readFileSync('html-aria-views.json', 'utf8'));
 
 const result = runHtmlIndex('/path/to/site', { html, aria }, { idrefAttributes: ['aria-labelledby', 'for'] });
+if (result.schemaVersion !== SCHEMA_VERSION) throw new Error(`unexpected schema ${result.schemaVersion}`);
+
 for (const { anchor, observation } of result.anchors) {
-  // anchor is the page path; observation is a PageObservation
+  const page = observation as PageObservation; // anchor is the page path
+  for (const el of page.elements) console.log(anchor, el.line, el.tag, el.effectiveRole, el.name);
 }
 ```
 
-`aria` holds `role-names`, `global-attributes`, `name-from-contents` and `required-owned`. `html` holds `row-match`, `tag-row`, `implicit-role-by-row` and `implicit-role-by-tag-default`. The types are `AriaViews` and `HtmlAriaViews`; `tests/fixtures/views.ts` is a small sample.
+## Schema version
+
+Every result carries `schemaVersion`, currently `"0.1"` (exported as `SCHEMA_VERSION`). It names the shape of the observations, separately from the package version. Pin it and refuse any other value: while it is `0.x`, a change of shape changes the number.
 
 ## Limits
 

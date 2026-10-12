@@ -109,5 +109,7 @@ export function runFileIndex(root: string, params: FileIndexParams = {}): RunRes
 
 export { buildSiteIndex, parseHtml } from './parse.js';
 export { decodeEntities, hostRow, pageObservation } from './html-index.js';
+export type { AriaViews, CssRuleObs, ElementObs, FrameObs, HtmlAriaViews, HtmlIndexParams, PageObservation, TextObs } from './html-index.js';
+export type { HNode, PageIndex, SiteIndex } from './parse.js';
 export { labelInName, labelWords, visibleInnerText, type LabelInName } from './label-in-name.js';
 export { isUnder, isUnderReal } from './path.js';

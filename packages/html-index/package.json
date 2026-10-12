@@ -1,7 +1,6 @@
 {
   "name": "@cognium/html-index",
   "version": "0.1.0",
-  "private": true,
   "description": "Static index of built HTML: elements with roles, accessible names, labels and hidden-ness, the IDREF graph, media, CSS rules, frames and shadow trees, plus a file index. Observations only; ARIA tables are inputs.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,7 +22,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "clean": "rm -rf dist coverage *.tsbuildinfo"
+    "clean": "rm -rf dist coverage *.tsbuildinfo *.tgz",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "keywords": [
     "html",
@@ -50,6 +50,10 @@
     "node": ">=20.19.0"
   },
   "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "dependencies": {
     "postcss": "^8.5.29"
   },
