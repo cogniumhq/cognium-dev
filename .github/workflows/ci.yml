@@ -103,7 +103,7 @@ jobs:
       # test steps with `if: !cancelled()`.
       fail-fast: false
       matrix:
-        package: [circle-ir, cli, project-profile-detect]
+        package: [circle-ir, cli, project-profile-detect, html-index]
 
     steps:
       - uses: actions/checkout@v7

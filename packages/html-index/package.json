@@ -1,0 +1,62 @@
+{
+  "name": "@cognium/html-index",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static index of built HTML: elements with roles, accessible names, labels and hidden-ness, the IDREF graph, media, CSS rules, frames and shadow trees, plus a file index. Observations only; ARIA tables are inputs.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage *.tsbuildinfo"
+  },
+  "keywords": [
+    "html",
+    "aria",
+    "accessible-name",
+    "static-analysis",
+    "cognium"
+  ],
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://cognium.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/html-index"
+  },
+  "homepage": "https://github.com/cogniumhq/cognium-dev/tree/main/packages/html-index#readme",
+  "bugs": {
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "type": "module",
+  "dependencies": {
+    "postcss": "^8.5.29"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "^5.0.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}
