@@ -51,3 +51,6 @@ Thumbs.db
 # package (no `files` entry references them) and they carry no scan output.
 # Anything genuinely scratch goes in bench/local/, which stays ignored.
 bench/local/
+
+# Local comparison-run output; never committed
+.parity/
