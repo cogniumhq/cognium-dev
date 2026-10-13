@@ -2998,6 +2998,14 @@ function receiverMightBeClassImpl(receiver: string, className: string): boolean 
     return true;
   }
 
+  // Inline CommonJS require receiver: `require('child_process').exec(x)`.
+  // The module is named at the call, so match it as if it were bound to a
+  // name (`const cp = require('child_process'); cp.exec(x)`). (cognium-dev#682)
+  const inlineRequire = receiver.match(/^require\(\s*['"`](?:node:)?([\w./-]+)['"`]\s*\)$/);
+  if (inlineRequire && inlineRequire[1] === className) {
+    return true;
+  }
+
   // Constructor-call receiver: `ClassName(args)` — Python `Path(raw)`,
   // JS `new URL(s)` (handled separately), etc. When the receiver is a
   // direct function call whose function name equals the target class
