@@ -531,6 +531,24 @@ const SERVER_SIGNAL_RE =
 // interpolated, the destination host is not attacker-controlled. Matches a
 // backtick + scheme + a literal host run (no `${` before the first `/`).
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
+/**
+ * The value of `name` when it is bound exactly once in the file, by `const`,
+ * to a plain string literal (no interpolation) and has no other `let` / `var`
+ * / `function` binding; otherwise null. (cognium-dev#681)
+ */
+function constStringLiteralValue(code: string, name: string): string | null {
+  const esc = name.replace(/\$/g, '\\$');
+  const decl = new RegExp(`(?:^|[^\\w$.])const\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(?:'((?:\\\\.|[^'\\\\\\n])*)'|"((?:\\\\.|[^"\\\\\\n])*)"|\`([^\`$\\\\]*)\`)\\s*[;\\n]`, 'g');
+  const decls = [...code.matchAll(decl)];
+  if (decls.length !== 1) return null;
+  const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var|function)\\s+${esc}\\b`, 'g');
+  if ([...code.matchAll(anyBinding)].length !== 1) return null;
+  return decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '';
+}
+
+/** A group that holds a quantifier and is itself quantified: `(a+)+`, `(x*)*`. */
+const NESTED_QUANTIFIER_RE = /\([^()]*[+*][^()]*\)\s*[+*{]/;
+
 /** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
 const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
 
@@ -2111,6 +2129,29 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           if (isConstLiteralOrigin(ctx.code, m[1])) return false;
         }
         return true;
+      });
+    }
+
+    // Stage 15k — JS/TS redos: `new RegExp(`…${CONST}…`)` whose every
+    // interpolation is a module `const` bound to a string literal has a
+    // constant pattern; a tainted subject alone is not ReDoS. (cognium-dev#681)
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'redos') return true;
+        const m = (sourceLines[sink.line - 1] ?? '').match(/new\s+RegExp\s*\(\s*`((?:\\.|[^`\\])*)`/);
+        if (!m) return true;
+        const parts = [...m[1].matchAll(/\$\{([^}]*)\}/g)].map(x => x[1].trim());
+        if (parts.length === 0) return true;
+        let pattern = m[1];
+        for (const name of parts) {
+          if (!/^[A-Za-z_$][\w$]*$/.test(name)) return true;
+          const value = constStringLiteralValue(ctx.code, name);
+          if (value === null) return true;
+          pattern = pattern.split('${' + name + '}').join(value);
+        }
+        // A constant pattern can still backtrack on a tainted subject.
+        return NESTED_QUANTIFIER_RE.test(pattern);
       });
     }
 
