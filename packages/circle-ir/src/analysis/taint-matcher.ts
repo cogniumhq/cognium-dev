@@ -110,7 +110,7 @@ export function analyzeTaint(
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
   const gatedSinks =
     language === 'csharp' ? dropCSharpObjectCarriedWaypoints(sinks, calls) : sinks;
-  const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines);
+  const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines, language);
 
   return { sources, sinks: gatedSinks, sanitizers };
 }
@@ -3434,9 +3434,14 @@ function findSanitizers(
   calls: CallInfo[],
   types: TypeInfo[],
   patterns: SanitizerPattern[],
-  sourceLines?: string[]
+  sourceLines?: string[],
+  language?: SupportedLanguage,
 ): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
+  const javaReplace = (call: CallInfo): SinkType[] | null =>
+    language === 'java' && sourceLines && (call.method_name === 'replace' || call.method_name === 'replaceAll')
+      ? javaReplaceChainCredit(sourceLines[call.location.line - 1] ?? '')
+      : null;
 
   // Build a set of method names with @sanitizer annotation (from Javadoc comments)
   const sanitizerMethods = new Set<string>();
@@ -3479,10 +3484,15 @@ function findSanitizers(
       const innerCall = inside[0]!;
 
       let matched: SanitizerPattern | undefined;
-      for (const pattern of patterns) {
-        if (matchesSanitizerPattern(innerCall, pattern)) {
-          matched = pattern;
-          break;
+      const replaceCredit = javaReplace(innerCall);
+      if (replaceCredit) {
+        matched = replaceCredit.length > 0 ? { method: innerCall.method_name, removes: replaceCredit } : undefined;
+      } else {
+        for (const pattern of patterns) {
+          if (matchesSanitizerPattern(innerCall, pattern)) {
+            matched = pattern;
+            break;
+          }
         }
       }
       if (!matched || !matched.removes || matched.removes.length === 0) continue;
@@ -3541,6 +3551,19 @@ function findSanitizers(
       continue; // Skip pattern matching - already added as sanitizer
     }
 
+    const replaceCredit = javaReplace(call);
+    if (replaceCredit) {
+      if (replaceCredit.length > 0) {
+        sanitizers.push({
+          type: 'method_call',
+          method: formatSanitizerMethod(call),
+          line: call.location.line,
+          sanitizes: replaceCredit,
+        });
+      }
+      continue;
+    }
+
     for (const pattern of patterns) {
       if (matchesSanitizerPattern(call, pattern)) {
         sanitizers.push({
@@ -3572,6 +3595,43 @@ function findSanitizers(
   }
 
   return sanitizers;
+}
+
+/**
+ * Java `String.replace` / `replaceAll` credit, decided from the literal
+ * arguments of the replace chain on the line instead of the method name
+ * (cognium-dev#562 / #605 / #517). The class-less `replace` row credited any
+ * replace as a log-injection sanitizer, so an LF-only strip silenced the
+ * finding while `replaceAll("[\r\n]", "")` got no credit at all.
+ *   - `log_injection`: the chain strips both CR and LF.
+ *   - `xss`: the chain maps both `<` and `>` to an entity.
+ * Returns the credited sink types (possibly empty).
+ */
+const JAVA_REPLACE_ARGS_RE = /\.(replace|replaceAll)\(\s*"((?:\\.|[^"\\])*)"\s*,\s*"((?:\\.|[^"\\])*)"\s*\)/g;
+
+function javaReplaceChainCredit(lineText: string): SinkType[] {
+  let cr = false;
+  let lf = false;
+  let lt = false;
+  let gt = false;
+  for (const m of lineText.matchAll(JAVA_REPLACE_ARGS_RE)) {
+    const kind = m[1];
+    const from = m[2]!.replace(/\\\\/g, '\\');
+    const to = m[3]!;
+    if (kind === 'replace') {
+      if (from === '\\n') lf = true;
+      if (from === '\\r') cr = true;
+    } else if (from !== '\\r\\n') {
+      if (from.includes('\\r')) cr = true;
+      if (from.includes('\\n')) lf = true;
+    }
+    if (from === '<' && to.startsWith('&')) lt = true;
+    if (from === '>' && to.startsWith('&')) gt = true;
+  }
+  const out: SinkType[] = [];
+  if (cr && lf) out.push('log_injection');
+  if (lt && gt) out.push('xss');
+  return out;
 }
 
 /**
