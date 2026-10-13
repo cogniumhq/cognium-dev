@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.14.2] - 2026-10-12
+
+### Changes
+
+- Bundles circle-ir 4.14.2: a scan no longer fails on a `sql_injection` sink
+  pattern supplied without `arg_positions` (#683). Java `setSecure(true)`
+  credits that cookie only (#595), Undertow `ResourceManager.getResource` is a
+  path sink (#622), and a sanitizer on one operand no longer clears the whole
+  sink (#641). Go `r.PostForm.Get` / `r.Form.Get` are sources (#492). Secrets:
+  OpenAI `sk-proj-` keys (#551) and GitHub fine-grained PATs (#553) are
+  detected, and a Stripe `pk_live_` key is reported at `low` (#552).
+
 ## [4.14.1] - 2026-10-11
 
 ### Changes
