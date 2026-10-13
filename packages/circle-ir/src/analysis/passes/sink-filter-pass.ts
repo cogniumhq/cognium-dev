@@ -531,6 +531,24 @@ const SERVER_SIGNAL_RE =
 // interpolated, the destination host is not attacker-controlled. Matches a
 // backtick + scheme + a literal host run (no `${` before the first `/`).
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
+/** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
+const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
+
+/**
+ * True when `name` is bound exactly once in the file, by `const`, to a string
+ * literal http(s) origin with a literal host, and is never reassigned.
+ */
+function isConstLiteralOrigin(code: string, name: string): boolean {
+  const esc = name.replace(/\$/g, '\\$');
+  const decl = new RegExp(`(?:^|[^\\w$.])(const|let|var)\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(['"\`])(https?://[^/'"\`\\s$]+(?:/[^'"\`$]*)?)\\2\\s*;?`, 'gm');
+  const decls = [...code.matchAll(decl)];
+  if (decls.length !== 1 || decls[0][1] !== 'const') return false;
+  const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var)\\s+${esc}\\b`, 'g');
+  if ([...code.matchAll(anyBinding)].length !== 1) return false;
+  const reassign = new RegExp(`(?:^|[^\\w$.])${esc}\\s*(?:[-+]?=)(?!=)`, 'g');
+  const rest = code.slice(0, decls[0].index) + code.slice(decls[0].index! + decls[0][0].length);
+  return !reassign.test(rest);
+}
 
 /**
  * Returns the 1-indexed line numbers that a Java `if (x.contains("..")) throw/
@@ -2086,7 +2104,13 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'ssrf') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        return !FIXED_HOST_TEMPLATE_RE.test(sinkLineText);
+        if (FIXED_HOST_TEMPLATE_RE.test(sinkLineText)) return false;
+        // `${API_BASE}/path` where API_BASE is bound once by `const` to a
+        // literal origin: the authority is constant and closed by `/` (#680).
+        for (const m of sinkLineText.matchAll(CONST_BASE_TEMPLATE_RE)) {
+          if (isConstLiteralOrigin(ctx.code, m[1])) return false;
+        }
+        return true;
       });
     }
 
