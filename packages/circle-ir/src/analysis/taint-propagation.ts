@@ -324,6 +324,9 @@ export function propagateTaint(
 /**
  * Find initial tainted definitions from sources.
  */
+/** Locations of sources that name exactly one parameter binding (#586, #587). */
+const PARAM_SCOPED_SOURCE_RE = /^(?:GraphQL \w+\.\w+ resolver args|Express handler destructured request) /;
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
@@ -345,8 +348,11 @@ function findInitialTaint(
       // the bogus taint into `cmd.ExecuteReader()`. Taintable neighbours
       // (`string tableName`) get their own source, so restricting the seed
       // to the named parameter loses nothing.
+      // cognium-dev#586 / #587: framework parameter sources (GraphQL resolver
+      // `args`, Express destructured request keys) also name exactly one
+      // binding; `parent` / `context` / `res` share the signature line.
       if (
-        source.type === 'interprocedural_param' &&
+        (source.type === 'interprocedural_param' || PARAM_SCOPED_SOURCE_RE.test(source.location ?? '')) &&
         source.variable &&
         def.kind === 'param' &&
         def.variable !== source.variable
