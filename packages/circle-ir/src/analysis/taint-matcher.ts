@@ -792,8 +792,11 @@ function isParameterizedQueryCall(call: CallInfo, pattern: SinkPattern): boolean
   // Arg-0 behaviour is unchanged: a placeholder literal plus any further
   // argument is parameterized. Context forms look at the query argument
   // the sink names, and require a bound argument after it.
-  const queryPos = pattern.arg_positions.length > 0
-    ? Math.min(...pattern.arg_positions)
+  // A sink loaded from an untyped rules file can omit `arg_positions`;
+  // treat that as empty, as the subtype-arity check does (#683).
+  const positions = pattern.arg_positions ?? [];
+  const queryPos = positions.length > 0
+    ? Math.min(...positions)
     : 0;
   const queryArg = call.arguments.find(a => a.position === queryPos);
   if (queryArg) {

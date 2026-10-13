@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`analyze()` no longer throws on a `sql_injection` sink pattern supplied without `arg_positions` (#683).** A sink loaded from an untyped rules file can omit the field. 4.14.0 read it unguarded in the parameterized-query check, so one such sink failed the analysis of every file that matched it. A missing field is treated as empty, as before 4.14.0.
 - **Java: `setSecure(true)` credits that cookie only (#595).** A second cookie that calls `setSecure(false)`, or never sets the flag, is still insecure-cookie. One cookie with both flags set stays clean.
 - **Java: Undertow `ResourceManager.getResource` is a path sink (#622).** `ResourceManager`, `PathResourceManager`, `FileResourceManager`, and `ClassPathResourceManager`, class-qualified. A literal path stays clean.
 - **A sanitizer on one operand no longer clears the whole sink (#641).** `println(escapeHtml4(a) + b)` and `res.send(escapeHtml(a) + b)` are reported. Both operands escaped stays clean.
