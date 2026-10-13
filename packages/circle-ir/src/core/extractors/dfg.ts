@@ -445,6 +445,7 @@ function processStatement(
             };
             defs.push(def);
             currentScope(scopeStack).set(name, def.id);
+            markDeclared(currentScope(scopeStack), name);
           } else if (isJavaScript) {
             // Handle destructuring patterns in JavaScript
             const destructDefs = extractDestructuringDefs(nameNode, defId);
@@ -648,7 +649,8 @@ function processStatement(
       uses.push(...result.uses);
       defId = result.nextDefId;
       useId = result.nextUseId;
-      scopeStack.pop();
+      const popped = scopeStack.pop()!;
+      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack);
       break;
     }
 
@@ -713,6 +715,8 @@ function processExpression(
       };
       defs.push(def);
       currentScope(scopeStack).set(name, def.id);
+      // A straight-line reassignment replaces any branch defs carried out (#596).
+      alternateDefs.get(currentScope(scopeStack))?.delete(name);
     } else if (left) {
       // Field access or array access - extract uses
       const leftUses = extractUses(left, useId, scopeStack, isJavaScript);
@@ -827,6 +831,11 @@ function extractUses(
         line: n.startPosition.row + 1,
         def_id: reachingDef,
       });
+      // A def made inside a nested block may also reach this use (#596).
+      for (const alt of findAlternateDefs(name, scopeStack)) {
+        if (alt === reachingDef) continue;
+        uses.push({ id: id++, variable: name, line: n.startPosition.row + 1, def_id: alt });
+      }
     }
   });
 
@@ -1147,6 +1156,52 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
  */
 function currentScope(scopeStack: Map<string, number>[]): Map<string, number> {
   return scopeStack[scopeStack.length - 1];
+}
+
+/**
+ * Java: an assignment inside a braced block to a variable declared outside it
+ * was bound in the block's own scope, so it was dropped when the block ended
+ * and later uses saw only the outer def (cognium-dev#596 / #597:
+ * `String t = ""; if (a) { if (b) t = tainted; } exec(c + t)` had no flow).
+ * The block def may or may not run, so it is kept as an *alternate* reaching
+ * def of the enclosing scope, next to the outer one, not in place of it.
+ */
+const declaredNames = new WeakMap<Map<string, number>, Set<string>>();
+const alternateDefs = new WeakMap<Map<string, number>, Map<string, number[]>>();
+
+function markDeclared(scope: Map<string, number>, name: string): void {
+  let set = declaredNames.get(scope);
+  if (!set) { set = new Set(); declaredNames.set(scope, set); }
+  set.add(name);
+  alternateDefs.get(scope)?.delete(name);
+}
+
+function carryBranchDefsOut(popped: Map<string, number>, scopeStack: Map<string, number>[]): void {
+  const declared = declaredNames.get(popped);
+  const poppedAlts = alternateDefs.get(popped);
+  const carry = (name: string, ids: number[]): void => {
+    if (declared?.has(name)) return;
+    for (let i = scopeStack.length - 1; i >= 0; i--) {
+      if (!scopeStack[i].has(name)) continue;
+      let alts = alternateDefs.get(scopeStack[i]);
+      if (!alts) { alts = new Map(); alternateDefs.set(scopeStack[i], alts); }
+      const list = alts.get(name) ?? [];
+      for (const id of ids) if (!list.includes(id)) list.push(id);
+      alts.set(name, list);
+      return;
+    }
+  };
+  for (const [name, id] of popped) carry(name, [id]);
+  if (poppedAlts) for (const [name, ids] of poppedAlts) carry(name, ids);
+}
+
+function findAlternateDefs(name: string, scopeStack: Map<string, number>[]): number[] {
+  for (let i = scopeStack.length - 1; i >= 0; i--) {
+    const alts = alternateDefs.get(scopeStack[i])?.get(name);
+    if (alts && alts.length > 0) return alts;
+    if (scopeStack[i].has(name)) return [];
+  }
+  return [];
 }
 
 /**
