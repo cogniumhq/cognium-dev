@@ -3,8 +3,9 @@
  * file is not an `external_taint_escape`. The cross-file path (or its absence
  * after the callee-reach check) is what reports, so `analyzeProject` agrees
  * with a single-file analysis of the same code. The escape stays when the call
- * is unresolved, the callee has no registered sink, or the callee hands the
- * value to another call.
+ * is unresolved, the callee has no registered sink, or the callee forwards the
+ * value (direct call, interpolated hole, local alias, field/property store, or
+ * return). Same-line mixed project + unknown receivers also keep it.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
@@ -26,6 +27,34 @@ const run = async (files: F[]) => {
   const paths = pa.taint_paths.map(p => `${p.sink.type}@${p.source.file}:${p.source.line}->${p.sink.file}:${p.sink.line}`);
   return { pa, escapes, sinks, paths };
 };
+
+/** Callee with a registered sink plus a forwarding line under test. */
+const calleeWithForward = (forward: string): string => `using System.Data.SqlClient;
+public class B
+{
+    string saved;
+    public static void Run(string data)
+    {
+        using (SqlConnection conn = new SqlConnection("cs"))
+        {
+            SqlCommand cmd = new SqlCommand("select 1", conn);
+            cmd.ExecuteReader();
+        }
+        ${forward}
+    }
+}
+`;
+
+const callerRun = `using System.Web;
+public class A
+{
+    public void Bad(HttpRequest req)
+    {
+        string data = req.QueryString["name"];
+        B.Run(data);
+    }
+}
+`;
 
 const callerA = `using System.Web;
 public class A
@@ -196,6 +225,78 @@ public class Audit
 }
 `;
     const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'Audit.cs', code: callee }]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+
+  it('keeps the escape when the callee forwards via an interpolated string hole', async () => {
+    const r = await run([
+      { filePath: 'A.cs', code: callerRun },
+      { filePath: 'B.cs', code: calleeWithForward('Sender.Post($"hello {data}");') },
+    ]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+
+  it('keeps the escape when the callee forwards through a local alias', async () => {
+    const r = await run([
+      { filePath: 'A.cs', code: callerRun },
+      { filePath: 'B.cs', code: calleeWithForward('string x = data; Sender.Post(x);') },
+    ]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+
+  it('keeps the escape when the callee stores the parameter in a field', async () => {
+    const callee = `using System.Data.SqlClient;
+public class B
+{
+    static string saved;
+    public static void Run(string data)
+    {
+        using (SqlConnection conn = new SqlConnection("cs"))
+        {
+            SqlCommand cmd = new SqlCommand("select 1", conn);
+            cmd.ExecuteReader();
+        }
+        saved = data;
+    }
+}
+`;
+    const r = await run([{ filePath: 'A.cs', code: callerRun }, { filePath: 'B.cs', code: callee }]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+
+  it('keeps the escape when the callee returns the parameter', async () => {
+    const r = await run([
+      { filePath: 'A.cs', code: callerRun },
+      { filePath: 'B.cs', code: calleeWithForward('return data;') },
+    ]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+
+  it('keeps the escape when the same line also calls an unknown receiver of the same method name', async () => {
+    const caller = `using System.Web;
+public class A
+{
+    public void Bad(HttpRequest req)
+    {
+        string data = req.QueryString["name"];
+        B.Run(data); Unknown.Run(data);
+    }
+}
+`;
+    const callee = `using System.Data.SqlClient;
+public class B
+{
+    public static void Run(string data)
+    {
+        using (SqlConnection conn = new SqlConnection("cs"))
+        {
+            SqlCommand cmd = new SqlCommand("select 1", conn);
+            cmd.ExecuteReader();
+        }
+    }
+}
+`;
+    const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'B.cs', code: callee }]);
     expect(r.escapes).toContain('A.cs:7');
   });
 });
