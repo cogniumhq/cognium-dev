@@ -1218,6 +1218,15 @@ function processArm(
   if (isJavaScript || !inAlwaysRunBlock(node)) {
     lastPoppedBlock = null;
     const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
+    // A braceless body that shares the enclosing block's scope (e.g. a nested
+    // `if` inside a braced `else { … }` arm) still only writes on some paths.
+    // Note its defs so `mergeIfElseDefs` does not treat them as direct statements.
+    if (!isJavaScript && node.type !== 'block' && node.type !== 'statement_block') {
+      const scope = currentScope(scopeStack);
+      for (const def of result.defs) {
+        if (scope.get(def.variable) === def.id) markConditional(scope, def.id);
+      }
+    }
     return { ...result, popped: null };
   }
   if (node.type === 'block' || node.type === 'statement_block') {
@@ -1249,6 +1258,8 @@ function mergeIfElseDefs(
   for (const [name, idA] of armA) {
     const idB = armB.get(name);
     if (idB === undefined) continue;
+    // An id that came from a nested braceless conditional / loop is not a write on every path.
+    if (conditionalIds.get(armA)?.has(idA) || conditionalIds.get(armB)?.has(idB)) continue;
     if (declaredNames.get(armA)?.has(name) || declaredNames.get(armB)?.has(name)) continue;
     if (!scopeStack.some((scope) => scope.has(name))) continue;
     const prior = new Set(before.get(name) ?? []);
@@ -1259,6 +1270,15 @@ function mergeIfElseDefs(
     if (!map) { map = new Map(); alternateDefs.set(top, map); }
     map.set(name, arms);
   }
+}
+
+/** Def ids that sit in a scope's map but were made under a braceless conditional / loop body, so they may not run. */
+const conditionalIds = new WeakMap<Map<string, number>, Set<number>>();
+
+function markConditional(scope: Map<string, number>, id: number): void {
+  let set = conditionalIds.get(scope);
+  if (!set) { set = new Set(); conditionalIds.set(scope, set); }
+  set.add(id);
 }
 
 const declaredNames = new WeakMap<Map<string, number>, Set<string>>();
