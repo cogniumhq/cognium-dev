@@ -91,6 +91,42 @@ function stripPythonTrailingComment(text: string): string {
  * tracks `()[]{}`; string literals are skipped so a `:` inside a subscript
  * key does not truncate the expression.
  */
+function pythonFStringNestedFields(body: string): string {
+  // Same `{{` / `}}` skip as braceExprs: doubled braces are literal text, not
+  // nested replacement fields. Each nested `{…}` is itself an expression (and
+  // may carry its own conversion / format-spec), so recurse through
+  // pythonFStringExprOnly.
+  let acc = '';
+  for (let j = 0; j < body.length; ) {
+    if (body[j] === '{' && body[j + 1] === '{') { j += 2; continue; }
+    if (body[j] === '}' && body[j + 1] === '}') { j += 2; continue; }
+    if (body[j] === '{') {
+      j++;
+      let depth = 1;
+      let inner = '';
+      while (j < body.length && depth > 0) {
+        if (body[j] === '{') depth++;
+        else if (body[j] === '}') {
+          depth--;
+          if (depth === 0) break;
+        }
+        inner += body[j];
+        j++;
+      }
+      j++;
+      acc += ' ' + pythonFStringExprOnly(inner) + ' ';
+      continue;
+    }
+    j++;
+  }
+  return acc;
+}
+
+/**
+ * Keep the expression part of an f-string replacement field; drop literal
+ * conversion / format-spec text, but retain nested `{…}` fields from the
+ * discarded tail (format specs may contain nested replacement fields).
+ */
 function pythonFStringExprOnly(inner: string): string {
   let depth = 0;
   let i = 0;
@@ -114,14 +150,19 @@ function pythonFStringExprOnly(inner: string): string {
       let j = i + 1;
       while (j < inner.length && (inner[j] === ' ' || inner[j] === '\t')) j++;
       if (inner[j] === '=') { i = j + 1; continue; }
-      return inner.slice(0, i);
+      const expr = inner.slice(0, i);
+      const nested = pythonFStringNestedFields(inner.slice(i + 1));
+      return nested ? expr + nested : expr;
     }
-    if (depth === 0 && ch === ':') return inner.slice(0, i);
+    if (depth === 0 && ch === ':') {
+      const expr = inner.slice(0, i);
+      const nested = pythonFStringNestedFields(inner.slice(i + 1));
+      return nested ? expr + nested : expr;
+    }
     i++;
   }
   return inner;
 }
-
 function resolvePythonDerivedAnchor<S extends { line: number }>(
   varName: string,
   derived: ReadonlyMap<string, number>,
@@ -140,7 +181,8 @@ function resolvePythonDerivedAnchor<S extends { line: number }>(
   // Drop a real trailing `#…` comment first (outside strings only), then lift
   // f-string `{…}` names. Format specs / conversion flags are cut inside
   // braceExprs so a `#` in `{width:#04x}` cannot eat later names, and `!s`
-  // cannot become a scanned identifier.
+  // cannot become a scanned identifier; nested `{…}` fields in the format
+  // spec (e.g. `{label:{fmt}}`) are kept.
   const rhs = maskStringLiteralsForTokenScan(stripPythonTrailingComment(text.slice(eq + 1)));
   let best: S | undefined;
   for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
