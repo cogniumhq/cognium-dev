@@ -265,10 +265,21 @@ public class B
   });
 
   it('keeps the escape when the callee returns the parameter', async () => {
-    const r = await run([
-      { filePath: 'A.cs', code: callerRun },
-      { filePath: 'B.cs', code: calleeWithForward('return data;') },
-    ]);
+    const callee = `using System.Data.SqlClient;
+public class B
+{
+    public static string Run(string data)
+    {
+        using (SqlConnection conn = new SqlConnection("cs"))
+        {
+            SqlCommand cmd = new SqlCommand("select 1", conn);
+            cmd.ExecuteReader();
+        }
+        return data;
+    }
+}
+`;
+    const r = await run([{ filePath: 'A.cs', code: callerRun }, { filePath: 'B.cs', code: callee }]);
     expect(r.escapes).toContain('A.cs:7');
   });
 

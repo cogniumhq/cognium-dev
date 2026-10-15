@@ -13,19 +13,19 @@
  * cross-file path is built from the dropped sink. A sink is dropped only when
  * every call at its line to that method name resolves exactly to a method
  * declared in a different project file AND that method contains a registered
- * sink and does not forward any of its parameters (directly, through a local
- * alias, a field/property store, a return, or an interpolated-string hole):
- * the cross-file phase and its callee-reach check then decide what is reported.
- * A callee with no registered sink is a shape the registry does not know (for
- * example a header or cookie write), and one that forwards the parameter
- * elsewhere leaks it there; in both the escape is the only signal. An
- * unresolved, inferred or polymorphic call also keeps it. When the call's
- * receiver is a type-like name it must match the resolved class, so a second
- * same-line call such as `Unknown.Run(data)` cannot inherit another call's
- * cached resolution.
+ * sink and does not forward any of its parameters (directly, through an
+ * identity local alias, a field/property store, a return of a non-void method,
+ * or an interpolated-string hole): the cross-file phase and its callee-reach
+ * check then decide what is reported. A callee with no registered sink is a
+ * shape the registry does not know (for example a header or cookie write), and
+ * one that forwards the parameter elsewhere leaks it there; in both the escape
+ * is the only signal. An unresolved, inferred or polymorphic call also keeps
+ * it. When the call's receiver is a type-like name it must match the resolved
+ * class, so a second same-line call such as `Unknown.Run(data)` cannot inherit
+ * another call's cached resolution.
  */
 
-import type { CircleIR, CallInfo, DFGDef } from '../types/index.js';
+import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
 import type { ProjectGraph } from '../graph/project-graph.js';
 
 const ESCAPE = 'external_taint_escape';
@@ -51,23 +51,34 @@ function mentionsName(expr: string, name: string): boolean {
   return new RegExp(`(?<![\\w.])${name}(?!\\w)`).test(textOf(expr));
 }
 
-/** Locals (and further aliases) that DFG-chain from the method's parameters. */
-function aliasesOfParams(ir: CircleIR, methodStart: number, methodEnd: number, params: string[]): Set<string> {
+/**
+ * Identity aliases of parameters (`string x = data`), not transforms
+ * (`data.Split(...)`). A local chained from a known name counts only when its
+ * def line has a use of that name and no call with that name as receiver.
+ */
+function identityAliases(ir: CircleIR, methodStart: number, methodEnd: number, params: string[]): Set<string> {
   const names = new Set(params);
   const defs = ir.dfg?.defs ?? [];
+  const uses = ir.dfg?.uses ?? [];
   const chains = ir.dfg?.chains ?? [];
   const inMethod = (d: DFGDef): boolean => d.line >= methodStart && d.line <= methodEnd;
-  const aliasDefIds = new Set(
-    defs.filter(d => inMethod(d) && d.kind === 'param' && params.includes(d.variable)).map(d => d.id),
-  );
+
   let grew = true;
   while (grew) {
     grew = false;
+    const nameDefIds = new Set(
+      defs.filter(d => inMethod(d) && names.has(d.variable)).map(d => d.id),
+    );
     for (const ch of chains) {
-      if (!aliasDefIds.has(ch.from_def) || aliasDefIds.has(ch.to_def)) continue;
+      if (!nameDefIds.has(ch.from_def)) continue;
+      const from = defs.find(d => d.id === ch.from_def);
       const to = defs.find(d => d.id === ch.to_def);
-      if (!to || !inMethod(to)) continue;
-      aliasDefIds.add(ch.to_def);
+      if (!from || !to || !inMethod(to) || to.kind !== 'local') continue;
+      if (names.has(to.variable)) continue;
+      if (!uses.some(u => u.line === to.line && u.variable === from.variable)) continue;
+      const transform = ir.calls.some(c =>
+        c.location.line === to.line && c.receiver === from.variable);
+      if (transform) continue;
       names.add(to.variable);
       grew = true;
     }
@@ -75,20 +86,24 @@ function aliasesOfParams(ir: CircleIR, methodStart: number, methodEnd: number, p
   return names;
 }
 
-function isParametersBindingLine(ir: CircleIR, line: number, methodStart: number, methodEnd: number): boolean {
-  return ir.calls.some(c =>
-    c.location.line === line
-    && c.location.line >= methodStart && c.location.line <= methodEnd
-    && /(?:^|\.)Parameters$/.test(c.receiver ?? ''));
+function fieldNamesOf(ir: CircleIR): Set<string> {
+  return new Set(ir.types.flatMap(t => (t.fields ?? []).map(f => f.name)));
+}
+
+function isVoidReturn(m: MethodInfo): boolean {
+  const t = (m.return_type ?? 'void').trim().toLowerCase();
+  return t === '' || t === 'void';
 }
 
 /**
  * True when every method named like `targetFqn` in `ir` contains a registered
- * sink and does not forward a parameter elsewhere. Allowed mentions of a
- * parameter (or a local alias of one) are only: a registered-sink line, or a
- * `x.Parameters.Add*(...)` binding. Any other use — a call argument (including
- * interpolated holes), a local alias assignment, a field/property store, or a
- * return — is forwarding, which the escape reports.
+ * sink and does not forward a parameter elsewhere. A parameter bound with
+ * `x.Parameters.Add*(...)` is a binding, and a call on a registered sink line
+ * is covered by the reach check. Forwarding includes: a call argument that
+ * mentions the parameter or an identity local alias of it (including `{data}`
+ * holes in interpolated strings), a store into a field/property, and a return
+ * of the parameter from a non-void method. Null-checks and transforms like
+ * `data.Split(...)` are not forwarding.
  */
 function calleeDecidedBySinks(ir: CircleIR | undefined, targetFqn: string): boolean {
   if (!ir) return false;
@@ -97,32 +112,46 @@ function calleeDecidedBySinks(ir: CircleIR | undefined, targetFqn: string): bool
   if (methods.length === 0) return false;
   const sinks = ir.taint?.sinks ?? [];
   const sinkLines = new Set(sinks.filter(k => k.type !== ESCAPE).map(k => k.line));
+  const fields = fieldNamesOf(ir);
+  const defs = ir.dfg?.defs ?? [];
+  const uses = ir.dfg?.uses ?? [];
+
   return methods.every(m => {
     if (!sinks.some(k => k.type !== ESCAPE && k.line >= m.start_line && k.line <= m.end_line)) return false;
     const params = m.parameters.map(p => p.name).filter(Boolean);
     if (params.length === 0) return true;
-    const aliases = aliasesOfParams(ir, m.start_line, m.end_line, params);
+    const aliases = identityAliases(ir, m.start_line, m.end_line, params);
 
-    // Call-argument forwarding (direct or via alias / interpolated hole).
+    // Call-argument forwarding (direct, identity alias, or interpolated hole).
     const callForward = ir.calls.some(c =>
       c.location.line >= m.start_line && c.location.line <= m.end_line
       && !sinkLines.has(c.location.line)
       && !/(?:^|\.)Parameters$/.test(c.receiver ?? '')
-      && c.arguments.some(a => {
-        const e = a.expression ?? '';
-        return [...aliases].some(p => mentionsName(e, p));
-      }));
+      && c.arguments.some(a => [...aliases].some(p => mentionsName(a.expression ?? '', p))));
     if (callForward) return false;
 
-    // Any other use of a parameter/alias outside sink / Parameters lines
-    // (local alias assignment, field/property store, return, object initializer).
-    const uses = ir.dfg?.uses ?? [];
-    const otherUse = uses.some(u =>
-      u.line >= m.start_line && u.line <= m.end_line
-      && aliases.has(u.variable)
-      && !sinkLines.has(u.line)
-      && !isParametersBindingLine(ir, u.line, m.start_line, m.end_line));
-    if (otherUse) return false;
+    // Field/property store: `saved = data` / `this.saved = data` / `Prop = data`.
+    for (const u of uses) {
+      if (u.line < m.start_line || u.line > m.end_line) continue;
+      if (!aliases.has(u.variable)) continue;
+      if (sinkLines.has(u.line)) continue;
+      const lineDefs = defs.filter(d => d.line === u.line);
+      if (lineDefs.some(d => d.kind === 'field' || fields.has(d.variable))) return false;
+      if (uses.some(o => o.line === u.line && o.variable !== u.variable && fields.has(o.variable))) return false;
+    }
+
+    // Return of a parameter/alias from a non-void method: use on a line with
+    // no calls and no new local def (null-checks in void methods stay silent).
+    if (!isVoidReturn(m)) {
+      for (const u of uses) {
+        if (u.line < m.start_line || u.line > m.end_line) continue;
+        if (!aliases.has(u.variable)) continue;
+        if (sinkLines.has(u.line)) continue;
+        if (ir.calls.some(c => c.location.line === u.line)) continue;
+        if (defs.some(d => d.line === u.line && d.kind === 'local')) continue;
+        return false;
+      }
+    }
 
     return true;
   });
