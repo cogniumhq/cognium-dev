@@ -45,6 +45,10 @@ describe('cognium-dev#680 — const literal origin in a fetch template', () => {
     expect(await ssrf(file("const REGISTRY_ORIGIN = 'https://registry.example.org' // registry\n", '`${REGISTRY_ORIGIN}/pkgs/${req.query.owner}`'))).toHaveLength(0);
   });
 
+  it('const origin with `as const` on the next line is clean', async () => {
+    expect(await ssrf(file("const REGISTRY_ORIGIN = 'https://registry.example.org'\n  as const;", '`${REGISTRY_ORIGIN}/pkgs/${req.query.owner}`'))).toHaveLength(0);
+  });
+
   it('const origin with `as const` is clean', async () => {
     expect(await ssrf(file("const REGISTRY_ORIGIN = 'https://registry.example.org' as const;", '`${REGISTRY_ORIGIN}/pkgs/${req.query.owner}`'))).toHaveLength(0);
   });
@@ -56,6 +60,10 @@ describe('cognium-dev#680 — const literal origin in a fetch template', () => {
     ['literal.concat(tainted)', "const REGISTRY_ORIGIN = 'https://registry.example.org'.concat(req.query.host);", T],
     ['literal then + on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  + process.env.HOST;", T],
     ['literal then .concat on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  .concat(req.query.host);", T],
+    ['literal then `as string` + process.env on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  as string + process.env.HOST;", T],
+    ['literal then `in` on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  in allow ? 'https://registry.example.org' : req.query.host;", T],
+    ['literal then `instanceof` on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  instanceof String || req.query.host;", T],
+    ['literal then `satisfies` on the next line', "const REGISTRY_ORIGIN = 'https://registry.example.org'\n  satisfies string || req.query.host;", T],
     ['literal in a conditional', "const REGISTRY_ORIGIN = 'https://registry.example.org' || req.query.host;", T],
     ['no / closing the authority', "const REGISTRY_ORIGIN = 'https://registry.example.org';", '`${REGISTRY_ORIGIN}${req.query.p}`'],
     ['string concat without a closing /', "const REGISTRY_ORIGIN = 'https://registry.example.org';", 'REGISTRY_ORIGIN + req.query.p'],

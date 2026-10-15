@@ -537,14 +537,18 @@ const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
  * line that cannot continue the expression. A same-line operator (`+`, `.`,
  * `||` …) or a next-line `+` / `.` / `(` / `[` / template continuation means
  * the literal is only the start of a larger expression, so it is not a
- * constant. An optional TS `as const` / `as string` suffix is skipped.
+ * constant. An optional TS `as const` / `as string` suffix is skipped (it may
+ * sit on the next line).
  * (cognium-dev#680, #681)
  */
 function literalEndsInitializer(code: string, end: number): boolean {
   let i = end;
-  const asConst = /^[ \t]+as[ \t]+(?:const|string)\b/.exec(code.slice(i, i + 24));
-  if (asConst) i += asConst[0].length;
   let crossedNewline = false;
+  const asConst = /^\s+as\s+(?:const|string)\b/.exec(code.slice(i, i + 64));
+  if (asConst) {
+    i += asConst[0].length;
+    crossedNewline = asConst[0].includes('\n');
+  }
   for (;;) {
     while (i < code.length && /\s/.test(code[i])) {
       if (code[i] === '\n') crossedNewline = true;
@@ -564,6 +568,8 @@ function literalEndsInitializer(code: string, end: number): boolean {
   const c = code[i];
   if (c === ';' || c === ',') return true;
   // ASI: a following line that begins a new statement terminates the initializer.
+  // A line that starts with `as` / `satisfies` / `in` / `instanceof` continues it.
+  if (/^(?:as|satisfies|in|instanceof)(?![\w$])/.test(code.slice(i, i + 12))) return false;
   return crossedNewline && !/[-+*/%.?:|&<>=!~^(\[`]/.test(c);
 }
 

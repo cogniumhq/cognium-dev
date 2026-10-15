@@ -65,6 +65,9 @@ describe('cognium-dev#681 — constant template RegExp pattern', () => {
     ['literal + tainted value on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  + req.query.suffix;"],
     ['literal + tainted value on the same line', "const CRED_KEY = '(?:apikey|passwd)' + req.query.suffix;"],
     ['literal.concat(...) on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  .concat(process.env.SUFFIX);"],
+    ['literal then `in` on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  in flags || req.query.suffix;"],
+    ['literal then `as string` + tainted on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  as string + req.query.suffix;"],
+    ['literal then `instanceof` on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  instanceof String || req.query.suffix;"],
     ['\\x28 escape producing a nested quantifier', "const CRED_KEY = '\\x28\\\\w+)+';"],
     ['\\u0028 escape producing a nested quantifier', "const CRED_KEY = '\\u0028\\\\w+)+';"],
   ];
