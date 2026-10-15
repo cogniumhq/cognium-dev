@@ -18,6 +18,7 @@ import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import { CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
+import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
 import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
@@ -242,7 +243,22 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         taintedVariables: constProp.tainted,
       });
 
+      // A call the sink registry matched and SinkFilterPass then cleared (a
+      // guard above `res.redirect(x)`, a literal header value, ...) is not an
+      // unknown external method for the arguments that sink covers.
+      // Re-reporting them as an escape would undo the filter's verdict on the
+      // same call. Other tainted arguments (the data in
+      // `writeFileSync(constPath, data)`) still escape.
+      const cleared = ctx.hasResult('taint-matcher')
+        ? ctx.getResult<TaintMatcherResult>('taint-matcher').sinks.filter(s =>
+          s.method && !sinks.some(k => k.line === s.line && k.method === s.method))
+        : [];
+      const isClearedCall = (esc: TaintSink): boolean => cleared.some(s =>
+        s.line === esc.line && s.method === esc.method &&
+        (!s.argPositions?.length || !esc.argPositions?.length ||
+          esc.argPositions.every(p => s.argPositions!.includes(p))));
       for (const sink of interProc.propagatedSinks) {
+        if (sink.type === 'external_taint_escape' && isClearedCall(sink)) continue;
         if (!constProp.unreachableLines.has(sink.line)) {
           additionalSinks.push(sink);
         }
