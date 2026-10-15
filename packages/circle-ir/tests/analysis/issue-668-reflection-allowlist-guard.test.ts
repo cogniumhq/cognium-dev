@@ -99,4 +99,43 @@ describe('cognium-dev#668 — reflection allowlist guard', () => {
     const r = await analyze(unguarded, 'Plugins.java', 'java');
     expect(codeInjectionLines(r)).toEqual([18, 25, 32, 38]);
   });
+
+  it('a branch-only guard, a mutated set and a second tainted value on the sink still report', async () => {
+    const code = `package com.acme.render;
+
+import java.util.*;
+import javax.servlet.http.HttpServletRequest;
+
+public class Loader {
+    private static final List<String> NAMES = List.of("com.acme.A", "com.acme.B");
+    private static final Set<String> GROWN = new HashSet<>(Arrays.asList("com.acme.C"));
+
+    public Object branch(HttpServletRequest req, boolean strict) throws Exception {
+        String kind = req.getParameter("kind");
+        if (strict) {
+            if (!NAMES.contains(kind)) {
+                throw new SecurityException("denied");
+            }
+        }
+        return Class.forName(kind).newInstance();
+    }
+
+    public Object mutated(HttpServletRequest req) throws Exception {
+        GROWN.add(req.getParameter("extra"));
+        String kind = req.getParameter("kind");
+        if (!GROWN.contains(kind)) throw new SecurityException("denied");
+        return Class.forName(kind).newInstance();
+    }
+
+    public Object joined(HttpServletRequest req) throws Exception {
+        String kind = req.getParameter("kind");
+        String tail = req.getParameter("tail");
+        if (!NAMES.contains(kind)) throw new SecurityException("denied");
+        return Class.forName(kind + tail).newInstance();
+    }
+}
+`;
+    const r = await analyze(code, 'Loader.java', 'java');
+    expect(codeInjectionLines(r)).toEqual([17, 24, 31]);
+  });
 });

@@ -90,4 +90,29 @@ describe('cognium-dev#671 — outbound getOutputStream() is not xss', () => {
     const lines = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))].sort((a, b) => a - b);
     expect(lines).toEqual([10, 15, 21]);
   });
+
+  it('a `var` alias of the response shadows an earlier URLConnection of the same name', async () => {
+    const code = `package com.acme.relay;
+
+import java.net.URL;
+import java.net.URLConnection;
+import javax.servlet.http.*;
+
+public class Mixed {
+    public void push(HttpServletRequest req) throws Exception {
+        URLConnection sink = new URL("https://svc.example").openConnection();
+        sink.getOutputStream().write(req.getParameter("a").getBytes());
+    }
+
+    public void echo(HttpServletRequest req, HttpServletResponse resp) throws Exception {
+        String v = req.getParameter("v");
+        var sink = resp;
+        sink.getOutputStream().write(v.getBytes());
+    }
+}
+`;
+    const r = await analyze(code, 'Mixed.java', 'java');
+    const lines = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))];
+    expect(lines).toEqual([16]);
+  });
 });

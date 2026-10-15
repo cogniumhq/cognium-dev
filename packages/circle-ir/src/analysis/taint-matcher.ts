@@ -1990,7 +1990,8 @@ function isJavaOutboundOutputStreamWrite(
   );
   // Nearest declaration above the call wins; a re-declaration with another
   // type (shadowing) stops the walk.
-  const anyDeclRe = new RegExp(`\\b[A-Z][\\w.<>,\\[\\]]*\\s+${m[1]}\\s*[=;,)]`);
+  // `var x = …` (inferred type) also shadows, and its type is unknown here.
+  const anyDeclRe = new RegExp(`\\b(?:[A-Z][\\w.<>,\\[\\]]*|var)\\s+${m[1]}\\s*[=;,)]`);
   for (let i = call.location.line - 1; i >= 0; i--) {
     const line = sourceLines[i] ?? '';
     if (declRe.test(line)) return true;

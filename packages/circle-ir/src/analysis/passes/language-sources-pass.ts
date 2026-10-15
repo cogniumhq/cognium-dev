@@ -6181,7 +6181,10 @@ function findJavaReflectionAllowlistGuardSanitizers(
       init = init.slice(0, init.indexOf(';')).replace(/"(?:[^"\\]|\\.)*"/g, '""');
       if (!init.includes('""')) return false;
       const idents = init.match(/[A-Za-z_]\w*/g) ?? [];
-      return idents.every(id => JAVA_LITERAL_COLLECTION_IDENTS.has(id));
+      if (!idents.every(id => JAVA_LITERAL_COLLECTION_IDENTS.has(id))) return false;
+      // A mutable collection that is written anywhere is not a fixed set.
+      const mutRe = new RegExp(`\\b${name}\\s*\\.\\s*(?:add|addAll|put|putAll|set|replaceAll)\\s*\\(`);
+      return !lines.some(l => mutRe.test(l));
     }
     return false;
   };
@@ -6197,12 +6200,21 @@ function findJavaReflectionAllowlistGuardSanitizers(
       .filter(mt => mt.start_line <= i + 1 && mt.end_line >= i + 1)
       .sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line))[0];
     if (!method) continue;
+    // The guard must sit in the method body's top-level block, so it dominates
+    // every later line (not inside an `if` branch, loop or lambda body).
+    const before = [...lines.slice(method.start_line - 1, i), lines[i].slice(0, m.index)]
+      .join('\n').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    const depth = (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
+    if (depth !== 1) continue;
     const refRe = new RegExp(`(?<![\\w.])${guarded}\\b`);
+    // Credit only lines where `<v>` is a whole call argument, `f(<v>)`, so a
+    // second tainted value on the same line (`forName(v + other)`) still reports.
+    const wholeArgRe = new RegExp(`\\(\\s*${guarded}\\s*\\)`);
     const reassignRe = new RegExp(`(?<![\\w.])${guarded}\\s*(?:=(?!=)|\\+=)`);
     for (let l = i + 1; l < Math.min(method.end_line, lines.length); l++) {
       const lt = lines[l];
       if (reassignRe.test(lt)) break;
-      if (!refRe.test(lt)) continue;
+      if (!refRe.test(lt) || !wholeArgRe.test(lt)) continue;
       sanitizers.push({
         type: 'java_reflection_allowlist_guard',
         method: 'contains',
@@ -11404,6 +11416,8 @@ export function findJsTemplateInjectionSstiFindings(
 
 const SPRING_MAPPING_ANN = /^(?:Get|Post|Put|Delete|Patch|Request)Mapping\b/;
 const SPRING_WEB_PARAM_ANN = /^(?:RequestParam|PathVariable|RequestHeader|CookieValue|MatrixVariable)\b/;
+const SPRING_NON_TEXT_PARAM_TYPE =
+  /^(?:int|long|short|byte|double|float|boolean|char|Integer|Long|Short|Byte|Double|Float|Boolean|Character|BigDecimal|BigInteger|UUID|LocalDate|LocalDateTime|LocalTime|Instant|OffsetDateTime|ZonedDateTime|Date)$/;
 
 /** A `@*Mapping(produces = ...)` names a media type, and it is not HTML. */
 function springProducesNonHtml(annotations: ReadonlyArray<string>): boolean {
@@ -11482,6 +11496,9 @@ export function findJavaSpringReturnXSSSinks(
       // Seeds: request-bound parameters, then in-method sources with a variable.
       const seeds = new Map<string, number>();
       for (const p of m.parameters) {
+        // Spring converts to the declared type first: a number, boolean,
+        // UUID or date cannot carry markup.
+        if (SPRING_NON_TEXT_PARAM_TYPE.test((p.type ?? '').replace(/^(?:[\w]+\.)+/, ''))) continue;
         const bound = p.annotations.some(a => SPRING_WEB_PARAM_ANN.test(a))
           || (p.annotations.some(a => /^RequestBody\b/.test(a)) && p.type === 'String');
         if (bound) seeds.set(p.name, p.line ?? m.start_line);

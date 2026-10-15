@@ -116,4 +116,37 @@ describe('cognium-dev#566 — Spring return-as-body xss', () => {
     const r = await analyze(mvc, 'Fragments.java', 'java');
     expect(xssFlowLines(r)).toEqual([24]);
   });
+
+  it('number, boolean and UUID bound parameters cannot carry markup', async () => {
+    const code = `package com.acme.board;
+
+import java.util.UUID;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class Items {
+    @GetMapping("/item/{id}")
+    public String item(@PathVariable long id) {
+        return "<p>item " + id + "</p>";
+    }
+
+    @GetMapping("/page")
+    public String page(@RequestParam Integer pageNo, @RequestParam Boolean on) {
+        return "<span>" + pageNo + on + "</span>";
+    }
+
+    @GetMapping("/u/{uid}")
+    public String user(@PathVariable java.util.UUID uid) {
+        return "<a>" + uid + "</a>";
+    }
+
+    @GetMapping("/name")
+    public String name(@RequestParam String who) {
+        return "<b>" + who + "</b>";
+    }
+}
+`;
+    const r = await analyze(code, 'Items.java', 'java');
+    expect(xssFlowLines(r)).toEqual([25]);
+  });
 });
