@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, ImportInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import {
   DOM_ASSIGNMENT_SINK_METHODS,
@@ -268,6 +268,22 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
           location: s.location,
           method: s.method,
           confidence: 1.0,
+        });
+      }
+    }
+
+    // -- Java (#624): JSPWiki plugin `execute` return is HTML output ------------
+    if (language === 'java') {
+      const tm = ctx.getResult<TaintMatcherResult>('taint-matcher');
+      const xssSan = tm.sanitizers.filter(sa => sa.sanitizes.includes('xss')).map(sa => sa.line);
+      for (const r of findJavaWikiPluginReturnXSSSinks(code, types, graph.ir.imports, tm.sources, xssSan)) {
+        if (additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss')) continue;
+        additionalSinks.push({
+          type: 'xss',
+          cwe: 'CWE-79',
+          line: r.sinkLine,
+          location: `WikiPlugin.execute returns HTML with user input at line ${r.sinkLine}`,
+          confidence: 0.9,
         });
       }
     }
@@ -2903,6 +2919,82 @@ const JINJA_SAFE_TEMPLATE_RE = new RegExp(
 function isSafeJinjaReturnExpr(expr: string): boolean {
   const trimmed = expr.trim();
   return JINJA_SAFE_RTS_RE.test(trimmed) || JINJA_SAFE_TEMPLATE_RE.test(trimmed);
+}
+
+/**
+ * cognium-dev#624 (minimal slice) — JSPWiki plugin output is rendered as HTML.
+ *
+ * The `String` returned from `execute(...)` of a class that implements
+ * `org.apache.wiki.api.plugin.WikiPlugin` (or the older `...plugin.Plugin`) is
+ * written into the page unescaped, so a request- or markup-derived value that
+ * reaches the return is reflected XSS. The rule keys on the interface (from the
+ * import or a fully-qualified `implements`), never on the method name: another
+ * class's `execute(...)` is untouched.
+ *
+ * Mirrors `findPythonReturnXSSSinks` (#368): one sink per tainted `return`, and
+ * `TaintPropagationPass` links it to a source. `StringBuilder.append` is
+ * deliberately not an xss sink on its own (#268) — a builder only matters here
+ * when it reaches the return. An xss-covering sanitizer between the source and
+ * the return suppresses the site.
+ */
+export function findJavaWikiPluginReturnXSSSinks(
+  code: string,
+  types: ReadonlyArray<TypeInfo>,
+  imports: ReadonlyArray<ImportInfo>,
+  sources: ReadonlyArray<{ line: number; variable?: string }>,
+  xssSanitizerLines: ReadonlyArray<number>,
+): Array<{ sinkLine: number; sourceLine: number }> {
+  if (sources.length === 0) return [];
+  const PKG = 'org.apache.wiki.api.plugin';
+  const simpleImported = imports.some(
+    i => i.from_package === PKG && (i.is_wildcard || i.imported_name === 'WikiPlugin' || i.imported_name === 'Plugin'),
+  );
+  const isPluginIface = (name: string): boolean => {
+    const bare = name.replace(/<.*$/, '').trim();
+    if (bare === `${PKG}.WikiPlugin` || bare === `${PKG}.Plugin`) return true;
+    return simpleImported && (bare === 'WikiPlugin' || bare === 'Plugin');
+  };
+  const lines = code.split('\n');
+  const codeOnly = (expr: string): string => expr.replace(/"(?:[^"\\]|\\.)*"/g, ' ').replace(/'(?:[^'\\]|\\.)'/g, ' ');
+  const refs = (expr: string, name: string): boolean =>
+    new RegExp(`(?<![\\p{L}\\p{N}_.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(expr);
+
+  const out: Array<{ sinkLine: number; sourceLine: number }> = [];
+  for (const t of types) {
+    if (!t.implements.some(isPluginIface)) continue;
+    for (const m of t.methods) {
+      if (m.name !== 'execute' || m.return_type !== 'String') continue;
+      const inMethod = sources.filter(sc => sc.line >= m.start_line && sc.line <= m.end_line);
+      if (inMethod.length === 0) continue;
+      const seeds = new Set(inMethod.map(sc => sc.variable).filter((v): v is string => !!v));
+      const tainted = new Set(seeds);
+      for (const [name, line] of buildJavaTaintedVars(code, seeds)) {
+        if (line >= m.start_line && line <= m.end_line) tainted.add(name);
+      }
+      const isTaintedExpr = (expr: string): boolean => {
+        const c = codeOnly(expr);
+        return [...tainted].some(v => refs(c, v));
+      };
+      // Accumulators: `sb.append(<tainted>)` / `out += <tainted>` carry the taint
+      // into the receiver, which the return then reads back.
+      for (let i = m.start_line - 1; i < m.end_line; i++) {
+        const am = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\((.*)$/u.exec(lines[i] ?? '');
+        if (am && isTaintedExpr(am[2])) tainted.add(am[1]);
+        const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[i] ?? '');
+        if (cm && isTaintedExpr(cm[2])) tainted.add(cm[1]);
+      }
+      for (let i = m.start_line - 1; i < m.end_line; i++) {
+        const rm = /^\s*return\s+(.+?);\s*$/.exec(lines[i] ?? '');
+        if (!rm || !isTaintedExpr(rm[1])) continue;
+        const sinkLine = i + 1;
+        const src = inMethod.filter(sc => sc.line <= sinkLine).sort((a, b) => b.line - a.line)[0];
+        if (!src) continue;
+        if (xssSanitizerLines.some(l => l >= src.line && l <= sinkLine)) continue;
+        out.push({ sinkLine, sourceLine: src.line });
+      }
+    }
+  }
+  return out;
 }
 
 export function findPythonReturnXSSSinks(
