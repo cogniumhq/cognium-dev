@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Optional `AnalyzerOptions.resources` (`Map<path, text>`) for project resource files; Java weak-hash resolves a `getProperty("key"[, default])` algorithm through the `.properties` resource the `Properties` object was loaded from (#591, partial).** The resource is the one named in `getResourceAsStream("<name>")` before `load(...)`. Omitting `resources` leaves every result unchanged.
 
+### Fixed
+- **C#: `UrlEncoder.Default.Encode(x)` is credited as an xss sanitizer (#564, partial).** A percent-encoded value cannot carry `<`, `"` or `'` into an HTML attribute or text position. A file that declares its own `UrlEncoder` type is not credited, and a raw operand next to the encoded one still reports.
+
 ## [4.15.0] - 2026-10-15
 
 ### Added

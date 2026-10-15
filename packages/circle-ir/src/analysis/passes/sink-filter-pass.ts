@@ -19,7 +19,7 @@
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
-import { CSHARP_SANITIZER_RES, CSharpCredit } from './csharp-sanitizer-credit.js';
+import { CSHARP_SANITIZER_RES, CSharpCredit, csharpSanitizersFor } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
@@ -1025,6 +1025,7 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
   const byType = new Map<string, Set<string>>();
   const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
 
+  const sanitizers = csharpSanitizersFor(code);
   for (const { type } of CSHARP_SANITIZER_RES) {
     if (!byType.has(type)) byType.set(type, new Set());
   }
@@ -1033,7 +1034,7 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
     const m = assignRe.exec(line);
     if (!m) continue;
     const [, lhs, rhs] = m;
-    for (const { re, type } of CSHARP_SANITIZER_RES) {
+    for (const { re, type } of sanitizers) {
       if (re.test(rhs)) byType.get(type)!.add(lhs);
     }
   }
