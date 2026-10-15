@@ -2963,7 +2963,13 @@ export function findJavaWikiPluginReturnXSSSinks(
     return (bare === 'WikiPlugin' || bare === 'Plugin') && (wildcardImported || importedSimple.has(bare));
   };
   const lines = code.split('\n');
-  const codeOnly = (expr: string): string => expr.replace(/"(?:[^"\\]|\\.)*"/g, ' ').replace(/'(?:[^'\\]|\\.)'/g, ' ');
+  // Code positions only: string / char literal bodies blanked, then inline `/* */` and
+  // trailing `//` comments dropped (after the literals, so a `"http://…"` is not cut).
+  const codeOnly = (expr: string): string => expr
+    .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+    .replace(/'(?:[^'\\]|\\.)'/g, ' ')
+    .replace(/\/\*.*?\*\//g, ' ')
+    .replace(/\/\/.*$/, '');
   const refs = (expr: string, name: string): boolean =>
     new RegExp(`(?<![\\p{L}\\p{N}_.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(expr);
 
@@ -2994,19 +3000,21 @@ export function findJavaWikiPluginReturnXSSSinks(
         for (const { sc, chain } of perSource) {
           if (sc.line > sinkLine) continue;
           // Carriers: the source's names that are tainted by the return, plus every
-          // accumulator an earlier `x.append(<carrier>)` / `x += <carrier>` fed. Only
-          // statements above the return count, in order.
-          const carriers = new Set<string>();
-          for (const [name, line] of chain) if (line <= sinkLine) carriers.add(name);
-          const refsCarrier = (expr: string): boolean => {
+          // accumulator an earlier `x.append(<carrier>)` / `x += <carrier>` fed. Each
+          // name counts only from the line it became tainted (a name assigned the
+          // source later carries nothing on the lines above), and only statements
+          // above the return count, in order.
+          const carriers = new Map<string, number>();
+          for (const [name, line] of chain) if (line >= sc.line && line <= sinkLine) carriers.set(name, line);
+          const refsCarrier = (expr: string, atLine: number = sinkLine): boolean => {
             const c = codeOnly(expr);
-            return [...carriers].some(v => refs(c, v));
+            return [...carriers].some(([v, l]) => l <= atLine && refs(c, v));
           };
           for (let j = m.start_line - 1; j < i; j++) {
             const am = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\((.*)$/u.exec(lines[j] ?? '');
-            if (am && refsCarrier(am[2])) carriers.add(am[1]);
+            if (am && !carriers.has(am[1]) && refsCarrier(am[2], j + 1)) carriers.set(am[1], j + 1);
             const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[j] ?? '');
-            if (cm && refsCarrier(cm[2])) carriers.add(cm[1]);
+            if (cm && !carriers.has(cm[1]) && refsCarrier(cm[2], j + 1)) carriers.set(cm[1], j + 1);
           }
           if (!refsCarrier(rm[1])) continue;
           // An xss-covering sanitizer only counts for this source when it is on the

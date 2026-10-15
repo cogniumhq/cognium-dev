@@ -173,6 +173,32 @@ public class Builder {
     expect(r.sinkLines).not.toContain(early);
   });
 
+  it('a name reassigned from the request after it was appended is not a carrier: no xss', async () => {
+    const code = greeting.replace(
+      '        String who = req.getParameter("visitor");\n        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n',
+      '        StringBuilder html = new StringBuilder();\n        String who = "guest";\n        html.append(who);\n        who = req.getParameter("visitor");\n',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('a carrier name only inside a trailing comment of an append does not taint the builder', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        html.append("safe"); // who',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
   it('only the escaped value is returned while a later, unused parameter is read: no xss', async () => {
     const code = banner.replace(
       '        return',

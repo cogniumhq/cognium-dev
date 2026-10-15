@@ -123,4 +123,30 @@ class Other {
 `;
     expect(await cmdiSinkLines(code)).toEqual([]);
   });
+  const withInner = (innerOwnMethod: boolean) => head +
+`        launchCommand(Arrays.asList("git", "log", step));
+    }
+
+    class Inner {
+        void run(String step) throws IOException {
+            launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step));
+        }
+` + (innerOwnMethod ? `        void launchCommand(List<String> argv) {}
+` : '') + `    }
+
+    private Process launchCommand(List<String> argv) throws IOException {
+        return new ProcessBuilder(argv).start();
+    }
+}
+`;
+
+  it('a shell-argv call inside a nested class that declares its own launchCommand does not keep the outer wrapper sink', async () => {
+    expect(await cmdiSinkLines(withInner(true))).toEqual([]);
+  });
+
+  it('a shell-argv call inside a nested class without its own launchCommand reaches the outer wrapper and keeps the sink', async () => {
+    const code = withInner(false);
+    const wrapperLine = code.split('\n').findIndex((l) => l.includes('new ProcessBuilder(argv)')) + 1;
+    expect(await cmdiSinkLines(code)).toEqual([wrapperLine]);
+  });
 });
