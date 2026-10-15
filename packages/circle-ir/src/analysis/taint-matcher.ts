@@ -1087,6 +1087,39 @@ function processStartInfoExe(expr: string, sourceLines: string[] | undefined): s
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Rust `serde_json` parse into `serde_json::Value` (cognium-dev#674).
+//
+// `serde_json` is a data-only parser: parsing into the dynamic `Value` tree
+// cannot instantiate an attacker-chosen type, so it is not CWE-502. A typed
+// target (`let c: Config = serde_json::from_str(..)`), an undeclared target
+// and every other format crate (`serde_yaml`, `toml`, ...) keep their sink.
+// Positive evidence only: the statement must carry an explicit `Value`
+// annotation on the binding it assigns to.
+// ---------------------------------------------------------------------------
+const RUST_VALUE_LET_RE =
+  /\blet\s+(?:mut\s+)?[A-Za-z_]\w*\s*:\s*(?:[A-Za-z_]\w*::)*Value\s*=\s*[^;]*\bfrom_(?:str|slice|reader)\b/;
+
+function isRustSerdeJsonValueParse(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines?: string[],
+): boolean {
+  if (language !== 'rust' || pattern.class !== 'serde_json' || pattern.type !== 'deserialization') return false;
+  if (!sourceLines) return false;
+  const lineNo = call.location.line;
+  const line = sourceLines[lineNo - 1];
+  if (line === undefined) return false;
+  // A `let x: Value =` that rustfmt wrapped before the call lands on the previous line.
+  const prev = lineNo >= 2 ? (sourceLines[lineNo - 2] ?? '') : '';
+  const stmt = (prev.trimEnd().endsWith('=') ? prev + ' ' : '') + line;
+  // Two parse calls in one statement text: cannot attribute the annotation to this call.
+  const parseSegments = stmt.split(';').filter((seg) => /\bfrom_(?:str|slice|reader)\b/.test(seg));
+  if (parseSegments.length !== 1) return false;
+  return RUST_VALUE_LET_RE.test(parseSegments[0]!);
+}
+
 function isSafeCSharpProcessStartCall(
   call: CallInfo,
   pattern: SinkPattern,
@@ -2277,6 +2310,12 @@ function findSinks(
         // a non-shell executable receives the arguments directly (no shell),
         // so tainted arguments cannot inject a command. cognium-ai#328.
         if (isSafeCSharpProcessStartCall(call, pattern, language, sourceLines)) {
+          continue;
+        }
+
+        // Skip `serde_json::from_*` parses whose declared target is
+        // `serde_json::Value` — a data-only parse, not CWE-502. #674.
+        if (isRustSerdeJsonValueParse(call, pattern, language, sourceLines)) {
           continue;
         }
 
