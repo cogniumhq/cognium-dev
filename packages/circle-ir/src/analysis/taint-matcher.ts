@@ -3004,6 +3004,14 @@ function receiverMightBeClassImpl(receiver: string, className: string): boolean 
     return true;
   }
 
+  // Inline CommonJS require receiver: `require('child_process').exec(x)`.
+  // The module is named at the call, so match it as if it were bound to a
+  // name (`const cp = require('child_process'); cp.exec(x)`). (cognium-dev#682)
+  const inlineRequire = receiver.match(/^require\(\s*['"`](?:node:)?([\w./-]+)['"`]\s*\)$/);
+  if (inlineRequire && inlineRequire[1] === className) {
+    return true;
+  }
+
   // Chained JDK ClassLoader accessors: `Thread.currentThread()
   // .getContextClassLoader().loadClass(x)`, `getClass().getClassLoader()
   // .loadClass(x)`, `ClassLoader.getSystemClassLoader().loadClass(x)`.
