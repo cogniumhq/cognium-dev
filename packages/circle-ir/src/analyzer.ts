@@ -88,6 +88,7 @@ import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
 import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
+import { applyConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
@@ -1880,6 +1881,10 @@ export async function analyzeProject(
     projectProfile: options.projectProfile,
     disabledPasses: options.disabledPasses,
   });
+
+  // 3.6 (#636) — constant-caller gate. Drops a C# parameter-seeded sink flow
+  // when every in-project caller passes a constant at that parameter.
+  applyConstantCallerGate(fileAnalyses, projectGraph, sourceLinesByFile);
 
   // 4. Assemble ProjectMeta
   const filePaths = files.map(f => f.filePath);
