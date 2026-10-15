@@ -10,6 +10,7 @@ import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
 import { javaReplaceCrLfCoverage } from './java-crlf-strip.js';
+import { jsChainTextAt, jsReplaceChainVerdict } from './js-crlf-strip.js';
 import {
   resolveIdentifierType,
   resolveCallReturnType,
@@ -3655,10 +3656,19 @@ function findSanitizers(
   language?: SupportedLanguage,
 ): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
-  const javaReplace = (call: CallInfo): SinkType[] | null =>
-    language === 'java' && sourceLines && (call.method_name === 'replace' || call.method_name === 'replaceAll')
-      ? javaReplaceChainCredit(javaChainTextAt(sourceLines, call.location.line, call.location.column))
-      : null;
+  const javaReplace = (call: CallInfo): SinkType[] | null => {
+    if (!sourceLines || (call.method_name !== 'replace' && call.method_name !== 'replaceAll')) return null;
+    if (language === 'java') {
+      return javaReplaceChainCredit(javaChainTextAt(sourceLines, call.location.line, call.location.column));
+    }
+    if (language === 'javascript' || language === 'typescript' || language === 'tsx') {
+      // #562: the class-less `replace` row credits log_injection; keep it only
+      // when the literal chain strips both CR and LF, or cannot be decided.
+      const verdict = jsReplaceChainVerdict(jsChainTextAt(sourceLines, call.location.line, call.location.column));
+      return verdict === 'leaves-crlf' ? [] : null;
+    }
+    return null;
+  };
 
   // Build a set of method names with @sanitizer annotation (from Javadoc comments)
   const sanitizerMethods = new Set<string>();
