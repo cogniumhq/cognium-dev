@@ -58,6 +58,8 @@ export interface CrossFileTaintFlow {
   targetMethod: string;
   flowType: 'call_arg' | 'return_value' | 'field_access';
   taintedArgPositions?: number[];
+  /** Line of the call in `sourceFile` that passes the tainted argument. */
+  callLine?: number;
 }
 
 /**
@@ -999,6 +1001,7 @@ export class CrossFileResolver {
               targetMethod: resolved.targetMethod,
               flowType: 'call_arg',
               taintedArgPositions: carriedPositions ?? call.arguments.map((_, i) => i),
+              callLine: call.location.line,
             });
           }
         }

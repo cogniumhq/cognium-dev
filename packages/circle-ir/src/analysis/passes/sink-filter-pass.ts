@@ -809,8 +809,7 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
  *     so it is called unqualified or on `this` / `base`. `note.Content(q)` is
  *     some other type's method.
  *   - The content type is argument 1. A literal or `MediaTypeNames` constant
- *     that is not `text/html` / `application/xhtml+xml` serves the body as
- *     data. A computed content type is unknown and keeps the sink, as does the
+ *     that is not HTML or a script-capable XML type serves the body as data. A computed content type is unknown and keeps the sink, as does the
  *     one-argument overload.
  */
 function csharpContentServesHtml(call: CallInfo): boolean {
@@ -818,9 +817,11 @@ function csharpContentServesHtml(call: CallInfo): boolean {
   const contentType = call.arguments.find(a => a.position === 1)?.expression.trim();
   if (contentType === undefined) return true;
   const literal = /^@?"([^"]*)"$/.exec(contentType);
-  if (literal) return /^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(literal[1]);
+  // XML types (`text/xml`, `application/xml`, `image/svg+xml`, any `+xml`)
+  // render XHTML / SVG markup and run its scripts, so they count as HTML.
+  if (literal) return /^\s*(?:text\/html|text\/xml|application\/xml|[\w.-]+\/[\w.-]+\+xml)\b/i.test(literal[1]);
   const named = /^(?:System\s*\.\s*Net\s*\.\s*Mime\s*\.\s*)?MediaTypeNames\s*\.\s*(Text|Application)\s*\.\s*(\w+)$/.exec(contentType);
-  if (named) return named[1] === 'Text' && named[2] === 'Html';
+  if (named) return named[2] === 'Html' || named[2] === 'Xml';
   return true;
 }
 

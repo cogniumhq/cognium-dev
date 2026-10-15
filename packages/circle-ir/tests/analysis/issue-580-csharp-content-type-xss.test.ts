@@ -47,6 +47,12 @@ describe('#580 C# Content() xss honours the content type and receiver', () => {
     expect(await flows('    return Content(text);')).toEqual(['xss@6']);
   });
 
+  it('script-capable XML content types still fire', async () => {
+    expect(await flows('    return Content(text, "image/svg+xml");')).toEqual(['xss@6']);
+    expect(await flows('    return Content(text, "application/xml");')).toEqual(['xss@6']);
+    expect(await flows('    return Content(text, MediaTypeNames.Text.Xml);')).toEqual(['xss@6']);
+  });
+
   it('text/plain is clean', async () => {
     expect(await flows('    return Content(text, "text/plain");')).toEqual([]);
   });

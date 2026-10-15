@@ -39,6 +39,16 @@ public class Orders
         string sku = req.QueryString["sku"];
         Store.CountOnly(sku);
     }
+    public void LookupNamed(HttpRequest req)
+    {
+        string sku = req.QueryString["sku"];
+        Store.ByTenant(name: sku, tenant: "acme");
+    }
+    public void LookupExt(HttpRequest req, System.Data.SqlClient.SqlConnection conn)
+    {
+        string sku = req.QueryString["sku"];
+        conn.FindRawOn(sku);
+    }
 }
 `;
 
@@ -75,6 +85,17 @@ public class Store
 }
 `;
 
+const ext = `using System.Data.SqlClient;
+public static class StoreExt
+{
+    public static void FindRawOn(this SqlConnection conn, string sku)
+    {
+        var cmd = new SqlCommand("select * from items where sku='" + sku + "'");
+        cmd.ExecuteReader();
+    }
+}
+`;
+
 describe('#637 C# cross-file paths apply the callee-reach check', () => {
   let sqlPaths: string[] = [];
 
@@ -83,6 +104,7 @@ describe('#637 C# cross-file paths apply the callee-reach check', () => {
     const r = await analyzeProject([
       { code: handler, filePath: 'Orders.cs', language: 'csharp' },
       { code: store, filePath: 'Store.cs', language: 'csharp' },
+      { code: ext, filePath: 'StoreExt.cs', language: 'csharp' },
     ]);
     sqlPaths = r.taint_paths
       .filter(p => p.sink.type === 'sql_injection')
@@ -107,5 +129,13 @@ describe('#637 C# cross-file paths apply the callee-reach check', () => {
 
   it('a value the callee never puts in the query is clean', () => {
     expect(sqlPaths.filter(p => p.startsWith('Orders.cs:26->'))).toEqual([]);
+  });
+
+  it('a call with named arguments keeps its path', () => {
+    expect(sqlPaths).toContain('Orders.cs:31->Store.cs:22');
+  });
+
+  it("an extension method's argument is not read as its receiver", () => {
+    expect(sqlPaths).toContain('Orders.cs:36->StoreExt.cs:6');
   });
 });
