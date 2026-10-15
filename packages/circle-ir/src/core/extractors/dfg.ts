@@ -1201,6 +1201,37 @@ function inAlwaysRunBlock(arm: Node): boolean {
 }
 
 /**
+ * True when the `if` / loop that owns the braceless `arm` sits in a braced
+ * block that is not a method body (a braced `if` / `else` / loop / `try` arm, or
+ * a bare / `synchronized` block). That block shares one scope slot per name, so
+ * a braceless body there must not assign into it: the write may not run, and it
+ * would hide an earlier write in the same block.
+ */
+function inNestedBlock(arm: Node): boolean {
+  let n: Node | null = arm.parent;
+  while (n && (n.type === 'if_statement' || n.type === 'for_statement' || n.type === 'enhanced_for_statement' ||
+    n.type === 'while_statement' || n.type === 'do_statement')) n = n.parent;
+  if (!n || n.type !== 'block' || !n.parent) return false;
+  switch (n.parent.type) {
+    case 'block':
+    case 'synchronized_statement':
+    case 'if_statement':
+    case 'for_statement':
+    case 'enhanced_for_statement':
+    case 'while_statement':
+    case 'do_statement':
+    case 'try_statement':
+    case 'try_with_resources_statement':
+    case 'catch_clause':
+    case 'finally_clause':
+    case 'labeled_statement':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * Process the body of an `if` / `else` / loop. A braced body is a `block` and
  * pops its own scope. A braceless body (`if (c) t = x;`) is a single statement
  * that would otherwise assign in the enclosing scope as if it always ran, so for
@@ -1215,21 +1246,13 @@ function processArm(
   scopeStack: Map<string, number>[],
   isJavaScript: boolean,
 ): BlockResult & { popped: Map<string, number> | null } {
-  if (isJavaScript || !inAlwaysRunBlock(node)) {
+  const isBlock = node.type === 'block' || node.type === 'statement_block';
+  if (isJavaScript || (isBlock ? !inAlwaysRunBlock(node) : !inNestedBlock(node))) {
     lastPoppedBlock = null;
     const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
-    // A braceless body that shares the enclosing block's scope (e.g. a nested
-    // `if` inside a braced `else { … }` arm) still only writes on some paths.
-    // Note its defs so `mergeIfElseDefs` does not treat them as direct statements.
-    if (!isJavaScript && node.type !== 'block' && node.type !== 'statement_block') {
-      const scope = currentScope(scopeStack);
-      for (const def of result.defs) {
-        if (scope.get(def.variable) === def.id) markConditional(scope, def.id);
-      }
-    }
     return { ...result, popped: null };
   }
-  if (node.type === 'block' || node.type === 'statement_block') {
+  if (isBlock) {
     lastPoppedBlock = null;
     const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
     return { ...result, popped: lastPoppedBlock };
@@ -1258,8 +1281,6 @@ function mergeIfElseDefs(
   for (const [name, idA] of armA) {
     const idB = armB.get(name);
     if (idB === undefined) continue;
-    // An id that came from a nested braceless conditional / loop is not a write on every path.
-    if (conditionalIds.get(armA)?.has(idA) || conditionalIds.get(armB)?.has(idB)) continue;
     if (declaredNames.get(armA)?.has(name) || declaredNames.get(armB)?.has(name)) continue;
     if (!scopeStack.some((scope) => scope.has(name))) continue;
     const prior = new Set(before.get(name) ?? []);
@@ -1270,15 +1291,6 @@ function mergeIfElseDefs(
     if (!map) { map = new Map(); alternateDefs.set(top, map); }
     map.set(name, arms);
   }
-}
-
-/** Def ids that sit in a scope's map but were made under a braceless conditional / loop body, so they may not run. */
-const conditionalIds = new WeakMap<Map<string, number>, Set<number>>();
-
-function markConditional(scope: Map<string, number>, id: number): void {
-  let set = conditionalIds.get(scope);
-  if (!set) { set = new Set(); conditionalIds.set(scope, set); }
-  set.add(id);
 }
 
 const declaredNames = new WeakMap<Map<string, number>, Set<string>>();

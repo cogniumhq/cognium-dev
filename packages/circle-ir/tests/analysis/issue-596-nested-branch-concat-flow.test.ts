@@ -417,11 +417,59 @@ public class ${name} extends HttpServlet {
       expect(ids).toEqual(new Set([defs[1].id, defs[2].id]));
     });
 
-    it('if / else where the else block assigns directly and then again under a nested braceless if is not merged (conservative: the initialiser stays reachable)', async () => {
+    it('if / else where the else block assigns directly and then again under a nested braceless if: the direct write still replaces the initialiser', async () => {
       const code = initTainted(`{\n            if (request.getParameter("a") != null) {\n                target = "safe";\n            } else {\n                target = "safe2";\n                if (request.getParameter("b") != null)\n                    target = "safe3";\n            }\n        }`, 'DirectThenNested');
       const { defs, ids } = await reaching(code, 'DirectThenNested.java');
       expect(defs).toHaveLength(4);
-      expect(ids.has(defs[0].id)).toBe(true);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect(ids.has(defs[0].id)).toBe(false);
+      // Only the DFG is asserted, as for `BracedBoth`: the finding for a name assigned on both arms is
+      // decided by the name-based taint pass and fires on main with or without this change.
+    });
+
+    for (const [label, head] of [
+      ['while', 'while (request.getParameter("b") != null)'],
+      ['for', 'for (int i = 0; i < 3; i++)'],
+    ] as const) {
+      it(`if / else where the else block assigns directly and then again in a nested braceless ${label}: the direct write still replaces the initialiser`, async () => {
+        const code = initTainted(`{\n            if (request.getParameter("a") != null) {\n                target = "safe";\n            } else {\n                target = "safe2";\n                ${head}\n                    target = "safe3";\n            }\n        }`, 'DirectThenNestedLoop');
+        const { defs, ids } = await reaching(code, 'DirectThenNestedLoop.java');
+        expect(defs).toHaveLength(4);
+        expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+        expect(ids.has(defs[0].id)).toBe(false);
+      });
+    }
+
+    it('if / else where the else block writes the tainted value directly and then a constant under a nested braceless if: the tainted def still reaches', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null) {\n                target = "safe1";\n            } else {\n                target = request.getParameter("host");\n                if (request.getParameter("b") != null)\n                    target = fallback;\n            }\n        }`, 'DirectTaintThenNested');
+      const { defs, ids } = await reaching(code, 'DirectTaintThenNested.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect((await cmdi(code, 'DirectTaintThenNested.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('nested braceless if / else inside a braced else arm: the tainted write in the nested if still reaches', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else {\n                if (request.getParameter("b") != null)\n                    target = request.getParameter("host");\n                else\n                    target = "safe2";\n            }\n        }`, 'NestedIfElseInElse');
+      const { defs, ids } = await reaching(code, 'NestedIfElseInElse.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect((await cmdi(code, 'NestedIfElseInElse.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('two braceless ifs inside a braced else arm: both writes and the initialiser reach', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else {\n                if (request.getParameter("b") != null)\n                    target = request.getParameter("host");\n                if (request.getParameter("c") != null)\n                    target = fallback;\n            }\n        }`, 'TwoBracelessInElse');
+      const { defs, ids } = await reaching(code, 'TwoBracelessInElse.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set(defs.map((d) => d.id)));
+      expect((await cmdi(code, 'TwoBracelessInElse.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('two braceless ifs inside a braced if arm: the earlier tainted write is not replaced by the later one', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null) {\n                if (request.getParameter("b") != null)\n                    target = request.getParameter("host");\n                if (request.getParameter("c") != null)\n                    target = fallback;\n            } else\n                target = "safe2";\n        }`, 'TwoBracelessInIf');
+      const { defs, ids } = await reaching(code, 'TwoBracelessInIf.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set(defs.map((d) => d.id)));
+      expect((await cmdi(code, 'TwoBracelessInIf.java')).length).toBeGreaterThanOrEqual(1);
     });
 
     it('two braceless ifs in one block: both arms and the initialiser reach', async () => {
