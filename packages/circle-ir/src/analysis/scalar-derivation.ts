@@ -173,3 +173,82 @@ export function scalarDerivedDefIds(defs: readonly DFGDef[], code: string, langu
   }
   return out;
 }
+
+/** An integer literal, optionally with `_` separators or a hex/binary/octal prefix. */
+const GO_INT_LITERAL = /^(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO]?[0-7_]+|[1-9][0-9_]*|0)$/;
+
+/**
+ * Names `n` bounded by `if <... n > K | n >= K ...> { ...; return|panic|continue }`
+ * somewhere in `lines[from .. to)`. The condition may join the bound with `||`
+ * only: under `&&` the branch would not reject every large value. K is an integer
+ * literal. A reassignment of `n` after the guard voids the bound.
+ */
+function goUpperBoundGuardedAt(lines: readonly string[], from: number, to: number, name: string): boolean {
+  const esc = name.replace(/[$]/g, '\\$');
+  const bound = new RegExp(`^\\(*\\s*${esc}\\s*>=?\\s*([\\w]+)\\s*\\)*$`);
+  const reassign = new RegExp(`(?:^|[\\s,;(])${esc}(?:\\s*,\\s*\\w+)*\\s*(?::=|=(?!=)|\\+=|-=|\\*=|/=|<<=|>>=)`);
+  let guardEnd = -1;
+  for (let i = from; i < to; i++) {
+    const text = lines[i]!.replace(/\s*\/\/.*$/, '').trim();
+    const ifm = /^if\s+(.+?)\s*\{$/.exec(text);
+    if (ifm && i + 1 < to) {
+      const cond = ifm[1]!;
+      if (!cond.includes('&&')) {
+        const parts = cond.split('||').map((p) => p.trim());
+        const hit = parts.some((p) => {
+          const m = bound.exec(p);
+          return m !== null && GO_INT_LITERAL.test(m[1]!);
+        });
+        if (hit) {
+          // The guard block must end in an exit before its closing brace.
+          let depth = 1;
+          let last = '';
+          let j = i + 1;
+          for (; j < to; j++) {
+            const t = lines[j]!.replace(/\s*\/\/.*$/, '').trim();
+            for (const ch of t) depth += ch === '{' ? 1 : ch === '}' ? -1 : 0;
+            if (depth <= 0) break;
+            if (t) last = t;
+          }
+          if (depth <= 0 && /^(?:return\b|panic\(|continue\b)/.test(last)) {
+            guardEnd = j;
+            i = j;
+            continue;
+          }
+        }
+      }
+    }
+    if (guardEnd >= 0 && i > guardEnd && reassign.test(text)) guardEnd = -1;
+  }
+  return guardEnd >= 0;
+}
+
+/**
+ * DFG def ids of a Go local initialised by `make(<type>, <len>[, <cap>])` whose
+ * every size argument is an integer literal or a variable rejected above a
+ * constant earlier in the same function (`if n > K { return }`). The buffer
+ * holds zero values; its size is bounded, so the request text that chose the
+ * size does not reach a sink through it. An unbounded size is not credited.
+ */
+export function boundedMakeDefIds(defs: readonly DFGDef[], code: string, language: string): Set<number> {
+  const out = new Set<number>();
+  if (language !== 'go') return out;
+  const lines = code.split('\n');
+  for (const def of defs) {
+    if (def.kind !== 'local') continue;
+    const text = lines[def.line - 1];
+    if (text === undefined) continue;
+    const rhs = initializerOf(text, def.variable, 'go');
+    const mk = rhs === null ? null : /^make\(\s*(\[\][\w.*]+|map\[[^\]]+\][\w.*]+)\s*,\s*([^()]*?)\s*\)$/.exec(rhs);
+    if (!mk) continue;
+    const sizes = mk[2]!.split(',').map((s) => s.trim());
+    if (sizes.length > 2 || sizes.some((s) => s === '')) continue;
+    let fnStart = def.line - 1;
+    while (fnStart > 0 && !/^func\b/.test(lines[fnStart]!)) fnStart--;
+    const ok = sizes.every(
+      (s) => GO_INT_LITERAL.test(s) || (/^[A-Za-z_]\w*$/.test(s) && goUpperBoundGuardedAt(lines, fnStart, def.line - 1, s)),
+    );
+    if (ok) out.add(def.id);
+  }
+  return out;
+}

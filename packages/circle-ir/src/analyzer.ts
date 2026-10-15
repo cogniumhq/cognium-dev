@@ -195,7 +195,7 @@ import {
 } from './analysis/passes/language-sources-pass.js';
 
 // Pass result types (used to read typed results from the pipeline map)
-import { scalarDerivedDefIds } from './analysis/scalar-derivation.js';
+import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-derivation.js';
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
@@ -1038,6 +1038,7 @@ export async function analyze(
   });
   graph.taintBarrierDefIds = new Set([
     ...scalarDerivedDefIds(dfg.defs, code, language),
+    ...boundedMakeDefIds(dfg.defs, code, language),
     ...constTableLookupDefIds(dfg.defs, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
