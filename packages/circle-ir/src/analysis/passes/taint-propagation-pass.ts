@@ -2325,7 +2325,13 @@ function detectExpressionScanFlows(
   // tainted var (at the CommandText line) so the arg-scan links the Execute sink.
   if (language === 'csharp' && typeof code === 'string' && sourcesWithVar.length > 0) {
     const lines = code.split('\n');
-    const ctRe = /(\w+)\s*\.\s*CommandText\s*\+?=\s*(.+)/;
+    // cognium-dev#594: `X.StartInfo.FileName = <tainted>` is the same shape for a
+    // `System.Diagnostics.Process`: the executable path rides the process object
+    // and the zero-argument `X.Start()` is the injection point. Only the
+    // `FileName` write seeds it (`Arguments` / `ArgumentList` are a separate
+    // follow-up), so a constant `FileName` beside an unrelated tainted
+    // parameter stays clean.
+    const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*FileName)\s*\+?=\s*(.+)/;
     // cognium-dev#548: seed per method, from sources in that method. The seed
     // used to be made once per file and matched by name, so `cmd.CommandText =
     // … + data` in `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`, whose

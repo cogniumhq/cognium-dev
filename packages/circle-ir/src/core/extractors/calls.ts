@@ -315,6 +315,14 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     if (receiver && CSHARP_COMMAND_EXECUTE_METHODS.has(methodName)) {
       args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }, ...args];
     }
+    // cognium-dev#594: `proc.Start()` takes no argument; the executable rides the
+    // `Process` object (`proc.StartInfo.FileName = tainted`, seeded in
+    // taint-propagation). Surface the receiver as arg[0], as for `Execute*()`
+    // above. Gated on the receiver being a declared `Process` so `Stopwatch`,
+    // `Timer` and `Thread` `Start()` calls are untouched.
+    if (receiver && methodName === 'Start' && args.length === 0 && typeMap.get(receiver) === 'Process') {
+      args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }];
+    }
     // `Response.Headers.Add(name, value)` is the ASP.NET Core response-header
     // writer, but a bare `Add` is far too common to register as a CRLF sink
     // (List.Add, Dictionary.Add, …). Normalize the header-dictionary form to the
