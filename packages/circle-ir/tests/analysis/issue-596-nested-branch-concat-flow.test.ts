@@ -185,3 +185,102 @@ describe('cognium-dev#596 — a block that always runs replaces the carried defs
     expect(reaching.size).toBe(defs.length);
   });
 });
+
+describe('cognium-dev#596 — a carried def is killed by a later assignment in the block it was carried into', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const innerTaint = `if (request.getParameter("b") != null) {
+                target = request.getParameter("host");
+            }`;
+
+  it('a straight-line constant assignment after the inner braced if, in the same block, stays clean', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            ${innerTaint}
+            target = "localhost";
+        }`, 'OuterBlockReset');
+    expect(await cmdi(code, 'OuterBlockReset.java')).toHaveLength(0);
+  });
+
+  it('a bare block that assigns a constant after the inner braced if, in the same block, stays clean', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            ${innerTaint}
+            {
+                target = "localhost";
+            }
+        }`, 'OuterBareBlockReset');
+    expect(await cmdi(code, 'OuterBareBlockReset.java')).toHaveLength(0);
+  });
+
+  it('DFG: a one-line bare block after the inner braced if kills the carried def', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            ${innerTaint}
+            { target = "localhost"; }
+        }`, 'OuterBareBlockDfg');
+    const r = await analyze(code, 'OuterBareBlockDfg.java', 'java');
+    const defs = (r.dfg?.defs ?? []).filter((d) => d.variable === 'target');
+    const sinkLine = code.split('\n').findIndex((l) => l.includes('exec(target)')) + 1;
+    const reaching = new Set((r.dfg?.uses ?? []).filter((u) => u.variable === 'target' && u.line === sinkLine).map((u) => u.def_id));
+    expect(defs).toHaveLength(3);
+    expect(reaching).toEqual(new Set([defs[0].id, defs[2].id]));
+  });
+
+  it('DFG: only the initialiser and the constant def reach the sink use', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            ${innerTaint}
+            target = "localhost";
+        }`, 'OuterBlockDfg');
+    const r = await analyze(code, 'OuterBlockDfg.java', 'java');
+    const defs = (r.dfg?.defs ?? []).filter((d) => d.variable === 'target');
+    const sinkLine = code.split('\n').findIndex((l) => l.includes('exec(target)')) + 1;
+    const reaching = new Set((r.dfg?.uses ?? []).filter((u) => u.variable === 'target' && u.line === sinkLine).map((u) => u.def_id));
+    expect(defs).toHaveLength(3);
+    expect(reaching).toEqual(new Set([defs[0].id, defs[2].id]));
+  });
+
+  it('still fires: an inner braced if with no later assignment in the outer block', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            ${innerTaint}
+        }`, 'OuterBlockTaint');
+    expect((await cmdi(code, 'OuterBlockTaint.java')).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still fires: three levels of nesting', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) {
+            if (request.getParameter("b") != null) {
+                if (request.getParameter("c") != null) {
+                    target = request.getParameter("host");
+                }
+            }
+        }`, 'ThreeLevels');
+    expect((await cmdi(code, 'ThreeLevels.java')).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still fires: a second if with a braced inner if does not kill an earlier branch def', async () => {
+    const code = withBlocks(`if (request.getParameter("a") != null) { target = request.getParameter("host"); }
+        if (request.getParameter("b") != null) {
+            if (request.getParameter("c") != null) { target = "localhost"; }
+        }`, 'SecondIfBraced');
+    expect((await cmdi(code, 'SecondIfBraced.java')).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still fires: a tainted def inside a bare block in a switch case reaches a later sink', async () => {
+    const code = withBlocks(`switch (request.getParameter("a")) {
+            case "1": { target = request.getParameter("host"); break; }
+            default: break;
+        }`, 'SwitchBlock');
+    expect((await cmdi(code, 'SwitchBlock.java')).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still fires: a nested braced if inside a switch case reaches a later sink', async () => {
+    const code = withBlocks(`switch (request.getParameter("a")) {
+            case "1":
+                if (request.getParameter("b") != null) { target = request.getParameter("host"); }
+                break;
+            default: break;
+        }`, 'SwitchNested');
+    expect((await cmdi(code, 'SwitchNested.java')).length).toBeGreaterThanOrEqual(1);
+  });
+});
+

@@ -635,7 +635,9 @@ function processStatement(
           defId = result.nextDefId;
           useId = result.nextUseId;
         }
-        scopeStack.pop();
+        // Alternates parked on the switch scope go on to the enclosing scope.
+        const poppedSwitch = scopeStack.pop()!;
+        if (!isJavaScript) carryBranchDefsOut(poppedSwitch, scopeStack, false, true);
       }
       break;
     }
@@ -1184,15 +1186,16 @@ function carryBranchDefsOut(
   popped: Map<string, number>,
   scopeStack: Map<string, number>[],
   alwaysRuns = false,
+  altsOnly = false,
 ): void {
   const declared = declaredNames.get(popped);
   const poppedAlts = alternateDefs.get(popped);
+  const top = scopeStack[scopeStack.length - 1];
+  if (!top) return;
   if (alwaysRuns) {
     // Straight-line block: the def is as if made directly in the enclosing
     // scope. It becomes that scope's reaching def and drops the alternates
     // for the name; defs the block itself held as alternates stay alternates.
-    const top = scopeStack[scopeStack.length - 1];
-    if (!top) return;
     for (const [name, id] of popped) {
       if (declared?.has(name)) continue;
       if (!scopeStack.some((scope) => scope.has(name))) continue;
@@ -1203,31 +1206,35 @@ function carryBranchDefsOut(
       const kept = poppedAlts?.get(name);
       if (kept && kept.length > 0) alts.set(name, [...kept]);
     }
+    // Alternates for a name the block did not assign itself stay alternates.
+    if (poppedAlts) for (const [name, ids] of poppedAlts) if (!popped.has(name)) carry(name, ids);
     return;
   }
-  const carry = (name: string, ids: number[]): void => {
+  // The alternate is parked on the immediate parent whenever some outer scope
+  // declares the name, so a later assignment in that parent (or an enclosing
+  // straight-line block) can still kill it; the parent hands it on when it ends.
+  function carry(name: string, ids: number[]): void {
     if (declared?.has(name)) return;
-    for (let i = scopeStack.length - 1; i >= 0; i--) {
-      if (!scopeStack[i].has(name)) continue;
-      let alts = alternateDefs.get(scopeStack[i]);
-      if (!alts) { alts = new Map(); alternateDefs.set(scopeStack[i], alts); }
-      const list = alts.get(name) ?? [];
-      for (const id of ids) if (!list.includes(id)) list.push(id);
-      alts.set(name, list);
-      return;
-    }
-  };
-  for (const [name, id] of popped) carry(name, [id]);
+    if (!scopeStack.some((scope) => scope.has(name))) return;
+    let alts = alternateDefs.get(top);
+    if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
+    const list = alts.get(name) ?? [];
+    for (const id of ids) if (!list.includes(id)) list.push(id);
+    alts.set(name, list);
+  }
+  if (!altsOnly) for (const [name, id] of popped) carry(name, [id]);
   if (poppedAlts) for (const [name, ids] of poppedAlts) carry(name, ids);
 }
 
+/** Alternate reaching defs of `name`: those parked on every scope down to the one that binds it. */
 function findAlternateDefs(name: string, scopeStack: Map<string, number>[]): number[] {
+  const out: number[] = [];
   for (let i = scopeStack.length - 1; i >= 0; i--) {
     const alts = alternateDefs.get(scopeStack[i])?.get(name);
-    if (alts && alts.length > 0) return alts;
-    if (scopeStack[i].has(name)) return [];
+    if (alts) for (const id of alts) if (!out.includes(id)) out.push(id);
+    if (scopeStack[i].has(name)) break;
   }
-  return [];
+  return out;
 }
 
 /**
