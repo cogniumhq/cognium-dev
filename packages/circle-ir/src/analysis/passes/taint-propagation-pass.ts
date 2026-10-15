@@ -16,12 +16,14 @@ import type { CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
+import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { identifierOutsideSanitizerCalls, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { javaCanonicalStartsWithAllBare } from '../java-canonical-prefix.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -51,6 +53,159 @@ export interface TaintPropagationPassResult {
  * code, resolved constant) are unaffected.
  */
 const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'config_param']);
+
+
+/**
+ * #515 — find the real source a Python derived variable actually references.
+ * Reads the derivation's right-hand side at its origin line (f-string braces
+ * kept, plain quotes and trailing `#…` comments dropped), picks the real
+ * source variables named there (earliest line wins when several), and follows
+ * names that are themselves derived — including a later assignment of a name
+ * that was also a real source. Returns undefined when nothing can be
+ * resolved, so the caller keeps its earliest-source fallback.
+ */
+/** Drop a trailing `#…` comment, leaving `#` inside string literals alone. */
+function stripPythonTrailingComment(text: string): string {
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const triple = text.startsWith(ch.repeat(3), i);
+      const delim = triple ? ch.repeat(3) : ch;
+      i += delim.length;
+      while (i < text.length && !text.startsWith(delim, i)) {
+        if (text[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      i += delim.length;
+      continue;
+    }
+    if (ch === '#') return text.slice(0, i);
+    i++;
+  }
+  return text;
+}
+
+/**
+ * Keep only the f-string interpolation expression: cut before a top-level
+ * `!conversion` or `:format_spec` (Python replacement_field grammar). A `!`
+ * followed by `=` is the `!=` operator and is not a cut point. Depth
+ * tracks `()[]{}`; string literals are skipped so a `:` inside a subscript
+ * key does not truncate the expression.
+ */
+function pythonFStringNestedFields(body: string): string {
+  // Format-spec / conversion tails only: a `{` here always opens a nested
+  // replacement field (Python 3.12+). Do NOT treat `{{` / `}}` as literal-brace
+  // escapes — `f"{label:{{fmt}}}"` parses as a nested FormattedValue whose
+  // expression is the set `{fmt}`. The top-level f-string skip stays in
+  // braceExprs so a literal `f"{{fmt}}"` still does not credit `fmt`. Each
+  // nested `{…}` is itself an expression (and may carry its own conversion /
+  // format-spec), so recurse through pythonFStringExprOnly.
+  let acc = '';
+  for (let j = 0; j < body.length; ) {
+    if (body[j] === '{') {
+      j++;
+      let depth = 1;
+      let inner = '';
+      while (j < body.length && depth > 0) {
+        if (body[j] === '{') depth++;
+        else if (body[j] === '}') {
+          depth--;
+          if (depth === 0) break;
+        }
+        inner += body[j];
+        j++;
+      }
+      j++;
+      acc += ' ' + pythonFStringExprOnly(inner) + ' ';
+      continue;
+    }
+    j++;
+  }
+  return acc;
+}
+
+/**
+ * Keep the expression part of an f-string replacement field; drop literal
+ * conversion / format-spec text, but retain nested `{…}` fields from the
+ * discarded tail (format specs may contain nested replacement fields).
+ */
+function pythonFStringExprOnly(inner: string): string {
+  let depth = 0;
+  let i = 0;
+  while (i < inner.length) {
+    const ch = inner[i];
+    if (ch === '"' || ch === "'") {
+      const triple = inner.startsWith(ch.repeat(3), i);
+      const delim = triple ? ch.repeat(3) : ch;
+      i += delim.length;
+      while (i < inner.length && !inner.startsWith(delim, i)) {
+        if (inner[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      i += delim.length;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; i++; continue; }
+    if (depth === 0 && ch === '!') {
+      // `!=` is the comparison operator, not a `!conversion`; keep scanning.
+      let j = i + 1;
+      while (j < inner.length && (inner[j] === ' ' || inner[j] === '\t')) j++;
+      if (inner[j] === '=') { i = j + 1; continue; }
+      const expr = inner.slice(0, i);
+      const nested = pythonFStringNestedFields(inner.slice(i + 1));
+      return nested ? expr + nested : expr;
+    }
+    if (depth === 0 && ch === ':') {
+      const expr = inner.slice(0, i);
+      const nested = pythonFStringNestedFields(inner.slice(i + 1));
+      return nested ? expr + nested : expr;
+    }
+    i++;
+  }
+  return inner;
+}
+function resolvePythonDerivedAnchor<S extends { line: number }>(
+  varName: string,
+  derived: ReadonlyMap<string, number>,
+  realSourceByVar: ReadonlyMap<string, S>,
+  codeLines: readonly string[],
+  visiting: Set<string>,
+): S | undefined {
+  if (visiting.has(varName)) return undefined;
+  visiting.add(varName);
+  const originLine = derived.get(varName);
+  if (originLine === undefined) return undefined;
+  const text = codeLines[originLine - 1];
+  if (!text) return undefined;
+  const eq = text.search(/(?<![=!<>+\-*/%&|^:])=(?!=)/);
+  if (eq < 0) return undefined;
+  // Drop a real trailing `#…` comment first (outside strings only), then lift
+  // f-string `{…}` names. Format specs / conversion flags are cut inside
+  // braceExprs so a `#` in `{width:#04x}` cannot eat later names, and `!s`
+  // cannot become a scanned identifier; nested `{…}` fields in the format
+  // spec (e.g. `{label:{fmt}}`) are kept.
+  const rhs = maskStringLiteralsForTokenScan(stripPythonTrailingComment(text.slice(eq + 1)));
+  let best: S | undefined;
+  for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const id = m[0];
+    if (id === varName) continue;
+    const real = realSourceByVar.get(id);
+    const derivedLine = derived.get(id);
+    // A later assignment of the same name (recorded in `derived` after the
+    // real source line) is the value that flows — resolve it first. Fall
+    // back to the real source when that derivation does not resolve (e.g.
+    // `fmt = request.form.get("fmt")`, whose RHS names no source variable).
+    let cand: S | undefined;
+    if (derivedLine !== undefined && (!real || derivedLine > real.line)) {
+      cand = resolvePythonDerivedAnchor(id, derived, realSourceByVar, codeLines, visiting);
+    }
+    if (!cand) cand = real;
+    if (cand && (!best || cand.line < best.line)) best = cand;
+  }
+  return best;
+}
 
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
@@ -202,6 +357,36 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       flows.push(f);
       return true;
     };
+
+    // Supplement: Spring MVC return-as-body XSS flows — cognium-dev#566. The
+    // sink `LanguageSourcesPass` synthesises at the `return` has no method or
+    // argument, so no argument matcher reaches it; the detector already knows
+    // both ends, so the flow is emitted here (as for Python #368 below).
+    if (ctx.language === 'java' && typeof ctx.code === 'string') {
+      const xssSanitizerLines = sanitizers
+        .filter(sa => sa.sanitizes.includes('xss'))
+        .map(sa => sa.line);
+      for (const rx of findJavaSpringReturnXSSSinks(ctx.code, types, sources, xssSanitizerLines)) {
+        if (constProp.unreachableLines.has(rx.sinkLine)) continue;
+        const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === 'xss');
+        if (!sink) continue;
+        const atLine = sources.filter(sc => sc.line === rx.sourceLine);
+        const src = atLine.find(sc => sc.type !== 'interprocedural_param') ?? atLine[0];
+        if (!src) continue;
+        pushIfNew({
+          source_line: src.line,
+          sink_line: rx.sinkLine,
+          source_type: src.type,
+          sink_type: 'xss',
+          path: [
+            { variable: src.variable ?? 'response', line: src.line, type: 'source' as const },
+            { variable: src.variable ?? 'response', line: rx.sinkLine, type: 'sink' as const },
+          ],
+          confidence: (src.confidence ?? 1) * (sink.confidence ?? 1),
+          sanitized: false,
+        });
+      }
+    }
 
     // Supplement: Python trust-boundary (CWE-501) flows — cognium-dev#363.
     //
@@ -470,6 +655,21 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         arr.push(san);
         sanitizersByLine.set(san.line, arr);
       }
+      // True unless every def at `line` among `visited` is provably off this
+      // flow: not a variable on its path, and a complete backward walk from it
+      // never reaches `sourceLine`.
+      const sanitizedDefOnFlow = (visited: ReadonlySet<number>, line: number, f: TaintFlowInfo): boolean => {
+        let sawDef = false;
+        for (const id of visited) {
+          const def = graph.defById.get(id);
+          if (!def || def.line !== line) continue;
+          sawDef = true;
+          if (f.path.some(step => step.variable === def.variable)) return true;
+          const back = walkBackwardDefs(id, graph.chainsByToDef, graph.defById, { maxHops: 32 });
+          if (back.hopCapReached || back.lines.has(f.source_line)) return true;
+        }
+        return !sawDef;
+      };
       finalFlows = finalFlows.filter(f => {
         // Two-tier filter:
         //   - `external_taint_escape` (synthetic CWE-668 fallback): no
@@ -555,6 +755,11 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             if (line < f.source_line) continue;
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
+            // cognium-dev#348: the walk visits every contributor of the sink
+            // value. In `clean = a.replaceAll(..); msg = clean + b; log(msg)`
+            // the strip on `a` must not credit the flow from `b`. Skip a
+            // sanitized def that does not derive from this flow's source.
+            if (line > f.source_line && !sanitizedDefOnFlow(walk.visited, line, f)) continue;
             for (const san of sansAtLine) {
               if (sanitizerCoversSink(san, f.sink_type)) {
                 return false;
@@ -850,6 +1055,9 @@ function isInJavaSanitizedMethod(
     // Canonical-path-startsWith-throw idiom.
     if (!/\.getCanonicalPath\s*\(/.test(body)) return false;
     if (!/\.startsWith\s*\([^)]*getCanonicalPath/.test(body)) return false;
+    // cognium-dev#618: `startsWith(parent.getCanonicalPath())` with no
+    // trailing separator is the prefix-confusion bypass, not a guard.
+    if (javaCanonicalStartsWithAllBare(body)) return false;
     if (!/\bthrow\s+new\b/.test(body)) return false;
     return true;
   }
@@ -1761,7 +1969,7 @@ export function maskStringLiteralsForTokenScan(expr: string): string {
           j++;
         }
         j++;
-        acc += ' ' + maskStringLiteralsForTokenScan(inner) + ' ';
+        acc += ' ' + maskStringLiteralsForTokenScan(pythonFStringExprOnly(inner)) + ' ';
         continue;
       }
       j++;
@@ -1972,6 +2180,14 @@ function detectExpressionScanFlows(
           if (s.line < anchor.line) anchor = s;
         }
       }
+      // #515: real (non-derived) sources by variable name, earliest first, and
+      // the file's lines for reading each derivation's right-hand side.
+      const realSourceByVar = new Map<string, typeof sourcesWithVar[0]>();
+      for (const s of sourcesWithVar) {
+        const prev = realSourceByVar.get(s.variable);
+        if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
+      }
+      const codeLines = code.split('\n');
       for (const [varName, originLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
         // Don't shadow real sources; build a minimal synthetic record that
@@ -1980,8 +2196,14 @@ function detectExpressionScanFlows(
         // `http_param` type — the for-loop / bare-inline patterns we want
         // to recover here are all web-request-derived in practice.
         if (hasRealSource && anchor) {
+          // #515: anchor to the real source this derivation actually
+          // references (through earlier derived vars); the earliest-source
+          // anchor stays the fallback when none can be found.
+          const referenced = resolvePythonDerivedAnchor(
+            varName, derived, realSourceByVar, codeLines, new Set(),
+          );
           sourcesWithVar.push({
-            ...anchor,
+            ...(referenced ?? anchor),
             variable: varName,
           });
         } else {

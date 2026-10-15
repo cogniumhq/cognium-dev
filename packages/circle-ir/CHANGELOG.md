@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.15.0] - 2026-10-15
+
+### Added
+- **JS/TS: Express handlers that destructure the request (`({ query }, res)`, `({ params }, res)`, nested `({ query: { t } }, res)`) get an http source (#587, partial).** A handler must be registered on an `express()` / `Router()` receiver in the same file.
+- **JS/TS: GraphQL resolver-map arguments are a source (#586, partial).** Parameter 1 of `Query` / `Mutation` / `Subscription` resolvers in a map passed to `new ApolloServer` or `makeExecutableSchema`. `parent` and `context` stay untainted.
+- **Java: Spring `@RestController` / `@ResponseBody` handlers that return request input in an HTML string are xss sinks (#566, partial).** `produces` text/plain or JSON stays clean.
+- **JS/TS: CWE-523 for credentials written to an `http://` `http.request` relay (#670).**
+
+### Fixed
+- **Java: `loadClass(tainted)` on `getContextClassLoader()` / `getClassLoader()` / `getSystemClassLoader()` receivers is a code-injection sink (#623, partial).**
+- **Java: a def made inside a nested block to an outer variable reaches later uses (#596, #597, partial).** A straight-line reassignment after the block still clears it.
+- **JS/TS: inline `require('child_process').exec(x)` matches the class-scoped command sinks (#682).**
+- **JS/TS: no ssrf for `fetch(`${BASE}/…${x}`)` when `BASE` is a `const` literal origin (#680).**
+- **JS/TS: no redos for `new RegExp(`…${CONST}…`)` built only from const string literals without a nested quantifier (#681).**
+- **Java: `replace` / `replaceAll` credit follows the literal arguments (#562, #605, #517, partial).** An LF-only strip no longer clears log_injection; `replaceAll("[\r\n]", "")` does; a `<` / `>` entity escape credits xss only.
+- **Java: a canonical-path `startsWith` guard is credited only when the base ends with a separator (#618).** `startsWith(parent.getCanonicalPath())` is the prefix-confusion bypass (CVE-2022-23457) and is reported.
+- **Java and Go: inline CR/LF strips are credited for log_injection (#348); Go map and Java literal-set allow-list guards are credited (#293, partial).**
+- **Java: outbound `URLConnection` / `Socket` `getOutputStream().write(...)` is not xss (#671).**
+- **Java: a rejecting literal-set allow-list guard before `Class.forName` clears code_injection (#668).**
+- **Java: a source after the sink is no longer paired with it when no flow backs the finding (#387, partial); constructing a JDK exception is not an `external_taint_escape` (#468, partial).**
+- **Go and JS/TS: a length, count or boolean test of tainted text carries no taint (#568).** `len(x)`, `strings.Count`, `MatchString`, `.length`, `.test`, `.includes`, `.indexOf`. String-returning matchers still propagate.
+- **JS/TS: a whole lookup in a constant table that the file never writes to is not request data (#667, partial).**
+- **`JSON.stringify` / `qs.stringify` are not `external_taint_escape` (#670).**
+- **C#: dictionary lookups (`TryGetValue`, `ContainsKey`, `ContainsValue`, `GetValueOrDefault`) are not `external_taint_escape` (#665).**
+- **C#: one-way hashes and key derivation (`HashData`, `ComputeHash`, PBKDF2, `BCrypt.HashPassword`) are not `external_taint_escape` (#666).** Juliet C# CWE-313/314: 216 escape findings removed, all in `Good*` methods.
+- **C#: `Content(x, contentType)` is xss only for HTML, unknown or script-capable XML content types (#580, partial).**
+- **C#: a cross-file path into a callee that only binds the value as a query parameter is not reported (#637, partial).**
+- **bash: `curl` / `wget` to a double-quoted URL with a literal host closed by `/` is not ssrf (#495, #669).**
+- **JS/Python helper flows fed by a real source are kept after the parameter-only gate (#684, #685, partial); a sink cleared by a guard is not re-reported as an escape (#686, partial).**
+- **A second statement on a source line is not seeded (#490, partial); every operand of a multi-interpolation JS/TS template-literal sink argument is checked (#563, partial).**
+- **Python: a derived variable is credited to the source it reads, not the first read in the file (#515, partial).**
+
 ## [4.14.2] - 2026-10-12
 
 ### Fixed

@@ -50,6 +50,24 @@ export const CSHARP_ALLOWLIST_STRIP_RE =
 const CSHARP_ALLOWLIST_FILTER_RE =
   /\bnew\s+string\s*\(\s*[A-Za-z_]\w*\s*\.\s*Where\s*\(\s*char\s*\.\s*Is(?:LetterOrDigit|Digit|Letter)\s*\)\s*\.\s*ToArray\s*\(\s*\)\s*\)/;
 
+/**
+ * One-way digests (cognium-dev#666): `SHA256.HashData(bytes)`,
+ * `hasher.ComputeHash(bytes)`, PBKDF2 and bcrypt. The input cannot be
+ * recovered from what they return, so storing or sending the digest does not
+ * hand the input out of the program. Credited for the untyped escape fallback
+ * only; the typed injection families keep their own sanitizers.
+ *
+ * The receiver chain (`sha.`, `SHA512.Create().`, `BCrypt.Net.BCrypt.`) is part
+ * of the match, so cutting the call out of a line leaves nothing of it.
+ */
+const HASH_RECEIVER = String.raw`(?:\b[A-Za-z_]\w*(?:\s*\(\s*\))?\s*\.\s*)*`;
+const CSHARP_ONE_WAY_HASH_RES: RegExp[] = [
+  HASH_RECEIVER + String.raw`\b(?:SHA(?:1|256|384|512)|SHA3_(?:256|384|512)|MD5|HMACSHA(?:1|256|384|512)|HMACMD5)\s*\.\s*HashData\s*\(`,
+  HASH_RECEIVER + String.raw`\bComputeHash\s*\(`,
+  HASH_RECEIVER + String.raw`\b(?:Rfc2898DeriveBytes|KeyDerivation)\s*\.\s*Pbkdf2\s*\(`,
+  HASH_RECEIVER + String.raw`\bBCrypt\s*\.\s*(?:HashPassword|EnhancedHashPassword)\s*\(`,
+].map(src => new RegExp(src));
+
 // C# sanitizers and the sink types each neutralises. A tainted value that
 // flows through one of these before reaching a sink of the matching type is
 // safe. Method names are C#-distinctive (see config-loader C# sanitizers).
@@ -74,6 +92,7 @@ export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
   { re: CSHARP_ALLOWLIST_FILTER_RE, type: 'command_injection' },
   { re: CSHARP_ALLOWLIST_FILTER_RE, type: 'sql_injection' },
   { re: CSHARP_ALLOWLIST_FILTER_RE, type: 'crlf' },
+  ...CSHARP_ONE_WAY_HASH_RES.map(re => ({ re, type: 'external_taint_escape' })),
 ];
 
 /**

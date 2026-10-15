@@ -226,11 +226,22 @@ export function generateFindings(
       // Measured on Juliet C#, 1,658 such pairings — 1,338 of them
       // path_traversal, and every one findings-only with no flow behind it.
       //
-      // Scoped to C#: the same rule wants its own measurement per language,
-      // and #508's Java gate is a standing reminder of what skipping that
-      // costs.
+      // Scoped to C# and, for Java, to request-derived sources (#387).
+      //
+      // Java's broader form was measured and rejected: on OWASP BenchmarkJava
+      // it also removed pairings whose "source" is a `file_input` / `db_input`
+      // read AFTER the sink (e.g. `is.read(b)` after the `Paths.get` it opened),
+      // and five `real=true` files (path_traversal, sql_injection) lost their
+      // only detection. Those pairings are coincidental, but they stand in for
+      // the SeparateClassRequest / helper-method flow the taint layer does not
+      // yet prove (#590), so removing them is a true-positive loss. A
+      // request-derived source (`http_*`) read after the sink can only reach it
+      // through a loop or a field, and both of those are flow-backed or
+      // exempted below, so that direction is safe to drop. Java
+      // `pref.setPath(request.getRequestURI())` after `new Cookie(n, v)` is the
+      // shape this removes.
       if (
-        language === 'csharp' &&
+        (language === 'csharp' || (language === 'java' && source.type.startsWith('http_'))) &&
         flowsKnown &&
         source.line > sink.line &&
         !isFlowBacked(sink.type, sink.line) &&

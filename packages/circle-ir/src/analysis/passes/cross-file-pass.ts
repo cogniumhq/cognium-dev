@@ -24,6 +24,8 @@ import type { ProjectGraph } from '../../graph/project-graph.js';
 import type { InterproceduralTaintPath } from '../../resolution/cross-file.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { CSharpCredit } from './csharp-sanitizer-credit.js';
+import { csharpParamReachesSink } from './interprocedural-pass.js';
 
 export interface CrossFilePassResult {
   /** Inter-file method calls (source file → target file). */
@@ -91,6 +93,11 @@ export class CrossFilePass {
 
       const matchedSink = targetIR.taint.sinks.find(s => s.line === flow.targetLine);
       if (!matchedSink) return [];
+      if (targetIR.meta.language === 'csharp' &&
+          !csharpCalleeReachesSink(targetIR, tgtLines, flow.targetMethod, flow.taintedArgPositions, matchedSink,
+            flow.callLine !== undefined ? srcLines[flow.callLine - 1] : undefined)) {
+        return [];
+      }
 
       return [{
         id: `cf-${idx}`,
@@ -197,6 +204,13 @@ export class CrossFilePass {
       if (!sinkIR) continue;
       const matchedSink = sinkIR.taint.sinks.find(s => s.line === p.sink.line);
       if (!matchedSink) continue;
+      const sinkHop = p.hops[p.hops.length - 1];
+      const callHop = p.hops[p.hops.length - 2];
+      if (sinkIR.meta.language === 'csharp' && p.calleeArgPositions && sinkHop?.kind === 'sink' &&
+          !csharpCalleeReachesSink(sinkIR, sourceLines.get(p.sink.file) ?? [], sinkHop.method, p.calleeArgPositions, matchedSink,
+            callHop?.kind === 'sink_call' ? sourceLines.get(callHop.file)?.[callHop.line - 1] : undefined)) {
+        continue;
+      }
 
       const srcLines = sourceLines.get(p.source.file) ?? [];
       const tgtLines = sourceLines.get(p.sink.file)   ?? [];
@@ -332,6 +346,49 @@ export class CrossFilePass {
     if (exceeded) result.budgetExceeded = true;
     return result;
   }
+}
+
+const csharpFileCache = new WeakMap<CircleIR, { code: string; credit: CSharpCredit }>();
+
+/**
+ * Does a tainted argument passed into a C# callee in another file reach the
+ * sink there (cognium-dev#637)? The per-file inter-procedural phase applies
+ * the same check to same-file callees; without it here, a parameterised query
+ * in another file (`cmd.Parameters.AddWithValue("@p", p)`) was reported.
+ * When the callee cannot be located the path is kept.
+ */
+function csharpCalleeReachesSink(
+  ir: CircleIR,
+  lines: string[],
+  targetMethod: string,
+  taintedArgs: number[] | undefined,
+  sink: { line: number; type: string },
+  callText?: string,
+): boolean {
+  const shortName = targetMethod.split('.').pop() ?? targetMethod;
+  const method = ir.types
+    .flatMap(t => t.methods)
+    .find(m => m.name === shortName && sink.line >= m.start_line && sink.line <= m.end_line);
+  if (!method) return true;
+  // The positions are call-argument indexes. They name the wrong parameter
+  // when the call uses named arguments (`Find(val: x, table: "t")`) or the
+  // callee is an extension method, whose `this` parameter is the receiver.
+  if (callText !== undefined && /[(,]\s*@?[A-Za-z_]\w*\s*:(?!:)/.test(callText)) return true;
+  const declaration = lines.slice(method.start_line - 1, method.start_line + 2).join(' ');
+  if (new RegExp(`\\b${shortName}\\s*(?:<[^>]*>)?\\s*\\(\\s*this\\s`).test(declaration)) return true;
+  let file = csharpFileCache.get(ir);
+  if (!file) {
+    const code = lines.join('\n');
+    file = { code, credit: new CSharpCredit(code, ir.types.flatMap(t => t.methods)) };
+    csharpFileCache.set(ir, file);
+  }
+  return csharpParamReachesSink(
+    file.code,
+    { parameters: method.parameters.map((p, position) => ({ name: p.name, position })), startLine: method.start_line },
+    taintedArgs ?? [],
+    sink,
+    file.credit,
+  );
 }
 
 /**

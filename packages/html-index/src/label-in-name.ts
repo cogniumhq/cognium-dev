@@ -65,10 +65,14 @@ function decode(s: string): string {
 }
 
 const inlineDisplay = (n: HNode): string | null => /(?:^|;)\s*display\s*:\s*([a-z-]+)/i.exec(n.attrs.style ?? '')?.[1].toLowerCase() ?? null;
-const markupHides = (c: HNode): boolean =>
+/** the markup itself keeps `c` from being rendered (`aria-hidden` does not: it hides from the accessibility tree, not the screen) */
+export const markupHides = (c: HNode): boolean =>
   'hidden' in c.attrs || (c.tag === 'dialog' && !('open' in c.attrs)) || /display\s*:\s*none/i.test(c.attrs.style ?? '') || /visibility\s*:\s*(hidden|collapse)/i.test(c.attrs.style ?? '');
 const isShadowTemplate = (n: HNode): boolean => n.tag === 'template' && 'shadowrootmode' in n.attrs;
 const skipped = (c: HNode): boolean => NO_TEXT_TAGS.has(c.tag) || (c.tag === 'template' && !isShadowTemplate(c)) || markupHides(c);
+
+/** Whether the element renders its own content as text (not script, style, an image, a form field, a plain template, …). */
+export const rendersText = (n: HNode): boolean => !NO_TEXT_TAGS.has(n.tag) && !(n.tag === 'template' && !isShadowTemplate(n));
 
 /** The visible inner text of a subtree as the markup alone gives it (the visible inner text, without the stylesheets). */
 export function visibleInnerText(n: HNode): string {

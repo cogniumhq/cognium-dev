@@ -48,3 +48,22 @@ test('isTestFile: test/ tests/ __tests__/ spec/ directories recognized', () => {
   expect(isTestFile('/proj/__tests__/foo.ts')).toBe(true);
   expect(isTestFile('/proj/spec/foo.rb')).toBe(true);
 });
+
+test('isTestFile: C# *Test.cs / *Tests.cs and .NET test projects recognized (#602)', () => {
+  expect(isTestFile('/proj/ShellRunnerTests.cs')).toBe(true);
+  expect(isTestFile('/proj/ShellRunnerTest.cs')).toBe(true);
+  expect(isTestFile('C:\\src\\ShellRunnerTests.cs')).toBe(true);
+  expect(isTestFile('/proj/Acme.Billing.Tests/InvoiceFacts.cs')).toBe(true);
+  expect(isTestFile('/proj/Acme.Billing.UnitTests/InvoiceFacts.cs')).toBe(true);
+  expect(isTestFile('/proj/Acme.Billing.IntegrationTest/InvoiceFacts.cs')).toBe(true);
+});
+
+test('isTestFile: C# production files are NOT test files (#602)', () => {
+  expect(isTestFile('/proj/ShellRunner.cs')).toBe(false);
+  expect(isTestFile('/proj/Contest.cs')).toBe(false);
+  expect(isTestFile('/proj/Latest.cs')).toBe(false);
+  expect(isTestFile('/proj/TestDataBuilder.cs')).toBe(false);
+  expect(isTestFile('/proj/Acme.Billing/Invoice.cs')).toBe(false);
+  expect(isTestFile('/proj/Acme.Testing/Invoice.cs')).toBe(false);
+  expect(isTestFile('/proj/src/testcases/CWE89_SQL/Case_01.cs')).toBe(false);
+});

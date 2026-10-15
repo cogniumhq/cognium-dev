@@ -1964,6 +1964,53 @@ function isGoFprintToNonResponseWriter(
 }
 
 /**
+ * JDK types whose `getOutputStream()` is an outbound channel (a remote server,
+ * a peer socket, a child process) rather than the servlet response.
+ */
+const JAVA_OUTBOUND_STREAM_OWNERS =
+  'HttpURLConnection|HttpsURLConnection|URLConnection|JarURLConnection|Socket|SSLSocket|Process';
+
+/**
+ * #671 — true when a Java xss sink is `<base>.getOutputStream().<write>(...)`
+ * and `<base>` is declared in this file as a `URLConnection` / `Socket` /
+ * `Process` (or the chain is `….openConnection().getOutputStream()`). Bytes
+ * written there leave for another host or process; nothing is rendered in the
+ * requester's browser. Positive evidence only: an unresolved base keeps the
+ * sink.
+ */
+function isJavaOutboundOutputStreamWrite(
+  call: CallInfo,
+  pattern: SinkPattern,
+  language: SupportedLanguage | undefined,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (language !== 'java' || pattern.type !== 'xss') return false;
+  const receiver = (call.receiver ?? '').replace(/\s+/g, '');
+  if (!receiver.endsWith('.getOutputStream()')) return false;
+  if (/\.openConnection\(\)\)?\.getOutputStream\(\)$/.test(receiver)) return true;
+  const m = receiver.match(/^\(?([A-Za-z_]\w*)\)?\.getOutputStream\(\)$/);
+  if (!m || !sourceLines) return false;
+  const declRe = new RegExp(
+    `\\b(?:[\\w.]+\\.)?(?:${JAVA_OUTBOUND_STREAM_OWNERS})\\s+${m[1]}\\s*[=;,)]`,
+  );
+  // Nearest declaration above the call wins; a re-declaration with another
+  // type (shadowing) stops the walk.
+  // `var x = …` (inferred type) also shadows, and its type is unknown here.
+  const anyDeclRe = new RegExp(`\\b(?:[A-Z][\\w.<>,\\[\\]]*|var)\\s+${m[1]}\\s*[=;,)]`);
+  for (let i = call.location.line - 1; i >= 0; i--) {
+    // Strip string literals, `//` comments and `/* … */` block comments so a
+    // commented-out declaration cannot match either regex.
+    const line = (sourceLines[i] ?? '')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/, '');
+    if (declRe.test(line)) return true;
+    if (anyDeclRe.test(line)) return false;
+  }
+  return false;
+}
+
+/**
  * Gate for Go `json.Unmarshal(data, &dst)` / `json.NewDecoder(r).Decode(&dst)`
  * deserialization (CWE-502) sinks. Returns `true` when the destination is a
  * provably typed value (concrete struct, typed slice/map, pointer to named
@@ -2402,6 +2449,13 @@ function findSinks(
         // the wrong sphere is worse than the low-confidence escape it
         // replaces.
         if (isGoFprintToNonResponseWriter(call, pattern, language, sourceLines)) {
+          continue;
+        }
+
+        // #671 — `conn.getOutputStream().write(...)` on an outbound
+        // URLConnection / Socket / Process writes to a remote peer or child
+        // process, not to the HTTP response. Not xss.
+        if (isJavaOutboundOutputStreamWrite(call, pattern, language, sourceLines)) {
           continue;
         }
 

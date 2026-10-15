@@ -65,20 +65,51 @@ function anyArgCarriesCredential(call: CallInfo, startPos: number): boolean {
     if (a.position < startPos) continue;
     // Direct identifier (`requests.post(url, password)` shape).
     if (argLooksLikeCredential(a)) return true;
-    // Inline object literal: `{ password: pw, ... }`.
-    const expr = (a.expression ?? '').trim();
-    if (!expr) continue;
-    // Look for credential-keyword as a key OR value identifier.
-    if (
-      /(?:["'`]?(?:password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|credential)["'`]?\s*[:=])/i
-        .test(expr)
-    ) {
-      return true;
-    }
-    // Look for credential identifier appearing as a word.
-    if (/\b(?:password|passwd|pwd|secret|api_key|api-key|apiKey|auth_token|authToken|credential)\w*\b/i
-        .test(expr)) {
-      return true;
+    if (textCarriesCredential(a.expression ?? '')) return true;
+  }
+  return false;
+}
+
+/** True if an expression mentions a credential keyword as a key or a word. */
+function textCarriesCredential(text: string): boolean {
+  const expr = text.trim();
+  if (!expr) return false;
+  // Inline object literal: `{ password: pw, ... }` — keyword as a key.
+  if (
+    /(?:["'`]?(?:password|passwd|pwd|secret|api[_-]?key|auth[_-]?token|credential)["'`]?\s*[:=])/i
+      .test(expr)
+  ) {
+    return true;
+  }
+  // Credential identifier appearing as a word.
+  return /\b(?:password|passwd|pwd|secret|api_key|api-key|apiKey|auth_token|authToken|credential)\w*\b/i
+    .test(expr);
+}
+
+/**
+ * #670 — node `const r = http.request('http://…', opts)` whose body is sent
+ * later with `r.write(x)` / `r.end(x)` on that same binding. Credits `x` when
+ * its own text, or the text of the definition of `x` that reaches the write,
+ * carries a credential keyword.
+ */
+function nodeRequestWritesCredential(call: CallInfo, graph: PassContext['graph'], lines: string[]): boolean {
+  const text = lines[call.location.line - 1] ?? '';
+  const bound = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*https?\s*\.\s*request\s*\(/.exec(text);
+  if (!bound) return false;
+  const reqVar = bound[1]!;
+  const reqDef = graph.defsAtLine(call.location.line).find((d) => d.variable === reqVar);
+  if (!reqDef) return false;
+  for (const w of graph.ir.calls) {
+    if (w.receiver !== reqVar || (w.method_name !== 'write' && w.method_name !== 'end')) continue;
+    // The write must use this request object: its reaching def is the binding.
+    const use = graph.usesAtLine(w.location.line).find((u) => u.variable === reqVar);
+    if (!use || use.def_id !== reqDef.id) continue;
+    if (anyArgCarriesCredential(w, 0)) return true;
+    for (const a of w.arguments) {
+      if (!a.variable) continue;
+      const argUse = graph.usesAtLine(w.location.line).find((u) => u.variable === a.variable);
+      const def = argUse?.def_id != null ? graph.defById.get(argUse.def_id) : undefined;
+      if (def && textCarriesCredential(lines[def.line - 1] ?? '')) return true;
     }
   }
   return false;
@@ -95,8 +126,9 @@ export class CleartextCredentialTransportPass
     const file = graph.ir.meta.file;
     const findings: CleartextCredentialTransportResult['findings'] = [];
 
+    const lines = ctx.code.split('\n');
     for (const call of graph.ir.calls) {
-      const detection = this.detect(call, language);
+      const detection = this.detect(call, language) ?? this.detectNodeRequestBody(call, language, graph, lines);
       if (!detection) continue;
 
       const { api, url } = detection;
@@ -124,6 +156,22 @@ export class CleartextCredentialTransportPass
     }
 
     return { findings };
+  }
+
+  /** `http.request('http://…')` whose credential body is written afterwards (#670). */
+  private detectNodeRequestBody(
+    call: CallInfo,
+    language: string,
+    graph: PassContext['graph'],
+    lines: string[],
+  ): { api: string; url: string } | null {
+    if (language !== 'javascript' && language !== 'typescript') return null;
+    if (call.method_name !== 'request') return null;
+    const recvLower = (call.receiver ?? '').toLowerCase();
+    if (recvLower !== 'http' && !recvLower.endsWith('.http')) return null;
+    const url = literalAt(call, 0);
+    if (!isInsecureHttpUrl(url)) return null;
+    return nodeRequestWritesCredential(call, graph, lines) ? { api: 'http.request', url: url! } : null;
   }
 
   private detect(
