@@ -674,6 +674,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // cognium-dev#269: `!file.getCanonicalPath().startsWith(base)` reject
       // guard (the java.io.File OWASP-recommended containment defence).
       additionalSanitizers.push(...findJavaCanonicalPathStartsWithGuardSanitizers(code));
+      // cognium-dev#293: `if (!Set.of("a", "b").contains(key)) throw` allow-list guard.
+      additionalSanitizers.push(...findJavaLiteralAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // cognium-dev#293: the same strip, but living in a user-defined helper.
       additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'java'));
@@ -4144,9 +4146,12 @@ function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');
 
-  // `if !<mapName>[<key>] {`  — optional whitespace, optional `_ ,`
-  // ignored. Captures the map identifier in group 1.
-  const guardOpen = /^\s*if\s+!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*\s*\]\s*\{/;
+  // `if !<mapName>[<key>] {`, or that negated lookup as one `||` disjunct
+  // (`if err != nil || !<mapName>[u.Host] {`, #293): the block runs when any
+  // disjunct holds, so falling past it proves the key is in the map. The key
+  // may be a selector (`u.Host`). Captures the map identifier in group 1.
+  const guardOpen =
+    /^\s*if\s+(?:[^{&|]+\|\|\s*)*!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\]\s*(?:\|\|[^{&]+)?\{/;
   // Allow-list naming heuristic.
   const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
 
@@ -4180,9 +4185,19 @@ function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
     if (closeLine === -1 || !bodyHasTerminator) continue;
 
     // Emit per-line sanitizers for every line AFTER the guard's closing
-    // brace through end of file. `checkSanitized` is line-keyed so this
-    // suppresses the relevant sink types in the safe branch.
-    for (let l = closeLine + 2; l <= lines.length; l++) {
+    // brace to the end of the enclosing block (the function body, #293 —
+    // it used to run to the end of the file, crediting later functions).
+    // `checkSanitized` is line-keyed so this suppresses the relevant sink
+    // types in the safe branch.
+    let end = lines.length;
+    for (let j = closeLine + 1, d = 0; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === '{') d++;
+        else if (ch === '}') d--;
+      }
+      if (d < 0) { end = j + 1; break; }
+    }
+    for (let l = closeLine + 2; l <= end; l++) {
       sanitizers.push({
         type: 'go_map_allowlist_guard',
         method: 'if',
@@ -6176,6 +6191,76 @@ function guardRejects(
  * form `if (x.StartsWith(root)) { … }` still reports, and a test pins that so
  * the gap stays visible rather than silently assumed.
  */
+/**
+ * cognium-dev#293 (Java cell): membership in a literal allow-list followed by
+ * a reject is a guard.
+ *
+ *   if (!Set.of("locale", "theme").contains(key)) throw new IllegalArgumentException();
+ *   req.getSession().setAttribute(key, value);       // was trust_boundary on `key`
+ *
+ * Past the guard, `key` is one of the listed string constants. The set must
+ * be written out as string literals: inline `Set.of` / `List.of` /
+ * `Arrays.asList`, or a `static final` constant of the same file initialised
+ * from one of them. A set built any other way (a parameter, a config read, a
+ * mutable collection) is not credited: its contents are unknown.
+ *
+ * Only the guarded variable is credited, from the guard to the end of the
+ * enclosing method or the variable's next reassignment, and only when the
+ * guard rejects (`guardRejects`).
+ */
+function findJavaLiteralAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const literalList = String.raw`(?:Set|List)\s*\.\s*of|Arrays\s*\.\s*asList`;
+  const literalArgs = String.raw`\(\s*"(?:[^"\\]|\\.)*"(?:\s*,\s*"(?:[^"\\]|\\.)*")*\s*\)`;
+  // Constants declared from a literal list in this file.
+  const constants = new Set<string>();
+  const constRe = new RegExp(
+    String.raw`\bstatic\s+final\s+[\w<>,.\s]+?\s([A-Za-z_]\w*)\s*=\s*(?:${literalList})\s*${literalArgs}\s*;`,
+  );
+  for (const l of lines) {
+    const m = constRe.exec(l);
+    if (m) constants.add(m[1]!);
+  }
+  const guardRe = new RegExp(
+    String.raw`\bif\s*\(\s*!\s*(?:(?:${literalList})\s*${literalArgs}|([A-Za-z_]\w*))\s*\.\s*contains\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\)`,
+  );
+  const terminatorRe = /\b(throw|return)\b/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardRe.exec(lines[i]!);
+    if (!m) continue;
+    if (m[1] !== undefined && !constants.has(m[1])) continue;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+    const name = m[2]!;
+    const mention = new RegExp(String.raw`(?<![\w.])${name}\b`);
+    const reassign = new RegExp(String.raw`^\s*(?:[\w.<>[\]]+\s+)?${name}\s*=(?!=)`);
+    // Skip the guard's own block, then credit to the end of the enclosing method.
+    let start = i + 1;
+    if (/\{\s*$/.test(lines[i]!)) {
+      for (let d = 0, j = i; j < lines.length; j++) {
+        for (const ch of lines[j]!) { if (ch === '{') d++; else if (ch === '}') d--; }
+        if (d <= 0) { start = j + 1; break; }
+      }
+    }
+    for (let j = start, d = 0; j < lines.length; j++) {
+      for (const ch of lines[j]!) { if (ch === '{') d++; else if (ch === '}') d--; }
+      if (d < 0) break;
+      if (reassign.test(lines[j]!)) break;
+      if (!mention.test(lines[j]!)) continue;
+      sanitizers.push({
+        type: 'java_literal_allowlist_guard',
+        method: 'guard',
+        line: j + 1,
+        sanitizes: ['trust_boundary', 'sql_injection', 'command_injection', 'path_traversal', 'ssrf',
+                    'ldap_injection', 'xpath_injection', 'log_injection', 'xss', 'open_redirect',
+                    'external_taint_escape'],
+      });
+    }
+  }
+  return sanitizers;
+}
+
 /**
  * cognium-dev#272 — a validating predicate followed by an EARLY RETURN is a
  * guard, and the value reaching the sink afterwards is already validated.
