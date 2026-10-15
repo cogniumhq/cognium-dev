@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A directory scan collects `*.properties` files (same skip rules as source files, `--exclude-tests` and config `exclude`; files over 1 MB are ignored) and passes them to circle-ir as resources (#591, partial).
 - A C# scan no longer reports xss for a value passed through `UrlEncoder.Default.Encode(...)` before `Html.Raw(...)` (#564, partial).
+- A scan no longer reports redos for a constant `new RegExp(`…${CONST}…`)` pattern whose call is wrapped over several lines (#717).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
 ## [4.15.0] - 2026-10-15

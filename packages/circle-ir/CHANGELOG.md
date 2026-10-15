@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **C#: `UrlEncoder.Default.Encode(x)` is credited as an xss sanitizer (#564, partial).** A percent-encoded value cannot carry `<`, `"` or `'` into an HTML attribute or text position. A file that declares its own `UrlEncoder` type is not credited, and a raw operand next to the encoded one still reports.
+- **JS/TS: a constant `new RegExp(`…${CONST}…`)` pattern is exempt from redos when the constructor call spans lines (#717).** The template literal may start on a line after `new RegExp(` (or after a comment); a tainted interpolation, a nested-quantifier constant, or a pattern with anything appended after the template still reports.
 
 ## [4.15.0] - 2026-10-15
 
