@@ -7,10 +7,11 @@
  * right-hand side names; the earliest-source anchor remains the fallback.
  * Only `source_line` / `source_type` move; the flow set is unchanged.
  *
- * Review follow-ups: trailing `#…` comments and f-string `{…}` names are
- * handled on the RHS scan; a later assignment of a real-source name is
- * resolved before falling back to that real source; the direct-argument
- * case pins the source line.
+ * Review follow-ups: trailing `#…` comments (outside strings only) and
+ * f-string `{…}` names are handled on the RHS scan; format specs / conversion
+ * flags are cut so they cannot drop later names or become scanned identifiers;
+ * a later assignment of a real-source name is resolved before falling back to
+ * that real source; the direct-argument case pins the source line.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
@@ -57,6 +58,32 @@ def export_report():
     note = request.args.get("note")
     fmt = request.form.get("fmt")
     cmdline = f"pandoc -t {fmt}"
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('does not treat a format-spec # as a comment that drops later names', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    cmdline = f"{width:#04x}" + fmt
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('does not treat an f-string conversion flag as a source name', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    s = request.args.get("s")
+    fmt = request.form.get("fmt")
+    cmdline = f"pandoc -t {fmt!s}"
     subprocess.check_output(cmdline, shell=True)
 `;
     expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);

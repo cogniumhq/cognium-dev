@@ -62,6 +62,58 @@ const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'co
  * that was also a real source. Returns undefined when nothing can be
  * resolved, so the caller keeps its earliest-source fallback.
  */
+/** Drop a trailing `#…` comment, leaving `#` inside string literals alone. */
+function stripPythonTrailingComment(text: string): string {
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const triple = text.startsWith(ch.repeat(3), i);
+      const delim = triple ? ch.repeat(3) : ch;
+      i += delim.length;
+      while (i < text.length && !text.startsWith(delim, i)) {
+        if (text[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      i += delim.length;
+      continue;
+    }
+    if (ch === '#') return text.slice(0, i);
+    i++;
+  }
+  return text;
+}
+
+/**
+ * Keep only the f-string interpolation expression: cut before a top-level
+ * `!conversion` or `:format_spec` (Python replacement_field grammar). Depth
+ * tracks `()[]{}`; string literals are skipped so a `:` inside a subscript
+ * key does not truncate the expression.
+ */
+function pythonFStringExprOnly(inner: string): string {
+  let depth = 0;
+  let i = 0;
+  while (i < inner.length) {
+    const ch = inner[i];
+    if (ch === '"' || ch === "'") {
+      const triple = inner.startsWith(ch.repeat(3), i);
+      const delim = triple ? ch.repeat(3) : ch;
+      i += delim.length;
+      while (i < inner.length && !inner.startsWith(delim, i)) {
+        if (inner[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      i += delim.length;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; i++; continue; }
+    if (depth === 0 && (ch === '!' || ch === ':')) return inner.slice(0, i);
+    i++;
+  }
+  return inner;
+}
+
 function resolvePythonDerivedAnchor<S extends { line: number }>(
   varName: string,
   derived: ReadonlyMap<string, number>,
@@ -77,10 +129,11 @@ function resolvePythonDerivedAnchor<S extends { line: number }>(
   if (!text) return undefined;
   const eq = text.search(/(?<![=!<>+\-*/%&|^:])=(?!=)/);
   if (eq < 0) return undefined;
-  // Lift f-string `{…}` names (via maskStringLiteralsForTokenScan), blank
-  // plain quotes, then drop a trailing `#…` comment. A `#` that was inside a
-  // string is already gone, so the comment strip cannot eat string content.
-  const rhs = maskStringLiteralsForTokenScan(text.slice(eq + 1)).replace(/#.*$/, '');
+  // Drop a real trailing `#…` comment first (outside strings only), then lift
+  // f-string `{…}` names. Format specs / conversion flags are cut inside
+  // braceExprs so a `#` in `{width:#04x}` cannot eat later names, and `!s`
+  // cannot become a scanned identifier.
+  const rhs = maskStringLiteralsForTokenScan(stripPythonTrailingComment(text.slice(eq + 1)));
   let best: S | undefined;
   for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
     const id = m[0];
@@ -1767,7 +1820,7 @@ export function maskStringLiteralsForTokenScan(expr: string): string {
           j++;
         }
         j++;
-        acc += ' ' + maskStringLiteralsForTokenScan(inner) + ' ';
+        acc += ' ' + maskStringLiteralsForTokenScan(pythonFStringExprOnly(inner)) + ' ';
         continue;
       }
       j++;
