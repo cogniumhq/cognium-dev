@@ -43,6 +43,13 @@ export class ConstantPropagator {
   private methodReturnsConstant: Set<string> = new Set();
   // Track which methods always return sanitized values (inter-procedural analysis)
   private methodReturnsSanitized: Set<string> = new Set();
+  /**
+   * #589: same-file helpers whose every reachable return is a direct call to a
+   * context-specific HTML encoder (`return StringEscapeUtils.escapeHtml(v);`).
+   * Such a helper cleans `xss` like the encoder it wraps, but not `trust_boundary`.
+   */
+  private methodReturnsHtmlEncoderOnly: Set<string> = new Set();
+  private methodNotHtmlEncoderOnly: Set<string> = new Set();
   // Track which methods return a specific parameter (index) - for taint propagation
   private methodReturnsParameter: Map<string, number> = new Map();
   // Track which methods return safe (non-tainted) values even with tainted input
@@ -116,6 +123,8 @@ export class ConstantPropagator {
     this.inConditionalBranch = false;
     this.methodReturnsConstant.clear();
     this.methodReturnsSanitized.clear();
+    this.methodReturnsHtmlEncoderOnly.clear();
+    this.methodNotHtmlEncoderOnly.clear();
     this.methodReturnsParameter.clear();
     this.methodReturnsSafeValue.clear();
     this.listElements.clear();
@@ -305,6 +314,7 @@ export class ConstantPropagator {
       let allReturnsConstant = true;
       let allReturnsSanitized = true;
       let allReturnsSafe = true; // Track if all returns are non-tainted
+      let allReturnsHtmlEncoder = true; // #589: every return is a direct HTML-encoder call
       let returnedParamIndex = -1;
       let hasReachableReturn = false;
 
@@ -324,8 +334,19 @@ export class ConstantPropagator {
         if (!valueNode) {
           allReturnsConstant = false;
           allReturnsSanitized = false;
+          allReturnsHtmlEncoder = false;
           allReturnsSafe = false; // void return or unknown - not safe
           continue;
+        }
+
+        // #589: `return <Encoder>.<encode>(<the only parameter>)`.
+        const encoderArgs = valueNode.type === 'method_invocation'
+          ? valueNode.childForFieldName('arguments')?.children.filter((c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',')
+          : undefined;
+        if (!(valueNode.type === 'method_invocation' &&
+          HTML_CONTEXT_ENCODER_METHODS.has(getNodeText(valueNode.childForFieldName('name') ?? valueNode, this.source)) &&
+          params.length === 1 && encoderArgs?.length === 1 && getNodeText(encoderArgs[0]!, this.source) === params[0])) {
+          allReturnsHtmlEncoder = false;
         }
 
         const value = tempPropagator.evaluateExpression(valueNode);
@@ -366,6 +387,15 @@ export class ConstantPropagator {
       }
 
       if (hasReachableReturn) {
+        // #589: an encoder-only helper is recorded only when no other method of
+        // this name (an overload, an annotated sanitizer) returns anything else.
+        if (allReturnsHtmlEncoder && allReturnsSanitized && !this.methodNotHtmlEncoderOnly.has(methodName) &&
+          (!this.methodReturnsSanitized.has(methodName) || this.methodReturnsHtmlEncoderOnly.has(methodName))) {
+          this.methodReturnsHtmlEncoderOnly.add(methodName);
+        } else {
+          this.methodNotHtmlEncoderOnly.add(methodName);
+          this.methodReturnsHtmlEncoderOnly.delete(methodName);
+        }
         if (allReturnsConstant) {
           this.methodReturnsConstant.add(methodName);
         }
@@ -1944,7 +1974,10 @@ export class ConstantPropagator {
    */
   private recordSanitizerScope(scopedName: string, node: Node): void {
     const methodName = this.extractCallName(node);
-    if (methodName && HTML_CONTEXT_ENCODER_METHODS.has(methodName) && !this.methodReturnsSanitized.has(methodName)) {
+    if (methodName && (
+      (HTML_CONTEXT_ENCODER_METHODS.has(methodName) && !this.methodReturnsSanitized.has(methodName)) ||
+      this.methodReturnsHtmlEncoderOnly.has(methodName)
+    )) {
       this.sanitizedVarUncovered.set(scopedName, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS);
     } else {
       this.sanitizedVarUncovered.delete(scopedName);

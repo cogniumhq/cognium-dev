@@ -11,6 +11,7 @@ import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
 import { getDefaultConfig } from './config-loader.js';
 import { javaReplaceCrLfCoverage } from './java-crlf-strip.js';
 import { jsChainTextAt, jsReplaceChainVerdict } from './js-crlf-strip.js';
+import { HTML_CONTEXT_ENCODER_METHODS } from './constant-propagation/patterns.js';
 import {
   resolveIdentifierType,
   resolveCallReturnType,
@@ -3694,6 +3695,9 @@ function findSanitizers(
   //      `[receiver.]method(` prefix and ends with `)` — rejecting
   //      unsafe shapes like `return x + shlex.quote(x)`.
   const wrapperSanitizers = new Map<string, SinkType[]>();
+  // #589: wrappers whose single inner call is a context-specific HTML encoder
+  // (every same-named wrapper, so an overload cannot lend its credit).
+  const wrapperEncoderOnly = new Map<string, boolean>();
   for (const type of types) {
     for (const method of type.methods) {
       const bodySize = method.end_line - method.start_line;
@@ -3743,6 +3747,9 @@ function findSanitizers(
         if (!after.endsWith(')')) continue;
       }
 
+      const encoderWrapper = !replaceCredit && method.parameters.length === 1 &&
+        HTML_CONTEXT_ENCODER_METHODS.has(innerCall.method_name);
+      wrapperEncoderOnly.set(method.name, (wrapperEncoderOnly.get(method.name) ?? true) && encoderWrapper);
       const existing = wrapperSanitizers.get(method.name);
       if (existing) {
         const set = new Set<SinkType>([...existing, ...matched.removes]);
@@ -3758,7 +3765,9 @@ function findSanitizers(
     const removes = wrapperSanitizers.get(call.method_name);
     if (!removes) continue;
     sanitizers.push({
-      type: 'derived_wrapper',
+      // #589: a wrapper of an HTML encoder cleans `xss` but not `trust_boundary`,
+      // like the encoder itself, so it is told apart from other wrappers.
+      type: wrapperEncoderOnly.get(call.method_name) ? 'derived_html_encoder' : 'derived_wrapper',
       method: formatSanitizerMethod(call),
       line: call.location.line,
       sanitizes: removes,
