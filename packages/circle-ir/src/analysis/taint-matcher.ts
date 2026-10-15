@@ -3440,7 +3440,7 @@ function findSanitizers(
   const sanitizers: TaintSanitizer[] = [];
   const javaReplace = (call: CallInfo): SinkType[] | null =>
     language === 'java' && sourceLines && (call.method_name === 'replace' || call.method_name === 'replaceAll')
-      ? javaReplaceChainCredit(sourceLines[call.location.line - 1] ?? '')
+      ? javaReplaceChainCredit(javaChainTextAt(sourceLines, call.location.line, call.location.column))
       : null;
 
   // Build a set of method names with @sanitizer annotation (from Javadoc comments)
@@ -3597,27 +3597,58 @@ function findSanitizers(
   return sanitizers;
 }
 
+const JAVA_LIT = String.raw`(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')`;
+const JAVA_REPLACE_ARGS_RE = new RegExp(String.raw`\.(replace|replaceAll)\(\s*${JAVA_LIT}\s*,\s*${JAVA_LIT}\s*\)`, 'g');
+
+/**
+ * The text of the call chain that starts at (line, column): the receiver
+ * expression plus the `.method(...)` segments after it, up to the first
+ * character that cannot continue the chain at nesting depth 0 (`;`, `,`, an
+ * operator, an unmatched closing bracket). A call reports the start of the
+ * whole chain it ends, so `a.replace("\n", "")` and `b.replace("\r", "")` on one
+ * line start at different columns and never credit each other. The chain may
+ * continue over following lines.
+ */
+function javaChainTextAt(sourceLines: string[], line: number, column: number): string {
+  const text = [(sourceLines[line - 1] ?? '').slice(column), ...sourceLines.slice(line, line + 7)].join('\n');
+  let depth = 0;
+  let i = 0;
+  for (; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '"' || c === "'") {
+      for (i++; i < text.length && text[i] !== c; i++) if (text[i] === '\\') i++;
+      continue;
+    }
+    if (c === '(' || c === '[') { depth++; continue; }
+    if (c === ')' || c === ']') {
+      if (depth === 0) break;
+      depth--;
+      continue;
+    }
+    if (depth === 0 && !/[\w$.\s]/.test(c)) break;
+  }
+  return text.slice(0, i);
+}
+
 /**
  * Java `String.replace` / `replaceAll` credit, decided from the literal
- * arguments of the replace chain on the line instead of the method name
+ * arguments of the replace chain that contains the call instead of the method name
  * (cognium-dev#562 / #605 / #517). The class-less `replace` row credited any
  * replace as a log-injection sanitizer, so an LF-only strip silenced the
  * finding while `replaceAll("[\r\n]", "")` got no credit at all.
- *   - `log_injection`: the chain strips both CR and LF.
+ *   - `log_injection`: the chain strips both CR and LF (double-quoted String or single-quoted char literals).
  *   - `xss`: the chain maps both `<` and `>` to an entity.
  * Returns the credited sink types (possibly empty).
  */
-const JAVA_REPLACE_ARGS_RE = /\.(replace|replaceAll)\(\s*"((?:\\.|[^"\\])*)"\s*,\s*"((?:\\.|[^"\\])*)"\s*\)/g;
-
-function javaReplaceChainCredit(lineText: string): SinkType[] {
+function javaReplaceChainCredit(chainText: string): SinkType[] {
   let cr = false;
   let lf = false;
   let lt = false;
   let gt = false;
-  for (const m of lineText.matchAll(JAVA_REPLACE_ARGS_RE)) {
+  for (const m of chainText.matchAll(JAVA_REPLACE_ARGS_RE)) {
     const kind = m[1];
-    const from = m[2]!.replace(/\\\\/g, '\\');
-    const to = m[3]!;
+    const from = (m[2] ?? m[3] ?? '').replace(/\\\\/g, '\\');
+    const to = m[4] ?? m[5] ?? '';
     if (kind === 'replace') {
       if (from === '\\n') lf = true;
       if (from === '\\r') cr = true;

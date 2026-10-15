@@ -109,6 +109,38 @@ public class EchoPartialServlet extends HttpServlet {
 }
 `;
 
+const chars = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class CharStripServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String actor = request.getParameter("actor");
+        String other = request.getParameter("other");
+        String both = actor.replace('\\n', ' ').replace('\\r', ' ');
+        AUDIT.info("login by " + both);
+        String lfOnly = actor.replace('\\n', ' ');
+        AUDIT.info("login by " + lfOnly);
+        String first = actor.replace("\\n", ""); String second = other.replace("\\r", "");
+        AUDIT.info("login by " + first);
+        AUDIT.info("login by " + second);
+        String full = actor.replace("\\n", "").replace("\\r", ""); String half = other.replace("\\n", "");
+        AUDIT.info("login by " + full);
+        AUDIT.info("login by " + half);
+        String wrapped = actor
+            .trim()
+            .replace("\\n", "")
+            .replace("\\r", "");
+        AUDIT.info("login by " + wrapped);
+    }
+}
+`;
+
 describe('Java argument-aware replace sanitizer credit', () => {
   beforeAll(async () => {
     await initAnalyzer();
@@ -133,5 +165,28 @@ describe('Java argument-aware replace sanitizer credit', () => {
     expect(l).toContain(11);
     expect(l).toContain(13);
     expect(await lines(partial, 'EchoPartialServlet.java', 'command_injection')).toContain(15);
+  });
+
+  it('char-literal chains: CR+LF char strip is clean (15), LF-only char strip fires (17)', async () => {
+    const l = await lines(chars, 'CharStripServlet.java', 'log_injection');
+    expect(l).not.toContain(15);
+    expect(l).toContain(17);
+  });
+
+  it('credit comes from the chain containing the call, not the whole line', async () => {
+    const l = await lines(chars, 'CharStripServlet.java', 'log_injection');
+    // an LF-only strip and a CR-only strip on one line: neither value is credited
+    expect(l).toContain(19);
+    expect(l).toContain(20);
+    // a multi-line CR+LF chain is clean
+    expect(l).not.toContain(28);
+  });
+
+  it('the sanitizer decision is made per call chain', async () => {
+    const r = await analyze(chars, 'CharStripServlet.java', 'java');
+    const san = (r.taint.sanitizers ?? []).filter((x) => (x.sanitizes ?? []).includes('log_injection'));
+    const byLine = (n: number) => san.filter((x) => x.line === n).length;
+    expect(byLine(18)).toBe(0); // LF-only + CR-only on separate chains
+    expect(byLine(21)).toBe(2); // only the two calls of the CR+LF chain, not the LF-only call beside it
   });
 });
