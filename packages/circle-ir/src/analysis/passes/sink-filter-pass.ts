@@ -531,6 +531,8 @@ const SERVER_SIGNAL_RE =
 // interpolated, the destination host is not attacker-controlled. Matches a
 // backtick + scheme + a literal host run (no `${` before the first `/`).
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
+/** A bash URL word whose scheme and host are literal and closed by `/` (#495). */
+const BASH_FIXED_HOST_URL_RE = /^(?:https?|ftp):\/\/[A-Za-z0-9.-]+(?::\d+)?\//;
 /**
  * True when the string literal that ended at `end` is the WHOLE initializer:
  * the next code token is `;`, `,`, end of input, or (ASI) a token on a later
@@ -2319,6 +2321,23 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'xss' || sink.method !== 'Content') return true;
         const contentCalls = callsByLine.get(sink.line)?.filter(c => c.method_name === 'Content') ?? [];
         return contentCalls.length === 0 || contentCalls.some(csharpContentServesHtml);
+      });
+    }
+
+    // Stage 15m — bash ssrf: fixed-host URL word (cognium-dev#495, #669).
+    // The bash analogue of Stage 15i: `curl -- "https://api.example.com/${p}"`
+    // can only reach the literal host, whatever `$p` holds. Every word on the
+    // line that expands a variable must be such a URL; a word like `"$url"`,
+    // `"https://${host}/x"` or `"https://api.example.com${p}"` (no `/` to
+    // close the authority, so `$p` may be `@evil.com`) keeps the sink.
+    if (language === 'bash') {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'ssrf') return true;
+        const words = (sourceLines[sink.line - 1] ?? '').match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? [];
+        const expanding = words.filter(w => !w.startsWith("'") && w.includes('$'));
+        return expanding.length === 0 ||
+          !expanding.every(w => BASH_FIXED_HOST_URL_RE.test(w.replace(/^"|"$/g, '')));
       });
     }
 
