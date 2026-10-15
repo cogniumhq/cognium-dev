@@ -853,6 +853,26 @@ export function identifierOutsideSanitizerCallsInText(
   return re.test(blankStringLiterals(masked));
 }
 
+/**
+ * True when every operand of `text` sits inside a covering sanitizer call:
+ * after those calls are removed and string literals blanked, no identifier is
+ * left. `shlex.quote(request.args.get("t"))` qualifies; `quote(a) + b` does
+ * not (#582).
+ */
+export function expressionFullyWrappedBySanitizer(
+  text: string,
+  sanitizers: TaintSanitizer[],
+  sinkType: string,
+): boolean {
+  const refs = sanitizerCallRefs(sanitizers, sinkType);
+  if (refs.length === 0) return false;
+  const masked = maskSanitizerCalls(text, refs);
+  if (masked === text) return false;
+  // A qualified call (`os.path.basename(x)`) leaves its module prefix (`os. `) behind.
+  const rest = blankStringLiterals(masked).replace(/\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.(?=\s)/g, ' ');
+  return !/[A-Za-z_]/.test(rest);
+}
+
 /** Last segment of a sanitizer's method name, without the call parens (`ESAPI.encoder().encodeForHTML()` -> `encodeForHTML`). */
 function sanitizerMethodTail(san: TaintSanitizer): string {
   const m = san.method ?? '';
