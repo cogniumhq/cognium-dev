@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.15.0] - 2026-10-15
 
 ### Added
 - **JS/TS: Express handlers that destructure the request (`({ query }, res)`, `({ params }, res)`, nested `({ query: { t } }, res)`) get an http source (#587, partial).** A handler must be registered on an `express()` / `Router()` receiver in the same file.
