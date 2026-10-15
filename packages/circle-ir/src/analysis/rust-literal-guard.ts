@@ -22,8 +22,11 @@
  * The credit is line-keyed. It starts after the guard block, ends with the
  * enclosing block (so never reaches another function), stops at the first
  * line that rebinds or mutates the variable (or at the start of a loop that
- * contains such a line), and skips a line that also reads another value
- * (`Command::new(x).arg(other)`), since the line credit would clean it too.
+ * contains such a line), and skips a mention whose whole statement also reads
+ * another value (`Command::new(x).arg(other)`, including when the other
+ * operand sits on a later line of the same statement). A pattern that binds
+ * the name (`let (x, _)`, `for x in`, `Some(x) =>`, …) ends the credit like a
+ * plain `let x`.
  */
 import type { TaintSanitizer } from '../types/index.js';
 
@@ -171,11 +174,58 @@ function readsOtherValue(original: string, masked: string, name: string): boolea
   return false;
 }
 
-function mutates(masked: string, name: string): boolean {
+/** True when `pat` (a Rust pattern fragment) binds `name`. */
+function patternBinds(pat: string, name: string): boolean {
+  // Drop type ascriptions (`x: Type`) and references (`ref mut x`, `&mut x` in patterns).
+  const cleaned = pat
+    .replace(/:\s*[^=,;({]+/g, ' ')
+    .replace(/\b(?:ref\s+(?:mut\s+)?|mut\s+)/g, ' ');
+  return new RegExp(String.raw`(?<![\w.])${name}\b`).test(cleaned);
+}
+
+/**
+ * True when the (masked) line rebinds or mutates `name`: a plain `let`/`=`,
+ * a pattern that binds the name (`let (name, _)`, `for name in`, `Some(name) =>`,
+ * `while let` / `if let`), `&mut name`, a nested fn/closure parameter, a
+ * known mutating method (`push_str`, `insert_str`, …), `write!`/`writeln!`
+ * with the name as the first argument, `mem::swap` involving the name, or
+ * (when `mutParam` is set) passing the bare name as a call argument.
+ */
+function mutates(masked: string, name: string, mutParam = false): boolean {
   const n = name;
-  return new RegExp(
-    String.raw`\blet\s+(?:mut\s+)?${n}\b|(?<![\w.])${n}\s*(?:[-+*/%|&^]|<<|>>)?=(?![=>])|&\s*mut\s+${n}\b|\bfn\s+\w+\s*(?:<[^>]*>)?\([^)]*\b${n}\s*:|\|[^|]*\b${n}\b[^|]*\||\b${n}\s*\.\s*(?:push|push_str|clear|insert|extend|truncate|remove|retain|drain|replace_range|make_ascii_lowercase|make_ascii_uppercase)\s*\(`,
-  ).test(masked);
+  if (new RegExp(
+    String.raw`(?<![\w.])${n}\s*(?:[-+*/%|&^]|<<|>>)?=(?![=>])|&\s*mut\s+${n}\b|\bfn\s+\w+\s*(?:<[^>]*>)?\([^)]*\b${n}\s*:|\|[^|]*\b${n}\b[^|]*\||\b${n}\s*\.\s*(?:push|push_str|clear|insert_str|insert|extend|truncate|remove|retain|drain|replace_range|make_ascii_lowercase|make_ascii_uppercase)\s*\(`,
+  ).test(masked)) return true;
+
+  // write!(name, …) / writeln!(name, …)
+  if (new RegExp(String.raw`\b(?:write|writeln)\s*!\s*\(\s*${n}\b`).test(masked)) return true;
+
+  // std::mem::swap(… name …) / mem::swap(…)
+  if (new RegExp(String.raw`\b(?:std\s*::\s*)?mem\s*::\s*swap\s*\([^;]*\b${n}\b`).test(masked)) return true;
+
+  // let / if let / while let PATTERN = …  (and let-else)
+  for (const m of masked.matchAll(/\b(?:(?:if|while)\s+)?let\s+(?:mut\s+)?([\s\S]*?)(?:\s*=|\s+\belse\b)/g)) {
+    if (patternBinds(m[1], n)) return true;
+  }
+  // for PATTERN in …
+  for (const m of masked.matchAll(/\bfor\s+(?:mut\s+)?([\s\S]*?)\bin\b/g)) {
+    if (patternBinds(m[1], n)) return true;
+  }
+  // match-arm PATTERN => … (skip fat-arrow from closures / `||=`)
+  for (const m of masked.matchAll(/(?:^|[,|{])\s*([^,;{}]+?)\s*=>/g)) {
+    const pat = m[1].trim();
+    if (!pat || /[;=]/.test(pat)) continue; // expression-like, not a pattern
+    if (patternBinds(pat, n)) return true;
+  }
+
+  // &mut parameter: bare name as a call argument can be mutated by the callee.
+  if (mutParam && new RegExp(String.raw`(?<![\w.])(?:[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\((?:[^)]*,\s*)?${n}\b`).test(masked)) {
+    // Exclude method calls on name itself (`name.foo(`) — already handled above.
+    if (!new RegExp(String.raw`\b${n}\s*\.\s*\w+\s*\(`).test(masked) || new RegExp(String.raw`(?<![\w.])\w+\s*\(\s*${n}\b`).test(masked)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanitizer[] {
@@ -216,19 +266,41 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
     if (/^\s*else\b/.test(masked.slice(close + 1, close + 12))) continue;
 
     // The block must reject at its own top level (not inside an inner branch).
+    // Strip nested braces and braceless closure bodies (`|…| expr`) so a
+    // `return` inside a closure does not count as the guard rejecting.
     const body = masked.slice(open + 1, close).split('');
     for (let i = 0, d = 0; i < body.length; i++) {
       if (body[i] === '{') { d++; body[i] = ' '; }
       else if (body[i] === '}') { d--; body[i] = ' '; }
       else if (d > 0 && body[i] !== '\n') body[i] = ' ';
     }
-    if (!/(?<![\w.])(?:return\b|panic\s*!|unreachable\s*!|bail\s*!|(?:std\s*::\s*)?process\s*::\s*exit\s*\()/.test(body.join(''))) continue;
+    let bodyText = body.join('');
+    bodyText = bodyText.replace(/\|\s*[\w\s,&:()]*?\s*\|\s*[^;{}]*/g, ' ');
+    if (!/(?<![\w.])(?:return\b|panic\s*!|unreachable\s*!|bail\s*!|(?:std\s*::\s*)?process\s*::\s*exit\s*\()/.test(bodyText)) continue;
 
     // Credit region: after the guard block to the end of the enclosing block.
     let end = masked.length;
     for (let i = close + 1, d = 0; i < masked.length; i++) {
       if (masked[i] === '{') d++;
       else if (masked[i] === '}' && --d < 0) { end = i; break; }
+    }
+    // Is the guarded binding a `&mut` parameter of the enclosing function?
+    let mutParam = false;
+    {
+      const before = masked.slice(0, at);
+      let fnOpen = -1;
+      for (const m of before.matchAll(/\bfn\s+\w+\s*(?:<[^>]*>)?\s*\(/g)) fnOpen = m.index! + m[0].length - 1;
+      if (fnOpen >= 0) {
+        let depth = 1, fnClose = -1;
+        for (let i = fnOpen + 1; i < at; i++) {
+          if (masked[i] === '(') depth++;
+          else if (masked[i] === ')' && --depth === 0) { fnClose = i; break; }
+        }
+        if (fnClose > fnOpen) {
+          const params = masked.slice(fnOpen + 1, fnClose);
+          mutParam = new RegExp(String.raw`\b${name}\s*:\s*&(?:\s*'\w+)?\s*mut\b`).test(params);
+        }
+      }
     }
     // Whole lines after the guard's closing line, up to the line before the
     // enclosing block's closing brace (or the end of the file).
@@ -237,7 +309,7 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
     let stop = lastLine + 1;
     // A rebind or mutation ends the credit; inside a later loop it ends at the loop.
     for (let l = firstLine; l <= lastLine; l++) {
-      if (!mutates(maskedLines[l], name)) continue;
+      if (!mutates(maskedLines[l], name, mutParam)) continue;
       stop = l;
       for (const lp of masked.slice(close + 1, end).matchAll(/\b(?:for|while|loop)\b[^{;]*\{/g)) {
         const lpOpen = close + 1 + lp.index! + lp[0].length - 1;
@@ -250,7 +322,11 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
     const mention = new RegExp(String.raw`(?<![\w.])${name}\b`);
     for (let l = firstLine; l < stop && l <= lastLine; l++) {
       if (!mention.test(maskedLines[l])) continue;
-      if (readsOtherValue(origLines[l], maskedLines[l], name)) continue;
+      // Evaluate "reads another value" over the whole statement that contains
+      // this mention (up to a terminating `;` or the matching close of the
+      // enclosing call), not only the single line the name sits on.
+      const stmt = statementSpan(code, masked, lineStarts[l], end);
+      if (readsOtherValue(stmt.orig, stmt.masked, name)) continue;
       out.push({
         type: 'rust_literal_equality_guard',
         method: 'guard',
@@ -260,4 +336,59 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
     }
   }
   return out;
+}
+
+/**
+ * Exact text of the statement that contains `lineStart` (absolute index),
+ * clipped to `endIdx`. Walks back to the previous `;` / `{` / `}` at depth 0
+ * and forward to a terminating `;` (or unmatched closer), so a multi-line
+ * `format!(…, tool, extra)` is considered as one statement without pulling in
+ * the enclosing function signature.
+ */
+function statementSpan(
+  code: string,
+  masked: string,
+  lineStart: number,
+  endIdx: number,
+): { orig: string; masked: string } {
+  // Walk back to the previous statement boundary at bracket depth 0.
+  let start = lineStart;
+  let depth = 0;
+  for (let i = lineStart - 1; i >= 0; i--) {
+    const ch = masked[i];
+    if (ch === ')' || ch === ']') depth++;
+    else if (ch === '(' || ch === '[') {
+      if (depth === 0) { start = i + 1; break; }
+      depth--;
+    } else if (ch === '}') {
+      if (depth === 0) { start = i + 1; break; }
+      depth++; // matching an earlier `{` when walking back through nested blocks
+    } else if (ch === '{') {
+      if (depth === 0) { start = i + 1; break; }
+      depth--;
+    } else if (ch === ';' && depth === 0) {
+      start = i + 1;
+      break;
+    }
+    if (i === 0) start = 0;
+  }
+  // Walk forward to terminating `;` at depth 0, or stop at `endIdx` / unmatched `}`.
+  depth = 0;
+  let stop = Math.min(endIdx, masked.length);
+  for (let i = start; i < stop; i++) {
+    const ch = masked[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') {
+      if (depth === 0) { stop = i; break; }
+      depth--;
+    } else if (ch === '{') depth++;
+    else if (ch === '}') {
+      if (depth === 0) { stop = i; break; }
+      depth--;
+    } else if (ch === ';' && depth === 0) { stop = i + 1; break; }
+  }
+  return {
+    orig: code.slice(start, stop),
+    masked: masked.slice(start, stop),
+  };
 }

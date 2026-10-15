@@ -268,4 +268,125 @@ pub fn run(tool: &str) -> std::io::Result<std::process::ExitStatus> {
 `;
     expect(await ci(code)).toEqual([]);
   });
+
+  // --- Review feedback on PR #734: pattern rebinds, multi-line reads, mutations, closure return ---
+
+  it('still reports: tuple pattern rebind of the guarded name', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    let (tool, _n) = (extra.as_str(), 1);\n    let out = Command::new(tool).output().map_err(|e| e.to_string())?;`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: struct pattern rebind of the guarded name', async () => {
+    const code = `use std::process::Command;
+
+struct Wrapper<'a> { tool: &'a str }
+
+pub fn run(tool: &str) -> Result<(), String> {
+    let extra = std::env::var("E").unwrap_or_default();
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    let Wrapper { tool } = Wrapper { tool: extra.as_str() };
+    Command::new(tool).status().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: let-else Some(tool) pattern rebind', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    let Some(tool) = Some(extra.as_str()) else { return Err("x".into()); };\n    let out = Command::new(tool).output().map_err(|e| e.to_string())?;`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: if-let Some(tool) pattern rebind', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    if let Some(tool) = Some(extra.as_str()) {\n        let out = Command::new(tool).output().map_err(|e| e.to_string())?;\n    }`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: for-loop pattern rebind of the guarded name', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    for tool in [extra.as_str()] {\n        let out = Command::new(tool).output().map_err(|e| e.to_string())?;\n    }`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: while-let pattern rebind of the guarded name', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    let mut it = std::iter::once(extra.as_str());\n    while let Some(tool) = it.next() {\n        let out = Command::new(tool).output().map_err(|e| e.to_string())?;\n    }`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: match-arm pattern rebind of the guarded name', async () => {
+    const code = wrap(`    let extra = std::env::var("E").unwrap_or_default();\n    if tool != "uptime" {\n        return Err("no".into());\n    }\n    match Some(extra.as_str()) {\n        Some(tool) => {\n            let out = Command::new(tool).output().map_err(|e| e.to_string())?;\n        }\n        None => {}\n    }`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: raw second operand on a later line of the same statement', async () => {
+    const code = `use std::process::Command;
+
+pub fn run(tool: &str) -> Result<(), String> {
+    let extra = std::env::var("EXTRA").unwrap_or_default();
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    let cmd = format!("{} {}", tool,
+        extra);
+    let out = Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: insert_str mutates the guarded String after the guard', async () => {
+    const code = wrap(`    if tool != "uptime" {\n        return Err("no".into());\n    }\n    let extra = std::env::var("E").unwrap_or_default();\n    tool.insert_str(0, &extra);\n    let out = Command::new(&tool).output().map_err(|e| e.to_string())?;`, 'mut tool: String');
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: write! macro mutates the guarded String after the guard', async () => {
+    const code = `use std::process::Command;
+use std::fmt::Write;
+
+pub fn run(mut tool: String) -> Result<(), String> {
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    let extra = std::env::var("E").unwrap_or_default();
+    write!(tool, "{}", extra).map_err(|e| e.to_string())?;
+    let out = Command::new(&tool).output().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: mem::swap replaces the guarded value after the guard', async () => {
+    const code = wrap(`    if tool != "uptime" {\n        return Err("no".into());\n    }\n    let mut extra = std::env::var("E").unwrap_or_default();\n    std::mem::swap(&mut tool, &mut extra);\n    let out = Command::new(&tool).output().map_err(|e| e.to_string())?;`, 'mut tool: String');
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: &mut parameter passed to a free function after the guard', async () => {
+    const code = `use std::process::Command;
+
+fn append(dst: &mut String, src: &str) {
+    dst.push_str(src);
+}
+
+pub fn run(tool: &mut String) -> Result<(), String> {
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    let extra = std::env::var("E").unwrap_or_default();
+    append(tool, &extra);
+    let out = Command::new(tool.as_str()).output().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: braceless closure return in the guard body is not a reject', async () => {
+    const code = wrap(`    if tool != "a" && tool != "b" {\n        let f = |x: i32| return x;\n        let _ = f(1);\n    }\n${RUN}`);
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+
 });
