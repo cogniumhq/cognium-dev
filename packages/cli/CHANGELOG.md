@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust: a literal-equality reject guard (`if tool != "a" && tool != "b" { return Err(..) }`) is credited for the guarded variable on the lines after it (#293).
 - A C# scan no longer reports xss for a value passed through `UrlEncoder.Default.Encode(...)` before `Html.Raw(...)` (#564, partial).
 - A scan no longer reports redos for a constant `new RegExp(`…${CONST}…`)` pattern whose call is wrapped over several lines (#717).
+- A JavaScript/TypeScript scan no longer reports a second variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
 ## [4.15.0] - 2026-10-15

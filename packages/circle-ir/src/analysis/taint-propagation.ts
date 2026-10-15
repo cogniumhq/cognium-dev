@@ -176,8 +176,14 @@ export function propagateTaint(
     : graph.sanitizersByLine;
   const defById = graph.defById;
 
+  const sourceLines = typeof sourceCode === 'string' ? sourceCode.split('\n') : [];
+  const lineText = (line: number): string | undefined => {
+    const raw = sourceLines[line - 1];
+    return raw !== undefined ? raw : undefined;
+  };
+
   // Step 1: Identify initial tainted definitions (from sources)
-  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef, jsLike);
+  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef, jsLike, lineText);
 
   // Filter variables added via the "next-line" heuristic that are actually the
   // result of a sanitizer call.  The source variable itself (tv.line ===
@@ -203,11 +209,6 @@ export function propagateTaint(
   taintedVars.push(...initialTaint);
 
   // Step 2: Propagate taint through def-use chains
-  const sourceLines = typeof sourceCode === 'string' ? sourceCode.split('\n') : [];
-  const lineText = (line: number): string | undefined => {
-    const raw = sourceLines[line - 1];
-    return raw !== undefined ? raw : undefined;
-  };
 
   const propagatedTaint = propagateThroughChains(
     initialTaint,
@@ -406,12 +407,45 @@ function hasSecondStatement(code: string | undefined): boolean {
   return /;\s*(?!\/\/|\/\*|#|\}|\)|$)\S/.test(text);
 }
 
+/**
+ * #490: on a line that holds several statements, true when the one statement
+ * that defines `variable` is positively known not to read `via`. The data-flow
+ * graph links a use to every definition on its line, so in
+ * `const q = req.query.q; const tool = "ls";` the handler parameter `req` would
+ * otherwise reach `tool`. Returns false whenever the defining statement cannot
+ * be isolated (no match, more than one match, a destructuring or other form the
+ * scan does not read) so the line-granular behaviour is kept.
+ */
+function lineDefinitionLacksUse(lineCode: string, variable: string, via: string): boolean {
+  if (!/^[A-Za-z_$][\w$]*$/.test(variable) || !/^[A-Za-z_$][\w$]*$/.test(via)) return false;
+  // Blank string / char / template literals so `;` and identifiers inside them do not count.
+  const text = lineCode.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => '"' + ' '.repeat(Math.max(0, m.length - 2)) + '"');
+  const declRe = new RegExp(String.raw`(?<![.\w$])${variable.replace(/\$/g, '\\$')}\s*(?::=|=|:[^=;]*=)(?![=>])`, 'g');
+  const matches = [...text.matchAll(declRe)];
+  if (matches.length !== 1) return false;
+  const m = matches[0]!;
+  // The initializer runs to the next `;` at its own nesting depth.
+  let depth = 0;
+  let end = text.length;
+  for (let i = m.index! + m[0].length; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') { if (--depth < 0) { end = i; break; } }
+    else if (c === ';' && depth === 0) { end = i; break; }
+  }
+  // Judge the original text of the initializer: an identifier inside a literal
+  // (`$"make {q}"`, `f"{q}"`, `${q}`) counts as a read. Blanking keeps offsets.
+  const rhs = lineCode.slice(m.index! + m[0].length, end);
+  return !new RegExp(String.raw`(?<![.\w$])${via.replace(/\$/g, '\\$')}(?![\w$])`).test(rhs);
+}
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
   defsByLine: Map<number, DFGDef[]>,
   chainsByFromDef: Map<number, DFGChain[]>,
   jsLike = false,
+  lineText?: (line: number) => string | undefined,
 ): TaintedVariable[] {
   const tainted: TaintedVariable[] = [];
 
@@ -424,13 +458,21 @@ function findInitialTaint(
     // (`w := r.FormValue("w"); cmd := "x " + w`), is tainted; an unrelated
     // neighbour statement's definition is not.
     let seedable: Set<number> | null = null;
-    if (source.variable && hasSecondStatement(source.code)) {
+    // The whole line, not just the text from the source: a statement before the
+    // read (`const tool = "ls"; const q = req.query.q;`) is a second statement too.
+    const lineCode = lineText?.(source.line)?.trim() || source.code;
+    if (source.variable && hasSecondStatement(lineCode)) {
       const own = defsOnLine.filter(d => d.variable === source.variable);
       if (own.length > 0) {
         seedable = new Set(own.map(d => d.id));
         for (const d of own) {
           for (const c of chainsByFromDef.get(d.id) ?? []) {
-            if (defsOnLine.some(o => o.id === c.to_def)) seedable.add(c.to_def);
+            const to = defsOnLine.find(o => o.id === c.to_def);
+            if (!to) continue;
+            // The graph links a use to every definition on its line; keep the
+            // neighbour only when its own statement reads the linked variable.
+            if (c.via && lineCode && lineDefinitionLacksUse(lineCode, to.variable, c.via)) continue;
+            seedable.add(c.to_def);
           }
         }
       }
@@ -503,11 +545,21 @@ function findInitialTaint(
     const defsNextLine = isCompleteConditionHeader(source.code)
       ? []
       : (defsByLine.get(source.line + 1) ?? []).filter(d => !(closesOwnStatement && d.kind === 'local'));
+    // cognium-dev#490: a source with no binding of its own (a handler signature)
+    // seeds the first body line by adjacency. When that line holds several
+    // statements, a definition whose own statement reads nothing defined on the
+    // source line (`const tool = "ls";` beside `const q = req.query.q;`) is not
+    // a continuation of it.
+    const nextCode = lineText && !source.variable ? lineText(source.line + 1)?.trim() : undefined;
+    const nextMulti = !!nextCode && hasSecondStatement(nextCode);
+    const sourceLineNames = [...new Set(defsOnLine.map(d => d.variable))];
     for (const def of defsNextLine) {
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
       if (callsOnSourceLine.length > 0) {
         if (source.variable && def.variable !== source.variable) continue;
+        if (nextMulti && sourceLineNames.length > 0 &&
+            sourceLineNames.every(n => lineDefinitionLacksUse(nextCode!, def.variable, n))) continue;
         tainted.push({
           variable: def.variable,
           defId: def.id,
@@ -619,6 +671,14 @@ function propagateThroughChains(
 
       const targetDef = defById.get(chain.to_def);
       if (!targetDef) continue;
+
+      // #490: the graph links a use to every definition on its line; on a line
+      // with a second statement the link holds only when the use is in the
+      // definition's own statement.
+      if (chain.via && lineText) {
+        const code = lineText(targetDef.line)?.trim();
+        if (code && hasSecondStatement(code) && lineDefinitionLacksUse(code, targetDef.variable, chain.via)) continue;
+      }
 
       // Check if there's a sanitizer between source and this def
       const sanitizeCheck = checkSanitized(
