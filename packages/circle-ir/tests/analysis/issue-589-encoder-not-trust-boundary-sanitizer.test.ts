@@ -296,3 +296,82 @@ public class MixedInlineServlet extends HttpServlet {
     expect(flowTypesFrom(r, 10, 13)).toContain('xss');
   });
 });
+
+describe('#589 scoped sanitizer must not clear another method\'s flow', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('one method\'s escapeHtml must not drop xss in a sibling that prints raw data', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class SiblingEncodeServlet extends HttpServlet {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("a"));
+        response.getWriter().print(data);
+    }
+    protected void other(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = request.getParameter("b");
+        response.getWriter().print(data);
+    }
+}
+`, 'SiblingEncodeServlet.java', 'java');
+    // doPost print(data) line 10 — encoded, no xss
+    expect(flowTypesFrom(r, 9, 10)).not.toContain('xss');
+    // other print(data) line 14 — raw, xss must fire
+    expect(sinksAt(r, 14)).toContain('xss');
+    expect(flowTypesFrom(r, 13, 14)).toContain('xss');
+  });
+
+  it('good() encoder must not drop xss in bad() on the same local name', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class BadGoodEncodeServlet extends HttpServlet {
+    protected void bad(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String data = req.getParameter("x");
+        resp.getWriter().print(data);
+    }
+    protected void good(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(req.getParameter("y"));
+        resp.getWriter().print(data);
+    }
+}
+`, 'BadGoodEncodeServlet.java', 'java');
+    // bad print line 10; good print line 14
+    expect(sinksAt(r, 10)).toContain('xss');
+    expect(flowTypesFrom(r, 9, 10)).toContain('xss');
+    expect(flowTypesFrom(r, 13, 14)).not.toContain('xss');
+  });
+
+  it('sibling encoder uncovered must not keep trust_boundary on a cleaned local in good()', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class SiblingUncoveredServlet extends HttpServlet {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("a"));
+        request.getSession().setAttribute("k", data);
+    }
+    protected void good(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = request.getParameter("b");
+        data = "safe";
+        request.getSession().setAttribute("k", data);
+    }
+}
+`, 'SiblingUncoveredServlet.java', 'java');
+    // doPost setAttribute line 10; good setAttribute line 15
+    expect(sinksAt(r, 10)).toContain('trust_boundary');
+    expect(flowTypesFrom(r, 9, 10)).toContain('trust_boundary');
+    expect(sinksAt(r, 15)).not.toContain('trust_boundary');
+    expect((r.taint.flows ?? []).filter(f => f.sink_line === 15 && f.sink_type === 'trust_boundary')).toHaveLength(0);
+  });
+});
