@@ -184,4 +184,106 @@ public class Reader {
     expect(ptFlows(r).length).toBeGreaterThan(0);
   });
 
+  // Review round 3 (cogbot-eng on 0a9c6da5).
+  it.each([
+    ['a call wrapping the "/" literal', 'parent.getCanonicalPath() + label("/")'],
+    ['a "/" literal passed as a call argument', 'helper(parent.getCanonicalPath(), "/")'],
+  ])('%s is not a separator-anchored base', async (_n, arg) => {
+    const r = await analyzeJava(esapi(
+      `if ( !dir.getCanonicalPath().startsWith(${arg}) ) { throw new Exception("outside"); }`));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+    expect(ptScan(r).length).toBeGreaterThan(0);
+  });
+
+  it('a parenthesized separator-anchored base stays clean', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith((parent.getCanonicalPath() + File.separator)) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it('a parenthesized separator-anchored base in a local variable stays clean (maintainer negative)', async () => {
+    const code = `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    public void read(HttpServletRequest req) throws IOException {
+        File root = new File("/srv/data");
+        File f = new File(root, req.getParameter("name"));
+        String base = (root.getCanonicalPath() + File.separator);
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+    const r = await analyzeJava(code);
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it.each([
+    ['a separator concatenated inside a call', 'foo(parent.getCanonicalPath() + File.separator)'],
+    ['a parenthesized separator mid-expression', '(parent.getCanonicalPath() + File.separator + "subdir")'],
+  ])('%s is not a guard', async (_n, arg) => {
+    const r = await analyzeJava(esapi(
+      `if ( !dir.getCanonicalPath().startsWith(${arg}) ) { throw new Exception("outside"); }`));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
+  it('a commented-out assignment does not resolve a parameter base', async () => {
+    const code = `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    void read(HttpServletRequest req, String base) throws IOException {
+        // String base = parent.getCanonicalPath();
+        /* base = parent.getCanonicalPath(); */
+        File f = new File("/srv/data", req.getParameter("name"));
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+    const r = await analyzeJava(code);
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('a parameter in a wrapped signature is not poisoned by an earlier method', async () => {
+    const code = `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    void helper() { String base = parent.getCanonicalPath(); }
+    void read(HttpServletRequest req,
+              String base) throws IOException {
+        File f = new File("/srv/data", req.getParameter("name"));
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+    const r = await analyzeJava(code);
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an anonymous class body does not hide an earlier unanchored base', async () => {
+    const code = `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    public void read(HttpServletRequest req, File parent) throws IOException {
+        String base = parent.getCanonicalPath();
+        new Thread(new Runnable() {
+            public void run() { }
+        }).start();
+        File f = new File("/srv/data", req.getParameter("name"));
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+    const r = await analyzeJava(code);
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
 });
