@@ -951,6 +951,67 @@ function csharpContentCallInheritsHelper(
 }
 
 /**
+ * Does this Rust `.body(x)` call write a response whose builder chain declared
+ * a literal non-HTML content type (cognium-dev#478)? actix-web does not add a
+ * `Content-Type` of its own for `.body(...)`, so only an explicit
+ * `.content_type(<literal>)` earlier in the same chain proves the body is data:
+ *
+ *   - a string literal `type/subtype` that is not HTML, XHTML or a
+ *     script-capable XML type (`text/xml`, `application/xml`, any `+xml`);
+ *   - `ContentType::plaintext()` / `json()` / `octet_stream()` /
+ *     `form_url_encoded()` and the matching `mime::` constants.
+ *
+ * No content type, a computed one, `ContentType::html()` and every XML type
+ * keep the sink. When the chain sets the type more than once the last wins.
+ * Only a call made at the top level of the chain counts, so a nested
+ * `content_type(...)` inside an argument is never read as the response type.
+ */
+function rustBodyDeclaresNonHtmlType(call: CallInfo): boolean {
+  const recv = call.receiver;
+  if (!recv) return false;
+  let arg: string | undefined;
+  let depth = 0;
+  let quote = false;
+  for (let i = 0; i < recv.length; i++) {
+    const ch = recv[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === '"') quote = false;
+      continue;
+    }
+    if (ch === '"') { quote = true; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+    if (depth === 0 && recv.startsWith('.content_type(', i)) {
+      const start = i + '.content_type('.length;
+      let d = 1;
+      let q = false;
+      let j = start;
+      for (; j < recv.length && d > 0; j++) {
+        const c = recv[j];
+        if (q) {
+          if (c === '\\') j++;
+          else if (c === '"') q = false;
+        } else if (c === '"') q = true;
+        else if (c === '(') d++;
+        else if (c === ')') d--;
+      }
+      arg = d === 0 ? recv.slice(start, j - 1).trim() : undefined;
+      i = j - 1;
+    }
+  }
+  if (arg === undefined) return false;
+  const literal = /^"([^"]*)"$/.exec(arg);
+  if (literal) {
+    const type = literal[1];
+    if (!/^\s*[\w.-]+\/[\w.+-]+/.test(type)) return false;
+    return !/^\s*(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|[\w.-]+\/[\w.-]+\+xml)\b/i.test(type);
+  }
+  if (/^(?:(?:actix_web\s*::\s*)?(?:http\s*::\s*header\s*::\s*)?)ContentType\s*::\s*(?:plaintext|json|octet_stream|form_url_encoded)\s*\(\s*\)$/.test(arg)) return true;
+  return /^(?:::)?mime\s*::\s*(?:TEXT_PLAIN|TEXT_PLAIN_UTF_8|APPLICATION_JSON|APPLICATION_OCTET_STREAM)$/.test(arg);
+}
+
+/**
  * Compute, per sink type, the set of C# variables whose value has passed through
  * a sanitizer for that type (cognium-dev C#/.NET Phase-1). Seeds from
  * `V = <sanitizer_T>(…)` assignments, then takes a transitive closure over
@@ -2455,6 +2516,17 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // The call must also sit in a type that can inherit the MVC helper (#580).
         return contentCalls.length === 0 || contentCalls.some(c =>
           csharpContentCallInheritsHelper(c, ctx.graph.ir.types, csContentLines) && csharpContentServesHtml(c));
+      });
+    }
+
+    // Stage 15k'' — Rust `.body(x)` with a literal non-HTML content type is
+    // data, not markup (cognium-dev#478). The xss sink stays unless every
+    // `body` call on its line sits on a chain that declared such a type.
+    if (language === 'rust') {
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss' || sink.method !== 'body') return true;
+        const bodyCalls = callsByLine.get(sink.line)?.filter(c => c.method_name === 'body') ?? [];
+        return bodyCalls.length === 0 || !bodyCalls.every(rustBodyDeclaresNonHtmlType);
       });
     }
 
