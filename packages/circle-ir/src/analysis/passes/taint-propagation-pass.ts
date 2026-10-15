@@ -991,6 +991,36 @@ function detectGoPackageGlobalFlows(
   return flows;
 }
 
+/**
+ * #614 — is `varName` tainted in the sink's own method?
+ *
+ * The const-prop result carries scoped names (`method:var`) and, for backward
+ * compatibility, an unscoped alias of each. The unscoped alias says only that
+ * SOME method tainted a local of that name. When any scoped entry for the name
+ * exists, membership is decided by the sink's own scoped name, so a same-named
+ * local in a safe sibling method (the Juliet `bad()` / `good*()` layout) is not
+ * treated as tainted. A name with no scoped entry (a field, a parameter) keeps
+ * the unscoped match, and so does a field.
+ */
+function isTaintedInMethod(
+  taintedVars: ReadonlySet<string>,
+  varName: string,
+  scopedName: string,
+  fieldNames: ReadonlySet<string>,
+): boolean {
+  if (taintedVars.has(scopedName)) return true;
+  if (!taintedVars.has(varName)) return false;
+  if (scopedName === varName) return true;
+  // A field is shared by every method of its class: assigned in one method and
+  // used in another (SecuriBench Inter4), it is tainted in both.
+  if (fieldNames.has(varName)) return true;
+  const suffix = `:${varName}`;
+  for (const t of taintedVars) {
+    if (t.endsWith(suffix)) return false;
+  }
+  return true;
+}
+
 function detectCollectionFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -1001,6 +1031,8 @@ function detectCollectionFlows(
   types?: CircleIR['types'],
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
+  const fieldNames = new Set<string>();
+  for (const t of types ?? []) for (const f of t.fields ?? []) fieldNames.add(f.name);
   const callsByLine = new Map<number, typeof calls>();
   for (const call of calls) {
     const existing = callsByLine.get(call.location.line) ?? [];
@@ -1022,7 +1054,7 @@ function detectCollectionFlows(
         if (arg.variable) {
           const varName = arg.variable;
           const scopedName = call.in_method ? `${call.in_method}:${varName}` : varName;
-          if (taintedVars.has(varName) || taintedVars.has(scopedName)) {
+          if (isTaintedInMethod(taintedVars, varName, scopedName, fieldNames)) {
             // Sprint 13 #70 — pick a source in the same method scope as the
             // sink, not blanket sources[0]. The varName-based match is
             // primary; method-scope is the tiebreaker; sources[0] is the
