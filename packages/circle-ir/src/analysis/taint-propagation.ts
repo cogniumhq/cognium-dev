@@ -165,12 +165,24 @@ export function propagateTaint(
   // Filter variables added via the "next-line" heuristic that are actually the
   // result of a sanitizer call.  The source variable itself (tv.line ===
   // tv.sourceLine) is always tainted; next-line additions need an extra check.
-  const initialTaint = rawInitialTaint.filter(tv => {
+  const filteredInitialTaint = rawInitialTaint.filter(tv => {
     if (tv.line === tv.sourceLine) return true;
     if (graph.taintBarrierDefIds.has(tv.defId)) return false;
     const sanCheck = checkSanitized(tv.sourceLine, tv.line, tv.sourceType, sanitizersByLine);
     return !sanCheck.sanitized;
   });
+  // Propagation is a BFS that credits each definition to the first seed that
+  // reaches it. A bare function parameter (`interprocedural_param`) is only
+  // speculative evidence, and its line usually precedes the handler that
+  // reads real input, so seeding it first let it claim definitions that a
+  // real source also reaches: `const ident = async (x) => x; … v = await
+  // ident(req.query.u)` credited `v` to `x`, and the flow was then dropped
+  // as parameter-only. Seed real sources first so they win any shared
+  // definition; parameter-only reach is unchanged.
+  const initialTaint = [
+    ...filteredInitialTaint.filter(tv => tv.sourceType !== 'interprocedural_param'),
+    ...filteredInitialTaint.filter(tv => tv.sourceType === 'interprocedural_param'),
+  ];
   taintedVars.push(...initialTaint);
 
   // Step 2: Propagate taint through def-use chains
@@ -188,7 +200,7 @@ export function propagateTaint(
   const taintByDefId = new Map<number, TaintedVariable>();
   for (const tv of taintedVars) {
     allTaintedDefIds.add(tv.defId);
-    taintByDefId.set(tv.defId, tv);
+    if (!yieldsToRealSource(taintByDefId.get(tv.defId), tv)) taintByDefId.set(tv.defId, tv);
   }
 
   // Step 3: Check which sinks are reachable from tainted variables
@@ -379,6 +391,13 @@ function findInitialTaint(
       ) {
         continue;
       }
+      // A parameter source stands for the parameter's binding only. Other
+      // definitions that share the signature line are not the parameter:
+      // `const ident = async (x) => x;` defines `ident` there, and seeding it
+      // tainted every `ident(…)` result with the parameter's taint (#490).
+      if (source.type === 'interprocedural_param' && def.kind !== 'param') {
+        continue;
+      }
       tainted.push({
         variable: def.variable,
         defId: def.id,
@@ -448,6 +467,16 @@ function findInitialTaint(
 }
 
 /**
+ * True when `next` is a bare-parameter seed and `existing` already credits the
+ * same definition to a real source: the real source keeps the definition.
+ */
+function yieldsToRealSource(existing: TaintedVariable | undefined, next: TaintedVariable): boolean {
+  return existing !== undefined &&
+    next.sourceType === 'interprocedural_param' &&
+    existing.sourceType !== 'interprocedural_param';
+}
+
+/**
  * Propagate taint through def-use chains.
  * Accepts a pre-computed chainsByFromDef index (from CodeGraph) — no internal
  * adjacency list building needed.
@@ -464,7 +493,7 @@ function propagateThroughChains(
   const taintInfoByDefId = new Map<number, TaintedVariable>();
 
   for (const t of initialTaint) {
-    taintInfoByDefId.set(t.defId, t);
+    if (!yieldsToRealSource(taintInfoByDefId.get(t.defId), t)) taintInfoByDefId.set(t.defId, t);
   }
 
   // BFS to propagate taint
