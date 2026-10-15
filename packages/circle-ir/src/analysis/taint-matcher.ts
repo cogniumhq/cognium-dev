@@ -3615,6 +3615,8 @@ function findSanitizers(
     });
   }
 
+  const noopLocalHelpers = language === 'java' && sourceLines ? findJavaNoopHelpers(types, sourceLines) : new Set<string>();
+
   // Check method calls for sanitizer methods
   for (const call of calls) {
     // Check if this call is to a method with @sanitizer annotation
@@ -3643,6 +3645,9 @@ function findSanitizers(
 
     for (const pattern of patterns) {
       if (matchesSanitizerPattern(call, pattern)) {
+        if (!pattern.class && noopLocalHelpers.has(call.method_name) && (!call.receiver || call.receiver === 'this')) {
+          continue; // same-file helper that does no escaping: not credited by name (#581)
+        }
         sanitizers.push({
           type: determineSanitizerType(pattern),
           method: formatSanitizerMethod(call),
@@ -3672,6 +3677,47 @@ function findSanitizers(
   }
 
   return sanitizers;
+}
+
+/**
+ * Names of methods defined in this file whose every definition is a no-op
+ * shape: a single `return <expr>;` built only from the method's own
+ * parameters, string literals, `+` and the pass-through calls `trim`, `strip`,
+ * `toString`, `toLowerCase` and `toUpperCase`. A class-less sanitizer row must
+ * not credit a call to such a helper by name (#581). Any other body (a
+ * `replace`, a library call, a branch, a loop) keeps the by-name credit, and so
+ * does a name that has a non-no-op overload.
+ */
+function findJavaNoopHelpers(types: TypeInfo[], sourceLines: string[]): Set<string> {
+  const noop = new Set<string>();
+  const other = new Set<string>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      (isJavaNoopBody(method, sourceLines) ? noop : other).add(method.name);
+    }
+  }
+  for (const name of other) noop.delete(name);
+  return noop;
+}
+
+function isJavaNoopBody(
+  method: { parameters: { name: string }[]; start_line: number; end_line: number },
+  sourceLines: string[],
+): boolean {
+  if (method.parameters.length === 0) return false;
+  const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
+  const open = text.indexOf('{');
+  const close = text.lastIndexOf('}');
+  if (open < 0 || close < open) return false;
+  const m = /^\s*return\s+([^;{}]+);\s*$/.exec(text.slice(open + 1, close));
+  if (!m) return false;
+  const params = new Set(method.parameters.map(p => p.name));
+  const expr = m[1]!
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/\.(?:trim|strip|toString|toLowerCase|toUpperCase)\(\)/g, '');
+  const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
+  if (leftovers === '') return true;
+  return leftovers.split(/\s+/).every(tok => params.has(tok));
 }
 
 const JAVA_LIT = String.raw`(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')`;

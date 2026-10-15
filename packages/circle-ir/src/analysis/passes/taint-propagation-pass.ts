@@ -17,7 +17,7 @@ import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
-import { identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
+import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
@@ -820,6 +820,19 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             }
           }
           return true;
+        }
+        // #582: Python has no branch-aware def chain, so a literal in a sibling
+        // arm can hide the one def whose sanitizer the walk below would find.
+        // The flow's own source def is the whole answer when its right-hand side
+        // is wrapped, end to end, in a covering sanitizer.
+        if (ctx.language === 'python' && codeLines && f.path.length > 0) {
+          const first = f.path[0];
+          const defText = first.line === f.source_line ? codeLines[f.source_line - 1] : undefined;
+          const sansAtSource = sanitizersByLine.get(f.source_line);
+          if (defText && first.variable && sansAtSource && /^[A-Za-z_]\w*$/.test(first.variable)) {
+            const dm = new RegExp(`^\\s*${first.variable}\\s*=(?!=)(.*)$`).exec(defText);
+            if (dm && expressionFullyWrappedBySanitizer(dm[1], sansAtSource, f.sink_type)) return false;
+          }
         }
         const sansAtSink = sanitizersByLine.get(f.sink_line);
         if (sansAtSink && sansAtSink.length > 0) {
@@ -2093,7 +2106,7 @@ function siblingBranchAssignsNonLiteral(
   if (block && /^(?:case\b.*|default\s*):$/.test(block.header)) {
     block = enclosingBrace(lines, block.line, block.col);
   }
-  if (!block) return false;
+  if (!block) return pythonSiblingBranchAssignsNonLiteral(lines, idx, variable, strLit, unreachableLines);
 
   let first = block.headerLine;
   let last: number;
@@ -2158,6 +2171,81 @@ function siblingBranchAssignsNonLiteral(
   for (let i = first; i <= last; i++) {
     if (i === idx || unreachableLines?.has(i + 1)) continue;
     if (!isSwitch && i > ownStart && i < ownEnd) continue;
+    const m = assign.exec(lines[i]);
+    if (m && m[1] && !literalOnly.test(m[1])) return true;
+  }
+  return false;
+}
+
+const PY_ARM_OPEN = /^(?:(?:if|elif)\b.*|else\s*):\s*(?:#.*)?$/;
+
+/**
+ * The indentation-delimited counterpart of `siblingBranchAssignsNonLiteral`.
+ * The arms of one `if` / `elif` / `else` chain are the header lines at one
+ * indentation plus the more deeply indented lines under each. True when line
+ * `idx` sits directly in one arm of such a chain and another arm assigns
+ * `variable` a value that is not a string literal (cognium-dev#582). Answers
+ * false, keeping the literal as an overwrite, for anything else: a
+ * straight-line assignment, a `for` / `while` / `try` / `def` body, or a header
+ * that is not part of an `if` chain.
+ */
+function pythonSiblingBranchAssignsNonLiteral(
+  lines: string[],
+  idx: number,
+  variable: string,
+  strLit: string,
+  unreachableLines?: ReadonlySet<number>,
+): boolean {
+  const indentOf = (t: string): number => t.length - t.trimStart().length;
+  const skippable = (t: string): boolean => t.trim() === '' || t.trimStart().startsWith('#');
+  const own = lines[idx];
+  if (own === undefined) return false;
+  const bodyIndent = indentOf(own);
+  if (bodyIndent === 0) return false;
+
+  // The header of the arm that holds the literal: the nearest line above with less indentation.
+  let h = idx - 1;
+  while (h >= 0 && (skippable(lines[h]) || indentOf(lines[h]) >= bodyIndent)) h--;
+  if (h < 0 || !PY_ARM_OPEN.test(lines[h].trim())) return false;
+  const armIndent = indentOf(lines[h]);
+
+  // The last line of the arm whose header is at `header`.
+  const armEnd = (header: number): number => {
+    let lastBody = header;
+    for (let e = header + 1; e < lines.length; e++) {
+      if (skippable(lines[e])) continue;
+      if (indentOf(lines[e]) <= armIndent) break;
+      lastBody = e;
+    }
+    return lastBody;
+  };
+
+  // Walk up through `elif` / `else` to the opening `if`.
+  let first = h;
+  while (/^(?:elif\b|else\s*:)/.test(lines[first].trim())) {
+    let p = first - 1;
+    while (p >= 0 && (skippable(lines[p]) || indentOf(lines[p]) > armIndent)) p--;
+    if (p < 0 || indentOf(lines[p]) !== armIndent || !PY_ARM_OPEN.test(lines[p].trim())) return false;
+    first = p;
+  }
+  if (!/^if\b/.test(lines[first].trim())) return false;
+
+  // Walk down through the following `elif` / `else` arms.
+  const ownEnd = armEnd(h);
+  let last = ownEnd;
+  for (let guard = 0; guard < 64; guard++) {
+    let n = last + 1;
+    while (n < lines.length && skippable(lines[n])) n++;
+    if (n >= lines.length || indentOf(lines[n]) !== armIndent) break;
+    if (!/^(?:elif\b|else\s*:)/.test(lines[n].trim()) || !PY_ARM_OPEN.test(lines[n].trim())) break;
+    last = armEnd(n);
+  }
+
+  const assign = new RegExp(`(?:^|[^\\w.$])${variable}\\s*(?::?=)(?!=)\\s*(.*?)\\s*;?\\s*$`);
+  const literalOnly = new RegExp(`^${strLit}$`);
+  for (let i = first; i <= last; i++) {
+    if (i === idx || unreachableLines?.has(i + 1)) continue;
+    if (i >= h && i <= ownEnd) continue; // the literal's own arm is not a sibling
     const m = assign.exec(lines[i]);
     if (m && m[1] && !literalOnly.test(m[1])) return true;
   }
