@@ -178,15 +178,44 @@ function pyWriteTargetsOwnerOnlyFile(call: CallInfo, scopeCalls: CallInfo[], lin
   const bindingLine = (name: string, from: number): number | null => {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`(?:\\bas\\s+${esc}\\b|^\\s*${esc}\\s*=(?!=))`);
+    // `with <expr> as name: name.write(...)` — binding and use on one line.
+    if (new RegExp(`\\bas\\s+${esc}\\s*:`).test(lines[from - 1] ?? '')) return from;
     for (let ln = from - 1; ln >= 1; ln--) {
       if (re.test(lines[ln - 1] ?? '')) return ln;
     }
     return null;
   };
 
-  // Does the expression evaluated on `line` yield an owner-only file/descriptor?
-  const ownerOnlyAt = (line: number, depth: number): boolean => {
-    const here = callsOn(line);
+  // Column range of the expression that initializes `name` on `line`:
+  // the `with` item before `as name` (items split at top-level commas), or the
+  // right-hand side of `name = ...`. Calls elsewhere on the line belong to
+  // other handles and must not be attributed to this one.
+  const initializerSpan = (name: string, line: number): [number, number] => {
+    const text = lines[line - 1] ?? '';
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const asM = new RegExp(`\\bas\\s+${esc}\\b`).exec(text);
+    if (asM) {
+      const kw = /\bwith\b/.exec(text);
+      let start = kw ? kw.index + kw[0].length : 0;
+      let depthN = 0;
+      for (let i = asM.index - 1; i >= start; i--) {
+        const ch = text[i]!;
+        if (ch === ')' || ch === ']' || ch === '}') depthN++;
+        else if (ch === '(' || ch === '[' || ch === '{') {
+          if (depthN === 0) { start = i + 1; break; }
+          depthN--;
+        } else if (ch === ',' && depthN === 0) { start = i + 1; break; }
+      }
+      return [start, asM.index];
+    }
+    const eq = new RegExp(`^\\s*${esc}\\s*=(?!=)`).exec(text);
+    if (eq) return [eq[0].length, text.length];
+    return [0, text.length];
+  };
+
+  // Does the expression evaluated on `line` (within `span`) yield an owner-only file/descriptor?
+  const ownerOnlyAt = (line: number, depth: number, span: [number, number] = [0, Infinity]): boolean => {
+    const here = callsOn(line).filter((c) => c.location.column >= span[0] && c.location.column < span[1]);
     if (here.some((c) => c.method_name === 'open' && callSetsOwnerOnlyMode(c))) return true;
     for (const c of here) {
       // os.fdopen(fd, ...) / open(fd, ...) — follow a bare descriptor variable.
@@ -194,11 +223,16 @@ function pyWriteTargetsOwnerOnlyFile(call: CallInfo, scopeCalls: CallInfo[], lin
         const a0 = firstArg(c);
         if (IDENT.test(a0) && depth < 3) {
           const bl = bindingLine(a0, line);
-          if (bl !== null && ownerOnlyAt(bl, depth + 1)) return true;
+          if (bl !== null && ownerOnlyAt(bl, depth + 1, initializerSpan(a0, bl))) return true;
         }
-        // open(path, ...) — an earlier chmod of that same path expression.
+        // open(path, ...) — the LAST chmod of that same path expression before
+        // this open decides; a later permissive chmod widens it again.
         if (c.method_name === 'open' && a0) {
-          if (before.some((p) => p.location.line < line && callSetsOwnerOnlyMode(p) && p.method_name === 'chmod' && firstArg(p) === a0)) return true;
+          const chmods = before.filter((p) => p.location.line < line && p.receiver === 'os' && p.method_name === 'chmod' && firstArg(p) === a0);
+          const last = chmods.reduce<CallInfo | null>((acc, p) =>
+            !acc || p.location.line > acc.location.line ||
+            (p.location.line === acc.location.line && p.location.column > acc.location.column) ? p : acc, null);
+          if (last && callSetsOwnerOnlyMode(last)) return true;
         }
       }
     }
@@ -214,14 +248,15 @@ function pyWriteTargetsOwnerOnlyFile(call: CallInfo, scopeCalls: CallInfo[], lin
       new RegExp(`\\b${receiver}\\b`).test(firstArg(c)))) return true;
   if (bl === null) return false;
   // os.fchmod(fd, owner-only) on the bare descriptor this handle wraps.
-  const handleCalls = callsOn(bl);
+  const hSpan = initializerSpan(receiver, bl);
+  const handleCalls = callsOn(bl).filter((c) => c.location.column >= hSpan[0] && c.location.column < hSpan[1]);
   for (const c of handleCalls) {
     if ((c.method_name === 'fdopen' && c.receiver === 'os') || (c.method_name === 'open' && !c.receiver)) {
       const a0 = firstArg(c);
       if (IDENT.test(a0) && before.some((p) => p.method_name === 'fchmod' && callSetsOwnerOnlyMode(p) && firstArg(p) === a0)) return true;
     }
   }
-  return ownerOnlyAt(bl, 0);
+  return ownerOnlyAt(bl, 0, hSpan);
 }
 
 export class PlaintextPasswordStoragePass

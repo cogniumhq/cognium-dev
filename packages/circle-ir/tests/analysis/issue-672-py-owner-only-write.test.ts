@@ -132,4 +132,49 @@ def dump_settings():
 `);
     expect(lines).toEqual([9]);
   });
+
+  it('one-line with and write: a handle other than the owner-only one still reports', async () => {
+    const lines = await plaintextLines(`${HEAD}def save(db_password, pub, p, f):
+    with os.fdopen(os.open(p, f, 0o600)) as a, open(pub, "w") as b: b.write(db_password)
+`);
+    expect(lines).toEqual([7]);
+  });
+
+  it('a different handle on the with line reports when written in the with body', async () => {
+    const lines = await plaintextLines(`${HEAD}def save(db_password, pub, p, f):
+    with os.fdopen(os.open(p, f, 0o600)) as a, open(pub, "w") as b:
+        b.write(db_password)
+`);
+    expect(lines).toEqual([8]);
+  });
+
+  it('the owner-only handle on a shared with line stays clear', async () => {
+    const lines = await plaintextLines(`${HEAD}def save(db_password, pub, p, f):
+    with os.fdopen(os.open(p, f, 0o600), "w") as a, open(pub, "w") as b:
+        a.write(db_password)
+`);
+    expect(lines).toEqual([]);
+  });
+
+  it('a permissive chmod after an owner-only chmod, before the open, reports', async () => {
+    const lines = await plaintextLines(`${HEAD}def save(db_password):
+    t = "/srv/p/q"
+    os.chmod(t, 0o600)
+    os.chmod(t, 0o644)
+    with open(t, "w") as fh:
+        fh.write(db_password)
+`);
+    expect(lines).toEqual([11]);
+  });
+
+  it('an owner-only chmod after a permissive one (last wins) is clean', async () => {
+    const lines = await plaintextLines(`${HEAD}def save(db_password):
+    t = "/srv/p/r"
+    os.chmod(t, 0o644)
+    os.chmod(t, 0o600)
+    with open(t, "w") as fh:
+        fh.write(db_password)
+`);
+    expect(lines).toEqual([]);
+  });
 });
