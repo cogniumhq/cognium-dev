@@ -160,7 +160,7 @@ export function propagateTaint(
   const defById = graph.defById;
 
   // Step 1: Identify initial tainted definitions (from sources)
-  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine);
+  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef);
 
   // Filter variables added via the "next-line" heuristic that are actually the
   // result of a sanitizer call.  The source variable itself (tv.line ===
@@ -359,18 +359,48 @@ function isCompleteConditionHeader(code: string | undefined): boolean {
   return false;
 }
 
+/**
+ * True when `code` (one trimmed source line) holds a second statement after a
+ * `;` (`a := f(); b := "x"`). A `for (…;…;…)` header and a trailing comment
+ * or closing brace do not count.
+ */
+function hasSecondStatement(code: string | undefined): boolean {
+  if (!code || /^for\b/.test(code)) return false;
+  const text = code.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+  return /;\s*(?!\/\/|\/\*|#|\}|\)|$)\S/.test(text);
+}
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
-  defsByLine: Map<number, DFGDef[]>
+  defsByLine: Map<number, DFGDef[]>,
+  chainsByFromDef: Map<number, DFGChain[]>,
 ): TaintedVariable[] {
   const tainted: TaintedVariable[] = [];
 
   for (const source of sources) {
     // Find definitions on the same line as the source
     const defsOnLine = defsByLine.get(source.line) ?? [];
+    // cognium-dev#490: `q := r.FormValue("q"); x := "fixed"` puts two
+    // statements on the source line. Only the source's own binding, and a
+    // same-line definition the data-flow graph derives from it
+    // (`w := r.FormValue("w"); cmd := "x " + w`), is tainted; an unrelated
+    // neighbour statement's definition is not.
+    let seedable: Set<number> | null = null;
+    if (source.variable && hasSecondStatement(source.code)) {
+      const own = defsOnLine.filter(d => d.variable === source.variable);
+      if (own.length > 0) {
+        seedable = new Set(own.map(d => d.id));
+        for (const d of own) {
+          for (const c of chainsByFromDef.get(d.id) ?? []) {
+            if (defsOnLine.some(o => o.id === c.to_def)) seedable.add(c.to_def);
+          }
+        }
+      }
+    }
 
     for (const def of defsOnLine) {
+      if (seedable && !seedable.has(def.id)) continue;
       // cognium-dev #308 (from cognium-ai#326 / #289): an
       // `interprocedural_param` source names exactly one parameter
       // (`source.variable`, set for Java/C#). Every parameter shares the
