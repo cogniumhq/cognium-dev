@@ -373,8 +373,8 @@ public class MixedInlineServlet extends HttpServlet {
 }
 `, 'MixedInlineServlet.java', 'java');
     // 10: a, 11: b, 12: mixed, 13: print
-    // Kept because the join def's predecessors (a, b) are not themselves encoder-
-    // covered — not because the sink use happens to be the join.
+    // Kept because `b` is read on the join line outside the encoder call, so the
+    // join def is not covered — not because the sink use happens to be the join.
     expect(sinksAt(r, 13)).toContain('xss');
     expect(flowTypesFrom(r, 10, 13)).toContain('xss');
   });
@@ -410,8 +410,8 @@ public class MixedCopyServlet extends HttpServlet {
 
   it('same-line escapeHtml(a) + b via copy: xss kept because the join def\'s preds are uncovered', async () => {
     // Intermediate copy so the sink def is not the join. Crediting the encoder on
-    // the join line itself would wrongly drop xss; only every-pred coverage on the
-    // join def (a and b have no encoder) keeps the flow.
+    // the join line itself would wrongly drop xss: it wraps `a` but not `b`, so the
+    // join def is not covered and the chain through `b` reaches the source raw.
     const r = await analyze(`import java.io.IOException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
