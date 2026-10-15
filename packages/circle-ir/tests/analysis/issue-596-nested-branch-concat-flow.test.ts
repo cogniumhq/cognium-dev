@@ -309,5 +309,78 @@ describe('cognium-dev#596 — a carried def is killed by a later assignment in t
       expect((await cmdi(code, 'LoopTaint.java')).length).toBeGreaterThanOrEqual(1);
     });
   }
+
+  describe('a braceless conditional inside an always-run block is not an unconditional assignment', () => {
+    const initTainted = (blocks: string, name: string) => `
+import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class ${name} extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String fallback = "localhost";
+        String target = request.getParameter("host");
+        ${blocks}
+        Runtime.getRuntime().exec(target);
+    }
+}
+`;
+    const reaching = async (code: string, file: string) => {
+      const r = await analyze(code, file, 'java');
+      const defs = (r.dfg?.defs ?? []).filter((d) => d.variable === 'target');
+      const sinkLine = code.split('\n').findIndex((l) => l.includes('exec(target)')) + 1;
+      const ids = new Set((r.dfg?.uses ?? []).filter((u) => u.variable === 'target' && u.line === sinkLine).map((u) => u.def_id));
+      return { defs, ids };
+    };
+
+    it('bare block, braceless if: the earlier tainted def still reaches the sink and the finding fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = fallback;\n        }`, 'BracelessIf');
+      const { defs, ids } = await reaching(code, 'BracelessIf.java');
+      expect(defs).toHaveLength(2);
+      expect(ids).toEqual(new Set([defs[0].id, defs[1].id]));
+      expect((await cmdi(code, 'BracelessIf.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    // The finding for a braceless loop body is decided elsewhere (constant
+    // propagation vetoes it with or without the bare block), so only the DFG is asserted.
+    for (const [label, head] of [
+      ['while', 'while (request.getParameter("a") != null)'],
+      ['for', 'for (int i = 0; i < 3; i++)'],
+    ] as const) {
+      it(`bare block, braceless ${label}: the earlier tainted def still reaches the sink use`, async () => {
+        const code = initTainted(`{\n            ${head}\n                target = fallback;\n        }`, 'BracelessLoop');
+        const { defs, ids } = await reaching(code, 'BracelessLoop.java');
+        expect(defs).toHaveLength(2);
+        expect(ids).toEqual(new Set([defs[0].id, defs[1].id]));
+      });
+    }
+
+    it('synchronized block, braceless if: the earlier tainted def still reaches the sink and the finding fires', async () => {
+      const code = initTainted(`synchronized (this) {\n            if (request.getParameter("a") != null)\n                target = fallback;\n        }`, 'SyncBracelessIf');
+      const { defs, ids } = await reaching(code, 'SyncBracelessIf.java');
+      expect(ids.has(defs[0].id)).toBe(true);
+      expect((await cmdi(code, 'SyncBracelessIf.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('a straight-line assignment in the bare block still replaces the tainted def', async () => {
+      const code = initTainted('{\n            target = fallback;\n        }', 'BareStraight');
+      const { defs, ids } = await reaching(code, 'BareStraight.java');
+      expect(ids).toEqual(new Set([defs[1].id]));
+    });
+
+    it('a straight-line assignment before a braceless conditional keeps both as reaching defs', async () => {
+      const code = initTainted('{\n            target = fallback;\n            if (request.getParameter("a") != null)\n                target = request.getParameter("host");\n        }', 'StraightThenCond');
+      const { defs, ids } = await reaching(code, 'StraightThenCond.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id]));
+    });
+
+    it('the existing braced conditional in a bare block still fires', async () => {
+      const code = withBlocks('{ if (request.getParameter("a") != null) target = request.getParameter("host"); }', 'BareBlockBranch2');
+      expect((await cmdi(code, 'BareBlockBranch2.java')).length).toBeGreaterThanOrEqual(1);
+    });
+  });
 });
 

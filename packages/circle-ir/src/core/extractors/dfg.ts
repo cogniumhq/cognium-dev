@@ -656,7 +656,9 @@ function processStatement(
       // replace the enclosing scope's; an if/loop/try/switch/lambda body may
       // not, so its defs are kept beside them.
       const alwaysRuns = stmt.parent?.type === 'block' || stmt.parent?.type === 'synchronized_statement';
-      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack, alwaysRuns);
+      if (!isJavaScript) {
+        carryBranchDefsOut(popped, scopeStack, alwaysRuns, false, alwaysRuns ? straightLineDefs(stmt, result.defs) : undefined);
+      }
       break;
     }
 
@@ -1187,24 +1189,36 @@ function carryBranchDefsOut(
   scopeStack: Map<string, number>[],
   alwaysRuns = false,
   altsOnly = false,
+  straightLine?: Map<string, { last: number; ids: Set<number> }>,
 ): void {
   const declared = declaredNames.get(popped);
   const poppedAlts = alternateDefs.get(popped);
   const top = scopeStack[scopeStack.length - 1];
   if (!top) return;
   if (alwaysRuns) {
-    // Straight-line block: the def is as if made directly in the enclosing
-    // scope. It becomes that scope's reaching def and drops the alternates
-    // for the name; defs the block itself held as alternates stay alternates.
+    // Straight-line block: a def the block makes unconditionally is as if made
+    // directly in the enclosing scope. It becomes that scope's reaching def and
+    // drops the alternates for the name; defs the block itself held as
+    // alternates stay alternates. A def under a braceless `if` / loop body is
+    // not unconditional, so it is kept beside the reaching def instead.
     for (const [name, id] of popped) {
       if (declared?.has(name)) continue;
       if (!scopeStack.some((scope) => scope.has(name))) continue;
-      top.set(name, id);
-      let alts = alternateDefs.get(top);
-      if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
-      alts.delete(name);
-      const kept = poppedAlts?.get(name);
-      if (kept && kept.length > 0) alts.set(name, [...kept]);
+      const sl = straightLine?.get(name);
+      const unconditional = !straightLine || sl?.ids.has(id) === true;
+      const reaching = unconditional ? id : sl?.last;
+      if (reaching !== undefined) {
+        top.set(name, reaching);
+        let alts = alternateDefs.get(top);
+        if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
+        alts.delete(name);
+        const kept = poppedAlts?.get(name);
+        if (kept && kept.length > 0) alts.set(name, [...kept]);
+      }
+      if (!unconditional) {
+        carry(name, [id]);
+        if (reaching === undefined) { const k = poppedAlts?.get(name); if (k) carry(name, k); }
+      }
     }
     // Alternates for a name the block did not assign itself stay alternates.
     if (poppedAlts) for (const [name, ids] of poppedAlts) if (!popped.has(name)) carry(name, ids);
@@ -1224,6 +1238,39 @@ function carryBranchDefsOut(
   }
   if (!altsOnly) for (const [name, id] of popped) carry(name, [id]);
   if (poppedAlts) for (const [name, ids] of poppedAlts) carry(name, ids);
+}
+
+/**
+ * Defs a block makes as direct statements (`name = …;` or a chain `a = b = …;`),
+ * which run whenever the block does, by name: the ids and the last such id. A
+ * def under a braceless `if` / loop body is not a direct statement of the block.
+ */
+function straightLineDefs(
+  block: Node,
+  defs: DFGDef[],
+): Map<string, { last: number; ids: Set<number> }> {
+  const out = new Map<string, { last: number; ids: Set<number> }>();
+  for (let i = 0; i < block.namedChildCount; i++) {
+    const child = block.namedChild(i);
+    if (!child || child.type !== 'expression_statement') continue;
+    let expr: Node | null = child.namedChild(0);
+    while (expr && expr.type === 'assignment_expression') {
+      const left = expr.childForFieldName('left');
+      if (left && left.type === 'identifier') {
+        const name = getNodeText(left);
+        const line = left.startPosition.row + 1;
+        const def = defs.find((d) => d.variable === name && d.line === line && d.kind === 'local');
+        if (def) {
+          const entry = out.get(name) ?? { last: def.id, ids: new Set<number>() };
+          entry.ids.add(def.id);
+          if (def.id > entry.last) entry.last = def.id;
+          out.set(name, entry);
+        }
+      }
+      expr = expr.childForFieldName('right');
+    }
+  }
+  return out;
 }
 
 /** Alternate reaching defs of `name`: those parked on every scope down to the one that binds it. */
