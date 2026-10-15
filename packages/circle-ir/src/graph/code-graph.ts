@@ -27,11 +27,14 @@ export class CodeGraph {
   readonly ir: CircleIR;
 
   /**
-   * Defs holding an int or bool derived from another value by a measure or a
-   * test (`len(x)`, `x.length`, `re.MatchString(x)`). Taint does not flow
-   * into them (#568). Set by `analyze()`; empty for a bare graph.
+   * Defs whose value cannot carry the content of the values they read, so
+   * taint does not flow into them. Set by `analyze()`; empty for a bare graph.
+   *   - an int or bool measure or test (`len(x)`, `x.length`,
+   *     `re.MatchString(x)`) (#568)
+   *   - a lookup in a constant table the file never writes (`T[req.query.k]`)
+   *     (#667)
    */
-  scalarDefIds: ReadonlySet<number> = new Set();
+  taintBarrierDefIds: ReadonlySet<number> = new Set();
 
   constructor(ir: CircleIR) {
     this.ir = ir;
@@ -314,7 +317,7 @@ export class CodeGraph {
       for (const [fromDef, chains] of this.chainsByFromDef) {
         if (!result.has(fromDef)) continue;
         for (const chain of chains) {
-          if (this.scalarDefIds.has(chain.to_def)) continue;
+          if (this.taintBarrierDefIds.has(chain.to_def)) continue;
           if (!result.has(chain.to_def)) {
             result.add(chain.to_def);
             changed = true;

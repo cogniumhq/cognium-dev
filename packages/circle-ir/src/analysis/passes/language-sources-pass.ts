@@ -26,6 +26,7 @@ import { attachSourceLineCode } from '../taint-matcher.js';
 import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
 import { javaCallArgument, javaCanonicalBaseLacksSeparator } from '../java-canonical-prefix.js';
 import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
+import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -2118,12 +2119,17 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
     ? [...JS_TAINTED_PATTERNS, { pattern: /\bparams\s*[.[]/, type: 'http_path' as const }]
     : JS_TAINTED_PATTERNS;
 
+  // #667: `REGISTRY[req.query.mod]` on a constant table yields a value the
+  // program wrote, not request data.
+  const lookupTables = constLookupTables(sourceCode, language);
+
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
     const line = lines[lineNum];
     const lineNumber = lineNum + 1;
     const assignmentMatch = line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
     if (!assignmentMatch) continue;
     const [, varName, rhs] = assignmentMatch;
+    if (isConstTableLookup(rhs, lookupTables)) continue;
 
     for (const { pattern, type } of patterns) {
       if (pattern.test(rhs)) {
@@ -3113,6 +3119,7 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   if (!['javascript', 'typescript'].includes(language)) return new Map();
   const tainted = new Map<string, number>();
   const lines = sourceCode.split('\n');
+  const lookupTables = constLookupTables(sourceCode, language);
 
   // Seed with WebSocket `.on('message', cb)` callback-param names (#213
   // second slice). Same event allowlist as findJavaScriptCallbackParamSources.
@@ -3133,6 +3140,7 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     if (!assignMatch) continue;
     const [, lhs, rhs] = assignMatch;
     if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) continue;
+    if (isConstTableLookup(rhs, lookupTables)) continue; // #667
     const isDirectSource = JS_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
     const isTaintedPropagation = tainted.size > 0 && [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(rhs));
     if (isDirectSource || isTaintedPropagation) tainted.set(lhs, i + 1);

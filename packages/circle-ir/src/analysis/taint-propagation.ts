@@ -167,6 +167,7 @@ export function propagateTaint(
   // tv.sourceLine) is always tainted; next-line additions need an extra check.
   const initialTaint = rawInitialTaint.filter(tv => {
     if (tv.line === tv.sourceLine) return true;
+    if (graph.taintBarrierDefIds.has(tv.defId)) return false;
     const sanCheck = checkSanitized(tv.sourceLine, tv.line, tv.sourceType, sanitizersByLine);
     return !sanCheck.sanitized;
   });
@@ -178,7 +179,7 @@ export function propagateTaint(
     graph.chainsByFromDef,
     defById,
     sanitizersByLine,
-    graph.scalarDefIds
+    graph.taintBarrierDefIds
   );
   taintedVars.push(...propagatedTaint);
 
@@ -456,7 +457,7 @@ function propagateThroughChains(
   chainsByFromDef: Map<number, DFGChain[]>,
   defById: Map<number, DFGDef>,
   sanitizersByLine: Map<number, TaintSanitizer[]>,
-  scalarDefIds: ReadonlySet<number>
+  taintBarrierDefIds: ReadonlySet<number>
 ): TaintedVariable[] {
   const propagated: TaintedVariable[] = [];
   const taintedDefIds = new Set<number>(initialTaint.map(t => t.defId));
@@ -479,8 +480,8 @@ function propagateThroughChains(
 
     for (const chain of outgoingChains) {
       if (visited.has(chain.to_def)) continue;
-      // An int/bool measure or test of the value carries no payload (#568).
-      if (scalarDefIds.has(chain.to_def)) continue;
+      // A measure/test of the value or a constant-table lookup (#568, #667).
+      if (taintBarrierDefIds.has(chain.to_def)) continue;
 
       const targetDef = defById.get(chain.to_def);
       if (!targetDef) continue;
