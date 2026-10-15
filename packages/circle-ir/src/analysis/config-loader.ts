@@ -3532,8 +3532,10 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
 
   // Go html/template escape helpers (#102 FP-27) — registered explicitly because
   // configs/sinks/golang.json is not loaded at runtime.
-  { method: 'EscapeString', class: 'html', removes: ['xss', 'external_taint_escape', 'log_injection', 'open_redirect'] },
-  { method: 'HTMLEscapeString', class: 'template', removes: ['xss', 'external_taint_escape', 'log_injection', 'open_redirect'] },
+  // html.EscapeString / template.HTMLEscapeString escape HTML metacharacters, not
+  // CR/LF, so they carry no log_injection credit (#605); JSEscapeString is left as is.
+  { method: 'EscapeString', class: 'html', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
+  { method: 'HTMLEscapeString', class: 'template', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
   { method: 'JSEscapeString', class: 'template', removes: ['xss', 'external_taint_escape', 'log_injection'] },
   { method: 'URLQueryEscaper', class: 'template', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
   { method: 'QueryEscape', class: 'url', removes: ['xss', 'external_taint_escape', 'open_redirect'] },
