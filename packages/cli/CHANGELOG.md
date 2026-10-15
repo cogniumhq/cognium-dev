@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changes
+
+- A directory scan collects `*.properties` files (same skip rules as source files, `--exclude-tests` and config `exclude`; files over 1 MB are ignored) and passes them to circle-ir as resources (#591, partial).
+- Bundles the circle-ir changes listed under circle-ir [Unreleased].
+
 ## [4.15.0] - 2026-10-15
 
 ### Changes
