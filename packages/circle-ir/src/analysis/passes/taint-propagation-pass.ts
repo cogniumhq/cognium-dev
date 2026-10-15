@@ -52,6 +52,41 @@ export interface TaintPropagationPassResult {
  */
 const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'config_param']);
 
+
+/**
+ * #515 — find the real source a Python derived variable actually references.
+ * Reads the derivation's right-hand side at its origin line, picks the real
+ * source variables named there (earliest line wins when several), and follows
+ * names that are themselves derived. Returns undefined when nothing can be
+ * resolved, so the caller keeps its earliest-source fallback.
+ */
+function resolvePythonDerivedAnchor<S extends { line: number }>(
+  varName: string,
+  derived: ReadonlyMap<string, number>,
+  realSourceByVar: ReadonlyMap<string, S>,
+  codeLines: readonly string[],
+  visiting: Set<string>,
+): S | undefined {
+  if (visiting.has(varName)) return undefined;
+  visiting.add(varName);
+  const originLine = derived.get(varName);
+  if (originLine === undefined) return undefined;
+  const text = codeLines[originLine - 1];
+  if (!text) return undefined;
+  const eq = text.search(/(?<![=!<>+\-*/%&|^:])=(?!=)/);
+  if (eq < 0) return undefined;
+  const rhs = text.slice(eq + 1).replace(/(["'])(?:\\.|(?!\1).)*\1/g, ' ');
+  let best: S | undefined;
+  for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const id = m[0];
+    if (id === varName) continue;
+    const cand = realSourceByVar.get(id)
+      ?? (derived.has(id) ? resolvePythonDerivedAnchor(id, derived, realSourceByVar, codeLines, visiting) : undefined);
+    if (cand && (!best || cand.line < best.line)) best = cand;
+  }
+  return best;
+}
+
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -1929,6 +1964,14 @@ function detectExpressionScanFlows(
           if (s.line < anchor.line) anchor = s;
         }
       }
+      // #515: real (non-derived) sources by variable name, earliest first, and
+      // the file's lines for reading each derivation's right-hand side.
+      const realSourceByVar = new Map<string, typeof sourcesWithVar[0]>();
+      for (const s of sourcesWithVar) {
+        const prev = realSourceByVar.get(s.variable);
+        if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
+      }
+      const codeLines = code.split('\n');
       for (const [varName, originLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
         // Don't shadow real sources; build a minimal synthetic record that
@@ -1937,8 +1980,14 @@ function detectExpressionScanFlows(
         // `http_param` type — the for-loop / bare-inline patterns we want
         // to recover here are all web-request-derived in practice.
         if (hasRealSource && anchor) {
+          // #515: anchor to the real source this derivation actually
+          // references (through earlier derived vars); the earliest-source
+          // anchor stays the fallback when none can be found.
+          const referenced = resolvePythonDerivedAnchor(
+            varName, derived, realSourceByVar, codeLines, new Set(),
+          );
           sourcesWithVar.push({
-            ...anchor,
+            ...(referenced ?? anchor),
             variable: varName,
           });
         } else {
