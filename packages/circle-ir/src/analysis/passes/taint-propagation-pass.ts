@@ -1679,8 +1679,16 @@ function siblingBranchAssignsNonLiteral(
 
   const assign = new RegExp(`(?:^|[^\\w.$])${variable}\\s*(?::?=)(?!=)\\s*(.*?)\\s*;?\\s*(?:break\\s*;?)?\\s*$`);
   const literalOnly = new RegExp(`^${strLit}$`);
+  // For an if/else chain the literal's own arm is skipped: an earlier
+  // assignment in that same arm (`if (a) { if (b) x = input; x = "safe"; }`) is
+  // overwritten by the literal, it is not a sibling branch. A switch body shares
+  // one brace, so every line of it stays a sibling.
+  const isSwitch = /\bswitch\b/.test(block.header);
+  const ownStart = block.line;
+  const ownEnd = end.line;
   for (let i = first; i <= last; i++) {
     if (i === idx || unreachableLines?.has(i + 1)) continue;
+    if (!isSwitch && i > ownStart && i < ownEnd) continue;
     const m = assign.exec(lines[i]);
     if (m && m[1] && !literalOnly.test(m[1])) return true;
   }

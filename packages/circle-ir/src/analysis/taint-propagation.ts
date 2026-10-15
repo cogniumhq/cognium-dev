@@ -342,6 +342,24 @@ export function propagateTaint(
 /** Locations of sources that name exactly one parameter binding (#586, #587). */
 const PARAM_SCOPED_SOURCE_RE = /^(?:GraphQL \w+\.\w+ resolver args|Express handler destructured request) /;
 
+/**
+ * True when `code` (one trimmed source line) is an `if` / `else if` / `while`
+ * header whose parenthesised condition closes on that same line.
+ */
+function isCompleteConditionHeader(code: string | undefined): boolean {
+  if (!code) return false;
+  const m = /^(?:\}\s*)?(?:else\s+)?(?:if|while)\s*\(/.exec(code);
+  if (!m) return false;
+  // Blank out string / char literals so their parens do not count.
+  const text = code.slice(m[0].length - 1).replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return true;
+  }
+  return false;
+}
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
@@ -395,7 +413,12 @@ function findInitialTaint(
     // purely by line adjacency, then `propagateThroughChains` carries the
     // bogus taint forward to any sink that consumes `cmd` later in the
     // method — that was the FP-03 root cause from issue #101.
-    const defsNextLine = defsByLine.get(source.line + 1) ?? [];
+    //
+    // cognium-dev#596: a source inside a complete `if (…)` / `while (…)` header
+    // (`if (request.getParameter("a") != null)`) is a condition, not the start
+    // of an expression that continues on the next line. The next line is the
+    // body, so `target = "safe";` there must not be seeded by adjacency.
+    const defsNextLine = isCompleteConditionHeader(source.code) ? [] : (defsByLine.get(source.line + 1) ?? []);
     for (const def of defsNextLine) {
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
