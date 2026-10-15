@@ -2194,8 +2194,8 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // event-name allowlist to avoid firing on unrelated `.on('drain', cb)`
   // / `.on('close', cb)` etc. that carry non-user-input.
   sources.push(...findJavaScriptCallbackParamSources(sourceCode));
+  sources.push(...findExpressDestructuredRequestSources(sourceCode));
   if (language === 'javascript') {
-    sources.push(...findExpressDestructuredRequestSources(sourceCode));
     sources.push(...findGraphqlResolverArgSources(sourceCode));
   }
 
@@ -2211,6 +2211,27 @@ function matchBrace(text: string, open: number): number {
     else if (ch === '}') { depth--; if (depth === 0) return i + 1; }
   }
   return -1;
+}
+
+/**
+ * Index just past an optional TypeScript `: <type>` annotation starting at
+ * `from` (`}: Request<A, B>`), i.e. at the next top-level `,` or `)`. Returns
+ * `from` unchanged when no annotation follows.
+ */
+function skipTypeAnnotation(text: string, from: number): number {
+  const m = /^\s*:/.exec(text.slice(from));
+  if (!m) return from;
+  let depth = 0;
+  for (let i = from + m[0].length; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === '>' || ch === ']' || ch === '}') depth--;
+    else if (ch === ')') { if (depth === 0) return i; depth--; }
+    else if (ch === ',' && depth === 0) return i;
+    else if (ch === '=' && text[i + 1] === '>' && depth === 0) return from;
+    if (depth < 0) return from;
+  }
+  return from;
 }
 
 const EXPRESS_REQUEST_KEYS: Record<string, TaintSource['type']> = {
@@ -2232,7 +2253,7 @@ const EXPRESS_REQUEST_KEYS: Record<string, TaintSource['type']> = {
 function findExpressDestructuredRequestSources(sourceCode: string): TaintSource[] {
   const sources: TaintSource[] = [];
   const receivers = new Set<string>();
-  for (const m of sourceCode.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*(?:express\s*\(\s*\)|express\s*\.\s*Router\s*\(\s*\)|Router\s*\(\s*\))/g)) {
+  for (const m of sourceCode.matchAll(/\b(?:const|let|var)\s+(\w+)\s*(?::\s*[\w.]+\s*)?=\s*(?:express\s*\(\s*\)|express\s*\.\s*Router\s*\(\s*\)|Router\s*\(\s*\))/g)) {
     receivers.add(m[1]);
   }
   if (receivers.size === 0) return sources;
@@ -2244,7 +2265,8 @@ function findExpressDestructuredRequestSources(sourceCode: string): TaintSource[
     if (close < 0) continue;
     // The pattern must be followed by another parameter or `)`, i.e. it is
     // the handler's first parameter.
-    if (!/^\s*[,)]/.test(sourceCode.slice(close))) continue;
+    // A TypeScript `: Request` annotation after the pattern is skipped first.
+    if (!/^\s*[,)]/.test(sourceCode.slice(skipTypeAnnotation(sourceCode, close)))) continue;
     const line = sourceCode.slice(0, m.index! + m[0].length).split('\n').length;
     const inner = sourceCode.slice(open + 1, close - 1);
     // Split top-level entries.
