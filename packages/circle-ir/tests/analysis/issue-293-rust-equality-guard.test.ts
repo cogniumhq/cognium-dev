@@ -224,4 +224,48 @@ pub fn run(tool: &str) -> Result<(), String> {
 `;
     expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
   });
+
+  it('still reports: a second source joined into the command after the guarded alias', async () => {
+    const code = `use std::process::Command;
+
+pub fn run(tool: &str) -> Result<(), String> {
+    let user = std::env::var("U").unwrap_or_default();
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    let alias = tool;
+    let cmd = format!("{} {}", alias, user);
+    Command::new("sh").arg("-c").arg(cmd).status().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still reports: a second parameter concatenated into the guarded command on one line', async () => {
+    const code = `use std::process::Command;
+
+pub fn run(tool: &str, extra: &str) -> Result<(), String> {
+    if tool != "uptime" {
+        return Err("no".into());
+    }
+    Command::new(tool.to_string() + extra).status().map_err(|e| e.to_string())?;
+    Ok(())
+}
+`;
+    expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a tail-expression sink after the guard is credited', async () => {
+    const code = `use std::process::Command;
+
+pub fn run(tool: &str) -> std::io::Result<std::process::ExitStatus> {
+    if tool != "uptime" {
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "no"));
+    }
+    Command::new(tool).status()
+}
+`;
+    expect(await ci(code)).toEqual([]);
+  });
 });
