@@ -3,7 +3,8 @@
  * file is not an `external_taint_escape`. The cross-file path (or its absence
  * after the callee-reach check) is what reports, so `analyzeProject` agrees
  * with a single-file analysis of the same code. The escape stays when the call
- * is unresolved or the callee has no registered sink.
+ * is unresolved, the callee has no registered sink, or the callee hands the
+ * value to another call.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
@@ -166,6 +167,35 @@ public class A
 }
 `;
     const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'Relay.cs', code: callee }]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+  it('a callee that has a sink but also hands the value to another call keeps the escape', async () => {
+    const caller = `using System.Web;
+public class A
+{
+    public void Run(HttpRequest req)
+    {
+        string data = req.QueryString["name"];
+        Audit.Record(data);
+    }
+}
+`;
+    const callee = `using System.Data.SqlClient;
+public class Audit
+{
+    public static void Record(string data)
+    {
+        using (SqlConnection conn = new SqlConnection("cs"))
+        {
+            SqlCommand cmd = new SqlCommand("insert into audit(n) values (@n)", conn);
+            cmd.Parameters.AddWithValue("@n", data);
+            cmd.ExecuteNonQuery();
+        }
+        Mailer.Send("audit: " + data);
+    }
+}
+`;
+    const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'Audit.cs', code: callee }]);
     expect(r.escapes).toContain('A.cs:7');
   });
 });
