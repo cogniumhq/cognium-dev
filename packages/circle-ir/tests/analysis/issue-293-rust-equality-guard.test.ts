@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
+import { findRustLiteralEqualityGuardSanitizers } from '../../src/analysis/rust-literal-guard.js';
 
 async function ci(code: string): Promise<number[]> {
   const r = await analyze(code, 'runner.rs', 'rust', { speculativeParamSources: true });
@@ -388,5 +389,121 @@ pub fn run(tool: &mut String) -> Result<(), String> {
     expect((await ci(code)).length).toBeGreaterThanOrEqual(1);
   });
 
+  // --- Second review round on PR #734: multi-line pattern heads, renamed
+  // struct fields, nested fn pattern params, destructuring assignment and
+  // other &mut self methods all end the credit. ---
 
+  describe('review round 2: still reports', () => {
+    const PRELUDE = `use std::fmt::Write;
+use std::ops::AddAssign;
+
+struct W<'a> { n: i32, tool: &'a str }
+struct N<'a> { name: &'a str }
+struct P<'a>(&'a str, i32);
+struct V<'a> { tool: &'a str }
+struct U<'a>(&'a str);
+`;
+    const GUARD = '    if tool != "uptime" && tool != "whoami" {\n        return Err("no".into());\n    }\n';
+    const SINK = '    let _o = Command::new(&tool).output().map_err(|e| e.to_string())?;';
+    const SINK8 = '        let _o = Command::new(&tool).output().map_err(|e| e.to_string())?;';
+    const src = (body: string, params = 'tool: &str, extra: &str') => `use std::process::Command;
+${PRELUDE}
+pub fn run(${params}) -> Result<String, String> {
+${GUARD}${body}
+    Ok(String::new())
+}
+`;
+    const OWNED = 'mut tool: String, extra: &str';
+    const MUTREF = 'mut tool: &str, extra: &str';
+
+    const cases: Array<[string, string, string?]> = [
+      // Item 1: rustfmt-wrapped pattern heads and nested fn parameter lists.
+      ['let tuple pattern over several lines', `    let (\n        tool,\n        n,\n    ) = (extra, 1);\n    let _ = n;\n${SINK}`],
+      ['if-let Some pattern over several lines', `    if let Some(\n        tool,\n    ) = Some(extra) {\n${SINK8}\n    }`],
+      ['for tuple pattern over several lines', `    for (\n        _i,\n        tool,\n    ) in [extra].iter().enumerate() {\n${SINK8}\n    }`],
+      ['match-arm tuple pattern over several lines', `    match (extra, 1) {\n        (\n            tool,\n            _,\n        ) => {\n    ${SINK8}\n        }\n    }`],
+      ['let struct pattern over several lines', `    let W {\n        n: _,\n        tool,\n    } = W { n: 1, tool: extra };\n${SINK}`],
+      ['nested fn whose parameter list spans lines', `    fn inner(\n        tool: &str,\n        n: i32,\n    ) -> Result<String, String> {\n        let _ = n;\n${SINK8}\n        Ok(String::new())\n    }\n    inner(extra, 1)?;`],
+      // Item 2: renamed struct-field patterns.
+      ['let renamed struct field', `    let N { name: tool } = N { name: extra };\n${SINK}`],
+      ['let renamed struct field with mut', `    let N { name: mut tool } = N { name: extra };\n${SINK}`],
+      ['if-let renamed struct field', `    if let N { name: tool } = (N { name: extra }) {\n${SINK8}\n    }`],
+      ['let renamed struct field over several lines', `    let N {\n        name: tool,\n    } = N { name: extra };\n${SINK}`],
+      ['match-arm renamed struct field', `    match (N { name: extra }) {\n        N { name: tool } => {\n    ${SINK8}\n        }\n    }`],
+      // Item 3: nested fn with a pattern parameter.
+      ['nested fn tuple-pattern parameter', `    fn inner((tool, _n): (&str, i32)) -> Result<String, String> {\n${SINK8}\n        Ok(String::new())\n    }\n    inner((extra, 1))?;`],
+      ['nested fn struct-pattern parameter', `    fn inner(V { tool }: V) -> Result<String, String> {\n${SINK8}\n        Ok(String::new())\n    }\n    inner(V { tool: extra })?;`],
+      ['nested fn tuple-struct parameter', `    fn inner(U(tool): U) -> Result<String, String> {\n${SINK8}\n        Ok(String::new())\n    }\n    inner(U(extra))?;`],
+      ['nested fn tuple-pattern parameter over several lines', `    fn inner(\n        (tool, _n): (&str, i32),\n    ) -> Result<String, String> {\n${SINK8}\n        Ok(String::new())\n    }\n    inner((extra, 1))?;`],
+      ['nested generic fn with a pattern parameter', `    fn inner<'a>(U(tool): U<'a>) -> Result<String, String> {\n${SINK8}\n        Ok(String::new())\n    }\n    inner(U(extra))?;`],
+      // Item 4: destructuring assignment to a \`mut tool: &str\` parameter.
+      ['tuple destructuring assignment', `    let n;\n    (tool, n) = (extra, 1);\n    let _ = n;\n${SINK}`, MUTREF],
+      ['tuple destructuring assignment over several lines', `    let n;\n    (\n        tool,\n        n,\n    ) = (extra, 1);\n    let _ = n;\n${SINK}`, MUTREF],
+      ['struct destructuring assignment', `    W { tool, .. } = W { tool: extra, n: 1 };\n${SINK}`, MUTREF],
+      ['struct destructuring assignment over several lines', `    W {\n        tool,\n        ..\n    } = W { tool: extra, n: 1 };\n${SINK}`, MUTREF],
+      ['tuple-struct destructuring assignment', `    P(tool, _) = P(extra, 1);\n${SINK}`, MUTREF],
+      ['tuple-struct destructuring assignment over several lines', `    P(\n        tool,\n        _,\n    ) = P(extra, 1);\n${SINK}`, MUTREF],
+      // Item 5: other &mut self methods on an owned \`mut tool: String\`.
+      ['clone_from', `    tool.clone_from(&extra.to_string());\n${SINK}`, OWNED],
+      ['clone_from over several lines', `    tool.clone_from(\n        &extra.to_string(),\n    );\n${SINK}`, OWNED],
+      ['write_fmt', `    tool.write_fmt(format_args!("{}", extra)).map_err(|e| e.to_string())?;\n${SINK}`, OWNED],
+      ['write_char', `    tool.write_char(extra.chars().next().unwrap_or('x')).map_err(|e| e.to_string())?;\n${SINK}`, OWNED],
+      ['write_str', `    tool.write_str(extra).map_err(|e| e.to_string())?;\n${SINK}`, OWNED],
+      ['write_str with the call on the next line', `    tool\n        .write_str(extra)\n        .map_err(|e| e.to_string())?;\n${SINK}`, OWNED],
+      ['add_assign', `    tool.add_assign(extra);\n${SINK}`, OWNED],
+      ['a method that is not on any list (as_mut_vec)', `    unsafe { tool.as_mut_vec() }.extend_from_slice(extra.as_bytes());\n${SINK}`, OWNED],
+      // Non-blocking note from the review.
+      ['two statements on one line: a credited sink then a raw sink', `    let _a = Command::new(&tool).output().map_err(|e| e.to_string())?; let _b = Command::new(extra).output().map_err(|e| e.to_string())?;`],
+    ];
+
+    for (const [title, body, params] of cases) {
+      it(title, async () => {
+        expect((await ci(src(body, params))).length).toBeGreaterThanOrEqual(1);
+      });
+    }
+  });
+
+  // The engine does not carry a flow through a closure whose parameter list
+  // is wrapped over lines even without a guard, so this one is checked on the
+  // credit lines directly: the sink line must get no credit.
+  it('review round 2: a closure whose parameter list spans lines gets no credit', () => {
+    const code = `use std::process::Command;
+
+pub fn run(tool: &str, extra: &str) -> Result<(), String> {
+    if tool != "uptime" && tool != "whoami" {
+        return Err("no".into());
+    }
+    let go = |
+        tool: &str,
+    | {
+        Command::new(tool).output().map_err(|e| e.to_string())
+    };
+    go(extra)?;
+    Ok(())
+}
+`;
+    const lines = findRustLiteralEqualityGuardSanitizers(code).map((s) => s.line);
+    expect(lines).not.toContain(10);
+  });
+
+  describe('review round 2: credit still applies', () => {
+    const GUARD = '    if tool != "uptime" && tool != "whoami" {\n        return Err("no".into());\n    }\n';
+    const SINK = '    let _o = Command::new(&tool).output().map_err(|e| e.to_string())?;';
+    const src = (body: string, params = 'tool: &str') => `use std::process::Command;
+
+pub fn run(${params}) -> Result<String, String> {
+${GUARD}${body}
+    Ok(String::new())
+}
+`;
+    it('a multi-line let that binds other names', async () => {
+      expect(await ci(src(`    let (\n        a,\n        b,\n    ) = (1, 2);\n    let _ = a + b;\n${SINK}`))).toEqual([]);
+    });
+    it('a nested fn with other parameter names', async () => {
+      expect(await ci(src(`    fn helper(\n        x: i32,\n    ) -> i32 {\n        x\n    }\n    let _ = helper(1);\n${SINK}`))).toEqual([]);
+    });
+    it('read-only methods on an owned mut String', async () => {
+      expect(await ci(src(`    if tool.is_empty() || tool.len() > 10 {\n        return Err("x".into());\n    }\n    let _o = Command::new(tool.as_str()).output().map_err(|e| e.to_string())?;`, 'mut tool: String'))).toEqual([]);
+    });
+  });
 });

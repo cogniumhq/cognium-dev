@@ -20,15 +20,16 @@
  * `matches!` arm that is not a plain string literal.
  *
  * The credit is line-keyed. It starts after the guard block, ends with the
- * enclosing block (so never reaches another function), stops at the first
- * line that rebinds or mutates the variable (or at the start of a loop that
- * contains such a line), and skips a mention whose whole statement also reads
- * another value (`Command::new(x).arg(other)`, including when the other
- * operand sits on a later line of the same statement). A pattern that binds
- * the name (`let (x, _)`, `for x in`, `Some(x) =>`, …) ends the credit like a
- * plain `let x`.
+ * enclosing block (so never reaches another function), stops at the line of
+ * the first rebind or possible mutation of the variable (or at the start of a
+ * loop that contains it; see `rust-literal-guard-rebind.ts`, which scans the
+ * whole region so wrapped patterns and parameter lists count), and skips a
+ * mention whose statement or line also reads another value
+ * (`Command::new(x).arg(other)`, an operand on a later line of the same
+ * statement, or a second statement on the same line).
  */
 import type { TaintSanitizer } from '../types/index.js';
+import { firstRebind } from './rust-literal-guard-rebind.js';
 
 const CREDITED_TYPES = [
   'command_injection', 'path_traversal', 'sql_injection', 'ssrf', 'open_redirect',
@@ -174,58 +175,14 @@ function readsOtherValue(original: string, masked: string, name: string): boolea
   return false;
 }
 
-/** True when `pat` (a Rust pattern fragment) binds `name`. */
-function patternBinds(pat: string, name: string): boolean {
-  // Drop type ascriptions (`x: Type`) and references (`ref mut x`, `&mut x` in patterns).
-  const cleaned = pat
-    .replace(/:\s*[^=,;({]+/g, ' ')
-    .replace(/\b(?:ref\s+(?:mut\s+)?|mut\s+)/g, ' ');
-  return new RegExp(String.raw`(?<![\w.])${name}\b`).test(cleaned);
-}
-
 /**
- * True when the (masked) line rebinds or mutates `name`: a plain `let`/`=`,
- * a pattern that binds the name (`let (name, _)`, `for name in`, `Some(name) =>`,
- * `while let` / `if let`), `&mut name`, a nested fn/closure parameter, a
- * known mutating method (`push_str`, `insert_str`, …), `write!`/`writeln!`
- * with the name as the first argument, `mem::swap` involving the name, or
- * (when `mutParam` is set) passing the bare name as a call argument.
+ * `&mut` parameter only: the bare name passed as a call argument can be
+ * mutated by the callee (checked per line).
  */
-function mutates(masked: string, name: string, mutParam = false): boolean {
-  const n = name;
-  if (new RegExp(
-    String.raw`(?<![\w.])${n}\s*(?:[-+*/%|&^]|<<|>>)?=(?![=>])|&\s*mut\s+${n}\b|\bfn\s+\w+\s*(?:<[^>]*>)?\([^)]*\b${n}\s*:|\|[^|]*\b${n}\b[^|]*\||\b${n}\s*\.\s*(?:push|push_str|clear|insert_str|insert|extend|truncate|remove|retain|drain|replace_range|make_ascii_lowercase|make_ascii_uppercase)\s*\(`,
-  ).test(masked)) return true;
-
-  // write!(name, …) / writeln!(name, …)
-  if (new RegExp(String.raw`\b(?:write|writeln)\s*!\s*\(\s*${n}\b`).test(masked)) return true;
-
-  // std::mem::swap(… name …) / mem::swap(…)
-  if (new RegExp(String.raw`\b(?:std\s*::\s*)?mem\s*::\s*swap\s*\([^;]*\b${n}\b`).test(masked)) return true;
-
-  // let / if let / while let PATTERN = …  (and let-else)
-  for (const m of masked.matchAll(/\b(?:(?:if|while)\s+)?let\s+(?:mut\s+)?([\s\S]*?)(?:\s*=|\s+\belse\b)/g)) {
-    if (patternBinds(m[1], n)) return true;
-  }
-  // for PATTERN in …
-  for (const m of masked.matchAll(/\bfor\s+(?:mut\s+)?([\s\S]*?)\bin\b/g)) {
-    if (patternBinds(m[1], n)) return true;
-  }
-  // match-arm PATTERN => … (skip fat-arrow from closures / `||=`)
-  for (const m of masked.matchAll(/(?:^|[,|{])\s*([^,;{}]+?)\s*=>/g)) {
-    const pat = m[1].trim();
-    if (!pat || /[;=]/.test(pat)) continue; // expression-like, not a pattern
-    if (patternBinds(pat, n)) return true;
-  }
-
-  // &mut parameter: bare name as a call argument can be mutated by the callee.
-  if (mutParam && new RegExp(String.raw`(?<![\w.])(?:[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\((?:[^)]*,\s*)?${n}\b`).test(masked)) {
-    // Exclude method calls on name itself (`name.foo(`) — already handled above.
-    if (!new RegExp(String.raw`\b${n}\s*\.\s*\w+\s*\(`).test(masked) || new RegExp(String.raw`(?<![\w.])\w+\s*\(\s*${n}\b`).test(masked)) {
-      return true;
-    }
-  }
-  return false;
+function passesMutParam(line: string, n: string): boolean {
+  if (!new RegExp(String.raw`(?<![\w.])(?:[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\((?:[^)]*,\s*)?${n}\b`).test(line)) return false;
+  // Exclude method calls on name itself (`name.foo(`), handled by firstRebind.
+  return !new RegExp(String.raw`\b${n}\s*\.\s*\w+\s*\(`).test(line) || new RegExp(String.raw`(?<![\w.])\w+\s*\(\s*${n}\b`).test(line);
 }
 
 export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanitizer[] {
@@ -302,14 +259,27 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
         }
       }
     }
+    // Could the binding be `mut`? Any `mut name` / `name: &mut` before the
+    // guard counts (wider than needed, which only ends the credit sooner).
+    const mutBinding = mutParam || new RegExp(String.raw`\bmut\s+${name}\b|\b${name}\s*:\s*&(?:\s*'\w+)?\s*mut\b`).test(masked.slice(0, at));
     // Whole lines after the guard's closing line, up to the line before the
     // enclosing block's closing brace (or the end of the file).
     const firstLine = lineOf(close) + 1;
     const lastLine = end === masked.length ? origLines.length - 1 : lineOf(end) - 1;
     let stop = lastLine + 1;
-    // A rebind or mutation ends the credit; inside a later loop it ends at the loop.
-    for (let l = firstLine; l <= lastLine; l++) {
-      if (!mutates(maskedLines[l], name, mutParam)) continue;
+    // A rebind or mutation ends the credit (scanned over the whole region, so a
+    // pattern or parameter list wrapped over lines is seen in one piece);
+    // inside a later loop it ends at the loop.
+    let rebindLine = lastLine + 1;
+    const rb = firstRebind(masked, close + 1, end, name, { mutBinding });
+    if (rb >= 0) rebindLine = lineOf(rb);
+    if (mutParam) {
+      for (let l = firstLine; l < rebindLine && l <= lastLine; l++) {
+        if (passesMutParam(maskedLines[l], name)) { rebindLine = l; break; }
+      }
+    }
+    if (rebindLine <= lastLine) {
+      const l = rebindLine;
       stop = l;
       for (const lp of masked.slice(close + 1, end).matchAll(/\b(?:for|while|loop)\b[^{;]*\{/g)) {
         const lpOpen = close + 1 + lp.index! + lp[0].length - 1;
@@ -317,7 +287,6 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
         const lpLine = lineOf(lpOpen);
         if (lpClose >= 0 && lineOf(lpClose) >= l && lpLine <= l) stop = Math.min(stop, lpLine);
       }
-      break;
     }
     const mention = new RegExp(String.raw`(?<![\w.])${name}\b`);
     for (let l = firstLine; l < stop && l <= lastLine; l++) {
@@ -325,8 +294,11 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
       // Evaluate "reads another value" over the whole statement that contains
       // this mention (up to a terminating `;` or the matching close of the
       // enclosing call), not only the single line the name sits on.
+      // The line itself is checked too, so a second statement on the same
+      // line (`a(tool); b(other);`) also ends the credit for that line.
       const stmt = statementSpan(code, masked, lineStarts[l], end);
       if (readsOtherValue(stmt.orig, stmt.masked, name)) continue;
+      if (readsOtherValue(origLines[l], maskedLines[l], name)) continue;
       out.push({
         type: 'rust_literal_equality_guard',
         method: 'guard',
