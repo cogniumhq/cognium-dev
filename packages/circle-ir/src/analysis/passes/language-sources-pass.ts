@@ -3024,18 +3024,27 @@ function javaAppendArgExprs(line: string): { receiver: string; args: string[] } 
  * `getParameter() in execute`) as a regex over `codeOnly` text: the receiver
  * chain must match too (any spacing between its tokens), and a call with no
  * receiver must not follow a `.`. `byName` is the method name alone, for a
- * receiver whose text is not on the line as written. Null when the location
- * names no call.
+ * receiver whose text is not on the line as written. `method` / `receiver`
+ * are the unescaped names from the location. Null when the location names no
+ * call.
  */
-function javaSourceCallRe(location: string | undefined): { exact: RegExp; byName: RegExp } | null {
+function javaSourceCallRe(location: string | undefined): {
+  exact: RegExp; byName: RegExp; method: string; receiver: string | null;
+} | null {
   const callee = /^([\s\S]*?)\(\)(?:\s+in\s+[^()]*)?$/u.exec((location ?? '').trim())?.[1]?.trim();
   if (!callee) return null;
   const cm = /^(?:([\s\S]*?)\s*\.\s*)?([\p{L}_$][\p{L}\p{N}_$]*)$/u.exec(callee);
   if (!cm) return null;
   const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const method = esc(cm[2]);
+  const methodName = cm[2];
+  const method = esc(methodName);
   const byName = new RegExp(`(?<![\\p{L}\\p{N}_$])${method}\\s*\\(`, 'u');
-  if (!cm[1]) return { exact: new RegExp(`(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)${method}\\s*\\(`, 'u'), byName };
+  if (!cm[1]) {
+    return {
+      exact: new RegExp(`(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)${method}\\s*\\(`, 'u'),
+      byName, method: methodName, receiver: null,
+    };
+  }
   // Receiver text as written in the location, with literal bodies blanked like the
   // statement text it is matched against.
   const recv = cm[1]
@@ -3045,8 +3054,81 @@ function javaSourceCallRe(location: string | undefined): { exact: RegExp; byName
   if (!toks) return null;
   return {
     exact: new RegExp(`(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)${toks.map(esc).join('\\s*')}\\s*\\.\\s*${method}\\s*\\(`, 'u'),
-    byName,
+    byName, method: methodName, receiver: toks.join(''),
   };
+}
+
+/** Keywords that must not be treated as a Java type name in a declaration. */
+const JAVA_NON_TYPE_NAMES = new Set([
+  'return', 'if', 'else', 'while', 'for', 'switch', 'case', 'new', 'throw', 'try',
+  'catch', 'class', 'interface', 'package', 'import', 'assert', 'synchronized',
+  'do', 'break', 'continue', 'finally', 'default', 'this', 'super', 'true',
+  'false', 'null', 'instanceof', 'extends', 'implements', 'throws', 'enum',
+]);
+
+/**
+ * Simple type name → last segment of an FQN, generics stripped
+ * (`javax.servlet.http.HttpServletRequest` → `HttpServletRequest`).
+ */
+function javaSimpleTypeName(type: string): string {
+  return type.replace(/\s+/g, '').replace(/<.*$/, '').replace(/^.*\./, '');
+}
+
+/**
+ * Locals and parameters declared in `[startLine, endLine]` (1-based), mapped to
+ * their simple type name. Used so a line that lost a second request-source to
+ * per-line dedup can still seed every receiver of that source class.
+ */
+function javaMethodVarTypes(
+  lines: ReadonlyArray<string>,
+  startLine: number,
+  endLine: number,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  // Optional modifiers, then Type (FQN / simple, optional generics), then name,
+  // then `=` `,` `;` or `)` (parameter list). Strings / comments blanked first.
+  const decl = /(?:(?:public|private|protected|static|final|volatile|transient)\s+)*(?<![\p{L}\p{N}_$.])((?:[\p{L}_$][\p{L}\p{N}_$]*\s*\.\s*)*[\p{L}_$][\p{L}\p{N}_$]*)\s*(?:<[^;{}()=]*>)?\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*(?:=|,|;|\))/gu;
+  for (let i = startLine - 1; i < endLine && i < lines.length; i++) {
+    const text = (lines[i] ?? '')
+      .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+      .replace(/'(?:[^'\\]|\\.)'/g, ' ')
+      .replace(/\/\*.*?\*\//g, ' ')
+      .replace(/\/\/.*$/, '');
+    decl.lastIndex = 0;
+    for (let m = decl.exec(text); m; m = decl.exec(text)) {
+      const simple = javaSimpleTypeName(m[1]);
+      if (!simple || JAVA_NON_TYPE_NAMES.has(simple)) continue;
+      out.set(m[2], simple);
+    }
+  }
+  return out;
+}
+
+/**
+ * Call matcher for a source location that accepts every receiver declared with
+ * the same simple type as the location's stored receiver (not only that
+ * receiver). Falls back to `exact` when the stored receiver's type is unknown.
+ * When the location names no receiver, returns `exact` (method-only form).
+ */
+function javaSameClassCallRe(
+  srcRes: { exact: RegExp; method: string; receiver: string | null },
+  varTypes: Map<string, string>,
+): RegExp {
+  if (!srcRes.receiver) return srcRes.exact;
+  const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Location receiver may be a chain (`this.req`); the declared name is the
+  // last identifier.
+  const recvId = /[\p{L}_$][\p{L}\p{N}_$]*$/u.exec(srcRes.receiver)?.[0] ?? srcRes.receiver;
+  const names = new Set<string>([recvId]);
+  const ty = varTypes.get(recvId);
+  if (ty) {
+    for (const [n, t] of varTypes) if (t === ty) names.add(n);
+  }
+  const alts = [...names].map(esc).join('|');
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)(?:${alts})\\s*\\.\\s*${esc(srcRes.method)}\\s*\\(`,
+    'u',
+  );
 }
 
 /**
@@ -3156,17 +3238,27 @@ export function findJavaWikiPluginReturnXSSSinks(
             const c = codeOnly(expr);
             return [...carriers.keys()].some(v => refs(c, v));
           };
-          // Where the source enters on its line. A call source names its call,
-          // receiver included ("req.getParameter() in execute"), and only the
-          // statement(s) holding that exact call are where the value appears:
-          // the line-level binder takes the first `=` on the line, which may be
-          // another statement's name, and another receiver's call of the same
-          // method (`prefs.getParameter(...)`) is not the source. A parameter /
+          // Where the source enters on its line. Call sources are deduped to one
+          // per line, so the surviving location names only one receiver
+          // ("req.getParameter() in execute"). Accept every call whose receiver
+          // shares that source class (another HttpServletRequest on the line),
+          // not only the stored receiver — otherwise a second request call never
+          // seeds its value. `prefs.getParameter` stays out: different class.
+          // `byName` (method alone) must not run when the line has another
+          // same-named call: that reintroduces the method-name FP. A parameter /
           // annotation source (no call) is live from its own assignment on the
           // line, or from the start of the line.
           const srcStmts = javaLineStatements(lines[sc.line - 1] ?? '');
           const srcRes = javaSourceCallRe(sc.location);
-          const callRe = srcRes && (srcStmts.some(st => srcRes.exact.test(codeOnly(st.text))) ? srcRes.exact : srcRes.byName);
+          const varTypes = javaMethodVarTypes(lines, m.start_line, m.end_line);
+          let callRe: RegExp | null = null;
+          if (srcRes) {
+            const hasExact = srcStmts.some(st => srcRes.exact.test(codeOnly(st.text)));
+            const byNameHits = srcStmts.filter(st => srcRes.byName.test(codeOnly(st.text))).length;
+            if (hasExact) callRe = javaSameClassCallRe(srcRes, varTypes);
+            else if (byNameHits === 1) callRe = srcRes.byName;
+            else callRe = srcRes.receiver ? javaSameClassCallRe(srcRes, varTypes) : null;
+          }
           const callsSource = (expr: string): boolean => !!callRe && callRe.test(codeOnly(expr));
           const seeded = srcStmts.some(st => callsSource(st.text));
           // xss sanitizer calls on the source line: a value that reaches a

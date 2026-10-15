@@ -405,6 +405,33 @@ public class Builder {
       expect((await xss(real, 'GreetingMacro.java')).flows).toEqual([[14, 15]]);
     });
 
+    it('two HttpServletRequest receivers on one line: the second still seeds xss', async () => {
+      // Call sources dedupe to one per line; the survivor may be `req` while
+      // `request.getParameter` on the same line is the value that is returned.
+      const code = oneLine(
+        '        HttpServletRequest request = req;\n        String who = req.getParameter("a"); String other = request.getParameter("b");',
+        '"<div>" + other + "</div>"',
+      );
+      expect(code).not.toBe(greeting);
+      const r = await xss(code, 'GreetingMacro.java');
+      expect(r.flows.map((f) => f[1])).toEqual([15]);
+      expect(r.findings).toBeGreaterThan(0);
+      // Returning `who` (first receiver) still fires.
+      expect((await xss(code.replace('+ other +', '+ who +'), 'GreetingMacro.java')).flows.map((f) => f[1])).toEqual([15]);
+      // prefs.getParameter on the same line as a request call must stay clean
+      // when only the prefs value is returned (byName must not seed it).
+      await clean(oneLine(
+        '        String label = prefs.getParameter("ui.theme"); String who = req.getParameter("visitor");',
+        'label',
+      ));
+      // Existing positive: `String who = req.getParameter(...); html.append(who);` still fires.
+      const appendWho = oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = req.getParameter("visitor"); html.append(who);',
+        'html.toString()',
+      );
+      expect((await xss(appendWho, 'GreetingMacro.java')).flows).toEqual([[14, 15]]);
+    });
+
     it('a same-line sanitizer that wraps a different request value does not cover the returned one', async () => {
       const code = oneLine(
         '        String who = req.getParameter("a"); String safe = StringEscapeUtils.escapeHtml4(req.getParameter("b"));',
