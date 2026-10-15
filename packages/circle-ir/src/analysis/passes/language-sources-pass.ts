@@ -678,6 +678,23 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJavaLiteralAllowlistGuardSanitizers(code));
       // cognium-dev#668: `!<literal set>.contains(cls)` reject guard before reflection.
       additionalSanitizers.push(...findJavaReflectionAllowlistGuardSanitizers(code, types));
+      // cognium-dev#566: a Spring @RestController / @ResponseBody / ResponseEntity
+      // handler's returned String is the response body. TaintPropagationPass
+      // links each synthesised sink to its source.
+      {
+        const tm = ctx.getResult<TaintMatcherResult>('taint-matcher');
+        const xssSan = tm.sanitizers.filter(sa => sa.sanitizes.includes('xss')).map(sa => sa.line);
+        for (const r of findJavaSpringReturnXSSSinks(code, types, tm.sources, xssSan)) {
+          if (additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss')) continue;
+          additionalSinks.push({
+            type: 'xss',
+            cwe: 'CWE-79',
+            line: r.sinkLine,
+            location: `Spring handler returns HTML with request input at line ${r.sinkLine}`,
+            confidence: 0.9,
+          });
+        }
+      }
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // cognium-dev#293: the same strip, but living in a user-defined helper.
       additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'java'));
@@ -11379,4 +11396,145 @@ export function findJsTemplateInjectionSstiFindings(
     });
   }
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// cognium-dev#566 — Spring MVC return-as-body XSS (Java)
+// ---------------------------------------------------------------------------
+
+const SPRING_MAPPING_ANN = /^(?:Get|Post|Put|Delete|Patch|Request)Mapping\b/;
+const SPRING_WEB_PARAM_ANN = /^(?:RequestParam|PathVariable|RequestHeader|CookieValue|MatrixVariable)\b/;
+
+/** A `@*Mapping(produces = ...)` names a media type, and it is not HTML. */
+function springProducesNonHtml(annotations: ReadonlyArray<string>): boolean {
+  return annotations.some(a => /^\w+Mapping\b/.test(a) && /\bproduces\s*=/.test(a) && !/html/i.test(a));
+}
+
+/** Markup or string concatenation around a value (the Python return-XSS gate, #368). */
+function javaExprLooksLikeHtml(expr: string): boolean {
+  return /"[^"]*<[^"]*"/.test(expr) || /"\s*\+/.test(expr) || /\+\s*"/.test(expr);
+}
+
+/** Parentheses outside string literals never close below depth 0 and end at 0. */
+function javaParensBalanced(expr: string): boolean {
+  let depth = 0;
+  for (const ch of expr.replace(/"(?:[^"\\]|\\.)*"/g, '""')) {
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+/**
+ * cognium-dev#566 — the value a Spring MVC handler returns is the response
+ * body when the class is `@RestController` (or `@ResponseBody` sits on the
+ * class or the method), and always when the handler returns a
+ * `ResponseEntity`. A `String` body is written with the negotiated content
+ * type, so a browser request gets it as `text/html`: request data
+ * concatenated into markup there is reflected XSS.
+ *
+ * Positive evidence only:
+ *   - the method carries a `@*Mapping` annotation;
+ *   - it returns `String` under a body-writing controller, or
+ *     `ResponseEntity<String>` via `ResponseEntity.ok(x)` /
+ *     `new ResponseEntity<>(x, …)` (the builder `.body(x)` form is left to
+ *     SinkFilterPass Stage 15c's text/html content-type rule);
+ *   - the returned expression references a request-bound parameter
+ *     (`@RequestParam`, `@PathVariable`, `@RequestHeader`, `@CookieValue`,
+ *     `@MatrixVariable`, a `String` `@RequestBody`) or an in-method source,
+ *     directly or through a local assigned from it, and looks like HTML
+ *     (markup or string concatenation, directly or in that local's assignment).
+ *
+ * Not a sink: a plain `@Controller` returning a `String` (a view name),
+ * `produces = ` a non-HTML media type on the method or class mapping, a
+ * non-`String` return (serialised as JSON), a returned value that does not
+ * look like markup, and any handler with an xss-covering sanitizer between
+ * its start and the return.
+ */
+export function findJavaSpringReturnXSSSinks(
+  code: string,
+  types: ReadonlyArray<TypeInfo>,
+  sources: ReadonlyArray<{ line: number; type: string; variable?: string }>,
+  xssSanitizerLines: ReadonlyArray<number>,
+): Array<{ sinkLine: number; sourceLine: number }> {
+  const out: Array<{ sinkLine: number; sourceLine: number }> = [];
+  const lines = code.split('\n');
+  const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const stripStrings = (s: string): string => s.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const refers = (expr: string, name: string): boolean =>
+    new RegExp(`(?<![\\w.])${esc(name)}\\b`).test(stripStrings(expr));
+
+  for (const t of types) {
+    const ann = t.annotations ?? [];
+    const isRest = ann.some(a => /^RestController\b/.test(a));
+    if (!isRest && !ann.some(a => /^Controller\b/.test(a))) continue;
+    if (springProducesNonHtml(ann)) continue;
+    const classBody = isRest || ann.some(a => /^ResponseBody\b/.test(a));
+
+    for (const m of t.methods) {
+      if (!m.annotations.some(a => SPRING_MAPPING_ANN.test(a))) continue;
+      if (springProducesNonHtml(m.annotations)) continue;
+      const rt = (m.return_type ?? '').replace(/\s+/g, '');
+      const entity = rt === 'ResponseEntity<String>';
+      const body = rt === 'String' && (classBody || m.annotations.some(a => /^ResponseBody\b/.test(a)));
+      if (!entity && !body) continue;
+
+      // Seeds: request-bound parameters, then in-method sources with a variable.
+      const seeds = new Map<string, number>();
+      for (const p of m.parameters) {
+        const bound = p.annotations.some(a => SPRING_WEB_PARAM_ANN.test(a))
+          || (p.annotations.some(a => /^RequestBody\b/.test(a)) && p.type === 'String');
+        if (bound) seeds.set(p.name, p.line ?? m.start_line);
+      }
+      for (const s of sources) {
+        // A plain parameter of the handler is not request data by itself.
+        if (s.type === 'interprocedural_param') continue;
+        if (!s.variable || !/^[A-Za-z_]\w*$/.test(s.variable)) continue;
+        if (s.line > m.start_line && s.line <= m.end_line && !seeds.has(s.variable)) seeds.set(s.variable, s.line);
+      }
+      if (seeds.size === 0) continue;
+
+      // Locals assigned from a seed (method body only), each tied to its seed's line.
+      const bodyText = lines.slice(m.start_line - 1, m.end_line).join('\n');
+      const carriers = new Map<string, { sourceLine: number; assignLine: number }>();
+      for (const [n, l] of seeds) carriers.set(n, { sourceLine: l, assignLine: l });
+      const derived = [...buildJavaTaintedVars(bodyText, new Set(seeds.keys()))].sort((a, b) => a[1] - b[1]);
+      for (const [n, rel] of derived) {
+        if (carriers.has(n)) continue;
+        const assignLine = m.start_line + rel - 1;
+        const from = [...carriers].find(([c]) => refers(lines[assignLine - 1] ?? '', c));
+        carriers.set(n, { sourceLine: from ? from[1].sourceLine : m.start_line, assignLine });
+      }
+
+      for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
+        if (!/^\s*return\b/.test(lines[i] ?? '')) continue;
+        let stmt = lines[i];
+        for (let j = i + 1; !stmt.includes(';') && j < Math.min(m.end_line, lines.length); j++) stmt += ' ' + lines[j];
+        stmt = stmt.replace(/^\s*return\b/, '').replace(/;[^;]*$/, '');
+        const sinkLine = i + 1;
+
+        let expr = stmt;
+        if (entity) {
+          // `ResponseEntity.ok(x)` / `new ResponseEntity<>(x, status)` only. The
+          // builder `.body(x)` form stays with SinkFilterPass Stage 15c, which
+          // keeps it only next to an explicit text/html signal.
+          const em = /^\s*ResponseEntity\s*\.\s*ok\s*\(([\s\S]+)\)\s*$/.exec(stmt)
+            ?? /^\s*new\s+ResponseEntity\s*(?:<[^>]*>)?\s*\(([\s\S]+),[^,()]*\)\s*$/.exec(stmt);
+          if (!em || !javaParensBalanced(em[1])) continue;
+          expr = em[1];
+        }
+        const hit = [...carriers].find(([c, info]) => info.assignLine <= sinkLine && refers(expr, c));
+        if (!hit) continue;
+        const [name, info] = hit;
+        let htmlish = javaExprLooksLikeHtml(expr);
+        if (!htmlish && new RegExp(`^\\s*${esc(name)}\\s*$`).test(expr) && info.assignLine !== info.sourceLine) {
+          htmlish = javaExprLooksLikeHtml(lines[info.assignLine - 1] ?? '');
+        }
+        if (!htmlish) continue;
+        if (xssSanitizerLines.some(l => l >= m.start_line && l <= sinkLine)) continue;
+        out.push({ sinkLine, sourceLine: info.sourceLine });
+      }
+    }
+  }
+  return out;
 }
