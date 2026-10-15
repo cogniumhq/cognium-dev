@@ -1071,28 +1071,53 @@ function detectGoPackageGlobalFlows(
  * field's name is not.
  */
 
-/** True when `methodName` declares a local (or param) named `varName`. */
-function methodHasLocalDecl(code: string | undefined, methodName: string | null | undefined, varName: string): boolean {
+/**
+ * True when `methodName` declares a local (or param) named `varName`. With
+ * overloads, the declaration that encloses `atLine` is the one checked (the
+ * first declaration of that name is only a fallback when no line is known or
+ * none encloses it).
+ */
+function methodHasLocalDecl(
+  code: string | undefined,
+  methodName: string | null | undefined,
+  varName: string,
+  atLine?: number,
+): boolean {
   if (!code || !methodName) return false;
   // Find `methodName(...) [throws ...] {` then scan the body for a local decl.
   const esc = methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const v = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const methodRe = new RegExp(
     '(?:^|[\\s;{}])' + esc + '\\s*\\([^;{]*\\)\\s*(?:throws\\s+[^{]+)?\\{',
-    'm',
+    'gm',
   );
-  const m = methodRe.exec(code);
-  if (!m || m.index === undefined) return false;
-  let i = m.index + m[0].length;
-  let depth = 1;
-  while (i < code.length && depth > 0) {
-    const c = code[i++];
-    if (c === '{') depth++;
-    else if (c === '}') depth--;
+  const lineAt = (offset: number): number => {
+    let n = 1;
+    for (let k = 0; k < offset; k++) if (code.charCodeAt(k) === 10) n++;
+    return n;
+  };
+  type MethodSpan = { header: string; bodyStart: number; bodyEnd: number };
+  let chosen: MethodSpan | null = null;
+  let first: MethodSpan | null = null;
+  for (let m = methodRe.exec(code); m; m = methodRe.exec(code)) {
+    const bodyStart = m.index + m[0].length;
+    let i = bodyStart;
+    let depth = 1;
+    while (i < code.length && depth > 0) {
+      const c = code[i++];
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+    }
+    const cand: MethodSpan = { header: m[0], bodyStart, bodyEnd: i - 1 };
+    if (!first) first = cand;
+    if (atLine === undefined) break;
+    if (atLine >= lineAt(m.index) && atLine <= lineAt(cand.bodyEnd)) { chosen = cand; break; }
   }
-  const body = code.slice(m.index + m[0].length, i - 1);
+  const hit = chosen ?? first;
+  if (!hit) return false;
+  const body = code.slice(hit.bodyStart, hit.bodyEnd);
   // Parameter named varName counts as shadowing the field.
-  if (new RegExp('[(,]\\s*(?:final\\s+)?[\\w.<>,\\[\\]\\s]+\\s+' + v + '\\s*[,)]').test(m[0])) return true;
+  if (new RegExp('[(,]\\s*(?:final\\s+)?[\\w.<>,\\[\\]\\s]+\\s+' + v + '\\s*[,)]').test(hit.header)) return true;
   const declRe = new RegExp(
     '(?:^|[;{}])\\s*(?:(?:final|volatile)\\s+)?(?:[A-Za-z_][\\w.<>,\\[\\]\\s]*?)\\s+' + v + '\\s*(?:=|;|,)',
     'm',
@@ -1100,13 +1125,30 @@ function methodHasLocalDecl(code: string | undefined, methodName: string | null 
   return declRe.test(body);
 }
 
-function isFieldUseExpression(expression: string | undefined, varName: string): boolean {
+/**
+ * True when `expression` reads this class's own field `varName`: `this.name`,
+ * `self.name`, or `Enclosing.name` (static access through an enclosing type).
+ * Another object's member (`item.name`, `file.name`) is not this class's field.
+ */
+function isFieldUseExpression(
+  expression: string | undefined,
+  varName: string,
+  enclosingTypeNames: ReadonlySet<string>,
+): boolean {
   if (!expression) return false;
   const e = expression.trim();
-  // Explicit field access: this.name / self.name / obj.name
   if (e === `this.${varName}` || e === `self.${varName}`) return true;
-  if (new RegExp('^[A-Za-z_]\\w*\\.' + varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$').test(e)) return true;
-  return false;
+  const m = new RegExp('^([A-Za-z_]\\w*)\\.' + varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$').exec(e);
+  return !!m && enclosingTypeNames.has(m[1]);
+}
+
+/** Names of the types whose range encloses `line` (outer and nested). */
+function enclosingTypeNamesAt(types: CircleIR['types'] | undefined, line: number): Set<string> {
+  const names = new Set<string>();
+  for (const t of types ?? []) {
+    if (line >= t.start_line && line <= t.end_line) names.add(t.name);
+  }
+  return names;
 }
 
 
@@ -1166,10 +1208,12 @@ function detectCollectionFlows(
           // method) still counts as a field use — Inter4-style. A shadowing
           // local declaration in the method does not.
           const expr = arg.expression ?? '';
-          const explicitField = isFieldUseExpression(expr, varName);
+          const explicitField = isFieldUseExpression(
+            expr, varName, enclosingTypeNamesAt(types, call.location.line),
+          );
           const bareFieldRead = fieldNames.has(varName)
             && expr === varName
-            && !methodHasLocalDecl(code, call.in_method, varName);
+            && !methodHasLocalDecl(code, call.in_method, varName, call.location.line);
           const isFieldUse = explicitField || bareFieldRead;
           if (isTaintedInMethod(taintedVars, varName, scopedName, fieldNames, isFieldUse)) {
             // Sprint 13 #70 — pick a source in the same method scope as the

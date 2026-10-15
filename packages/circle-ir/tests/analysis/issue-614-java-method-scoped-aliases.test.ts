@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
+import { generateFindings } from '../../src/analysis/findings.js';
 
 const flowSinkLines = async (code: string, type: string) => {
   const ir = await analyze(code, 'T.java', 'java');
@@ -174,3 +175,149 @@ public class FieldHop {
     expect(sinkLines).not.toContain(24);
   });
 });
+
+describe('#614 field-use check is scoped to this class and to the sink\'s own overload', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('`item.name` on another object does not share the tainted field; this.name still fires', async () => {
+    const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class FieldHop {
+    private String name;
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        name = req.getParameter("name");
+        f(resp);
+        good(resp);
+    }
+
+    private void f(ServletResponse resp) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        writer.println(this.name);
+    }
+
+    private void good(ServletResponse resp) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        Item item = new Item();
+        writer.println(item.name);
+    }
+}
+
+class Item {
+    String name = "readme.txt";
+}
+`;
+    const ir = await analyze(code, 'T.java', 'java');
+    const xss = (ir.taint.flows ?? []).filter(f => f.sink_type === 'xss');
+    const sinkLines = [...new Set(xss.map(f => f.sink_line))].sort((a, b) => a - b);
+    // this.name in f() — line 18
+    expect(sinkLines).toContain(18);
+    // item.name in good() — line 24
+    expect(sinkLines).not.toContain(24);
+  });
+
+  it('an overload that declares a local of the field\'s name is not a bare field read', async () => {
+    const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class FieldHop {
+    private String name;
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        name = req.getParameter("name");
+        show(resp);
+        show(resp, 1);
+    }
+
+    private void show(ServletResponse resp) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        writer.println(name);
+    }
+
+    private void show(ServletResponse resp, int n) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        String name = "readme.txt";
+        writer.println(name);
+    }
+}
+`;
+    const ir = await analyze(code, 'T.java', 'java');
+    const xss = (ir.taint.flows ?? []).filter(f => f.sink_type === 'xss');
+    const sinkLines = [...new Set(xss.map(f => f.sink_line))].sort((a, b) => a - b);
+    // bare field read in show(resp) — line 18
+    expect(sinkLines).toContain(18);
+    // shadowing local in show(resp, n) — line 24
+    expect(sinkLines).not.toContain(24);
+  });
+});
+
+describe('#614 call-chain source (SecuriBench Inter3 shape) stays pinned', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  // Hand-written equivalent of SecuriBench Micro Inter3: a request parameter is
+  // passed down a chain of private methods to a sink, and an unreachable public
+  // method with a same-named parameter sits below it. Before #614 Inter3's
+  // line-40 finding was carried by the bare-name match (doGet's `name` credited
+  // to f9's `name`, confidence 0.8). It is now carried by the interprocedural
+  // flow, whose confidence decays per hop; over Inter3's nine-method chain it
+  // drops below the proximity pairing with the dead method's parameter, so the
+  // findings grouping picks line 89 as the primary source there. Line 89 is NOT
+  // the intended source. The real one is the getParameter line, which the flow
+  // and the finding's evidence keep. Re-ranking the findings grouping (prefer a
+  // flow-backed source over a proximity pairing) is a separate change; this
+  // pins the real source on the shorter chain, where it is still primary.
+  const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class ChainServlet extends HttpServlet {
+    private PrintWriter writer;
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String name = req.getParameter("name");
+        writer = resp.getWriter();
+        a(name);
+    }
+
+    private void a(String name) {
+        b(name);
+    }
+
+    private void b(String name) {
+        writer.println(name);
+    }
+
+    public void unused(String name) {
+        writer.println(name);
+    }
+}
+`;
+
+  it('taint.flows keeps the getParameter line (11) as the source of the chain sink (line 21)', async () => {
+    const ir = await analyze(code, 'ChainServlet.java', 'java');
+    const xss = (ir.taint.flows ?? []).filter(f => f.sink_type === 'xss' && f.sink_line === 21);
+    expect(xss.map(f => f.source_line)).toContain(11);
+  });
+
+  it('the finding at line 21 is attributed to the getParameter line, not the dead parameter (24)', async () => {
+    const ir = await analyze(code, 'ChainServlet.java', 'java');
+    const findings = generateFindings(
+      ir.taint.sources ?? [], ir.taint.sinks ?? [], ir.dfg, 'ChainServlet.java', code, 'java',
+      ir.taint.sanitizers ?? [], ir.types ?? [], ir.taint.flows ?? [],
+    );
+    const atSink = findings.filter(f => f.type === 'xss' && f.sink.line === 21);
+    expect(atSink).toHaveLength(1);
+    expect(atSink[0].source.line).toBe(11);
+    expect((atSink[0].evidence?.sources ?? []).map(s => s.line)).toContain(11);
+  });
+});
+
