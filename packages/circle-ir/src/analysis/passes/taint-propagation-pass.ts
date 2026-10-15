@@ -68,6 +68,7 @@ function methodAtLine(graph: PassContext['graph'], line: number): string | null 
 
 /** #589: method-call sanitizer that is a context-specific HTML / markup encoder. */
 function isHtmlContextEncoderSanitizer(san: { type?: string; method?: string }): boolean {
+  if (san.type === 'derived_html_encoder') return true; // same-file wrapper of an HTML encoder (#589)
   if (san.type !== 'method_call' || !san.method) return false;
   const tail = san.method.replace(/\(\)$/, '').split('.').pop() ?? '';
   return HTML_CONTEXT_ENCODER_METHODS.has(tail);

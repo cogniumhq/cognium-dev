@@ -239,6 +239,17 @@ describe('ScanSecretsPass — provider patterns', () => {
     expect(out[0].level).toBe('note');
   });
 
+  it('detects Stripe pk_test_ publishable key as informational, not entropy high (#718)', () => {
+    const body = 'ABCDEFGHIJKLMNOPQRSTUVWXabcdefghijklmnopqrstuvwx0123456789';
+    const code = `const STRIPE_PUBLISHABLE_KEY = 'pk_test_${body}';`;
+    const out = runPass('checkout.js', code, 'javascript');
+    expect(out).toHaveLength(1);
+    expect(out[0].rule_id).toBe('hardcoded-credential');
+    expect(out[0].evidence?.provider).toBe('Stripe test publishable key');
+    expect(out[0].severity).toBe('low');
+    expect(out[0].level).toBe('note');
+  });
+
   it('detects OpenAI API key', () => {
     const code = `key = "sk-` + 'a'.repeat(48) + `"`;
     const out = runPass('app.py', code, 'python');

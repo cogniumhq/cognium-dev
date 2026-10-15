@@ -960,6 +960,7 @@ function sanitizerMethodTail(san: TaintSanitizer): string {
 
 /** #589: a method-call sanitizer that is a context-specific HTML / markup encoder. */
 function isHtmlContextEncoder(san: TaintSanitizer): boolean {
+  if (san.type === 'derived_html_encoder') return true; // same-file wrapper of an HTML encoder (#589)
   return san.type === 'method_call' && HTML_CONTEXT_ENCODER_METHODS.has(sanitizerMethodTail(san));
 }
 
