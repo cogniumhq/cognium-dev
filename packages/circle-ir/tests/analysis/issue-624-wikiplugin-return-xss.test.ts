@@ -225,6 +225,71 @@ public class Builder {
     expect(r.proximity).toBe(0);
   });
 
+  it('a second append(who) after the semicolon on the same line still fires', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        html.append("safe"); html.append(who);',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([[13, 16]]);
+    expect(r.findings).toBeGreaterThan(0);
+  });
+
+  it('each statement on a line taints only its own receiver: other.append(who) fires on other, not html', async () => {
+    const shape = (ret: string) => greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      `        StringBuilder other = new StringBuilder();\n        html.append("safe"); other.append(who);\n        return ${ret}.toString();`,
+    );
+    const viaOther = shape('other');
+    expect(viaOther).not.toBe(greeting);
+    expect((await xss(viaOther, 'GreetingMacro.java')).flows).toEqual([[13, 17]]);
+    const viaHtml = await xss(shape('html'), 'GreetingMacro.java');
+    expect(viaHtml.flows).toEqual([]);
+    expect(viaHtml.sinkLines).toEqual([]);
+    expect(viaHtml.findings).toBe(0);
+    expect(viaHtml.proximity).toBe(0);
+  });
+
+  it('html += who fires; a name in a later statement after `html += "safe";` does not taint html', async () => {
+    const accumulate = greeting.replace(
+      '        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      '        String html = "";\n        html += who;\n        return html;',
+    );
+    expect(accumulate).not.toBe(greeting);
+    expect((await xss(accumulate, 'GreetingMacro.java')).flows).toEqual([[13, 16]]);
+    const later = greeting.replace(
+      '        String who = req.getParameter("visitor");\n        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      '        String html = "";\n        html += "safe"; String who = req.getParameter("visitor");\n        return html;',
+    );
+    expect(later).not.toBe(greeting);
+    const r = await xss(later, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+    // Same shape with `who` already tainted above: only `copy` gets it, not `html`.
+    const copied = greeting.replace(
+      '        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      '        String html = "";\n        html += "safe"; String copy = who;\n        return html;',
+    );
+    expect(copied).not.toBe(greeting);
+    const c = await xss(copied, 'GreetingMacro.java');
+    expect(c.flows).toEqual([]);
+    expect(c.sinkLines).toEqual([]);
+    expect(c.findings).toBe(0);
+    expect(c.proximity).toBe(0);
+  });
+
+  it('a `;` inside a string or comment does not end the += right-hand side', async () => {
+    const code = greeting.replace(
+      '        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      '        String html = "";\n        html += "a;b" + /* ; */ who;\n        return html;',
+    );
+    expect(code).not.toBe(greeting);
+    expect((await xss(code, 'GreetingMacro.java')).flows).toEqual([[13, 16]]);
+  });
+
   it('a chained .append(who) after a safe append still fires', async () => {
     const code = greeting.replace(
       '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',

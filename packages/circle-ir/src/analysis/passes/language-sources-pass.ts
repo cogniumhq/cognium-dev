@@ -2923,9 +2923,45 @@ function isSafeJinjaReturnExpr(expr: string): boolean {
 }
 
 /**
+ * The statements on one Java source line, split at each `;` that is outside a
+ * string / char literal and outside a comment. Comment text (`//` to the end of
+ * the line, inline or unterminated `/* ... *\/`) is dropped; literals are kept.
+ * `terminated` is false for a trailing piece with no `;` on this line.
+ */
+function javaLineStatements(line: string): Array<{ text: string; terminated: boolean }> {
+  const out: Array<{ text: string; terminated: boolean }> = [];
+  let cur = '';
+  let inStr: '"' | "'" | null = null;
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inStr) {
+      cur += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = ch; cur += ch; continue; }
+    if (ch === '/' && line[i + 1] === '/') break;
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end < 0) break;
+      cur += ' ';
+      i = end + 1;
+      continue;
+    }
+    if (ch === ';') { out.push({ text: cur, terminated: true }); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push({ text: cur, terminated: false });
+  return out;
+}
+
+/**
  * Arguments of `receiver.append(...)` on one statement, including a chain of
  * further `.append(...)` calls on the same expression. Stops at any other
- * method (e.g. `.indexOf(...)`) or at the statement semicolon. Nested calls
+ * method (e.g. `.indexOf(...)`) or at the end of the statement. Nested calls
  * inside an argument (e.g. `append(escape(who))`) stay inside that argument.
  * String / char literal bodies are walked so a `)` inside a string does not
  * close the argument.
@@ -3064,14 +3100,18 @@ export function findJavaWikiPluginReturnXSSSinks(
             return [...carriers].some(([v, l]) => l <= atLine && refs(c, v));
           };
           for (let j = m.start_line - 1; j < i; j++) {
-            // Only names inside append(...) arguments count (chained .append and
-            // nested calls included). A name in another method or after ';' does not.
-            const ap = javaAppendArgExprs(lines[j] ?? '');
-            if (ap && !carriers.has(ap.receiver) && ap.args.some(a => refsCarrier(a, j + 1))) {
-              carriers.set(ap.receiver, j + 1);
+            // Each statement on the line on its own, in order: only names inside that
+            // statement's append(...) arguments (chained .append and nested calls
+            // included) taint its receiver, and only that statement's `+=` right-hand
+            // side taints its target. A name in another method or statement does not.
+            for (const st of javaLineStatements(lines[j] ?? '')) {
+              const ap = javaAppendArgExprs(st.text);
+              if (ap && !carriers.has(ap.receiver) && ap.args.some(a => refsCarrier(a, j + 1))) {
+                carriers.set(ap.receiver, j + 1);
+              }
+              const cm = st.terminated ? /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+?)\s*$/u.exec(st.text) : null;
+              if (cm && !carriers.has(cm[1]) && refsCarrier(cm[2], j + 1)) carriers.set(cm[1], j + 1);
             }
-            const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[j] ?? '');
-            if (cm && !carriers.has(cm[1]) && refsCarrier(cm[2], j + 1)) carriers.set(cm[1], j + 1);
           }
           if (!refsCarrier(rm[1])) continue;
           // An xss-covering sanitizer only counts for this source when it is on the
