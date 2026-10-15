@@ -55,9 +55,11 @@ const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'co
 
 /**
  * #515 — find the real source a Python derived variable actually references.
- * Reads the derivation's right-hand side at its origin line, picks the real
+ * Reads the derivation's right-hand side at its origin line (f-string braces
+ * kept, plain quotes and trailing `#…` comments dropped), picks the real
  * source variables named there (earliest line wins when several), and follows
- * names that are themselves derived. Returns undefined when nothing can be
+ * names that are themselves derived — including a later assignment of a name
+ * that was also a real source. Returns undefined when nothing can be
  * resolved, so the caller keeps its earliest-source fallback.
  */
 function resolvePythonDerivedAnchor<S extends { line: number }>(
@@ -75,13 +77,25 @@ function resolvePythonDerivedAnchor<S extends { line: number }>(
   if (!text) return undefined;
   const eq = text.search(/(?<![=!<>+\-*/%&|^:])=(?!=)/);
   if (eq < 0) return undefined;
-  const rhs = text.slice(eq + 1).replace(/(["'])(?:\\.|(?!\1).)*\1/g, ' ');
+  // Lift f-string `{…}` names (via maskStringLiteralsForTokenScan), blank
+  // plain quotes, then drop a trailing `#…` comment. A `#` that was inside a
+  // string is already gone, so the comment strip cannot eat string content.
+  const rhs = maskStringLiteralsForTokenScan(text.slice(eq + 1)).replace(/#.*$/, '');
   let best: S | undefined;
   for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
     const id = m[0];
     if (id === varName) continue;
-    const cand = realSourceByVar.get(id)
-      ?? (derived.has(id) ? resolvePythonDerivedAnchor(id, derived, realSourceByVar, codeLines, visiting) : undefined);
+    const real = realSourceByVar.get(id);
+    const derivedLine = derived.get(id);
+    // A later assignment of the same name (recorded in `derived` after the
+    // real source line) is the value that flows — resolve it first. Fall
+    // back to the real source when that derivation does not resolve (e.g.
+    // `fmt = request.form.get("fmt")`, whose RHS names no source variable).
+    let cand: S | undefined;
+    if (derivedLine !== undefined && (!real || derivedLine > real.line)) {
+      cand = resolvePythonDerivedAnchor(id, derived, realSourceByVar, codeLines, visiting);
+    }
+    if (!cand) cand = real;
     if (cand && (!best || cand.line < best.line)) best = cand;
   }
   return best;
