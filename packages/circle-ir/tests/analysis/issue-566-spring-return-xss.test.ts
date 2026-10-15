@@ -149,4 +149,57 @@ public class Items {
     const r = await analyze(code, 'Items.java', 'java');
     expect(xssFlowLines(r)).toEqual([25]);
   });
+
+  it('path containing .html with JSON produces stays clean; method HTML produces overrides class JSON', async () => {
+    const pathJson = `package com.acme.board;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class Widgets {
+    @GetMapping(path = "/widgets.html", produces = "application/json")
+    public String widgets(@RequestParam String name) {
+        return "<li>" + name + "</li>";
+    }
+}
+`;
+    const r1 = await analyze(pathJson, 'Widgets.java', 'java');
+    expect(xssFlowLines(r1)).toEqual([]);
+
+    const override = `package com.acme.board;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(produces = "application/json")
+public class Pages {
+    @GetMapping(value = "/page", produces = "text/html")
+    public String page(@RequestParam String body) {
+        return "<div>" + body + "</div>";
+    }
+}
+`;
+    const r2 = await analyze(override, 'Pages.java', 'java');
+    expect(xssFlowLines(r2)).toEqual([10]);
+  });
+
+  it('escaping a different variable must not suppress a return of another carrier', async () => {
+    const code = `package com.acme.board;
+
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.util.HtmlUtils;
+
+@RestController
+public class MixedEscape {
+    @GetMapping("/mix")
+    public String mix(@RequestParam String title, @RequestParam String message) {
+        String safeTitle = HtmlUtils.htmlEscape(title);
+        return "<h1>" + safeTitle + "</h1><p>" + message + "</p>";
+    }
+}
+`;
+    const r = await analyze(code, 'MixedEscape.java', 'java');
+    // message is still unsanitized in the returned markup
+    expect(xssFlowLines(r)).toEqual([11]);
+  });
 });

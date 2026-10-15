@@ -6169,9 +6169,20 @@ function findJavaReflectionAllowlistGuardSanitizers(
     /\bif\s*\(\s*!\s*(?:this\s*\.\s*|[A-Z]\w*\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*contains\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\)/;
   const terminatorRe = /\b(throw|return)\b/;
 
-  const isLiteralCollection = (name: string): boolean => {
+  // Factory / constructor tokens that prove the initializer is a collection of
+  // literals. A bare `final String ALLOWED = "…"` leaves no idents after string
+  // stripping (so `.every` would pass) and `String.contains` is substring — not
+  // an allowlist. Require at least one of these.
+  const LITERAL_COLLECTION_FACTORIES = new Set([
+    'of', 'copyOf', 'asList', 'HashSet', 'TreeSet', 'LinkedHashSet',
+    'ArrayList', 'LinkedList', 'unmodifiableSet', 'unmodifiableList',
+    'ImmutableSet', 'ImmutableList',
+  ]);
+
+  /** Nearest `final` declaration of `name` at or above `fromLine` (0-based). */
+  const isLiteralCollection = (name: string, fromLine: number): boolean => {
     const declRe = new RegExp(`\\bfinal\\b[^=;(]*\\b${name}\\s*=(?!=)`);
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = fromLine; i >= 0; i--) {
       const dm = declRe.exec(lines[i]);
       if (!dm) continue;
       // Initializer up to the terminating `;` (may span a few lines).
@@ -6181,6 +6192,8 @@ function findJavaReflectionAllowlistGuardSanitizers(
       init = init.slice(0, init.indexOf(';')).replace(/"(?:[^"\\]|\\.)*"/g, '""');
       if (!init.includes('""')) return false;
       const idents = init.match(/[A-Za-z_]\w*/g) ?? [];
+      // Empty idents (string-only initializer) or no collection factory → not a set.
+      if (!idents.some(id => LITERAL_COLLECTION_FACTORIES.has(id))) return false;
       if (!idents.every(id => JAVA_LITERAL_COLLECTION_IDENTS.has(id))) return false;
       // A mutable collection that is written anywhere is not a fixed set.
       const mutRe = new RegExp(`\\b${name}\\s*\\.\\s*(?:add|addAll|put|putAll|set|replaceAll)\\s*\\(`);
@@ -6194,7 +6207,7 @@ function findJavaReflectionAllowlistGuardSanitizers(
     if (!m) continue;
     const [, setName, guarded] = m;
     if (!guardRejects(lines, i, terminatorRe, 6)) continue;
-    if (!isLiteralCollection(setName)) continue;
+    if (!isLiteralCollection(setName, i)) continue;
     const method = types
       .flatMap(t => t.methods)
       .filter(mt => mt.start_line <= i + 1 && mt.end_line >= i + 1)
@@ -6206,6 +6219,16 @@ function findJavaReflectionAllowlistGuardSanitizers(
       .join('\n').replace(/"(?:[^"\\]|\\.)*"/g, '""');
     const depth = (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
     if (depth !== 1) continue;
+    // Braceless `if`/`for`/`while`/`else` keeps brace-depth 1, so also reject a
+    // guard that is the body of a preceding braceless control statement.
+    let prev = '';
+    for (let p = i - 1; p >= method.start_line - 1; p--) {
+      const t = lines[p].replace(/\/\/.*$/, '').trim();
+      if (!t) continue;
+      prev = t;
+      break;
+    }
+    if (prev && /^(?:else(?:\s+if\b)?|if|for|while)\b/.test(prev) && !prev.includes('{')) continue;
     const refRe = new RegExp(`(?<![\\w.])${guarded}\\b`);
     // Credit only lines where `<v>` is a whole call argument, `f(<v>)`, so a
     // second tainted value on the same line (`forName(v + other)`) still reports.
@@ -11419,9 +11442,24 @@ const SPRING_WEB_PARAM_ANN = /^(?:RequestParam|PathVariable|RequestHeader|Cookie
 const SPRING_NON_TEXT_PARAM_TYPE =
   /^(?:int|long|short|byte|double|float|boolean|char|Integer|Long|Short|Byte|Double|Float|Boolean|Character|BigDecimal|BigInteger|UUID|LocalDate|LocalDateTime|LocalTime|Instant|OffsetDateTime|ZonedDateTime|Date)$/;
 
-/** A `@*Mapping(produces = ...)` names a media type, and it is not HTML. */
-function springProducesNonHtml(annotations: ReadonlyArray<string>): boolean {
-  return annotations.some(a => /^\w+Mapping\b/.test(a) && /\bproduces\s*=/.test(a) && !/html/i.test(a));
+/**
+ * Value of `produces = …` on a `@*Mapping` annotation, or null when absent.
+ * Only the produces value is considered — a path like `/widgets.html` must not
+ * look like an HTML media type.
+ */
+function springProducesValue(annotations: ReadonlyArray<string>): string | null {
+  for (const a of annotations) {
+    if (!/^\w+Mapping\b/.test(a) || !/\bproduces\s*=/.test(a)) continue;
+    const m = /\bproduces\s*=\s*(?:\{([^}]*)\}|([^,)]+))/.exec(a);
+    if (!m) continue;
+    return (m[1] ?? m[2] ?? '').trim();
+  }
+  return null;
+}
+
+/** True when a produces value names a non-HTML media type. */
+function springProducesValueIsNonHtml(value: string): boolean {
+  return !/html/i.test(value);
 }
 
 /** Markup or string concatenation around a value (the Python return-XSS gate, #368). */
@@ -11482,12 +11520,15 @@ export function findJavaSpringReturnXSSSinks(
     const ann = t.annotations ?? [];
     const isRest = ann.some(a => /^RestController\b/.test(a));
     if (!isRest && !ann.some(a => /^Controller\b/.test(a))) continue;
-    if (springProducesNonHtml(ann)) continue;
+    const classProduces = springProducesValue(ann);
     const classBody = isRest || ann.some(a => /^ResponseBody\b/.test(a));
 
     for (const m of t.methods) {
       if (!m.annotations.some(a => SPRING_MAPPING_ANN.test(a))) continue;
-      if (springProducesNonHtml(m.annotations)) continue;
+      // Method-level produces overrides class-level; only non-HTML suppresses.
+      const methodProduces = springProducesValue(m.annotations);
+      const produces = methodProduces ?? classProduces;
+      if (produces != null && springProducesValueIsNonHtml(produces)) continue;
       const rt = (m.return_type ?? '').replace(/\s+/g, '');
       const entity = rt === 'ResponseEntity<String>';
       const body = rt === 'String' && (classBody || m.annotations.some(a => /^ResponseBody\b/.test(a)));
@@ -11548,7 +11589,27 @@ export function findJavaSpringReturnXSSSinks(
           htmlish = javaExprLooksLikeHtml(lines[info.assignLine - 1] ?? '');
         }
         if (!htmlish) continue;
-        if (xssSanitizerLines.some(l => l >= m.start_line && l <= sinkLine)) continue;
+        // Suppress only when an xss sanitizer's operand is the returned carrier
+        // (or the carrier local was assigned from that sanitizer). Escaping a
+        // different variable must not clear a return of another carrier.
+        const xssEscapeOpRe =
+          /\b(?:Encode\.(?:forHtml|forHtmlAttribute|forHtmlContent|forJavaScript)|StringEscapeUtils\.escape(?:Html3|Html4|EcmaScript|Xml)|HtmlUtils\.htmlEscape(?:Decimal|Hex)?|Escaper\.escapeHtml|HtmlEscapers\.(?:escapeHtml|htmlEscaper)|Encoder\.encodeForHTML(?:Attribute)?|Jsoup\.clean)\s*\(\s*([A-Za-z_]\w*)/;
+        const sanitizerCoversCarrier = xssSanitizerLines.some(l => {
+          if (l < m.start_line || l > sinkLine) return false;
+          const line = lines[l - 1] ?? '';
+          const ops: string[] = [];
+          let sm: RegExpExecArray | null;
+          const re = new RegExp(xssEscapeOpRe.source, 'g');
+          while ((sm = re.exec(line)) !== null) ops.push(sm[1]);
+          if (ops.length === 0) {
+            // Unparsed sanitizer shape on this line — keep prior line-level skip.
+            return /\b(?:htmlEscape|forHtml|escapeHtml|encodeForHTML|Jsoup\.clean|escapeHtml[34])\b/.test(line);
+          }
+          if (ops.some(op => op === name)) return true;
+          if (l === info.assignLine) return true;
+          return false;
+        });
+        if (sanitizerCoversCarrier) continue;
         out.push({ sinkLine, sourceLine: info.sourceLine });
       }
     }

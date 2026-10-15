@@ -1993,7 +1993,11 @@ function isJavaOutboundOutputStreamWrite(
   // `var x = …` (inferred type) also shadows, and its type is unknown here.
   const anyDeclRe = new RegExp(`\\b(?:[A-Z][\\w.<>,\\[\\]]*|var)\\s+${m[1]}\\s*[=;,)]`);
   for (let i = call.location.line - 1; i >= 0; i--) {
-    const line = sourceLines[i] ?? '';
+    // Strip string literals and `//` comments so a commented-out declaration
+    // (e.g. `// was URLConnection resp = …`) cannot match either regex.
+    const line = (sourceLines[i] ?? '')
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/\/\/.*$/, '');
     if (declRe.test(line)) return true;
     if (anyDeclRe.test(line)) return false;
   }

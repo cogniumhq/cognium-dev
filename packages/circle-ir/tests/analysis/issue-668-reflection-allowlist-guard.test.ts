@@ -133,9 +133,58 @@ public class Loader {
         if (!NAMES.contains(kind)) throw new SecurityException("denied");
         return Class.forName(kind + tail).newInstance();
     }
+
+    // Braceless outer if — guard must not clear the sink outside the branch.
+    public Object braceless(HttpServletRequest req, boolean strict) throws Exception {
+        String kind = req.getParameter("kind");
+        if (strict)
+            if (!NAMES.contains(kind))
+                throw new SecurityException("denied");
+        return Class.forName(kind).newInstance();
+    }
 }
 `;
     const r = await analyze(code, 'Loader.java', 'java');
-    expect(codeInjectionLines(r)).toEqual([17, 24, 31]);
+    expect(codeInjectionLines(r)).toEqual([17, 24, 31, 40]);
+  });
+
+  it('a final String "allowlist" is not a collection; String.contains must not clear Class.forName', async () => {
+    const code = `package com.acme.render;
+
+import javax.servlet.http.HttpServletRequest;
+
+public class StringGuard {
+    private static final String ALLOWED = "com.acme.Safe";
+
+    public Object load(HttpServletRequest req) throws Exception {
+        String cls = req.getParameter("cls");
+        if (!ALLOWED.contains(cls)) throw new SecurityException("denied");
+        return Class.forName(cls).newInstance();
+    }
+}
+`;
+    const r = await analyze(code, 'StringGuard.java', 'java');
+    expect(codeInjectionLines(r)).toEqual([11]);
+  });
+
+  it('nearest final declaration wins over an earlier field of the same name', async () => {
+    const code = `package com.acme.render;
+
+import java.util.Set;
+import javax.servlet.http.HttpServletRequest;
+
+public class Shadow {
+    private static final Set<String> ALLOWED = Set.of("com.acme.Safe");
+
+    public Object load(HttpServletRequest req) throws Exception {
+        final Set<String> ALLOWED = Set.of(req.getParameter("x"));
+        String cls = req.getParameter("cls");
+        if (!ALLOWED.contains(cls)) throw new SecurityException("denied");
+        return Class.forName(cls).newInstance();
+    }
+}
+`;
+    const r = await analyze(code, 'Shadow.java', 'java');
+    expect(codeInjectionLines(r)).toEqual([13]);
   });
 });

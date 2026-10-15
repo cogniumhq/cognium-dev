@@ -115,4 +115,22 @@ public class Mixed {
     const lines = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))];
     expect(lines).toEqual([16]);
   });
+
+  it('a commented-out URLConnection declaration must not drop servlet xss', async () => {
+    const code = `package com.acme.relay;
+
+import javax.servlet.http.*;
+
+public class Commented {
+    public void echo(HttpServletRequest req, HttpServletResponse resp) throws Exception {
+        String v = req.getParameter("v");
+        // was URLConnection resp = client.openConnection();
+        resp.getOutputStream().write(v.getBytes());
+    }
+}
+`;
+    const r = await analyze(code, 'Commented.java', 'java');
+    const lines = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))];
+    expect(lines).toEqual([9]);
+  });
 });
