@@ -16,7 +16,7 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import { CSHARP_SANITIZER_RES, CSharpCredit } from './csharp-sanitizer-credit.js';
@@ -334,6 +334,41 @@ function argvFirstLiteralIsShell(lineText: string): boolean {
     .replace(/\.exe$/i, '')
     .toLowerCase();
   return SHELL_PROGRAMS.has(base);
+}
+
+/**
+ * cognium-dev#626 — does any same-file call of `methodName` pass a shell argv
+ * (`Arrays.asList("/bin/sh", "-c", ...)`, `List.of("bash", ...)`,
+ * `new String[]{"sh", ...}`) at the position of its parameter `paramName`?
+ *
+ * Reuses the #351 literal test (`argvFirstLiteralIsShell`) on the caller's
+ * argument text, so the criterion is the same one the inline form already
+ * obeys. Same-file callers only; a parameter that is not found, or a call
+ * with no such argument, answers `false` and today's suppression stands.
+ */
+function sameFileCallerPassesShellArgv(
+  paramName: string,
+  methodName: string | null | undefined,
+  types: ReadonlyArray<TypeInfo>,
+  calls: ReadonlyArray<CallInfo>,
+): boolean {
+  if (!methodName) return false;
+  const positions = new Set<number>();
+  for (const t of types) {
+    for (const m of t.methods) {
+      if (m.name !== methodName) continue;
+      const idx = m.parameters.findIndex(p => p.name === paramName);
+      if (idx >= 0) positions.add(idx);
+    }
+  }
+  if (positions.size === 0) return false;
+  return calls.some(c =>
+    c.method_name === methodName &&
+    [...positions].some(pos => {
+      const expr = c.arguments[pos]?.expression;
+      return typeof expr === 'string' && argvFirstLiteralIsShell(`new ProcessBuilder(${expr}`);
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,7 +1780,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Bare identifier — parameter/field lookup.
         if (varName !== '' && argExpr === varName && !/[(.]/.test(argExpr)) {
           const t = resolveIdentifierType(varName, ctorCall.in_method, irTypes);
-          if (isArgvContainerType(t)) return false;
+          // cognium-dev#626: a `List<String>` PARAMETER is argv-form only while no
+          // same-file caller hands it a shell argv (`/bin/sh -c <script>`): then
+          // the tainted element is the script, so the suppression proves nothing.
+          if (isArgvContainerType(t) && !sameFileCallerPassesShellArgv(varName, ctorCall.in_method, irTypes, irCalls)) {
+            return false;
+          }
         }
         // Method call — return-type lookup. `variable` field carries the
         // callee name for call-expression args.

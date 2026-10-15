@@ -22,6 +22,11 @@ import type {
 } from '../types/index.js';
 import { CodeGraph } from '../graph/index.js';
 
+
+/** cognium-dev#626 — in-place Java argv container passed as a call argument. */
+const ARGV_CONTAINER_ARG_RE =
+  /^\s*(?:Arrays\s*\.\s*asList|List\s*\.\s*of|Collections\s*\.\s*singletonList)\s*\(|^\s*new\s+String\s*\[\s*\]\s*\{/;
+
 /**
  * Represents a method in the call graph.
  */
@@ -393,6 +398,21 @@ export function analyzeInterprocedural(
         if (isTaintedByDFG || isTaintedByCP) {
           taintedArgPositions.push(arg.position);
           taintedArgVars.push(arg.variable);
+          continue;
+        }
+      }
+      // cognium-dev#626: a Java argv container built in place —
+      // `launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step))` — carries
+      // every tainted variable named inside it. For a call expression `variable`
+      // is the callee name, so the check above never sees `step`.
+      if (graph.ir.meta.language === 'java' && ARGV_CONTAINER_ARG_RE.test(arg.expression ?? '')) {
+        const inCode = (arg.expression ?? '').replace(/"(?:[^"\\]|\\.)*"/g, ' ');
+        const carried = graph.usesAtLine(call.location.line).find(u =>
+          u.def_id !== null && taintedDefIds.has(u.def_id) &&
+          new RegExp(`(?<![\\p{L}\\p{N}_.])${u.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(inCode));
+        if (carried) {
+          taintedArgPositions.push(arg.position);
+          taintedArgVars.push(carried.variable);
         }
       }
     }
