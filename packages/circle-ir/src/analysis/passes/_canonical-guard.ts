@@ -202,47 +202,92 @@ function opensScopeBoundary(skel: string, brace: number): boolean {
 }
 
 /**
+ * Does the `{` at `brace` open a nested scope — a lambda body, an anonymous
+ * class body or a local class / interface / enum / record body — rather than
+ * a block that is part of the enclosing method (`if` / `for` / `while` /
+ * `switch` / `try` / `catch` / `finally` / `else` / `do`, a switch-rule
+ * block, a bare block, an array initializer)?
+ */
+function opensNestedScope(skel: string, brace: number): boolean {
+  // A bounded look-back keeps this linear per brace on large files.
+  const pre = skel.slice(Math.max(0, brace - 2048), brace).trimEnd();
+  if (pre.endsWith('->')) return !/(?:\bcase\b[^;{}]*|\bdefault\s*)->$/.test(pre); // lambda, not a switch rule
+  if (/\b(?:class|interface|enum)\s+[\w$][^;{}=()]*$/.test(pre)) return true; // local type
+  const p = pre.replace(/\b(?:implements)\s+[^;{}=()]+$/, '').trimEnd();
+  if (!p.endsWith(')')) return false;
+  const open = matchingOpen(p, p.length - 1);
+  if (open < 0) return false;
+  const head = p.slice(0, open).trimEnd();
+  if (/\bnew\s+[\w.$]+\s*(?:<[^()]*>)?$/.test(head)) return true; // anonymous class
+  return /\brecord\s+[\w$]+\s*(?:<[^()]*>)?$/.test(head); // local record
+}
+
+/**
  * Nearest earlier definition of `name` in the current method, walking back
  * from the end of `lines`. Comments are ignored; the walk stops at the
- * method's opening brace (found by brace depth, so a wrapped signature or a
- * nested block / anonymous class in between does not end it early or late).
+ * method's opening brace (the innermost still-open `{` that opens a method /
+ * constructor / type body, so a wrapped signature or a block in between does
+ * not end it early or late).
  *
- * Only the depth-0 part of each line is searched, so an assignment inside a
- * nested `{…}` (anonymous class, lambda body, local class) is not this
- * method's definition, and matching runs on the string-blanked skeleton so an
- * assignment written inside a string / char literal is skipped. The RHS is
- * then read from the source text, so a real literal RHS keeps its value.
+ * Blocks that are part of the method (`if` / `for` / `try` / … bodies) are
+ * searched like any other method code, so the nearest assignment wins
+ * wherever it sits. A closed nested scope (lambda body, anonymous class,
+ * local class) is skipped: an assignment there is not this method's
+ * definition. Matching runs on the string-blanked skeleton so an assignment
+ * written inside a string / char literal is skipped; the RHS is then read
+ * from the source text, so a real literal RHS keeps its value.
+ *
+ * `name += rhs` appends `rhs` to the previous value, so it is returned as a
+ * concatenation whose last operand is `rhs`'s.
  */
 function findLocalDefinition(name: string, lines: readonly string[]): string | null {
-  const re = new RegExp(`(?:^|[\\s;{(])(?:[A-Za-z_][\\w.<>\\[\\]]*\\s+)?${name}\\s*=(?!=)\\s*([^;]*)`, 'd');
+  const re = new RegExp(`(?:^|[\\s;{}(])(?:[A-Za-z_][\\w.<>\\[\\]]*\\s+)?${name}\\s*(\\+?)=(?!=)\\s*([^;]*)`, 'dg');
   const { code, skel } = blankJava(lines.join('\n'));
+
+  // Pair the braces. The still-open ones enclose the guard; the innermost of
+  // those that opens a method / type body bounds the search.
+  const openStack: number[] = [];
+  const closed: Array<[number, number]> = [];
+  for (let k = 0; k < skel.length; k++) {
+    if (skel[k] === '{') openStack.push(k);
+    else if (skel[k] === '}' && openStack.length > 0) closed.push([openStack.pop() as number, k]);
+  }
+  let boundary = -1;
+  for (let s = openStack.length - 1; s >= 0; s--) {
+    if (opensScopeBoundary(skel, openStack[s])) { boundary = openStack[s]; break; }
+  }
+  // Blank every closed nested scope inside the method; method blocks stay.
+  const masked = skel.split('');
+  let maskedTo = -1;
+  closed.sort((x, y) => x[0] - y[0]);
+  for (const [o, c] of closed) {
+    if (o <= boundary || c <= maskedTo) continue; // outside the method, or already blanked
+    if (!opensNestedScope(skel, o)) continue;
+    for (let q = o; q <= c; q++) if (masked[q] !== '\n') masked[q] = ' ';
+    maskedTo = c;
+  }
+  const top = masked.join('');
+
   const codeLines = code.split('\n');
   let end = code.length;
-  let depth = 0;
-  for (let i = codeLines.length - 1; i >= 0; i--) {
+  for (let i = codeLines.length - 1; i >= 0 && end > boundary; i--) {
     const start = end - codeLines[i].length;
-    let boundary = -1;
-    // `skel` for this line with everything inside a nested `{…}` blanked.
-    const top = skel.slice(start, end).split('');
-    for (let k = end - 1; k >= start; k--) {
-      if (skel[k] === '}') { depth++; top[k - start] = ' '; }
-      else if (skel[k] === '{') {
-        if (depth > 0) { depth--; top[k - start] = ' '; }
-        else if (opensScopeBoundary(skel, k)) { boundary = k; break; }
-      } else if (depth > 0) top[k - start] = ' ';
-    }
-    const from = boundary < 0 ? start : boundary + 1;
-    const m = re.exec(top.join('').slice(from - start));
-    if (m?.indices?.[1]) {
-      const [rs, rEnd] = m.indices[1];
+    const from = Math.max(start, boundary + 1);
+    const seg = top.slice(from, end);
+    let m: RegExpExecArray | null;
+    let last: RegExpExecArray | null = null;
+    re.lastIndex = 0;
+    while ((m = re.exec(seg)) !== null) last = m;
+    if (last?.indices?.[2]) {
+      const [rs, rEnd] = last.indices[2];
       let rhs = code.slice(from + rs, from + rEnd);
       // A definition split over lines: gather up to the terminating `;`.
       for (let j = i; !codeLines[j].includes(';') && j + 1 < codeLines.length && j < i + 4; j++) {
         rhs += ' ' + codeLines[j + 1].split(';')[0];
       }
-      return rhs.trim();
+      rhs = rhs.trim();
+      return last[1] === '+' ? `"" + ${rhs}` : rhs;
     }
-    if (boundary >= 0) break;
     end = start - 1;
   }
   return null;

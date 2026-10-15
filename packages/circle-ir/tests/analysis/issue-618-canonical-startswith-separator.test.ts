@@ -389,4 +389,76 @@ ${body}
     expect(ptScan(r)).toHaveLength(0);
   });
 
+  // Review round 6 (cogbot-eng on 54c19ed1).
+  const localBase = (body: string) => `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    public void read(HttpServletRequest req, File parent, boolean flag, String[] parts) throws IOException {
+        File f = new File(parent, req.getParameter("name"));
+${body}
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+
+  it.each([
+    ['an `if` block', `        String base = parent.getCanonicalPath();
+        if (!base.endsWith(File.separator)) {
+            base = base + File.separator;
+        }`],
+    ['a `for` block', `        String base = parent.getCanonicalPath();
+        for (int i = 0; i < 1; i++) {
+            base = base + File.separator;
+        }`],
+    ['a `try` block', `        String base = parent.getCanonicalPath();
+        try {
+            base = base + File.separator;
+        } finally {
+            parts = null;
+        }`],
+    ['a `while` block', `        String base = parent.getCanonicalPath();
+        while (!base.endsWith(File.separator)) {
+            base = base + File.separator;
+        }`],
+    ['a one-line `if` block', `        String base = parent.getCanonicalPath();
+        if (!base.endsWith(File.separator)) { base = base + File.separator; }`],
+    ['a `+=` at method level', `        String base = parent.getCanonicalPath();
+        base += File.separator;`],
+    ['a `+=` inside an `if` block', `        String base = parent.getCanonicalPath();
+        if (!base.endsWith(File.separator)) {
+            base += File.separator;
+        }`],
+    ['a `+=` of a separator-holding local', `        String sep = File.separator;
+        String base = parent.getCanonicalPath();
+        base += sep;`],
+  ])('a separator appended in %s stays clean', async (_n, body) => {
+    const r = await analyzeJava(localBase(body));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it.each([
+    ['an unanchored overwrite inside an `if` block', `        String base = parent.getCanonicalPath() + File.separator;
+        if (flag) {
+            base = parent.getCanonicalPath();
+        }`],
+    ['an unanchored overwrite later on the same line', `        String base = parent.getCanonicalPath() + File.separator; if (flag) { base = parent.getCanonicalPath(); }`],
+    ['a `+=` of a non-separator', `        String base = parent.getCanonicalPath() + File.separator;
+        base += parent.getName();`],
+    ['a `+=` of an unresolved non-separator name', `        String base = parent.getCanonicalPath() + File.separator;
+        base += parts;`],
+    ['a shadowing field in a local class', `        String base = parent.getCanonicalPath();
+        class Inner { String base = parent.getCanonicalPath() + File.separator; }`],
+    ['an anonymous class body', `        String base = parent.getCanonicalPath();
+        new Thread(new Runnable() {
+            public void run() { String base = parent.getCanonicalPath() + File.separator; }
+        }).start();`],
+  ])('%s still reports', async (_n, body) => {
+    const r = await analyzeJava(localBase(body));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+    expect(ptScan(r).length).toBeGreaterThan(0);
+  });
+
 });
