@@ -199,6 +199,54 @@ public class Builder {
     expect(r.proximity).toBe(0);
   });
 
+  it('a carrier name only in a chained non-append call does not taint the builder', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        html.append("safe").indexOf(who);',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('a carrier name after the append statement semicolon does not taint the builder', async () => {
+    const code = greeting.replace(
+      '        String who = req.getParameter("visitor");\n        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        StringBuilder html = new StringBuilder();\n        html.append("safe"); String who = req.getParameter("visitor");',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('a chained .append(who) after a safe append still fires', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        html.append("safe").append(who);',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([[13, 16]]);
+    expect(r.findings).toBeGreaterThan(0);
+  });
+
+  it('a nested call inside append(String.valueOf(who)) still fires', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");',
+      '        html.append(String.valueOf(who));',
+    );
+    expect(code).not.toBe(greeting);
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([[13, 16]]);
+    expect(r.findings).toBeGreaterThan(0);
+  });
+
   it('only the escaped value is returned while a later, unused parameter is read: no xss', async () => {
     const code = banner.replace(
       '        return',

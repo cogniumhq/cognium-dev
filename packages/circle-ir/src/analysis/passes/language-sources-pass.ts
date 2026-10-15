@@ -2923,6 +2923,59 @@ function isSafeJinjaReturnExpr(expr: string): boolean {
 }
 
 /**
+ * Arguments of `receiver.append(...)` on one statement, including a chain of
+ * further `.append(...)` calls on the same expression. Stops at any other
+ * method (e.g. `.indexOf(...)`) or at the statement semicolon. Nested calls
+ * inside an argument (e.g. `append(escape(who))`) stay inside that argument.
+ * String / char literal bodies are walked so a `)` inside a string does not
+ * close the argument.
+ */
+function javaAppendArgExprs(line: string): { receiver: string; args: string[] } | null {
+  const start = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\(/u.exec(line);
+  if (!start) return null;
+  const receiver = start[1];
+  const args: string[] = [];
+  let i = start[0].length;
+  const takeArg = (): string | null => {
+    let depth = 1;
+    let inStr: '"' | "'" | null = null;
+    let escaped = false;
+    const from = i;
+    for (; i < line.length; i++) {
+      const ch = line[i];
+      if (inStr) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { inStr = ch; continue; }
+      if (ch === '(') { depth++; continue; }
+      if (ch === ')') {
+        depth--;
+        if (depth === 0) {
+          const arg = line.slice(from, i);
+          i++; // past ')'
+          return arg;
+        }
+      }
+    }
+    return null;
+  };
+  while (true) {
+    const arg = takeArg();
+    if (arg === null) return null;
+    args.push(arg);
+    // More chained .append(…)? Otherwise stop (other method, ';', end).
+    const rest = line.slice(i);
+    const next = /^\s*\.\s*append\s*\(/.exec(rest);
+    if (!next) break;
+    i += next[0].length;
+  }
+  return { receiver, args };
+}
+
+/**
  * cognium-dev#624 (minimal slice) — JSPWiki plugin output is rendered as HTML.
  *
  * The `String` returned from `execute(...)` of a class that implements
@@ -3011,8 +3064,12 @@ export function findJavaWikiPluginReturnXSSSinks(
             return [...carriers].some(([v, l]) => l <= atLine && refs(c, v));
           };
           for (let j = m.start_line - 1; j < i; j++) {
-            const am = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\((.*)$/u.exec(lines[j] ?? '');
-            if (am && !carriers.has(am[1]) && refsCarrier(am[2], j + 1)) carriers.set(am[1], j + 1);
+            // Only names inside append(...) arguments count (chained .append and
+            // nested calls included). A name in another method or after ';' does not.
+            const ap = javaAppendArgExprs(lines[j] ?? '');
+            if (ap && !carriers.has(ap.receiver) && ap.args.some(a => refsCarrier(a, j + 1))) {
+              carriers.set(ap.receiver, j + 1);
+            }
             const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[j] ?? '');
             if (cm && !carriers.has(cm[1]) && refsCarrier(cm[2], j + 1)) carriers.set(cm[1], j + 1);
           }
