@@ -23,6 +23,7 @@ import {
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
+import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -6522,6 +6523,18 @@ function findJavaPathGetFileNameSanitizers(
  * strips CRLF. In Java that means an explicit `String`/`CharSequence` return
  * type, which keeps `void` log-and-forget methods out.
  */
+/** True when the Java text strips both `\r` and `\n` via replace / replaceAll (cognium-dev#605). */
+function javaBodyStripsCrAndLf(body: string): boolean {
+  let cr = false;
+  let lf = false;
+  for (const m of body.matchAll(/\.\s*(replace|replaceAll)\s*\(\s*(?:"((?:\\.|[^"\\])*)"|'(\\.|[^'\\])')/g)) {
+    const cov = javaReplaceCrLfCoverage(m[1] as 'replace' | 'replaceAll', m[2] ?? m[3] ?? '');
+    if (cov.cr) cr = true;
+    if (cov.lf) lf = true;
+  }
+  return cr && lf;
+}
+
 function findCrlfWrapperFunctionSanitizers(
   code: string,
   language: 'java' | 'python',
@@ -6545,8 +6558,21 @@ function findCrlfWrapperFunctionSanitizers(
   for (let i = 0; i < lines.length; i++) {
     const m = declRe.exec(lines[i]);
     if (!m) continue;
-    const body = lines.slice(i, Math.min(lines.length, i + bodyWindow)).join('\n');
-    if (stripRe.test(body)) wrappers.add(m[1]);
+    if (language !== 'java') {
+      const body = lines.slice(i, Math.min(lines.length, i + bodyWindow)).join('\n');
+      if (stripRe.test(body)) wrappers.add(m[1]);
+      continue;
+    }
+    // Java: stop at the next declaration so one helper's body does not
+    // credit the helper above it, and require the strip to cover BOTH CR and
+    // LF. An LF-only `replace("\n", "")` leaves CR, which still forges a
+    // log line (cognium-dev#605).
+    let end = Math.min(lines.length, i + bodyWindow);
+    for (let j = i + 1; j < end; j++) {
+      if (declRe.test(lines[j])) { end = j; break; }
+    }
+    const body = lines.slice(i, end).join('\n');
+    if (javaBodyStripsCrAndLf(body)) wrappers.add(m[1]);
   }
   if (wrappers.size === 0) return sanitizers;
 
