@@ -11,7 +11,8 @@
  * f-string `{…}` names are handled on the RHS scan; format specs / conversion
  * flags are cut so they cannot drop later names or become scanned identifiers;
  * a later assignment of a real-source name is resolved before falling back to
- * that real source; the direct-argument case pins the source line.
+ * that real source; the direct-argument case pins the source line. `!=` inside
+ * an f-string is an operator, not a conversion, so names after it are kept.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
@@ -87,6 +88,57 @@ def export_report():
     subprocess.check_output(cmdline, shell=True)
 `;
     expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('still drops a conversion flag followed by a format spec', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    s = request.args.get("s")
+    fmt = request.form.get("fmt")
+    cmdline = f"pandoc -t {fmt!s:10}"
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('does not cut an f-string != comparison as if it were a conversion', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    cmdline = f"{label != fmt}"
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('does not cut an unspaced != comparison inside an f-string', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    cmdline = f"{other!=fmt}"
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
+  it('keeps the name after != when the f-string is the sink argument', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    subprocess.check_output(f"{label != fmt}", shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 7, 'command_injection']]);
   });
 
   it('follows a reassignment of a real-source name to the value that flows', async () => {

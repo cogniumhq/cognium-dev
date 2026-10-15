@@ -86,7 +86,8 @@ function stripPythonTrailingComment(text: string): string {
 
 /**
  * Keep only the f-string interpolation expression: cut before a top-level
- * `!conversion` or `:format_spec` (Python replacement_field grammar). Depth
+ * `!conversion` or `:format_spec` (Python replacement_field grammar). A `!`
+ * followed by `=` is the `!=` operator and is not a cut point. Depth
  * tracks `()[]{}`; string literals are skipped so a `:` inside a subscript
  * key does not truncate the expression.
  */
@@ -108,7 +109,14 @@ function pythonFStringExprOnly(inner: string): string {
     }
     if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue; }
     if (ch === ')' || ch === ']' || ch === '}') { depth--; i++; continue; }
-    if (depth === 0 && (ch === '!' || ch === ':')) return inner.slice(0, i);
+    if (depth === 0 && ch === '!') {
+      // `!=` is the comparison operator, not a `!conversion`; keep scanning.
+      let j = i + 1;
+      while (j < inner.length && (inner[j] === ' ' || inner[j] === '\t')) j++;
+      if (inner[j] === '=') { i = j + 1; continue; }
+      return inner.slice(0, i);
+    }
+    if (depth === 0 && ch === ':') return inner.slice(0, i);
     i++;
   }
   return inner;
