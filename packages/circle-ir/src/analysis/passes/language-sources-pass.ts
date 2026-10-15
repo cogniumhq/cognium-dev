@@ -25,6 +25,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
 import { javaCallArgument, javaCanonicalBaseLacksSeparator } from '../java-canonical-prefix.js';
+import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -350,6 +351,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findGoMapAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findGoHtmlTemplateImportSanitizers(code));
       additionalSanitizers.push(...findGoPathContainmentGuardSanitizers(code));
+      // #348 / #293: strings.NewReplacer CR/LF strip and < > entity escape.
+      additionalSanitizers.push(...findGoStringsReplacerSanitizers(code));
       // Sprint 78 (#190): Go ECB-mode weak-crypto detection.
       const goMisconfigFindings = findGoPatternFindings(code, graph.ir.meta.file);
       for (const finding of goMisconfigFindings) {
