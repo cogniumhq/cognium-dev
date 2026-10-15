@@ -202,4 +202,41 @@ public class MixedEscape {
     // message is still unsanitized in the returned markup
     expect(xssFlowLines(r)).toEqual([11]);
   });
+
+  it('static-import htmlEscape and same-line concat must not suppress unsanitized carrier', async () => {
+    const staticImport = `package com.acme.board;
+
+import org.springframework.web.bind.annotation.*;
+import static org.springframework.web.util.HtmlUtils.htmlEscape;
+
+@RestController
+public class StaticEsc {
+    @GetMapping("/mix")
+    public String mix(@RequestParam String title, @RequestParam String message) {
+        String safeTitle = htmlEscape(title);
+        return "<h1>" + safeTitle + "</h1><p>" + message + "</p>";
+    }
+}
+`;
+    const r1 = await analyze(staticImport, 'StaticEsc.java', 'java');
+    expect(xssFlowLines(r1)).toEqual([11]);
+
+    const concatAssign = `package com.acme.board;
+
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.util.HtmlUtils;
+
+@RestController
+public class ConcatAssign {
+    @GetMapping("/mix")
+    public String mix(@RequestParam String title, @RequestParam String message) {
+        String body = "<p>" + HtmlUtils.htmlEscape(title) + message + "</p>";
+        return body;
+    }
+}
+`;
+    const r2 = await analyze(concatAssign, 'ConcatAssign.java', 'java');
+    expect(xssFlowLines(r2)).toEqual([11]);
+  });
+
 });

@@ -6179,14 +6179,22 @@ function findJavaReflectionAllowlistGuardSanitizers(
     'ImmutableSet', 'ImmutableList',
   ]);
 
-  /** Nearest `final` declaration of `name` at or above `fromLine` (0-based). */
+  /**
+   * Nearest declaration of `name` at or above `fromLine` (0-based). A closer
+   * non-final binding (local, `var`, parameter) wins over an earlier `final`
+   * field; only a nearest `final` literal collection returns true.
+   */
   const isLiteralCollection = (name: string, fromLine: number): boolean => {
-    const declRe = new RegExp(`\\bfinal\\b[^=;(]*\\b${name}\\s*=(?!=)`);
+    const finalDeclRe = new RegExp(`\\bfinal\\b[^=;(]*\\b${name}\\s*=(?!=)`);
+    // Type/var declaration or use as a parameter (`Type name` before `=` / `;` / `,` / `)`).
+    const anyDeclRe = new RegExp(`\\b(?:[A-Z][\\w.<>,\\[\\]?\\s]*|var)\\s+${name}\\s*[=;,)]`);
     for (let i = fromLine; i >= 0; i--) {
-      const dm = declRe.exec(lines[i]);
-      if (!dm) continue;
+      const line = lines[i];
+      if (!anyDeclRe.test(line) && !finalDeclRe.test(line)) continue;
+      const dm = finalDeclRe.exec(line);
+      if (!dm) return false; // nearer non-final binding — not a fixed allowlist
       // Initializer up to the terminating `;` (may span a few lines).
-      let init = lines[i].slice(dm.index + dm[0].length);
+      let init = line.slice(dm.index + dm[0].length);
       for (let j = i + 1; !init.includes(';') && j < Math.min(lines.length, i + 12); j++) init += ' ' + lines[j];
       if (!init.includes(';')) return false;
       init = init.slice(0, init.indexOf(';')).replace(/"(?:[^"\\]|\\.)*"/g, '""');
@@ -6220,7 +6228,10 @@ function findJavaReflectionAllowlistGuardSanitizers(
     const depth = (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
     if (depth !== 1) continue;
     // Braceless `if`/`for`/`while`/`else` keeps brace-depth 1, so also reject a
-    // guard that is the body of a preceding braceless control statement.
+    // guard that is the body of a preceding braceless control statement — on the
+    // same line (`if (strict) if (!SET.contains(v))`) or the previous statement
+    // (`} else` / `else` / `if (x)` without `{`).
+    const samePrefix = lines[i].slice(0, m.index).replace(/\/\/.*$/, '').trim();
     let prev = '';
     for (let p = i - 1; p >= method.start_line - 1; p--) {
       const t = lines[p].replace(/\/\/.*$/, '').trim();
@@ -6228,7 +6239,12 @@ function findJavaReflectionAllowlistGuardSanitizers(
       prev = t;
       break;
     }
-    if (prev && /^(?:else(?:\s+if\b)?|if|for|while)\b/.test(prev) && !prev.includes('{')) continue;
+    const openBraceless = (s: string): boolean => {
+      // Allow a leading `}` so `} else` counts as braceless else.
+      const t = s.replace(/^\}+\s*/, '').trim();
+      return /^(?:else(?:\s+if\b)?|if|for|while)\b/.test(t) && !s.includes('{');
+    };
+    if (openBraceless(samePrefix) || (prev && openBraceless(prev))) continue;
     const refRe = new RegExp(`(?<![\\w.])${guarded}\\b`);
     // Credit only lines where `<v>` is a whole call argument, `f(<v>)`, so a
     // second tainted value on the same line (`forName(v + other)`) still reports.
@@ -11601,12 +11617,32 @@ export function findJavaSpringReturnXSSSinks(
           let sm: RegExpExecArray | null;
           const re = new RegExp(xssEscapeOpRe.source, 'g');
           while ((sm = re.exec(line)) !== null) ops.push(sm[1]);
-          if (ops.length === 0) {
-            // Unparsed sanitizer shape on this line — keep prior line-level skip.
-            return /\b(?:htmlEscape|forHtml|escapeHtml|encodeForHTML|Jsoup\.clean|escapeHtml[34])\b/.test(line);
-          }
+          // Unparsed shapes (e.g. static-import `htmlEscape(title)`) do not suppress.
+          if (ops.length === 0) return false;
+          // Operand is the returned carrier.
           if (ops.some(op => op === name)) return true;
-          if (l === info.assignLine) return true;
+          // Carrier assigned from the sanitizer call itself (`body = HtmlUtils.htmlEscape(x)`),
+          // not a concat that merely mentions a sanitizer on the assignment line.
+          if (l === info.assignLine) {
+            const stripped = line.replace(/"(?:[^"\\]|\\.)*"/g, '""').trim();
+            const am = new RegExp(`\\b${esc(name)}\\s*=\\s*(.+)$`).exec(stripped);
+            if (!am) return false;
+            const rhs = am[1].replace(/;\s*$/, '').trim();
+            const call = xssEscapeOpRe.exec(rhs);
+            if (!call || call.index !== 0) return false;
+            // Whole RHS is one sanitizer invocation (no concatenation outside the call).
+            let depth = 0;
+            let ended = -1;
+            for (let k = call.index; k < rhs.length; k++) {
+              const ch = rhs[k];
+              if (ch === '(') depth++;
+              else if (ch === ')') {
+                depth--;
+                if (depth === 0) { ended = k; break; }
+              }
+            }
+            return ended >= 0 && rhs.slice(ended + 1).trim() === '';
+          }
           return false;
         });
         if (sanitizerCoversCarrier) continue;

@@ -187,4 +187,65 @@ public class Shadow {
     const r = await analyze(code, 'Shadow.java', 'java');
     expect(codeInjectionLines(r)).toEqual([13]);
   });
+
+  it('} else / same-line nested braceless if must not clear Class.forName', async () => {
+    const code = `package com.acme.render;
+
+import java.util.Set;
+import javax.servlet.http.HttpServletRequest;
+
+public class NestedElse {
+    private static final Set<String> SET = Set.of("com.acme.Safe");
+
+    public Object elseForm(HttpServletRequest req, boolean other) throws Exception {
+        String v = req.getParameter("v");
+        if (other) {
+            doSomething();
+        } else
+            if (!SET.contains(v))
+                throw new SecurityException("denied");
+        return Class.forName(v).newInstance();
+    }
+
+    public Object sameLine(HttpServletRequest req, boolean strict) throws Exception {
+        String v = req.getParameter("v");
+        if (strict) if (!SET.contains(v)) throw new SecurityException("denied");
+        return Class.forName(v).newInstance();
+    }
+
+    private void doSomething() {}
+}
+`;
+    const r = await analyze(code, 'NestedElse.java', 'java');
+    expect(codeInjectionLines(r)).toEqual([16, 22]);
+  });
+
+  it('a closer non-final local shadows a final field allowlist', async () => {
+    const code = `package com.acme.render;
+
+import java.util.Set;
+import javax.servlet.http.HttpServletRequest;
+
+public class NonFinalShadow {
+    private static final Set<String> ALLOWED = Set.of("com.acme.Safe");
+
+    public Object load(HttpServletRequest req) throws Exception {
+        Set<String> ALLOWED = Set.of(req.getParameter("x"));
+        String cls = req.getParameter("cls");
+        if (!ALLOWED.contains(cls)) throw new SecurityException("denied");
+        return Class.forName(cls).newInstance();
+    }
+
+    public Object withVar(HttpServletRequest req) throws Exception {
+        var ALLOWED = Set.of(req.getParameter("x"));
+        String cls = req.getParameter("cls");
+        if (!ALLOWED.contains(cls)) throw new SecurityException("denied");
+        return Class.forName(cls).newInstance();
+    }
+}
+`;
+    const r = await analyze(code, 'NonFinalShadow.java', 'java');
+    expect(codeInjectionLines(r)).toEqual([13, 20]);
+  });
+
 });
