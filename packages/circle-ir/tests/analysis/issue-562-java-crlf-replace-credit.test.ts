@@ -235,3 +235,88 @@ describe('Java argument-aware replace sanitizer credit', () => {
     for (const n of [24, 26, 28, 30, 32]) expect(l).toContain(n);
   });
 });
+
+// `body` is Java source written inside a TS template literal, so a Java `\\r`
+// regex escape is spelled `\\\\r` here and a Java `\\\\r` (backslash + r) is `\\\\\\\\r`.
+const patternServlet = (cases: Array<[string, string]>) => `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class PatternServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+${cases.map(([name, pattern]) => `        String ${name} = a.replaceAll("${pattern}", "");\n        AUDIT.info("v " + ${name});`).join('\n')}
+    }
+}
+`;
+const lineOf = (code: string, text: string) => code.split('\n').findIndex((l) => l.includes(text)) + 1;
+
+const helperServlet = (helpers: Array<[string, string]>) => `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class HelperPatternServlet extends HttpServlet {
+    private static final Logger LOG = Logger.getLogger("audit");
+
+${helpers.map(([name, pattern]) => `    private String ${name}(String value) {\n        return value.replaceAll("${pattern}", "");\n    }\n`).join('\n')}
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String email = request.getParameter("email");
+${helpers.map(([name]) => `        LOG.info("signup " + ${name}(email));`).join('\n')}
+    }
+}
+`;
+
+describe('Java replaceAll regex coverage reads one escape atom at a time', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const clean: Array<[string, string]> = [
+    ['cls', '[\\r\\n]+'],
+    ['alt', '\\r|\\n'],
+    ['grp', '(?:\\r\\n|\\r|\\n)'],
+    ['wide', '[\\r\\n\\t]'],
+    ['esc', '[\\\\r\\\\n]'],
+    ['wrapQ', '(?:[\\r\\n])+'],
+    ['altQ', '(?:\\r|\\n)+'],
+    ['one', '[\\r\\n]{1}'],
+    ['oneUp', '[\\r\\n]{1,}'],
+    ['star', '[\\r\\n]*'],
+    ['lazy', '[\\r\\n]+?'],
+  ];
+  const fires: Array<[string, string]> = [
+    ['overEsc', '[\\\\\\\\r\\\\\\\\n]'],
+    ['overEscAlt', '\\\\\\\\r|\\\\\\\\n'],
+    ['twice', '[\\r\\n]{2}'],
+    ['twiceUp', '[\\r\\n]{2,}'],
+    ['zero', '[\\r\\n]{0}'],
+    ['crTwice', '\\r{2}|\\n'],
+    ['grpTwice', '(?:\\r|\\n){2}'],
+    ['seq', '\\r\\n\\r\\n'],
+    ['negated', '[^\\r\\n]'],
+    ['pair', '\\r\\n'],
+  ];
+
+  it('inline: credited only for a real \\r / \\n atom with a quantifier that allows one repetition', async () => {
+    const code = patternServlet([...clean, ...fires]);
+    const l = await lines(code, 'PatternServlet.java', 'log_injection');
+    for (const [name] of clean) expect(l, name).not.toContain(lineOf(code, `"v " + ${name});`));
+    for (const [name] of fires) expect(l, name).toContain(lineOf(code, `"v " + ${name});`));
+  });
+
+  it('helper body: the same decision, and the call site of an over-credited helper still fires', async () => {
+    const code = helperServlet([...clean.slice(0, 5), ...fires]);
+    const l = await lines(code, 'HelperPatternServlet.java', 'log_injection');
+    for (const [name] of clean.slice(0, 5)) expect(l, name).not.toContain(lineOf(code, `${name}(email)`));
+    for (const [name] of fires) expect(l, name).toContain(lineOf(code, `${name}(email)`));
+  });
+});
+

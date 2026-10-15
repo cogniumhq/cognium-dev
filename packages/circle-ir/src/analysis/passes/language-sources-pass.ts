@@ -23,6 +23,7 @@ import {
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
+import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -6290,14 +6291,9 @@ function javaBodyStripsCrAndLf(body: string): boolean {
   let cr = false;
   let lf = false;
   for (const m of body.matchAll(/\.\s*(replace|replaceAll)\s*\(\s*(?:"((?:\\.|[^"\\])*)"|'(\\.|[^'\\])')/g)) {
-    const from = (m[2] ?? m[3] ?? '').replace(/\\\\/g, '\\');
-    if (m[1] === 'replace') {
-      if (from === '\\n') lf = true;
-      if (from === '\\r') cr = true;
-    } else if (from !== '\\r\\n') {
-      if (from.includes('\\r')) cr = true;
-      if (from.includes('\\n')) lf = true;
-    }
+    const cov = javaReplaceCrLfCoverage(m[1] as 'replace' | 'replaceAll', m[2] ?? m[3] ?? '');
+    if (cov.cr) cr = true;
+    if (cov.lf) lf = true;
   }
   return cr && lf;
 }
