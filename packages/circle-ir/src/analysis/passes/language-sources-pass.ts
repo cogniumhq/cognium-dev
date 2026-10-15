@@ -2959,6 +2959,14 @@ function javaLineStatements(line: string): Array<{ text: string; terminated: boo
 }
 
 /**
+ * `[modifiers] [Type] name = rhs` as ONE statement (no `;`; see
+ * `javaLineStatements`). `==` is not an assignment; `+=` and field targets
+ * (`a.b = x`) are not matched. Group 1 is the name, group 2 the right-hand side.
+ */
+const JAVA_STMT_ASSIGN =
+  /^\s*(?:(?:final|public|private|protected|static|volatile|transient)\s+)*(?:[\p{L}_][\p{L}\p{N}_.]*(?:\s*<[^=]*>)?(?:\s*\[\s*\])*\s+)?([\p{L}_][\p{L}\p{N}_]*)\s*=(?!=)\s*([\s\S]*)$/u;
+
+/**
  * Arguments of `receiver.append(...)` on one statement, including a chain of
  * further `.append(...)` calls on the same expression. Stops at any other
  * method (e.g. `.indexOf(...)`) or at the end of the statement. Nested calls
@@ -3031,7 +3039,7 @@ export function findJavaWikiPluginReturnXSSSinks(
   code: string,
   types: ReadonlyArray<TypeInfo>,
   imports: ReadonlyArray<ImportInfo>,
-  sources: ReadonlyArray<{ line: number; variable?: string }>,
+  sources: ReadonlyArray<{ line: number; variable?: string; location?: string }>,
   xssSanitizerLines: ReadonlyArray<number>,
 ): Array<{ sinkLine: number; sourceLine: number }> {
   if (sources.length === 0) return [];
@@ -3069,48 +3077,61 @@ export function findJavaWikiPluginReturnXSSSinks(
       if (m.name !== 'execute' || m.return_type !== 'String') continue;
       const inMethod = sources.filter(sc => sc.line >= m.start_line && sc.line <= m.end_line);
       if (inMethod.length === 0) continue;
-      // Per source: the names its value reaches (the variable itself and what is
-      // assigned from it), with the line each became tainted.
+      // Sources that name a variable (the carriers are walked per return below).
       const perSource = inMethod
-        .filter((sc): sc is { line: number; variable: string } => !!sc.variable)
-        .map(sc => {
-          const chain = new Map<string, number>([[sc.variable, sc.line]]);
-          for (const [name, line] of buildJavaTaintedVars(code, new Set([sc.variable]))) {
-            if (line >= m.start_line && line <= m.end_line && !chain.has(name)) chain.set(name, line);
-          }
-          return { sc, chain };
-        });
+        .filter((sc): sc is { line: number; variable: string; location?: string } => !!sc.variable)
+        .map(sc => ({ sc }));
       if (perSource.length === 0) continue;
       for (let i = m.start_line - 1; i < m.end_line; i++) {
         const rm = /^\s*return\s+(.+?);\s*$/.exec(lines[i] ?? '');
         if (!rm) continue;
         const sinkLine = i + 1;
         let best: { line: number } | null = null;
-        for (const { sc, chain } of perSource) {
+        for (const { sc } of perSource) {
           if (sc.line > sinkLine) continue;
-          // Carriers: the source's names that are tainted by the return, plus every
-          // accumulator an earlier `x.append(<carrier>)` / `x += <carrier>` fed. Each
-          // name counts only from the line it became tainted (a name assigned the
-          // source later carries nothing on the lines above), and only statements
-          // above the return count, in order.
+          // Carriers: the names the source's value reaches before the return, with
+          // the line each became tainted. Walked one statement at a time, in order,
+          // from the source's own statement: a name is live only after the statement
+          // that gives it a tainted value (the source call, or an already-live
+          // carrier), so a statement earlier on the same line sees nothing. Only
+          // names inside a statement's append(...) arguments (chained .append and
+          // nested calls included) taint its receiver, only its `+=` right-hand
+          // side taints its target, and only its `=` right-hand side taints the
+          // assigned name. A name in another method or statement does not.
           const carriers = new Map<string, number>();
-          for (const [name, line] of chain) if (line >= sc.line && line <= sinkLine) carriers.set(name, line);
-          const refsCarrier = (expr: string, atLine: number = sinkLine): boolean => {
+          const refsCarrier = (expr: string): boolean => {
             const c = codeOnly(expr);
-            return [...carriers].some(([v, l]) => l <= atLine && refs(c, v));
+            return [...carriers.keys()].some(v => refs(c, v));
           };
-          for (let j = m.start_line - 1; j < i; j++) {
-            // Each statement on the line on its own, in order: only names inside that
-            // statement's append(...) arguments (chained .append and nested calls
-            // included) taint its receiver, and only that statement's `+=` right-hand
-            // side taints its target. A name in another method or statement does not.
-            for (const st of javaLineStatements(lines[j] ?? '')) {
+          // Where the source enters on its line. A call source names its call
+          // ("req.getParameter() in execute"), and the statement(s) holding that
+          // call are where the value appears: the line-level binder takes the
+          // first `=` on the line, which may be another statement's name. A
+          // parameter / annotation source (no call) is live from its own
+          // assignment on the line, or from the start of the line.
+          const srcCall = /([\p{L}_$][\p{L}\p{N}_$]*)\(\)(?:\s+in\s+.*)?$/u.exec(sc.location ?? '')?.[1];
+          const callRe = srcCall ? new RegExp(`(?<![\\p{L}\\p{N}_$])${srcCall.replace(/[$]/g, '\\$&')}\\s*\\(`, 'u') : null;
+          const callsSource = (expr: string): boolean => !!callRe && callRe.test(codeOnly(expr));
+          const srcStmts = javaLineStatements(lines[sc.line - 1] ?? '');
+          const seeded = srcStmts.some(st => callsSource(st.text));
+          // Unseeded: index of the statement after which `sc.variable` is live.
+          let liveAfter = -1;
+          if (!seeded) liveAfter = srcStmts.findIndex(st => JAVA_STMT_ASSIGN.exec(st.text)?.[1] === sc.variable);
+          // A source on the return line itself is checked against the return as is.
+          if ((!seeded && liveAfter < 0) || sc.line === sinkLine) carriers.set(sc.variable, sc.line);
+          for (let j = sc.line - 1; j < i; j++) {
+            const onSrcLine = j === sc.line - 1;
+            const stmts = onSrcLine ? srcStmts : javaLineStatements(lines[j] ?? '');
+            for (let k = 0; k < stmts.length; k++) {
+              const st = stmts[k];
+              const tainted = (expr: string): boolean => refsCarrier(expr) || (onSrcLine && seeded && callsSource(expr));
+              const as = JAVA_STMT_ASSIGN.exec(st.text);
+              if (as && !carriers.has(as[1]) && tainted(as[2])) carriers.set(as[1], j + 1);
               const ap = javaAppendArgExprs(st.text);
-              if (ap && !carriers.has(ap.receiver) && ap.args.some(a => refsCarrier(a, j + 1))) {
-                carriers.set(ap.receiver, j + 1);
-              }
+              if (ap && !carriers.has(ap.receiver) && ap.args.some(a => tainted(a))) carriers.set(ap.receiver, j + 1);
               const cm = st.terminated ? /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+?)\s*$/u.exec(st.text) : null;
-              if (cm && !carriers.has(cm[1]) && refsCarrier(cm[2], j + 1)) carriers.set(cm[1], j + 1);
+              if (cm && !carriers.has(cm[1]) && tainted(cm[2])) carriers.set(cm[1], j + 1);
+              if (onSrcLine && !seeded && k === liveAfter && !carriers.has(sc.variable)) carriers.set(sc.variable, sc.line);
             }
           }
           if (!refsCarrier(rm[1])) continue;

@@ -312,6 +312,90 @@ public class Builder {
     expect(r.findings).toBeGreaterThan(0);
   });
 
+  describe('same-line liveness: a name carries the source only after the statement that assigns it', () => {
+    const oneLine = (body: string, ret: string) => greeting.replace(
+      '        String who = req.getParameter("visitor");\n        StringBuilder html = new StringBuilder();\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      `${body}\n        return ${ret};`,
+    );
+    const clean = async (code: string) => {
+      expect(code).not.toBe(greeting);
+      const r = await xss(code, 'GreetingMacro.java');
+      expect(r.flows).toEqual([]);
+      expect(r.sinkLines).toEqual([]);
+      expect(r.findings).toBe(0);
+      expect(r.proximity).toBe(0);
+    };
+
+    it('append(who) before `who = req.getParameter(...)` on the same line: no xss', async () => {
+      await clean(oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = "guest"; html.append(who); who = req.getParameter("visitor");',
+        'html.toString()',
+      ));
+    });
+
+    it('html += who before `who = req.getParameter(...)` on the same line: no xss', async () => {
+      await clean(oneLine(
+        '        String html = ""; String who = "guest"; html += who; who = req.getParameter("visitor");',
+        'html',
+      ));
+    });
+
+    it('the source bound to a later statement on the line (`extra`), not the first `=`: no xss', async () => {
+      await clean(oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = "guest"; html.append(who); String extra = req.getParameter("visitor");',
+        'html.toString()',
+      ));
+    });
+
+    it('the same line with extra appended instead does fire', async () => {
+      const code = oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = "guest"; String extra = req.getParameter("visitor"); html.append(extra);',
+        'html.toString()',
+      );
+      expect(code).not.toBe(greeting);
+      expect((await xss(code, 'GreetingMacro.java')).flows).toEqual([[14, 15]]);
+    });
+
+    it('`String who = req.getParameter(...); html.append(who);` on one line still fires', async () => {
+      const code = oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = req.getParameter("visitor"); html.append(who);',
+        'html.toString()',
+      );
+      expect(code).not.toBe(greeting);
+      expect((await xss(code, 'GreetingMacro.java')).flows).toEqual([[14, 15]]);
+    });
+
+    it('`who = req.getParameter(...); html += who;` on one line still fires', async () => {
+      const code = oneLine(
+        '        String html = ""; String who = "guest"; who = req.getParameter("visitor"); html += who;',
+        'html',
+      );
+      expect(code).not.toBe(greeting);
+      expect((await xss(code, 'GreetingMacro.java')).flows).toEqual([[13, 14]]);
+    });
+
+    it('a copy made on the line before the source is assigned carries nothing; one made after does', async () => {
+      await clean(oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = "guest"; String copy = who; who = req.getParameter("visitor");\n        html.append(copy);',
+        'html.toString()',
+      ));
+      const after = oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String who = req.getParameter("visitor"); String copy = who;\n        html.append(copy);',
+        'html.toString()',
+      );
+      expect((await xss(after, 'GreetingMacro.java')).flows).toEqual([[14, 16]]);
+    });
+
+    it('html += who with who tainted on an earlier line still fires', async () => {
+      const code = oneLine(
+        '        String who = req.getParameter("visitor");\n        String html = ""; html += who;',
+        'html',
+      );
+      expect(code).not.toBe(greeting);
+      expect((await xss(code, 'GreetingMacro.java')).flows).toEqual([[13, 15]]);
+    });
+  });
+
   it('only the escaped value is returned while a later, unused parameter is read: no xss', async () => {
     const code = banner.replace(
       '        return',
