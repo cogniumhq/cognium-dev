@@ -918,11 +918,13 @@ function csharpContentServesHtml(call: CallInfo): boolean {
  * that can inherit the MVC helper (cognium-dev#580). The C# extractor does not
  * record base lists, so they are read from the declaration text.
  *   - a base named `Controller`, `ControllerBase` or `PageModel`: the helper;
+ *   - a `partial` class: the base may be in another part, so treat as unknown and keep;
  *   - no base list, or only `I`-prefixed interface names: nothing is inherited,
  *     so `Content(...)` is the type's own method;
  *   - any other base: unknown, kept, unless the type declares its own `Content`
  *     name, which hides an inherited one.
- * A controller that declares its own `Content` overload keeps the helper call.
+ * Non-class IR kinds (and a missing owner) keep the sink. A controller that
+ * declares its own `Content` overload keeps the helper call.
  */
 function csharpContentCallInheritsHelper(
   call: CallInfo,
@@ -941,6 +943,9 @@ function csharpContentCallInheritsHelper(
   if (!decl) return true;
   const bases = (decl[1] ?? '').split(',').map(b => b.trim().replace(/<.*$/, '').split('.').pop() ?? '').filter(Boolean);
   if (bases.some(b => b === 'Controller' || b === 'ControllerBase' || b === 'PageModel')) return true;
+  // Partial types may declare their base in another part of the type — unknown, keep.
+  const classAt = header.search(/\bclass\b/);
+  if (classAt >= 0 && /\bpartial\b/.test(header.slice(0, classAt))) return true;
   if (bases.every(b => /^I[A-Z]/.test(b))) return false;
   return !owner.methods.some(m => m.name === 'Content');
 }
