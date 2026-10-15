@@ -392,7 +392,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
  * The sink is reached when its statement mentions a derived name that is not
  * sanitized or guarded there.
  */
-function csharpParamReachesSink(
+export function csharpParamReachesSink(
   code: string,
   method: { parameters: Array<{ name: string; position: number }>; startLine: number },
   taintedArgs: number[],

@@ -72,6 +72,11 @@ export interface InterproceduralTaintPath {
   sink:   { file: string; line: number; type: string; cwe: string };
   hops:   Array<{ file: string; line: number; method: string; kind: 'source' | 'wrapper_return' | 'field_write' | 'field_read' | 'sink_call' | 'sink' }>;
   confidence: number;
+  /**
+   * The callee argument position the tainted value enters through, when the
+   * path ends in a call into the sink's method (cognium-dev#637).
+   */
+  calleeArgPositions?: number[];
 }
 
 /**
@@ -908,6 +913,7 @@ export class CrossFileResolver {
           const resolved = this.resolveCall(call, filePath);
           if (!resolved || resolved.targetFile === filePath) continue;
 
+          let carriedPositions: number[] | undefined;
           // Variable-connectivity gate: when we know the source variable, the
           // call's arguments must reference it — or a variable DFG-derived
           // from it (#146) — directly or by expression.
@@ -932,6 +938,13 @@ export class CrossFileResolver {
               }
             }
             if (!matchedName) continue;
+            // The arguments that carry the source (cognium-dev#637): the
+            // callee reach check follows only those parameters.
+            const names = [...reachable.names];
+            carriedPositions = call.arguments.flatMap((arg, i) =>
+              (arg.variable && reachable.names.has(arg.variable)) ||
+              names.some(v => arg.expression && new RegExp(`\\b${escapeRegExp(v)}\\b`).test(arg.expression))
+                ? [i] : []);
 
             // Redefinition override (cognium-dev #266): the name-based gate
             // cannot distinguish a source-named variable from a later
@@ -985,7 +998,7 @@ export class CrossFileResolver {
               targetLine: sink.line,           // actual sink line in target file
               targetMethod: resolved.targetMethod,
               flowType: 'call_arg',
-              taintedArgPositions: call.arguments.map((_, i) => i),
+              taintedArgPositions: carriedPositions ?? call.arguments.map((_, i) => i),
             });
           }
         }
@@ -1146,6 +1159,7 @@ export class CrossFileResolver {
                   },
                   hops,
                   confidence: decay,
+                  calleeArgPositions: [argIdx],
                 });
               }
             }
