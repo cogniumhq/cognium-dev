@@ -29,9 +29,12 @@
  *    `impl Responder`, `impl warp::Reply`, ...).
  *  - A parameter that a real source in the same file feeds is kept
  *    (cognium-dev #684): `function grep(t) {…}` called as
- *    `grep(req.query.t)`, a class constructed with `new C(req.query.u)`,
- *    or a function handed to `pool.submit(fn, q)`. Arguments passed through
- *    a sanitizer do not count, and `external_taint_escape` stays gated.
+ *    `grep(req.query.t)`, a class method called as `svc.run(req.body.c)`,
+ *    a class constructed with `new C(req.query.u)`, or a function handed to
+ *    an executor that runs it (`pool.submit(fn, q)`). A bare call never
+ *    feeds a class method and a call through a receiver never feeds a
+ *    module function. Arguments passed through a sanitizer do not count,
+ *    and `external_taint_escape` stays gated.
  *
  * Only flows are gated; the source list is untouched, so passes and
  * consumers that read `taint.sources` (cross-file resolution, co-occurrence
@@ -117,6 +120,21 @@ interface RealFedParams {
   classes: Set<string>;
 }
 
+/**
+ * Calls that invoke a function passed to them with the arguments that follow
+ * it, keyed by method name. The value is how many of those arguments are not
+ * forwarded (`setTimeout(fn, delay, a)` passes only `a`). Executor and
+ * scheduler shapes only: `pool.submit(fn, q)`,
+ * `loop.run_in_executor(None, fn, q)`, `asyncio.to_thread(fn, q)`,
+ * `loop.call_soon(fn, q)`, `setImmediate(fn, q)`, `process.nextTick(fn, q)`.
+ */
+const EXECUTOR_CALLEES: ReadonlyMap<string, number> = new Map([
+  ['submit', 0], ['run_in_executor', 0], ['to_thread', 0], ['run_sync', 0],
+  ['call_soon', 0], ['call_soon_threadsafe', 0], ['call_later', 0], ['call_at', 0],
+  ['setImmediate', 0], ['nextTick', 0], ['queueMicrotask', 0],
+  ['setTimeout', 1], ['setInterval', 1],
+]);
+
 /** `name` as a whole identifier (names may contain `$`). */
 function identifierRe(name: string): RegExp {
   return new RegExp(`(?:^|[^\\w$.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`);
@@ -170,13 +188,17 @@ function realFedParams(ctx: PassContext, sources: TaintSource[]): RealFedParams 
       reads.some(r => expr.includes(r)) ||
       // The argument's own identifiers, not those of a sibling argument.
       uses.some(u => identifierRe(u.variable).test(expr)));
-    // A local function handed over by reference receives the arguments that
-    // follow it (`pool.submit(render, q)`, `loop.run_in_executor(None, f, q)`).
+    // A local function handed over by reference to a call that runs it
+    // receives the arguments that follow it (`pool.submit(render, q)`,
+    // `loop.run_in_executor(None, f, q)`). Only callees known to invoke their
+    // function argument count: `print(banner, name)` or
+    // `audit.record(banner, name)` only pass `banner` along.
+    const skipAfterCallback = EXECUTOR_CALLEES.get(call.method_name);
     let callbackName: string | null = null;
     let callbackPos = -1;
     for (const arg of call.arguments) {
       const expr = typeof arg.expression === 'string' ? arg.expression.trim() : '';
-      if (callbackName === null && functionNames.has(expr)) {
+      if (skipAfterCallback !== undefined && callbackName === null && functionNames.has(expr)) {
         callbackName = expr;
         callbackPos = arg.position;
         continue;
@@ -186,7 +208,10 @@ function realFedParams(ctx: PassContext, sources: TaintSource[]): RealFedParams 
       // class method named `send`, never a module-level `function send`.
       out.params.add(`${call.receiver ? 'm' : 'f'}:${call.method_name}:${arg.position}`);
       if (classNames.has(call.method_name)) out.classes.add(call.method_name);
-      if (callbackName !== null) out.params.add(`f:${callbackName}:${arg.position - callbackPos - 1}`);
+      if (callbackName !== null) {
+        const pos = arg.position - callbackPos - 1 - (skipAfterCallback ?? 0);
+        if (pos >= 0) out.params.add(`f:${callbackName}:${pos}`);
+      }
     }
   }
   return out;
@@ -239,10 +264,13 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
       const isCtor = (m.name === 'constructor' || m.name === '__init__') && !!owner;
       const callee = isCtor && owner ? owner.name : m.name;
       // A module-level function or a constructor is called without a
-      // receiver; a class method is reached through one (`svc.run(x)`).
+      // receiver; a class method is reached through one (`svc.run(x)`). Each
+      // matches its own call shape only: a bare `send(req.query.m)` does not
+      // run `Mailer.prototype.send`, and `res.send(…)` does not run a
+      // module-level `function send`.
       const viaReceiver = !isCtor && !!owner && owner.name !== '<module>';
-      const feeds = (pos: number): boolean => fed!.params.has(`f:${callee}:${pos}`) ||
-        (viaReceiver && fed!.params.has(`m:${callee}:${pos}`));
+      const feeds = (pos: number): boolean =>
+        fed!.params.has(`${viaReceiver ? 'm' : 'f'}:${callee}:${pos}`);
       // When the flow's first step names a parameter, only that parameter
       // counts: every parameter shares the signature line, and `f(a, b)`
       // called as `f(req.query.a, 'x')` does not feed `b`.

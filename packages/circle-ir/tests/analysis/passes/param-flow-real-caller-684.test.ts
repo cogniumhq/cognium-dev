@@ -231,3 +231,62 @@ warm();
     expect(has(await flows(code, 'bound_collision.js', 'javascript'), 'command_injection')).toBe(false);
   });
 });
+
+describe('#684 review follow-ups: the real-caller key matches one call shape only', () => {
+  it('a receiver-less call does not feed a class method of the same name', async () => {
+    const code = `const express = require('express');
+const { exec } = require('child_process');
+const app = express();
+class Mailer {
+  send(cmd) {
+    exec(cmd);
+  }
+}
+function send(msg) { console.log(msg); }
+app.get('/notify', (req, res) => {
+  send(req.query.msg);
+  res.end();
+});
+module.exports = { app, Mailer };
+`;
+    expect(has(await flows(code, 'mailer_collision.js', 'javascript'), 'command_injection')).toBe(false);
+    // The method itself, called through an instance with the request value, still fires.
+    const vuln = code.replace('send(req.query.msg);', 'new Mailer().send(req.query.msg);');
+    expect(has(await flows(vuln, 'mailer_collision_vuln.js', 'javascript'), 'command_injection')).toBe(true);
+  });
+
+  it('a function passed to a call that never invokes it is not fed by later arguments', async () => {
+    const code = `from flask import Flask, request
+import audit
+app = Flask(__name__)
+def banner(name):
+    return "<h1>" + name + "</h1>"
+@app.route("/banner")
+def show_banner():
+    name = request.args.get("name", "")
+    print(banner, name)
+    audit.record(banner, name)
+    return "ok"
+`;
+    expect(has(await flows(code, 'banner_passthrough.py', 'python'), 'xss')).toBe(false);
+    // Handed to an executor that calls it with the request value: still fires.
+    const vuln = code.replace('audit.record(banner, name)', 'loop.run_in_executor(None, banner, name)');
+    expect(has(await flows(vuln, 'banner_executor.py', 'python'), 'xss')).toBe(true);
+  });
+
+  it('JavaScript: a function logged next to a request value stays gated', async () => {
+    const code = `const express = require('express');
+const { exec } = require('child_process');
+const app = express();
+function load(name) { exec('cat /srv/' + name); }
+app.get('/peek', (req, res) => {
+  console.log(load, req.query.name);
+  res.end();
+});
+load('motd');
+`;
+    expect(has(await flows(code, 'load_logged.js', 'javascript'), 'command_injection')).toBe(false);
+    const vuln = code.replace('console.log(load, req.query.name);', 'setImmediate(load, req.query.name);');
+    expect(has(await flows(vuln, 'load_immediate.js', 'javascript'), 'command_injection')).toBe(true);
+  });
+});
