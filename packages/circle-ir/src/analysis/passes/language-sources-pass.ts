@@ -2159,37 +2159,47 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // program wrote, not request data.
   const lookupTables = constLookupTables(sourceCode, language);
 
+  // cognium-dev#582: scan every assignment on the line. A one-line
+  // `if (c) t = "b"; else t = req.query.t` (or braced `var` arms) has the
+  // source on a later assignment; matching only the first and truncating its
+  // RHS dropped that source. After a control-flow header before an
+  // assignment, that assignment owns only its own statement so a condition's
+  // read is not bound to a body variable (`if (req.query.m) { t = "a"; } else
+  // if (req.query.n) { … }`).
+  const assignmentRe = /(?:(?:var|let|const)\s+)?(\w+)\s*=\s*/g;
+  const rhsOwnStmt = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/;
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
     const line = lines[lineNum];
     const lineNumber = lineNum + 1;
-    const assignmentMatch = line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
-    if (!assignmentMatch) continue;
-    const varName = assignmentMatch[1];
-    let rhs = assignmentMatch[2];
-    // cognium-dev#582: in `if (req.query.m) { t = "a"; } else if (req.query.n) { … }`
-    // the first `name =` is an assignment in the block body, and the greedy
-    // right-hand side runs on into the next condition, so the condition's read
-    // was bound to `t`. After a control-flow header on the line, the assignment
-    // owns only its own statement.
-    if (/\b(?:if|while|switch|else)\b/.test(line.slice(0, assignmentMatch.index ?? 0))) {
-      rhs = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/.exec(rhs)?.[0] ?? rhs;
-    }
-    if (isConstTableLookup(rhs, lookupTables)) continue;
+    assignmentRe.lastIndex = 0;
+    for (const assignmentMatch of line.matchAll(assignmentRe)) {
+      const varName = assignmentMatch[1];
+      if (!varName) continue;
+      let rhs = line.slice((assignmentMatch.index ?? 0) + assignmentMatch[0].length);
+      if (/\b(?:if|while|switch|else)\b/.test(line.slice(0, assignmentMatch.index ?? 0))) {
+        rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
+      } else if (line.includes(';', (assignmentMatch.index ?? 0) + assignmentMatch[0].length)) {
+        // Same-line later statements: do not let a greedy RHS attribute their
+        // reads to this variable (`a = 1; b = req.query.t`).
+        rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
+      }
+      if (isConstTableLookup(rhs, lookupTables)) continue;
 
-    for (const { pattern, type } of patterns) {
-      if (pattern.test(rhs)) {
-        const alreadyExists = sources.some(s => s.line === lineNumber && s.type === type);
-        if (!alreadyExists) {
-          sources.push({
-            type,
-            location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
-            severity: 'high',
-            line: lineNumber,
-            confidence: 1.0,
-            variable: varName,
-          });
+      for (const { pattern, type } of patterns) {
+        if (pattern.test(rhs)) {
+          const alreadyExists = sources.some(s => s.line === lineNumber && s.type === type && s.variable === varName);
+          if (!alreadyExists) {
+            sources.push({
+              type,
+              location: `${varName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+              severity: 'high',
+              line: lineNumber,
+              confidence: 1.0,
+              variable: varName,
+            });
+          }
+          break;
         }
-        break;
       }
     }
   }

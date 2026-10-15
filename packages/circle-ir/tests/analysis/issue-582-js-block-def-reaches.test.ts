@@ -183,4 +183,48 @@ describe('cognium-dev#582 JS block-local definition reaches the use after the bl
   exec("ping " + t); // SINK-CLEAN`);
     expect(await lines(code, 'a.js')).toEqual([]);
   });
+
+  it('a one-line brace-less if/else with the tainted assignment in the else arm reports', async () => {
+    const code = wrap(`  let t;
+  if (req.query.a) t = "b"; else t = req.query.t;
+  exec("ping " + t); // SINK-TP`);
+    expect(await lines(code, 'a.js')).toEqual(marked(code, 'SINK-TP'));
+  });
+
+  it('a one-line braced var declaration in each arm, tainted in else, reports', async () => {
+    const code = wrap(`  if (req.query.a) { var t = "x"; } else { var t = req.query.t; }
+  exec("ping " + t); // SINK-TP`);
+    expect(await lines(code, 'a.js')).toEqual(marked(code, 'SINK-TP'));
+  });
+
+  it('a sanitizer in the only assignment arm stays clean for xss', async () => {
+    const code = `const express = require("express");
+const escapeHtml = require("escape-html");
+const app = express();
+app.get("/u", (req, res) => {
+  let n = "x";
+  if (req.query.a) {
+    n = escapeHtml(req.query.n);
+  }
+  res.send("<p>" + n + "</p>"); // SINK-CLEAN
+});
+`;
+    const r = await analyze(code, 'app.js', 'javascript');
+    const got = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))];
+    expect(got).toEqual([]);
+  });
+
+  it('straight-line escapeHtml stays clean for xss', async () => {
+    const code = `const express = require("express");
+const escapeHtml = require("escape-html");
+const app = express();
+app.get("/u", (req, res) => {
+  const n = escapeHtml(req.query.n);
+  res.send("<p>" + n + "</p>"); // SINK-CLEAN
+});
+`;
+    const r = await analyze(code, 'app.js', 'javascript');
+    const got = [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))];
+    expect(got).toEqual([]);
+  });
 });
