@@ -94,11 +94,11 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "web-tree-sitter": "^0.27.0",
+    "web-tree-sitter": "^0.27.1",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.3",
     "esbuild": "^0.28.0",
     "tree-sitter-bash": "^0.25.1",

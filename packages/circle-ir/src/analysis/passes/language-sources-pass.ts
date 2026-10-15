@@ -2140,7 +2140,152 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // event-name allowlist to avoid firing on unrelated `.on('drain', cb)`
   // / `.on('close', cb)` etc. that carry non-user-input.
   sources.push(...findJavaScriptCallbackParamSources(sourceCode));
+  if (language === 'javascript') {
+    sources.push(...findExpressDestructuredRequestSources(sourceCode));
+    sources.push(...findGraphqlResolverArgSources(sourceCode));
+  }
 
+  return sources;
+}
+
+/** Index just past the `}` matching the `{` at `open`, or -1. */
+function matchBrace(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+const EXPRESS_REQUEST_KEYS: Record<string, TaintSource['type']> = {
+  query: 'http_param',
+  params: 'http_param',
+  body: 'http_body',
+  headers: 'http_header',
+  cookies: 'http_cookie',
+};
+
+/**
+ * cognium-dev#587 — Express handler whose first parameter destructures the
+ * request: `app.get(path, ({ query }, res) => …)`, `({ query: q }, res)`,
+ * `({ query: { id } }, res)`. Seeds the bound names of the allowlisted request
+ * keys only. Gated on a receiver bound to `express()` / `express.Router()` /
+ * `Router()` in the same file, so an arbitrary `({ query }) => …` callback is
+ * not a source.
+ */
+function findExpressDestructuredRequestSources(sourceCode: string): TaintSource[] {
+  const sources: TaintSource[] = [];
+  const receivers = new Set<string>();
+  for (const m of sourceCode.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*(?:express\s*\(\s*\)|express\s*\.\s*Router\s*\(\s*\)|Router\s*\(\s*\))/g)) {
+    receivers.add(m[1]);
+  }
+  if (receivers.size === 0) return sources;
+  const REG_RE = /\b(\w+)\s*\.\s*(?:get|post|put|patch|delete|all)\s*\(\s*(['"`])[^'"`]*\2\s*,\s*(?:async\s+)?(?:function\s*\w*\s*)?\(\s*\{/g;
+  for (const m of sourceCode.matchAll(REG_RE)) {
+    if (!receivers.has(m[1])) continue;
+    const open = m.index! + m[0].length - 1;
+    const close = matchBrace(sourceCode, open);
+    if (close < 0) continue;
+    // The pattern must be followed by another parameter or `)`, i.e. it is
+    // the handler's first parameter.
+    if (!/^\s*[,)]/.test(sourceCode.slice(close))) continue;
+    const line = sourceCode.slice(0, m.index! + m[0].length).split('\n').length;
+    const inner = sourceCode.slice(open + 1, close - 1);
+    // Split top-level entries.
+    const entries: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '{') depth++;
+      else if (inner[i] === '}') depth--;
+      else if (inner[i] === ',' && depth === 0) { entries.push(inner.slice(start, i)); start = i + 1; }
+    }
+    entries.push(inner.slice(start));
+    for (const raw of entries) {
+      const entry = raw.trim();
+      const km = entry.match(/^(\w+)\s*(?::\s*([\s\S]+))?$/);
+      if (!km) continue;
+      const type = EXPRESS_REQUEST_KEYS[km[1]];
+      if (!type) continue;
+      const target = (km[2] ?? km[1]).replace(/=[\s\S]*$/, '').trim();
+      const names = target.startsWith('{')
+        ? [...target.slice(1, -1).matchAll(/(?:^|,)\s*(?:\w+\s*:\s*)?(\w+)/g)].map(x => x[1])
+        : /^\w+$/.test(target) ? [target] : [];
+      for (const name of names) {
+        sources.push({
+          type,
+          location: `Express handler destructured request '${km[1]}' -> '${name}' at line ${line}`,
+          severity: 'high',
+          line,
+          confidence: 0.95,
+          variable: name,
+        });
+      }
+    }
+  }
+  return sources;
+}
+
+/**
+ * cognium-dev#586 — GraphQL resolver-map arguments. The second parameter of a
+ * function under `Query` / `Mutation` / `Subscription` in the object passed as
+ * `resolvers` to `new ApolloServer({…})` / `makeExecutableSchema({…})` (inline,
+ * or a same-file `const resolvers = {…}`) is client-supplied. Parameter 0
+ * (`parent`) and 2 (`context`) are never seeded.
+ */
+function findGraphqlResolverArgSources(sourceCode: string): TaintSource[] {
+  const sources: TaintSource[] = [];
+  const ctor = /(?:new\s+ApolloServer|makeExecutableSchema)\s*\(\s*\{/g;
+  const maps: number[] = [];
+  for (const m of sourceCode.matchAll(ctor)) {
+    const open = m.index! + m[0].length - 1;
+    const close = matchBrace(sourceCode, open);
+    if (close < 0) continue;
+    const opts = sourceCode.slice(open, close);
+    const inline = opts.match(/\bresolvers\s*:\s*\{/);
+    if (inline) { maps.push(open + inline.index! + inline[0].length - 1); continue; }
+    const named = opts.match(/\bresolvers\s*(?::\s*(\w+))?\s*[,}]/);
+    if (!named) continue;
+    const ident = named[1] ?? 'resolvers';
+    const decl = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\{`).exec(sourceCode);
+    if (decl) maps.push(decl.index + decl[0].length - 1);
+  }
+  const FN_RE = /(?:^|[\s,{])(\w+)\s*(?::\s*(?:async\s+)?(?:function\s*\w*\s*)?\(|\()\s*\w+\s*,\s*(\w+)\s*[,)]/g;
+  for (const open of maps) {
+    const close = matchBrace(sourceCode, open);
+    if (close < 0) continue;
+    const body = sourceCode.slice(open, close);
+    for (const t of body.matchAll(/\b(Query|Mutation|Subscription)\s*:\s*\{/g)) {
+      const tOpen = open + t.index! + t[0].length - 1;
+      const tClose = matchBrace(sourceCode, tOpen);
+      if (tClose < 0) continue;
+      // Only direct members of the type object (depth 1).
+      const typeBody = sourceCode.slice(tOpen + 1, tClose - 1);
+      let depth = 0;
+      const depthAt: number[] = [];
+      for (let i = 0; i < typeBody.length; i++) {
+        depthAt.push(depth);
+        const ch = typeBody[i];
+        if (ch === '{' || ch === '(') depth++;
+        else if (ch === '}' || ch === ')') depth--;
+      }
+      for (const f of typeBody.matchAll(FN_RE)) {
+        const at = f.index! + f[0].indexOf(f[1]);
+        if (depthAt[at] !== 0) continue;
+        const line = sourceCode.slice(0, tOpen + 1 + at).split('\n').length;
+        sources.push({
+          type: 'http_param',
+          location: `GraphQL ${t[1]}.${f[1]} resolver args '${f[2]}' at line ${line}`,
+          severity: 'high',
+          line,
+          confidence: 0.9,
+          variable: f[2],
+        });
+      }
+    }
+  }
   return sources;
 }
 

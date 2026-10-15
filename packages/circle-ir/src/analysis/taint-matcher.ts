@@ -3006,6 +3006,15 @@ function receiverMightBeClassImpl(receiver: string, className: string): boolean 
     return true;
   }
 
+  // Chained JDK ClassLoader accessors: `Thread.currentThread()
+  // .getContextClassLoader().loadClass(x)`, `getClass().getClassLoader()
+  // .loadClass(x)`, `ClassLoader.getSystemClassLoader().loadClass(x)`.
+  // These return a ClassLoader, so match the receiver as one. (cognium-dev#623)
+  if (className === 'ClassLoader' &&
+      /(?:^|\.)(?:getContextClassLoader|getClassLoader|getSystemClassLoader)\(\s*\)$/.test(receiver.replace(/\s+/g, ''))) {
+    return true;
+  }
+
   // Constructor-call receiver: `ClassName(args)` — Python `Path(raw)`,
   // JS `new URL(s)` (handled separately), etc. When the receiver is a
   // direct function call whose function name equals the target class
