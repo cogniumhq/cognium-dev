@@ -282,5 +282,32 @@ describe('cognium-dev#596 — a carried def is killed by a later assignment in t
         }`, 'SwitchNested');
     expect((await cmdi(code, 'SwitchNested.java')).length).toBeGreaterThanOrEqual(1);
   });
+
+  for (const [label, head] of [
+    ['while', 'while (request.getParameter("a") != null)'],
+    ['for', 'for (int i = 0; i < 3; i++)'],
+    ['enhanced for', 'for (String k : request.getParameterValues("a"))'],
+  ] as const) {
+    it(`${label} body: a later constant assignment in the same body kills the nested branch def`, async () => {
+      const code = withBlocks(`${head} {
+            ${innerTaint}
+            target = "localhost";
+        }`, 'LoopReset');
+      expect(await cmdi(code, 'LoopReset.java')).toHaveLength(0);
+      const r = await analyze(code, 'LoopReset.java', 'java');
+      const defs = (r.dfg?.defs ?? []).filter((d) => d.variable === 'target');
+      const sinkLine = code.split('\n').findIndex((l) => l.includes('exec(target)')) + 1;
+      const reaching = new Set((r.dfg?.uses ?? []).filter((u) => u.variable === 'target' && u.line === sinkLine).map((u) => u.def_id));
+      expect(defs).toHaveLength(3);
+      expect(reaching).toEqual(new Set([defs[0].id, defs[2].id]));
+    });
+
+    it(`${label} body: a nested branch def with no later assignment still reaches the sink`, async () => {
+      const code = withBlocks(`${head} {
+            ${innerTaint}
+        }`, 'LoopTaint');
+      expect((await cmdi(code, 'LoopTaint.java')).length).toBeGreaterThanOrEqual(1);
+    });
+  }
 });
 
