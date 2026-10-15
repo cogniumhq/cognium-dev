@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Go scan reports `log_injection` for a value escaped only with `html.EscapeString` / `template.HTMLEscapeString` before a logger call (#605, partial).
 - A JS/TS scan reports `log_injection` for a value cleaned with an LF-only (or CR-only) `replace` before a logger call (#562, partial).
 - A JavaScript/TypeScript scan no longer reports a second variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
+- A Java scan reports `trust_boundary` for a value stored in a session after passing through a same-file helper that only HTML-encodes it (#589, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
 ## [4.15.0] - 2026-10-15
