@@ -64,7 +64,7 @@ describe('#333 Java getCanonicalPath containment guard', () => {
 
   it('a guard that returns still suppresses it', async () => {
     const r = await java([
-      'if (!f.getCanonicalPath().startsWith("/srv/data"))',
+      'if (!f.getCanonicalPath().startsWith("/srv/data/"))',
       '  return null;',
     ]);
     expect(traversal(r).length).toBe(0);
@@ -72,13 +72,13 @@ describe('#333 Java getCanonicalPath containment guard', () => {
   });
 
   it('a single-line guard that returns still suppresses it', async () => {
-    const r = await java(['if (!f.getCanonicalPath().startsWith("/srv/data")) return null;']);
+    const r = await java(['if (!f.getCanonicalPath().startsWith("/srv/data/")) return null;']);
     expect(traversal(r).length).toBe(0);
   });
 
   it('a block-form guard that returns inside still suppresses it', async () => {
     const r = await java([
-      'if (!f.getCanonicalPath().startsWith("/srv/data")) {',
+      'if (!f.getCanonicalPath().startsWith("/srv/data/")) {',
       '  return null;',
       '}',
     ]);
@@ -87,7 +87,7 @@ describe('#333 Java getCanonicalPath containment guard', () => {
 
   it('a guard that throws still suppresses it', async () => {
     const r = await java([
-      'if (!f.getCanonicalPath().startsWith("/srv/data"))',
+      'if (!f.getCanonicalPath().startsWith("/srv/data/"))',
       '  throw new IOException("escape");',
     ]);
     expect(traversal(r).length).toBe(0);

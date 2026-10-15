@@ -24,6 +24,7 @@ import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
+import { firstCallArgument, isSeparatorAnchoredBase } from './_canonical-guard.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -6058,6 +6059,10 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
     const m = guardRe.exec(lines[i]);
     if (!m) continue;
     if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+    // #618: a bare-string `startsWith` on canonical paths (no trailing
+    // separator on the base) lets `/safe/dir-evil` through; it is not a guard.
+    const baseArg = firstCallArgument(lines.slice(i, i + 3).join('\n'), m.index + m[0].length - 1);
+    if (baseArg !== null && !isSeparatorAnchoredBase(baseArg, lines.slice(0, i))) continue;
 
     const guarded = new Set<string>([m[1]]);
     const mentions = (t: string): boolean => {

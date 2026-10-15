@@ -22,6 +22,7 @@ import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, fin
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { firstCallArgument, isSeparatorAnchoredBase } from './_canonical-guard.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -816,7 +817,19 @@ function isInJavaSanitizedMethod(
     if (!/\.getCanonicalPath\s*\(/.test(body)) return false;
     if (!/\.startsWith\s*\([^)]*getCanonicalPath/.test(body)) return false;
     if (!/\bthrow\s+new\b/.test(body)) return false;
-    return true;
+    // #618: credit the guard only when the base it compares against ends in a
+    // separator. `a.getCanonicalPath().startsWith(b.getCanonicalPath())` lets
+    // `/safe/dir-evil` through (ESAPI CVE-2022-23457).
+    const bodyLines = body.split('\n');
+    const startsWithRe = /\.startsWith\s*\(/g;
+    let sm: RegExpExecArray | null;
+    while ((sm = startsWithRe.exec(body)) !== null) {
+      const arg = firstCallArgument(body, sm.index + sm[0].length - 1);
+      if (arg === null || !/getCanonicalPath/.test(arg)) continue;
+      const lineIdx = body.slice(0, sm.index).split('\n').length - 1;
+      if (isSeparatorAnchoredBase(arg, bodyLines.slice(0, lineIdx))) return true;
+    }
+    return false;
   }
   if (sinkType === 'xxe') {
     // DocumentBuilderFactory / SAXParserFactory / XMLInputFactory hardening.
