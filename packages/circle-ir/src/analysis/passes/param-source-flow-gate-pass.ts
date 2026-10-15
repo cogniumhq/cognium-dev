@@ -126,17 +126,23 @@ function realFedParams(ctx: PassContext, sources: TaintSource[]): RealFedParams 
   const out: RealFedParams = { params: new Set(), classes: new Set() };
   const { graph } = ctx;
   const seeds = new Set<number>();
-  // Variables a real source binds directly (`q = request.args.get("q")`).
-  // The Python DFG does not model every function body, so the binding name
-  // is the fallback evidence there.
-  const boundVars = new Set<string>();
+  const allMethods = graph.ir.types.flatMap(t => t.methods);
+  // Variables a real source binds directly (`q = request.args.get("q")`),
+  // with the method that binds them: a `name` bound in one handler says
+  // nothing about a `name` local to another function. The Python DFG does
+  // not model every function body, so the binding is the fallback evidence.
+  const boundVars = new Map<string, Set<MethodInfo | undefined>>();
   // Source reads written inline as an argument (`sink(request.args.get("q"))`),
   // by line: the read's text as the source location names it.
   const inlineReads = new Map<number, string[]>();
   for (const s of sources) {
     if (s.type === 'interprocedural_param') continue;
     for (const d of graph.defsAtLine(s.line)) seeds.add(d.id);
-    if (s.variable) boundVars.add(s.variable);
+    if (s.variable) {
+      const where = boundVars.get(s.variable) ?? new Set<MethodInfo | undefined>();
+      where.add(enclosingMethod(allMethods, s.line));
+      boundVars.set(s.variable, where);
+    }
     const read = /^([\w$.]+?)(?:\(\))? in /.exec(s.location ?? '')?.[1];
     if (read && read.includes('.')) inlineReads.set(s.line, [...(inlineReads.get(s.line) ?? []), read]);
   }
@@ -156,10 +162,11 @@ function realFedParams(ctx: PassContext, sources: TaintSource[]): RealFedParams 
     const uses = graph.usesAtLine(line).filter(u => u.def_id !== null && tainted.has(u.def_id));
     const reads = inlineReads.get(line) ?? [];
     const sanitizersHere = sanitizerNames.get(line) ?? [];
+    const callMethod = enclosingMethod(allMethods, line);
     const isFed = (expr: string, variable: string | null | undefined): boolean =>
       // An argument passed through a sanitizer is not the raw request value.
       !sanitizersHere.some(n => expr.includes(`${n}(`)) && (
-      (!!variable && boundVars.has(variable)) ||
+      (!!variable && !!boundVars.get(variable)?.has(callMethod)) ||
       reads.some(r => expr.includes(r)) ||
       // The argument's own identifiers, not those of a sibling argument.
       uses.some(u => identifierRe(u.variable).test(expr)));
@@ -175,9 +182,11 @@ function realFedParams(ctx: PassContext, sources: TaintSource[]): RealFedParams 
         continue;
       }
       if (!isFed(expr, arg.variable)) continue;
-      out.params.add(`${call.method_name}:${arg.position}`);
+      // `res.send(req.query.m)` is a call on another object; it feeds a
+      // class method named `send`, never a module-level `function send`.
+      out.params.add(`${call.receiver ? 'm' : 'f'}:${call.method_name}:${arg.position}`);
       if (classNames.has(call.method_name)) out.classes.add(call.method_name);
-      if (callbackName !== null) out.params.add(`${callbackName}:${arg.position - callbackPos - 1}`);
+      if (callbackName !== null) out.params.add(`f:${callbackName}:${arg.position - callbackPos - 1}`);
     }
   }
   return out;
@@ -227,13 +236,19 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
       if (fed.params.size === 0) return false;
       const owner = ctx.graph.ir.types.find(t => t.methods.includes(m));
       // A constructor is invoked through its class name (`new C(…)`, `C(…)`).
-      const callee = (m.name === 'constructor' || m.name === '__init__') && owner ? owner.name : m.name;
+      const isCtor = (m.name === 'constructor' || m.name === '__init__') && !!owner;
+      const callee = isCtor && owner ? owner.name : m.name;
+      // A module-level function or a constructor is called without a
+      // receiver; a class method is reached through one (`svc.run(x)`).
+      const viaReceiver = !isCtor && !!owner && owner.name !== '<module>';
+      const feeds = (pos: number): boolean => fed!.params.has(`f:${callee}:${pos}`) ||
+        (viaReceiver && fed!.params.has(`m:${callee}:${pos}`));
       // When the flow's first step names a parameter, only that parameter
       // counts: every parameter shares the signature line, and `f(a, b)`
       // called as `f(req.query.a, 'x')` does not feed `b`.
       const head = f.path[0]?.variable;
       const named = m.parameters.findIndex(p => p.name === head);
-      if (named >= 0) return fed.params.has(`${callee}:${named}`);
+      if (named >= 0) return feeds(named);
       for (const s of sources) {
         if (s.line !== f.source_line || s.type !== 'interprocedural_param') continue;
         if (FIELD_CARRIED_SOURCE.test(s.location ?? '')) {
@@ -246,7 +261,7 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           ? p.name === s.variable
           : (s.location ?? '').endsWith(` ${p.name} in ${m.name}`));
         if (pos < 0) continue;
-        if (fed.params.has(`${callee}:${pos}`)) return true;
+        if (feeds(pos)) return true;
       }
       return false;
     };

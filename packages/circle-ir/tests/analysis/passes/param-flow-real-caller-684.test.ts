@@ -197,4 +197,37 @@ module.exports = { search };
 `;
     expect(has(await flows(code, 'grep_chain.js', 'javascript'), 'command_injection')).toBe(false);
   });
+
+  it('a call on another object does not feed a module function of the same name', async () => {
+    const code = `const express = require('express');
+const { exec } = require('child_process');
+const app = express();
+function send(cmd) { exec(cmd); }
+app.get('/echo', (req, res) => {
+  res.send(req.query.msg);
+});
+send('uptime');
+`;
+    expect(has(await flows(code, 'send_collision.js', 'javascript'), 'command_injection')).toBe(false);
+    const vuln = code.replace("send('uptime');", "app.post('/run', (req, res) => { send(req.body.cmd); res.end(); });");
+    expect(has(await flows(vuln, 'send_collision_vuln.js', 'javascript'), 'command_injection')).toBe(true);
+  });
+
+  it('a source-bound name in one function does not feed a same-named local elsewhere', async () => {
+    const code = `const express = require('express');
+const { exec } = require('child_process');
+const app = express();
+function runCmd(name) { exec('echo ' + name); }
+app.get('/a', (req, res) => {
+  const name = req.query.name;
+  res.send(String(name).length);
+});
+function warm() {
+  const name = 'static';
+  runCmd(name);
+}
+warm();
+`;
+    expect(has(await flows(code, 'bound_collision.js', 'javascript'), 'command_injection')).toBe(false);
+  });
 });
