@@ -141,6 +141,42 @@ public class CharStripServlet extends HttpServlet {
 }
 `;
 
+const regexes = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class RegexStripServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String cls = a.replaceAll("[\\r\\n]+", "");
+        AUDIT.info("v " + cls);
+        String alt = a.replaceAll("\\r|\\n", "");
+        AUDIT.info("v " + alt);
+        String grp = a.replaceAll("(?:\\r\\n|\\r|\\n)", "");
+        AUDIT.info("v " + grp);
+        String wide = a.replaceAll("[\\r\\n\\t]", "");
+        AUDIT.info("v " + wide);
+        String esc = a.replaceAll("[\\\\r\\\\n]", "");
+        AUDIT.info("v " + esc);
+        String seq = a.replaceAll("\\r\\n\\r\\n", "");
+        AUDIT.info("v " + seq);
+        String embedded = a.replaceAll("x\\r\\ny", "");
+        AUDIT.info("v " + embedded);
+        String crlfOrLf = a.replaceAll("\\r\\n|\\n", "");
+        AUDIT.info("v " + crlfOrLf);
+        String negated = a.replaceAll("[^\\r\\n]", "");
+        AUDIT.info("v " + negated);
+        String pair = a.replaceAll("\\r\\n", "");
+        AUDIT.info("v " + pair);
+    }
+}
+`;
+
 describe('Java argument-aware replace sanitizer credit', () => {
   beforeAll(async () => {
     await initAnalyzer();
@@ -188,5 +224,14 @@ describe('Java argument-aware replace sanitizer credit', () => {
     const byLine = (n: number) => san.filter((x) => x.line === n).length;
     expect(byLine(18)).toBe(0); // LF-only + CR-only on separate chains
     expect(byLine(21)).toBe(2); // only the two calls of the CR+LF chain, not the LF-only call beside it
+  });
+
+  it('replaceAll credits only a pattern that strips both CR and LF as separate matches', async () => {
+    const l = await lines(regexes, 'RegexStripServlet.java', 'log_injection');
+    // clean: [\r\n]+, \r|\n, (?:\r\n|\r|\n), [\r\n\t], and the regex-escaped [\\r\\n]
+    for (const n of [14, 16, 18, 20, 22]) expect(l).not.toContain(n);
+    // fires: a longer sequence, a sequence embedded in text, \r\n|\n (lone CR survives),
+    // a negated class, and the bare CR+LF pair
+    for (const n of [24, 26, 28, 30, 32]) expect(l).toContain(n);
   });
 });

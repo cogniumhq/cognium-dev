@@ -3631,6 +3631,45 @@ function javaChainTextAt(sourceLines: string[], line: number, column: number): s
 }
 
 /**
+ * Which of CR / LF a `replaceAll` regex strips as a match of its own. Only a
+ * top-level alternation (optionally inside one `(?:…)` / `(…)` group) whose
+ * alternatives are a lone `\r` / `\n` escape or a non-negated character class
+ * holding one, each with an optional quantifier, counts. A longer sequence
+ * (`\r\n`, `\r\n\r\n`, `x\r\ny`) removes neither character on its own, and a
+ * negated class keeps them, so neither credits. (cognium-dev#562)
+ */
+function javaRegexCrLfCoverage(pattern: string): { cr: boolean; lf: boolean } {
+  let body = pattern;
+  const wrapped = /^\((?:\?:)?([\s\S]*)\)$/.exec(body);
+  if (wrapped && !/[()]/.test(wrapped[1]!.replace(/\\[\s\S]|\[(?:\\[\s\S]|[^\]\\])*\]/g, ''))) body = wrapped[1]!;
+  const alts: string[] = [];
+  let depth = 0;
+  let inClass = false;
+  let cur = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!;
+    if (c === '\\') { cur += c + (body[i + 1] ?? ''); i++; continue; }
+    if (inClass) { if (c === ']') inClass = false; cur += c; continue; }
+    if (c === '[') { inClass = true; cur += c; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    if (c === '|' && depth === 0) { alts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  alts.push(cur);
+  let cr = false;
+  let lf = false;
+  for (const alt of alts) {
+    const m = /^(?:\[(\^?)((?:\\[\s\S]|[^\]\\])+)\]|(\\[rn]))(?:[+*?]|\{\d+(?:,\d*)?\})?[+?]?$/.exec(alt);
+    if (!m || m[1] === '^') continue;
+    const chars = m[2] ?? m[3] ?? '';
+    if (chars.includes('\\r')) cr = true;
+    if (chars.includes('\\n')) lf = true;
+  }
+  return { cr, lf };
+}
+
+/**
  * Java `String.replace` / `replaceAll` credit, decided from the literal
  * arguments of the replace chain that contains the call instead of the method name
  * (cognium-dev#562 / #605 / #517). The class-less `replace` row credited any
@@ -3652,9 +3691,10 @@ function javaReplaceChainCredit(chainText: string): SinkType[] {
     if (kind === 'replace') {
       if (from === '\\n') lf = true;
       if (from === '\\r') cr = true;
-    } else if (from !== '\\r\\n') {
-      if (from.includes('\\r')) cr = true;
-      if (from.includes('\\n')) lf = true;
+    } else {
+      const cov = javaRegexCrLfCoverage(from);
+      if (cov.cr) cr = true;
+      if (cov.lf) lf = true;
     }
     if (from === '<' && to.startsWith('&')) lt = true;
     if (from === '>' && to.startsWith('&')) gt = true;
