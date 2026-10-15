@@ -259,6 +259,10 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
           esc.argPositions.every(p => s.argPositions!.includes(p))));
       for (const sink of interProc.propagatedSinks) {
         if (sink.type === 'external_taint_escape' && isClearedCall(sink)) continue;
+        // Bash reports the fallback as an unquoted-argument command_injection.
+        // A curl/wget whose ssrf sink Stage 15m cleared has only double-quoted
+        // fixed-host URL words, so no argument can be split or read as a flag.
+        if (language === 'bash' && cleared.some(s => s.type === 'ssrf' && s.line === sink.line && s.method === sink.method)) continue;
         if (!constProp.unreachableLines.has(sink.line)) {
           additionalSinks.push(sink);
         }

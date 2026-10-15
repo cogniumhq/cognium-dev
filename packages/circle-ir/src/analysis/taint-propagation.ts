@@ -102,13 +102,13 @@ function buildSanitizersByLine(sanitizers: TaintSanitizer[]): Map<number, TaintS
  * Accepts either a CodeGraph (preferred) or the legacy (dfg, calls, ...) signature
  * for backward compatibility with existing call sites and tests.
  */
-/** True when `+` appears outside string literals. */
 /** Number of `${…}` interpolations in a JS/TS template-literal argument. */
 function templateInterpolationCount(expression: string): number {
   if (!expression.trimStart().startsWith('`')) return 0;
   return (expression.match(/\$\{/g) ?? []).length;
 }
 
+/** True when `+` appears outside string literals. */
 function concatOutsideStrings(expression: string): boolean {
   return expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').includes('+');
 }

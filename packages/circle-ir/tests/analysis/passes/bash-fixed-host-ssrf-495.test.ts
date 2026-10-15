@@ -69,4 +69,22 @@ curl -s "https://docs.example.org/$a" "$b"
 `;
     expect(new Set(await ssrfSinkLines(code))).toEqual(new Set([4]));
   });
+
+  it('an unquoted path expansion still fires: word splitting can add a URL', async () => {
+    const code = `#!/bin/bash
+rel="$1"
+curl -s https://api.example.com/$rel
+`;
+    expect(await ssrfSinkLines(code)).toEqual([3]);
+  });
+
+  it('a cleared fixed-host call is not re-reported as command_injection', async () => {
+    const code = `#!/bin/bash
+seg="$2"
+wget -q "http://10.0.0.5:8080/files/\${seg}"
+curl -s "https://api.example.com/$seg" -o out.txt
+`;
+    const ir = await analyze(code, 'mirror_fetch.sh', 'bash');
+    expect(ir.taint.flows ?? []).toEqual([]);
+  });
 });

@@ -2336,8 +2336,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'ssrf') return true;
         const words = (sourceLines[sink.line - 1] ?? '').match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? [];
         const expanding = words.filter(w => !w.startsWith("'") && w.includes('$'));
+        // Unquoted (`https://h/$p`), the expansion is word-split, so `$p`
+        // can add a second URL or a flag: only a double-quoted word counts.
         return expanding.length === 0 ||
-          !expanding.every(w => BASH_FIXED_HOST_URL_RE.test(w.replace(/^"|"$/g, '')));
+          !expanding.every(w => w.startsWith('"') && BASH_FIXED_HOST_URL_RE.test(w.slice(1, -1)));
       });
     }
 
