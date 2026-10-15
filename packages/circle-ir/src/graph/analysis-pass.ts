@@ -23,6 +23,11 @@ export interface PassContext {
   readonly language: string;
   /** Merged taint configuration (sources + sinks patterns). */
   readonly config: TaintConfig;
+  /**
+   * Project resource files (`Map<path, text>`) from `AnalyzerOptions.resources`,
+   * when the caller supplied any (cognium-dev#591).
+   */
+  readonly resources?: ReadonlyMap<string, string>;
 
   /**
    * Retrieve the result of a previously-run pass.
@@ -93,6 +98,7 @@ export class AnalysisPipeline {
     code: string,
     language: string,
     config: TaintConfig,
+    resources?: ReadonlyMap<string, string>,
   ): PipelineRunResult {
     const results = new Map<string, unknown>();
     const findings: SastFinding[] = [];
@@ -102,6 +108,7 @@ export class AnalysisPipeline {
       code,
       language,
       config,
+      ...(resources !== undefined ? { resources } : {}),
       getResult<T>(passName: string): T {
         if (!results.has(passName)) {
           throw new Error(

@@ -237,6 +237,18 @@ export interface AnalyzerOptions {
   navigationTypes?: boolean;
 
   /**
+   * Project resource files, `Map<path, text>` (for example `*.properties`).
+   * Optional and additive: omitting it leaves every result unchanged.
+   *
+   * The weak-hash pass uses it to resolve a Java algorithm read with
+   * `Properties.getProperty(key[, default])` from the resource the object was
+   * `load(...)`ed from (`getResourceAsStream("<name>")`), instead of trusting the
+   * default literal. A path matches a resource name when it equals it or ends
+   * in `/<name>`; a name that matches more than one differing file is ignored.
+   */
+  resources?: ReadonlyMap<string, string>;
+
+  /**
    * Custom taint configuration.
    */
   taintConfig?: TaintConfig;
@@ -1245,7 +1257,7 @@ export async function analyze(
   if (!disabledPasses.has('insecure-deserialization-config')) pipeline.add(new InsecureDeserializationConfigPass());
 
   // Run the pipeline
-  const { results, findings } = pipeline.run(graph, code, language, config);
+  const { results, findings } = pipeline.run(graph, code, language, config, options.resources);
 
   const sinkFilter = results.get('sink-filter')    as SinkFilterResult;
   const interProc  = results.get('interprocedural') as InterproceduralPassResult;
