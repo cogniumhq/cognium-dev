@@ -47,11 +47,15 @@ export function firstCallArgument(text: string, open: number): string | null {
 /**
  * Is the `startsWith` argument a separator-anchored base?
  *
- * - the last `+` operand names a separator (`File.separator`, `separatorChar`,
- *   `getSeparator()`) or ends in a `/` or `\` literal: anchored.
- * - a bare identifier is resolved through its nearest earlier definition in
- *   the current method (`precedingLines`); one that cannot be resolved (a
- *   parameter or field) is unknown and keeps the guard credited.
+ * - the last `+` operand is a qualified separator (`File.separator`,
+ *   `File.separatorChar`, `….getSeparator()`) or ends in a `/` or `\`
+ *   literal: anchored.
+ * - a bare identifier (the whole base, or its last `+` operand) is resolved
+ *   first, through its nearest earlier definition in the current method
+ *   (`precedingLines`), so a local merely *named* `separator` is judged by its
+ *   value. One that cannot be resolved (a parameter or field) is unknown: as
+ *   the whole base it keeps the guard credited; as a trailing operand only a
+ *   `separator` / `separatorChar` name (a static import or field) does.
  * - anything else (`parent.getCanonicalPath()`, a literal with no trailing
  *   separator, a variable holding one, a separator ref mid-expression or
  *   inside a string): not anchored.
@@ -64,13 +68,14 @@ export function isSeparatorAnchoredBase(arg: string, precedingLines: readonly st
   if (a === '""' || a === "''") return false;
 
   const last = stripWrappingParens(lastPlusOperand(a));
-  if (isSeparatorName(last)) return true;
+  if (isQualifiedSeparator(last)) return true;
   if (TRAILING_SEPARATOR_LITERAL.test(last)) return true;
 
-  if (/^[A-Za-z_]\w*$/.test(a) && depth < 3) {
-    const def = findLocalDefinition(a, precedingLines);
-    if (def === null) return true;
-    return isSeparatorAnchoredBase(def, precedingLines, depth + 1);
+  if (/^[A-Za-z_]\w*$/.test(last) && depth < 3) {
+    const def = findLocalDefinition(last, precedingLines);
+    if (def !== null) return isSeparatorAnchoredBase(def, precedingLines, depth + 1);
+    if (last === a) return true; // unresolved base (parameter / field): keep credit
+    return /^(?:separator|separatorChar)$/.test(last); // static import / field
   }
   return false;
 }
@@ -126,10 +131,14 @@ function lastPlusOperand(expr: string): string {
   return lastPlus < 0 ? expr : expr.slice(lastPlus + 1);
 }
 
-/** True when `expr` *is* a separator name (not merely contains one). */
-function isSeparatorName(expr: string): boolean {
+/**
+ * True when `expr` *is* a qualified separator reference (not merely contains
+ * one). A bare `separator` / `separatorChar` may be a local holding anything,
+ * so it is resolved by the caller instead.
+ */
+function isQualifiedSeparator(expr: string): boolean {
   const t = stripWrappingParens(expr);
-  return /^(?:[\w.]+\.)?(?:separator|separatorChar)$/.test(t)
+  return /^[\w.]+\.(?:separator|separatorChar)$/.test(t)
     || /^(?:[\w.]+\.)?getSeparator\s*\(\s*\)$/.test(t);
 }
 

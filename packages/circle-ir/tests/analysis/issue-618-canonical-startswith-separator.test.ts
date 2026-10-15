@@ -342,4 +342,51 @@ ${body}
     expect(ptFlows(r).length).toBeGreaterThan(0);
   });
 
+  // Review round 5 (cogbot-eng on c394ac8f).
+  it('a local named `separator` that holds an unanchored base still reports', async () => {
+    const r = await analyzeJava(esapi(
+      'String separator = parent.getCanonicalPath();\n            if ( !dir.getCanonicalPath().startsWith(separator) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+    expect(ptScan(r).length).toBeGreaterThan(0);
+  });
+
+  it('a trailing local named `separator` that holds no separator still reports', async () => {
+    const r = await analyzeJava(esapi(
+      'String separator = parent.getName();\n            if ( !dir.getCanonicalPath().startsWith(parent.getCanonicalPath() + separator) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+    expect(ptScan(r).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['File.separator on its own', 'File.separator', ''],
+    ['a local `separator` that ends in File.separator', 'separator',
+      'String separator = parent.getCanonicalPath() + File.separator;\n            '],
+    ['a trailing local `sep` holding File.separator', 'parent.getCanonicalPath() + sep',
+      'String sep = File.separator;\n            '],
+  ])('%s stays clean', async (_n, arg, def) => {
+    const r = await analyzeJava(esapi(
+      `${def}if ( !dir.getCanonicalPath().startsWith(${arg}) ) { throw new Exception("outside"); }`));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it('a `separator` parameter that cannot be resolved keeps the existing credit', async () => {
+    const r = await analyzeJava(paramBase('').replace('String base', 'String separator')
+      .replace('startsWith(base)', 'startsWith(separator)'));
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an unresolved trailing `separator` (static import / field) keeps the credit', async () => {
+    const r = await analyzeJava(paramBase('').replace('String base', 'File parent')
+      .replace('startsWith(base)', 'startsWith(parent.getCanonicalPath() + separator)')
+      .replace('import java.io.*;', 'import java.io.*;\nimport static java.io.File.separator;'));
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an assignment-like text inside a string does not resolve a parameter base', async () => {
+    const r = await analyzeJava(paramBase('        String msg = "check base = parent.getCanonicalPath()";'));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
 });
