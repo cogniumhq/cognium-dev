@@ -26,6 +26,13 @@ import type { MethodInfo } from '../types/index.js';
 export class CodeGraph {
   readonly ir: CircleIR;
 
+  /**
+   * Defs holding an int or bool derived from another value by a measure or a
+   * test (`len(x)`, `x.length`, `re.MatchString(x)`). Taint does not flow
+   * into them (#568). Set by `analyze()`; empty for a bare graph.
+   */
+  scalarDefIds: ReadonlySet<number> = new Set();
+
   constructor(ir: CircleIR) {
     this.ir = ir;
   }
@@ -307,6 +314,7 @@ export class CodeGraph {
       for (const [fromDef, chains] of this.chainsByFromDef) {
         if (!result.has(fromDef)) continue;
         for (const chain of chains) {
+          if (this.scalarDefIds.has(chain.to_def)) continue;
           if (!result.has(chain.to_def)) {
             result.add(chain.to_def);
             changed = true;

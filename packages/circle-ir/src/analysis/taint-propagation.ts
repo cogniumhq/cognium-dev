@@ -177,7 +177,8 @@ export function propagateTaint(
     initialTaint,
     graph.chainsByFromDef,
     defById,
-    sanitizersByLine
+    sanitizersByLine,
+    graph.scalarDefIds
   );
   taintedVars.push(...propagatedTaint);
 
@@ -454,7 +455,8 @@ function propagateThroughChains(
   initialTaint: TaintedVariable[],
   chainsByFromDef: Map<number, DFGChain[]>,
   defById: Map<number, DFGDef>,
-  sanitizersByLine: Map<number, TaintSanitizer[]>
+  sanitizersByLine: Map<number, TaintSanitizer[]>,
+  scalarDefIds: ReadonlySet<number>
 ): TaintedVariable[] {
   const propagated: TaintedVariable[] = [];
   const taintedDefIds = new Set<number>(initialTaint.map(t => t.defId));
@@ -477,6 +479,8 @@ function propagateThroughChains(
 
     for (const chain of outgoingChains) {
       if (visited.has(chain.to_def)) continue;
+      // An int/bool measure or test of the value carries no payload (#568).
+      if (scalarDefIds.has(chain.to_def)) continue;
 
       const targetDef = defById.get(chain.to_def);
       if (!targetDef) continue;

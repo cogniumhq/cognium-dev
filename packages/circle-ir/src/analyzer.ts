@@ -193,6 +193,7 @@ import {
 } from './analysis/passes/language-sources-pass.js';
 
 // Pass result types (used to read typed results from the pipeline map)
+import { scalarDerivedDefIds } from './analysis/scalar-derivation.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
 
@@ -1032,6 +1033,7 @@ export async function analyze(
     taint: { sources: [], sinks: [], sanitizers: [] },
     imports, exports, unresolved: [], enriched: {},
   });
+  graph.scalarDefIds = scalarDerivedDefIds(dfg.defs, code, language);
   phaseEnd('buildCodeGraph', tGraph);
 
   const config = options.taintConfig ?? getDefaultConfig();

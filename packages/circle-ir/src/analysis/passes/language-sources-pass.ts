@@ -359,7 +359,15 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
       // Sprint 81 (#189): Go xss — fmt.Fprint(f|ln) to http.ResponseWriter.
-      for (const finding of findGoXssFindings(code, graph.ir.meta.file)) {
+      // Since #456 the taint matcher resolves a handler-writer Fprint* as an
+      // xss sink; on those lines taint propagation decides (#568), as for
+      // the Java writer detector below.
+      const goXssSinkLines = new Set(
+        ctx.getResult<TaintMatcherResult>('taint-matcher').sinks
+          .filter(s => s.type === 'xss')
+          .map(s => s.line),
+      );
+      for (const finding of findGoXssFindings(code, graph.ir.meta.file, goXssSinkLines)) {
         ctx.addFinding(finding);
       }
       // Sprint 82 (#189): Go open_redirect — Header().Set("Location", taint).
@@ -7828,8 +7836,16 @@ export function findJsPatternFindings(
  *      the args is wrapped in a recognized HTML escaper
  *      (`html.EscapeString` / `template.HTMLEscapeString` /
  *      `template.HTMLEscaper`).
+ *
+ * Lines in `taintSinkLines` are skipped: the taint matcher resolved the
+ * write as an xss sink there, so taint propagation decides whether user
+ * input reaches it (#568 — `fmt.Fprintf(w, "%d", n)` with an int `n`).
  */
-export function findGoXssFindings(code: string, file: string): SastFinding[] {
+export function findGoXssFindings(
+  code: string,
+  file: string,
+  taintSinkLines: ReadonlySet<number> = new Set(),
+): SastFinding[] {
   const out: SastFinding[] = [];
   const lines = code.split('\n');
 
@@ -7851,6 +7867,7 @@ export function findGoXssFindings(code: string, file: string): SastFinding[] {
     if (!trimmed || trimmed.startsWith('//')) continue;
     const callRe =
       /\bfmt\.Fprint(?:f|ln)?\s*\(\s*([A-Za-z_]\w*)\s*,\s*([\s\S]*)\)\s*(?:\/\/.*)?$/;
+    if (taintSinkLines.has(i + 1)) continue;
     const m = trimmed.match(callRe);
     if (!m) continue;
     if (!rwNames.has(m[1])) continue;
