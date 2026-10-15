@@ -727,6 +727,31 @@ export function identifierOutsideSanitizerCalls(
   return false;
 }
 
+/**
+ * True when `variable` appears in `text` once covering sanitizer calls are
+ * removed. Returns `null` when no covering sanitizer call is found in `text`
+ * (the caller cannot tell a wrapped operand from a raw one).
+ *
+ * #589: `mixed = escapeHtml(a) + b` keeps `b`; `both = escapeHtml(a) +
+ * escapeHtml(b)` keeps nothing.
+ */
+export function identifierOutsideSanitizerCallsInText(
+  variable: string,
+  text: string,
+  sanitizers: TaintSanitizer[],
+  sinkType: string,
+): boolean | null {
+  const refs = sanitizerCallRefs(sanitizers, sinkType);
+  if (refs.length === 0) return null;
+  const masked = maskSanitizerCalls(text, refs);
+  if (masked === text) return null;
+  if (!/^[A-Za-z_$][\w$]*$/.test(variable)) return true;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`,
+  );
+  return re.test(blankStringLiterals(masked));
+}
+
 /** Last segment of a sanitizer's method name, without the call parens (`ESAPI.encoder().encodeForHTML()` -> `encodeForHTML`). */
 function sanitizerMethodTail(san: TaintSanitizer): string {
   const m = san.method ?? '';

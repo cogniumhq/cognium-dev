@@ -261,18 +261,14 @@ public class FieldHop {
 describe('#614 call-chain source (SecuriBench Inter3 shape) stays pinned', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
-  // Hand-written equivalent of SecuriBench Micro Inter3: a request parameter is
-  // passed down a chain of private methods to a sink, and an unreachable public
-  // method with a same-named parameter sits below it. Before #614 Inter3's
-  // line-40 finding was carried by the bare-name match (doGet's `name` credited
-  // to f9's `name`, confidence 0.8). It is now carried by the interprocedural
-  // flow, whose confidence decays per hop; over Inter3's nine-method chain it
-  // drops below the proximity pairing with the dead method's parameter, so the
-  // findings grouping picks line 89 as the primary source there. Line 89 is NOT
-  // the intended source. The real one is the getParameter line, which the flow
-  // and the finding's evidence keep. Re-ranking the findings grouping (prefer a
-  // flow-backed source over a proximity pairing) is a separate change; this
-  // pins the real source on the shorter chain, where it is still primary.
+  // Shorter stand-in for SecuriBench Micro Inter3: a request parameter flows
+  // through two private methods to a sink, with an unused public method that
+  // reuses the same parameter name below it. This fixture pins the real
+  // getParameter line as the finding's primary source on a two-hop chain.
+  // On the real nine-method Inter3 row, hop decay can still let findings
+  // grouping prefer the dead parameter via proximity; re-ranking that
+  // (prefer a flow-backed source) remains a follow-up. Before #614 the
+  // bare-name match credited doGet's `name` onto the unused method's sink.
   const code = `import java.io.IOException;
 import java.io.PrintWriter;
 import javax.servlet.http.HttpServlet;

@@ -16,7 +16,7 @@ import type { CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
-import { identifierOutsideSanitizerCalls, propagateTaint } from '../taint-propagation.js';
+import { identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks } from './language-sources-pass.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
@@ -69,6 +69,70 @@ function isHtmlContextEncoderSanitizer(san: { type?: string; method?: string }):
   if (san.type !== 'method_call' || !san.method) return false;
   const tail = san.method.replace(/\(\)$/, '').split('.').pop() ?? '';
   return HTML_CONTEXT_ENCODER_METHODS.has(tail);
+}
+
+/**
+ * #589: true when some def-use chain from `startDefId` back to the flow's
+ * source reaches it without passing through a def that a covering sanitizer
+ * cleans. A def is covered when a sanitizer for `sinkType` sits on its line
+ * (at or after the source line) and none of its predecessor variables
+ * appears on that line outside the sanitizer call. Every def on the walk is
+ * tested, so a join one or more assignments before the sink is still seen.
+ * Unknown defs, chains that reach the source line raw, chains that end in a
+ * def with no predecessor, and an exhausted budget all count as uncovered.
+ */
+function hasUncoveredChain(
+  startDefId: number,
+  sinkType: string,
+  sourceLine: number,
+  graph: PassContext['graph'],
+  sanitizersByLine: Map<number, NonNullable<SinkFilterResult['sanitizers']>>,
+  codeLines: string[] | undefined,
+): boolean {
+  const visited = new Set<number>();
+  let budget = 256;
+  const covered = (defId: number, line: number): boolean => {
+    if (line < sourceLine) return false;
+    const sans = (sanitizersByLine.get(line) ?? []).filter(s => sanitizerCoversSink(s, sinkType));
+    if (sans.length === 0) return false;
+    const preds = graph.chainsByToDef.get(defId) ?? [];
+    if (preds.length === 0) return true;
+    const def = graph.defById.get(defId);
+    const text = codeLines?.[line - 1];
+    let rhs = text;
+    if (text && def) {
+      const v = def.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const m = new RegExp(`(?:^|[^\\w$.])${v}\\s*=(?!=)`).exec(text);
+      if (m) rhs = text.slice(m.index + m[0].length);
+    }
+    for (const chain of preds) {
+      const predVar = graph.defById.get(chain.from_def)?.variable ?? chain.via;
+      const outside = rhs ? identifierOutsideSanitizerCallsInText(predVar, rhs, sans, sinkType) : null;
+      // No sanitizer call found in the text: fall back to the single-chain
+      // credit (one predecessor that the sanitizer line consumes).
+      if (outside === null) {
+        if (preds.length > 1) return false;
+        continue;
+      }
+      if (outside) return false;
+    }
+    return true;
+  };
+  const stack: number[] = [startDefId];
+  while (stack.length > 0) {
+    if (--budget < 0) return true;
+    const id = stack.pop() as number;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const def = graph.defById.get(id);
+    if (!def) return true;
+    if (covered(id, def.line)) continue;
+    if (def.line <= sourceLine) return true;
+    const preds = graph.chainsByToDef.get(id) ?? [];
+    if (preds.length === 0) return true;
+    for (const chain of preds) stack.push(chain.from_def);
+  }
+  return false;
 }
 
 function makeConstPropVeto(
@@ -498,6 +562,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         arr.push(san);
         sanitizersByLine.set(san.line, arr);
       }
+      const codeLines = typeof ctx.code === 'string' ? ctx.code.split('\n') : undefined;
       finalFlows = finalFlows.filter(f => {
         // Two-tier filter:
         //   - `external_taint_escape` (synthetic CWE-668 fallback): no
@@ -558,6 +623,22 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
           ? f.path[f.path.length - 1].variable
           : undefined;
         if (!sinkVar) return true;
+        // #589: an HTML encoder is credited only when every chain from the
+        // sink back to this flow's source passes through a covering
+        // sanitizer. Computed once per flow, over every reaching def of the
+        // sink variable, and only when an HTML encoder is the candidate.
+        let everyChainCovered: boolean | undefined;
+        const htmlEncoderCoversEveryChain = (): boolean => {
+          if (everyChainCovered === undefined) {
+            const starts: number[] = [];
+            for (const u of usesAtSink) {
+              if (u.variable === sinkVar && u.def_id !== null && u.def_id !== undefined) starts.push(u.def_id);
+            }
+            everyChainCovered = starts.length > 0 && starts.every(id =>
+              !hasUncoveredChain(id, f.sink_type, f.source_line, graph, sanitizersByLine, codeLines));
+          }
+          return everyChainCovered;
+        };
         for (const use of usesAtSink) {
           if (use.variable !== sinkVar) continue;
           if (use.def_id === null || use.def_id === undefined) continue;
@@ -583,27 +664,12 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             if (line < f.source_line) continue;
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
-            // #589: at a join (`mixed = shown + b`) an HTML encoder on one
-            // predecessor must not drop unrestricted taint from another.
-            const preds = graph.chainsByToDef.get(sinkDefId) ?? [];
-            const joinWithSibling = preds.length > 1;
-            const joinDefLine = graph.defById.get(sinkDefId)?.line;
             for (const san of sansAtLine) {
               if (!sanitizerCoversSink(san, f.sink_type)) continue;
-              if (joinWithSibling && isHtmlContextEncoderSanitizer(san)) {
-                const allPredsEncoderCovered = preds.every(pred => {
-                  const predDef = graph.defById.get(pred.from_def);
-                  if (!predDef) return false;
-                  const sansOnPred = sanitizersByLine.get(predDef.line) ?? [];
-                  if (sansOnPred.some(s => isHtmlContextEncoderSanitizer(s) && sanitizerCoversSink(s, f.sink_type))) {
-                    return true;
-                  }
-                  // Same-line join: encoder is on the join def, not the preds.
-                  if (line === joinDefLine) return false;
-                  return false;
-                });
-                if (!allPredsEncoderCovered) continue;
-              }
+              // #589: a join anywhere between the sink and the encoder
+              // (`mixed = shown + b`, then `copy = mixed`) must not let an
+              // encoder on one operand drop unrestricted taint from another.
+              if (isHtmlContextEncoderSanitizer(san) && !htmlEncoderCoversEveryChain()) continue;
               return false;
             }
           }

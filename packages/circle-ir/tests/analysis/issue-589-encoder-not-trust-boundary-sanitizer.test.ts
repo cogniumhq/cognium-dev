@@ -274,6 +274,87 @@ public class MixedEncoderServlet extends HttpServlet {
     expect(flowTypesFrom(r, 10, 15)).toContain('trust_boundary');
   });
 
+  it('copy = escapeHtml(a): print(copy) stays clean of xss', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class EncodedCopyServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String shown = StringEscapeUtils.escapeHtml(a);
+        String copy = shown;
+        response.getWriter().print(copy);
+    }
+}
+`, 'EncodedCopyServlet.java', 'java');
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss')).toHaveLength(0);
+  });
+
+  it('copy = escapeHtml(a) directly: print(copy) stays clean of xss', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class EncodedDirectServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String copy = StringEscapeUtils.escapeHtml(a);
+        response.getWriter().print(copy);
+    }
+}
+`, 'EncodedDirectServlet.java', 'java');
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss')).toHaveLength(0);
+  });
+
+  it('print(escapeHtml(a) + escapeHtml(b)) stays clean of xss', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class BothEncodedServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String b = a.toUpperCase();
+        response.getWriter().print(StringEscapeUtils.escapeHtml(a) + StringEscapeUtils.escapeHtml(b));
+    }
+}
+`, 'BothEncodedServlet.java', 'java');
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss')).toHaveLength(0);
+  });
+
+  it('both = escapeHtml(a) + escapeHtml(b); copy = both: print(copy) stays clean of xss', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class BothEncodedCopyServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String b = a.toUpperCase();
+        String ea = StringEscapeUtils.escapeHtml(a);
+        String eb = StringEscapeUtils.escapeHtml(b);
+        String both = ea + eb;
+        String copy = both;
+        response.getWriter().print(copy);
+    }
+}
+`, 'BothEncodedCopyServlet.java', 'java');
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss')).toHaveLength(0);
+  });
+
   it('same-line escapeHtml(a) + b: raw operand keeps xss on print(mixed)', async () => {
     const r = await analyze(`import java.io.IOException;
 import javax.servlet.http.HttpServlet;
@@ -292,8 +373,65 @@ public class MixedInlineServlet extends HttpServlet {
 }
 `, 'MixedInlineServlet.java', 'java');
     // 10: a, 11: b, 12: mixed, 13: print
+    // Kept because the join def's predecessors (a, b) are not themselves encoder-
+    // covered — not because the sink use happens to be the join.
     expect(sinksAt(r, 13)).toContain('xss');
     expect(flowTypesFrom(r, 10, 13)).toContain('xss');
+  });
+
+  it('mixed = shown + b; copy = mixed; print(copy) still reports xss; setAttribute(shown) stays trust_boundary', async () => {
+    // One assignment before the sink: the sink use's def has a single predecessor,
+    // so join detection must follow the walk to the real join (mixed), not stop at copy.
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class MixedCopyServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String shown = StringEscapeUtils.escapeHtml(a);
+        String b = a.toUpperCase();
+        String mixed = shown + b;
+        String copy = mixed;
+        response.getWriter().print(copy);
+        request.getSession().setAttribute("displayName", shown);
+    }
+}
+`, 'MixedCopyServlet.java', 'java');
+    // 10: a, 11: shown, 12: b, 13: mixed, 14: copy, 15: print, 16: setAttribute
+    expect(sinksAt(r, 15)).toContain('xss');
+    expect(flowTypesFrom(r, 10, 15)).toContain('xss');
+    expect(sinksAt(r, 16)).toContain('trust_boundary');
+    expect(flowTypesFrom(r, 10, 16)).toContain('trust_boundary');
+  });
+
+  it('same-line escapeHtml(a) + b via copy: xss kept because the join def\'s preds are uncovered', async () => {
+    // Intermediate copy so the sink def is not the join. Crediting the encoder on
+    // the join line itself would wrongly drop xss; only every-pred coverage on the
+    // join def (a and b have no encoder) keeps the flow.
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class MixedInlineCopyServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String b = a.toUpperCase();
+        String mixed = StringEscapeUtils.escapeHtml(a) + b;
+        String copy = mixed;
+        response.getWriter().print(copy);
+    }
+}
+`, 'MixedInlineCopyServlet.java', 'java');
+    // 10: a, 11: b, 12: mixed, 13: copy, 14: print
+    expect(sinksAt(r, 14)).toContain('xss');
+    expect(flowTypesFrom(r, 10, 14)).toContain('xss');
   });
 });
 
