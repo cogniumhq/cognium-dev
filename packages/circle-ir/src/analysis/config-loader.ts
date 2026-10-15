@@ -1329,11 +1329,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'FileOutputStream', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileReader', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'FileWriter', class: 'constructor', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
-  // NOTE: ClassLoader.getResource / Class.getResource were removed in
-  // 3.153.0 (#233). Classpath resource resolution cannot escape the
-  // classpath root via `../` (JAR entries are opaque). If reintroduced,
-  // the correct CWE is CWE-829 (untrusted-classpath-resource), not
-  // CWE-22 path traversal.
+  // ClassLoader.getResource / getResourceAsStream: re-added as CWE-22 in #621
+  // (Spark CVE-2018-9159, a request-derived name read through a classLoader
+  // field). Class.getResource and Spring ResourceLoader.getResource stay out
+  // (#233). A string-literal name is dropped by the constant-argument filter,
+  // so only a non-constant name reaches this sink.
+  { method: 'getResource', class: 'ClassLoader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'getResourceAsStream', class: 'ClassLoader', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0], languages: ['java'] },
   // Paths.get can be used for path traversal
   { method: 'get', class: 'Paths', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },
   { method: 'of', class: 'Path', type: 'path_traversal', cwe: 'CWE-22', severity: 'high', arg_positions: [0] },

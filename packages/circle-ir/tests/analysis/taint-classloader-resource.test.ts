@@ -1,13 +1,14 @@
 /**
- * Tests verifying that classpath-resource lookups are NOT emitted as
- * `path_traversal` sinks. `ClassLoader.getResource(name)`,
+ * Tests for classpath-resource lookups as `path_traversal` sinks.
  * `Class.getResource(name)` and Spring `ResourceLoader.getResource(name)`
- * resolve a classpath resource — an attacker-supplied `../` prefix
- * cannot escape the classpath root. Filesystem sinks
- * (`FileInputStream(name)`, `Files.readAllBytes(Paths.get(name))`,
+ * are not sinks (#233). `ClassLoader.getResource(name)` /
+ * `getResourceAsStream(name)` are CWE-22 sinks again for a non-constant name
+ * (#621, Spark CVE-2018-9159); a string-literal name is dropped by the
+ * constant-argument filter and covered in issue-621-classloader-resource-sink.
+ * Filesystem sinks (`FileInputStream(name)`, `Files.readAllBytes(Paths.get(name))`,
  * `File(name)`) remain sinks.
  *
- * Closes cognium-dev#233 (path_traversal family).
+ * Originally cognium-dev#233 (path_traversal family).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -25,12 +26,12 @@ async function pathSinksFor(code: string) {
   return taint.sinks.filter((s) => s.type === 'path_traversal');
 }
 
-describe('Classpath-resource lookups are not path_traversal (#233)', () => {
+describe('Classpath-resource lookups as path_traversal (#233, #621)', () => {
   beforeAll(async () => {
     await initParser();
   });
 
-  it('ClassLoader.getResource(name) is NOT a path_traversal sink', async () => {
+  it('ClassLoader.getResource(name) with a non-constant name IS a path_traversal sink (#621)', async () => {
     const code = `
 public class Svc {
   public java.net.URL run(ClassLoader cl, String name) {
@@ -39,10 +40,10 @@ public class Svc {
 }
 `;
     const sinks = await pathSinksFor(code);
-    expect(sinks.find((s) => s.method === 'getResource')).toBeUndefined();
+    expect(sinks.find((s) => s.method === 'getResource')).toBeDefined();
   });
 
-  it('ClassLoader.getResourceAsStream(name) is NOT a path_traversal sink', async () => {
+  it('ClassLoader.getResourceAsStream(name) with a non-constant name IS a path_traversal sink (#621)', async () => {
     const code = `
 public class Svc {
   public java.io.InputStream run(ClassLoader cl, String name) {
@@ -51,7 +52,7 @@ public class Svc {
 }
 `;
     const sinks = await pathSinksFor(code);
-    expect(sinks.find((s) => s.method === 'getResourceAsStream')).toBeUndefined();
+    expect(sinks.find((s) => s.method === 'getResourceAsStream')).toBeDefined();
   });
 
   it('Class.getResource(name) is NOT a path_traversal sink', async () => {
@@ -69,8 +70,8 @@ public class Svc {
   it('ResourceLoader.getResource(name) is NOT a path_traversal sink', async () => {
     const code = `
 public class Svc {
-  public Object run(org.springframework.core.io.ResourceLoader loader, String name) {
-    return loader.getResource(name);
+  public Object run(org.springframework.core.io.ResourceLoader resourceLoader, String name) {
+    return resourceLoader.getResource(name);
   }
 }
 `;

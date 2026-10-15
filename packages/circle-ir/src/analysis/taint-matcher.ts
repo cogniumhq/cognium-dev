@@ -2823,6 +2823,14 @@ const SINK_FQN_EXCLUSIONS: Partial<Record<SinkType, string[]>> = {
     // Expression.accept(ExpressionVisitor), etc.
     'net.sf.jsqlparser.',
   ],
+  path_traversal: [
+    // Spring `ResourceLoader.getResource(location)` resolves a classpath /
+    // URL location, not a file path. A receiver named `loader` would
+    // otherwise be taken for `ClassLoader` by the receiver-name heuristic
+    // (the ClassLoader.getResource sink, #621).
+    'org.springframework.core.io.ResourceLoader',
+    'org.springframework.core.io.support.ResourcePatternResolver',
+  ],
 };
 
 /**
