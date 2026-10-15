@@ -13,6 +13,7 @@ const header = [
   'package pool',
   '',
   'import (',
+  '\t"fmt"',
   '\t"net/http"',
   '\t"strconv"',
   ')',
@@ -98,6 +99,39 @@ describe('#349 — a bounded size is not tainted where it sizes a make', () => {
     expect(await flows(code, 'sized_cap.go')).toEqual([]);
   });
 
+  it('a guard inside a block that is still open at the make clears', async () => {
+    const code = handler(
+      'OpenBlock',
+      'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+      'if r.Method == "POST" {',
+      '\tif n > 4096 {',
+      '\t\treturn',
+      '\t}',
+      '\tbuf := make([]byte, n)',
+      '\tw.Write(buf)',
+      '}',
+    );
+    expect(await flows(code, 'open_block.go')).toEqual([]);
+  });
+
+  it('an outer guard still clears after a later nested guard closes', async () => {
+    const code = handler(
+      'TwoGuards',
+      'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+      'if n > 4096 {',
+      '\treturn',
+      '}',
+      'if r.Method == "POST" {',
+      '\tif n > 1024 {',
+      '\t\treturn',
+      '\t}',
+      '}',
+      'buf := make([]byte, n)',
+      'w.Write(buf)',
+    );
+    expect(await flows(code, 'two_guards.go')).toEqual([]);
+  });
+
   describe('still reports when the bound does not hold at the make', () => {
     it('the guard does not exit', async () => {
       const code = handler(
@@ -164,6 +198,87 @@ describe('#349 — a bounded size is not tainted where it sizes a make', () => {
         'w.Write(buf)',
       );
       expect((await flows(code, 'conditional.go')).length).toBeGreaterThan(0);
+    });
+
+    it('the guard sits in a nested block that closes before the make', async () => {
+      const code = handler(
+        'NestedGuard',
+        'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+        'if r.Method == "POST" {',
+        '\tif n > 4096 {',
+        '\t\treturn',
+        '\t}',
+        '}',
+        'buf := make([]byte, n)',
+        'w.Write(buf)',
+      );
+      expect((await flows(code, 'nested_guard.go')).length).toBeGreaterThan(0);
+    });
+
+    it('the guard sits in a loop body that closes before the make', async () => {
+      const code = handler(
+        'LoopGuard',
+        'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+        'for i := 0; i < 3; i++ {',
+        '\tif n > 4096 {',
+        '\t\tcontinue',
+        '\t}',
+        '}',
+        'buf := make([]byte, n)',
+        'w.Write(buf)',
+      );
+      expect((await flows(code, 'loop_guard.go')).length).toBeGreaterThan(0);
+    });
+
+    it('the guard sits in an if branch and the make in its else branch', async () => {
+      const code = handler(
+        'ElseMake',
+        'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+        'if r.Method == "POST" {',
+        '\tif n > 4096 {',
+        '\t\treturn',
+        '\t}',
+        '} else {',
+        '\tbuf := make([]byte, n)',
+        '\tw.Write(buf)',
+        '}',
+      );
+      expect((await flows(code, 'else_make.go')).length).toBeGreaterThan(0);
+    });
+
+    it('the guard sits in another switch case than the make', async () => {
+      const code = handler(
+        'CaseMake',
+        'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+        'switch r.Method {',
+        'case "POST":',
+        '\tif n > 4096 {',
+        '\t\treturn',
+        '\t}',
+        'case "GET":',
+        '\tbuf := make([]byte, n)',
+        '\tw.Write(buf)',
+        '}',
+      );
+      expect((await flows(code, 'case_make.go')).length).toBeGreaterThan(0);
+    });
+
+    it.each([
+      ['n++', 'n++'],
+      ['n--', 'n--'],
+      ['&n passed to fmt.Sscanf', 'fmt.Sscanf(r.URL.Query().Get("other"), "%d", &n)'],
+    ])('the size is rewritten after the guard by %s', async (_label, rewrite) => {
+      const code = handler(
+        'Rewritten',
+        'n, _ := strconv.Atoi(r.URL.Query().Get("size"))',
+        'if n > 4096 {',
+        '\treturn',
+        '}',
+        rewrite,
+        'buf := make([]byte, n)',
+        'w.Write(buf)',
+      );
+      expect((await flows(code, 'rewritten.go')).length).toBeGreaterThan(0);
     });
 
     it('the bound is read in another function', async () => {
