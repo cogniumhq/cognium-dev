@@ -27,9 +27,12 @@ const GO_STRINGS_SCALAR = new Set([
 /** `*regexp.Regexp` methods with a bool result, on any receiver. */
 const GO_REGEXP_BOOL = new Set(['MatchString', 'Match']);
 
-/** JS/TS members that yield a number or a boolean. */
+/**
+ * JS/TS members that yield a number or a boolean. `search` is left out: on
+ * search-index objects (`idx.search(q)`) it returns result data, not a number.
+ */
 const JS_SCALAR_METHODS = new Set([
-  'test', 'includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search',
+  'test', 'includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf',
 ]);
 
 type Lang = 'go' | 'javascript' | 'typescript';

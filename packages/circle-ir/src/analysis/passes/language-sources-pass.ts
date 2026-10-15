@@ -360,15 +360,13 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         ctx.addFinding(finding);
       }
       // Sprint 81 (#189): Go xss — fmt.Fprint(f|ln) to http.ResponseWriter.
-      // Since #456 the taint matcher resolves a handler-writer Fprint* as an
-      // xss sink; on those lines taint propagation decides (#568), as for
-      // the Java writer detector below.
-      const goXssSinkLines = new Set(
-        ctx.getResult<TaintMatcherResult>('taint-matcher').sinks
-          .filter(s => s.type === 'xss')
-          .map(s => s.line),
+      // #568: an arg that is an int/bool measure local carries no payload.
+      const scalarVarsAt = (line: number): Set<string> => new Set(
+        graph.usesAtLine(line)
+          .filter(u => u.def_id != null && graph.taintBarrierDefIds.has(u.def_id))
+          .map(u => u.variable),
       );
-      for (const finding of findGoXssFindings(code, graph.ir.meta.file, goXssSinkLines)) {
+      for (const finding of findGoXssFindings(code, graph.ir.meta.file, scalarVarsAt)) {
         ctx.addFinding(finding);
       }
       // Sprint 82 (#189): Go open_redirect — Header().Set("Location", taint).
@@ -7845,14 +7843,15 @@ export function findJsPatternFindings(
  *      (`html.EscapeString` / `template.HTMLEscapeString` /
  *      `template.HTMLEscaper`).
  *
- * Lines in `taintSinkLines` are skipped: the taint matcher resolved the
- * write as an xss sink there, so taint propagation decides whether user
- * input reaches it (#568 — `fmt.Fprintf(w, "%d", n)` with an int `n`).
+ * A write whose every argument is a local holding an int or bool measure of
+ * a value (`scalarVarsAt(line)`, #568 — `fmt.Fprintf(w, "%d", n)` with
+ * `n := len(...)`) is skipped. Any other argument, including request reads
+ * the taint engine has no source for (`r.URL.Path`), still reports.
  */
 export function findGoXssFindings(
   code: string,
   file: string,
-  taintSinkLines: ReadonlySet<number> = new Set(),
+  scalarVarsAt: (line: number) => ReadonlySet<string> = () => new Set(),
 ): SastFinding[] {
   const out: SastFinding[] = [];
   const lines = code.split('\n');
@@ -7875,7 +7874,6 @@ export function findGoXssFindings(
     if (!trimmed || trimmed.startsWith('//')) continue;
     const callRe =
       /\bfmt\.Fprint(?:f|ln)?\s*\(\s*([A-Za-z_]\w*)\s*,\s*([\s\S]*)\)\s*(?:\/\/.*)?$/;
-    if (taintSinkLines.has(i + 1)) continue;
     const m = trimmed.match(callRe);
     if (!m) continue;
     if (!rwNames.has(m[1])) continue;
@@ -7883,6 +7881,10 @@ export function findGoXssFindings(
     if (escaperRe.test(tail)) continue;
     // Require at least one identifier in tail outside string literals.
     if (!/[A-Za-z_]\w*/.test(tail.replace(/"[^"]*"|`[^`]*`/g, ''))) continue;
+    const idents = tail.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`/g, '')
+      .match(/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*/g) ?? [];
+    const scalars = scalarVarsAt(i + 1);
+    if (idents.length > 0 && idents.every(id => scalars.has(id))) continue;
     out.push({
       id: `xss-${file}-${i + 1}`,
       pass: 'language-sources',

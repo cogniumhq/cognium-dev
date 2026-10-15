@@ -76,6 +76,16 @@ describe('#568 — taint does not flow into an int/bool measure of a value', () 
       expect(await fprintPattern('n := len(vowelRe.FindAllString(word, -1))', 'fmt.Fprintf(w, "%d", n)')).toHaveLength(0);
     });
 
+    // A request read the taint engine has no source for still reports
+    // through the pattern detector; only all-scalar arguments are skipped.
+    it.each([
+      ['the URL path', 'fmt.Fprintf(w, "<p>%s</p>", r.URL.Path)'],
+      ['a path value', 'id := r.PathValue("id")', 'fmt.Fprintln(w, "<b>"+id+"</b>")'],
+      ['a count beside the raw query', 'n := len(word)', 'fmt.Fprintf(w, "%d %s", n, r.URL.RawQuery)'],
+    ])('the Fprint* pattern still fires on %s', async (_n, ...body) => {
+      expect(await fprintPattern(...body)).toHaveLength(1);
+    });
+
     it('a printed word still reports xss from taint propagation', async () => {
       const r = await analyze(goHandler('fmt.Fprintf(w, "<b>%s</b>", word)'), 'tally.go', 'go');
       expect((r.taint.flows ?? []).some((f) => f.sink_type === 'xss' && f.sink_line === 14)).toBe(true);
@@ -107,6 +117,7 @@ describe('#568 — taint does not flow into an int/bool measure of a value', () 
       ['the match array', 'const hits = word.match(VOWELS);', 'res.send(hits[0]);'],
       ['a ternary on the length', "const out = word.length > 3 ? word : '';", 'res.send(out);'],
       ['the text beside its length', 'const size = word.length;', "res.send(word + ' ' + size);"],
+      ['a search method returning markup', "const html = { search: (s) => '<li>' + s }.search(word);", 'res.send(html);'],
     ])('%s still reports xss', async (_n, ...body) => {
       expect(await sinkTypes(jsHandler(...body), 'tally.js', 'javascript')).toContain('xss');
     });
@@ -141,6 +152,7 @@ describe('#568 — taint does not flow into an int/bool measure of a value', () 
       ['`${q}x`.length', 'javascript'],
       ['foo(q).bar', 'javascript'],
       ['includes(q)', 'javascript'],
+      ['idx.search(q)', 'javascript'],
       ['len(q)', 'python'],
     ])('%s (%s) is not', (expr, lang) => {
       expect(isScalarDerivation(expr, lang)).toBe(false);
