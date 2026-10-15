@@ -71,6 +71,18 @@ func rawBesideAtTheCall(w http.ResponseWriter, r *http.Request) {
 	team := r.FormValue("team")
 	log.Printf("sign-in user=%s grp=%s", oneLine.Replace(r.FormValue("login")), team)
 }
+
+func rawConcatOnReplaceLine(w http.ResponseWriter, r *http.Request) {
+	login := r.FormValue("login")
+	team := r.FormValue("team")
+	entry := oneLine.Replace(login) + " / " + team
+	log.Print(entry)
+}
+
+func lengthBeside(w http.ResponseWriter, r *http.Request) {
+	login := r.FormValue("login")
+	log.Printf("sign-in user=%s (%d)", oneLine.Replace(login), len(login))
+}
 `;
 
 const xssCode = `package main
@@ -130,6 +142,15 @@ describe('#348 Go strings.NewReplacer CR/LF strip', () => {
     expect(firesIn('signIn')).toBe(false);
     expect(firesIn('escapedBreaks')).toBe(false);
     expect(firesIn('atTheCall')).toBe(false);
+  });
+
+  it('a sibling that passes only the length of the raw value is not a raw operand', () => {
+    expect(firesIn('lengthBeside')).toBe(false);
+  });
+
+  it('gives no line credit to an assignment that also concatenates a raw value', () => {
+    const sink = sinkIn(logCode, 'rawConcatOnReplaceLine', 'log.Print(');
+    expect(flows.some(f => f.sink_line === sink)).toBe(true);
   });
 
   it('still fires when the replacer leaves CR or LF in place', () => {

@@ -48,10 +48,12 @@ export function javaCallArgument(text: string, open: number): string | null {
 
 /** RHS of the nearest assignment to `name` above line `from`, within the enclosing method. */
 function resolveLocal(lines: string[], from: number, name: string): string | null {
-  const assignRe = new RegExp(`(?:^|[^\\w.])${name}\\s*=(?!=)\\s*([^;]+);`);
+  const assignRe = new RegExp(`(?:^|[^\\w.])${name}\\s*([-+*/%&|^]|<<|>>>?)?=(?!=)\\s*([^;]+);`);
   for (let l = from - 1; l >= 0; l--) {
     const m = assignRe.exec(lines[l]!);
-    if (m) return m[1]!.trim();
+    // A compound assignment (`base += File.separator`) extends the value; it
+    // cannot be proven bare, so it stays unresolved and the guard keeps credit.
+    if (m) return m[1] !== undefined ? null : m[2]!.trim();
     if (METHOD_HEADER_RE.test(lines[l]!)) return null;
   }
   return null;

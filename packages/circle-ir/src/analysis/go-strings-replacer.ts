@@ -71,6 +71,26 @@ function callArgs(text: string, open: number): { args: string; end: number } | n
   return null;
 }
 
+/**
+ * True when `lineText` is an assignment whose right-hand side holds an operand
+ * outside every `….Replace(…)` call (`msg := flat.Replace(a) + " " + b`). The
+ * credit is line-keyed, so it would also clean `b`; such a line earns none.
+ */
+function assignmentHasRawOperand(lineText: string): boolean {
+  const m = /^\s*(?:var\s+)?[A-Za-z_][\w\s,]*?:?=(?!=)(.*)$/.exec(lineText);
+  if (!m) return false;
+  let rhs = m[1]!;
+  for (const re of [/\bstrings\s*\.\s*NewReplacer\s*\(/, /(?:\b[A-Za-z_]\w*\s*)?\.\s*Replace\s*\(/]) {
+    for (let r = re.exec(rhs); r; r = re.exec(rhs)) {
+      const call = callArgs(rhs, r.index + r[0].length - 1);
+      if (!call) return true;
+      rhs = rhs.slice(0, r.index) + rhs.slice(call.end + 1);
+    }
+  }
+  rhs = rhs.replace(/"(?:[^"\\]|\\.)*"|`[^`]*`/g, '""');
+  return /\b[A-Za-z_]\w*\b(?!\s*[.(])/.test(rhs.replace(/\.\s*[A-Za-z_]\w*/g, ''));
+}
+
 export function findGoStringsReplacerSanitizers(code: string): TaintSanitizer[] {
   const out: TaintSanitizer[] = [];
   const lineStarts = [0];
@@ -85,7 +105,9 @@ export function findGoStringsReplacerSanitizers(code: string): TaintSanitizer[] 
   };
   // `method` names the call that does the replacing, so a sink-line credit
   // covers only that call's operand (#641).
+  const lines = code.split('\n');
   const emit = (line: number, sanitizes: SinkType[], method: string): void => {
+    if (assignmentHasRawOperand(lines[line - 1] ?? '')) return;
     out.push({ type: 'go_strings_replacer', method, line, sanitizes });
   };
 

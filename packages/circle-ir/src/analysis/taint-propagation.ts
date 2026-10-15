@@ -603,6 +603,12 @@ function maskSanitizerCalls(expr: string, refs: SanitizerCallRef[]): string {
   return out;
 }
 
+function maskLengthOf(expr: string): string {
+  return expr
+    .replace(/\b(?:len|strlen|count)\s*\(\s*[\w$.]+\s*\)/g, ' 0 ')
+    .replace(/[\w$.]+\s*\.\s*(?:length|size|count)\s*(?:\(\s*\))?(?![\w$(])/g, ' 0 ');
+}
+
 function blankStringLiterals(expr: string): string {
   return expr
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
@@ -641,7 +647,11 @@ export function identifierOutsideSanitizerCalls(
     });
     if (!masked.some(m => m.masked !== m.expr)) continue;
     for (const m of masked) {
-      if (m.masked && re.test(blankStringLiterals(m.masked))) return true;
+      if (!m.masked) continue;
+      // A sibling that passes only the value's length (`len(s)`,
+      // `s.length()`, `s.size()`) carries no attacker-controlled text.
+      const text = m.masked === m.expr ? maskLengthOf(m.masked) : m.masked;
+      if (re.test(blankStringLiterals(text))) return true;
     }
   }
   return false;

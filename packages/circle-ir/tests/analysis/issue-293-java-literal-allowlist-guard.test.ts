@@ -60,6 +60,13 @@ public class DisplaySettings extends HttpServlet {
         req.getSession().setAttribute(opt, "1");
     }
 
+    protected void rawValueOnSinkLine(HttpServletRequest req) {
+        String opt = req.getParameter("opt");
+        String level = req.getParameter("level");
+        if (!OPTIONS.contains(opt)) return;
+        req.getSession().setAttribute(opt, level);
+    }
+
     protected void unguarded(HttpServletRequest req) {
         String opt = req.getParameter("opt");
         req.getSession().setAttribute(opt, "1");
@@ -95,5 +102,9 @@ describe('#293 Java literal allow-list guard', () => {
     expect(sinks).toContain(sinkOf('otherValueStored'));
     expect(sinks).toContain(sinkOf('reassignedAfterGuard'));
     expect(sinks).toContain(sinkOf('unguarded'));
+  });
+
+  it('does not credit a raw value that shares the sink line with the guarded one', () => {
+    expect(sinks).toContain(sinkOf('rawValueOnSinkLine'));
   });
 });

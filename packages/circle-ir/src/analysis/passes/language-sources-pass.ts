@@ -6208,6 +6208,24 @@ function guardRejects(
  * enclosing method or the variable's next reassignment, and only when the
  * guard rejects (`guardRejects`).
  */
+const JAVA_OPERAND_KEYWORDS = new Set([
+  'new', 'return', 'this', 'super', 'null', 'true', 'false', 'throw', 'if', 'else', 'instanceof',
+  'int', 'long', 'short', 'byte', 'char', 'boolean', 'double', 'float', 'var', 'final',
+]);
+
+/**
+ * True when `line` reads a lower-case identifier other than `name` as a value
+ * (not a receiver, call name, member, type, constant or the assigned local).
+ */
+function otherLocalOperand(line: string, name: string): boolean {
+  const s = line
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""')
+    .replace(/^\s*(?:[\w<>[\],.?]+\s+)?[A-Za-z_]\w*\s*=(?!=)/, ' ')
+    .replace(/\.\s*[A-Za-z_]\w*/g, ' ')
+    .replace(/\b[A-Za-z_]\w*(?=\s*[.(])/g, ' ');
+  return (s.match(/\b[a-z_]\w*\b/g) ?? []).some(id => id !== name && !JAVA_OPERAND_KEYWORDS.has(id));
+}
+
 function findJavaLiteralAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');
@@ -6248,6 +6266,9 @@ function findJavaLiteralAllowlistGuardSanitizers(code: string): TaintSanitizer[]
       if (d < 0) break;
       if (reassign.test(lines[j]!)) break;
       if (!mention.test(lines[j]!)) continue;
+      // The credit is line-keyed: a line that also carries another local
+      // (`"... n='" + who + "' ORDER BY " + col`) would clean `who` too.
+      if (otherLocalOperand(lines[j]!, name)) continue;
       sanitizers.push({
         type: 'java_literal_allowlist_guard',
         method: 'guard',

@@ -95,6 +95,9 @@ describe('#618 canonical-path prefix guard needs a separator', () => {
       traversal(await servlet(['String prefix = store.getCanonicalPath();', "prefix = prefix + '/';"], 'prefix')).length,
     ).toBe(0);
     expect(
+      traversal(await servlet(['String prefix = store.getCanonicalPath();', 'prefix += File.separator;'], 'prefix')).length,
+    ).toBe(0);
+    expect(
       traversal(
         await servlet(['String rootText = store.getCanonicalPath();', 'String prefix = rootText + File.separatorChar;'], 'prefix'),
       ).length,
