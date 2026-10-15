@@ -23,6 +23,13 @@ export interface ConstantPropagatorResult {
   taintedArrayElements: Map<string, Set<string>>;
   /** Variables explicitly assigned from sanitizer calls */
   sanitizedVars: Set<string>;
+  /**
+   * Sink types a sanitized variable is NOT clean for (#589): set when the
+   * sanitizer that produced it is a context-specific encoder, which does not
+   * clean `trust_boundary`. A variable absent from this map is clean for every
+   * sink type, as before.
+   */
+  sanitizedVarUncovered?: Map<string, ReadonlySet<string>>;
   /** Conditional taint tracking: condition expression → set of variables tainted under that condition */
   conditionalTaints: Map<string, Set<string>>;
   /** Line condition tracking: line number → condition expression it's under */

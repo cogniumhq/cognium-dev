@@ -58,7 +58,7 @@ function makeConstPropVeto(
   sources: SinkFilterResult['sources'],
   code: string | undefined,
   language?: string,
-): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number) => boolean {
+): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number, sinkType?: string) => boolean {
   const lines = typeof code === 'string' ? code.split('\n') : [];
   const selfReassign = new Map<string, number[]>();
   const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -86,10 +86,17 @@ function makeConstPropVeto(
     const use = (graph.usesByLine.get(line) ?? []).find(u => u.variable === v && u.def_id != null);
     return use ? graph.defById.get(use.def_id!) : undefined;
   };
-  return (step, sourceLine, sinkLine) => {
+  return (step, sourceLine, sinkLine, sinkType) => {
     const r = isFalsePositive(constProp, step.line, step.variable);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
+    // #589: the step variable came from a context-specific encoder
+    // (`escapeHtml`, `encodeForHTML`, …), which does not clean `trust_boundary`
+    // (a `session.setAttribute` sink). It is "not tainted" only for the other
+    // sink types, so this flow is not vetoed.
+    if (sinkType !== undefined && constProp.sanitizedVarUncovered?.get(step.variable)?.has(sinkType)) {
+      return false;
+    }
     // cognium-dev#579: const-prop has no C# source model, so its tainted set is
     // empty for C# and "not tainted" there means "never looked", not "clean".
     // It still records a plain reassignment (`s = q;`) as a tracked symbol,
@@ -157,7 +164,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       if (constProp.unreachableLines.has(flow.sink.line)) return false;
 
       for (const step of flow.path) {
-        if (isVetoed(step, flow.source.line, flow.sink.line)) return false;
+        if (isVetoed(step, flow.source.line, flow.sink.line, flow.sink.type)) return false;
       }
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
@@ -407,14 +414,22 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // explicitly marked sanitized by a guard (e.g. regex-allowlist).
     // Applied to ALL flow generators (DFG-built and the four supplements)
     // so the suppression is uniform regardless of which path emitted the flow.
+    //
+    // #589: a variable produced by a context-specific encoder (`escapeHtml`,
+    // `encodeForHTML`, …) is not clean for `trust_boundary`
+    // (`session.setAttribute`), so that flow from the variable stays.
     const sanitizedNames = constProp.sanitizedVars;
+    const sanitizedUncovered = constProp.sanitizedVarUncovered;
     let finalFlows = sanitizedNames.size === 0 ? flows : flows.filter(f => {
       if (f.path.length === 0) return true;
       const sourceVar = f.path[0].variable;
       if (!sourceVar) return true;
-      if (sanitizedNames.has(sourceVar)) return false;
+      const coversFlow = (name: string): boolean => {
+        return !(sanitizedUncovered?.get(name)?.has(f.sink_type));
+      };
+      if (sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
       for (const s of sanitizedNames) {
-        if (s.endsWith(`:${sourceVar}`)) return false;
+        if (s.endsWith(`:${sourceVar}`) && coversFlow(s)) return false;
       }
       return true;
     });

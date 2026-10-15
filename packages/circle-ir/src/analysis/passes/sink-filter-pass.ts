@@ -1241,6 +1241,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     filtered = filterCleanVariableSinks(
       filtered, calls, constProp.tainted, constProp.symbols,
       dfg, constProp.sanitizedVars, constProp.synchronizedLines, language,
+      constProp.sanitizedVarUncovered,
     );
 
     // Stage 4 — sanitized sinks. A sanitizer on one operand does not drop
@@ -2993,6 +2994,7 @@ export function filterCleanVariableSinks(
   sanitizedVars?: Set<string>,
   synchronizedLines?: Set<number>,
   language?: string,
+  sanitizedVarUncovered?: Map<string, ReadonlySet<string>>,
 ): CircleIR['taint']['sinks'] {
   const fieldNames = new Set<string>();
   if (dfg) {
@@ -3062,7 +3064,14 @@ export function filterCleanVariableSinks(
             const scopedName = methodName ? `${methodName}:${varName}` : varName;
 
             if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
-            if (sanitizedVars?.has(scopedName) || sanitizedVars?.has(varName)) continue;
+            if (sanitizedVars?.has(scopedName) || sanitizedVars?.has(varName)) {
+              // #589: a context-specific encoder (`escapeHtml`, `encodeForHTML`, …)
+              // does not clean `trust_boundary`; that sink on the same
+              // variable stays.
+              const uncovered = sanitizedVarUncovered?.get(scopedName) ?? sanitizedVarUncovered?.get(varName);
+              if (!uncovered || !uncovered.has(sink.type)) continue;
+              argClean = false; break;
+            }
             if (taintedVars.has(scopedName) || taintedVars.has(varName)) { argClean = false; break; }
 
             const symbolValue = symbols.get(scopedName) ?? symbols.get(varName);

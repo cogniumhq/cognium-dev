@@ -9,7 +9,10 @@ import type { Node, Tree } from 'web-tree-sitter';
 import type { ConstantValue, ConstantPropagatorResult, TaintedParameter, FieldTaintInfo } from './types.js';
 import { isKnown, createUnknown, getNodeText, getNodeLine } from './ast-utils.js';
 import { ExpressionEvaluator } from './evaluator.js';
-import { TAINT_PATTERN_REGEX, SANITIZER_METHODS, PROPAGATOR_METHODS, ANTI_SANITIZER_METHODS } from './patterns.js';
+import {
+  TAINT_PATTERN_REGEX, SANITIZER_METHODS, PROPAGATOR_METHODS, ANTI_SANITIZER_METHODS,
+  HTML_CONTEXT_ENCODER_METHODS, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS,
+} from './patterns.js';
 
 /**
  * Constant Propagator for taint analysis.
@@ -27,6 +30,8 @@ export class ConstantPropagator {
   private taintedCollections: Map<string, Set<string>> = new Map();
   // Track variables explicitly assigned from sanitizer calls
   private sanitizedVars: Set<string> = new Set();
+  /** #589: per sanitized variable, the sink types its context-specific encoder does NOT clean. */
+  private sanitizedVarUncovered: Map<string, ReadonlySet<string>> = new Map();
   private source: string = '';
   private evaluator!: ExpressionEvaluator;
 
@@ -117,6 +122,7 @@ export class ConstantPropagator {
     this.loopVariables.clear();
     this.taintedArrayElements.clear();
     this.sanitizedVars.clear();
+    this.sanitizedVarUncovered.clear();
     this.currentMethod = null;
     this.conditionalTaints.clear();
     this.conditionStack = [];
@@ -181,10 +187,15 @@ export class ConstantPropagator {
         resultTainted.add(unscoped);
       }
     }
+    const resultScopes = new Map(this.sanitizedVarUncovered);
     for (const name of this.sanitizedVars) {
       if (name.includes(':')) {
         const unscoped = name.substring(name.indexOf(':') + 1);
         resultSanitized.add(unscoped);
+        // The unscoped alias inherits the entry only while no unscoped
+        // sanitizer of another family claimed the same name.
+        const sc = this.sanitizedVarUncovered.get(name);
+        if (sc && !resultScopes.has(unscoped) && !this.sanitizedVars.has(unscoped)) resultScopes.set(unscoped, sc);
       }
     }
     // Add unscoped symbols for backward compatibility with tests
@@ -206,6 +217,7 @@ export class ConstantPropagator {
       taintedCollections: new Map(this.taintedCollections),
       taintedArrayElements: new Map(this.taintedArrayElements),
       sanitizedVars: resultSanitized,
+      sanitizedVarUncovered: resultScopes,
       conditionalTaints: new Map(this.conditionalTaints),
       lineConditions: new Map(this.lineConditions),
       synchronizedLines: new Set(this.synchronizedLines),
@@ -1267,6 +1279,7 @@ export class ConstantPropagator {
               // Track if this variable was explicitly assigned from a sanitizer call
               if (this.isSanitizerMethodCall(valueNode)) {
                 this.sanitizedVars.add(scopedName);
+                this.recordSanitizerScope(scopedName, valueNode);
               }
 
               // Check if this is an anti-sanitizer call that reintroduces taint
@@ -1364,6 +1377,7 @@ export class ConstantPropagator {
         // Track if this variable was explicitly assigned from a sanitizer call
         if (this.isSanitizerMethodCall(right)) {
           this.sanitizedVars.add(scopedName);
+          this.recordSanitizerScope(scopedName, right);
         }
       }
 
@@ -1573,10 +1587,12 @@ export class ConstantPropagator {
       if (guardedVar) {
         this.tainted.delete(guardedVar);
         this.sanitizedVars.add(guardedVar);
+        this.sanitizedVarUncovered.delete(guardedVar);
         const scoped = this.getScopedName(guardedVar);
         if (scoped !== guardedVar) {
           this.tainted.delete(scoped);
           this.sanitizedVars.add(scoped);
+          this.sanitizedVarUncovered.delete(scoped);
         }
       }
     }
@@ -1908,6 +1924,20 @@ export class ConstantPropagator {
    * Handles Java (`method_invocation`), Go/JS/TS (`call_expression`), and
    * Python (`call`) AST shapes.
    */
+  /**
+   * #589: remember which sink types the sanitizer behind `scopedName` does NOT
+   * clean. Only context-specific HTML/markup encoders carry an entry; any other
+   * sanitizer clears a previously recorded one (the variable was reassigned).
+   */
+  private recordSanitizerScope(scopedName: string, node: Node): void {
+    const methodName = this.extractCallName(node);
+    if (methodName && HTML_CONTEXT_ENCODER_METHODS.has(methodName) && !this.methodReturnsSanitized.has(methodName)) {
+      this.sanitizedVarUncovered.set(scopedName, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS);
+    } else {
+      this.sanitizedVarUncovered.delete(scopedName);
+    }
+  }
+
   isSanitizerMethodCall(node: Node): boolean {
     const methodName = this.extractCallName(node);
     if (!methodName) return false;

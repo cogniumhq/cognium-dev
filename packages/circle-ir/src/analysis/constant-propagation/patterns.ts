@@ -136,6 +136,41 @@ export const SANITIZER_METHODS = new Set([
   'int', 'float', 'bool',
 ]);
 
+/**
+ * Context-specific HTML / markup / script encoders (cognium-dev#589).
+ *
+ * A local assigned from one of these is clean for the output-encoding sinks but
+ * not for `trust_boundary`. The constant propagator records this per variable so
+ * that the clean-variable sink filter does not drop a `trust_boundary` sink on a
+ * session `setAttribute`. Every method here is a registered sanitizer
+ * whose config row removes `xss` and nothing else; a drift test pins that.
+ * Families that are NOT listed (type casts, SQL/LDAP/path codecs, URL encoders)
+ * keep their existing all-sinks behaviour.
+ */
+export const HTML_CONTEXT_ENCODER_METHODS: ReadonlySet<string> = new Set([
+  // ESAPI
+  'encodeForHTML', 'encodeForHTMLAttribute', 'encodeForJavaScript', 'encodeForCSS',
+  'encodeForXML', 'encodeForXMLAttribute',
+  // OWASP Java Encoder
+  'forHtml', 'forHtmlAttribute', 'forHtmlContent', 'forHtmlUnquotedAttribute',
+  'forJavaScript', 'forJavaScriptBlock', 'forJavaScriptAttribute', 'forJavaScriptSource',
+  'forCssString', 'forCssUrl', 'forXml', 'forXmlAttribute', 'forXmlContent',
+  'forXmlComment', 'forCDATA',
+  // Apache Commons StringEscapeUtils
+  'escapeHtml', 'escapeHtml3', 'escapeHtml4', 'escapeXml', 'escapeXml10', 'escapeXml11',
+  'escapeEcmaScript',
+  // Spring HtmlUtils
+  'htmlEscape', 'htmlEscapeDecimal', 'htmlEscapeHex',
+]);
+
+/**
+ * Sink types an HTML-context encoder does NOT clean. `trust_boundary`
+ * (CWE-501, a tainted value stored in a session / trusted container) is not an
+ * output-encoding concern: an encoded value is still untrusted data crossing
+ * the boundary (#589). Every other sink type keeps its existing credit.
+ */
+export const HTML_CONTEXT_ENCODER_UNCOVERED_SINKS: ReadonlySet<string> = new Set(['trust_boundary']);
+
 // =============================================================================
 // Anti-Sanitizer Methods
 // These methods REVERSE sanitization - calling them on sanitized input produces tainted output
