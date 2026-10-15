@@ -71,9 +71,37 @@ export function constLookupTables(code: string, language: string): Set<string> {
       `|\\bdelete\\s+${esc}\\b`,
     );
     if (write.test(code)) continue;
+    if (!onlyReadByLookup(code, name, m.index! + m[0].indexOf(name, 5))) continue;
     out.add(name);
   }
   return out;
+}
+
+/** Writes or mutations through an element read: `[k] = v`, `[k].x = v`, `[k].push(v)`. */
+const WRITE_THROUGH_RE = new RegExp(
+  String.raw`^(?:\s*(?:\?\.\s*)?(?:\.\s*[\w$]+|\[[^\]]*\]))*\s*` +
+  String.raw`(?:=(?!=)|[-+*/%&|^]=|\+\+|--|\?\?=|\|\|=|&&=|\.\s*(?:push|unshift|splice|set|add|delete|clear|fill|copyWithin|reverse|sort)\s*\()`,
+);
+
+/**
+ * True when every use of `name` outside its declaration is a plain element
+ * read `name[k]` / `name?.[k]` that is not written or mutated through
+ * (`name[k] = v`, `name[k].x = v`, `name[k].push(v)`). Any other use — an
+ * alias (`const t = name`), a nested write (`name.items.push(v)`), a helper
+ * taking the table (`_.set(name, …)`) — may change the table's contents.
+ */
+function onlyReadByLookup(code: string, name: string, declAt: number): boolean {
+  const esc = name.replace(/\$/g, '\\$');
+  for (const m of code.matchAll(new RegExp(`(?<![\\w$.])${esc}(?![\\w$])`, 'g'))) {
+    if (m.index === declAt) continue;
+    const rest = code.slice(m.index! + name.length);
+    const open = /^\s*(?:\?\.)?\s*\[/.exec(rest);
+    if (!open) return false;
+    const close = closeOf(rest, open[0].length - 1);
+    if (close < 0) return false;
+    if (WRITE_THROUGH_RE.test(rest.slice(close))) return false;
+  }
+  return true;
 }
 
 /**

@@ -63,6 +63,12 @@ describe('#667 — constant-table lookup is not request data', () => {
       'const name = NAMES[req.query.k] || req.query.k;', "res.send('<b>' + name + '</b>');"],
     ['a table mutated through Object.assign', ['const PREFS = {};', 'Object.assign(PREFS, global.userPrefs);'],
       'const p = PREFS[req.query.k];', "res.send('<b>' + p + '</b>');"],
+    ['a table written through a nested member', ['const STORE = { items: [] };'],
+      'STORE.items.push(req.query.v);', 'const b = STORE[req.query.k];', "res.send('<b>' + b + '</b>');"],
+    ['a table written through an alias', ['const CACHE2 = {};', 'const alias = CACHE2;'],
+      'alias[req.query.k] = req.query.v;', 'const hit = CACHE2[req.query.k];', "res.send('<b>' + hit + '</b>');"],
+    ['a table passed to a setter helper', ["const _ = require('lodash');", "const SETTINGS = { theme: 'dark' };"],
+      '_.set(SETTINGS, req.query.p, req.query.v);', 'const v = SETTINGS[req.query.k];', "res.send('<b>' + v + '</b>');"],
   ])('%s still reports xss', async (_n, decls, ...body) => {
     expect(await flowTypes(app(decls, ...body))).toContain('xss');
   });
@@ -84,8 +90,16 @@ describe('#667 — constant-table lookup is not request data', () => {
         'const F = { q: req.query.x };',
         'const G = [];',
         'G.push(3);',
+        'const H = { a: [] };',
+        'H.a.push(4);',
+        'const I = { a: {} };',
+        'I[k].x = 5;',
+        'const J = { a: 1 };',
+        'exported({ J });',
+        'const K = { a: 1 };',
+        'if (K[k] === 1) use(K[k].toString());',
       ].join('\n');
-      expect([...constLookupTables(code, 'javascript')].sort()).toEqual(['A', 'B', 'E']);
+      expect([...constLookupTables(code, 'javascript')].sort()).toEqual(['A', 'B', 'E', 'K']);
       expect(constLookupTables(code, 'python').size).toBe(0);
     });
 
