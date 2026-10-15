@@ -357,6 +357,9 @@ export function analyzeInterprocedural(
     'text', 'textContent', 'innerText', 'createTextNode',
     'addClass', 'removeClass', 'toggleClass',
     'parseInt', 'parseFloat', 'Number', 'String', 'Boolean',
+    // Pure serializers (JSON.stringify, qs/querystring.stringify) return a
+    // string to the caller; the value has not left the program (#670).
+    'stringify',
     // I/O stream wrappers — pure decorators that wrap a stream, not security sinks
     // e.g. new InputStreamReader(proc.getInputStream()) is safe; the underlying stream is the source
     'InputStreamReader', 'OutputStreamWriter',
