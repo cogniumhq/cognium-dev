@@ -650,7 +650,11 @@ function processStatement(
       defId = result.nextDefId;
       useId = result.nextUseId;
       const popped = scopeStack.pop()!;
-      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack);
+      // A bare `{ … }` (or `synchronized (x) { … }`) always runs, so its defs
+      // replace the enclosing scope's; an if/loop/try/switch/lambda body may
+      // not, so its defs are kept beside them.
+      const alwaysRuns = stmt.parent?.type === 'block' || stmt.parent?.type === 'synchronized_statement';
+      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack, alwaysRuns);
       break;
     }
 
@@ -1176,9 +1180,31 @@ function markDeclared(scope: Map<string, number>, name: string): void {
   alternateDefs.get(scope)?.delete(name);
 }
 
-function carryBranchDefsOut(popped: Map<string, number>, scopeStack: Map<string, number>[]): void {
+function carryBranchDefsOut(
+  popped: Map<string, number>,
+  scopeStack: Map<string, number>[],
+  alwaysRuns = false,
+): void {
   const declared = declaredNames.get(popped);
   const poppedAlts = alternateDefs.get(popped);
+  if (alwaysRuns) {
+    // Straight-line block: the def is as if made directly in the enclosing
+    // scope. It becomes that scope's reaching def and drops the alternates
+    // for the name; defs the block itself held as alternates stay alternates.
+    const top = scopeStack[scopeStack.length - 1];
+    if (!top) return;
+    for (const [name, id] of popped) {
+      if (declared?.has(name)) continue;
+      if (!scopeStack.some((scope) => scope.has(name))) continue;
+      top.set(name, id);
+      let alts = alternateDefs.get(top);
+      if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
+      alts.delete(name);
+      const kept = poppedAlts?.get(name);
+      if (kept && kept.length > 0) alts.set(name, [...kept]);
+    }
+    return;
+  }
   const carry = (name: string, ids: number[]): void => {
     if (declared?.has(name)) return;
     for (let i = scopeStack.length - 1; i >= 0; i--) {
