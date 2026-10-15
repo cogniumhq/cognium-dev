@@ -1,0 +1,322 @@
+/**
+ * cognium-dev#562 / #605 / #517 (minimal slices): Java `String.replace`
+ * sanitizer credit is argument-aware. `log_injection` is credited only when
+ * the chain strips both CR and LF; `xss` only when it entity-escapes `<` and `>`.
+ *
+ * SAST regression fixtures — the handlers are deliberately vulnerable.
+ */
+
+import { describe, it, expect, beforeAll } from 'vitest';
+import { initAnalyzer, analyze } from '../../src/analyzer.js';
+
+async function lines(code: string, file: string, type: string) {
+  const r = await analyze(code, file, 'java');
+  return [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === type).map((f) => f.sink_line))].sort((a, b) => a - b);
+}
+
+const audit = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class AuditTrailServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String actor = request.getParameter("actor");
+        String lfOnly = actor.replace("\\n", "");
+        AUDIT.info("login by " + lfOnly);
+        String both = actor.replace("\\n", "").replace("\\r", "");
+        AUDIT.info("login by " + both);
+        String rx = actor.replaceAll("[\\r\\n]", "");
+        AUDIT.info("login by " + rx);
+        AUDIT.info("login by " + actor);
+        String angle = actor.replace("<", "");
+        AUDIT.info("login by " + angle);
+    }
+}
+`;
+
+const signup = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class SignupAuditServlet extends HttpServlet {
+    private static final Logger LOG = Logger.getLogger("signup");
+
+    private String scrub(String value) {
+        return value.replace("\\n", "");
+    }
+
+    private String scrubBoth(String value) {
+        return value.replace("\\n", "").replace("\\r", "");
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String email = request.getParameter("email");
+        LOG.info("signup " + scrub(email));
+        LOG.info("signup " + scrubBoth(email));
+    }
+}
+`;
+
+const echo = `import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class EchoPageServlet extends HttpServlet {
+    private String tidy(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private String decorate(String value) {
+        return "[" + value.trim() + "]";
+    }
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String q = request.getParameter("q");
+        response.getWriter().write("<p>" + tidy(q) + "</p>");
+        response.getWriter().write("<p>" + decorate(q) + "</p>");
+        String inline = q.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        response.getWriter().write("<p>" + inline + "</p>");
+    }
+}
+`;
+
+const partial = `import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class EchoPartialServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String q = request.getParameter("q");
+        String amp = q.replace("&", "&amp;");
+        response.getWriter().write(amp);
+        String nl = q.replace("\\n", "").replace("\\r", "");
+        response.getWriter().write(nl);
+        String esc = q.replace("<", "&lt;").replace(">", "&gt;");
+        Runtime.getRuntime().exec(esc);
+    }
+}
+`;
+
+const chars = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class CharStripServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String actor = request.getParameter("actor");
+        String other = request.getParameter("other");
+        String both = actor.replace('\\n', ' ').replace('\\r', ' ');
+        AUDIT.info("login by " + both);
+        String lfOnly = actor.replace('\\n', ' ');
+        AUDIT.info("login by " + lfOnly);
+        String first = actor.replace("\\n", ""); String second = other.replace("\\r", "");
+        AUDIT.info("login by " + first);
+        AUDIT.info("login by " + second);
+        String full = actor.replace("\\n", "").replace("\\r", ""); String half = other.replace("\\n", "");
+        AUDIT.info("login by " + full);
+        AUDIT.info("login by " + half);
+        String wrapped = actor
+            .trim()
+            .replace("\\n", "")
+            .replace("\\r", "");
+        AUDIT.info("login by " + wrapped);
+    }
+}
+`;
+
+const regexes = `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class RegexStripServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String cls = a.replaceAll("[\\r\\n]+", "");
+        AUDIT.info("v " + cls);
+        String alt = a.replaceAll("\\r|\\n", "");
+        AUDIT.info("v " + alt);
+        String grp = a.replaceAll("(?:\\r\\n|\\r|\\n)", "");
+        AUDIT.info("v " + grp);
+        String wide = a.replaceAll("[\\r\\n\\t]", "");
+        AUDIT.info("v " + wide);
+        String esc = a.replaceAll("[\\\\r\\\\n]", "");
+        AUDIT.info("v " + esc);
+        String seq = a.replaceAll("\\r\\n\\r\\n", "");
+        AUDIT.info("v " + seq);
+        String embedded = a.replaceAll("x\\r\\ny", "");
+        AUDIT.info("v " + embedded);
+        String crlfOrLf = a.replaceAll("\\r\\n|\\n", "");
+        AUDIT.info("v " + crlfOrLf);
+        String negated = a.replaceAll("[^\\r\\n]", "");
+        AUDIT.info("v " + negated);
+        String pair = a.replaceAll("\\r\\n", "");
+        AUDIT.info("v " + pair);
+    }
+}
+`;
+
+describe('Java argument-aware replace sanitizer credit', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('#562: log_injection only at the LF-only (14), control (19) and angle-only (21) lines', async () => {
+    expect(await lines(audit, 'AuditTrailServlet.java', 'log_injection')).toEqual([14, 19, 21]);
+  });
+
+  it('#605: LF-only helper fires, CR+LF helper stays clean', async () => {
+    expect(await lines(signup, 'SignupAuditServlet.java', 'log_injection')).toEqual([21]);
+  });
+
+  it('#517: inline < > entity escape clears xss at 21; the unescaped helper (19) still fires', async () => {
+    const l = await lines(echo, 'EchoPageServlet.java', 'xss');
+    expect(l).toContain(19);
+    expect(l).not.toContain(21);
+  });
+
+  it('#517: partial escapes keep xss, and the xss credit does not clear command_injection', async () => {
+    const l = await lines(partial, 'EchoPartialServlet.java', 'xss');
+    expect(l).toContain(11);
+    expect(l).toContain(13);
+    expect(await lines(partial, 'EchoPartialServlet.java', 'command_injection')).toContain(15);
+  });
+
+  it('char-literal chains: CR+LF char strip is clean (15), LF-only char strip fires (17)', async () => {
+    const l = await lines(chars, 'CharStripServlet.java', 'log_injection');
+    expect(l).not.toContain(15);
+    expect(l).toContain(17);
+  });
+
+  it('credit comes from the chain containing the call, not the whole line', async () => {
+    const l = await lines(chars, 'CharStripServlet.java', 'log_injection');
+    // an LF-only strip and a CR-only strip on one line: neither value is credited
+    expect(l).toContain(19);
+    expect(l).toContain(20);
+    // a multi-line CR+LF chain is clean
+    expect(l).not.toContain(28);
+  });
+
+  it('the sanitizer decision is made per call chain', async () => {
+    const r = await analyze(chars, 'CharStripServlet.java', 'java');
+    const san = (r.taint.sanitizers ?? []).filter((x) => (x.sanitizes ?? []).includes('log_injection'));
+    const byLine = (n: number) => san.filter((x) => x.line === n).length;
+    expect(byLine(18)).toBe(0); // LF-only + CR-only on separate chains
+    expect(byLine(21)).toBe(2); // only the two calls of the CR+LF chain, not the LF-only call beside it
+  });
+
+  it('replaceAll credits only a pattern that strips both CR and LF as separate matches', async () => {
+    const l = await lines(regexes, 'RegexStripServlet.java', 'log_injection');
+    // clean: [\r\n]+, \r|\n, (?:\r\n|\r|\n), [\r\n\t], and the regex-escaped [\\r\\n]
+    for (const n of [14, 16, 18, 20, 22]) expect(l).not.toContain(n);
+    // fires: a longer sequence, a sequence embedded in text, \r\n|\n (lone CR survives),
+    // a negated class, and the bare CR+LF pair
+    for (const n of [24, 26, 28, 30, 32]) expect(l).toContain(n);
+  });
+});
+
+// `body` is Java source written inside a TS template literal, so a Java `\\r`
+// regex escape is spelled `\\\\r` here and a Java `\\\\r` (backslash + r) is `\\\\\\\\r`.
+const patternServlet = (cases: Array<[string, string]>) => `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class PatternServlet extends HttpServlet {
+    private static final Logger AUDIT = Logger.getLogger("audit");
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+${cases.map(([name, pattern]) => `        String ${name} = a.replaceAll("${pattern}", "");\n        AUDIT.info("v " + ${name});`).join('\n')}
+    }
+}
+`;
+const lineOf = (code: string, text: string) => code.split('\n').findIndex((l) => l.includes(text)) + 1;
+
+const helperServlet = (helpers: Array<[string, string]>) => `import java.io.IOException;
+import java.util.logging.Logger;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class HelperPatternServlet extends HttpServlet {
+    private static final Logger LOG = Logger.getLogger("audit");
+
+${helpers.map(([name, pattern]) => `    private String ${name}(String value) {\n        return value.replaceAll("${pattern}", "");\n    }\n`).join('\n')}
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String email = request.getParameter("email");
+${helpers.map(([name]) => `        LOG.info("signup " + ${name}(email));`).join('\n')}
+    }
+}
+`;
+
+describe('Java replaceAll regex coverage reads one escape atom at a time', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const clean: Array<[string, string]> = [
+    ['cls', '[\\r\\n]+'],
+    ['alt', '\\r|\\n'],
+    ['grp', '(?:\\r\\n|\\r|\\n)'],
+    ['wide', '[\\r\\n\\t]'],
+    ['esc', '[\\\\r\\\\n]'],
+    ['wrapQ', '(?:[\\r\\n])+'],
+    ['altQ', '(?:\\r|\\n)+'],
+    ['one', '[\\r\\n]{1}'],
+    ['oneUp', '[\\r\\n]{1,}'],
+    ['star', '[\\r\\n]*'],
+    ['lazy', '[\\r\\n]+?'],
+  ];
+  const fires: Array<[string, string]> = [
+    ['overEsc', '[\\\\\\\\r\\\\\\\\n]'],
+    ['overEscAlt', '\\\\\\\\r|\\\\\\\\n'],
+    ['twice', '[\\r\\n]{2}'],
+    ['twiceUp', '[\\r\\n]{2,}'],
+    ['zero', '[\\r\\n]{0}'],
+    ['crTwice', '\\r{2}|\\n'],
+    ['grpTwice', '(?:\\r|\\n){2}'],
+    ['seq', '\\r\\n\\r\\n'],
+    ['negated', '[^\\r\\n]'],
+    ['pair', '\\r\\n'],
+  ];
+
+  it('inline: credited only for a real \\r / \\n atom with a quantifier that allows one repetition', async () => {
+    const code = patternServlet([...clean, ...fires]);
+    const l = await lines(code, 'PatternServlet.java', 'log_injection');
+    for (const [name] of clean) expect(l, name).not.toContain(lineOf(code, `"v " + ${name});`));
+    for (const [name] of fires) expect(l, name).toContain(lineOf(code, `"v " + ${name});`));
+  });
+
+  it('helper body: the same decision, and the call site of an over-credited helper still fires', async () => {
+    const code = helperServlet([...clean.slice(0, 5), ...fires]);
+    const l = await lines(code, 'HelperPatternServlet.java', 'log_injection');
+    for (const [name] of clean.slice(0, 5)) expect(l, name).not.toContain(lineOf(code, `${name}(email)`));
+    for (const [name] of fires) expect(l, name).toContain(lineOf(code, `${name}(email)`));
+  });
+});
+

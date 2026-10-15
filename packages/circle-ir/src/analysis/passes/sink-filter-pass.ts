@@ -531,6 +531,97 @@ const SERVER_SIGNAL_RE =
 // interpolated, the destination host is not attacker-controlled. Matches a
 // backtick + scheme + a literal host run (no `${` before the first `/`).
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
+/**
+ * True when the string literal that ended at `end` is the WHOLE initializer:
+ * the next code token is `;`, `,`, end of input, or (ASI) a token on a later
+ * line that cannot continue the expression. A same-line operator (`+`, `.`,
+ * `||` …) or a next-line `+` / `.` / `(` / `[` / template continuation means
+ * the literal is only the start of a larger expression, so it is not a
+ * constant. An optional TS `as const` / `as string` suffix is skipped (it may
+ * sit on the next line).
+ * (cognium-dev#680, #681)
+ */
+function literalEndsInitializer(code: string, end: number): boolean {
+  let i = end;
+  let crossedNewline = false;
+  const asConst = /^\s+as\s+(?:const|string)\b/.exec(code.slice(i, i + 64));
+  if (asConst) {
+    i += asConst[0].length;
+    crossedNewline = asConst[0].includes('\n');
+  }
+  for (;;) {
+    while (i < code.length && /\s/.test(code[i])) {
+      if (code[i] === '\n') crossedNewline = true;
+      i++;
+    }
+    if (code.startsWith('//', i)) {
+      const nl = code.indexOf('\n', i);
+      i = nl === -1 ? code.length : nl;
+    } else if (code.startsWith('/*', i)) {
+      const close = code.indexOf('*/', i + 2);
+      if (close === -1) return false;
+      if (code.slice(i, close).includes('\n')) crossedNewline = true;
+      i = close + 2;
+    } else break;
+  }
+  if (i >= code.length) return true;
+  const c = code[i];
+  if (c === ';' || c === ',') return true;
+  // ASI: a following line that begins a new statement terminates the initializer.
+  // A line that starts with `as` / `satisfies` / `in` / `instanceof` continues it.
+  if (/^(?:as|satisfies|in|instanceof)(?![\w$])/.test(code.slice(i, i + 12))) return false;
+  return crossedNewline && !/[-+*/%.?:|&<>=!~^(\[`]/.test(c);
+}
+
+/** Decode `\xNN` / `\uNNNN` / `\u{…}` JS string escapes; other escapes are kept verbatim. */
+function decodeJsHexEscapes(value: string): string {
+  return value.replace(/\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]{1,6})\}|[\s\S])/g, (m, x, u4, ub) => {
+    const hex = x ?? u4 ?? ub;
+    if (hex === undefined) return m;
+    const cp = parseInt(hex, 16);
+    return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+  });
+}
+
+/**
+ * The value of `name` when it is bound exactly once in the file, by `const`,
+ * to a plain string literal (no interpolation) that is the whole initializer,
+ * and has no other `let` / `var` / `function` binding; otherwise null.
+ * (cognium-dev#681)
+ */
+function constStringLiteralValue(code: string, name: string): string | null {
+  const esc = name.replace(/\$/g, '\\$');
+  const decl = new RegExp(`(?:^|[^\\w$.])const\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(?:'((?:\\\\.|[^'\\\\\\n])*)'|"((?:\\\\.|[^"\\\\\\n])*)"|\`([^\`$\\\\]*)\`)`, 'g');
+  const decls = [...code.matchAll(decl)];
+  if (decls.length !== 1) return null;
+  if (!literalEndsInitializer(code, decls[0].index! + decls[0][0].length)) return null;
+  const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var|function)\\s+${esc}\\b`, 'g');
+  if ([...code.matchAll(anyBinding)].length !== 1) return null;
+  return decodeJsHexEscapes(decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '');
+}
+
+/** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
+const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
+
+/** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
+const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
+
+/**
+ * True when `name` is bound exactly once in the file, by `const`, to a string
+ * literal http(s) origin with a literal host, and is never reassigned.
+ */
+function isConstLiteralOrigin(code: string, name: string): boolean {
+  const esc = name.replace(/\$/g, '\\$');
+  const decl = new RegExp(`(?:^|[^\\w$.])(const|let|var)\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(['"\`])(https?://[^/'"\`\\s$]+(?:/[^'"\`$]*)?)\\2`, 'gm');
+  const decls = [...code.matchAll(decl)];
+  if (decls.length !== 1 || decls[0][1] !== 'const') return false;
+  if (!literalEndsInitializer(code, decls[0].index! + decls[0][0].length)) return false;
+  const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var)\\s+${esc}\\b`, 'g');
+  if ([...code.matchAll(anyBinding)].length !== 1) return false;
+  const reassign = new RegExp(`(?:^|[^\\w$.])${esc}\\s*(?:[-+]?=)(?!=)`, 'g');
+  const rest = code.slice(0, decls[0].index) + code.slice(decls[0].index! + decls[0][0].length);
+  return !reassign.test(rest);
+}
 
 /**
  * Returns the 1-indexed line numbers that a Java `if (x.contains("..")) throw/
@@ -2086,7 +2177,41 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'ssrf') return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        return !FIXED_HOST_TEMPLATE_RE.test(sinkLineText);
+        if (FIXED_HOST_TEMPLATE_RE.test(sinkLineText)) return false;
+        // `${API_BASE}/path` where API_BASE is bound once by `const` to a
+        // literal origin: the authority is constant and closed by `/` (#680).
+        for (const m of sinkLineText.matchAll(CONST_BASE_TEMPLATE_RE)) {
+          if (isConstLiteralOrigin(ctx.code, m[1])) return false;
+        }
+        return true;
+      });
+    }
+
+    // Stage 15k — JS/TS redos: `new RegExp(`…${CONST}…`)` whose every
+    // interpolation is a module `const` bound to a string literal has a
+    // constant pattern; a tainted subject alone is not ReDoS. (cognium-dev#681)
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'redos') return true;
+        const m = (sourceLines[sink.line - 1] ?? '').match(/new\s+RegExp\s*\(\s*`((?:\\.|[^`\\])*)`/);
+        if (!m) return true;
+        let pattern = m[1];
+        let interpolations = 0;
+        let allConst = true;
+        // Replace each `${ NAME }` as written (whitespace inside the braces
+        // included) by the const's literal value.
+        pattern = pattern.replace(/\$\{([^}]*)\}/g, (_full, raw: string) => {
+          interpolations++;
+          const name = raw.trim();
+          if (!/^[A-Za-z_$][\w$]*$/.test(name)) { allConst = false; return ''; }
+          const value = constStringLiteralValue(ctx.code, name);
+          if (value === null) { allConst = false; return ''; }
+          return value;
+        });
+        if (interpolations === 0 || !allConst) return true;
+        // A constant pattern can still backtrack on a tainted subject.
+        return NESTED_QUANTIFIER_RE.test(pattern);
       });
     }
 

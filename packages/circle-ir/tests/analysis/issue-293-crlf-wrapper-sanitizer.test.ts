@@ -87,10 +87,19 @@ describe('#293 Java CRLF wrapper is credited at the call site', () => {
   it("char-form replace('\\n', …) helper suppresses it", async () => {
     const r = await java([
       'private static String clean(String s) {',
-      "    return s.replace('\\n', '_');",
+      "    return s.replace('\\n', '_').replace('\\r', '_');",
       '}',
     ]);
     expect(logInj(r).length).toBe(0);
+  });
+
+  it("an LF-only char-form helper still fires: CR survives (cognium-dev#605)", async () => {
+    const r = await java([
+      'private static String clean(String s) {',
+      "    return s.replace('\\n', '_');",
+      '}',
+    ]);
+    expect(logInj(r).length).toBeGreaterThan(0);
   });
 
   it('a helper that does NOT strip CRLF still fires', async () => {
