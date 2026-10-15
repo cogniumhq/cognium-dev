@@ -364,6 +364,39 @@ public class ${name} extends HttpServlet {
       expect((await cmdi(code, 'SyncBracelessIf.java')).length).toBeGreaterThanOrEqual(1);
     });
 
+    const initSafe = (blocks: string, name: string) => initTainted(blocks, name).replace('String target = request.getParameter("host");', 'String target = "safe";');
+
+    it('a braced arm followed by a braceless conditional keeps the braced arm def reaching the sink', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null) { target = request.getParameter("host"); }\n            if (request.getParameter("b") != null)\n                target = fallback;\n        }`, 'BracedThenBraceless');
+      const { defs, ids } = await reaching(code, 'BracedThenBraceless.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set(defs.map((d) => d.id)));
+      expect((await cmdi(code, 'BracedThenBraceless.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('braceless if / else that assign on both arms: both arm defs reach, the initialiser does not', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null)\n                target = request.getParameter("host");\n            else\n                target = fallback;\n        }`, 'BracelessIfElse');
+      const { defs, ids } = await reaching(code, 'BracelessIfElse.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id]));
+      expect((await cmdi(code, 'BracelessIfElse.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('two braceless ifs in one block: both arms and the initialiser reach', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null)\n                target = request.getParameter("host");\n            if (request.getParameter("b") != null)\n                target = fallback;\n        }`, 'TwoBraceless');
+      const { defs, ids } = await reaching(code, 'TwoBraceless.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set(defs.map((d) => d.id)));
+      expect((await cmdi(code, 'TwoBraceless.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('two straight-line assignments on one line: the later one replaces', async () => {
+      const code = initTainted('{\n            target = request.getParameter("x"); target = fallback;\n        }', 'SameLine');
+      const { defs, ids } = await reaching(code, 'SameLine.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[2].id]));
+    });
+
     it('a straight-line assignment in the bare block still replaces the tainted def', async () => {
       const code = initTainted('{\n            target = fallback;\n        }', 'BareStraight');
       const { defs, ids } = await reaching(code, 'BareStraight.java');

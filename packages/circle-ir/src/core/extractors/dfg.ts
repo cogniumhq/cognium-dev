@@ -503,21 +503,31 @@ function processStatement(
 
       // Process branches
       const consequence = stmt.childForFieldName('consequence');
+      const alternative = stmt.childForFieldName('alternative');
+      const topAlts = alternateDefs.get(currentScope(scopeStack));
+      const before = new Map<string, number[]>();
+      if (topAlts) for (const [name, ids] of topAlts) before.set(name, [...ids]);
+      let armA: Map<string, number> | null = null;
+      let armB: Map<string, number> | null = null;
       if (consequence) {
-        const result = processStatement(consequence, defId, useId, scopeStack, isJavaScript);
+        const result = processArm(consequence, defId, useId, scopeStack, isJavaScript);
+        armA = result.popped;
         defs.push(...result.defs);
         uses.push(...result.uses);
         defId = result.nextDefId;
         useId = result.nextUseId;
       }
 
-      const alternative = stmt.childForFieldName('alternative');
       if (alternative) {
-        const result = processStatement(alternative, defId, useId, scopeStack, isJavaScript);
+        const result = processArm(alternative, defId, useId, scopeStack, isJavaScript);
+        armB = result.popped;
         defs.push(...result.defs);
         uses.push(...result.uses);
         defId = result.nextDefId;
         useId = result.nextUseId;
+      }
+      if (armA && armB && alternative && alternative.type !== 'if_statement') {
+        mergeIfElseDefs(armA, armB, before, scopeStack);
       }
       break;
     }
@@ -599,7 +609,7 @@ function processStatement(
       // Process body
       const body = stmt.childForFieldName('body');
       if (body) {
-        const result = processStatement(body, defId, useId, scopeStack, isJavaScript);
+        const result = processArm(body, defId, useId, scopeStack, isJavaScript);
         defs.push(...result.defs);
         uses.push(...result.uses);
         defId = result.nextDefId;
@@ -656,9 +666,8 @@ function processStatement(
       // replace the enclosing scope's; an if/loop/try/switch/lambda body may
       // not, so its defs are kept beside them.
       const alwaysRuns = stmt.parent?.type === 'block' || stmt.parent?.type === 'synchronized_statement';
-      if (!isJavaScript) {
-        carryBranchDefsOut(popped, scopeStack, alwaysRuns, false, alwaysRuns ? straightLineDefs(stmt, result.defs) : undefined);
-      }
+      lastPoppedBlock = popped;
+      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack, alwaysRuns);
       break;
     }
 
@@ -1174,6 +1183,84 @@ function currentScope(scopeStack: Map<string, number>[]): Map<string, number> {
  * The block def may or may not run, so it is kept as an *alternate* reaching
  * def of the enclosing scope, next to the outer one, not in place of it.
  */
+/** The scope the most recent `block` / `statement_block` case popped (read right after processing a block arm). */
+let lastPoppedBlock: Map<string, number> | null = null;
+
+/**
+ * True when the `if` / loop that owns `arm` sits directly in a bare `{ … }` or
+ * `synchronized` block. Only there is a braceless body given a scope of its own:
+ * at method level a braceless `if (!ALLOWED.contains(c)) c = "name";` overwrites
+ * the def on purpose (the allowlist idiom).
+ */
+function inAlwaysRunBlock(arm: Node): boolean {
+  let n: Node | null = arm.parent;
+  while (n && (n.type === 'if_statement' || n.type === 'for_statement' || n.type === 'enhanced_for_statement' ||
+    n.type === 'while_statement' || n.type === 'do_statement')) n = n.parent;
+  return !!n && n.type === 'block' && !!n.parent &&
+    (n.parent.type === 'block' || n.parent.type === 'synchronized_statement');
+}
+
+/**
+ * Process the body of an `if` / `else` / loop. A braced body is a `block` and
+ * pops its own scope. A braceless body (`if (c) t = x;`) is a single statement
+ * that would otherwise assign in the enclosing scope as if it always ran, so for
+ * Java inside an always-run block it gets a scope of its own and its defs are
+ * carried out as alternates. Returns the scope the body assigned in (null
+ * elsewhere), for `if` / `else` merging.
+ */
+function processArm(
+  node: Node,
+  defId: number,
+  useId: number,
+  scopeStack: Map<string, number>[],
+  isJavaScript: boolean,
+): BlockResult & { popped: Map<string, number> | null } {
+  if (isJavaScript || !inAlwaysRunBlock(node)) {
+    lastPoppedBlock = null;
+    const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
+    return { ...result, popped: null };
+  }
+  if (node.type === 'block' || node.type === 'statement_block') {
+    lastPoppedBlock = null;
+    const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
+    return { ...result, popped: lastPoppedBlock };
+  }
+  scopeStack.push(new Map());
+  const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
+  const popped = scopeStack.pop()!;
+  carryBranchDefsOut(popped, scopeStack, false);
+  return { ...result, popped };
+}
+
+/**
+ * After an `if` / `else` whose two arms both assign `name` directly, every path
+ * writes it: the arm defs replace the reaching def (and the alternates that
+ * existed before the `if`) instead of sitting beside them.
+ */
+function mergeIfElseDefs(
+  armA: Map<string, number>,
+  armB: Map<string, number>,
+  before: Map<string, number[]>,
+  scopeStack: Map<string, number>[],
+): void {
+  const top = scopeStack[scopeStack.length - 1];
+  if (!top) return;
+  const alts = alternateDefs.get(top);
+  for (const [name, idA] of armA) {
+    const idB = armB.get(name);
+    if (idB === undefined) continue;
+    if (declaredNames.get(armA)?.has(name) || declaredNames.get(armB)?.has(name)) continue;
+    if (!scopeStack.some((scope) => scope.has(name))) continue;
+    const prior = new Set(before.get(name) ?? []);
+    const arms = (alts?.get(name) ?? []).filter((id) => !prior.has(id) && id !== idB);
+    if (!arms.includes(idA)) arms.push(idA);
+    top.set(name, idB);
+    let map = alts;
+    if (!map) { map = new Map(); alternateDefs.set(top, map); }
+    map.set(name, arms);
+  }
+}
+
 const declaredNames = new WeakMap<Map<string, number>, Set<string>>();
 const alternateDefs = new WeakMap<Map<string, number>, Map<string, number[]>>();
 
@@ -1189,36 +1276,26 @@ function carryBranchDefsOut(
   scopeStack: Map<string, number>[],
   alwaysRuns = false,
   altsOnly = false,
-  straightLine?: Map<string, { last: number; ids: Set<number> }>,
 ): void {
   const declared = declaredNames.get(popped);
   const poppedAlts = alternateDefs.get(popped);
   const top = scopeStack[scopeStack.length - 1];
   if (!top) return;
   if (alwaysRuns) {
-    // Straight-line block: a def the block makes unconditionally is as if made
-    // directly in the enclosing scope. It becomes that scope's reaching def and
-    // drops the alternates for the name; defs the block itself held as
-    // alternates stay alternates. A def under a braceless `if` / loop body is
-    // not unconditional, so it is kept beside the reaching def instead.
+    // Straight-line block: its defs run whenever it does, so they are as if
+    // made directly in the enclosing scope. They become that scope's reaching
+    // def and drop the alternates for the name; defs the block itself held as
+    // alternates stay alternates. (A def under a braceless `if` / loop body
+    // never lands in `popped`: that body has its own scope, see `processArm`.)
     for (const [name, id] of popped) {
       if (declared?.has(name)) continue;
       if (!scopeStack.some((scope) => scope.has(name))) continue;
-      const sl = straightLine?.get(name);
-      const unconditional = !straightLine || sl?.ids.has(id) === true;
-      const reaching = unconditional ? id : sl?.last;
-      if (reaching !== undefined) {
-        top.set(name, reaching);
-        let alts = alternateDefs.get(top);
-        if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
-        alts.delete(name);
-        const kept = poppedAlts?.get(name);
-        if (kept && kept.length > 0) alts.set(name, [...kept]);
-      }
-      if (!unconditional) {
-        carry(name, [id]);
-        if (reaching === undefined) { const k = poppedAlts?.get(name); if (k) carry(name, k); }
-      }
+      top.set(name, id);
+      let alts = alternateDefs.get(top);
+      if (!alts) { alts = new Map(); alternateDefs.set(top, alts); }
+      alts.delete(name);
+      const kept = poppedAlts?.get(name);
+      if (kept && kept.length > 0) alts.set(name, [...kept]);
     }
     // Alternates for a name the block did not assign itself stay alternates.
     if (poppedAlts) for (const [name, ids] of poppedAlts) if (!popped.has(name)) carry(name, ids);
@@ -1238,39 +1315,6 @@ function carryBranchDefsOut(
   }
   if (!altsOnly) for (const [name, id] of popped) carry(name, [id]);
   if (poppedAlts) for (const [name, ids] of poppedAlts) carry(name, ids);
-}
-
-/**
- * Defs a block makes as direct statements (`name = …;` or a chain `a = b = …;`),
- * which run whenever the block does, by name: the ids and the last such id. A
- * def under a braceless `if` / loop body is not a direct statement of the block.
- */
-function straightLineDefs(
-  block: Node,
-  defs: DFGDef[],
-): Map<string, { last: number; ids: Set<number> }> {
-  const out = new Map<string, { last: number; ids: Set<number> }>();
-  for (let i = 0; i < block.namedChildCount; i++) {
-    const child = block.namedChild(i);
-    if (!child || child.type !== 'expression_statement') continue;
-    let expr: Node | null = child.namedChild(0);
-    while (expr && expr.type === 'assignment_expression') {
-      const left = expr.childForFieldName('left');
-      if (left && left.type === 'identifier') {
-        const name = getNodeText(left);
-        const line = left.startPosition.row + 1;
-        const def = defs.find((d) => d.variable === name && d.line === line && d.kind === 'local');
-        if (def) {
-          const entry = out.get(name) ?? { last: def.id, ids: new Set<number>() };
-          entry.ids.add(def.id);
-          if (def.id > entry.last) entry.last = def.id;
-          out.set(name, entry);
-        }
-      }
-      expr = expr.childForFieldName('right');
-    }
-  }
-  return out;
 }
 
 /** Alternate reaching defs of `name`: those parked on every scope down to the one that binds it. */
