@@ -6214,10 +6214,89 @@ const JAVA_OPERAND_KEYWORDS = new Set([
 ]);
 
 /**
+ * True when `expr` is only `name`, string literals, `.length()` / `.size()`,
+ * and `+` (no other locals or value-producing calls).
+ */
+function javaExprOnlyGuardedAndLits(expr: string, name: string): boolean {
+  let s = expr
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '')
+    .replace(/\.\s*(?:length|size)\s*\(\s*\)/g, '')
+    .replace(new RegExp(String.raw`\b${name}\b`, 'g'), '');
+  s = s.replace(/[+\s()]/g, '');
+  return s.length === 0;
+}
+
+/** Top-level comma-separated arguments of a call, respecting quotes and nesting. */
+function javaSplitCallArgs(argsText: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < argsText.length; i++) {
+    const c = argsText[i]!;
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ',' && depth === 0) {
+      out.push(argsText.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = argsText.slice(start).trim();
+  if (last || out.length > 0) out.push(last);
+  return out;
+}
+
+/**
+ * True when a call on `line` (other than length/size) has an argument that is
+ * not only string literals and the guarded variable — a raw operand.
+ */
+function javaCallHasRawArgument(line: string, name: string): boolean {
+  const re = /\b([A-Za-z_]\w*)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    const method = m[1]!;
+    if (method === 'length' || method === 'size') continue;
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let quote: string | null = null;
+    let end = -1;
+    for (let i = open; i < line.length; i++) {
+      const c = line[i]!;
+      if (quote) {
+        if (c === '\\') { i++; continue; }
+        if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { quote = c; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end < 0) continue;
+    for (const arg of javaSplitCallArgs(line.slice(open + 1, end))) {
+      if (!arg) continue;
+      if (!javaExprOnlyGuardedAndLits(arg, name)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when `line` reads a lower-case identifier other than `name` as a value
- * (not a receiver, call name, member, type, constant or the assigned local).
+ * (not a receiver, call name, member, type, constant or the assigned local),
+ * or a call whose argument is not only string literals / `name` (a call-shaped
+ * raw operand such as `req.getParameter("level")` beside the guarded local).
  */
 function otherLocalOperand(line: string, name: string): boolean {
+  if (javaCallHasRawArgument(line, name)) return true;
   const s = line
     .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""')
     .replace(/^\s*(?:[\w<>[\],.?]+\s+)?[A-Za-z_]\w*\s*=(?!=)/, ' ')

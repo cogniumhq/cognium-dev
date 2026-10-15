@@ -5,8 +5,8 @@
  * A string-prefix check against a bare canonical path is the prefix-confusion
  * bypass (`/srv/data-evil` starts with `/srv/data`); that is the ESAPI
  * CVE-2022-23457 `getValidDirectoryPath` shape. The guard is credited only
- * when the base cannot be proven to be a bare canonical path — a separator
- * anywhere in it, resolved through local variables, keeps the credit.
+ * when the base cannot be proven to lack a trailing separator — a separator
+ * at the end of it, resolved through local variables, keeps the credit.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
@@ -77,6 +77,21 @@ describe('#618 canonical-path prefix guard needs a separator', () => {
 
   it('fires for getCanonicalFile().getPath() with no separator', async () => {
     expect(traversal(await servlet([], 'store.getCanonicalFile().getPath()')).length).toBeGreaterThan(0);
+  });
+
+  it('fires when File.separator is joined on the LEFT of the canonical path', async () => {
+    expect(traversal(await servlet([], 'File.separator + store.getCanonicalPath()')).length).toBeGreaterThan(0);
+  });
+
+  it('fires when a non-separator suffix is appended (+ "X" or + "/foo")', async () => {
+    expect(traversal(await servlet(['String prefix = store.getCanonicalPath() + "X";'], 'prefix')).length).toBeGreaterThan(0);
+    expect(traversal(await servlet(['String prefix = store.getCanonicalPath() + "/foo";'], 'prefix')).length).toBeGreaterThan(0);
+  });
+
+  it('fires when a compound assignment appends a non-separator', async () => {
+    expect(
+      traversal(await servlet(['String prefix = store.getCanonicalPath();', 'prefix += "X";'], 'prefix')).length,
+    ).toBeGreaterThan(0);
   });
 
   it('stays clean when the separator is appended inline', async () => {

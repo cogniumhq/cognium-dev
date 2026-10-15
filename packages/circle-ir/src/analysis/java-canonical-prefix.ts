@@ -11,22 +11,40 @@
  * This answers `true` only when it can prove the base is a bare canonical /
  * absolute path call (`x.getCanonicalPath()`, `x.getCanonicalFile().getPath()`,
  * `x.getAbsolutePath()`, …), either inline or through a local variable whose
- * nearest preceding assignment in the same method is such a call. Anything it
- * cannot resolve (a parameter, a field, a literal, a concatenation) answers
- * `false`, so existing guard credit is kept. A separator anywhere in the
- * resolved expression (`+ File.separator`, `+ "/"`, `+ '/'`) also answers
- * `false`:
+ * nearest preceding assignment in the same method is such a call — or a
+ * concatenation / compound assignment that still involves such a call and does
+ * not *end with* a separator. Anything it cannot resolve (a parameter, a field,
+ * a literal without a trailing separator it already accepted) answers `false`,
+ * so existing guard credit is kept. A trailing separator (`+ File.separator`,
+ * `+ "/"`, `+ '/'`, or a literal that ends with `/` or `\`) answers `false`:
  *
  *     String base = root.getCanonicalPath() + File.separator;
  *     if (!f.getCanonicalPath().startsWith(base)) throw ...   // still a guard
+ *
+ * A separator that is not at the end (`File.separator + path`, `path + "X"`,
+ * `path + "/foo"`) does not keep the credit: `/srv/data/foo-evil` still starts
+ * with `/srv/data/foo`.
  */
 
 const BARE_CANONICAL_RE =
   /^[A-Za-z_][\w.]*(?:\s*\(\s*\))?(?:\s*\.\s*getCanonicalFile\s*\(\s*\)|\s*\.\s*getAbsoluteFile\s*\(\s*\))?\s*\.\s*(?:getCanonicalPath|getAbsolutePath|getPath|toString)\s*\(\s*\)$/;
 const CANONICAL_CALL_RE = /\b(?:getCanonicalPath|getCanonicalFile|getAbsolutePath|getAbsoluteFile)\s*\(/;
-const SEPARATOR_RE = /\bFile\s*\.\s*(?:separator|separatorChar)\b|["'](?:[^"'\\]|\\.)*(?:\/|\\\\)["']/;
 const METHOD_HEADER_RE =
   /^\s*(?!(?:if|for|while|switch|catch|synchronized|try|else|do)\b)[^=;]*\)\s*(?:throws\s+[\w.,\s]+)?\{\s*$/;
+
+/** True when `expr` ends with a path-separator fragment. */
+function endsWithSeparator(expr: string): boolean {
+  const t = expr.trim();
+  // Whole-expression string literal ending in / or \
+  if (/^"(?:[^"\\]|\\.)*[\/\\]"$/.test(t)) return true;
+  if (/^'(?:[^'\\]|\\.)*[\/\\]'$/.test(t)) return true;
+  // Concatenation ending in + File.separator / File.separatorChar
+  if (/\+\s*File\s*\.\s*(?:separator|separatorChar)\s*$/.test(t)) return true;
+  // Concatenation ending in + "/" or + '/' or + "\\" or + '\\'
+  if (/\+\s*"(?:\/|\\\\)"\s*$/.test(t)) return true;
+  if (/\+\s*'(?:\/|\\\\)'\s*$/.test(t)) return true;
+  return false;
+}
 
 /** Text of the call argument opening at `open` (index of `(`), or null when unbalanced. */
 export function javaCallArgument(text: string, open: number): string | null {
@@ -51,9 +69,18 @@ function resolveLocal(lines: string[], from: number, name: string): string | nul
   const assignRe = new RegExp(`(?:^|[^\\w.])${name}\\s*([-+*/%&|^]|<<|>>>?)?=(?!=)\\s*([^;]+);`);
   for (let l = from - 1; l >= 0; l--) {
     const m = assignRe.exec(lines[l]!);
-    // A compound assignment (`base += File.separator`) extends the value; it
-    // cannot be proven bare, so it stays unresolved and the guard keeps credit.
-    if (m) return m[1] !== undefined ? null : m[2]!.trim();
+    if (m) {
+      if (m[1] === undefined) return m[2]!.trim();
+      // `base += File.separator` / `base += "X"`: fold into `prev + rhs` so
+      // trailing-separator checks still see the full expression. Other
+      // compounds stay unresolved and the guard keeps its credit.
+      if (m[1] === '+') {
+        const prev = resolveLocal(lines, l, name);
+        if (prev === null) return null;
+        return `${prev} + ${m[2]!.trim()}`;
+      }
+      return null;
+    }
     if (METHOD_HEADER_RE.test(lines[l]!)) return null;
   }
   return null;
@@ -67,8 +94,11 @@ function resolveLocal(lines: string[], from: number, name: string): string | nul
 export function javaCanonicalBaseLacksSeparator(lines: string[], lineIdx: number, arg: string): boolean {
   let expr = arg.trim();
   for (let hop = 0; hop < 3; hop++) {
-    if (SEPARATOR_RE.test(expr)) return false;
+    if (endsWithSeparator(expr)) return false;
     if (BARE_CANONICAL_RE.test(expr)) return CANONICAL_CALL_RE.test(expr);
+    // Concat / compound that still mentions a canonical call and does not end
+    // with a separator (e.g. `File.separator + path`, `path + "X"`, `path + "/foo"`).
+    if (CANONICAL_CALL_RE.test(expr)) return true;
     if (!/^[A-Za-z_]\w*$/.test(expr)) return false;
     const rhs = resolveLocal(lines, lineIdx, expr);
     if (rhs === null) return false;

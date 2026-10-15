@@ -108,3 +108,62 @@ describe('#293 Java literal allow-list guard', () => {
     expect(sinks).toContain(sinkOf('rawValueOnSinkLine'));
   });
 });
+
+// --- review follow-up: call-shaped raw operands must still fire (#708) ---
+const callCode = `import java.util.*;
+import java.sql.*;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+
+public class DisplaySettingsCalls extends HttpServlet {
+    private static final Set<String> OPTIONS = Set.of("density", "palette");
+    private static final Set<String> COLS = Set.of("name", "id");
+
+    protected void rawCallValueOnSinkLine(HttpServletRequest req) {
+        String opt = req.getParameter("opt");
+        if (!OPTIONS.contains(opt)) return;
+        req.getSession().setAttribute(opt, req.getParameter("level"));
+    }
+
+    protected void rawCallBesideOrderBy(HttpServletRequest req, Statement stmt) throws SQLException {
+        String col = req.getParameter("col");
+        if (!COLS.contains(col)) return;
+        stmt.execute("'" + req.getParameter("id") + "' ORDER BY " + col);
+    }
+
+    protected void lengthSiblingStaysClean(HttpServletRequest req) {
+        String opt = req.getParameter("opt");
+        if (!OPTIONS.contains(opt)) return;
+        req.getSession().setAttribute(opt, "x" + opt.length());
+    }
+}
+`;
+
+const callLines = callCode.split('\n');
+const callSink = (method: string, needle: string) => {
+  const start = callLines.findIndex(l => l.includes(`void ${method}(`));
+  return callLines.findIndex((l, i) => i > start && l.includes(needle)) + 1;
+};
+
+describe('#293 Java allow-list: call-shaped raw operands (review)', () => {
+  let trust: number[] = [];
+  let sql: number[] = [];
+  beforeAll(async () => {
+    await initAnalyzer();
+    const r = await analyze(callCode, 'DisplaySettingsCalls.java', 'java');
+    trust = (r.taint.flows ?? []).filter(f => f.sink_type === 'trust_boundary' && !f.sanitized).map(f => f.sink_line);
+    sql = (r.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection' && !f.sanitized).map(f => f.sink_line);
+  });
+
+  it('fires trust_boundary when setAttribute value is a call, not a bare local', () => {
+    expect(trust).toContain(callSink('rawCallValueOnSinkLine', 'setAttribute'));
+  });
+
+  it('fires sql_injection when a call shares the execute line with the guarded ORDER BY column', () => {
+    expect(sql).toContain(callSink('rawCallBesideOrderBy', 'execute'));
+  });
+
+  it('still clears trust_boundary when the sibling is only length()', () => {
+    expect(trust).not.toContain(callSink('lengthSiblingStaysClean', 'setAttribute'));
+  });
+});
