@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Optional `AnalyzerOptions.resources` (`Map<path, text>`) for project resource files; Java weak-hash resolves a `getProperty("key"[, default])` algorithm through the `.properties` resource the `Properties` object was loaded from (#591, partial).** The resource is the one named in `getResourceAsStream("<name>")` before `load(...)`. Omitting `resources` leaves every result unchanged.
 
+### Fixed
+- **JS/TS: a constant `new RegExp(`…${CONST}…`)` pattern is exempt from redos when the constructor call spans lines (#717).** The template literal may start on a line after `new RegExp(` (or after a comment); a tainted interpolation, a nested-quantifier constant, or a pattern with anything appended after the template still reports.
+
 ## [4.15.0] - 2026-10-15
 
 ### Added

@@ -656,6 +656,26 @@ function constStringLiteralValue(code: string, name: string): string | null {
   return decodeJsHexEscapes(decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '');
 }
 
+/**
+ * The body of the template literal that is the first argument of the
+ * `new RegExp(` on `line` (1-indexed), or null. The literal may start on a
+ * following line, after whitespace or comments, as a formatter wraps a long
+ * constructor call; the `new RegExp(` itself must be on the sink line.
+ * (cognium-dev#717)
+ */
+function regExpTemplateArgument(code: string, lines: string[], line: number): string | null {
+  const text = lines[line - 1] ?? '';
+  let offset = 0;
+  for (let i = 0; i < line - 1; i++) offset += lines[i].length + 1;
+  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
+  for (const start of text.matchAll(/new\s+RegExp\s*\(/g)) {
+    // The literal must be the whole first argument: `` `…` + text `` is not constant.
+    const m = argument.exec(code.slice(offset + start.index! + start[0].length));
+    if (m) return m[1];
+  }
+  return null;
+}
+
 /** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
 const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
 
@@ -2412,9 +2432,9 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       const sourceLines = ctx.code.split('\n');
       filtered = filtered.filter(sink => {
         if (sink.type !== 'redos') return true;
-        const m = (sourceLines[sink.line - 1] ?? '').match(/new\s+RegExp\s*\(\s*`((?:\\.|[^`\\])*)`/);
-        if (!m) return true;
-        let pattern = m[1];
+        const tpl = regExpTemplateArgument(ctx.code, sourceLines, sink.line);
+        if (tpl === null) return true;
+        let pattern = tpl;
         let interpolations = 0;
         let allConst = true;
         // Replace each `${ NAME }` as written (whitespace inside the braces
