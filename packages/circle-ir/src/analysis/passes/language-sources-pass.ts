@@ -24,6 +24,7 @@ import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
+import { javaCallArgument, javaCanonicalBaseLacksSeparator } from '../java-canonical-prefix.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -6058,6 +6059,10 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
     const m = guardRe.exec(lines[i]);
     if (!m) continue;
     if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+    // cognium-dev#618: a string-prefix check against a canonical base with no
+    // trailing separator is the prefix-confusion bypass, not a guard.
+    const base = javaCallArgument(lines.slice(i).join('\n'), m.index + m[0].length - 1);
+    if (base !== null && javaCanonicalBaseLacksSeparator(lines, i, base)) continue;
 
     const guarded = new Set<string>([m[1]]);
     const mentions = (t: string): boolean => {

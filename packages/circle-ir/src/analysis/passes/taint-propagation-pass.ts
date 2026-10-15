@@ -22,6 +22,7 @@ import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, fin
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { javaCanonicalStartsWithAllBare } from '../java-canonical-prefix.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -815,6 +816,9 @@ function isInJavaSanitizedMethod(
     // Canonical-path-startsWith-throw idiom.
     if (!/\.getCanonicalPath\s*\(/.test(body)) return false;
     if (!/\.startsWith\s*\([^)]*getCanonicalPath/.test(body)) return false;
+    // cognium-dev#618: `startsWith(parent.getCanonicalPath())` with no
+    // trailing separator is the prefix-confusion bypass, not a guard.
+    if (javaCanonicalStartsWithAllBare(body)) return false;
     if (!/\bthrow\s+new\b/.test(body)) return false;
     return true;
   }
