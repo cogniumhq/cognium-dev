@@ -54,6 +54,26 @@ describe('cognium-dev#681 — constant template RegExp pattern', () => {
     expect(await redos(code)).toHaveLength(0);
   });
 
+  it('const string without a semicolon (ASI) is still clean', async () => {
+    const code = masker("const CRED_KEY = '(?:apikey|passwd)'", '`^(\\\\s*${CRED_KEY}\\\\s*=\\\\s*).*$`');
+    expect(await redos(code)).toHaveLength(0);
+  });
+
+  const tpl = '`^${CRED_KEY}=`';
+  const continuations: Array<[string, string]> = [
+    ['literal split across lines with + (nested quantifier)', "const CRED_KEY = '('\n  + '\\\\w+)+';"],
+    ['literal + tainted value on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  + req.query.suffix;"],
+    ['literal + tainted value on the same line', "const CRED_KEY = '(?:apikey|passwd)' + req.query.suffix;"],
+    ['literal.concat(...) on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  .concat(process.env.SUFFIX);"],
+    ['\\x28 escape producing a nested quantifier', "const CRED_KEY = '\\x28\\\\w+)+';"],
+    ['\\u0028 escape producing a nested quantifier', "const CRED_KEY = '\\u0028\\\\w+)+';"],
+  ];
+  for (const [label, decl] of continuations) {
+    it(`still fires: ${label}`, async () => {
+      expect((await redos(masker(decl, tpl))).length).toBeGreaterThanOrEqual(1);
+    });
+  }
+
   it('still fires: attacker-controlled pattern in an express handler', async () => {
     const code = `
 const express = require('express');

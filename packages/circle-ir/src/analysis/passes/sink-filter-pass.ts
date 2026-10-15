@@ -532,18 +532,66 @@ const SERVER_SIGNAL_RE =
 // backtick + scheme + a literal host run (no `${` before the first `/`).
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
 /**
+ * True when the string literal that ended at `end` is the WHOLE initializer:
+ * the next code token is `;`, `,`, end of input, or (ASI) a token on a later
+ * line that cannot continue the expression. A same-line operator (`+`, `.`,
+ * `||` …) or a next-line `+` / `.` / `(` / `[` / template continuation means
+ * the literal is only the start of a larger expression, so it is not a
+ * constant. An optional TS `as const` / `as string` suffix is skipped.
+ * (cognium-dev#680, #681)
+ */
+function literalEndsInitializer(code: string, end: number): boolean {
+  let i = end;
+  const asConst = /^[ \t]+as[ \t]+(?:const|string)\b/.exec(code.slice(i, i + 24));
+  if (asConst) i += asConst[0].length;
+  let crossedNewline = false;
+  for (;;) {
+    while (i < code.length && /\s/.test(code[i])) {
+      if (code[i] === '\n') crossedNewline = true;
+      i++;
+    }
+    if (code.startsWith('//', i)) {
+      const nl = code.indexOf('\n', i);
+      i = nl === -1 ? code.length : nl;
+    } else if (code.startsWith('/*', i)) {
+      const close = code.indexOf('*/', i + 2);
+      if (close === -1) return false;
+      if (code.slice(i, close).includes('\n')) crossedNewline = true;
+      i = close + 2;
+    } else break;
+  }
+  if (i >= code.length) return true;
+  const c = code[i];
+  if (c === ';' || c === ',') return true;
+  // ASI: a following line that begins a new statement terminates the initializer.
+  return crossedNewline && !/[-+*/%.?:|&<>=!~^(\[`]/.test(c);
+}
+
+/** Decode `\xNN` / `\uNNNN` / `\u{…}` JS string escapes; other escapes are kept verbatim. */
+function decodeJsHexEscapes(value: string): string {
+  return value.replace(/\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]{1,6})\}|[\s\S])/g, (m, x, u4, ub) => {
+    const hex = x ?? u4 ?? ub;
+    if (hex === undefined) return m;
+    const cp = parseInt(hex, 16);
+    return cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+  });
+}
+
+/**
  * The value of `name` when it is bound exactly once in the file, by `const`,
- * to a plain string literal (no interpolation) and has no other `let` / `var`
- * / `function` binding; otherwise null. (cognium-dev#681)
+ * to a plain string literal (no interpolation) that is the whole initializer,
+ * and has no other `let` / `var` / `function` binding; otherwise null.
+ * (cognium-dev#681)
  */
 function constStringLiteralValue(code: string, name: string): string | null {
   const esc = name.replace(/\$/g, '\\$');
-  const decl = new RegExp(`(?:^|[^\\w$.])const\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(?:'((?:\\\\.|[^'\\\\\\n])*)'|"((?:\\\\.|[^"\\\\\\n])*)"|\`([^\`$\\\\]*)\`)\\s*[;\\n]`, 'g');
+  const decl = new RegExp(`(?:^|[^\\w$.])const\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(?:'((?:\\\\.|[^'\\\\\\n])*)'|"((?:\\\\.|[^"\\\\\\n])*)"|\`([^\`$\\\\]*)\`)`, 'g');
   const decls = [...code.matchAll(decl)];
   if (decls.length !== 1) return null;
+  if (!literalEndsInitializer(code, decls[0].index! + decls[0][0].length)) return null;
   const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var|function)\\s+${esc}\\b`, 'g');
   if ([...code.matchAll(anyBinding)].length !== 1) return null;
-  return decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '';
+  return decodeJsHexEscapes(decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '');
 }
 
 /** A group that holds a quantifier and is itself quantified: `(a+)+`, `(x*)*`. */
@@ -558,9 +606,10 @@ const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
  */
 function isConstLiteralOrigin(code: string, name: string): boolean {
   const esc = name.replace(/\$/g, '\\$');
-  const decl = new RegExp(`(?:^|[^\\w$.])(const|let|var)\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(['"\`])(https?://[^/'"\`\\s$]+(?:/[^'"\`$]*)?)\\2\\s*;?`, 'gm');
+  const decl = new RegExp(`(?:^|[^\\w$.])(const|let|var)\\s+${esc}\\s*(?::\\s*string\\s*)?=\\s*(['"\`])(https?://[^/'"\`\\s$]+(?:/[^'"\`$]*)?)\\2`, 'gm');
   const decls = [...code.matchAll(decl)];
   if (decls.length !== 1 || decls[0][1] !== 'const') return false;
+  if (!literalEndsInitializer(code, decls[0].index! + decls[0][0].length)) return false;
   const anyBinding = new RegExp(`(?:^|[^\\w$.])(?:const|let|var)\\s+${esc}\\b`, 'g');
   if ([...code.matchAll(anyBinding)].length !== 1) return false;
   const reassign = new RegExp(`(?:^|[^\\w$.])${esc}\\s*(?:[-+]?=)(?!=)`, 'g');
