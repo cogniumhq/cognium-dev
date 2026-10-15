@@ -291,3 +291,86 @@ describe('#591: properties unicode escapes', () => {
     expect(f[0].evidence?.algorithm).toBe('md5');
   });
 });
+
+describe('#591 review: the load(...) chain is read from the enclosing method only', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  // `p.load(...)` in another method must not tell this method which file a
+  // same-named `p` came from.
+  const crossMethodLoad = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class CrossMethodLoad {
+  private void warmUp() throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = CrossMethodLoad.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+  }
+
+  public byte[] fingerprint(byte[] data, Properties p) throws Exception {
+    String alg = p.getProperty("a", "SHA-256");
+    return MessageDigest.getInstance(alg).digest(data);
+  }
+}
+`;
+
+  it('a load of a same-named Properties in another method is not used (weak resource, strong default stays clean)', async () => {
+    const r = await analyze(crossMethodLoad, 'CrossMethodLoad.java', 'java', res('app.properties', 'a=MD5\n'));
+    expect(weakHash(r)).toHaveLength(0);
+  });
+
+  it('twin: with the load in the same method the weak resource value fires', async () => {
+    const code = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class SameMethodLoad {
+  public byte[] fingerprint(byte[] data) throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = SameMethodLoad.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+    String alg = p.getProperty("a", "SHA-256");
+    return MessageDigest.getInstance(alg).digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'SameMethodLoad.java', 'java', res('app.properties', 'a=MD5\n'));
+    const f = weakHash(r);
+    expect(f).toHaveLength(1);
+    expect(f[0].evidence?.algorithm).toBe('md5');
+  });
+
+  // The InputStream local the load reads from is also looked up in this method only.
+  it('an InputStream local of the same name bound in another method is not used', async () => {
+    const code = `
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class CrossMethodStream {
+  private InputStream in;
+
+  private void open() throws Exception {
+    in = CrossMethodStream.class.getClassLoader().getResourceAsStream("app.properties");
+  }
+
+  public byte[] fingerprint(byte[] data) throws Exception {
+    Properties cfg = new Properties();
+    cfg.load(in);
+    String alg = cfg.getProperty("a", "SHA-256");
+    return MessageDigest.getInstance(alg).digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'CrossMethodStream.java', 'java', res('app.properties', 'a=MD5\n'));
+    expect(weakHash(r)).toHaveLength(0);
+  });
+});

@@ -217,13 +217,15 @@ function resolveViaResources(
   }
   if (!recv || key === undefined) return null;
 
-  // The last `recv.load(<arg>)` before the lookup.
+  // The last `recv.load(<arg>)` before the lookup, in the same method: a
+  // same-named `Properties` loaded in another method says nothing about this one.
   let loadArg: string | undefined;
   let loadLine = propLine;
   const loadRe = new RegExp(String.raw`(?:^|[^\w.])${recv}\s*\.\s*load\s*\(([^;]*)\)\s*;`, 'g');
   let lm: RegExpExecArray | null;
   while ((lm = loadRe.exec(code)) !== null) {
     const line = lineOfIndex(code, lm.index);
+    if (line < methodStart) continue;
     if (line > propLine) break;
     loadArg = lm[1];
     loadLine = line;
@@ -237,7 +239,9 @@ function resolveViaResources(
     const bind = new RegExp(String.raw`(?:^|[^\w.])${stream}\s*=\s*([^;{]*)`, 'g');
     let bm: RegExpExecArray | null;
     while ((bm = bind.exec(code)) !== null) {
-      if (lineOfIndex(code, bm.index) > loadLine) break;
+      const line = lineOfIndex(code, bm.index);
+      if (line < methodStart) continue;
+      if (line > loadLine) break;
       const n = streamName.exec(bm[1]!)?.[1];
       if (n) name = n;
     }
@@ -258,6 +262,17 @@ function resolveViaResources(
   return lit ? lit[1]!.toLowerCase() || null : null;
 }
 
+/**
+ * Resolve the algorithm-name argument of a Java `getInstance(...)` call,
+ * preferring an inline literal but falling back to:
+ *   - `MessageDigestAlgorithms.MD5` / `.SHA_1` etc. (Apache Commons constants)
+ *   - constant-propagation result (`arg.variable` → bound string value)
+ *   - regex-scanned source bindings (`final String NAME = "MD5"` /
+ *     `static final String NAME = "MD5"` / `private String NAME = "MD5"`)
+ *
+ * Returns the lowercased algorithm name or null when unresolved.
+ * cognium-dev #119: OWASP Java benchmark FNs come from these shapes.
+ */
 function resolveJavaAlgo(
   call: CallInfo,
   position: number,
