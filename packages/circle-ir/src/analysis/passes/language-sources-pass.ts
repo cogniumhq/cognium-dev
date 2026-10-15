@@ -2164,7 +2164,16 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
     const lineNumber = lineNum + 1;
     const assignmentMatch = line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
     if (!assignmentMatch) continue;
-    const [, varName, rhs] = assignmentMatch;
+    const varName = assignmentMatch[1];
+    let rhs = assignmentMatch[2];
+    // cognium-dev#582: in `if (req.query.m) { t = "a"; } else if (req.query.n) { … }`
+    // the first `name =` is an assignment in the block body, and the greedy
+    // right-hand side runs on into the next condition, so the condition's read
+    // was bound to `t`. After a control-flow header on the line, the assignment
+    // owns only its own statement.
+    if (/\b(?:if|while|switch|else)\b/.test(line.slice(0, assignmentMatch.index ?? 0))) {
+      rhs = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/.exec(rhs)?.[0] ?? rhs;
+    }
     if (isConstTableLookup(rhs, lookupTables)) continue;
 
     for (const { pattern, type } of patterns) {

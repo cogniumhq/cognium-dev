@@ -352,6 +352,21 @@ function makeConstPropVeto(
     // which vetoed every C# flow through one while `var s = q;` passed. Dead
     // code and resolved constants (the reasons above) still apply.
     if (language === 'csharp') return false;
+    // cognium-dev#582: in JS/TS a use after an `if` / `else` / `switch` has the
+    // outer def and the block's def both reaching it (the DFG lists one use per
+    // reaching def). const-prop has no model of the block's assignment, so its
+    // "untainted" is only the outer def's value; when any reaching def is the
+    // source's own assignment the verdict is "never looked", not "clean".
+    if ((language === 'javascript' || language === 'typescript')) {
+      const reaching = (graph.usesByLine.get(step.line) ?? [])
+        .filter(u => u.variable === step.variable && u.def_id != null)
+        .map(u => graph.defById.get(u.def_id!))
+        .filter((d): d is NonNullable<typeof d> => !!d);
+      if (reaching.length > 1 && reaching.some(d => d.line === sourceLine &&
+        sources.some(s => s.line === sourceLine && !CONTAINER_READ_SOURCES.has(s.type)))) {
+        return false;
+      }
+    }
     const lo = Math.min(sourceLine, sinkLine);
     // Walk the reaching-def chain back from this step, stepping through
     // self-derived reassignments only. Reaching defs are per method, so a

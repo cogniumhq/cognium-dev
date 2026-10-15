@@ -643,15 +643,20 @@ function processStatement(
         for (let i = 0; i < body.childCount; i++) {
           const group = body.child(i);
           if (!group) continue;
+          // JS (#582): each `case` / `default` gets a scope of its own and its
+          // defs are parked beside the others, so a constant in `default` does
+          // not replace a tainted assignment in an earlier `case`.
+          if (isJavaScript) scopeStack.push(new Map());
           const result = processBlock(group, defId, useId, scopeStack, isJavaScript);
           defs.push(...result.defs);
           uses.push(...result.uses);
           defId = result.nextDefId;
           useId = result.nextUseId;
+          if (isJavaScript) carryBranchDefsOut(scopeStack.pop()!, scopeStack, false);
         }
         // Alternates parked on the switch scope go on to the enclosing scope.
         const poppedSwitch = scopeStack.pop()!;
-        if (!isJavaScript) carryBranchDefsOut(poppedSwitch, scopeStack, false, true);
+        carryBranchDefsOut(poppedSwitch, scopeStack, false, true);
       }
       break;
     }
@@ -669,9 +674,29 @@ function processStatement(
       // A bare `{ … }` (or `synchronized (x) { … }`) always runs, so its defs
       // replace the enclosing scope's; an if/loop/try/switch/lambda body may
       // not, so its defs are kept beside them.
-      const alwaysRuns = stmt.parent?.type === 'block' || stmt.parent?.type === 'synchronized_statement';
+      // JS: a bare `{ … }` inside a statement_block likewise always runs; the
+      // block of an `if` / `else` / loop / `try` may not, so (#582) its defs are
+      // carried out as alternates, as for Java (#692).
+      const alwaysRuns = stmt.parent?.type === 'block' || stmt.parent?.type === 'synchronized_statement' ||
+        (isJavaScript && stmt.parent?.type === 'statement_block');
       lastPoppedBlock = popped;
-      if (!isJavaScript) carryBranchDefsOut(popped, scopeStack, alwaysRuns);
+      carryBranchDefsOut(popped, scopeStack, alwaysRuns);
+      break;
+    }
+
+    case 'else_clause': {
+      // JavaScript: `else { … }` / `else if (…) { … }` hold their arm one level
+      // down; without this the arm fell to `default` and recorded no defs, so an
+      // assignment in an `else` never reached a use after the `if` (#582).
+      for (let i = 0; i < stmt.childCount; i++) {
+        const arm = stmt.child(i);
+        if (!arm || arm.type === 'else') continue;
+        const result = processStatement(arm, defId, useId, scopeStack, isJavaScript);
+        defs.push(...result.defs);
+        uses.push(...result.uses);
+        defId = result.nextDefId;
+        useId = result.nextUseId;
+      }
       break;
     }
 
