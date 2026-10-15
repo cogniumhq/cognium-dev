@@ -167,7 +167,7 @@ export function propagateTaint(
   const defById = graph.defById;
 
   // Step 1: Identify initial tainted definitions (from sources)
-  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef);
+  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef, jsLike);
 
   // Filter variables added via the "next-line" heuristic that are actually the
   // result of a sanitizer call.  The source variable itself (tv.line ===
@@ -387,6 +387,7 @@ function findInitialTaint(
   callsByLine: Map<number, CallInfo[]>,
   defsByLine: Map<number, DFGDef[]>,
   chainsByFromDef: Map<number, DFGChain[]>,
+  jsLike = false,
 ): TaintedVariable[] {
   const tainted: TaintedVariable[] = [];
 
@@ -470,8 +471,11 @@ function findInitialTaint(
     // cognium-dev#563: a source line that is a complete assignment
     // (`const qty = parseInt(req.query.qty, 10);`) does not continue on the
     // next line either; a local declared there (`const label = 'units';`)
-    // is a new statement and gets no taint by adjacency.
-    const closesOwnStatement = defsOnLine.length > 0 && /;\s*(?:\/\/.*)?$/.test(source.code ?? '');
+    // is a new statement and gets no taint by adjacency. JavaScript /
+    // TypeScript only, the languages this was measured on: in Java the next
+    // line can overwrite a servlet field (`name = "abc";`) that other
+    // requests share, and SecuriBench StrongUpdates4 expects that flow kept.
+    const closesOwnStatement = jsLike && defsOnLine.length > 0 && /;\s*(?:\/\/.*)?$/.test(source.code ?? '');
     const defsNextLine = isCompleteConditionHeader(source.code)
       ? []
       : (defsByLine.get(source.line + 1) ?? []).filter(d => !(closesOwnStatement && d.kind === 'local'));

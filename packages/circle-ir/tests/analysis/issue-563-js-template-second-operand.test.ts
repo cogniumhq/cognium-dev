@@ -60,3 +60,31 @@ describe('#563 template literal: later raw operand', () => {
     expect(await xss(code)).toEqual([]);
   });
 });
+
+describe('#563 next-line seeding change stays JS/TS only', () => {
+  it('Java: a shared field overwritten on the next line keeps its request flow', async () => {
+    // A servlet field is shared across requests, so `nick = "guest"` does not
+    // clear the value another request wrote. main reports this flow; the
+    // JS/TS adjacency change must not remove it.
+    const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class ProfileBanner extends HttpServlet {
+    private String nick;
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        nick = req.getParameter("nick");
+        nick = "guest";
+        PrintWriter out = resp.getWriter();
+        out.println(nick);
+    }
+}
+`;
+    const ir = await analyze(code, 'ProfileBanner.java', 'java');
+    const flows = (ir.taint.flows ?? []).filter(f => f.sink_type === 'xss').map(f => [f.source_line, f.sink_line]);
+    expect(flows).toContainEqual([11, 14]);
+  });
+});
