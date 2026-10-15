@@ -89,6 +89,39 @@ describe('cognium-dev#490 JS second statement on a source line', () => {
     expect(await lines(code, 'reassign_route.js', 'javascript', 'command_injection')).toEqual([7]);
   });
 
+  it('a neighbour whose initializer wraps onto the next line keeps the taint', async () => {
+    // line 6 holds the read and the start of `cmd`; the read reaches `cmd` on line 7
+    const concat = wrap(`  const q = req.query.q; const cmd = 'ls ' +\n    q;\n  exec(cmd);`);
+    expect(await lines(concat, 'wrap_concat_route.js', 'javascript', 'command_injection')).toEqual([8]);
+    const paren = wrap(`  const q = req.query.q; var cmd = 'ls ' + (\n    q);\n  exec(cmd);`);
+    expect(await lines(paren, 'wrap_paren_route.js', 'javascript', 'command_injection')).toEqual([8]);
+    const unterminated = wrap(`  const q = req.query.q; const cmd = 'ls '\n    + q;\n  exec(cmd);`);
+    expect(await lines(unterminated, 'wrap_lead_op_route.js', 'javascript', 'command_injection')).toEqual([8]);
+  });
+
+  it('a neighbour that is compound-assigned or updated on the line keeps the taint', async () => {
+    for (const write of ['cmd += q;', 'cmd ||= q;', 'cmd ??= q;', 'cmd = cmd + q;']) {
+      const code = wrap(`  const q = req.query.q; let cmd = 'ls '; ${write}\n  exec(cmd);`);
+      expect(await lines(code, 'compound_route.js', 'javascript', 'command_injection'), write).toEqual([7]);
+    }
+  });
+
+  it('a ";" inside a regex literal does not end the initializer early', async () => {
+    const code = wrap(`  const q = req.query.q; const t = /;/.test(q) ? q : '';\n  exec(t);`);
+    expect(await lines(code, 'regex_route.js', 'javascript', 'command_injection')).toEqual([7]);
+  });
+
+  it('a destructuring assignment of the neighbour on the line keeps the taint', async () => {
+    for (const body of [
+      `let b = req.query.q; let a = 'ls'; [a, b] = [b, a];`,
+      `const q = req.query.q; let a = 'ls'; [a] = [q];`,
+      `const q = req.query.q; let a = 'ls'; ({ a } = { a: q });`,
+    ]) {
+      const code = wrap(`  ${body}\n  exec(a);`);
+      expect(await lines(code, 'swap_route.js', 'javascript', 'command_injection'), body).toEqual([7]);
+    }
+  });
+
   it('a one-line handler body: the constant is clean, the read still reports', async () => {
     const clean = wrap(`  const q = req.query.q; const tool = "ls"; exec(tool);`);
     expect(await lines(clean, 'oneline_route.js', 'javascript', 'command_injection')).toEqual([]);

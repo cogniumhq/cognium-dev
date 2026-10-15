@@ -419,20 +419,39 @@ function hasSecondStatement(code: string | undefined): boolean {
 function lineDefinitionLacksUse(lineCode: string, variable: string, via: string): boolean {
   if (!/^[A-Za-z_$][\w$]*$/.test(variable) || !/^[A-Za-z_$][\w$]*$/.test(via)) return false;
   // Blank string / char / template literals so `;` and identifiers inside them do not count.
-  const text = lineCode.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => '"' + ' '.repeat(Math.max(0, m.length - 2)) + '"');
-  const declRe = new RegExp(String.raw`(?<![.\w$])${variable.replace(/\$/g, '\\$')}\s*(?::=|=|:[^=;]*=)(?![=>])`, 'g');
+  let text = lineCode.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => '"' + ' '.repeat(Math.max(0, m.length - 2)) + '"');
+  // Drop a trailing `//` comment. Any `/` left over may open a regex literal
+  // (`/;/.test(q)`) whose `;` or `=` would mislead the scan, so keep the
+  // line-granular behaviour.
+  text = text.replace(/(^|[\s;{}])\/\/.*$/, '$1');
+  if (text.includes('/')) return false;
+  const name = variable.replace(/\$/g, '\\$');
+  // A second write to the variable on the line (compound assignment, `++`/`--`,
+  // or a destructuring assignment target such as `[a, b] = [b, a]`) means the
+  // first initializer is not its only value.
+  if (new RegExp(String.raw`(?<![.\w$])${name}\s*(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*%&|^])=`).test(text)) return false;
+  if (new RegExp(String.raw`(?<![.\w$])${name}\s*(?:\+\+|--)|(?:\+\+|--)\s*${name}(?![\w$])`).test(text)) return false;
+  for (const d of text.matchAll(/[\[{]([^[\]{}]*)[\]}]\s*=(?![=>])/g)) {
+    if (new RegExp(String.raw`(?<![.\w$])${name}(?![\w$])`).test(d[1]!)) return false;
+  }
+  const declRe = new RegExp(String.raw`(?<![.\w$])${name}\s*(?::=|=|:[^=;]*=)(?![=>])`, 'g');
   const matches = [...text.matchAll(declRe)];
   if (matches.length !== 1) return false;
   const m = matches[0]!;
-  // The initializer runs to the next `;` at its own nesting depth.
+  // The initializer runs to the next `;` at its own nesting depth, or to the
+  // closer of the block / call it sits in. When neither is on this line the
+  // initializer wraps (`'ls ' +` / `(` then `q);` below), so it cannot be judged.
   let depth = 0;
-  let end = text.length;
+  let end = -1;
   for (let i = m.index! + m[0].length; i < text.length; i++) {
     const c = text[i]!;
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') { if (--depth < 0) { end = i; break; } }
     else if (c === ';' && depth === 0) { end = i; break; }
   }
+  if (end < 0) return false;
+  const bounded = text.slice(m.index! + m[0].length, end).trim();
+  if (bounded === '' || /[-+*%&|^!~<>=?:,.([{]$/.test(bounded)) return false;
   // Judge the original text of the initializer: an identifier inside a literal
   // (`$"make {q}"`, `f"{q}"`, `${q}`) counts as a read. Blanking keeps offsets.
   const rhs = lineCode.slice(m.index! + m[0].length, end);
