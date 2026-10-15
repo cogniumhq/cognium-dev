@@ -2,8 +2,8 @@
  * C# project gate (#637): a call that resolves to a method of another project
  * file is not an `external_taint_escape`. The cross-file path (or its absence
  * after the callee-reach check) is what reports, so `analyzeProject` agrees
- * with a single-file analysis of the same code. An unresolved call keeps the
- * escape.
+ * with a single-file analysis of the same code. The escape stays when the call
+ * is unresolved or the callee has no registered sink.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
@@ -144,6 +144,28 @@ public class A
 }
 `;
     const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'B.cs', code: calleeB }]);
+    expect(r.escapes).toContain('A.cs:7');
+  });
+  it('a project callee with no registered sink keeps the escape (the escape is the only signal)', async () => {
+    const caller = `using System.Web;
+public class A
+{
+    public void Run(HttpRequest req)
+    {
+        string data = req.QueryString["name"];
+        Relay.Forward(data);
+    }
+}
+`;
+    const callee = `public class Relay
+{
+    public static void Forward(string data)
+    {
+        Vendor.Sdk.Send(data);
+    }
+}
+`;
+    const r = await run([{ filePath: 'A.cs', code: caller }, { filePath: 'Relay.cs', code: callee }]);
     expect(r.escapes).toContain('A.cs:7');
   });
 });

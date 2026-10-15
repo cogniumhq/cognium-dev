@@ -12,14 +12,28 @@
  * Runs after the per-file analyses and before the cross-file phase, so no
  * cross-file path is built from the dropped sink. A sink is dropped only when
  * every call at its line to that method name resolves exactly to a method
- * declared in a different project file; an unresolved, inferred or
- * polymorphic call keeps the escape.
+ * declared in a different project file AND that method itself contains a
+ * registered sink: the cross-file phase and its callee-reach check then decide
+ * what is reported. A callee with no registered sink is a shape the registry
+ * does not know (for example a header or cookie write), where the escape is the
+ * only signal; an unresolved, inferred or polymorphic call also keeps it.
  */
 
 import type { CircleIR } from '../types/index.js';
 import type { ProjectGraph } from '../graph/project-graph.js';
 
 const ESCAPE = 'external_taint_escape';
+
+/** True when every method named like `targetFqn` in `ir` contains a non-escape sink. */
+function calleeHasRegisteredSink(ir: CircleIR | undefined, targetFqn: string): boolean {
+  if (!ir) return false;
+  const name = targetFqn.split('.').pop();
+  const methods = ir.types.flatMap(t => t.methods).filter(m => m.name === name);
+  if (methods.length === 0) return false;
+  const sinks = ir.taint?.sinks ?? [];
+  return methods.every(m => sinks.some(k =>
+    k.type !== ESCAPE && k.line >= m.start_line && k.line <= m.end_line));
+}
 
 export function dropEscapesToProjectCallees(
   fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
@@ -39,7 +53,8 @@ export function dropEscapesToProjectCallees(
       if (calls.length === 0) continue;
       const projectCall = calls.every(call => {
         const r = resolver.resolveCall(call, fa.file);
-        return !!r && r.resolution === 'exact' && r.targetFile !== fa.file;
+        return !!r && r.resolution === 'exact' && r.targetFile !== fa.file
+          && calleeHasRegisteredSink(projectGraph.getIR(r.targetFile), r.targetMethod);
       });
       if (projectCall) dropped.add(sink.line);
     }
