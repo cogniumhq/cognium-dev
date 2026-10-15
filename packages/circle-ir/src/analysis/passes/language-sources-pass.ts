@@ -676,6 +676,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJavaCanonicalPathStartsWithGuardSanitizers(code));
       // cognium-dev#293: `if (!Set.of("a", "b").contains(key)) throw` allow-list guard.
       additionalSanitizers.push(...findJavaLiteralAllowlistGuardSanitizers(code));
+      // cognium-dev#668: `!<literal set>.contains(cls)` reject guard before reflection.
+      additionalSanitizers.push(...findJavaReflectionAllowlistGuardSanitizers(code, types));
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // cognium-dev#293: the same strip, but living in a user-defined helper.
       additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'java'));
@@ -6107,6 +6109,89 @@ function findJavaCanonicalPathStartsWithGuardSanitizers(code: string): TaintSani
           sanitizes: ['path_traversal', 'external_taint_escape'],
         });
       }
+    }
+  }
+  return sanitizers;
+}
+
+/**
+ * Identifiers allowed in the initializer of a constant allowlist collection.
+ * Anything else (a method parameter, a request read, a config lookup) means
+ * the membership set is not a fixed set of literals.
+ */
+const JAVA_LITERAL_COLLECTION_IDENTS = new Set([
+  'new', 'String', 'Set', 'List', 'of', 'copyOf', 'Arrays', 'asList',
+  'HashSet', 'TreeSet', 'LinkedHashSet', 'ArrayList', 'LinkedList',
+  'Collections', 'unmodifiableSet', 'unmodifiableList',
+  'ImmutableSet', 'ImmutableList', 'java', 'util',
+]);
+
+/**
+ * cognium-dev#668 — Java reflection allowlist guard.
+ *
+ *   private static final Set<String> ALLOWED = Set.of("a.Csv", "a.Json");
+ *   if (!ALLOWED.contains(cls)) { throw new SecurityException("denied"); }
+ *   return Class.forName(cls).getDeclaredConstructor().newInstance();
+ *
+ * Past a rejecting `!<SET>.contains(<v>)` guard, `<v>` is one of the set's
+ * literals, so the class it names is chosen by the code, not the requester.
+ * Positive evidence only: `<SET>` must be a `final` field or local of this
+ * file whose initializer is nothing but string literals inside the standard
+ * collection factories, and the guard must reject (throw / return). Credits
+ * `<v>` on later lines of the enclosing method until `<v>` is reassigned.
+ * Scoped to `code_injection` (reflective class loading); other sink types
+ * are untouched.
+ */
+function findJavaReflectionAllowlistGuardSanitizers(
+  code: string,
+  types: ReadonlyArray<TypeInfo>,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const guardRe =
+    /\bif\s*\(\s*!\s*(?:this\s*\.\s*|[A-Z]\w*\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*contains\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+
+  const isLiteralCollection = (name: string): boolean => {
+    const declRe = new RegExp(`\\bfinal\\b[^=;(]*\\b${name}\\s*=(?!=)`);
+    for (let i = 0; i < lines.length; i++) {
+      const dm = declRe.exec(lines[i]);
+      if (!dm) continue;
+      // Initializer up to the terminating `;` (may span a few lines).
+      let init = lines[i].slice(dm.index + dm[0].length);
+      for (let j = i + 1; !init.includes(';') && j < Math.min(lines.length, i + 12); j++) init += ' ' + lines[j];
+      if (!init.includes(';')) return false;
+      init = init.slice(0, init.indexOf(';')).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      if (!init.includes('""')) return false;
+      const idents = init.match(/[A-Za-z_]\w*/g) ?? [];
+      return idents.every(id => JAVA_LITERAL_COLLECTION_IDENTS.has(id));
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardRe.exec(lines[i]);
+    if (!m) continue;
+    const [, setName, guarded] = m;
+    if (!guardRejects(lines, i, terminatorRe, 6)) continue;
+    if (!isLiteralCollection(setName)) continue;
+    const method = types
+      .flatMap(t => t.methods)
+      .filter(mt => mt.start_line <= i + 1 && mt.end_line >= i + 1)
+      .sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line))[0];
+    if (!method) continue;
+    const refRe = new RegExp(`(?<![\\w.])${guarded}\\b`);
+    const reassignRe = new RegExp(`(?<![\\w.])${guarded}\\s*(?:=(?!=)|\\+=)`);
+    for (let l = i + 1; l < Math.min(method.end_line, lines.length); l++) {
+      const lt = lines[l];
+      if (reassignRe.test(lt)) break;
+      if (!refRe.test(lt)) continue;
+      sanitizers.push({
+        type: 'java_reflection_allowlist_guard',
+        method: 'contains',
+        line: l + 1,
+        sanitizes: ['code_injection'],
+      });
     }
   }
   return sanitizers;
