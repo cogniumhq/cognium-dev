@@ -8,7 +8,7 @@
  *
  *   1. Provider-specific regex patterns. ~18 high-confidence prefixes /
  *      shapes (AWS AKIA, GitHub `ghp_`/`gho_`/`ghs_`/`ghu_`/`ghr_`,
- *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`/`sk_test_`/`rk_test_`, OpenAI `sk-`,
+ *      GitLab `glpat-`, Stripe `sk_live_`/`rk_live_`/`pk_live_`/`pk_test_`/`sk_test_`/`rk_test_`, OpenAI `sk-`,
  *      Anthropic `sk-ant-`, Slack `xox[baprs]-`, Google `AIza`, JWT `eyJ..eyJ..`,
  *      PEM private keys, npm `npm_`). Each match emits a finding with
  *      `rule_id: 'hardcoded-credential'` (matches the legacy Bash
@@ -190,6 +190,12 @@ const PROVIDER_PATTERNS: ProviderPattern[] = [
   {
     name: 'Stripe live publishable key',
     regex: /\bpk_live_[A-Za-z0-9]{24,}\b/,
+    severity: 'low', level: 'note',
+    fix: 'Publishable keys are not secret. Prefer loading them from configuration rather than a backend source file.',
+  },
+  {
+    name: 'Stripe test publishable key',
+    regex: /\bpk_test_[A-Za-z0-9]{24,}\b/,
     severity: 'low', level: 'note',
     fix: 'Publishable keys are not secret. Prefer loading them from configuration rather than a backend source file.',
   },
