@@ -135,4 +135,53 @@ public class Reader {
     const r = await analyzeJava(code);
     expect(ptFlows(r)).toHaveLength(0);
   });
+
+  it('separator mid-expression (… + File.separator + "subdir") is not a guard', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith(parent.getCanonicalPath() + File.separator + "subdir") ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
+  it('separator inside replace(...) is not a guard', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith(parent.getCanonicalPath().replace(File.separator, "")) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
+  it('a literal that merely contains the word "separator" is not a guard', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith("/var/separator") ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
+  it('a Windows literal base ending in an escaped backslash stays clean', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith("C:\\\\data\\\\") ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it('a parameter base is not poisoned by an assignment in an earlier method', async () => {
+    const code = `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    void helper() { String base = parent.getCanonicalPath(); }
+    void read(HttpServletRequest req, String base) throws IOException {
+        File f = new File("/srv/data", req.getParameter("name"));
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+    const r = await analyzeJava(code);
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an empty-string literal base is not a guard', async () => {
+    const r = await analyzeJava(esapi(
+      'if ( !dir.getCanonicalPath().startsWith("") ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
 });
