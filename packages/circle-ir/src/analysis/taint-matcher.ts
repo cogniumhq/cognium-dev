@@ -3765,7 +3765,13 @@ function findSanitizers(
     });
   }
 
-  const noopLocalHelpers = language === 'java' && sourceLines ? findJavaNoopHelpers(types, sourceLines) : new Set<string>();
+  const noopLocalHelpers = !sourceLines
+    ? new Set<string>()
+    : language === 'java'
+      ? findJavaNoopHelpers(types, sourceLines)
+      : language === 'python'
+        ? findPythonNoopHelpers(types, sourceLines)
+        : new Set<string>();
 
   // Check method calls for sanitizer methods
   for (const call of calls) {
@@ -3795,7 +3801,7 @@ function findSanitizers(
 
     for (const pattern of patterns) {
       if (matchesSanitizerPattern(call, pattern)) {
-        if (!pattern.class && noopLocalHelpers.has(call.method_name) && (!call.receiver || call.receiver === 'this')) {
+        if (!pattern.class && noopLocalHelpers.has(call.method_name) && (!call.receiver || call.receiver === 'this' || call.receiver === 'self')) {
           continue; // same-file helper that does no escaping: not credited by name (#581)
         }
         sanitizers.push({
@@ -3865,6 +3871,49 @@ function isJavaNoopBody(
   const expr = m[1]!
     .replace(/"(?:\\.|[^"\\])*"/g, '""')
     .replace(/\.(?:trim|strip|toString|toLowerCase|toUpperCase)\(\)/g, '');
+  const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
+  if (leftovers === '') return true;
+  return leftovers.split(/\s+/).every(tok => params.has(tok));
+}
+
+/**
+ * Python twin of `findJavaNoopHelpers` (#581): a `def` whose body is one
+ * `return <expr>` built only from its own parameters, string literals, `+`, the
+ * pass-through methods `strip` / `lstrip` / `rstrip` / `lower` / `upper` and the
+ * `str()` call. Any other body (a `re.sub`, `replace`, `html.escape`, a branch,
+ * a loop, a second statement) keeps the by-name credit, and so does a name with a
+ * non-no-op definition elsewhere in the file.
+ */
+function findPythonNoopHelpers(types: TypeInfo[], sourceLines: string[]): Set<string> {
+  const noop = new Set<string>();
+  const other = new Set<string>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      (isPythonNoopBody(method, sourceLines) ? noop : other).add(method.name);
+    }
+  }
+  for (const name of other) noop.delete(name);
+  return noop;
+}
+
+function isPythonNoopBody(
+  method: { name: string; parameters: { name: string }[]; start_line: number; end_line: number },
+  sourceLines: string[],
+): boolean {
+  if (method.parameters.length === 0) return false;
+  const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
+  // `def name(params) -> T:` then the body, on the same line or below. The header is
+  // matched without crossing a newline inside a default value or annotation.
+  const header = /^\s*(?:async\s+)?def\s+\w+\s*\(([^()]*)\)\s*(?:->\s*[\w.\[\], ]+)?\s*:/.exec(text);
+  if (!header) return false;
+  const body = text.slice(header[0].length).replace(/#.*$/gm, '').trim();
+  const m = /^return\s+([^\n;]+)$/.exec(body);
+  if (!m) return false;
+  const params = new Set(method.parameters.map(p => p.name.replace(/^\*+/, '')));
+  const expr = m[1]!
+    .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""')
+    .replace(/\.(?:strip|lstrip|rstrip|lower|upper)\(\)/g, '')
+    .replace(/\bstr\(/g, '(');
   const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
   if (leftovers === '') return true;
   return leftovers.split(/\s+/).every(tok => params.has(tok));
