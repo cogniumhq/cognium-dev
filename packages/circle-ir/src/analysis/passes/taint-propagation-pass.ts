@@ -2977,8 +2977,27 @@ function detectExpressionScanFlows(
     // `StartInfo.Arguments` seeds too, but only behind a shell (or a non-constant
     // program), see `argumentsReachShell` below.
     const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*(?:FileName|(Arguments)))\s*(?:\+=|(?<![=!<>])=(?!=))\s*(.+)/;
+    // cognium-dev#594: the same two writes on a local `ProcessStartInfo psi`
+    // (`psi.FileName = …`, `psi.Arguments = …`), read back by `Process.Start(psi)`.
+    // Gated on the receiver being declared as a `ProcessStartInfo`, so a `FileName`
+    // or `Arguments` property of any other type seeds nothing.
+    const psiVars = new Set<string>();
+    for (const line of lines) {
+      for (const pm of line.matchAll(/\bProcessStartInfo\s+([\p{L}_][\p{L}\p{N}_]*)/gu)) psiVars.add(pm[1]);
+      for (const pm of line.matchAll(/\b([\p{L}_][\p{L}\p{N}_]*)\s*=\s*new\s+ProcessStartInfo\b/gu)) psiVars.add(pm[1]);
+    }
+    const psiRe = /(?<![\w.])(\w+)\s*\.\s*(?:FileName|(Arguments))\s*(?:\+=|(?<![=!<>])=(?!=))\s*(.+)/;
+    const psiOverwrittenByLiteral = (obj: string, prop: string, at: number): boolean => {
+      const fn = csFnStart(at + 1);
+      const re = new RegExp(`(?<![\\w.])${obj}\\s*\\.\\s*${prop}\\s*=(?!=)\\s*@?"[^"]*"\\s*;\\s*(?://.*)?$`);
+      for (let j = at + 1; j < lines.length; j++) {
+        if (csFnStart(j + 1) !== fn) break;
+        if (re.test(lines[j])) return true;
+      }
+      return false;
+    };
     const fileNameRe = (obj: string): RegExp =>
-      new RegExp(`\\b${obj}\\s*\\.\\s*StartInfo\\s*\\.\\s*FileName\\s*=(?!=)\\s*(.+)`);
+      new RegExp(`\\b${obj}\\s*\\.\\s*(?:StartInfo\\s*\\.\\s*)?FileName\\s*=(?!=)\\s*(.+)`);
     const shellProgramRe = /^(?:cmd|powershell|pwsh|sh|bash|zsh|dash|ksh|csh|tcsh|fish)(?:\.exe)?$/i;
     // cognium-dev#594: with a constant, non-shell program the argument string is
     // argv (the #272 / #328 safe shape), so a tainted `Arguments` does not by itself
@@ -3011,16 +3030,29 @@ function detectExpressionScanFlows(
       added = false;
       guard++;
       for (let i = 0; i < lines.length; i++) {
-        const m = ctRe.exec(lines[i]);
+        let m = ctRe.exec(lines[i]);
+        let viaLocal = false;
+        if (!m) {
+          const pm = psiRe.exec(lines[i]);
+          if (pm && psiVars.has(pm[1])) { m = pm; viaLocal = true; }
+        }
         if (!m) continue;
         const [, obj, isArguments, rhs] = m;
+        // A later plain-literal write of the same property in this method replaces
+        // the tainted value before `Process.Start(psi)` reads it: do not credit it.
+        if (viaLocal && psiOverwrittenByLiteral(obj, isArguments ? 'Arguments' : 'FileName', i)) continue;
         const key = `${obj}@${csFnStart(i + 1)}`;
         if (seeded.has(key)) continue;
         if (isArguments && !argumentsReachShell(obj, i + 1)) continue;
         const reachable = sourcesWithVar.filter(
           sv => sv.line <= i + 1 && !csDifferentMethod(sv.variable, sv.line, i + 1),
         );
-        if (reachable.length === 0 || !argsReferenceTaintedVar(rhs, reachable)) continue;
+        // A value converted to a number / Guid / bool cannot carry a command; the
+        // local-`psi` form masks such conversions so a raw operand beside one still counts.
+        const rhsForTaint = viaLocal
+          ? rhs.replace(/\b(?:int|uint|long|ulong|short|ushort|byte|double|float|decimal|bool|Int16|Int32|Int64|Double|Decimal|Boolean|Guid)\s*\.\s*(?:Try)?Parse\s*\((?:[^()]|\([^()]*\))*\)|\bConvert\s*\.\s*To(?:Int16|Int32|Int64|Double|Decimal|Boolean|Byte)\s*\((?:[^()]|\([^()]*\))*\)/g, '0')
+          : rhs;
+        if (reachable.length === 0 || !argsReferenceTaintedVar(rhsForTaint, reachable)) continue;
         const from = reachable.reduce((a, sv) => (sv.line < a.line ? sv : a), reachable[0]);
         sourcesWithVar.push({ ...from, variable: obj, line: i + 1 });
         seeded.add(key);

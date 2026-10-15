@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Go scan reports `log_injection` for a value escaped only with `html.EscapeString` / `template.HTMLEscapeString` before a logger call (#605, partial).
 - A JS/TS scan reports `log_injection` for a value cleaned with an LF-only (or CR-only) `replace` before a logger call (#562, partial).
 - A JavaScript/TypeScript scan no longer reports a second variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
+- A C# scan reports `command_injection` for a `ProcessStartInfo` local with a tainted `FileName` (or tainted `Arguments` behind a shell) passed to `Process.Start(psi)` (#594, partial).
 - A JS/TS scan reports a command, path or SQL sink fed by a variable that is assigned the tainted value inside an `if` / `else` / loop body or a `switch` case before the sink (#582, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
