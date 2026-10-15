@@ -658,6 +658,9 @@ export function createWithJdkTypes(): TypeHierarchyResolver {
  * Currently registered:
  * - Apache HttpClient 4.x (`org.apache.http.*`)
  * - Apache HttpClient 5.x (`org.apache.hc.client5.*`)
+ * - JDK class loaders (`java.lang.ClassLoader` <- `java.security.SecureClassLoader`
+ *   <- `java.net.URLClassLoader`), so a user `extends URLClassLoader` subclass
+ *   matches the `ClassLoader` sinks (#621)
  */
 export function registerCommonLibraries(resolver: TypeHierarchyResolver): void {
   // Apache HttpClient 4.x — org.apache.http.*
@@ -800,7 +803,49 @@ export function registerCommonLibraries(resolver: TypeHierarchyResolver): void {
     },
   ];
 
-  for (const type of [...apacheHttpClient4x, ...apacheHttpClient5x]) {
+  // JDK class loaders. A user class `extends URLClassLoader` must still match
+  // the `ClassLoader.getResource` / `loadClass` sinks through `isSubtypeOf`
+  // rather than the receiver-name heuristic. (#621)
+  const jdkClassLoaders: TypeInfo[] = [
+    {
+      name: 'ClassLoader',
+      kind: 'class',
+      package: 'java.lang',
+      extends: null,
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'SecureClassLoader',
+      kind: 'class',
+      package: 'java.security',
+      extends: 'java.lang.ClassLoader',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+    {
+      name: 'URLClassLoader',
+      kind: 'class',
+      package: 'java.net',
+      extends: 'java.security.SecureClassLoader',
+      implements: [],
+      annotations: [],
+      methods: [],
+      fields: [],
+      start_line: 0,
+      end_line: 0,
+    },
+  ];
+
+  for (const type of [...apacheHttpClient4x, ...apacheHttpClient5x, ...jdkClassLoaders]) {
     resolver.addType(type, 'common-libraries', type.package);
   }
 

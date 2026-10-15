@@ -2834,29 +2834,90 @@ const SINK_FQN_EXCLUSIONS: Partial<Record<SinkType, string[]>> = {
 };
 
 /**
- * Sink classes whose receiver is matched by the declared type when the
- * language plugin resolved one. For these, a resolved receiver type that is
- * not the sink class (or a `*ClassLoader` subtype) must not fall back to the
- * receiver-name heuristic: `ClassLoader.getResource` is keyed on a receiver
- * named like `loader`, which would otherwise also take Spring's
- * `ResourceLoader loader` or a user type `MyLoader loader` for a ClassLoader
- * (#621 follow-up). An unresolved type (`var`, chained call, no declaration)
- * keeps the heuristic.
+ * Sink classes whose receiver-name heuristic is skipped when the declared
+ * receiver type is positively known NOT to be the sink class.
+ * `ClassLoader.getResource` is keyed on a receiver named like `loader`, which
+ * would otherwise also take Spring's `ResourceLoader loader` for a ClassLoader
+ * (#621 follow-up). A declared type that is merely unresolved (a user type
+ * from another file, a type parameter, `var`, a chained call) keeps the
+ * heuristic: it may well be a ClassLoader subclass.
  */
 const DECLARED_TYPE_STRICT_SINK_CLASSES: Partial<Record<SinkType, string[]>> = {
   path_traversal: ['ClassLoader'],
 };
 
-/** True when the call's declared receiver type is known and is not `pattern.class` or a `*<class>` subtype. */
-function declaredReceiverTypeExcludes(call: CallInfo, pattern: SinkPattern): boolean {
+/**
+ * Declared receiver types known not to be a `ClassLoader`, matched by simple
+ * name so a wildcard import (`import org.springframework.core.io.*;`), which
+ * leaves `receiver_type_fqn` unresolved, is covered too.
+ */
+const KNOWN_NON_CLASSLOADER_SIMPLE_NAMES = new Set([
+  'ResourceLoader',
+  'ResourcePatternResolver',
+  'Object',
+]);
+
+/** Spring resource abstractions: none of them is a `ClassLoader`. */
+const KNOWN_NON_CLASSLOADER_FQN_PREFIXES = ['org.springframework.core.io.'];
+
+/**
+ * True when the type hierarchy knows `typeName` and its whole superclass chain,
+ * and that chain ends without reaching a ClassLoader. Any link that is not in
+ * the hierarchy (a parent declared in another file) means "unknown", never
+ * "not a ClassLoader". Interfaces and enums are never ClassLoaders.
+ */
+function hierarchyKnowsNotSubtype(
+  typeName: string,
+  sinkClass: string,
+  typeHierarchy: TypeHierarchyResolver,
+): boolean {
+  let node = typeHierarchy.getType(typeName);
+  if (!node) return false;
+  const seen = new Set<string>();
+  while (node) {
+    if (seen.has(node.fqn)) return false;
+    seen.add(node.fqn);
+    if (node.name === sinkClass || typeHierarchy.isSubtypeOf(node.fqn, sinkClass)) return false;
+    if (node.kind === 'interface' || node.kind === 'enum') return true;
+    if (!node.extends) return true;
+    const parent = node.extends.replace(/<.*$/, '').trim();
+    if (parent.split('.').pop() === sinkClass) return false;
+    node = typeHierarchy.getType(parent);
+  }
+  return false;
+}
+
+/**
+ * True when the call's declared receiver type is positively known not to be
+ * `pattern.class` (a ClassLoader): a Spring resource loader / resolver, `Object`,
+ * or a type the hierarchy resolves (e.g. declared in this file) without
+ * reaching ClassLoader. Unresolved types return false so the receiver-name
+ * heuristic still decides.
+ */
+function declaredReceiverTypeExcludes(
+  call: CallInfo,
+  pattern: SinkPattern,
+  typeHierarchy?: TypeHierarchyResolver,
+): boolean {
   if (!pattern.class || !DECLARED_TYPE_STRICT_SINK_CLASSES[pattern.type]?.includes(pattern.class)) {
     return false;
   }
-  const declared = call.receiver_type_fqn ?? call.receiver_type;
+  const fqn = call.receiver_type_fqn?.replace(/<.*$/, '').trim();
+  const simpleDeclared = call.receiver_type?.replace(/<.*$/, '').trim();
+  if (fqn && KNOWN_NON_CLASSLOADER_FQN_PREFIXES.some((prefix) => fqn.startsWith(prefix))) {
+    return true;
+  }
+  if (fqn === 'java.lang.Object') return true;
+  const declared = fqn || simpleDeclared;
   if (!declared) return false;
-  const simple = declared.replace(/<.*$/, '').split('.').pop() ?? '';
+  const simple = declared.split('.').pop() ?? '';
   if (simple === '' || simple === 'var') return false;
-  return !simple.endsWith(pattern.class);
+  // A simple name only counts when no other FQN was resolved for it
+  // (`com.acme.ResourceLoader` is a user type, not Spring's).
+  if (KNOWN_NON_CLASSLOADER_SIMPLE_NAMES.has(simple) && (!fqn || fqn === simple)) {
+    return true;
+  }
+  return typeHierarchy !== undefined && hierarchyKnowsNotSubtype(declared, pattern.class, typeHierarchy);
 }
 
 /**
@@ -2974,10 +3035,11 @@ function matchesSinkPattern(
       // consult the factory-return-type registry on TypeHierarchyResolver.
       // If the mapped return type is a subtype of the sink class, accept.
       // — cognium-dev #241 Java
-    } else if (declaredReceiverTypeExcludes(call, pattern)) {
-      // Declared receiver type is known and is not the sink class (Spring
-      // `ResourceLoader`, a user `MyLoader`, ...): the receiver-name heuristic
-      // below must not turn it into the sink class.
+    } else if (declaredReceiverTypeExcludes(call, pattern, typeHierarchy)) {
+      // Declared receiver type is positively known not to be the sink class
+      // (Spring `ResourceLoader`, `Object`, a same-file class that does not
+      // extend ClassLoader): the receiver-name heuristic below must not turn
+      // it into the sink class. Unresolved types still use the heuristic.
       return false;
     } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
