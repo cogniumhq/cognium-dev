@@ -195,6 +195,40 @@ function isCSharpNonEscapeCall(call: CallInfo): boolean {
   return false;
 }
 
+// Java (#468, slice): JDK exception / error types. Constructing one wraps the
+// value into an object that has not left the program, the counterpart of the
+// error-construction rows in the Go (#455) and C# (#474) gates. Loggers,
+// formatters, StringBuilder and project-defined exception classes are NOT
+// gated here: an unknown callee still escapes.
+const JAVA_LANG_EXCEPTION_TYPES = new Set([
+  'Exception', 'RuntimeException', 'IllegalArgumentException',
+  'IllegalStateException', 'UnsupportedOperationException',
+  'NullPointerException', 'IndexOutOfBoundsException', 'NumberFormatException',
+  'Error', 'AssertionError',
+]);
+
+function isJavaNonEscapeCall(call: CallInfo, declaredTypeNames: ReadonlySet<string>): boolean {
+  // Only a constructor call `new X(...)`: no receiver, and the resolved target
+  // is `X.<init>` (the extractor does not set `is_constructor` for Java).
+  if (call.receiver) return false;
+  const isCtor = call.is_constructor === true ||
+    (call.resolution?.target ?? '').endsWith('.<init>');
+  if (!isCtor) return false;
+  const written = call.method_name;
+  const simple = written.split('.').pop() ?? written;
+  // Fully-qualified spelling: only `java.lang.<X>`; anything else is a project
+  // or library class.
+  if (written.includes('.')) {
+    return written.startsWith('java.lang.') &&
+      (JAVA_LANG_EXCEPTION_TYPES.has(simple) || /(Exception|Error)$/.test(simple));
+  }
+  // An explicit import of the same simple name from another package, or a class
+  // declared in this file, shadows the java.lang type.
+  if (call.receiver_type_fqn && !call.receiver_type_fqn.startsWith('java.lang.')) return false;
+  if (declaredTypeNames.has(simple)) return false;
+  return JAVA_LANG_EXCEPTION_TYPES.has(simple);
+}
+
 function isGoNonEscapeCall(call: CallInfo): boolean {
   const name = call.method_name;
   const recv = (call.receiver ?? '').split('.').pop() ?? '';
@@ -246,6 +280,7 @@ export function analyzeInterprocedural(
 
   const types = graph.ir.types;
   const calls = graph.ir.calls;
+  const declaredTypeNames = new Set<string>(types.map(t => t.name));
 
   // Build method nodes from type information
   const methodNodes = buildMethodNodes(types);
@@ -426,6 +461,10 @@ export function analyzeInterprocedural(
         }
         // C# — same gate, same reason (#474, sibling of #455/#468).
         if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
+          continue;
+        }
+        // Java — JDK exception construction (#468, minimal slice).
+        if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames)) {
           continue;
         }
         const bashSafeBuiltins = new Set([
