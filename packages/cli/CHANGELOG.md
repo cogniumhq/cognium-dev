@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A JS/TS scan reports `log_injection` for a value cleaned with an LF-only (or CR-only) `replace` before a logger call (#562, partial).
 - A JavaScript/TypeScript scan no longer reports a second variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
 - A Python scan reports a finding for a value passed through a same-file `strip()`/`lower()`/`str()`-only helper named like a sanitizer (#581, partial).
+- A C# scan reports `command_injection` for a `ProcessStartInfo` local with a tainted `FileName` (or tainted `Arguments` behind a shell) passed to `Process.Start(psi)` (#594, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
 ## [4.15.0] - 2026-10-15
