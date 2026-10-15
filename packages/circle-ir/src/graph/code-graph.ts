@@ -26,6 +26,16 @@ import type { MethodInfo } from '../types/index.js';
 export class CodeGraph {
   readonly ir: CircleIR;
 
+  /**
+   * Defs whose value cannot carry the content of the values they read, so
+   * taint does not flow into them. Set by `analyze()`; empty for a bare graph.
+   *   - an int or bool measure or test (`len(x)`, `x.length`,
+   *     `re.MatchString(x)`) (#568)
+   *   - a lookup in a constant table the file never writes (`T[req.query.k]`)
+   *     (#667)
+   */
+  taintBarrierDefIds: ReadonlySet<number> = new Set();
+
   constructor(ir: CircleIR) {
     this.ir = ir;
   }
@@ -307,6 +317,7 @@ export class CodeGraph {
       for (const [fromDef, chains] of this.chainsByFromDef) {
         if (!result.has(fromDef)) continue;
         for (const chain of chains) {
+          if (this.taintBarrierDefIds.has(chain.to_def)) continue;
           if (!result.has(chain.to_def)) {
             result.add(chain.to_def);
             changed = true;

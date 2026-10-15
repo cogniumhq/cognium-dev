@@ -44,6 +44,27 @@ export interface PageIndex {
   malformed: boolean;
   /** raw <!doctype ...> if present */
   doctype: string | null;
+  /** what set `malformed`, in the order the parser met it; empty exactly when `malformed` is false */
+  parseErrors: ParseError[];
+}
+
+/**
+ * One thing the forgiving parser noticed about the tag structure. Not the HTML parsing algorithm's
+ * error list: these are the four cases this parser handles, and conforming markup can produce one
+ * (an optional end tag the parser does not imply, for instance).
+ *  - `stray-end-tag`: an end tag with no open element of its name; ignored.
+ *  - `misnested-end-tag`: an end tag that closes elements opened after its own; `unclosed` names them.
+ *  - `unclosed-raw-text`: a `script`, `style`, `textarea` or `title` with no end tag; what follows it
+ *    is read as markup.
+ *  - `unclosed-at-end`: elements still open at the end of the file, one entry for the run; `line` and
+ *    `tag` are the innermost one's.
+ * `unclosed` is outermost first.
+ */
+export interface ParseError {
+  line: number;
+  code: 'stray-end-tag' | 'misnested-end-tag' | 'unclosed-raw-text' | 'unclosed-at-end';
+  tag: string;
+  unclosed: string[];
 }
 
 export interface SiteIndex {
@@ -81,6 +102,7 @@ export function parseHtml(raw: string, path: string): PageIndex {
   const stack: HNode[] = [root];
   let doctype: string | null = null;
   let malformed = false;
+  const parseErrors: ParseError[] = [];
   let lastIndex = 0;
 
   // line lookup without scanning the whole string per token
@@ -114,8 +136,11 @@ export function parseHtml(raw: string, path: string): PageIndex {
       // unwind to the nearest matching open element; anything skipped was left unclosed
       let depth = -1;
       for (let i = stack.length - 1; i > 0; i--) if (stack[i].tag === close) { depth = i; break; }
-      if (depth === -1) { malformed = true; continue; }
-      if (depth !== stack.length - 1) malformed = true;
+      if (depth === -1) { malformed = true; parseErrors.push({ line: lineAt(m.index), code: 'stray-end-tag', tag: close, unclosed: [] }); continue; }
+      if (depth !== stack.length - 1) {
+        malformed = true;
+        parseErrors.push({ line: lineAt(m.index), code: 'misnested-end-tag', tag: close, unclosed: stack.slice(depth + 1).map((n) => n.tag) });
+      }
       stack.length = depth;
       continue;
     }
@@ -149,14 +174,19 @@ export function parseHtml(raw: string, path: string): PageIndex {
         TAG_RE.lastIndex = lastIndex;
       } else {
         malformed = true;
+        parseErrors.push({ line: node.line, code: 'unclosed-raw-text', tag, unclosed: [] });
       }
       continue;
     }
     stack.push(node);
   }
-  if (stack.length !== 1) malformed = true;
+  if (stack.length !== 1) {
+    malformed = true;
+    const inner = stack[stack.length - 1];
+    parseErrors.push({ line: inner.line, code: 'unclosed-at-end', tag: inner.tag, unclosed: stack.slice(1).map((n) => n.tag) });
+  }
 
-  return { path, nodes, root, raw, malformed, doctype };
+  return { path, nodes, root, raw, malformed, doctype, parseErrors };
 }
 
 /** Concatenated text of a node's subtree, as a name computation would see it. */

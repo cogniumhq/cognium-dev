@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.15.0] - 2026-10-15
+
+### Changes
+
+- `--exclude-tests` recognises C# test files (`*Test.cs`, `*Tests.cs`) and .NET test projects (`X.Tests/`, `X.UnitTests/`, `X.IntegrationTest/`) (#602).
+- Bundles the circle-ir changes listed under circle-ir [Unreleased].
+
 ## [4.14.2] - 2026-10-12
 
 ### Changes

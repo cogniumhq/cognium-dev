@@ -181,6 +181,10 @@ const CSHARP_NON_ESCAPE_METHODS = new Set([
   // claim needing its own change.
   'Add', 'AddLast', 'AddFirst', 'AddRange', 'TryAdd', 'Insert', 'Push',
   'Enqueue',
+  // Collection lookups (cognium-dev#665). Using a value as a key into an
+  // in-memory map hands nothing out of the program; it is the allowlist
+  // shape (`if (!Catalog.TryGetValue(sku, out var price)) return …`).
+  'TryGetValue', 'ContainsKey', 'ContainsValue', 'GetValueOrDefault',
   // Encoders (cognium-dev#518). Encoding a value hands back a string; nothing
   // has left the program at `Uri.EscapeDataString(input)`.
   'EscapeDataString', 'EscapeUriString', 'UrlEncode', 'UrlPathEncode',
@@ -192,7 +196,45 @@ function isCSharpNonEscapeCall(call: CallInfo): boolean {
   const recv = (call.receiver ?? '').split('.').pop() ?? '';
   if (CSHARP_PURE_STATIC_RECEIVERS.has(recv)) return true;
   if (CSHARP_NON_ESCAPE_METHODS.has(name)) return true;
+  // The inherited controller helper `Content(body, contentType)` writes the
+  // response body; the `Content` xss sink judges it by its content type
+  // (cognium-dev#580), so a plain-text or JSON body is not an escape either.
+  if (name === 'Content' && (call.receiver === null || call.receiver === 'this' || call.receiver === 'base')) return true;
   return false;
+}
+
+// Java (#468, slice): JDK exception / error types. Constructing one wraps the
+// value into an object that has not left the program, the counterpart of the
+// error-construction rows in the Go (#455) and C# (#474) gates. Loggers,
+// formatters, StringBuilder and project-defined exception classes are NOT
+// gated here: an unknown callee still escapes.
+const JAVA_LANG_EXCEPTION_TYPES = new Set([
+  'Exception', 'RuntimeException', 'IllegalArgumentException',
+  'IllegalStateException', 'UnsupportedOperationException',
+  'NullPointerException', 'IndexOutOfBoundsException', 'NumberFormatException',
+  'Error', 'AssertionError',
+]);
+
+function isJavaNonEscapeCall(call: CallInfo, declaredTypeNames: ReadonlySet<string>): boolean {
+  // Only a constructor call `new X(...)`: no receiver, and the resolved target
+  // is `X.<init>` (the extractor does not set `is_constructor` for Java).
+  if (call.receiver) return false;
+  const isCtor = call.is_constructor === true ||
+    (call.resolution?.target ?? '').endsWith('.<init>');
+  if (!isCtor) return false;
+  const written = call.method_name;
+  const simple = written.split('.').pop() ?? written;
+  // Fully-qualified spelling: only `java.lang.<X>`; anything else is a project
+  // or library class.
+  if (written.includes('.')) {
+    return written.startsWith('java.lang.') &&
+      (JAVA_LANG_EXCEPTION_TYPES.has(simple) || /(Exception|Error)$/.test(simple));
+  }
+  // An explicit import of the same simple name from another package, or a class
+  // declared in this file, shadows the java.lang type.
+  if (call.receiver_type_fqn && !call.receiver_type_fqn.startsWith('java.lang.')) return false;
+  if (declaredTypeNames.has(simple)) return false;
+  return JAVA_LANG_EXCEPTION_TYPES.has(simple);
 }
 
 function isGoNonEscapeCall(call: CallInfo): boolean {
@@ -246,6 +288,7 @@ export function analyzeInterprocedural(
 
   const types = graph.ir.types;
   const calls = graph.ir.calls;
+  const declaredTypeNames = new Set<string>(types.map(t => t.name));
 
   // Build method nodes from type information
   const methodNodes = buildMethodNodes(types);
@@ -322,6 +365,9 @@ export function analyzeInterprocedural(
     'text', 'textContent', 'innerText', 'createTextNode',
     'addClass', 'removeClass', 'toggleClass',
     'parseInt', 'parseFloat', 'Number', 'String', 'Boolean',
+    // Pure serializers (JSON.stringify, qs/querystring.stringify) return a
+    // string to the caller; the value has not left the program (#670).
+    'stringify',
     // I/O stream wrappers — pure decorators that wrap a stream, not security sinks
     // e.g. new InputStreamReader(proc.getInputStream()) is safe; the underlying stream is the source
     'InputStreamReader', 'OutputStreamWriter',
@@ -426,6 +472,10 @@ export function analyzeInterprocedural(
         }
         // C# — same gate, same reason (#474, sibling of #455/#468).
         if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
+          continue;
+        }
+        // Java — JDK exception construction (#468, minimal slice).
+        if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames)) {
           continue;
         }
         const bashSafeBuiltins = new Set([

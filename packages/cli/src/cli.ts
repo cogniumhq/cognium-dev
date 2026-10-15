@@ -328,6 +328,8 @@ const TEST_PATTERNS = [
   /test_.*\.py$/,
   /_test\.rs$/,
   /_test\.go$/,
+  /Tests?\.cs$/,         // .NET: FooTest.cs / FooTests.cs
+  /[\/\\][^\/\\]+\.(?:Unit|Integration)?Tests?[\/\\]/, // .NET test projects: MyApp.Tests/, MyApp.UnitTests/
 ];
 
 export function isTestFile(filePath: string): boolean {

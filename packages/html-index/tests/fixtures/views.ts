@@ -27,14 +27,14 @@ export const html: HtmlAriaViews = {
     { key: 'select', tag: 'select', all: [{ lacks: 'multiple' }, { 'not-gt': ['size', 1] }] },
   ],
   'tag-row': {
-    body: 'body', dialog: 'dialog', h1: 'heading', h2: 'heading', h3: 'heading', html: 'html', li: 'li', main: 'main', nav: 'nav',
+    body: 'body', dialog: 'dialog', footer: 'footer', h1: 'heading', h2: 'heading', h3: 'heading', header: 'header', html: 'html', li: 'li', main: 'main', nav: 'nav',
     ol: 'ol', option: 'option', p: 'p', span: 'span', table: 'table', td: 'td', textarea: 'textarea', th: 'th', tr: 'tr', ul: 'ul',
   },
   'implicit-role-by-row': {
     'a[href]': 'link', 'a:not([href])': 'generic', 'area[href]': 'link', 'area:not([href])': 'generic', 'img[alt=""]': 'none', img: 'img',
     button: 'button', div: 'generic', 'input[list]': 'combobox', 'input[type=text]': 'textbox', 'select[multiple]': 'listbox', select: 'combobox',
     ...Object.fromEntries(INPUT_ROWS.map(([type, role]) => [`input[type=${type}]`, role])),
-    body: 'generic', dialog: 'dialog', heading: 'heading', html: 'generic', li: 'listitem', main: 'main', nav: 'navigation', ol: 'list',
+    body: 'generic', dialog: 'dialog', footer: 'contentinfo', header: 'banner', heading: 'heading', html: 'generic', li: 'listitem', main: 'main', nav: 'navigation', ol: 'list',
     option: 'option', p: 'paragraph', span: 'generic', table: 'table', td: 'cell', textarea: 'textbox', th: 'columnheader', tr: 'row', ul: 'list',
   },
   'implicit-role-by-tag-default': { a: 'link', area: 'link', button: 'button', div: 'generic', img: 'img', input: 'button', select: 'combobox' },
@@ -42,7 +42,7 @@ export const html: HtmlAriaViews = {
 
 export const aria: AriaViews = {
   'role-names': [
-    'alert', 'button', 'cell', 'checkbox', 'columnheader', 'combobox', 'dialog', 'generic', 'group', 'heading', 'img', 'link', 'list',
+    'alert', 'banner', 'button', 'cell', 'checkbox', 'columnheader', 'combobox', 'contentinfo', 'dialog', 'generic', 'group', 'heading', 'img', 'link', 'list',
     'listbox', 'listitem', 'main', 'navigation', 'none', 'option', 'paragraph', 'presentation', 'radio', 'row', 'rowgroup', 'slider',
     'spinbutton', 'tab', 'table', 'tablist', 'tabpanel', 'textbox',
   ],

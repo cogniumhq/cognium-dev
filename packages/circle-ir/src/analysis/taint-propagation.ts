@@ -110,6 +110,12 @@ function buildSanitizersByLine(sanitizers: TaintSanitizer[]): Map<number, TaintS
  * Accepts either a CodeGraph (preferred) or the legacy (dfg, calls, ...) signature
  * for backward compatibility with existing call sites and tests.
  */
+/** Number of `${…}` interpolations in a JS/TS template-literal argument. */
+function templateInterpolationCount(expression: string): number {
+  if (!expression.trimStart().startsWith('`')) return 0;
+  return (expression.match(/\$\{/g) ?? []).length;
+}
+
 /** True when `+` appears outside string literals. */
 function concatOutsideStrings(expression: string): boolean {
   return expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').includes('+');
@@ -153,6 +159,7 @@ export function propagateTaint(
   const taintedVars: TaintedVariable[] = [];
   const flows: TaintFlow[] = [];
   const javaConcat = graph.ir.meta.language === 'java';
+  const jsLike = graph.ir.meta.language === 'javascript' || graph.ir.meta.language === 'typescript';
   const reachableSinks = new Map<TaintSink, TaintSource[]>();
 
   // Use pre-computed indexes from CodeGraph — no local map building needed
@@ -170,16 +177,29 @@ export function propagateTaint(
   const defById = graph.defById;
 
   // Step 1: Identify initial tainted definitions (from sources)
-  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine);
+  const rawInitialTaint = findInitialTaint(sources, callsByLine, defsByLine, graph.chainsByFromDef, jsLike);
 
   // Filter variables added via the "next-line" heuristic that are actually the
   // result of a sanitizer call.  The source variable itself (tv.line ===
   // tv.sourceLine) is always tainted; next-line additions need an extra check.
-  const initialTaint = rawInitialTaint.filter(tv => {
+  const filteredInitialTaint = rawInitialTaint.filter(tv => {
     if (tv.line === tv.sourceLine) return true;
+    if (graph.taintBarrierDefIds.has(tv.defId)) return false;
     const sanCheck = checkSanitized(tv.sourceLine, tv.line, tv.sourceType, sanitizersByLine);
     return !sanCheck.sanitized;
   });
+  // Propagation is a BFS that credits each definition to the first seed that
+  // reaches it. A bare function parameter (`interprocedural_param`) is only
+  // speculative evidence, and its line usually precedes the handler that
+  // reads real input, so seeding it first let it claim definitions that a
+  // real source also reaches: `const ident = async (x) => x; … v = await
+  // ident(req.query.u)` credited `v` to `x`, and the flow was then dropped
+  // as parameter-only. Seed real sources first so they win any shared
+  // definition; parameter-only reach is unchanged.
+  const initialTaint = [
+    ...filteredInitialTaint.filter(tv => tv.sourceType !== 'interprocedural_param'),
+    ...filteredInitialTaint.filter(tv => tv.sourceType === 'interprocedural_param'),
+  ];
   taintedVars.push(...initialTaint);
 
   // Step 2: Propagate taint through def-use chains
@@ -194,6 +214,7 @@ export function propagateTaint(
     graph.chainsByFromDef,
     defById,
     sanitizersByLine,
+    graph.taintBarrierDefIds,
     lineText,
   );
   // #589: variables that survived only an HTML-encoder hop (`survivesOnlyFor`)
@@ -207,7 +228,7 @@ export function propagateTaint(
   const taintByDefId = new Map<number, TaintedVariable>();
   for (const tv of [...taintedVars, ...propagatedTaint.filter(tv => tv.survivesOnlyFor)]) {
     allTaintedDefIds.add(tv.defId);
-    taintByDefId.set(tv.defId, tv);
+    if (!yieldsToRealSource(taintByDefId.get(tv.defId), tv)) taintByDefId.set(tv.defId, tv);
   }
 
   // Step 3: Check which sinks are reachable from tainted variables
@@ -237,7 +258,12 @@ export function propagateTaint(
         //     A constant prefix must not hide a later tainted operand
         //     (cognium-dev#627).
         const expr = typeof arg.expression === 'string' ? arg.expression : '';
-        const compoundConcat = javaConcat && !!arg.variable && expr !== arg.variable && concatOutsideStrings(expr);
+        // cognium-dev#563: a JS/TS template literal names its first
+        // interpolated identifier as `arg.variable`; a sanitized first value
+        // (`${n}` from `parseInt`) must not hide a raw `${to}` after it.
+        const compoundConcat = !!arg.variable && expr !== arg.variable && (
+          (javaConcat && concatOutsideStrings(expr)) ||
+          (jsLike && templateInterpolationCount(expr) > 1));
         const candidateUses = arg.variable && !compoundConcat
           ? usesAtSink.filter(u => u.variable === arg.variable)
           : usesAtSink;
@@ -369,18 +395,49 @@ function isCompleteConditionHeader(code: string | undefined): boolean {
   return false;
 }
 
+/**
+ * True when `code` (one trimmed source line) holds a second statement after a
+ * `;` (`a := f(); b := "x"`). A `for (…;…;…)` header and a trailing comment
+ * or closing brace do not count.
+ */
+function hasSecondStatement(code: string | undefined): boolean {
+  if (!code || /^for\b/.test(code)) return false;
+  const text = code.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+  return /;\s*(?!\/\/|\/\*|#|\}|\)|$)\S/.test(text);
+}
+
 function findInitialTaint(
   sources: TaintSource[],
   callsByLine: Map<number, CallInfo[]>,
-  defsByLine: Map<number, DFGDef[]>
+  defsByLine: Map<number, DFGDef[]>,
+  chainsByFromDef: Map<number, DFGChain[]>,
+  jsLike = false,
 ): TaintedVariable[] {
   const tainted: TaintedVariable[] = [];
 
   for (const source of sources) {
     // Find definitions on the same line as the source
     const defsOnLine = defsByLine.get(source.line) ?? [];
+    // cognium-dev#490: `q := r.FormValue("q"); x := "fixed"` puts two
+    // statements on the source line. Only the source's own binding, and a
+    // same-line definition the data-flow graph derives from it
+    // (`w := r.FormValue("w"); cmd := "x " + w`), is tainted; an unrelated
+    // neighbour statement's definition is not.
+    let seedable: Set<number> | null = null;
+    if (source.variable && hasSecondStatement(source.code)) {
+      const own = defsOnLine.filter(d => d.variable === source.variable);
+      if (own.length > 0) {
+        seedable = new Set(own.map(d => d.id));
+        for (const d of own) {
+          for (const c of chainsByFromDef.get(d.id) ?? []) {
+            if (defsOnLine.some(o => o.id === c.to_def)) seedable.add(c.to_def);
+          }
+        }
+      }
+    }
 
     for (const def of defsOnLine) {
+      if (seedable && !seedable.has(def.id)) continue;
       // cognium-dev #308 (from cognium-ai#326 / #289): an
       // `interprocedural_param` source names exactly one parameter
       // (`source.variable`, set for Java/C#). Every parameter shares the
@@ -399,6 +456,13 @@ function findInitialTaint(
         def.kind === 'param' &&
         def.variable !== source.variable
       ) {
+        continue;
+      }
+      // A parameter source stands for the parameter's binding only. Other
+      // definitions that share the signature line are not the parameter:
+      // `const ident = async (x) => x;` defines `ident` there, and seeding it
+      // tainted every `ident(…)` result with the parameter's taint (#490).
+      if (source.type === 'interprocedural_param' && def.kind !== 'param') {
         continue;
       }
       tainted.push({
@@ -427,7 +491,18 @@ function findInitialTaint(
     // (`if (request.getParameter("a") != null)`) is a condition, not the start
     // of an expression that continues on the next line. The next line is the
     // body, so `target = "safe";` there must not be seeded by adjacency.
-    const defsNextLine = isCompleteConditionHeader(source.code) ? [] : (defsByLine.get(source.line + 1) ?? []);
+    //
+    // cognium-dev#563: a source line that is a complete assignment
+    // (`const qty = parseInt(req.query.qty, 10);`) does not continue on the
+    // next line either; a local declared there (`const label = 'units';`)
+    // is a new statement and gets no taint by adjacency. JavaScript /
+    // TypeScript only, the languages this was measured on: in Java the next
+    // line can overwrite a servlet field (`name = "abc";`) that other
+    // requests share, and SecuriBench StrongUpdates4 expects that flow kept.
+    const closesOwnStatement = jsLike && defsOnLine.length > 0 && /;\s*(?:\/\/.*)?$/.test(source.code ?? '');
+    const defsNextLine = isCompleteConditionHeader(source.code)
+      ? []
+      : (defsByLine.get(source.line + 1) ?? []).filter(d => !(closesOwnStatement && d.kind === 'local'));
     for (const def of defsNextLine) {
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
@@ -497,6 +572,16 @@ function identifierOutsideHtmlEncoderCalls(
 }
 
 /**
+ * True when `next` is a bare-parameter seed and `existing` already credits the
+ * same definition to a real source: the real source keeps the definition.
+ */
+function yieldsToRealSource(existing: TaintedVariable | undefined, next: TaintedVariable): boolean {
+  return existing !== undefined &&
+    next.sourceType === 'interprocedural_param' &&
+    existing.sourceType !== 'interprocedural_param';
+}
+
+/**
  * Propagate taint through def-use chains.
  * Accepts a pre-computed chainsByFromDef index (from CodeGraph) — no internal
  * adjacency list building needed.
@@ -506,6 +591,7 @@ function propagateThroughChains(
   chainsByFromDef: Map<number, DFGChain[]>,
   defById: Map<number, DFGDef>,
   sanitizersByLine: Map<number, TaintSanitizer[]>,
+  taintBarrierDefIds: ReadonlySet<number>,
   lineText?: (line: number) => string | undefined,
 ): TaintedVariable[] {
   const propagated: TaintedVariable[] = [];
@@ -513,7 +599,7 @@ function propagateThroughChains(
   const taintInfoByDefId = new Map<number, TaintedVariable>();
 
   for (const t of initialTaint) {
-    taintInfoByDefId.set(t.defId, t);
+    if (!yieldsToRealSource(taintInfoByDefId.get(t.defId), t)) taintInfoByDefId.set(t.defId, t);
   }
 
   // BFS to propagate taint
@@ -528,6 +614,9 @@ function propagateThroughChains(
     const outgoingChains = chainsByFromDef.get(currentDefId) ?? [];
 
     for (const chain of outgoingChains) {
+      // A measure/test of the value or a constant-table lookup (#568, #667).
+      if (taintBarrierDefIds.has(chain.to_def)) continue;
+
       const targetDef = defById.get(chain.to_def);
       if (!targetDef) continue;
 
@@ -685,6 +774,12 @@ function maskSanitizerCalls(expr: string, refs: SanitizerCallRef[]): string {
   return out;
 }
 
+function maskLengthOf(expr: string): string {
+  return expr
+    .replace(/\b(?:len|strlen|count)\s*\(\s*[\w$.]+\s*\)/g, ' 0 ')
+    .replace(/[\w$.]+\s*\.\s*(?:length|size|count)\s*(?:\(\s*\))?(?![\w$(])/g, ' 0 ');
+}
+
 function blankStringLiterals(expr: string): string {
   return expr
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
@@ -713,15 +808,21 @@ export function identifierOutsideSanitizerCalls(
   );
   for (const call of calls) {
     if (refs.some(r => r.methodName === call.method_name)) continue;
-    for (const arg of call.arguments) {
+    // A same-line guard (`IsLocalUrl(next); Redirect(next)`) is not a
+    // partial wrap. Only a call with an argument that itself contains the
+    // sanitizer call can leave a raw operand: in that argument, or in a
+    // sibling argument of the same call (`Printf("%s %s", clean(a), b)`).
+    const masked = call.arguments.map(arg => {
       const expr = arg.expression ?? '';
-      if (!expr) continue;
-      // A same-line guard (`IsLocalUrl(next); Redirect(next)`) is not a
-      // partial wrap. Only an argument that itself contains the sanitizer
-      // call can leave a raw sibling operand.
-      const masked = maskSanitizerCalls(expr, refs);
-      if (masked === expr) continue;
-      if (re.test(blankStringLiterals(masked))) return true;
+      return { expr, masked: expr ? maskSanitizerCalls(expr, refs) : expr };
+    });
+    if (!masked.some(m => m.masked !== m.expr)) continue;
+    for (const m of masked) {
+      if (!m.masked) continue;
+      // A sibling that passes only the value's length (`len(s)`,
+      // `s.length()`, `s.size()`) carries no attacker-controlled text.
+      const text = m.masked === m.expr ? maskLengthOf(m.masked) : m.masked;
+      if (re.test(blankStringLiterals(text))) return true;
     }
   }
   return false;
