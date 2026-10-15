@@ -286,4 +286,60 @@ public class Reader {
     expect(ptFlows(r).length).toBeGreaterThan(0);
   });
 
+  // Review round 4 (cogbot-eng on c394ac8f).
+  const paramBase = (body: string) => `import java.io.*;
+import javax.servlet.http.*;
+
+public class Reader {
+    void read(HttpServletRequest req, String base) throws IOException {
+${body}
+        File f = new File("/srv/data", req.getParameter("name"));
+        if (!f.getCanonicalPath().startsWith(base)) throw new IOException("bad");
+        new FileInputStream(f).close();
+    }
+}
+`;
+
+  it.each([
+    ['an anonymous class', `        new Thread(new Runnable() {
+            public void run() { String base = parent.getCanonicalPath();
+            }
+        }).start();`],
+    ['a lambda body', '        Runnable r = () -> { String base = parent.getCanonicalPath(); };'],
+    ['a local class', '        class Inner { String base = parent.getCanonicalPath(); }'],
+  ])('an assignment inside %s does not resolve a parameter base', async (_n, body) => {
+    const r = await analyzeJava(paramBase(body));
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an assignment inside a string literal does not resolve a parameter base', async () => {
+    const r = await analyzeJava(paramBase('        String msg = "String base = parent.getCanonicalPath();";'));
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('an assignment inside a string after a quote char literal does not resolve a parameter base', async () => {
+    const r = await analyzeJava(paramBase(`        char c = '"'; String msg = "x; base = parent.getCanonicalPath()";`));
+    expect(ptFlows(r)).toHaveLength(0);
+  });
+
+  it('a local string literal base ending in "/" stays clean', async () => {
+    const r = await analyzeJava(esapi(
+      'String base = "http://srv/data/";\n            if ( !dir.getCanonicalPath().startsWith(base) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r)).toHaveLength(0);
+    expect(ptScan(r)).toHaveLength(0);
+  });
+
+  it('a local string literal base with no trailing "/" reports', async () => {
+    const r = await analyzeJava(esapi(
+      'String base = "http://srv/data";\n            if ( !dir.getCanonicalPath().startsWith(base) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+    expect(ptScan(r).length).toBeGreaterThan(0);
+  });
+
+  it('an unanchored base defined on the same line before a lambda still reports', async () => {
+    const r = await analyzeJava(esapi(
+      'String base = parent.getCanonicalPath(); Runnable r = () -> { };\n            if ( !dir.getCanonicalPath().startsWith(base) ) { throw new Exception("outside"); }'));
+    expect(ptFlows(r).length).toBeGreaterThan(0);
+  });
+
 });

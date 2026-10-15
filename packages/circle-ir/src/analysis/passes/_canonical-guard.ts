@@ -197,9 +197,15 @@ function opensScopeBoundary(skel: string, brace: number): boolean {
  * from the end of `lines`. Comments are ignored; the walk stops at the
  * method's opening brace (found by brace depth, so a wrapped signature or a
  * nested block / anonymous class in between does not end it early or late).
+ *
+ * Only the depth-0 part of each line is searched, so an assignment inside a
+ * nested `{…}` (anonymous class, lambda body, local class) is not this
+ * method's definition, and matching runs on the string-blanked skeleton so an
+ * assignment written inside a string / char literal is skipped. The RHS is
+ * then read from the source text, so a real literal RHS keeps its value.
  */
 function findLocalDefinition(name: string, lines: readonly string[]): string | null {
-  const re = new RegExp(`(?:^|[\\s;{(])(?:[A-Za-z_][\\w.<>\\[\\]]*\\s+)?${name}\\s*=(?!=)\\s*([^;]*)`);
+  const re = new RegExp(`(?:^|[\\s;{(])(?:[A-Za-z_][\\w.<>\\[\\]]*\\s+)?${name}\\s*=(?!=)\\s*([^;]*)`, 'd');
   const { code, skel } = blankJava(lines.join('\n'));
   const codeLines = code.split('\n');
   let end = code.length;
@@ -207,16 +213,20 @@ function findLocalDefinition(name: string, lines: readonly string[]): string | n
   for (let i = codeLines.length - 1; i >= 0; i--) {
     const start = end - codeLines[i].length;
     let boundary = -1;
+    // `skel` for this line with everything inside a nested `{…}` blanked.
+    const top = skel.slice(start, end).split('');
     for (let k = end - 1; k >= start; k--) {
-      if (skel[k] === '}') depth++;
+      if (skel[k] === '}') { depth++; top[k - start] = ' '; }
       else if (skel[k] === '{') {
-        if (depth > 0) depth--;
+        if (depth > 0) { depth--; top[k - start] = ' '; }
         else if (opensScopeBoundary(skel, k)) { boundary = k; break; }
-      }
+      } else if (depth > 0) top[k - start] = ' ';
     }
-    const m = re.exec(boundary < 0 ? codeLines[i] : code.slice(boundary + 1, end));
-    if (m) {
-      let rhs = m[1];
+    const from = boundary < 0 ? start : boundary + 1;
+    const m = re.exec(top.join('').slice(from - start));
+    if (m?.indices?.[1]) {
+      const [rs, rEnd] = m.indices[1];
+      let rhs = code.slice(from + rs, from + rEnd);
       // A definition split over lines: gather up to the terminating `;`.
       for (let j = i; !codeLines[j].includes(';') && j + 1 < codeLines.length && j < i + 4; j++) {
         rhs += ' ' + codeLines[j + 1].split(';')[0];
