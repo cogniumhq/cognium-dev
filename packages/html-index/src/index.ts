@@ -6,6 +6,9 @@
  *    meta; parsed CSS rules; nested frame documents and declarative shadow trees; text blocks.
  *  - `file-index`: one observation per tree — every file with its sha256 and size, the text of
  *    files matching a path pattern, and pattern matches with line and excerpt.
+ *  - `route-index`: one observation per site, read off the pages' `html-index` observations — each
+ *    navigation block and each link of a repeated component (navigation, banner, contentinfo) lined
+ *    up with the same on the first page that has it.
  *
  * Observations only: facts about the markup, never a verdict. The ARIA and ARIA-in-HTML tables
  * the role and name algorithms read are inputs passed by the caller; none ships in this package.
@@ -16,19 +19,20 @@ import { join, relative } from 'node:path';
 import { buildSiteIndex } from './parse.js';
 import { walkEntry } from './path.js';
 import { pageObservation, type AriaViews, type HtmlAriaViews, type HtmlIndexParams } from './html-index.js';
+import { routeIndexOf, type RouteIndexParams } from './route-index.js';
 
 /** The version of the observation shape. A consumer pins it and refuses any other. */
-export const SCHEMA_VERSION = '0.1' as const;
+export const SCHEMA_VERSION = '0.2' as const;
 
 /** Identity of this index, carried on every result and in the environment digest. */
-export const DRIVER = { id: 'html-index', family: 'static', version: '0.1.0' } as const;
+export const DRIVER = { id: 'html-index', family: 'static', version: '0.2.0' } as const;
 
 export function capabilities(): string[] {
-  return ['html-index', 'file-index'];
+  return ['html-index', 'file-index', 'route-index'];
 }
 
 export interface AnchorObservation {
-  /** page path for `html-index`; `site` for `file-index` */
+  /** page path for `html-index`; `site` for `file-index` and `route-index` */
   anchor: string;
   observation: unknown;
   /** content hash of exactly what this anchor's observation read */
@@ -61,6 +65,24 @@ export function runHtmlIndex(root: string, views: { html: HtmlAriaViews; aria: A
       return { anchor: p.path, observation, inputDigest: input };
     });
   return { driver: DRIVER, schemaVersion: SCHEMA_VERSION, capability: 'html-index', anchors, environmentDigest: environmentDigest() };
+}
+
+/**
+ * Capability `route-index`: ONE site observation over the html-index observations of
+ * `pageAnchors` — the pages a run evaluates, which the caller has already indexed. Its input
+ * digest covers exactly those pages' input digests and the parameters.
+ */
+export function routeIndexRun(pageAnchors: AnchorObservation[], params: RouteIndexParams = {}): RunResult {
+  const sorted = [...pageAnchors].sort((a, b) => a.anchor.localeCompare(b.anchor));
+  const observation = routeIndexOf(sorted, params);
+  const inputDigest = sha([`origins ${JSON.stringify([...(params.origins ?? [])].sort())}`, ...sorted.map((a) => `${a.anchor}:${a.inputDigest}`)].join('\n'));
+  return { driver: DRIVER, schemaVersion: SCHEMA_VERSION, capability: 'route-index', anchors: [{ anchor: 'site', observation, inputDigest }], environmentDigest: environmentDigest() };
+}
+
+/** `route-index` over a tree: html-index (default parameters) over its pages, or over `pages` only, then the site observation. */
+export function runRouteIndex(root: string, views: { html: HtmlAriaViews; aria: AriaViews }, params: RouteIndexParams = {}, pages?: string[]): RunResult {
+  const all = runHtmlIndex(root, views).anchors;
+  return routeIndexRun(pages ? all.filter((a) => pages.includes(a.anchor)) : all, params);
 }
 
 export interface FileIndexParams {
@@ -109,7 +131,9 @@ export function runFileIndex(root: string, params: FileIndexParams = {}): RunRes
 
 export { buildSiteIndex, parseHtml } from './parse.js';
 export { decodeEntities, hostRow, pageObservation } from './html-index.js';
-export type { AriaViews, CssRuleObs, ElementObs, FrameObs, HtmlAriaViews, HtmlIndexParams, PageObservation, TextObs } from './html-index.js';
-export type { HNode, PageIndex, SiteIndex } from './parse.js';
+export type { AriaViews, CssDeclarationObs, CssRuleObs, ElementCssObs, ElementObs, FrameObs, HtmlAriaViews, HtmlIndexParams, PageObservation, StylesheetObs, TextObs } from './html-index.js';
+export type { HNode, PageIndex, ParseError, SiteIndex } from './parse.js';
+export { destinationOf, normaliseName, routeIndexOf } from './route-index.js';
+export type { IdentificationRow, NavigationRow, RouteIndexObservation, RouteIndexParams, RoutePage } from './route-index.js';
 export { labelInName, labelWords, visibleInnerText, type LabelInName } from './label-in-name.js';
 export { isUnder, isUnderReal } from './path.js';

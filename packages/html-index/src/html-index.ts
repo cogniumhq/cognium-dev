@@ -13,10 +13,11 @@
 import { readFileSync } from 'node:fs';
 import { dirname, extname, join, normalize } from 'node:path';
 import postcss from 'postcss';
-import { inOrder, parseHtml, type HNode, type PageIndex } from './parse.js';
+import { inOrder, parseHtml, type HNode, type PageIndex, type ParseError } from './parse.js';
 import { isUnder, isUnderReal } from './path.js';
-import { labelInName, type LabelInName } from './label-in-name.js';
+import { labelInName, markupHides, rendersText, visibleInnerText, type LabelInName } from './label-in-name.js';
 import { couldMatchCount, selectorIndex } from './selector.js';
+import { compareSpecificity, matchSpecificity, matchTree, parseSelector, type Specificity } from './cascade.js';
 
 export interface HtmlAriaViews {
   'row-match': { key: string; tag: string; all: Record<string, unknown>[] }[];
@@ -72,6 +73,8 @@ export function hostRow(n: HNode, v: HtmlAriaViews): string | null {
 
 /** HTML labelable elements (HTML §4.10.2). */
 const LABELABLE = new Set(['button', 'input', 'meter', 'output', 'progress', 'select', 'textarea']);
+/** labelable elements whose own content is not a label a user reads (a value, options, a gauge) */
+const FIELD = new Set(['input', 'meter', 'output', 'progress', 'select', 'textarea']);
 
 /** HTML focusable-by-default elements (sequential focus navigation), plus [tabindex] and contenteditable. */
 function focusable(n: HNode): boolean {
@@ -187,34 +190,117 @@ function shadowHostOf(n: HNode): HNode | null {
   return null;
 }
 
-function cssRulesOf(p: PageIndex, root: string, idOf: Map<HNode, number>, frame: string | null): CssRuleObs[] {
-  const out: CssRuleObs[] = [];
+/**
+ * One stylesheet a document loads, with its rules (the same rows as `cssRules`, in the same order).
+ * `kind` `linked` is a `<link rel="stylesheet">`, `inline` a `<style>` block. `resolved` is false
+ * for a linked sheet the root does not hold (a missing file, an absolute URL, a path out of the
+ * root): its `rules` are empty, and `cssRules` has no trace of it.
+ */
+export interface StylesheetObs {
+  /** the file under the root (`css/site.css`), `<page>#style@<line>` for a `<style>` block, null when the href names no file under the root */
+  file: string | null;
+  /** the `href` as written; null for a `<style>` block */
+  href: string | null;
+  kind: 'linked' | 'inline';
+  /** the line of the `<link>` or `<style>` start tag */
+  line: number;
+  /** the element's `media` attribute as written, `""` when it has none */
+  media: string;
+  resolved: boolean;
+  /** the sheet was read and parsed; false when it did not resolve or did not parse */
+  parsed: boolean;
+  /** as on its rules: the frame chain of a nested frame document's sheet, else null */
+  frame: string | null;
+  /** as on its rules: the host of the declarative shadow root holding the sheet, else null */
+  shadowHost: number | null;
+  rules: CssRuleObs[];
+}
+
+/** a rule as read, with every declaration in source order (the `declarations` map keeps the last of each property) */
+interface RuleRead { obs: CssRuleObs; decls: { prop: string; value: string; important: boolean }[]; inKeyframes: boolean; sheetMedia: string }
+
+function readSheets(p: PageIndex, root: string, idOf: Map<HNode, number>, frame: string | null): { sheets: StylesheetObs[]; rules: RuleRead[] } {
   const index = selectorIndex(p.nodes);
-  const sheets: { file: string; text: string; shadowHost: number | null }[] = [];
+  const sheets: StylesheetObs[] = [];
+  const rules: RuleRead[] = [];
   for (const n of p.nodes) {
     const host = shadowHostOf(n);
     const shadowHost = host ? idOf.get(host) ?? null : null;
-    if (n.tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(n.attrs.rel ?? '') && n.attrs.href && !/^[a-z]+:\/\//i.test(n.attrs.href)) {
+    let sheet: StylesheetObs | null = null;
+    let text: string | null = null;
+    if (n.tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(n.attrs.rel ?? '') && n.attrs.href) {
+      const absolute = /^[a-z]+:\/\//i.test(n.attrs.href);
       const href = n.attrs.href.split(/[?#]/)[0];
       const f = normalize(href.startsWith('/') ? join(root, href) : join(root, dirname(p.path), href));
       // inside the root lexically and after following symlinks; isUnderReal is false for a missing file
-      if (isUnder(root, f) && isUnderReal(root, f)) sheets.push({ file: f.slice(root.length + 1), text: readFileSync(f, 'utf8'), shadowHost });
+      const resolved = !absolute && isUnder(root, f) && isUnderReal(root, f);
+      if (resolved) text = readFileSync(f, 'utf8');
+      sheet = { file: !absolute && isUnder(root, f) ? f.slice(root.length + 1) : null, href: n.attrs.href, kind: 'linked', line: n.line, media: n.attrs.media ?? '', resolved, parsed: false, frame, shadowHost, rules: [] };
     }
-    if (n.tag === 'style') sheets.push({ file: `${p.path}#style@${n.line}`, text: n.text, shadowHost });
-  }
-  for (const s of sheets) {
+    if (n.tag === 'style') {
+      text = n.text;
+      sheet = { file: `${p.path}#style@${n.line}`, href: null, kind: 'inline', line: n.line, media: n.attrs.media ?? '', resolved: true, parsed: false, frame, shadowHost, rules: [] };
+    }
+    if (!sheet) continue;
+    sheets.push(sheet);
+    if (text === null) continue;
     let ast: postcss.Root;
-    try { ast = postcss.parse(s.text); } catch { continue; }
+    try { ast = postcss.parse(text); } catch { continue; }
+    sheet.parsed = true;
+    const s = sheet;
     ast.walkRules((r) => {
       const media: string[] = [];
+      let inKeyframes = false;
       for (let a: postcss.Node | undefined = r.parent as postcss.Node | undefined; a && a.type !== 'root'; a = a.parent as postcss.Node | undefined) {
         if (a.type === 'atrule' && (a as postcss.AtRule).name === 'media') media.push((a as postcss.AtRule).params);
+        if (a.type === 'atrule' && /keyframes$/i.test((a as postcss.AtRule).name)) inKeyframes = true;
       }
       const declarations: Record<string, string> = {};
-      r.walkDecls((d) => { declarations[d.prop.toLowerCase()] = d.value; });
-      out.push({ file: s.file, line: r.source?.start?.line ?? 0, media: media.join(' and '), selector: r.selector, declarations, rotation: rotationOf(declarations), frame, shadowHost: s.shadowHost, couldMatch: couldMatchCount(index, r.selector) });
+      const decls: RuleRead['decls'] = [];
+      r.walkDecls((d) => { declarations[d.prop.toLowerCase()] = d.value; if (d.parent === r) decls.push({ prop: d.prop.toLowerCase(), value: d.value, important: !!d.important }); });
+      const obs: CssRuleObs = { file: s.file!, line: r.source?.start?.line ?? 0, media: media.join(' and '), selector: r.selector, declarations, rotation: rotationOf(declarations), frame, shadowHost: s.shadowHost, couldMatch: couldMatchCount(index, r.selector) };
+      s.rules.push(obs);
+      rules.push({ obs, decls, inKeyframes, sheetMedia: s.media });
     });
   }
+  return { sheets, rules };
+}
+
+/** One author declaration that matches an element at rest, and where it was written. */
+export interface CssDeclarationObs {
+  property: string;
+  /** the value as written, without `!important` (as in `cssRules[].declarations`) */
+  value: string;
+  important: boolean;
+  /** the rule's `@media` conditions, as `cssRules[].media` */
+  media: string;
+  /** the `media` attribute of the `<link>` or `<style>` that loads the sheet; `""` for an inline style */
+  sheetMedia: string;
+  /** declared in the element's own `style` attribute */
+  inline: boolean;
+  /** the rule (`cssRules` row) it came from; for an inline style, the page and the element's line, selector null */
+  source: { file: string; line: number; selector: string | null };
+}
+
+/** The author declarations of two property families that match the element, lowest precedence first. */
+export interface ElementCssObs {
+  /** `animation` and `animation-*` (and their vendor-prefixed forms) */
+  animation: CssDeclarationObs[];
+  /** `text-decoration` and `text-decoration-*` (and their vendor-prefixed forms) */
+  textDecoration: CssDeclarationObs[];
+}
+
+const FAMILIES: [keyof ElementCssObs, RegExp][] = [
+  ['animation', /^(-[a-z]+-)?animation(-|$)/],
+  ['textDecoration', /^(-[a-z]+-)?text-decoration(-|$)/],
+];
+const familyOf = (prop: string): keyof ElementCssObs | null => FAMILIES.find(([, re]) => re.test(prop))?.[0] ?? null;
+
+/** the declarations of a `style` attribute, in source order */
+function inlineDeclarations(style: string): RuleRead['decls'] {
+  if (!style.trim()) return [];
+  const out: RuleRead['decls'] = [];
+  try { postcss.parse(`x{${style}}`).walkDecls((d) => { out.push({ prop: d.prop.toLowerCase(), value: d.value, important: !!d.important }); }); } catch { return []; }
   return out;
 }
 
@@ -251,6 +337,35 @@ export interface ElementObs {
   nthOfType: number | null;
   /** the same for each ancestor, parallel to `ancestorTags` (nearest first) */
   ancestorNthOfType: (number | null)[];
+  /**
+   * The text a sighted user reads as the element's label, as the markup gives it (beside `name`,
+   * which is what assistive technology reads). For a form field (`input`, `select`, `textarea`,
+   * `meter`, `progress`, `output`): the visible text of its `<label>`s, else of the `aria-labelledby`
+   * targets that are rendered. For a submit, reset or button input: its `value` (the default
+   * `Submit` / `Reset` when it has none). For anything else: its own visible text, else its labels',
+   * else its rendered `aria-labelledby` targets'. Visible text is `labelInName.visibleText`'s:
+   * `aria-hidden` text counts, text under `hidden` does not, and `alt`, `title`, `aria-label` and
+   * `placeholder` are never visible label text. White space collapsed, case kept. `""` when nothing
+   * is visible, or when the element itself is not rendered.
+   */
+  visibleLabelText: string;
+  /**
+   * The language in force on the element: the `lang` of the element or its nearest ancestor that has
+   * one, trimmed, in the author's case. `""` is a language declared unknown (and is inherited);
+   * null means no `lang` on the element or any ancestor in its document.
+   */
+  lang: string | null;
+  /** the id of the element whose `lang` that is; null when `lang` is null */
+  langFrom: number | null;
+  /**
+   * Every author declaration of the `animation` and `text-decoration` families that matches the
+   * element at rest, lowest precedence first: normal declarations before `!important` ones, an
+   * inline style after the stylesheets within each, then specificity, then source order. Conditions
+   * are reported, not evaluated: a declaration under `@media` or from a sheet with a `media`
+   * attribute is listed with it. A selector that needs a user action (`:hover`, `:focus` …) or
+   * styles a pseudo-element is not listed; no user-agent default is listed.
+   */
+  css: ElementCssObs;
 }
 
 /** one row per iframe/frame of a document, nested ones included, and whether its document was read. */
@@ -336,6 +451,20 @@ export interface PageObservation {
    * reads it. A collection of its own, so no `elements` row changes.
    */
   texts: TextObs[];
+  /** what set `malformed` in this document (a nested frame document's are not listed); empty exactly when `malformed` is false */
+  parseErrors: ParseError[];
+  /**
+   * One edge per IDREF token (the same rows, in the same order, as `idrefs`), with both ends: `to` is
+   * the first element holding the id, as `idrefs` resolves it; `targets` how many elements hold it.
+   */
+  idrefEdges: { from: number; fromLine: number; attr: string; token: string; to: number | null; toLine: number | null; dangling: boolean; duplicate: boolean; targets: number; selfReference: boolean }[];
+  /** every id held by two or more elements of one document, in the order the id first appears */
+  duplicateIds: { id: string; count: number; elementIds: number[]; lines: number[] }[];
+  /**
+   * Every stylesheet the documents load, in the order `cssRules` reads them: its `rules` flattened
+   * in order are `cssRules`. A linked sheet the root does not hold is listed, with no rules.
+   */
+  stylesheets: StylesheetObs[];
 }
 
 export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews, aria: AriaViews, params: HtmlIndexParams = {}, nest: NestCtx = { depth: 0, chain: [], frame: null }): PageObservation {
@@ -474,8 +603,75 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     return nthOf.get(n)!;
   };
 
+  // every <label> of a labelable element (HTML §4.10.4), in document order, with or without text
+  const labelsOf = new Map<HNode, HNode[]>();
+  for (const l of p.nodes.filter((n) => n.tag === 'label')) {
+    const f = (l.attrs.for ?? '').trim();
+    let target: HNode | undefined;
+    if (f) { const t = byId.get(f)?.[0]; if (t && LABELABLE.has(t.tag)) target = t; }
+    else {
+      const stack = [...l.children];
+      while (stack.length) {
+        const c = stack.shift()!;
+        if (LABELABLE.has(c.tag) && !(c.tag === 'input' && (c.attrs.type ?? '').toLowerCase() === 'hidden')) { target = c; break; }
+        stack.push(...c.children);
+      }
+    }
+    if (target) labelsOf.set(target, [...(labelsOf.get(target) ?? []), l]);
+  }
+  /** nothing in the markup keeps the element or an ancestor off the screen (`aria-hidden` does not) */
+  const rendered = (x: HNode): boolean => { for (let c: HNode | null = x; c; c = c.parent) if (markupHides(c)) return false; return true; };
+  const shown = (x: HNode): string => (rendered(x) && rendersText(x) ? visibleInnerText(x) : '');
+  const joined = (xs: HNode[]): string => xs.map(shown).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  function visibleLabelText(n: HNode): string {
+    if (!rendered(n)) return '';
+    const type = (n.attrs.type ?? '').toLowerCase();
+    if (n.tag === 'input' && ['submit', 'reset', 'button'].includes(type)) {
+      const v = (n.attrs.value ?? '').replace(/\s+/g, ' ').trim();
+      return v || (type === 'submit' ? 'Submit' : type === 'reset' ? 'Reset' : '');
+    }
+    if (!FIELD.has(n.tag)) { const own = shown(n); if (own) return own; }
+    const labels = joined(labelsOf.get(n) ?? []);
+    if (labels) return labels;
+    const lb = (n.attrs['aria-labelledby'] ?? '').trim();
+    return lb ? joined(lb.split(/\s+/).map((x) => byId.get(x)?.[0]).filter((x): x is HNode => !!x)) : '';
+  }
+  /** the nearest `lang` on the element or an ancestor of its document */
+  function langOf(n: HNode): { lang: string | null; langFrom: number | null } {
+    for (let c: HNode | null = n; c; c = c.parent) if ('lang' in c.attrs) return { lang: c.attrs.lang.trim(), langFrom: idOf.get(c)! };
+    return { lang: null, langFrom: null };
+  }
+
   // the page's own rules, and how many sheets it links that the subject tree does not hold
-  const pageRules = cssRulesOf(p, root, idOf, nest.frame);
+  const sheetsRead = readSheets(p, root, idOf, nest.frame);
+  const pageRules = sheetsRead.rules.map((r) => r.obs);
+  // the rules that declare either family, with their selectors parsed once; a keyframe step styles no element
+  const tree = matchTree(p.root.children);
+  const familyRules = sheetsRead.rules.map((r, order) => ({ r, order }))
+    .filter(({ r }) => !r.inKeyframes && r.decls.some((d) => familyOf(d.prop)))
+    .map(({ r, order }) => ({ r, order, sel: parseSelector(r.obs.selector) }));
+  function elementCss(n: HNode): ElementCssObs {
+    const host = shadowHostOf(n);
+    const hostId = host ? idOf.get(host) ?? null : null;
+    const hits: { d: CssDeclarationObs; important: number; inline: number; spec: Specificity; order: number; i: number }[] = [];
+    for (const { r, order, sel } of familyRules) {
+      if (!sel || r.obs.shadowHost !== hostId) continue;   // a rule styles its own document or shadow tree only
+      const spec = matchSpecificity(n, sel, tree);
+      if (!spec) continue;
+      r.decls.forEach((d, i) => {
+        if (!familyOf(d.prop)) return;
+        hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: r.obs.media, sheetMedia: r.sheetMedia, inline: false, source: { file: r.obs.file, line: r.obs.line, selector: r.obs.selector } }, important: d.important ? 1 : 0, inline: 0, spec, order, i });
+      });
+    }
+    inlineDeclarations(n.attrs.style ?? '').forEach((d, i) => {
+      if (!familyOf(d.prop)) return;
+      hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: '', sheetMedia: '', inline: true, source: { file: p.path, line: n.line, selector: null } }, important: d.important ? 1 : 0, inline: 1, spec: [0, 0, 0], order: 0, i });
+    });
+    hits.sort((a, b) => a.important - b.important || a.inline - b.inline || compareSpecificity(a.spec, b.spec) || a.order - b.order || a.i - b.i);
+    const out: ElementCssObs = { animation: [], textDecoration: [] };
+    for (const h of hits) out[familyOf(h.d.property)!].push(h.d);
+    return out;
+  }
   const unreadSheets = p.nodes.filter((n) => n.tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(n.attrs.rel ?? '') && n.attrs.href && !sheetInTree(p, root, n.attrs.href)).length;
   const elements: ElementObs[] = p.nodes.map((n) => {
     const ancestors: HNode[] = [];
@@ -504,12 +700,16 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
       inShadow: (() => { for (let a = n.parent; a; a = a.parent) if (isShadowTemplate(a)) return true; return false; })(),
       labelInName: ('aria-label' in n.attrs || 'aria-labelledby' in n.attrs) && !n.inSvg ? labelInName(n, name, pageRules, unreadSheets) : null,
       nthOfType: nthOfType(n), ancestorNthOfType: ancestors.map(nthOfType),
+      visibleLabelText: visibleLabelText(n),
+      ...langOf(n),
+      css: elementCss(n),
     };
   });
 
   const IDREF = params.idrefAttributes ?? [];
   const SINGLE = new Set(['aria-activedescendant', 'for', 'form', 'list']);
   const idrefs: PageObservation['idrefs'] = [];
+  const idrefEdges: PageObservation['idrefEdges'] = [];
   for (const n of p.nodes) {
     for (const k of IDREF) {
       const raw = n.attrs[k];
@@ -522,6 +722,10 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
           elementId: idOf.get(n)!, attr: k, token, resolves: t.length > 0, targetDuplicated: t.length > 1,
           targetTag: t[0]?.tag ?? null, sameTable: !!t[0] && tbl !== null && tableOf(t[0]) === tbl, selfReference: t[0] === n,
           tableRole: tbl ? roleOf.get(tbl) ?? null : null,
+        });
+        idrefEdges.push({
+          from: idOf.get(n)!, fromLine: n.line, attr: k, token, to: t[0] ? idOf.get(t[0])! : null, toLine: t[0]?.line ?? null,
+          dangling: t.length === 0, duplicate: t.length > 1, targets: t.length, selfReference: t[0] === n,
         });
       }
     }
@@ -571,6 +775,8 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
   // so a rule of a frame's sheet is never read as a rule of the page that frames it.
   // this document's own rules were read above (pageRules, for `labelInName`'s style risks); nested sheets are appended to a copy
   const cssRules = [...pageRules];
+  const stylesheets = [...sheetsRead.sheets];
+  const duplicateIds: PageObservation['duplicateIds'] = [...byId].filter(([, l]) => l.length > 1).map(([id, l]) => ({ id, count: l.length, elementIds: l.map((x) => idOf.get(x)!), lines: l.map((x) => x.line) }));
   const frames: FrameObs[] = [];
   for (const n of p.nodes) {
     if (n.tag !== 'iframe' && n.tag !== 'frame') continue;
@@ -581,13 +787,18 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     const inner = pageObservation(d.page, root, html, aria, params, { depth: nest.depth + 1, chain: [...nest.chain, p.path], frame });
     const off = elements.length;
     const frameHidden = hiddenNode(n);
-    for (const e of inner.elements) elements.push({ ...e, id: e.id + off, ancestorIds: e.ancestorIds.map((x) => x + off), hidden: e.hidden || frameHidden });
+    for (const e of inner.elements) elements.push({ ...e, id: e.id + off, ancestorIds: e.ancestorIds.map((x) => x + off), hidden: e.hidden || frameHidden, langFrom: e.langFrom === null ? null : e.langFrom + off });
     for (const r of inner.idrefs) idrefs.push({ ...r, elementId: r.elementId + off });
+    for (const r of inner.idrefEdges) idrefEdges.push({ ...r, from: r.from + off, to: r.to === null ? null : r.to + off });
+    for (const d of inner.duplicateIds) duplicateIds.push({ ...d, elementIds: d.elementIds.map((x) => x + off) });
     for (const m of inner.media) media.push({ ...m, elementId: m.elementId + off });
     for (const l of inner.langAttributes) langAttributes.push({ ...l, elementId: l.elementId + off });
     for (const f of inner.frames) frames.push({ ...f, elementId: f.elementId + off });
     if (!frameHidden) for (const t of inner.texts) texts.push({ ...t, elementId: t.elementId + off });
-    for (const r of inner.cssRules) cssRules.push({ ...r, shadowHost: r.shadowHost === null ? null : r.shadowHost + off });
+    // the same row objects in both views, so `stylesheets[].rules` flattened stays `cssRules`
+    const moved = new Map(inner.cssRules.map((r) => [r, { ...r, shadowHost: r.shadowHost === null ? null : r.shadowHost + off }]));
+    for (const r of inner.cssRules) cssRules.push(moved.get(r)!);
+    for (const sh of inner.stylesheets) stylesheets.push({ ...sh, shadowHost: sh.shadowHost === null ? null : sh.shadowHost + off, rules: sh.rules.map((r) => moved.get(r)!) });
   }
 
   const htmlEl = p.nodes.find((n) => n.tag === 'html');
@@ -606,5 +817,9 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     cssRules,
     frames,
     texts,
+    parseErrors: p.parseErrors,
+    idrefEdges,
+    duplicateIds,
+    stylesheets,
   };
 }

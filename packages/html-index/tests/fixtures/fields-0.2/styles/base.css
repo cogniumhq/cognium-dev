@@ -1,0 +1,10 @@
+.ticker { animation: scroll 20s linear infinite; }
+.menu > li { text-decoration-line: overline; }
+.spinner, .loader { animation-name: spin; animation-duration: 1s; }
+.spinner:focus { animation-play-state: paused; }
+.tag::after { animation: wiggle 1s; }
+li:not(.done) { text-decoration: none !important; }
+@media (min-width: 40em) {
+  .ticker { animation-duration: 40s; }
+}
+@keyframes scroll { from { opacity: 1; } to { opacity: 0.5; } }
