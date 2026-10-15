@@ -437,6 +437,21 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         arr.push(san);
         sanitizersByLine.set(san.line, arr);
       }
+      // True unless every def at `line` among `visited` is provably off this
+      // flow: not a variable on its path, and a complete backward walk from it
+      // never reaches `sourceLine`.
+      const sanitizedDefOnFlow = (visited: ReadonlySet<number>, line: number, f: TaintFlowInfo): boolean => {
+        let sawDef = false;
+        for (const id of visited) {
+          const def = graph.defById.get(id);
+          if (!def || def.line !== line) continue;
+          sawDef = true;
+          if (f.path.some(step => step.variable === def.variable)) return true;
+          const back = walkBackwardDefs(id, graph.chainsByToDef, graph.defById, { maxHops: 32 });
+          if (back.hopCapReached || back.lines.has(f.source_line)) return true;
+        }
+        return !sawDef;
+      };
       finalFlows = finalFlows.filter(f => {
         // Two-tier filter:
         //   - `external_taint_escape` (synthetic CWE-668 fallback): no
@@ -521,6 +536,11 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             if (line < f.source_line) continue;
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
+            // cognium-dev#348: the walk visits every contributor of the sink
+            // value. In `clean = a.replaceAll(..); msg = clean + b; log(msg)`
+            // the strip on `a` must not credit the flow from `b`. Skip a
+            // sanitized def that does not derive from this flow's source.
+            if (line > f.source_line && !sanitizedDefOnFlow(walk.visited, line, f)) continue;
             for (const san of sansAtLine) {
               if (sanitizerCoversSink(san, f.sink_type)) {
                 return false;
