@@ -89,6 +89,7 @@ import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-
 import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyConstantCallerGate } from './analysis/constant-caller-gate.js';
+import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
 import { logger } from './utils/logger.js';
@@ -1829,6 +1830,11 @@ export async function analyzeProject(
     sourceLinesByFile.set(filePath, code.split('\n'));
     projectSourceChars += code.length;
   }
+
+  // 1.5 (#637) — a C# call that resolves to a method in another project file
+  //     is not an `external_taint_escape`; drop it before the cross-file phase
+  //     so the callee-reach check decides what is reported.
+  dropEscapesToProjectCallees(fileAnalyses, projectGraph);
 
   // 2. Cross-file analysis
   //    Apply default budget of 300s if not specified by caller. `0` disables.
