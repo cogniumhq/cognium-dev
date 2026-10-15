@@ -2834,6 +2834,32 @@ const SINK_FQN_EXCLUSIONS: Partial<Record<SinkType, string[]>> = {
 };
 
 /**
+ * Sink classes whose receiver is matched by the declared type when the
+ * language plugin resolved one. For these, a resolved receiver type that is
+ * not the sink class (or a `*ClassLoader` subtype) must not fall back to the
+ * receiver-name heuristic: `ClassLoader.getResource` is keyed on a receiver
+ * named like `loader`, which would otherwise also take Spring's
+ * `ResourceLoader loader` or a user type `MyLoader loader` for a ClassLoader
+ * (#621 follow-up). An unresolved type (`var`, chained call, no declaration)
+ * keeps the heuristic.
+ */
+const DECLARED_TYPE_STRICT_SINK_CLASSES: Partial<Record<SinkType, string[]>> = {
+  path_traversal: ['ClassLoader'],
+};
+
+/** True when the call's declared receiver type is known and is not `pattern.class` or a `*<class>` subtype. */
+function declaredReceiverTypeExcludes(call: CallInfo, pattern: SinkPattern): boolean {
+  if (!pattern.class || !DECLARED_TYPE_STRICT_SINK_CLASSES[pattern.type]?.includes(pattern.class)) {
+    return false;
+  }
+  const declared = call.receiver_type_fqn ?? call.receiver_type;
+  if (!declared) return false;
+  const simple = declared.replace(/<.*$/, '').split('.').pop() ?? '';
+  if (simple === '' || simple === 'var') return false;
+  return !simple.endsWith(pattern.class);
+}
+
+/**
  * Check if a call matches a sink pattern.
  */
 function matchesSinkPattern(
@@ -2948,6 +2974,11 @@ function matchesSinkPattern(
       // consult the factory-return-type registry on TypeHierarchyResolver.
       // If the mapped return type is a subtype of the sink class, accept.
       // — cognium-dev #241 Java
+    } else if (declaredReceiverTypeExcludes(call, pattern)) {
+      // Declared receiver type is known and is not the sink class (Spring
+      // `ResourceLoader`, a user `MyLoader`, ...): the receiver-name heuristic
+      // below must not turn it into the sink class.
+      return false;
     } else if (call.receiver && !receiverMightBeClass(call.receiver, pattern.class)) {
       // Heuristic match failed; fall back to TypeHierarchyResolver if available
       if (typeHierarchy && typeHierarchy.couldBeType(call.receiver, pattern.class)) {

@@ -70,8 +70,8 @@ public class Svc {
   it('ResourceLoader.getResource(name) is NOT a path_traversal sink', async () => {
     const code = `
 public class Svc {
-  public Object run(org.springframework.core.io.ResourceLoader resourceLoader, String name) {
-    return resourceLoader.getResource(name);
+  public Object run(org.springframework.core.io.ResourceLoader loader, String name) {
+    return loader.getResource(name);
   }
 }
 `;

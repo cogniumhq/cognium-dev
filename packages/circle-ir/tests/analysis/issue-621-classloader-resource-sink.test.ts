@@ -150,4 +150,162 @@ public class Other {
 }`);
     expect(flows).toEqual([]);
   });
+  describe('declared receiver type decides the match (follow-up to #724)', () => {
+    const head = `import javax.servlet.http.HttpServletRequest;\n`;
+
+    it('inline fully-qualified Spring ResourceLoader parameter named loader does not fire', async () => {
+      const { flows, sinks } = await pathFlows(`${head}
+public class InlineFqn {
+  public Object load(HttpServletRequest req, org.springframework.core.io.ResourceLoader loader) {
+    String name = req.getParameter("n");
+    return loader.getResource(name);
+  }
+}`);
+      expect(flows).toEqual([]);
+      expect(sinks).toEqual([]);
+    });
+
+    it('wildcard-imported Spring ResourceLoader field and parameter named loader do not fire', async () => {
+      const { flows, sinks } = await pathFlows(`${head}
+import org.springframework.core.io.*;
+public class Wildcard {
+  private ResourceLoader loader;
+  public Object viaField(HttpServletRequest req) {
+    return loader.getResource(req.getParameter("n"));
+  }
+  public Object viaParam(HttpServletRequest req, ResourceLoader loader) {
+    String name = req.getParameter("n");
+    return loader.getResource(name);
+  }
+}`);
+      expect(flows).toEqual([]);
+      expect(sinks).toEqual([]);
+    });
+
+    it('wildcard-imported ResourcePatternResolver named classLoader does not fire', async () => {
+      const { flows } = await pathFlows(`${head}
+import org.springframework.core.io.support.*;
+public class Resolver {
+  public Object find(HttpServletRequest req, ResourcePatternResolver classLoader) throws Exception {
+    return classLoader.getResources(req.getParameter("n"));
+  }
+  public Object one(HttpServletRequest req, ResourcePatternResolver classLoader) {
+    return classLoader.getResource(req.getParameter("n"));
+  }
+}`);
+      expect(flows).toEqual([]);
+    });
+
+    it('a user type that is not a ClassLoader does not fire through the receiver-name heuristic', async () => {
+      const { flows, sinks } = await pathFlows(`${head}
+public class UserType {
+  public Object a(HttpServletRequest req, MyLoader loader) {
+    return loader.getResource(req.getParameter("n"));
+  }
+  public Object b(HttpServletRequest req, TemplateClassPathLoader classLoader) {
+    return classLoader.getResourceAsStream(req.getParameter("n"));
+  }
+}
+class MyLoader {
+  Object getResource(String n) { return n; }
+}
+class TemplateClassPathLoader {
+  Object getResourceAsStream(String n) { return n; }
+}`);
+      expect(flows).toEqual([]);
+      expect(sinks).toEqual([]);
+    });
+
+    it('a field typed Object named loader does not fire', async () => {
+      const { sinks } = await pathFlows(`${head}
+public class Untyped {
+  private Object loader;
+  public Object a(HttpServletRequest req) {
+    return loader.getResource(req.getParameter("n"));
+  }
+}`);
+      expect(sinks).toEqual([]);
+    });
+
+    it('keeps firing: java.lang.ClassLoader written inline with a tainted name', async () => {
+      const { flows } = await pathFlows(`${head}
+public class InlineClassLoader {
+  public java.net.URL find(HttpServletRequest req, java.lang.ClassLoader loader) {
+    String name = req.getParameter("n");
+    return loader.getResource(name);
+  }
+}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('keeps firing: ClassLoader receiver named loader with a tainted name', async () => {
+      const { flows } = await pathFlows(`${head}
+public class Plain {
+  public java.net.URL find(HttpServletRequest req, ClassLoader loader) {
+    return loader.getResource(req.getParameter("n"));
+  }
+}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('keeps firing: URLClassLoader receiver (a ClassLoader subtype)', async () => {
+      const { flows } = await pathFlows(`${head}
+import java.net.URLClassLoader;
+public class UrlLoader {
+  public java.net.URL find(HttpServletRequest req, URLClassLoader loader) {
+    return loader.getResource(req.getParameter("n"));
+  }
+}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('keeps firing: receiver is Thread.currentThread().getContextClassLoader()', async () => {
+      const { flows } = await pathFlows(`${head}
+public class ContextLoader {
+  public java.io.InputStream open(HttpServletRequest req) {
+    String name = req.getParameter("n");
+    return Thread.currentThread().getContextClassLoader().getResourceAsStream(name);
+  }
+}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('keeps firing: a local var initialised from getContextClassLoader()', async () => {
+      const { flows } = await pathFlows(`${head}
+public class VarLoader {
+  public java.net.URL open(HttpServletRequest req) {
+    var loader = Thread.currentThread().getContextClassLoader();
+    return loader.getResource(req.getParameter("n"));
+  }
+}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('keeps firing: a user subclass of ClassLoader declared in the same file', async () => {
+      const { flows } = await pathFlows(`${head}
+public class Sub {
+  public java.net.URL open(HttpServletRequest req, PluginClassLoader loader) {
+    return loader.getResource(req.getParameter("n"));
+  }
+}
+class PluginClassLoader extends ClassLoader {}`);
+      expect(flows.length).toBeGreaterThan(0);
+    });
+
+    it('literal names stay clean for every receiver shape', async () => {
+      const { flows, sinks } = await pathFlows(`${head}
+import org.springframework.core.io.*;
+public class Literals {
+  public Object a(ClassLoader loader, java.net.URLClassLoader u, ResourceLoader r, MyLoader m) {
+    Object x = loader.getResource("a.txt");
+    Object y = u.getResourceAsStream("b.txt");
+    Object z = r.getResource("classpath:c.txt");
+    Object w = m.getResource("d.txt");
+    return Thread.currentThread().getContextClassLoader().getResource("e.txt");
+  }
+}`);
+      expect(flows).toEqual([]);
+      expect(sinks).toEqual([]);
+    });
+  });
 });
