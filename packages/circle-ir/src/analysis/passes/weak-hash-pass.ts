@@ -127,6 +127,142 @@ function literalAlgo(call: CallInfo, position: number): string | null {
 }
 
 /**
+ * Parse the text of a Java `.properties` file: `key=value`, `key:value` or
+ * `key value`, `#` / `!` comment lines, trailing-backslash continuation. A later
+ * duplicate key wins, as in `Properties.load`.
+ */
+export function parsePropertiesText(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const rawLines = text.split(/\r?\n/);
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i]!.replace(/^[ \t\f]+/, '');
+    if (line === '' || line.startsWith('#') || line.startsWith('!')) continue;
+    while (/(?:^|[^\\])(?:\\\\)*\\$/.test(line) && i + 1 < rawLines.length) {
+      line = line.slice(0, -1) + rawLines[++i]!.replace(/^[ \t\f]+/, '');
+    }
+    const m = /^((?:\\.|[^\s=:\\])+)[ \t\f]*(?:[=:][ \t\f]*|[ \t\f]+)?(.*)$/s.exec(line);
+    if (!m) continue;
+    // Decode \uXXXX before the generic one-char escape pass (Java Properties.load).
+    const unescape = (v: string): string =>
+      v
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\(.)/g, '$1');
+    out.set(unescape(m[1]!), unescape(m[2]!.trimEnd()));
+  }
+  return out;
+}
+
+const lineOfIndex = (code: string, index: number): number => {
+  let n = 1;
+  for (let i = 0; i < index; i++) if (code.charCodeAt(i) === 10) n++;
+  return n;
+};
+
+/**
+ * cognium-dev#591: resolve a `Properties.getProperty(key[, default])` algorithm
+ * through the resource the `Properties` object was loaded from. Driven by the
+ * `load(...)` argument — `p.load(X.getResourceAsStream("<name>"))`, directly or
+ * through an `InputStream` local — with no file-name or key-name allowlist.
+ *
+ * Returns the lowercased algorithm, or null when the chain does not resolve to
+ * exactly one supplied resource (the caller then keeps its existing behaviour).
+ * A key missing from the resolved resource yields the default literal, which is
+ * the value the program gets at run time.
+ */
+function resolveViaResources(
+  code: string,
+  expr: string,
+  variable: string | undefined,
+  callLine: number,
+  resources: ReadonlyMap<string, string> | undefined,
+  methodRange?: { start: number; end: number } | null,
+): string | null {
+  if (!resources || resources.size === 0) return null;
+  const getPropTail = String.raw`(\w+)\s*\.\s*getProperty\s*\(\s*"([^"]*)"\s*(?:,\s*([^;]*?))?\s*\)`;
+  let recv: string | undefined;
+  let key: string | undefined;
+  let dflt: string | undefined;
+  let propLine = callLine;
+  const methodStart = methodRange?.start ?? 1;
+  const methodEnd = methodRange?.end ?? Number.POSITIVE_INFINITY;
+  const direct = new RegExp(`^${getPropTail}$`).exec(expr.trim());
+  if (direct) {
+    [, recv, key, dflt] = direct;
+  } else if (variable && /^[A-Za-z_]\w*$/.test(variable)) {
+    // cognium-dev#591 review: only assignments in the enclosing method, before the call.
+    const assign = new RegExp(String.raw`(?:^|[^\w.])${variable}\s*=\s*${getPropTail}\s*;`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = assign.exec(code)) !== null) {
+      const line = lineOfIndex(code, m.index);
+      if (line < methodStart) continue;
+      if (line > callLine || line > methodEnd) break;
+      [, recv, key, dflt] = m;
+      propLine = line;
+    }
+    // If any later assignment to the variable sits between the getProperty and the
+    // call, drop the resource value and let the literal / const-prop arms decide.
+    if (recv && key !== undefined) {
+      const later = new RegExp(
+        String.raw`(?:^|[^\w.])${variable}\s*(?:\+=|=)(?!=)\s*`,
+        'g',
+      );
+      let lm: RegExpExecArray | null;
+      while ((lm = later.exec(code)) !== null) {
+        const line = lineOfIndex(code, lm.index);
+        if (line <= propLine) continue;
+        if (line >= callLine || line > methodEnd) break;
+        return null;
+      }
+    }
+  }
+  if (!recv || key === undefined) return null;
+
+  // The last `recv.load(<arg>)` before the lookup, in the same method: a
+  // same-named `Properties` loaded in another method says nothing about this one.
+  let loadArg: string | undefined;
+  let loadLine = propLine;
+  const loadRe = new RegExp(String.raw`(?:^|[^\w.])${recv}\s*\.\s*load\s*\(([^;]*)\)\s*;`, 'g');
+  let lm: RegExpExecArray | null;
+  while ((lm = loadRe.exec(code)) !== null) {
+    const line = lineOfIndex(code, lm.index);
+    if (line < methodStart) continue;
+    if (line > propLine) break;
+    loadArg = lm[1];
+    loadLine = line;
+  }
+  if (loadArg === undefined) return null;
+
+  const streamName = /getResourceAsStream\s*\(\s*"([^"]+)"\s*\)/;
+  let name = streamName.exec(loadArg)?.[1];
+  if (!name && /^\s*[A-Za-z_]\w*\s*$/.test(loadArg)) {
+    const stream = loadArg.trim();
+    const bind = new RegExp(String.raw`(?:^|[^\w.])${stream}\s*=\s*([^;{]*)`, 'g');
+    let bm: RegExpExecArray | null;
+    while ((bm = bind.exec(code)) !== null) {
+      const line = lineOfIndex(code, bm.index);
+      if (line < methodStart) continue;
+      if (line > loadLine) break;
+      const n = streamName.exec(bm[1]!)?.[1];
+      if (n) name = n;
+    }
+  }
+  if (!name) return null;
+
+  const wanted = name.replace(/^\/+/, '');
+  const texts = new Set<string>();
+  for (const [path, text] of resources) {
+    const p = path.replace(/\\/g, '/');
+    if (p === wanted || p.endsWith('/' + wanted)) texts.add(text);
+  }
+  if (texts.size !== 1) return null;
+
+  const value = parsePropertiesText([...texts][0]!).get(key);
+  if (value !== undefined) return value.trim().toLowerCase() || null;
+  const lit = dflt === undefined ? null : /^"([^"]*)"$/.exec(dflt.trim());
+  return lit ? lit[1]!.toLowerCase() || null : null;
+}
+
+/**
  * Resolve the algorithm-name argument of a Java `getInstance(...)` call,
  * preferring an inline literal but falling back to:
  *   - `MessageDigestAlgorithms.MD5` / `.SHA_1` etc. (Apache Commons constants)
@@ -142,9 +278,25 @@ function resolveJavaAlgo(
   position: number,
   constProp: ConstantPropagatorResult | null,
   javaBindings: Map<string, string>,
+  code = '',
+  resources?: ReadonlyMap<string, string>,
+  methodRange?: { start: number; end: number } | null,
 ): string | null {
   const arg = call.arguments.find((a) => a.position === position);
   if (!arg) return null;
+
+  // 0. A `getProperty` value read from a supplied resource file (#591). Before the
+  //    default arm below, which would otherwise hide the file's value.
+  //    Scoped to the enclosing method; skipped when the variable is reassigned later.
+  const viaResource = resolveViaResources(
+    code,
+    arg.expression ?? '',
+    arg.variable ?? undefined,
+    call.location.line,
+    resources,
+    methodRange,
+  );
+  if (viaResource) return viaResource;
 
   // 1. Inline literal (existing behaviour)
   if (arg.literal) {
@@ -231,7 +383,11 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
       : new Map<string, string>();
 
     for (const call of graph.ir.calls) {
-      const detection = this.detect(call, language, constProp, javaBindings);
+      const enclosing = language === 'java' ? graph.methodAtLine(call.location.line) : null;
+      const methodRange = enclosing
+        ? { start: enclosing.method.start_line, end: enclosing.method.end_line }
+        : null;
+      const detection = this.detect(call, language, constProp, javaBindings, code, ctx.resources, methodRange);
       if (!detection) continue;
 
       const { algorithm, api } = detection;
@@ -268,6 +424,9 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     language: string,
     constProp: ConstantPropagatorResult | null,
     javaBindings: Map<string, string>,
+    code = '',
+    resources?: ReadonlyMap<string, string>,
+    methodRange?: { start: number; end: number } | null,
   ):
     | { algorithm: string; api: string }
     | null
@@ -278,7 +437,7 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     if (language === 'java') {
       // MessageDigest.getInstance("MD5") — literal or resolved variable.
       if (method === 'getInstance' && (receiver === 'MessageDigest' || receiver.endsWith('.MessageDigest'))) {
-        const algo = resolveJavaAlgo(call, 0, constProp, javaBindings);
+        const algo = resolveJavaAlgo(call, 0, constProp, javaBindings, code, resources, methodRange);
         if (algo && WEAK_HASH_NAMES.has(algo)) {
           return { algorithm: algo, api: 'MessageDigest.getInstance' };
         }

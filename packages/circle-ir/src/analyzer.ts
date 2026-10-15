@@ -195,7 +195,7 @@ import {
 } from './analysis/passes/language-sources-pass.js';
 
 // Pass result types (used to read typed results from the pipeline map)
-import { scalarDerivedDefIds } from './analysis/scalar-derivation.js';
+import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-derivation.js';
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
@@ -235,6 +235,18 @@ export interface AnalyzerOptions {
    * SAST corpora gates, not in a navigation change.
    */
   navigationTypes?: boolean;
+
+  /**
+   * Project resource files, `Map<path, text>` (for example `*.properties`).
+   * Optional and additive: omitting it leaves every result unchanged.
+   *
+   * The weak-hash pass uses it to resolve a Java algorithm read with
+   * `Properties.getProperty(key[, default])` from the resource the object was
+   * `load(...)`ed from (`getResourceAsStream("<name>")`), instead of trusting the
+   * default literal. A path matches a resource name when it equals it or ends
+   * in `/<name>`; a name that matches more than one differing file is ignored.
+   */
+  resources?: ReadonlyMap<string, string>;
 
   /**
    * Custom taint configuration.
@@ -1038,6 +1050,7 @@ export async function analyze(
   });
   graph.taintBarrierDefIds = new Set([
     ...scalarDerivedDefIds(dfg.defs, code, language),
+    ...boundedMakeDefIds(dfg.defs, code, language),
     ...constTableLookupDefIds(dfg.defs, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
@@ -1245,7 +1258,7 @@ export async function analyze(
   if (!disabledPasses.has('insecure-deserialization-config')) pipeline.add(new InsecureDeserializationConfigPass());
 
   // Run the pipeline
-  const { results, findings } = pipeline.run(graph, code, language, config);
+  const { results, findings } = pipeline.run(graph, code, language, config, options.resources);
 
   const sinkFilter = results.get('sink-filter')    as SinkFilterResult;
   const interProc  = results.get('interprocedural') as InterproceduralPassResult;

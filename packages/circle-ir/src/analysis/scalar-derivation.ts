@@ -173,3 +173,111 @@ export function scalarDerivedDefIds(defs: readonly DFGDef[], code: string, langu
   }
   return out;
 }
+
+/** An integer literal, optionally with `_` separators or a hex/binary/octal prefix. */
+const GO_INT_LITERAL = /^(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO]?[0-7_]+|[1-9][0-9_]*|0)$/;
+
+/** Braces in a Go line, with string, rune and raw-string literals blanked out. */
+function goBraceText(text: string): string {
+  return text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`/g, '""');
+}
+
+/**
+ * Names `n` bounded by `if <... n > K | n >= K ...> { ...; return|panic|continue }`
+ * in `lines[from .. to)` where the guard still dominates line `to`. The condition
+ * may join the bound with `||` only: under `&&` the branch would not reject every
+ * large value. K is an integer literal.
+ *
+ * A guard only holds while the block it sits in is open: once the brace depth
+ * falls below the guard's depth (the enclosing `if`, loop, closure or `else`
+ * branch closed), or a new `case`/`default` clause of the same switch starts,
+ * other paths reach `to` without passing the guard. A write to `n` after the
+ * guard (`n = …`, `n op= …`, `n++`, `n--`, or `&n` handed to a callee such as
+ * `fmt.Sscanf`) voids every bound on it.
+ */
+function goUpperBoundGuardedAt(lines: readonly string[], from: number, to: number, name: string): boolean {
+  const esc = name.replace(/[$]/g, '\\$');
+  const bound = new RegExp(`^\\(*\\s*${esc}\\s*>=?\\s*([\\w]+)\\s*\\)*$`);
+  const reassign = new RegExp(
+    `(?:^|[\\s,;(])${esc}(?:\\s*,\\s*\\w+)*\\s*(?::=|=(?!=)|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|&\\^=|<<=|>>=)` +
+      `|(?<![\\w.])${esc}\\s*(?:\\+\\+|--)` +
+      `|(?<![&\\w])&\\s*${esc}\\b`,
+  );
+  // Depth (in braces) of each guard still in force, in source order.
+  let guards: number[] = [];
+  let depth = 0;
+  for (let i = from; i < to; i++) {
+    const text = lines[i]!.replace(/\s*\/\/.*$/, '').trim();
+    if (guards.length > 0 && reassign.test(text)) guards = [];
+    const ifm = /^if\s+(.+?)\s*\{$/.exec(text);
+    if (ifm && i + 1 < to) {
+      const cond = ifm[1]!;
+      if (!cond.includes('&&')) {
+        const parts = cond.split('||').map((p) => p.trim());
+        const hit = parts.some((p) => {
+          const m = bound.exec(p);
+          return m !== null && GO_INT_LITERAL.test(m[1]!);
+        });
+        if (hit) {
+          // The guard block must end in an exit before its closing brace.
+          let inner = 1;
+          let last = '';
+          let j = i + 1;
+          for (; j < to; j++) {
+            const t = lines[j]!.replace(/\s*\/\/.*$/, '').trim();
+            for (const ch of goBraceText(t)) inner += ch === '{' ? 1 : ch === '}' ? -1 : 0;
+            if (inner <= 0) break;
+            if (t) last = t;
+          }
+          if (inner <= 0 && /^(?:return\b|panic\(|continue\b)/.test(last)) {
+            // The block opened and closed on lines i..j; depth is unchanged.
+            guards.push(depth);
+            i = j;
+            continue;
+          }
+        }
+      }
+    }
+    if (guards.length > 0 && /^(?:case\b.*|default\s*):$/.test(text)) {
+      guards = guards.filter((d) => d < depth);
+    }
+    for (const ch of goBraceText(text)) {
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (guards.length > 0) guards = guards.filter((d) => d <= depth);
+      }
+    }
+  }
+  return guards.length > 0;
+}
+
+/**
+ * DFG def ids of a Go local initialised by `make(<type>, <len>[, <cap>])` whose
+ * every size argument is an integer literal or a variable rejected above a
+ * constant earlier in the same function (`if n > K { return }`). The buffer
+ * holds zero values; its size is bounded, so the request text that chose the
+ * size does not reach a sink through it. An unbounded size is not credited.
+ */
+export function boundedMakeDefIds(defs: readonly DFGDef[], code: string, language: string): Set<number> {
+  const out = new Set<number>();
+  if (language !== 'go') return out;
+  const lines = code.split('\n');
+  for (const def of defs) {
+    if (def.kind !== 'local') continue;
+    const text = lines[def.line - 1];
+    if (text === undefined) continue;
+    const rhs = initializerOf(text, def.variable, 'go');
+    const mk = rhs === null ? null : /^make\(\s*(\[\][\w.*]+|map\[[^\]]+\][\w.*]+)\s*,\s*([^()]*?)\s*\)$/.exec(rhs);
+    if (!mk) continue;
+    const sizes = mk[2]!.split(',').map((s) => s.trim());
+    if (sizes.length > 2 || sizes.some((s) => s === '')) continue;
+    let fnStart = def.line - 1;
+    while (fnStart > 0 && !/^func\b/.test(lines[fnStart]!)) fnStart--;
+    const ok = sizes.every(
+      (s) => GO_INT_LITERAL.test(s) || (/^[A-Za-z_]\w*$/.test(s) && goUpperBoundGuardedAt(lines, fnStart, def.line - 1, s)),
+    );
+    if (ok) out.add(def.id);
+  }
+  return out;
+}

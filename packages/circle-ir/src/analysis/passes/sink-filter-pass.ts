@@ -19,7 +19,7 @@
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
-import { CSHARP_SANITIZER_RES, CSharpCredit } from './csharp-sanitizer-credit.js';
+import { CSHARP_SANITIZER_RES, CSharpCredit, csharpSanitizersFor } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { LanguageSourcesResult } from './language-sources-pass.js';
 import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
@@ -656,6 +656,26 @@ function constStringLiteralValue(code: string, name: string): string | null {
   return decodeJsHexEscapes(decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '');
 }
 
+/**
+ * The body of the template literal that is the first argument of the
+ * `new RegExp(` on `line` (1-indexed), or null. The literal may start on a
+ * following line, after whitespace or comments, as a formatter wraps a long
+ * constructor call; the `new RegExp(` itself must be on the sink line.
+ * (cognium-dev#717)
+ */
+function regExpTemplateArgument(code: string, lines: string[], line: number): string | null {
+  const text = lines[line - 1] ?? '';
+  let offset = 0;
+  for (let i = 0; i < line - 1; i++) offset += lines[i].length + 1;
+  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
+  for (const start of text.matchAll(/new\s+RegExp\s*\(/g)) {
+    // The literal must be the whole first argument: `` `…` + text `` is not constant.
+    const m = argument.exec(code.slice(offset + start.index! + start[0].length));
+    if (m) return m[1];
+  }
+  return null;
+}
+
 /** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
 const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
 
@@ -1025,6 +1045,7 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
   const byType = new Map<string, Set<string>>();
   const assignRe = /^\s*(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
 
+  const sanitizers = csharpSanitizersFor(code);
   for (const { type } of CSHARP_SANITIZER_RES) {
     if (!byType.has(type)) byType.set(type, new Set());
   }
@@ -1033,7 +1054,7 @@ function csharpSanitizedVarsByType(code: string): Map<string, Set<string>> {
     const m = assignRe.exec(line);
     if (!m) continue;
     const [, lhs, rhs] = m;
-    for (const { re, type } of CSHARP_SANITIZER_RES) {
+    for (const { re, type } of sanitizers) {
       if (re.test(rhs)) byType.get(type)!.add(lhs);
     }
   }
@@ -2412,9 +2433,9 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       const sourceLines = ctx.code.split('\n');
       filtered = filtered.filter(sink => {
         if (sink.type !== 'redos') return true;
-        const m = (sourceLines[sink.line - 1] ?? '').match(/new\s+RegExp\s*\(\s*`((?:\\.|[^`\\])*)`/);
-        if (!m) return true;
-        let pattern = m[1];
+        const tpl = regExpTemplateArgument(ctx.code, sourceLines, sink.line);
+        if (tpl === null) return true;
+        let pattern = tpl;
         let interpolations = 0;
         let allConst = true;
         // Replace each `${ NAME }` as written (whitespace inside the braces

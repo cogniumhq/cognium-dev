@@ -64,3 +64,15 @@ describe('package entry exports runtime values', () => {
     }
   });
 });
+
+describe('AnalyzerOptions.resources (#591)', () => {
+  it('is an optional additive field: existing option objects stay valid and analyzeProject is still exported', () => {
+    const withoutResources: publicApi.AnalyzerOptions = { crossFileBudgetMs: 0 };
+    const withResources: publicApi.AnalyzerOptions = {
+      resources: new Map([['src/main/resources/app.properties', 'digest.alg=SHA-256']]),
+    };
+    expect(withoutResources.resources).toBeUndefined();
+    expect(withResources.resources?.get('src/main/resources/app.properties')).toBe('digest.alg=SHA-256');
+    expect(typeof publicApi.analyzeProject).toBe('function');
+  });
+});

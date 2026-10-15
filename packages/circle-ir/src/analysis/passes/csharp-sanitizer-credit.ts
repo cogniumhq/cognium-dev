@@ -71,10 +71,13 @@ const CSHARP_ONE_WAY_HASH_RES: RegExp[] = [
 // C# sanitizers and the sink types each neutralises. A tainted value that
 // flows through one of these before reaching a sink of the matching type is
 // safe. Method names are C#-distinctive (see config-loader C# sanitizers).
-export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
+export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string; unlessDeclared?: string }> = [
   { re: /\b(?:HtmlEncode|JavaScriptStringEncode)\s*\(/, type: 'xss' },
   // `HtmlEncoder.Default.Encode(x)` is the ASP.NET Core spelling (#520).
   { re: /\bHtmlEncoder\s*\.\s*(?:Default\s*\.\s*)?Encode\s*\(/, type: 'xss' },
+  // `UrlEncoder.Default.Encode(x)` percent-encodes `<`, `"` and `'` (#564). A
+  // project type that declares its own `UrlEncoder` is not the framework's.
+  { re: /\bUrlEncoder\s*\.\s*Default\s*\.\s*Encode\s*\(/, type: 'xss', unlessDeclared: 'UrlEncoder' },
   { re: /\bPath\s*\.\s*GetFileName\s*\(/, type: 'path_traversal' },
   // XML-escapes `< > & " '`. A value escaped this way cannot close the quoted
   // literal it is placed in, which is what XPath injection needs.
@@ -94,6 +97,16 @@ export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string }> = [
   { re: CSHARP_ALLOWLIST_FILTER_RE, type: 'crlf' },
   ...CSHARP_ONE_WAY_HASH_RES.map(re => ({ re, type: 'external_taint_escape' })),
 ];
+
+/**
+ * The built-in sanitizers that apply to `code`: those gated on a type name
+ * (`unlessDeclared`) are dropped when the file declares a type of that name.
+ */
+export function csharpSanitizersFor(code: string): ReadonlyArray<{ re: RegExp; type: string }> {
+  const declared = (name: string) =>
+    new RegExp(`\\b(?:class|struct|record|interface|enum)\\s+${name}\\b`).test(code);
+  return CSHARP_SANITIZER_RES.filter(r => !r.unlessDeclared || !declared(r.unlessDeclared));
+}
 
 /**
  * Sink types for which a value made only of letters, digits, `_` and `-` is
@@ -167,8 +180,10 @@ export class CSharpCredit {
   private readonly lines: string[];
   private readonly helperCache = new Map<string, Set<string>>();
   private readonly guardHelperCache = new Map<GuardKind, Map<string, number>>();
+  private readonly sanitizers: ReadonlyArray<{ re: RegExp; type: string }>;
 
   constructor(code: string, private readonly methods: ReadonlyArray<CsMethodRange>) {
+    this.sanitizers = csharpSanitizersFor(code);
     // CRLF files leave `\r` on every line, which `.` and `$` will not cross.
     this.lines = code.split(/\r?\n/);
   }
@@ -206,7 +221,7 @@ export class CSharpCredit {
 
   /** Does `text` apply a built-in sanitizer for `type`? */
   private builtinSanitizes(type: string, text: string): boolean {
-    for (const { re, type: t } of CSHARP_SANITIZER_RES) {
+    for (const { re, type: t } of this.sanitizers) {
       if (t === type && re.test(text)) return true;
     }
     if (type === 'ldap_injection') {
@@ -364,7 +379,7 @@ export class CSharpCredit {
   /** `text` with every sanitizer call for `type`, arguments included, removed. */
   private withoutSanitizerCalls(type: string, text: string): string {
     const res: RegExp[] = [];
-    for (const { re, type: t } of CSHARP_SANITIZER_RES) if (t === type) res.push(re);
+    for (const { re, type: t } of this.sanitizers) if (t === type) res.push(re);
     for (const name of this.helpers(type)) res.push(new RegExp(`(?<![\\w.])${escapeRegex(name)}\\s*\\(`));
     let out = text;
     for (const re of res) {

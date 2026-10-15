@@ -605,6 +605,45 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
   return files;
 }
 
+/**
+ * #591: project resource files that analysis passes may read (`*.properties`).
+ * Collected from a directory scan with the same skip rules as `collectFiles`
+ * (dot-directories, `node_modules`, `--exclude-tests`, config `exclude`). Keys
+ * are the file paths as found; a file over 1 MB is ignored.
+ */
+export async function collectResourceFiles(
+  targetPath: string,
+  options: { excludeTests?: boolean; excludePatterns?: string[]; basePath?: string } = {},
+): Promise<Map<string, string>> {
+  const { excludeTests = false, excludePatterns, basePath } = options;
+  const out = new Map<string, string>();
+  const pathStat = await stat(targetPath);
+  if (pathStat.isFile()) {
+    if (!/\.properties$/i.test(targetPath) || pathStat.size > 1_000_000) return out;
+    if (excludeTests && isTestFile(targetPath)) return out;
+    const relativePath = basePath ? relative(basePath, targetPath) : targetPath;
+    if (excludePatterns && matchesAnyPattern(relativePath, excludePatterns)) return out;
+    out.set(targetPath, readFileSync(targetPath, 'utf-8'));
+    return out;
+  }
+  if (!pathStat.isDirectory()) return out;
+  for (const entry of await readdir(targetPath, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
+    const fullPath = join(targetPath, entry.name);
+    const relativePath = basePath ? relative(basePath, fullPath) : fullPath;
+    if (excludePatterns && entry.isDirectory()) {
+      const dirPattern = relativePath + '/';
+      if (excludePatterns.some(p => matchesGlob(dirPattern, p) || matchesGlob(relativePath, p))) continue;
+    }
+    if (!entry.isDirectory() && !entry.isFile()) continue;
+    for (const [k, v] of await collectResourceFiles(fullPath, { ...options, basePath: basePath || targetPath })) {
+      out.set(k, v);
+    }
+  }
+  return out;
+}
+
 interface AnalyzeOptions {
   passOptions?: PassOptions;
   disabledPasses?: string[];
@@ -615,6 +654,11 @@ interface AnalyzeOptions {
    * `AnalyzerOptions.projectProfile`. Added in 3.106.0 (#169).
    */
   projectProfile?: ProjectProfile | Map<string, ProjectProfile>;
+  /**
+   * `*.properties` files from the scan set, forwarded to circle-ir
+   * `AnalyzerOptions.resources` (#591). Directory scans only.
+   */
+  resources?: ReadonlyMap<string, string>;
 }
 
 async function scanFile(filePath: string, language: string, analyzeOpts?: AnalyzeOptions): Promise<ScanResult> {
@@ -746,6 +790,8 @@ async function scanProject(
     ...(crossFileBudgetMs !== undefined ? { crossFileBudgetMs } : {}),
     // 3.106.0 (#169): per-file project-profile map (from detector or forced).
     ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
+    // #591: `*.properties` from the scan set, for passes that resolve config-held values.
+    ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -1084,6 +1130,11 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if ((await stat(absPath)).isDirectory()) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
+      analyzeOpts.resources = await collectResourceFiles(absPath, {
+        excludeTests: options.excludeTests,
+        excludePatterns: config?.exclude,
+        basePath: absPath,
+      });
       const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;

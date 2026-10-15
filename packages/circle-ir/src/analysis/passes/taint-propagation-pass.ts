@@ -2954,12 +2954,36 @@ function detectExpressionScanFlows(
     // cognium-dev#594: `X.StartInfo.FileName = <tainted>` is the same shape for a
     // `System.Diagnostics.Process`: the executable path rides the process object
     // and the zero-argument `X.Start()` is the injection point. Only the
-    // `FileName` write seeds it (`Arguments` / `ArgumentList` are a separate
-    // follow-up), so a constant `FileName` beside an unrelated tainted
-    // parameter stays clean.
+    // `FileName` write seeds it, and an `Arguments` write when the program is a
+    // shell (`ArgumentList` is a separate follow-up), so a constant `FileName`
+    // beside an unrelated tainted parameter stays clean.
     // A write only: `+=` or a single `=` that is not part of `==`, `!=`, `<=`, `>=`
     // (`if (p.StartInfo.FileName == tool)` is a comparison, not an assignment).
-    const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*FileName)\s*(?:\+=|(?<![=!<>])=(?!=))\s*(.+)/;
+    // `StartInfo.Arguments` seeds too, but only behind a shell (or a non-constant
+    // program), see `argumentsReachShell` below.
+    const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*(?:FileName|(Arguments)))\s*(?:\+=|(?<![=!<>])=(?!=))\s*(.+)/;
+    const fileNameRe = (obj: string): RegExp =>
+      new RegExp(`\\b${obj}\\s*\\.\\s*StartInfo\\s*\\.\\s*FileName\\s*=(?!=)\\s*(.+)`);
+    const shellProgramRe = /^(?:cmd|powershell|pwsh|sh|bash|zsh|dash|ksh|csh|tcsh|fish)(?:\.exe)?$/i;
+    // cognium-dev#594: with a constant, non-shell program the argument string is
+    // argv (the #272 / #328 safe shape), so a tainted `Arguments` does not by itself
+    // reach a shell. A constant shell program, or a program that is not a constant,
+    // lets the argument text choose what runs. No `FileName` write in the method
+    // (for example a `ProcessStartInfo` built elsewhere) seeds nothing.
+    const argumentsReachShell = (obj: string, line: number): boolean => {
+      const re = fileNameRe(obj);
+      const fnStart = csFnStart(line);
+      for (let j = 0; j < lines.length; j++) {
+        if (csFnStart(j + 1) !== fnStart) continue;
+        const fm = re.exec(lines[j]);
+        if (!fm) continue;
+        const lit = /^\s*@?"([^"]*)"\s*;?\s*(?:\/\/.*)?$/.exec(fm[1]);
+        if (!lit) return true;
+        const base = lit[1].split(/[\\/]/).pop() ?? '';
+        return shellProgramRe.test(base);
+      }
+      return false;
+    };
     // cognium-dev#548: seed per method, from sources in that method. The seed
     // used to be made once per file and matched by name, so `cmd.CommandText =
     // … + data` in `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`, whose
@@ -2974,9 +2998,10 @@ function detectExpressionScanFlows(
       for (let i = 0; i < lines.length; i++) {
         const m = ctRe.exec(lines[i]);
         if (!m) continue;
-        const [, obj, rhs] = m;
+        const [, obj, isArguments, rhs] = m;
         const key = `${obj}@${csFnStart(i + 1)}`;
         if (seeded.has(key)) continue;
+        if (isArguments && !argumentsReachShell(obj, i + 1)) continue;
         const reachable = sourcesWithVar.filter(
           sv => sv.line <= i + 1 && !csDifferentMethod(sv.variable, sv.line, i + 1),
         );
