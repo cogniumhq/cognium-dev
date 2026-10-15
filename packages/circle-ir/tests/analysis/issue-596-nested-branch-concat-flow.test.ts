@@ -500,6 +500,86 @@ public class ${name} extends HttpServlet {
       expect(ids).toEqual(new Set([defs[1].id, defs[2].id]));
     });
 
+    it('braceless else-if chain where every arm assigns a constant: the initialiser does not reach and nothing fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                target = "safe2";\n            else\n                target = "safe3";\n        }`, 'ElseIfChainAll');
+      const { defs, ids } = await reaching(code, 'ElseIfChainAll.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect(ids.has(defs[0].id)).toBe(false);
+      expect(await cmdi(code, 'ElseIfChainAll.java')).toHaveLength(0);
+    });
+
+    it('braceless if / else where both arms assign a constant: a source in the if condition does not taint the arm on the next line', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else\n                target = "safe3";\n        }`, 'BracelessIfElseConst');
+      const { defs, ids } = await reaching(code, 'BracelessIfElseConst.java');
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id]));
+      expect(await cmdi(code, 'BracelessIfElseConst.java')).toHaveLength(0);
+    });
+
+    it('braced else-if chain where every arm assigns a constant: the initialiser does not reach and nothing fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null) {\n                target = "safe1";\n            } else if (request.getParameter("b") != null) {\n                target = "safe2";\n            } else {\n                target = "safe3";\n            }\n        }`, 'BracedElseIfChainAll');
+      const { defs, ids } = await reaching(code, 'BracedElseIfChainAll.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect(await cmdi(code, 'BracedElseIfChainAll.java')).toHaveLength(0);
+    });
+
+    it('longer braceless else-if chain where every arm assigns a constant: the initialiser does not reach', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                target = "safe2";\n            else if (request.getParameter("c") != null)\n                target = "safe3";\n            else\n                target = "safe4";\n        }`, 'LongElseIfChainAll');
+      const { defs, ids } = await reaching(code, 'LongElseIfChainAll.java');
+      expect(defs).toHaveLength(5);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id, defs[4].id]));
+      expect(await cmdi(code, 'LongElseIfChainAll.java')).toHaveLength(0);
+    });
+
+    it('else-if chain whose arms assign the tainted value: the tainted arm still reaches and fires', async () => {
+      const code = initSafe(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                target = request.getParameter("host");\n            else\n                target = "safe3";\n        }`, 'ElseIfChainTaintedArm');
+      const { defs, ids } = await reaching(code, 'ElseIfChainTaintedArm.java');
+      expect(defs).toHaveLength(4);
+      expect(ids).toEqual(new Set([defs[1].id, defs[2].id, defs[3].id]));
+      expect((await cmdi(code, 'ElseIfChainTaintedArm.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('else-if chain with no final else: the initialiser still reaches and the finding fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                target = "safe2";\n        }`, 'ElseIfChainNoElse');
+      const { defs, ids } = await reaching(code, 'ElseIfChainNoElse.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[0].id, defs[1].id, defs[2].id]));
+      expect((await cmdi(code, 'ElseIfChainNoElse.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('braced else-if chain with no final else: the initialiser still reaches and the finding fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null) {\n                target = "safe1";\n            } else if (request.getParameter("b") != null) {\n                target = "safe2";\n            }\n        }`, 'BracedElseIfChainNoElse');
+      const { defs, ids } = await reaching(code, 'BracedElseIfChainNoElse.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[0].id, defs[1].id, defs[2].id]));
+      expect((await cmdi(code, 'BracedElseIfChainNoElse.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('else-if chain where a middle arm does not assign: the initialiser still reaches and the finding fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                fallback = "other";\n            else\n                target = "safe3";\n        }`, 'ElseIfChainGap');
+      const { defs, ids } = await reaching(code, 'ElseIfChainGap.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[0].id, defs[1].id, defs[2].id]));
+      expect((await cmdi(code, 'ElseIfChainGap.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('else-if chain where the first arm does not assign: the initialiser still reaches and the finding fires', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                fallback = "other";\n            else if (request.getParameter("b") != null)\n                target = "safe2";\n            else\n                target = "safe3";\n        }`, 'ElseIfChainFirstGap');
+      const { defs, ids } = await reaching(code, 'ElseIfChainFirstGap.java');
+      expect(defs).toHaveLength(3);
+      expect(ids).toEqual(new Set([defs[0].id, defs[1].id, defs[2].id]));
+      expect((await cmdi(code, 'ElseIfChainFirstGap.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('else-if chain whose last arm only assigns under a nested braceless if: the initialiser still reaches', async () => {
+      const code = initTainted(`{\n            if (request.getParameter("a") != null)\n                target = "safe1";\n            else if (request.getParameter("b") != null)\n                target = "safe2";\n            else {\n                if (request.getParameter("c") != null)\n                    target = "safe3";\n            }\n        }`, 'ElseIfChainNestedLast');
+      const { defs, ids } = await reaching(code, 'ElseIfChainNestedLast.java');
+      expect(defs).toHaveLength(4);
+      expect(ids.has(defs[0].id)).toBe(true);
+      expect((await cmdi(code, 'ElseIfChainNestedLast.java')).length).toBeGreaterThanOrEqual(1);
+    });
+
     it('the existing braced conditional in a bare block still fires', async () => {
       const code = withBlocks('{ if (request.getParameter("a") != null) target = request.getParameter("host"); }', 'BareBlockBranch2');
       expect((await cmdi(code, 'BareBlockBranch2.java')).length).toBeGreaterThanOrEqual(1);

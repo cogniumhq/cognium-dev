@@ -526,7 +526,11 @@ function processStatement(
         defId = result.nextDefId;
         useId = result.nextUseId;
       }
-      if (armA && armB && alternative && alternative.type !== 'if_statement') {
+      // An `else if` arm is merged too: its own merge has already put the chain's
+      // final def on the arm's scope only when every arm of the chain assigns, so
+      // a chain with no final `else` (or one arm that skips the name) keeps the
+      // reaching def.
+      if (armA && armB) {
         mergeIfElseDefs(armA, armB, before, scopeStack);
       }
       break;
