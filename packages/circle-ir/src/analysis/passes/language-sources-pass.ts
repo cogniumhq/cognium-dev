@@ -26,6 +26,7 @@ import { attachSourceLineCode } from '../taint-matcher.js';
 import { javaReplaceCrLfCoverage } from '../java-crlf-strip.js';
 import { javaCallArgument, javaCanonicalBaseLacksSeparator } from '../java-canonical-prefix.js';
 import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
+import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js';
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 
 // ---------------------------------------------------------------------------
@@ -520,6 +521,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'rust') {
       additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
+      // cognium-dev#293: `if x != "a" && x != "b" { return Err(..) }` literal-equality guard.
+      additionalSanitizers.push(...findRustLiteralEqualityGuardSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form Command::new(literal).arg(...)
       // sanitizer.
       additionalSanitizers.push(...findRustArgvCommandSanitizers(code));

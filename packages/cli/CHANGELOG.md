@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changes
 
 - A directory scan collects `*.properties` files (same skip rules as source files, `--exclude-tests` and config `exclude`; files over 1 MB are ignored) and passes them to circle-ir as resources (#591, partial).
+- Rust: a literal-equality reject guard (`if tool != "a" && tool != "b" { return Err(..) }`) is credited for the guarded variable on the lines after it (#293).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 
 ## [4.15.0] - 2026-10-15

@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Optional `AnalyzerOptions.resources` (`Map<path, text>`) for project resource files; Java weak-hash resolves a `getProperty("key"[, default])` algorithm through the `.properties` resource the `Properties` object was loaded from (#591, partial).** The resource is the one named in `getResourceAsStream("<name>")` before `load(...)`. Omitting `resources` leaves every result unchanged.
 
+### Fixed
+- **Rust: a rejecting literal-equality guard credits the guarded variable (#293).** `if x != "a" && x != "b" { return Err(..) }`, `!(x == "a" || x == "b")`, `!matches!(x, "a" | "b")` and `!["a", "b"].contains(&x)` clear the injection families on the lines after the guard, to the end of the enclosing block or the variable's next rebind or mutation. An `||` of `!=`, a comparison to a non-literal, a guard that falls through or rejects only in a nested branch, and a line that also reads another value still report.
+
 ## [4.15.0] - 2026-10-15
 
 ### Added
