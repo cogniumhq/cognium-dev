@@ -96,8 +96,41 @@ function rustAttributesAbove(lines: string[], startLine: number): string[] {
   return out;
 }
 
+/**
+ * Well-known framework entry-point signatures (cognium-dev #685). Bare
+ * handler-shaped functions are not entry points in general: only these shapes
+ * are, and only on the signature, never on a file or fixture name.
+ *
+ *  - JS/TS AWS Lambda: a module-level `handler(event, context[, callback])`
+ *    that the module exports (`export`, `exports.handler = handler`,
+ *    `module.exports = { handler }`, `export { handler }`).
+ *  - Python AWS Lambda: a module-level `lambda_handler(event, context)`.
+ *
+ * `handler(event)`, `handle(req)`, `(a, b)`, a class method, and an
+ * allow-listed name that the module does not export are not matched.
+ */
+function isLambdaEntryPoint(method: MethodInfo, language: string, lines: string[]): boolean {
+  const names = method.parameters.map(p => p.name);
+  const first = lines[method.start_line - 1] ?? '';
+  // Module level only: a method or nested function is indented.
+  if (/^\s/.test(first)) return false;
+  if (language === 'python') {
+    return method.name === 'lambda_handler' && names.length === 2 && names[0] === 'event' && names[1] === 'context';
+  }
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  if (method.name !== 'handler') return false;
+  if (names.length < 2 || names.length > 3 || names[0] !== 'event' || names[1] !== 'context') return false;
+  if (names.length === 3 && names[2] !== 'callback') return false;
+  if (/^export\s+(?:default\s+)?(?:async\s+)?(?:function\b|(?:const|let|var)\s+handler\b)/.test(first)) return true;
+  const text = lines.join('\n');
+  return /(?:^|[^\w$.])(?:module\s*\.\s*)?exports\s*\.\s*handler\s*=\s*handler(?![\w$])/.test(text) ||
+    /(?:^|[^\w$.])module\s*\.\s*exports\s*=\s*\{(?:[^}]*[,\s])?handler\s*[,}]|\bmodule\s*\.\s*exports\s*=\s*\{[^}]*\bhandler\s*:\s*handler\b/.test(text) ||
+    /(?:^|\n)\s*export\s*\{[^}]*\bhandler\b[^}]*\}/.test(text);
+}
+
 export function isFrameworkHandler(method: MethodInfo, language: string, lines: string[]): boolean {
   if (method.annotations.some(a => ROUTE_ANNOTATION.test(a))) return true;
+  if (isLambdaEntryPoint(method, language, lines)) return true;
   if (language === 'rust') {
     if (rustAttributesAbove(lines, method.start_line).some(a => RUST_ROUTE_ATTR.test(a))) return true;
     if (method.return_type && RUST_HANDLER_RETURN.test(method.return_type)) return true;
