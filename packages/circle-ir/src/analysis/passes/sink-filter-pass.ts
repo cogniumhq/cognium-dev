@@ -795,9 +795,38 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
 
   // (c2) was this literal key ever written?
   const putRe = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
-  if (lines.some(l => putRe.test(l))) return false;
+  if (lines.some(l => putRe.test(l))) return isLiteralOnlyLocalMap(lines, recv);
 
   return true;
+}
+
+/**
+ * cognium-dev#584 (slice) — the map's whole contents are string literals.
+ *
+ * Every mutation of `recv` in the file is a `put(<key>, "<string literal>")`:
+ * no `put` of a non-literal value under any key (so no key-shuffle can place a
+ * tainted value under the key being read), and no bulk or computing mutator
+ * (`putAll`, `putIfAbsent`, `compute*`, `merge`, `replace*`) that could store
+ * a value out of sight. Combined with (a) local construction and (b) no escape
+ * in the caller, a read of such a map yields a literal and is not a source.
+ */
+function isLiteralOnlyLocalMap(lines: string[], recv: string): boolean {
+  const anyPut = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(`, 'g');
+  const literalPut = new RegExp(
+    `\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*(?:"(?:[^"\\\\]|\\\\.)*"|[A-Za-z_][\\w.]*)\\s*,\\s*"(?:[^"\\\\]|\\\\.)*"\\s*\\)`,
+    'g',
+  );
+  const otherMutator = new RegExp(
+    `\\b${recv}\\s*\\.\\s*(?:putAll|putIfAbsent|compute|computeIfAbsent|computeIfPresent|merge|replace|replaceAll|entrySet|values)\\s*\\(`,
+  );
+  let puts = 0;
+  let literalPuts = 0;
+  for (const l of lines) {
+    if (otherMutator.test(l)) return false;
+    puts += (l.match(anyPut) ?? []).length;
+    literalPuts += (l.match(literalPut) ?? []).length;
+  }
+  return puts > 0 && puts === literalPuts;
 }
 
 
