@@ -22,6 +22,7 @@ import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, fin
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
+import { HTML_CONTEXT_ENCODER_METHODS } from '../constant-propagation/patterns.js';
 
 export interface TaintPropagationPassResult {
   flows: TaintFlowInfo[];
@@ -51,6 +52,24 @@ export interface TaintPropagationPassResult {
  * code, resolved constant) are unaffected.
  */
 const CONTAINER_READ_SOURCES: ReadonlySet<string> = new Set(['plugin_param', 'config_param']);
+
+/** Method name enclosing `line`, from IR type ranges; null when unknown. */
+function methodAtLine(graph: PassContext['graph'], line: number): string | null {
+  for (const t of graph.ir.types ?? []) {
+    for (const m of t.methods) {
+      if (line >= m.start_line && line <= m.end_line) return m.name;
+    }
+  }
+  return null;
+}
+
+
+/** #589: method-call sanitizer that is a context-specific HTML / markup encoder. */
+function isHtmlContextEncoderSanitizer(san: { type?: string; method?: string }): boolean {
+  if (san.type !== 'method_call' || !san.method) return false;
+  const tail = san.method.replace(/\(\)$/, '').split('.').pop() ?? '';
+  return HTML_CONTEXT_ENCODER_METHODS.has(tail);
+}
 
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
@@ -94,14 +113,19 @@ function makeConstPropVeto(
     // (`escapeHtml`, `encodeForHTML`, …), which does not clean `trust_boundary`
     // (a `session.setAttribute` sink). It is "not tainted" only for the other
     // sink types, so this flow is not vetoed.
-    // Uncovered entries are scoped (`method:var`); also accept a bare key for
-    // legacy maps that still carry one. Do not invent a bare copy from siblings.
+    // Uncovered entries are scoped (`method:var`). A bare `step.variable` looks
+    // up only that step's own method — never any sibling `*:name`.
     if (sinkType !== undefined && constProp.sanitizedVarUncovered) {
       const unc = constProp.sanitizedVarUncovered;
-      if (unc.get(step.variable)?.has(sinkType)) return false;
-      const suffix = `:${step.variable}`;
-      for (const [k, set] of unc) {
-        if (k.endsWith(suffix) && set.has(sinkType)) return false;
+      if (step.variable.includes(':')) {
+        if (unc.get(step.variable)?.has(sinkType)) return false;
+      } else {
+        const method = methodAtLine(graph, step.line);
+        if (method) {
+          if (unc.get(`${method}:${step.variable}`)?.has(sinkType)) return false;
+        } else if (unc.get(step.variable)?.has(sinkType)) {
+          return false;
+        }
       }
     }
     // cognium-dev#579: const-prop has no C# source model, so its tainted set is
@@ -160,7 +184,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // DFG-based taint propagation
-    const propagationResult = propagateTaint(graph, sources, sinks, sanitizers);
+    const propagationResult = propagateTaint(graph, sources, sinks, sanitizers, undefined, ctx.code);
 
     // cognium-dev#328 — scoped exemption from const-prop's `variable_not_tainted`
     // veto for self-derived reassignment (`x = f(x)`, `x += y`), the #287 shape.
@@ -434,23 +458,23 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       const coversFlow = (name: string): boolean => {
         return !(sanitizedUncovered?.get(name)?.has(f.sink_type));
       };
-      // #589 review: when any `method:var` sanitizer exists, only that scoped
-      // entry can drop the flow — never a sibling's scoped name via endsWith,
-      // and never the bare unscoped alias alone.
+      // #589 review: when any `method:var` sanitizer exists, only that flow's
+      // own method can drop it — never a sibling's scoped name (one encoder in
+      // doPost must not clear xss in other()), and never the bare alias alone.
       const suffix = `:${sourceVar}`;
-      const scopedHits: string[] = [];
+      let hasScopedSanitizer = false;
       for (const s of sanitizedNames) {
-        if (s !== sourceVar && s.endsWith(suffix)) scopedHits.push(s);
+        if (s !== sourceVar && s.endsWith(suffix)) { hasScopedSanitizer = true; break; }
       }
-      if (scopedHits.length > 0) {
-        // Drop only when every scoped sanitizer for this name covers the sink
-        // type would be too strong; drop when the bare name is absent from the
-        // path's own method... We lack method on the step, so keep the flow
-        // unless the sourceVar itself is already scoped and covers.
+      if (hasScopedSanitizer) {
         if (sourceVar.includes(':') && sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
-        // If exactly one method sanitized this name and it covers, drop — the
-        // classic single-method case. Multiple methods → do not bleed.
-        if (scopedHits.length === 1 && coversFlow(scopedHits[0])) return false;
+        const method = methodAtLine(graph, f.sink_line) ?? methodAtLine(graph, f.source_line);
+        if (method) {
+          const scoped = `${method}:${sourceVar}`;
+          if (sanitizedNames.has(scoped) && coversFlow(scoped)) return false;
+        }
+        // Scoped sanitizers exist for this name, but none proved to be this
+        // flow's method — keep the flow.
         return true;
       }
       if (sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
@@ -537,8 +561,9 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         for (const use of usesAtSink) {
           if (use.variable !== sinkVar) continue;
           if (use.def_id === null || use.def_id === undefined) continue;
+          const sinkDefId = use.def_id;
           const walk = walkBackwardDefs(
-            use.def_id,
+            sinkDefId,
             graph.chainsByToDef,
             graph.defById,
             { maxHops: 32 }
@@ -558,10 +583,28 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
             if (line < f.source_line) continue;
             const sansAtLine = sanitizersByLine.get(line);
             if (!sansAtLine || sansAtLine.length === 0) continue;
+            // #589: at a join (`mixed = shown + b`) an HTML encoder on one
+            // predecessor must not drop unrestricted taint from another.
+            const preds = graph.chainsByToDef.get(sinkDefId) ?? [];
+            const joinWithSibling = preds.length > 1;
+            const joinDefLine = graph.defById.get(sinkDefId)?.line;
             for (const san of sansAtLine) {
-              if (sanitizerCoversSink(san, f.sink_type)) {
-                return false;
+              if (!sanitizerCoversSink(san, f.sink_type)) continue;
+              if (joinWithSibling && isHtmlContextEncoderSanitizer(san)) {
+                const allPredsEncoderCovered = preds.every(pred => {
+                  const predDef = graph.defById.get(pred.from_def);
+                  if (!predDef) return false;
+                  const sansOnPred = sanitizersByLine.get(predDef.line) ?? [];
+                  if (sansOnPred.some(s => isHtmlContextEncoderSanitizer(s) && sanitizerCoversSink(s, f.sink_type))) {
+                    return true;
+                  }
+                  // Same-line join: encoder is on the join def, not the preds.
+                  if (line === joinDefLine) return false;
+                  return false;
+                });
+                if (!allPredsEncoderCovered) continue;
               }
+              return false;
             }
           }
         }

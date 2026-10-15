@@ -120,7 +120,9 @@ export function propagateTaint(
   callsOrSources: CallInfo[] | TaintSource[],
   sourcesOrSinks: TaintSource[] | TaintSink[],
   sinksOrSanitizers: TaintSink[] | TaintSanitizer[],
-  sanitizersArg?: TaintSanitizer[]
+  sanitizersArg?: TaintSanitizer[],
+  /** Optional source text — used when DFG defs lack `expression` (Java locals). */
+  sourceCode?: string,
 ): TaintPropagationResult {
   let graph: CodeGraph;
   let sources: TaintSource[];
@@ -181,11 +183,18 @@ export function propagateTaint(
   taintedVars.push(...initialTaint);
 
   // Step 2: Propagate taint through def-use chains
+  const sourceLines = typeof sourceCode === 'string' ? sourceCode.split('\n') : [];
+  const lineText = (line: number): string | undefined => {
+    const raw = sourceLines[line - 1];
+    return raw !== undefined ? raw : undefined;
+  };
+
   const propagatedTaint = propagateThroughChains(
     initialTaint,
     graph.chainsByFromDef,
     defById,
-    sanitizersByLine
+    sanitizersByLine,
+    lineText,
   );
   // #589: variables that survived only an HTML-encoder hop (`survivesOnlyFor`)
   // are not general taint, so they stay out of the reported `taintedVars`; they
@@ -461,6 +470,33 @@ function findInitialTaint(
 }
 
 /**
+ * #589: true when `variable` still appears in a def expression after HTML-encoder
+ * calls are masked — e.g. `escapeHtml(a) + b` keeps `b` as a raw operand.
+ */
+function identifierOutsideHtmlEncoderCalls(
+  variable: string,
+  expression: string | undefined,
+  sans: TaintSanitizer[] | undefined,
+): boolean {
+  if (!expression || !sans || sans.length === 0) return false;
+  if (!/^[A-Za-z_$][\w$]*$/.test(variable)) return false;
+  const refs: SanitizerCallRef[] = [];
+  for (const san of sans) {
+    if (!isHtmlContextEncoder(san)) continue;
+    const m = /(?:(\w+)\.)?(\w+)\(\)/.exec(san.method);
+    if (!m?.[2]) continue;
+    refs.push({ receiver: m[1], methodName: m[2] });
+  }
+  if (refs.length === 0) return false;
+  const masked = maskSanitizerCalls(expression, refs);
+  if (masked === expression) return false;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`,
+  );
+  return re.test(blankStringLiterals(masked));
+}
+
+/**
  * Propagate taint through def-use chains.
  * Accepts a pre-computed chainsByFromDef index (from CodeGraph) — no internal
  * adjacency list building needed.
@@ -469,7 +505,8 @@ function propagateThroughChains(
   initialTaint: TaintedVariable[],
   chainsByFromDef: Map<number, DFGChain[]>,
   defById: Map<number, DFGDef>,
-  sanitizersByLine: Map<number, TaintSanitizer[]>
+  sanitizersByLine: Map<number, TaintSanitizer[]>,
+  lineText?: (line: number) => string | undefined,
 ): TaintedVariable[] {
   const propagated: TaintedVariable[] = [];
   const taintedDefIds = new Set<number>(initialTaint.map(t => t.defId));
@@ -491,8 +528,6 @@ function propagateThroughChains(
     const outgoingChains = chainsByFromDef.get(currentDefId) ?? [];
 
     for (const chain of outgoingChains) {
-      if (visited.has(chain.to_def)) continue;
-
       const targetDef = defById.get(chain.to_def);
       if (!targetDef) continue;
 
@@ -504,11 +539,21 @@ function propagateThroughChains(
         sanitizersByLine
       );
 
+      const sansAtTarget = sanitizersByLine.get(targetDef.line);
+      // #589: decide encoder-only per operand, not per line. A raw sibling on
+      // `escapeHtml(a) + b` is unrestricted even though the line has an encoder.
+      const viaName = chain.via || currentTaint.variable;
+      const rawOperand = identifierOutsideHtmlEncoderCalls(
+        viaName,
+        targetDef.expression ?? lineText?.(targetDef.line),
+        sansAtTarget,
+      );
+      const effectivelySanitized = sanitizeCheck.sanitized && !rawOperand;
       // #589: a hop through a context-specific HTML encoder keeps the taint
       // alive for the sink types the encoder does not clean (`trust_boundary`).
-      const encoderOnly = sanitizeCheck.sanitized && sanitizersAreHtmlContextEncoders(sanitizersByLine.get(targetDef.line));
+      const encoderOnly = effectivelySanitized && sanitizersAreHtmlContextEncoders(sansAtTarget);
 
-      if (!sanitizeCheck.sanitized || encoderOnly) {
+      if (!effectivelySanitized || encoderOnly) {
         const newTaint: TaintedVariable = {
           variable: targetDef.variable,
           defId: targetDef.id,
@@ -520,6 +565,21 @@ function propagateThroughChains(
             ? { survivesOnlyFor: HTML_CONTEXT_ENCODER_UNCOVERED_SINKS }
             : currentTaint.survivesOnlyFor ? { survivesOnlyFor: currentTaint.survivesOnlyFor } : {}),
         };
+
+        const existing = taintInfoByDefId.get(targetDef.id);
+        if (visited.has(chain.to_def)) {
+          // #589: first-wins `visited` kept an encoder-only predecessor; a later
+          // unrestricted chain must replace it and keep propagating.
+          if (!existing?.survivesOnlyFor) continue;
+          if (newTaint.survivesOnlyFor) continue;
+          const idx = propagated.findIndex(t => t.defId === targetDef.id);
+          if (idx >= 0) propagated[idx] = newTaint;
+          else propagated.push(newTaint);
+          taintedDefIds.add(targetDef.id);
+          taintInfoByDefId.set(targetDef.id, newTaint);
+          queue.push(targetDef.id);
+          continue;
+        }
 
         propagated.push(newTaint);
         taintedDefIds.add(targetDef.id);

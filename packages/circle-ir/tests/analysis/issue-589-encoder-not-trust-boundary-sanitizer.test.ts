@@ -195,6 +195,33 @@ public class ProfileSaveServlet extends HttpServlet {
     expect(sinksAt(r, 18)).not.toContain('trust_boundary');
   });
 
+  it('single escapeHtml in doPost must not drop xss in sibling other()', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class SiblingEncoderServlet extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("a"));
+        response.getWriter().print(data);
+    }
+
+    protected void other(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = request.getParameter("b");
+        response.getWriter().print(data);
+    }
+}
+`, 'SiblingEncoderServlet.java', 'java');
+    // doPost: escapeHtml → print stays clean of xss
+    expect((r.taint.flows ?? []).filter(f => f.sink_line === 11 && f.sink_type === 'xss')).toHaveLength(0);
+    // other(): raw getParameter → print must still report xss
+    expect(sinksAt(r, 16)).toContain('xss');
+    expect(flowTypesFrom(r, 15, 16)).toContain('xss');
+  });
+
   it('encoder method still fires trust_boundary (positive control)', async () => {
     const r = await analyze(`import java.io.IOException;
 import javax.servlet.http.HttpServlet;
@@ -213,5 +240,59 @@ public class ProfileSaveServlet extends HttpServlet {
 `, 'ProfileSaveServlet.java', 'java');
     expect(sinksAt(r, 12)).toContain('trust_boundary');
     expect(flowTypesFrom(r, 10, 12)).toContain('trust_boundary');
+  });
+});
+
+describe('#589 encoder-only predecessor must not drop a later unrestricted one', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('mixed = shown + b: xss still fires on print(mixed); setAttribute(shown) keeps trust_boundary', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class MixedEncoderServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String shown = StringEscapeUtils.escapeHtml(a);
+        String b = a.toUpperCase();
+        String mixed = shown + b;
+        response.getWriter().print(mixed);
+        request.getSession().setAttribute("displayName", shown);
+    }
+}
+`, 'MixedEncoderServlet.java', 'java');
+    // Line numbers (1-based, import lines included):
+    // 10: a = getParameter, 11: shown = escapeHtml, 12: b = toUpperCase,
+    // 13: mixed = shown + b, 14: print(mixed), 15: setAttribute(shown)
+    expect(sinksAt(r, 14)).toContain('xss');
+    expect(flowTypesFrom(r, 10, 14)).toContain('xss');
+    expect(sinksAt(r, 15)).toContain('trust_boundary');
+    expect(flowTypesFrom(r, 10, 15)).toContain('trust_boundary');
+  });
+
+  it('same-line escapeHtml(a) + b: raw operand keeps xss on print(mixed)', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class MixedInlineServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String a = request.getParameter("a");
+        String b = a.toUpperCase();
+        String mixed = StringEscapeUtils.escapeHtml(a) + b;
+        response.getWriter().print(mixed);
+    }
+}
+`, 'MixedInlineServlet.java', 'java');
+    // 10: a, 11: b, 12: mixed, 13: print
+    expect(sinksAt(r, 13)).toContain('xss');
+    expect(flowTypesFrom(r, 10, 13)).toContain('xss');
   });
 });
