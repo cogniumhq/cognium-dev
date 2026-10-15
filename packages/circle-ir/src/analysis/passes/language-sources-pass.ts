@@ -2947,13 +2947,20 @@ export function findJavaWikiPluginReturnXSSSinks(
 ): Array<{ sinkLine: number; sourceLine: number }> {
   if (sources.length === 0) return [];
   const PKG = 'org.apache.wiki.api.plugin';
-  const simpleImported = imports.some(
-    i => i.from_package === PKG && (i.is_wildcard || i.imported_name === 'WikiPlugin' || i.imported_name === 'Plugin'),
-  );
+  // Each simple name counts only when that name was imported (a wildcard of the
+  // plugin package accepts both): importing `WikiPlugin` does not make an
+  // `implements Plugin` (some other interface) a wiki plugin, nor the reverse.
+  const importedSimple = new Set<string>();
+  let wildcardImported = false;
+  for (const i of imports) {
+    if (i.from_package !== PKG) continue;
+    if (i.is_wildcard) wildcardImported = true;
+    else if (i.imported_name === 'WikiPlugin' || i.imported_name === 'Plugin') importedSimple.add(i.imported_name);
+  }
   const isPluginIface = (name: string): boolean => {
     const bare = name.replace(/<.*$/, '').trim();
     if (bare === `${PKG}.WikiPlugin` || bare === `${PKG}.Plugin`) return true;
-    return simpleImported && (bare === 'WikiPlugin' || bare === 'Plugin');
+    return (bare === 'WikiPlugin' || bare === 'Plugin') && (wildcardImported || importedSimple.has(bare));
   };
   const lines = code.split('\n');
   const codeOnly = (expr: string): string => expr.replace(/"(?:[^"\\]|\\.)*"/g, ' ').replace(/'(?:[^'\\]|\\.)'/g, ' ');
@@ -2967,31 +2974,49 @@ export function findJavaWikiPluginReturnXSSSinks(
       if (m.name !== 'execute' || m.return_type !== 'String') continue;
       const inMethod = sources.filter(sc => sc.line >= m.start_line && sc.line <= m.end_line);
       if (inMethod.length === 0) continue;
-      const seeds = new Set(inMethod.map(sc => sc.variable).filter((v): v is string => !!v));
-      const tainted = new Set(seeds);
-      for (const [name, line] of buildJavaTaintedVars(code, seeds)) {
-        if (line >= m.start_line && line <= m.end_line) tainted.add(name);
-      }
-      const isTaintedExpr = (expr: string): boolean => {
-        const c = codeOnly(expr);
-        return [...tainted].some(v => refs(c, v));
-      };
-      // Accumulators: `sb.append(<tainted>)` / `out += <tainted>` carry the taint
-      // into the receiver, which the return then reads back.
-      for (let i = m.start_line - 1; i < m.end_line; i++) {
-        const am = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\((.*)$/u.exec(lines[i] ?? '');
-        if (am && isTaintedExpr(am[2])) tainted.add(am[1]);
-        const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[i] ?? '');
-        if (cm && isTaintedExpr(cm[2])) tainted.add(cm[1]);
-      }
+      // Per source: the names its value reaches (the variable itself and what is
+      // assigned from it), with the line each became tainted.
+      const perSource = inMethod
+        .filter((sc): sc is { line: number; variable: string } => !!sc.variable)
+        .map(sc => {
+          const chain = new Map<string, number>([[sc.variable, sc.line]]);
+          for (const [name, line] of buildJavaTaintedVars(code, new Set([sc.variable]))) {
+            if (line >= m.start_line && line <= m.end_line && !chain.has(name)) chain.set(name, line);
+          }
+          return { sc, chain };
+        });
+      if (perSource.length === 0) continue;
       for (let i = m.start_line - 1; i < m.end_line; i++) {
         const rm = /^\s*return\s+(.+?);\s*$/.exec(lines[i] ?? '');
-        if (!rm || !isTaintedExpr(rm[1])) continue;
+        if (!rm) continue;
         const sinkLine = i + 1;
-        const src = inMethod.filter(sc => sc.line <= sinkLine).sort((a, b) => b.line - a.line)[0];
-        if (!src) continue;
-        if (xssSanitizerLines.some(l => l >= src.line && l <= sinkLine)) continue;
-        out.push({ sinkLine, sourceLine: src.line });
+        let best: { line: number } | null = null;
+        for (const { sc, chain } of perSource) {
+          if (sc.line > sinkLine) continue;
+          // Carriers: the source's names that are tainted by the return, plus every
+          // accumulator an earlier `x.append(<carrier>)` / `x += <carrier>` fed. Only
+          // statements above the return count, in order.
+          const carriers = new Set<string>();
+          for (const [name, line] of chain) if (line <= sinkLine) carriers.add(name);
+          const refsCarrier = (expr: string): boolean => {
+            const c = codeOnly(expr);
+            return [...carriers].some(v => refs(c, v));
+          };
+          for (let j = m.start_line - 1; j < i; j++) {
+            const am = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*append\s*\((.*)$/u.exec(lines[j] ?? '');
+            if (am && refsCarrier(am[2])) carriers.add(am[1]);
+            const cm = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+);\s*$/u.exec(lines[j] ?? '');
+            if (cm && refsCarrier(cm[2])) carriers.add(cm[1]);
+          }
+          if (!refsCarrier(rm[1])) continue;
+          // An xss-covering sanitizer only counts for this source when it is on the
+          // source's own line or on a line that names one of its carriers.
+          const sanitized = xssSanitizerLines.some(l =>
+            l >= sc.line && l <= sinkLine && (l === sc.line || refsCarrier(lines[l - 1] ?? '')));
+          if (sanitized) continue;
+          if (!best || sc.line > best.line) best = { line: sc.line };
+        }
+        if (best) out.push({ sinkLine, sourceLine: best.line });
       }
     }
   }

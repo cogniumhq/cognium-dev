@@ -1115,6 +1115,11 @@ function isSafeCSharpProcessStartCall(
   if (method === 'Start' && call.arguments.length === 1) {
     const arg0 = call.arguments.find(a => a.position === 0);
     const expr = (arg0?.expression ?? '').trim();
+    // `proc.Start()` surfaces its receiver as the only argument (#594): the
+    // executable rides the `Process` object (`proc.StartInfo.FileName = …`), not a
+    // `ProcessStartInfo` of the same name built elsewhere in the file, so a name
+    // lookup for a constant-exe construction proves nothing here.
+    if (call.receiver != null && call.receiver.trim() === expr) return false;
     return isConstNonShellExe(processStartInfoExe(expr, sourceLines));
   }
   return false;

@@ -2360,7 +2360,9 @@ function detectExpressionScanFlows(
     // `FileName` write seeds it (`Arguments` / `ArgumentList` are a separate
     // follow-up), so a constant `FileName` beside an unrelated tainted
     // parameter stays clean.
-    const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*FileName)\s*\+?=\s*(.+)/;
+    // A write only: `+=` or a single `=` that is not part of `==`, `!=`, `<=`, `>=`
+    // (`if (p.StartInfo.FileName == tool)` is a comparison, not an assignment).
+    const ctRe = /(\w+)\s*\.\s*(?:CommandText|StartInfo\s*\.\s*FileName)\s*(?:\+=|(?<![=!<>])=(?!=))\s*(.+)/;
     // cognium-dev#548: seed per method, from sources in that method. The seed
     // used to be made once per file and matched by name, so `cmd.CommandText =
     // … + data` in `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`, whose

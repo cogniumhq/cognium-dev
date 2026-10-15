@@ -135,4 +135,62 @@ public class Builder {
     expect(r.flows).toEqual([]);
     expect(r.sinkLines).toEqual([]);
   });
+
+  it('WikiPlugin imported only: a class that implements some other `Plugin` is not a wiki plugin', async () => {
+    const code = greeting.replace('implements WikiPlugin', 'implements Plugin');
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('Plugin imported only: a class that implements some other `WikiPlugin` is not a wiki plugin', async () => {
+    const code = greeting.replace('import org.apache.wiki.api.plugin.WikiPlugin;', 'import org.apache.wiki.api.plugin.Plugin;');
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.sinkLines).toEqual([]);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('a wildcard import of the plugin package accepts either simple name', async () => {
+    const wild = greeting.replace('import org.apache.wiki.api.plugin.WikiPlugin;', 'import org.apache.wiki.api.plugin.*;');
+    expect((await xss(wild, 'GreetingMacro.java')).flows).toEqual([[13, 16]]);
+    expect((await xss(wild.replace('implements WikiPlugin', 'implements Plugin'), 'GreetingMacro.java')).flows).toEqual([[13, 16]]);
+  });
+
+  it('a return above a later append is not a sink; the return below it is', async () => {
+    const code = greeting.replace(
+      '        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+      '        if (params.isEmpty()) {\n            return html.toString();\n        }\n        html.append("<div class=\\"greet\\">Hello ").append(who).append("</div>");\n        return html.toString();',
+    );
+    expect(code).not.toBe(greeting);
+    const lines = code.split('\n');
+    const early = lines.findIndex((l) => l.includes('return html.toString();')) + 1;
+    const late = lines.length - [...lines].reverse().findIndex((l) => l.includes('return html.toString();'));
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows.map((f) => f[1])).toEqual([late]);
+    expect(r.sinkLines).not.toContain(early);
+  });
+
+  it('only the escaped value is returned while a later, unused parameter is read: no xss', async () => {
+    const code = banner.replace(
+      '        return',
+      '        String extra = req.getParameter("extra");\n        return',
+    );
+    expect(code).not.toBe(banner);
+    const r = await xss(code, 'BannerMacro.java');
+    expect(r.flows).toEqual([]);
+    expect(r.findings).toBe(0);
+    expect(r.proximity).toBe(0);
+  });
+
+  it('an escaped value read after the returned raw one does not suppress it', async () => {
+    const code = greeting.replace(
+      '        StringBuilder html = new StringBuilder();',
+      '        String other = org.apache.commons.lang3.StringEscapeUtils.escapeHtml4(req.getParameter("other"));\n        StringBuilder html = new StringBuilder();',
+    );
+    const r = await xss(code, 'GreetingMacro.java');
+    expect(r.flows).toEqual([[13, 17]]);
+  });
 });

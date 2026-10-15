@@ -67,4 +67,60 @@ describe('#626: List<String> argv wrapper called with a shell argv', () => {
     const code = head + `        new ProcessBuilder(Arrays.asList("git", "log", step)).start();\n` + wrapper;
     expect(await cmdiSinkLines(code)).toEqual([]);
   });
+
+  const otherClass = `
+class Helper {
+    Process launchCommand(List<String> argv) throws IOException {
+        return null;
+    }
+}
+`;
+
+  it('a same-named call on a different receiver does not keep the wrapper sink', async () => {
+    const code = head +
+`        Helper helper = new Helper();
+        helper.launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step));
+        launchCommand(Arrays.asList("git", "log", step));
+` + wrapper + otherClass;
+    expect(await cmdiSinkLines(code)).toEqual([]);
+  });
+
+  it('a shell argv passed to a different overload (other arity) does not keep the wrapper sink', async () => {
+    const code = head +
+`        launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step), true);
+        launchCommand(Arrays.asList("git", "log", step));
+    }
+
+    private void launchCommand(List<String> argv, boolean quiet) {
+        System.out.println(argv + " " + quiet);
+    }
+
+    private Process launchCommand(List<String> argv) throws IOException {
+        return new ProcessBuilder(argv).start();
+    }
+}
+`;
+    expect(await cmdiSinkLines(code)).toEqual([]);
+  });
+
+  it('a this-qualified call with a shell argv keeps the wrapper sink', async () => {
+    const code = head +
+`        this.launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step));
+` + wrapper;
+    expect(await cmdiSinkLines(code)).toEqual([16]);
+  });
+
+  it('a shell-argv caller in another class of the file does not keep this class\'s wrapper sink', async () => {
+    const code = head +
+`        launchCommand(Arrays.asList("git", "log", step));
+` + wrapper + `
+class Other {
+    void run(String step) throws IOException {
+        launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step));
+    }
+    private void launchCommand(List<String> argv) {}
+}
+`;
+    expect(await cmdiSinkLines(code)).toEqual([]);
+  });
 });

@@ -162,22 +162,24 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
  * match only covers for static calls. Type comes from the declaration
  * (`HttpClient c = …`) or, for `var`, from the `new T(…)` initializer.
  */
-function buildCSharpReceiverTypeMap(tree: Tree, cache?: NodeCache): Map<string, string> {
+function buildCSharpReceiverTypeMap(tree: Tree, cache?: NodeCache, scope?: Node): Map<string, string> {
   const map = new Map<string, string>();
+  const nodesOf = (type: string): Node[] =>
+    scope ? scope.descendantsOfType(type).filter((n): n is Node => n !== null) : getNodesFromCache(tree.rootNode, type, cache);
   const simple = (t: string) => t.replace(/<[^>]*>/g, '').split('.').pop()?.trim() ?? t;
   // cognium-dev#542 — method/constructor parameters. A receiver is just as often a parameter as a
   // local — `void Bad(HttpRequest req, HttpResponse resp)` is the canonical
   // ASP.NET handler shape — and omitting them meant every receiver gate keyed on
   // a declared type silently failed for parameters. Locals below win on a name
   // clash, since an inner declaration shadows the parameter.
-  for (const prm of getNodesFromCache(tree.rootNode, 'parameter', cache)) {
+  for (const prm of nodesOf('parameter')) {
     const nameNode = prm.childForFieldName('name');
     const typeNode = prm.childForFieldName('type');
     if (nameNode?.type !== 'identifier' || !typeNode) continue;
     const t = getNodeText(typeNode);
     if (t && t !== 'var') map.set(getNodeText(nameNode), simple(t));
   }
-  for (const vd of getNodesFromCache(tree.rootNode, 'variable_declaration', cache)) {
+  for (const vd of nodesOf('variable_declaration')) {
     const typeNode = vd.childForFieldName('type');
     const declaredType = typeNode ? getNodeText(typeNode) : null;
     for (let i = 0; i < vd.childCount; i++) {
@@ -287,6 +289,23 @@ function csharpCreatedSimpleType(creation: Node): string | null {
 function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
   const calls: CallInfo[] = [];
   const typeMap = buildCSharpReceiverTypeMap(tree, cache);
+  // The file-wide map keeps one type per name, so `ProcessStartInfo proc` in one
+  // method hides `Process proc` in another. For a receiver check, look at the
+  // declarations of the method that holds the call first, then the file-wide map
+  // (fields, members declared outside any method).
+  const methodTypeMaps = new Map<number, Map<string, string>>();
+  const csharpReceiverTypeAt = (inv: Node, name: string): string | undefined => {
+    let n: Node | null = inv.parent;
+    while (n && n.type !== 'method_declaration' && n.type !== 'constructor_declaration' &&
+      n.type !== 'local_function_statement' && n.type !== 'accessor_declaration') n = n.parent;
+    if (!n) return typeMap.get(name);
+    let scoped = methodTypeMaps.get(n.id);
+    if (!scoped) {
+      scoped = buildCSharpReceiverTypeMap(tree, cache, n);
+      methodTypeMaps.set(n.id, scoped);
+    }
+    return scoped.get(name) ?? typeMap.get(name);
+  };
 
   const invocations = getNodesFromCache(tree.rootNode, 'invocation_expression', cache);
   for (const inv of invocations) {
@@ -320,7 +339,7 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     // taint-propagation). Surface the receiver as arg[0], as for `Execute*()`
     // above. Gated on the receiver being a declared `Process` so `Stopwatch`,
     // `Timer` and `Thread` `Start()` calls are untouched.
-    if (receiver && methodName === 'Start' && args.length === 0 && typeMap.get(receiver) === 'Process') {
+    if (receiver && methodName === 'Start' && args.length === 0 && csharpReceiverTypeAt(inv, receiver) === 'Process') {
       args = [{ position: 0, expression: receiver, variable: receiver, literal: null, value: null }];
     }
     // `Response.Headers.Add(name, value)` is the ASP.NET Core response-header
@@ -340,7 +359,7 @@ function extractCSharpCalls(tree: Tree, cache?: NodeCache): CallInfo[] {
     calls.push({
       method_name: methodName,
       receiver,
-      receiver_type: receiverTypeFromCreation ?? (receiver ? (typeMap.get(receiver) ?? null) : null),
+      receiver_type: receiverTypeFromCreation ?? (receiver ? (csharpReceiverTypeAt(inv, receiver) ?? null) : null),
       receiver_type_fqn: null,
       arguments: args,
       location: { line: inv.startPosition.row + 1, column: inv.startPosition.column },

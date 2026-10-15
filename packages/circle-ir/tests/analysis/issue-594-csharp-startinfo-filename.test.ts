@@ -102,4 +102,77 @@ public class GrepController : ControllerBase
 `;
     expect(await cmdiSinkLines(code)).toEqual([]);
   });
+
+  it('comparing FileName to a tainted value is not an assignment: a constant FileName stays clean', async () => {
+    const code = `using System.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+public class GuardController : Controller
+{
+    [HttpGet("g")]
+    public string Guard(string tool)
+    {
+        Process proc = new Process();
+        proc.StartInfo.FileName = "/usr/bin/uptime";
+        if (proc.StartInfo.FileName == tool)
+        {
+            proc.StartInfo.RedirectStandardOutput = true;
+        }
+        proc.Start();
+        return proc.StandardOutput.ReadToEnd();
+    }
+}
+`;
+    expect(await cmdiSinkLines(code)).toEqual([]);
+  });
+
+  it('a tainted FileName stays command_injection when another method has a constant-exe ProcessStartInfo of the same name', async () => {
+    const code = `using System.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+public class MixedController : Controller
+{
+    [HttpGet("run/{tool}")]
+    public void Run(string tool)
+    {
+        Process proc = new Process();
+        proc.StartInfo.FileName = tool;
+        proc.Start();
+    }
+
+    [HttpGet("find")]
+    public void Other(string pattern)
+    {
+        ProcessStartInfo proc = new ProcessStartInfo("grep", pattern);
+        Process.Start(proc);
+    }
+}
+`;
+    expect(await cmdiSinkLines(code)).toEqual([11]);
+  });
+
+  it('the same-name ProcessStartInfo method declared first still leaves the tainted Start() reported', async () => {
+    const code = `using System.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+public class MixedController : Controller
+{
+    [HttpGet("find")]
+    public void Other(string pattern)
+    {
+        ProcessStartInfo proc = new ProcessStartInfo("grep", pattern);
+        Process.Start(proc);
+    }
+
+    [HttpGet("run/{tool}")]
+    public void Run(string tool)
+    {
+        Process proc = new Process();
+        proc.StartInfo.FileName = tool;
+        proc.Start();
+    }
+}
+`;
+    expect(await cmdiSinkLines(code)).toEqual([18]);
+  });
 });
