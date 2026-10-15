@@ -220,7 +220,60 @@ const JAVA_LANG_EXCEPTION_TYPES = new Set([
   'Error', 'AssertionError',
 ]);
 
-function isJavaNonEscapeCall(call: CallInfo, declaredTypeNames: ReadonlySet<string>): boolean {
+// Java (#468, slice 2): JDK static formatters. Building a string sends the
+// value nowhere, the counterpart of the formatter row in the Go gate (#455).
+// Receiver-gated: only the exact JDK class, written bare (and not shadowed by a
+// declared or differently-imported class of that name) or fully qualified.
+// Instance `.format(...)` on any other receiver still escapes.
+const JAVA_FORMATTER_CLASSES: ReadonlyMap<string, string> = new Map([
+  ['String', 'java.lang'],
+  ['MessageFormat', 'java.text'],
+]);
+
+function isJavaStaticFormatterCall(
+  call: CallInfo,
+  declaredTypeNames: ReadonlySet<string>,
+  imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
+  calls: readonly CallInfo[],
+): boolean {
+  if (call.method_name !== 'format' || !call.receiver) return false;
+  // A formatter that is itself an argument of another call (`queue.publish(
+  // MessageFormat.format(..., v))`) keeps its escape: the enclosing call has no
+  // tainted variable of its own to report, so this call is where the value
+  // leaves.
+  const needle = `${call.receiver}.format(`;
+  for (const other of calls) {
+    if (other === call || other.method_name === 'format') continue;
+    if (other.arguments.some(a => a.expression.includes(needle))) return false;
+  }
+  const receiver = call.receiver;
+  const dot = receiver.lastIndexOf('.');
+  const simple = dot < 0 ? receiver : receiver.slice(dot + 1);
+  const pkg = JAVA_FORMATTER_CLASSES.get(simple);
+  if (pkg === undefined) return false;
+  // Fully-qualified receiver: exactly `<pkg>.<Class>`.
+  if (dot >= 0) return receiver === `${pkg}.${simple}`;
+  // Bare receiver: a class declared in this file, or an import of the simple
+  // name (or an alias for it) from another package, shadows the JDK class.
+  if (declaredTypeNames.has(simple)) return false;
+  for (const imp of imports) {
+    if (imp.alias === simple) return false;
+    if (!imp.is_wildcard && imp.imported_name === simple && imp.from_package !== pkg) return false;
+  }
+  // `String` is implicit; `MessageFormat` must be imported from java.text (or
+  // java.text.*), otherwise it may be a same-package class.
+  if (pkg === 'java.lang') return true;
+  return imports.some(imp =>
+    imp.from_package === pkg && (imp.imported_name === simple || imp.is_wildcard));
+}
+
+function isJavaNonEscapeCall(
+  call: CallInfo,
+  declaredTypeNames: ReadonlySet<string>,
+  imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
+  calls: readonly CallInfo[],
+): boolean {
+  if (isJavaStaticFormatterCall(call, declaredTypeNames, imports, calls)) return true;
   // Only a constructor call `new X(...)`: no receiver, and the resolved target
   // is `X.<init>` (the extractor does not set `is_constructor` for Java).
   if (call.receiver) return false;
@@ -494,8 +547,8 @@ export function analyzeInterprocedural(
         if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
           continue;
         }
-        // Java — JDK exception construction (#468, minimal slice).
-        if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames)) {
+        // Java — JDK exception construction and static formatters (#468, minimal slices).
+        if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames, graph.ir.imports ?? [], calls)) {
           continue;
         }
         const bashSafeBuiltins = new Set([
