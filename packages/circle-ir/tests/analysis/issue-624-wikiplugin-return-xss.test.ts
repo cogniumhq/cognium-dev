@@ -386,6 +386,47 @@ public class Builder {
       expect((await xss(after, 'GreetingMacro.java')).flows).toEqual([[14, 16]]);
     });
 
+    it('an earlier `prefs.getParameter(...)` on the source line is not the source: no xss', async () => {
+      await clean(oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String label = prefs.getParameter("ui.theme"); html.append(label); String who = req.getParameter("visitor");',
+        'html.toString()',
+      ));
+      // Renamed locals: the request receiver is matched by its name, not by `req`.
+      const renamed = oneLine(
+        '        StringBuilder out = new StringBuilder();\n        String label = prefs.getParameter("ui.theme"); out.append(label); String visitorName = request.getParameter("visitor");',
+        'out.toString()',
+      ).replace('HttpServletRequest req = ', 'HttpServletRequest request = ');
+      await clean(renamed);
+      // The request call after it on the same line, appended, still fires.
+      const real = oneLine(
+        '        StringBuilder html = new StringBuilder();\n        String label = prefs.getParameter("ui.theme"); html.append(label); String who = req.getParameter("visitor"); html.append(who);',
+        'html.toString()',
+      );
+      expect((await xss(real, 'GreetingMacro.java')).flows).toEqual([[14, 15]]);
+    });
+
+    it('a same-line sanitizer that wraps a different request value does not cover the returned one', async () => {
+      const code = oneLine(
+        '        String who = req.getParameter("a"); String safe = StringEscapeUtils.escapeHtml4(req.getParameter("b"));',
+        '"<div>" + who + "</div>"',
+      ).replace('import org.apache.wiki.WikiContext;', 'import org.apache.commons.lang3.StringEscapeUtils;\nimport org.apache.wiki.WikiContext;');
+      expect(code).not.toBe(greeting);
+      const r = await xss(code, 'GreetingMacro.java');
+      expect(r.flows.map((f) => f[1])).toEqual([15]);
+      expect(r.findings).toBeGreaterThan(0);
+      // Returning the escaped one instead stays clean.
+      await clean(code.replace('return "<div>" + who + "</div>";', 'return "<div>" + safe + "</div>";'));
+      // Renamed locals and request: still fires.
+      const renamed = code.replace(/\bwho\b/g, 'visitorName').replace(/\bsafe\b/g, 'escaped').replace(/\breq\b/g, 'request');
+      expect(renamed).not.toBe(code);
+      expect((await xss(renamed, 'GreetingMacro.java')).flows.map((f) => f[1])).toEqual([15]);
+      // The returned name itself escaped later on the same line stays clean.
+      await clean(code.replace(
+        'String safe = StringEscapeUtils.escapeHtml4(req.getParameter("b"));',
+        'who = StringEscapeUtils.escapeHtml4(who);',
+      ));
+    });
+
     it('html += who with who tainted on an earlier line still fires', async () => {
       const code = oneLine(
         '        String who = req.getParameter("visitor");\n        String html = ""; html += who;',

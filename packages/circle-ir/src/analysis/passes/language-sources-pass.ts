@@ -276,7 +276,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java (#624): JSPWiki plugin `execute` return is HTML output ------------
     if (language === 'java') {
       const tm = ctx.getResult<TaintMatcherResult>('taint-matcher');
-      const xssSan = tm.sanitizers.filter(sa => sa.sanitizes.includes('xss')).map(sa => sa.line);
+      const xssSan = tm.sanitizers.filter(sa => sa.sanitizes.includes('xss')).map(sa => ({ line: sa.line, method: sa.method }));
       for (const r of findJavaWikiPluginReturnXSSSinks(code, types, graph.ir.imports, tm.sources, xssSan)) {
         if (additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss')) continue;
         additionalSinks.push({
@@ -3020,6 +3020,59 @@ function javaAppendArgExprs(line: string): { receiver: string; args: string[] } 
 }
 
 /**
+ * The source call named by a source location (`req.getParameter() in execute`,
+ * `getParameter() in execute`) as a regex over `codeOnly` text: the receiver
+ * chain must match too (any spacing between its tokens), and a call with no
+ * receiver must not follow a `.`. `byName` is the method name alone, for a
+ * receiver whose text is not on the line as written. Null when the location
+ * names no call.
+ */
+function javaSourceCallRe(location: string | undefined): { exact: RegExp; byName: RegExp } | null {
+  const callee = /^([\s\S]*?)\(\)(?:\s+in\s+[^()]*)?$/u.exec((location ?? '').trim())?.[1]?.trim();
+  if (!callee) return null;
+  const cm = /^(?:([\s\S]*?)\s*\.\s*)?([\p{L}_$][\p{L}\p{N}_$]*)$/u.exec(callee);
+  if (!cm) return null;
+  const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const method = esc(cm[2]);
+  const byName = new RegExp(`(?<![\\p{L}\\p{N}_$])${method}\\s*\\(`, 'u');
+  if (!cm[1]) return { exact: new RegExp(`(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)${method}\\s*\\(`, 'u'), byName };
+  // Receiver text as written in the location, with literal bodies blanked like the
+  // statement text it is matched against.
+  const recv = cm[1]
+    .replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+    .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+  const toks = recv.match(/[\p{L}\p{N}_$]+|\S/gu);
+  if (!toks) return null;
+  return {
+    exact: new RegExp(`(?<![\\p{L}\\p{N}_$.])(?<!\\.\\s+)${toks.map(esc).join('\\s*')}\\s*\\.\\s*${method}\\s*\\(`, 'u'),
+    byName,
+  };
+}
+
+/**
+ * `expr` (already `codeOnly`) with every call to the named method blanked out,
+ * from its name through its closing `)` (or the end of `expr` when the call
+ * does not close there). `found` is true when at least one call was blanked.
+ */
+function blankJavaCalls(expr: string, method: string): { text: string; found: boolean } {
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_$])${method.replace(/[$]/g, '\\$&')}\\s*\\(`, 'gu');
+  let text = expr;
+  let found = false;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    let depth = 1;
+    let k = m.index + m[0].length;
+    for (; k < text.length && depth > 0; k++) {
+      if (text[k] === '(') depth++;
+      else if (text[k] === ')') depth--;
+    }
+    text = `${text.slice(0, m.index)} 0 ${text.slice(k)}`;
+    re.lastIndex = m.index + 3;
+    found = true;
+  }
+  return { text, found };
+}
+
+/**
  * cognium-dev#624 (minimal slice) — JSPWiki plugin output is rendered as HTML.
  *
  * The `String` returned from `execute(...)` of a class that implements
@@ -3040,7 +3093,7 @@ export function findJavaWikiPluginReturnXSSSinks(
   types: ReadonlyArray<TypeInfo>,
   imports: ReadonlyArray<ImportInfo>,
   sources: ReadonlyArray<{ line: number; variable?: string; location?: string }>,
-  xssSanitizerLines: ReadonlyArray<number>,
+  xssSanitizers: ReadonlyArray<{ line: number; method?: string }>,
 ): Array<{ sinkLine: number; sourceLine: number }> {
   if (sources.length === 0) return [];
   const PKG = 'org.apache.wiki.api.plugin';
@@ -3103,17 +3156,35 @@ export function findJavaWikiPluginReturnXSSSinks(
             const c = codeOnly(expr);
             return [...carriers.keys()].some(v => refs(c, v));
           };
-          // Where the source enters on its line. A call source names its call
-          // ("req.getParameter() in execute"), and the statement(s) holding that
-          // call are where the value appears: the line-level binder takes the
-          // first `=` on the line, which may be another statement's name. A
-          // parameter / annotation source (no call) is live from its own
-          // assignment on the line, or from the start of the line.
-          const srcCall = /([\p{L}_$][\p{L}\p{N}_$]*)\(\)(?:\s+in\s+.*)?$/u.exec(sc.location ?? '')?.[1];
-          const callRe = srcCall ? new RegExp(`(?<![\\p{L}\\p{N}_$])${srcCall.replace(/[$]/g, '\\$&')}\\s*\\(`, 'u') : null;
-          const callsSource = (expr: string): boolean => !!callRe && callRe.test(codeOnly(expr));
+          // Where the source enters on its line. A call source names its call,
+          // receiver included ("req.getParameter() in execute"), and only the
+          // statement(s) holding that exact call are where the value appears:
+          // the line-level binder takes the first `=` on the line, which may be
+          // another statement's name, and another receiver's call of the same
+          // method (`prefs.getParameter(...)`) is not the source. A parameter /
+          // annotation source (no call) is live from its own assignment on the
+          // line, or from the start of the line.
           const srcStmts = javaLineStatements(lines[sc.line - 1] ?? '');
+          const srcRes = javaSourceCallRe(sc.location);
+          const callRe = srcRes && (srcStmts.some(st => srcRes.exact.test(codeOnly(st.text))) ? srcRes.exact : srcRes.byName);
+          const callsSource = (expr: string): boolean => !!callRe && callRe.test(codeOnly(expr));
           const seeded = srcStmts.some(st => callsSource(st.text));
+          // xss sanitizer calls on the source line: a value that reaches a
+          // statement only inside one of them is not tainted by it. A sanitizer
+          // that cannot be found in the line's text covers the whole line.
+          const srcLineSan = sc.line < sinkLine
+            ? xssSanitizers.filter(sa => sa.line === sc.line).map(sa => ({
+                method: /([\p{L}_$][\p{L}\p{N}_$]*)\s*(?:\(\))?\s*$/u.exec(sa.method ?? '')?.[1],
+              }))
+            : [];
+          const sanMethods = srcLineSan.map(sa => sa.method).filter((x): x is string => !!x);
+          const srcLineSanFound = srcLineSan.length > 0 && srcLineSan.every(sa =>
+            !!sa.method && srcStmts.some(st => blankJavaCalls(codeOnly(st.text), sa.method as string).found));
+          const unsanitized = (expr: string): string => {
+            let text = codeOnly(expr);
+            if (srcLineSanFound) for (const sm of sanMethods) text = blankJavaCalls(text, sm).text;
+            return text;
+          };
           // Unseeded: index of the statement after which `sc.variable` is live.
           let liveAfter = -1;
           if (!seeded) liveAfter = srcStmts.findIndex(st => JAVA_STMT_ASSIGN.exec(st.text)?.[1] === sc.variable);
@@ -3124,9 +3195,13 @@ export function findJavaWikiPluginReturnXSSSinks(
             const stmts = onSrcLine ? srcStmts : javaLineStatements(lines[j] ?? '');
             for (let k = 0; k < stmts.length; k++) {
               const st = stmts[k];
-              const tainted = (expr: string): boolean => refsCarrier(expr) || (onSrcLine && seeded && callsSource(expr));
+              const raw = (expr: string): boolean => refsCarrier(expr) || (onSrcLine && seeded && callsSource(expr));
+              const tainted = (expr: string): boolean => (onSrcLine ? raw(unsanitized(expr)) : raw(expr));
               const as = JAVA_STMT_ASSIGN.exec(st.text);
-              if (as && !carriers.has(as[1]) && tainted(as[2])) carriers.set(as[1], j + 1);
+              // A name reassigned on the source line from a sanitized value only
+              // (`who = escapeHtml4(who)`) no longer carries the source.
+              if (as && onSrcLine && srcLineSanFound && carriers.has(as[1]) && raw(as[2]) && !tainted(as[2])) carriers.delete(as[1]);
+              else if (as && !carriers.has(as[1]) && tainted(as[2])) carriers.set(as[1], j + 1);
               const ap = javaAppendArgExprs(st.text);
               if (ap && !carriers.has(ap.receiver) && ap.args.some(a => tainted(a))) carriers.set(ap.receiver, j + 1);
               const cm = st.terminated ? /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\+=\s*(.+?)\s*$/u.exec(st.text) : null;
@@ -3135,10 +3210,14 @@ export function findJavaWikiPluginReturnXSSSinks(
             }
           }
           if (!refsCarrier(rm[1])) continue;
-          // An xss-covering sanitizer only counts for this source when it is on the
-          // source's own line or on a line that names one of its carriers.
-          const sanitized = xssSanitizerLines.some(l =>
-            l >= sc.line && l <= sinkLine && (l === sc.line || refsCarrier(lines[l - 1] ?? '')));
+          // An xss-covering sanitizer only counts for this source when it is on a
+          // later line that names one of its carriers. One on the source's own
+          // line already took effect in the walk above (only the value inside
+          // its argument is clean); one there that is not found in the line's
+          // text, or a source on the return line, still covers the line.
+          const sanitized = xssSanitizers.some(({ line: l }) =>
+            l >= sc.line && l <= sinkLine &&
+            (l === sc.line ? !srcLineSanFound : refsCarrier(lines[l - 1] ?? '')));
           if (sanitized) continue;
           if (!best || sc.line > best.line) best = { line: sc.line };
         }

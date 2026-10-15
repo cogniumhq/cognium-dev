@@ -309,17 +309,22 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // Supplement: Java JSPWiki plugin return-XSS flows — cognium-dev#624. The
     // sink synthesised by `LanguageSourcesPass` has no method or argument, so
     // no argument matcher can reach it; link it to its source here, as for the
-    // Python return-XSS shape above.
+    // Python return-XSS shape above. The helper already applies its own
+    // statement-level sanitizer check, so these flows skip the line-keyed
+    // def-chain credit below (a sanitizer elsewhere on a def line of the
+    // returned name does not cover it).
+    const wikiPluginFlowKeys = new Set<string>();
     if (ctx.language === 'java' && typeof ctx.code === 'string') {
-      const xssSanitizerLines = sanitizers
+      const xssSanitizers = sanitizers
         .filter(sa => sa.sanitizes.includes('xss'))
-        .map(sa => sa.line);
-      for (const rx of findJavaWikiPluginReturnXSSSinks(ctx.code, types, graph.ir.imports, sources, xssSanitizerLines)) {
+        .map(sa => ({ line: sa.line, method: sa.method }));
+      for (const rx of findJavaWikiPluginReturnXSSSinks(ctx.code, types, graph.ir.imports, sources, xssSanitizers)) {
         if (constProp.unreachableLines.has(rx.sinkLine)) continue;
         const sink = sinks.find(sk => sk.line === rx.sinkLine && sk.type === 'xss');
         if (!sink) continue;
         const src = sources.find(sc => sc.line === rx.sourceLine);
         if (!src) continue;
+        wikiPluginFlowKeys.add(`${src.line}:${rx.sinkLine}`);
         pushIfNew({
           source_line: src.line,
           sink_line: rx.sinkLine,
@@ -519,6 +524,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         // in taint-propagation.ts checkSanitized. Doesn't over-suppress
         // bare `shlex.quote(host)` on unrelated non-sink lines because
         // those calls don't create a def in the sink var's chain.
+        if (f.sink_type === 'xss' && wikiPluginFlowKeys.has(`${f.source_line}:${f.sink_line}`)) return true;
         const usesAtSink = graph.usesByLine.get(f.sink_line);
         if (!usesAtSink || usesAtSink.length === 0) return true;
         const sinkVar = f.path.length > 0
