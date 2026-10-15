@@ -196,6 +196,10 @@ function isCSharpNonEscapeCall(call: CallInfo): boolean {
   const recv = (call.receiver ?? '').split('.').pop() ?? '';
   if (CSHARP_PURE_STATIC_RECEIVERS.has(recv)) return true;
   if (CSHARP_NON_ESCAPE_METHODS.has(name)) return true;
+  // The inherited controller helper `Content(body, contentType)` writes the
+  // response body; the `Content` xss sink judges it by its content type
+  // (cognium-dev#580), so a plain-text or JSON body is not an escape either.
+  if (name === 'Content' && (call.receiver === null || call.receiver === 'this' || call.receiver === 'base')) return true;
   return false;
 }
 

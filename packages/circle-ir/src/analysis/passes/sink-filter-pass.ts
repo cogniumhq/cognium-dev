@@ -16,7 +16,7 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import { CSHARP_SANITIZER_RES, CSharpCredit } from './csharp-sanitizer-credit.js';
@@ -800,6 +800,29 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
   return true;
 }
 
+
+/**
+ * Is this C# `Content(...)` call the controller helper writing an HTML body
+ * (cognium-dev#580)?
+ *
+ *   - The helper is inherited (`ControllerBase.Content`, `PageModel.Content`),
+ *     so it is called unqualified or on `this` / `base`. `note.Content(q)` is
+ *     some other type's method.
+ *   - The content type is argument 1. A literal or `MediaTypeNames` constant
+ *     that is not `text/html` / `application/xhtml+xml` serves the body as
+ *     data. A computed content type is unknown and keeps the sink, as does the
+ *     one-argument overload.
+ */
+function csharpContentServesHtml(call: CallInfo): boolean {
+  if (call.receiver !== null && call.receiver !== 'this' && call.receiver !== 'base') return false;
+  const contentType = call.arguments.find(a => a.position === 1)?.expression.trim();
+  if (contentType === undefined) return true;
+  const literal = /^@?"([^"]*)"$/.exec(contentType);
+  if (literal) return /^\s*(?:text\/html|application\/xhtml\+xml)\b/i.test(literal[1]);
+  const named = /^(?:System\s*\.\s*Net\s*\.\s*Mime\s*\.\s*)?MediaTypeNames\s*\.\s*(Text|Application)\s*\.\s*(\w+)$/.exec(contentType);
+  if (named) return named[1] === 'Text' && named[2] === 'Html';
+  return true;
+}
 
 /**
  * Compute, per sink type, the set of C# variables whose value has passed through
@@ -2283,6 +2306,18 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // A sanitizer covers the operand it is applied to, not the whole
         // call: `Write(HtmlEncode(a) + b)` still receives `b` raw.
         return !covered || credit.rawTaintReaches(sink.type, sink.line, sanitizedVars, csSeeds);
+      });
+    }
+
+    // Stage 15k' — C# `Content(body, contentType)` serves HTML only when the
+    // content type is HTML (cognium-dev#580). The `Content` xss sink stays when
+    // at least one `Content` call on its line is the controller helper with an
+    // HTML or unknown content type.
+    if (language === 'csharp') {
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xss' || sink.method !== 'Content') return true;
+        const contentCalls = callsByLine.get(sink.line)?.filter(c => c.method_name === 'Content') ?? [];
+        return contentCalls.length === 0 || contentCalls.some(csharpContentServesHtml);
       });
     }
 
