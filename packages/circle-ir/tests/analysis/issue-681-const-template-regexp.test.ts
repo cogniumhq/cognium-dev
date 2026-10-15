@@ -60,6 +60,22 @@ describe('cognium-dev#681 — constant template RegExp pattern', () => {
   });
 
   const tpl = '`^${CRED_KEY}=`';
+  const nested: Array<[string, string]> = [
+    ['an open-ended {n,} inside a quantified group', "const CRED_KEY = '(\\\\w{2,})+';"],
+    ['a quantified group with {n,}', "const CRED_KEY = '(\\\\w+){2,}';"],
+    ['a {n,m} min bound inside a star group', "const CRED_KEY = '(a{1,})*';"],
+  ];
+  for (const [label, decl] of nested) {
+    it(`still fires: ${label}`, async () => {
+      expect((await redos(masker(decl, tpl))).length).toBeGreaterThanOrEqual(1);
+    });
+  }
+
+  it('a bounded repeat inside a group stays clean', async () => {
+    const code = masker("const CRED_KEY = '(\\\\w{2,4})';", tpl);
+    expect(await redos(code)).toHaveLength(0);
+  });
+
   const continuations: Array<[string, string]> = [
     ['literal split across lines with + (nested quantifier)', "const CRED_KEY = '('\n  + '\\\\w+)+';"],
     ['literal + tainted value on the next line', "const CRED_KEY = '(?:apikey|passwd)'\n  + req.query.suffix;"],

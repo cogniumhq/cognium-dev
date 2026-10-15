@@ -600,8 +600,8 @@ function constStringLiteralValue(code: string, name: string): string | null {
   return decodeJsHexEscapes(decls[0][1] ?? decls[0][2] ?? decls[0][3] ?? '');
 }
 
-/** A group that holds a quantifier and is itself quantified: `(a+)+`, `(x*)*`. */
-const NESTED_QUANTIFIER_RE = /\([^()]*[+*][^()]*\)\s*[+*{]/;
+/** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
+const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
 
 /** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
 const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
