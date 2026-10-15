@@ -54,3 +54,34 @@ test('collectResourceFiles: a single file target yields only a properties file',
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('collectResourceFiles: ignores a .properties file over 1 MB', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cog-res-'));
+  try {
+    const big = join(root, 'huge.properties');
+    // Just over the 1_000_000 byte cap.
+    writeFileSync(big, 'k=' + 'x'.repeat(1_000_010) + '\n');
+    expect((await collectResourceFiles(root, { basePath: root })).size).toBe(0);
+    expect((await collectResourceFiles(big)).size).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('collectResourceFiles: skips symlinks (no path escape)', async () => {
+  const { symlinkSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'cog-res-'));
+  const outside = mkdtempSync(join(tmpdir(), 'cog-out-'));
+  try {
+    writeFileSync(join(outside, 'secret.properties'), 'digest.alg=MD5\n');
+    writeFileSync(join(root, 'app.properties'), 'digest.alg=SHA-256\n');
+    symlinkSync(join(outside, 'secret.properties'), join(root, 'link.properties'));
+    const found = await collectResourceFiles(root, { basePath: root });
+    const names = [...found.keys()].map((k) => k.slice(root.length + 1)).sort();
+    expect(names).toEqual(['app.properties']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

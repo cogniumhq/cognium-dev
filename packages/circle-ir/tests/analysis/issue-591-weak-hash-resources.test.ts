@@ -161,3 +161,133 @@ public class NoLoad {
     expect(flat).toHaveLength(1);
   });
 });
+
+describe('#591 review: getProperty resolution scoped to method, skip reassignment', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  // Review claim (1): FP — later reassignment to strong literal ignored when resource is weak
+  it('reassigned to a strong literal after getProperty (resource weak) stays clean', async () => {
+    const code = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class ReassignStrong {
+  public byte[] fingerprint(byte[] data) throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = ReassignStrong.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+    String alg = p.getProperty("a", "SHA-512");
+    alg = "SHA-256";
+    MessageDigest md = MessageDigest.getInstance(alg);
+    return md.digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'ReassignStrong.java', 'java', res('app.properties', 'a=MD5\n'));
+    expect(weakHash(r)).toHaveLength(0);
+  });
+
+  // Strong-value twin of (1): resource strong, reassigned to weak — still fires via literal/const-prop
+  it('reassigned to "MD5" after a strong resource value still fires', async () => {
+    const code = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class ReassignWeak {
+  public byte[] fingerprint(byte[] data) throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = ReassignWeak.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+    String alg = p.getProperty("a", "SHA-512");
+    alg = "MD5";
+    MessageDigest md = MessageDigest.getInstance(alg);
+    return md.digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'ReassignWeak.java', 'java', res('app.properties', 'a=SHA-256\n'));
+    const f = weakHash(r);
+    expect(f).toHaveLength(1);
+    expect(f[0].evidence?.algorithm).toBe('md5');
+  });
+
+  // Review claim (2): lost TP — resource strong, reassigned to weak; without fix resource wins and reports nothing
+  // (covered by the test above; without resources the same shape still fires)
+  it('without resources, reassigned to "MD5" after getProperty still fires', async () => {
+    const code = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class ReassignWeakNoRes {
+  public byte[] fingerprint(byte[] data) throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = ReassignWeakNoRes.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+    String alg = p.getProperty("a", "SHA-512");
+    alg = "MD5";
+    MessageDigest md = MessageDigest.getInstance(alg);
+    return md.digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'ReassignWeakNoRes.java', 'java');
+    expect(weakHash(r)).toHaveLength(1);
+  });
+
+  // Review claim (3): same-named var in another method must not poison this method
+  it('a same-named var in an earlier method does not poison a later method with a strong literal', async () => {
+    const code = `
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.Properties;
+
+public class CrossMethod {
+  public byte[] fromResource(byte[] data) throws Exception {
+    Properties p = new Properties();
+    try (InputStream in = CrossMethod.class.getClassLoader().getResourceAsStream("app.properties")) {
+      p.load(in);
+    }
+    String alg = p.getProperty("a", "SHA-512");
+    return MessageDigest.getInstance(alg).digest(data);
+  }
+
+  public byte[] fromLiteral(byte[] data) throws Exception {
+    String alg = "SHA-256";
+    return MessageDigest.getInstance(alg).digest(data);
+  }
+}
+`;
+    const r = await analyze(code, 'CrossMethod.java', 'java', res('app.properties', 'a=MD5\n'));
+    const f = weakHash(r);
+    // Only fromResource should fire; fromLiteral must stay clean
+    expect(f).toHaveLength(1);
+    expect(f[0].evidence?.algorithm).toBe('md5');
+  });
+});
+
+describe('#591: properties unicode escapes', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('decodes \\uXXXX in a property value so a weak algorithm still fires', async () => {
+    // Properties text contains a literal backslash-u escape: \u004d → 'M', so value is MD5.
+    const r = await analyze(
+      service(),
+      'DigestService.java',
+      'java',
+      res('app.properties', 'digest.alg=\\u004dD5\n'),
+    );
+    const f = weakHash(r);
+    expect(f).toHaveLength(1);
+    expect(f[0].evidence?.algorithm).toBe('md5');
+  });
+});

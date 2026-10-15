@@ -142,7 +142,11 @@ export function parsePropertiesText(text: string): Map<string, string> {
     }
     const m = /^((?:\\.|[^\s=:\\])+)[ \t\f]*(?:[=:][ \t\f]*|[ \t\f]+)?(.*)$/s.exec(line);
     if (!m) continue;
-    const unescape = (v: string): string => v.replace(/\\(.)/g, '$1');
+    // Decode \uXXXX before the generic one-char escape pass (Java Properties.load).
+    const unescape = (v: string): string =>
+      v
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\(.)/g, '$1');
     out.set(unescape(m[1]!), unescape(m[2]!.trimEnd()));
   }
   return out;
@@ -171,6 +175,7 @@ function resolveViaResources(
   variable: string | undefined,
   callLine: number,
   resources: ReadonlyMap<string, string> | undefined,
+  methodRange?: { start: number; end: number } | null,
 ): string | null {
   if (!resources || resources.size === 0) return null;
   const getPropTail = String.raw`(\w+)\s*\.\s*getProperty\s*\(\s*"([^"]*)"\s*(?:,\s*([^;]*?))?\s*\)`;
@@ -178,17 +183,36 @@ function resolveViaResources(
   let key: string | undefined;
   let dflt: string | undefined;
   let propLine = callLine;
+  const methodStart = methodRange?.start ?? 1;
+  const methodEnd = methodRange?.end ?? Number.POSITIVE_INFINITY;
   const direct = new RegExp(`^${getPropTail}$`).exec(expr.trim());
   if (direct) {
     [, recv, key, dflt] = direct;
   } else if (variable && /^[A-Za-z_]\w*$/.test(variable)) {
+    // cognium-dev#591 review: only assignments in the enclosing method, before the call.
     const assign = new RegExp(String.raw`(?:^|[^\w.])${variable}\s*=\s*${getPropTail}\s*;`, 'g');
     let m: RegExpExecArray | null;
     while ((m = assign.exec(code)) !== null) {
       const line = lineOfIndex(code, m.index);
-      if (line > callLine) break;
+      if (line < methodStart) continue;
+      if (line > callLine || line > methodEnd) break;
       [, recv, key, dflt] = m;
       propLine = line;
+    }
+    // If any later assignment to the variable sits between the getProperty and the
+    // call, drop the resource value and let the literal / const-prop arms decide.
+    if (recv && key !== undefined) {
+      const later = new RegExp(
+        String.raw`(?:^|[^\w.])${variable}\s*(?:\+=|=)(?!=)\s*`,
+        'g',
+      );
+      let lm: RegExpExecArray | null;
+      while ((lm = later.exec(code)) !== null) {
+        const line = lineOfIndex(code, lm.index);
+        if (line <= propLine) continue;
+        if (line >= callLine || line > methodEnd) break;
+        return null;
+      }
     }
   }
   if (!recv || key === undefined) return null;
@@ -234,17 +258,6 @@ function resolveViaResources(
   return lit ? lit[1]!.toLowerCase() || null : null;
 }
 
-/**
- * Resolve the algorithm-name argument of a Java `getInstance(...)` call,
- * preferring an inline literal but falling back to:
- *   - `MessageDigestAlgorithms.MD5` / `.SHA_1` etc. (Apache Commons constants)
- *   - constant-propagation result (`arg.variable` → bound string value)
- *   - regex-scanned source bindings (`final String NAME = "MD5"` /
- *     `static final String NAME = "MD5"` / `private String NAME = "MD5"`)
- *
- * Returns the lowercased algorithm name or null when unresolved.
- * cognium-dev #119: OWASP Java benchmark FNs come from these shapes.
- */
 function resolveJavaAlgo(
   call: CallInfo,
   position: number,
@@ -252,13 +265,22 @@ function resolveJavaAlgo(
   javaBindings: Map<string, string>,
   code = '',
   resources?: ReadonlyMap<string, string>,
+  methodRange?: { start: number; end: number } | null,
 ): string | null {
   const arg = call.arguments.find((a) => a.position === position);
   if (!arg) return null;
 
   // 0. A `getProperty` value read from a supplied resource file (#591). Before the
   //    default arm below, which would otherwise hide the file's value.
-  const viaResource = resolveViaResources(code, arg.expression ?? '', arg.variable ?? undefined, call.location.line, resources);
+  //    Scoped to the enclosing method; skipped when the variable is reassigned later.
+  const viaResource = resolveViaResources(
+    code,
+    arg.expression ?? '',
+    arg.variable ?? undefined,
+    call.location.line,
+    resources,
+    methodRange,
+  );
   if (viaResource) return viaResource;
 
   // 1. Inline literal (existing behaviour)
@@ -346,7 +368,11 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
       : new Map<string, string>();
 
     for (const call of graph.ir.calls) {
-      const detection = this.detect(call, language, constProp, javaBindings, code, ctx.resources);
+      const enclosing = language === 'java' ? graph.methodAtLine(call.location.line) : null;
+      const methodRange = enclosing
+        ? { start: enclosing.method.start_line, end: enclosing.method.end_line }
+        : null;
+      const detection = this.detect(call, language, constProp, javaBindings, code, ctx.resources, methodRange);
       if (!detection) continue;
 
       const { algorithm, api } = detection;
@@ -385,6 +411,7 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     javaBindings: Map<string, string>,
     code = '',
     resources?: ReadonlyMap<string, string>,
+    methodRange?: { start: number; end: number } | null,
   ):
     | { algorithm: string; api: string }
     | null
@@ -395,7 +422,7 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
     if (language === 'java') {
       // MessageDigest.getInstance("MD5") — literal or resolved variable.
       if (method === 'getInstance' && (receiver === 'MessageDigest' || receiver.endsWith('.MessageDigest'))) {
-        const algo = resolveJavaAlgo(call, 0, constProp, javaBindings, code, resources);
+        const algo = resolveJavaAlgo(call, 0, constProp, javaBindings, code, resources, methodRange);
         if (algo && WEAK_HASH_NAMES.has(algo)) {
           return { algorithm: algo, api: 'MessageDigest.getInstance' };
         }
