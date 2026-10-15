@@ -14,7 +14,10 @@
  * that real source; the direct-argument case pins the source line. `!=` inside
  * an f-string is an operator, not a conversion, so names after it are kept.
  * Nested `{…}` fields inside a format spec (after `:` or after `!conversion:`)
- * are kept; literal format-spec text stays dropped.
+ * are kept; literal format-spec text stays dropped. Inside a format-spec tail,
+ * `{` always opens a nested field (Python 3.12+), so `{{fmt}}` is a set
+ * expression whose names are credited; the top-level `{{` / `}}` skip in
+ * `braceExprs` still keeps a literal `f"{{fmt}}"` from crediting `fmt`.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
@@ -118,6 +121,19 @@ def export_report():
     expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
   });
 
+  it('keeps a set-literal nested format-spec field ({{fmt}} is not a brace escape)', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    cmdline = f"{label:{{fmt}}}"
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 8, 'command_injection']]);
+  });
+
   it('keeps a nested format-spec field after a conversion flag', async () => {
     const code = `from flask import request
 import subprocess
@@ -141,6 +157,31 @@ def export_report():
     subprocess.check_output(f"{label:{fmt}}", shell=True)
 `;
     expect(await flowsOf(code)).toEqual([[6, 7, 'command_injection']]);
+  });
+
+  it('keeps a set-literal nested format-spec field when the f-string is the sink argument', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    subprocess.check_output(f"{label:{{fmt}}}", shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[6, 7, 'command_injection']]);
+  });
+
+  it('still does not credit a name inside a top-level literal brace escape', async () => {
+    const code = `from flask import request
+import subprocess
+
+def export_report():
+    note = request.args.get("note")
+    fmt = request.form.get("fmt")
+    cmdline = f"{{fmt}}" + note
+    subprocess.check_output(cmdline, shell=True)
+`;
+    expect(await flowsOf(code)).toEqual([[5, 8, 'command_injection']]);
   });
 
   it('does not cut an f-string != comparison as if it were a conversion', async () => {

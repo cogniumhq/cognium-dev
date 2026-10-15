@@ -92,14 +92,15 @@ function stripPythonTrailingComment(text: string): string {
  * key does not truncate the expression.
  */
 function pythonFStringNestedFields(body: string): string {
-  // Same `{{` / `}}` skip as braceExprs: doubled braces are literal text, not
-  // nested replacement fields. Each nested `{…}` is itself an expression (and
-  // may carry its own conversion / format-spec), so recurse through
-  // pythonFStringExprOnly.
+  // Format-spec / conversion tails only: a `{` here always opens a nested
+  // replacement field (Python 3.12+). Do NOT treat `{{` / `}}` as literal-brace
+  // escapes — `f"{label:{{fmt}}}"` parses as a nested FormattedValue whose
+  // expression is the set `{fmt}`. The top-level f-string skip stays in
+  // braceExprs so a literal `f"{{fmt}}"` still does not credit `fmt`. Each
+  // nested `{…}` is itself an expression (and may carry its own conversion /
+  // format-spec), so recurse through pythonFStringExprOnly.
   let acc = '';
   for (let j = 0; j < body.length; ) {
-    if (body[j] === '{' && body[j + 1] === '{') { j += 2; continue; }
-    if (body[j] === '}' && body[j + 1] === '}') { j += 2; continue; }
     if (body[j] === '{') {
       j++;
       let depth = 1;
