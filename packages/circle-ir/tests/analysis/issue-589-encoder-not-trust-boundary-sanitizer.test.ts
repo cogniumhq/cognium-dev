@@ -374,4 +374,53 @@ public class SiblingUncoveredServlet extends HttpServlet {
     expect(sinksAt(r, 15)).not.toContain('trust_boundary');
     expect((r.taint.flows ?? []).filter(f => f.sink_line === 15 && f.sink_type === 'trust_boundary')).toHaveLength(0);
   });
+
+  it('veto: a sibling encoder does not keep good()\'s flow once its local is a constant (String.valueOf reaches the veto)', async () => {
+    // `String.valueOf(data)` keeps the sink past the clean-variable sink filter,
+    // so the per-flow const-prop veto is what must drop good()'s flow. Its
+    // uncovered lookup is the step's own method only (good:data), not doPost:data.
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class SiblingVetoServlet extends HttpServlet {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("a"));
+        request.getSession().setAttribute("k", String.valueOf(data));
+    }
+    protected void good(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = request.getParameter("b");
+        data = "safe";
+        request.getSession().setAttribute("k", String.valueOf(data));
+    }
+}
+`, 'SiblingVetoServlet.java', 'java');
+    // doPost setAttribute line 10 keeps trust_boundary (single-method encoder case)
+    expect(flowTypesFrom(r, 9, 10)).toContain('trust_boundary');
+    // good setAttribute line 15: no flow of any type
+    expect((r.taint.flows ?? []).filter(f => f.sink_line === 15)).toHaveLength(0);
+  });
+
+  it('two methods that both encode stay quiet for xss (own method\'s sanitizer covers its flow)', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class BothEncodeServlet extends HttpServlet {
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("a"));
+        response.getWriter().print(String.valueOf(data));
+    }
+    protected void other(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = StringEscapeUtils.escapeHtml(request.getParameter("b"));
+        response.getWriter().print(String.valueOf(data));
+    }
+}
+`, 'BothEncodeServlet.java', 'java');
+    expect((r.taint.flows ?? []).filter(f => f.sink_type === 'xss')).toHaveLength(0);
+  });
 });

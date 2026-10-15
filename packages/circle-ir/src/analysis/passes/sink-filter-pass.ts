@@ -745,8 +745,10 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
 }
 
 /**
- * Is this `plugin_param` source a map read of a key that was never written, on
- * a map whose entire contents we can see? (cognium-dev#328 prerequisite.)
+ * Is this `plugin_param` source a map read that provably yields `null` or a
+ * string literal — a key that was never written, or any key of a literal-only
+ * map (#584) — on a map whose entire contents we can see? (cognium-dev#328
+ * prerequisite.)
  *
  * Sound only when the map's provenance is fully known, so all three hold:
  *
@@ -794,7 +796,7 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
     if (escapeRe.test(stripped)) return false;
   }
 
-  // (c2) was this literal key ever written?
+  // (c2) was this literal key ever written? If so, drop only a literal-only map.
   const putRe = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
   if (lines.some(l => putRe.test(l))) return isLiteralOnlyLocalMap(lines, recv);
 
@@ -1215,7 +1217,9 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // That is SecuriBench Micro `Collections6:47`, an `/* OK */` line. The
     // false positive is currently masked by the const-prop veto in #328, so
     // this gate is behaviour-neutral today; its purpose is to make lifting that
-    // veto safe, which is the sequencing chosen on #328.
+    // veto safe, which is the sequencing chosen on #328. #584 widened it: a read
+    // of a key that WAS put is also dropped when every value put on that local,
+    // non-escaping map is a string literal (`isLiteralOnlyLocalMap`).
     const sources: TaintSource[] = ctx.code
       ? executableSources.filter(s => !isUnwrittenLocalMapKeyRead(ctx.code as string, s))
       : executableSources;
