@@ -113,3 +113,105 @@ describe('#589 the HTML-encoder list stays in step with the sanitizer config', (
     }
   });
 });
+
+describe('#589 sibling / overwrite: encoder must not bleed onto another method or a later constant', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('same-method constant overwrite after escapeHtml stays quiet at setAttribute', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class ProfileSaveServlet extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String nick = request.getParameter("nickname");
+        String data = StringEscapeUtils.escapeHtml(nick);
+        data = "safe";
+        request.getSession().setAttribute("displayName", data);
+    }
+}
+`, 'ProfileSaveServlet.java', 'java');
+    expect(sinksAt(r, 13)).not.toContain('trust_boundary');
+    expect(flowTypesFrom(r, 10, 13)).not.toContain('trust_boundary');
+  });
+
+  it('sibling good() with literal "safe" on the same local stays quiet', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class ProfileSaveServlet extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String nick = request.getParameter("nickname");
+        String data = StringEscapeUtils.escapeHtml(nick);
+        request.getSession().setAttribute("displayName", data);
+    }
+
+    protected void good(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String data = "safe";
+        request.getSession().setAttribute("displayName", data);
+    }
+}
+`, 'ProfileSaveServlet.java', 'java');
+    // doPost encoder → trust_boundary still fires
+    expect(sinksAt(r, 12)).toContain('trust_boundary');
+    expect(flowTypesFrom(r, 10, 12)).toContain('trust_boundary');
+    // good() literal must stay quiet
+    expect(sinksAt(r, 17)).not.toContain('trust_boundary');
+    expect((r.taint.flows ?? []).filter(f => f.sink_line === 17 && f.sink_type === 'trust_boundary')).toHaveLength(0);
+  });
+
+  it('sibling good() with parseInt on the same local stays quiet', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class ProfileSaveServlet extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String nick = request.getParameter("nickname");
+        String data = StringEscapeUtils.escapeHtml(nick);
+        request.getSession().setAttribute("displayName", data);
+    }
+
+    protected void good(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        // parseInt of a literal — clean; must not inherit doPost's encoder uncovered set
+        // via the bare name data.
+        int id = Integer.parseInt("42");
+        String data = Integer.toString(id);
+        request.getSession().setAttribute("displayName", data);
+    }
+}
+`, 'ProfileSaveServlet.java', 'java');
+    expect(sinksAt(r, 12)).toContain('trust_boundary');
+    expect(sinksAt(r, 18)).not.toContain('trust_boundary');
+  });
+
+  it('encoder method still fires trust_boundary (positive control)', async () => {
+    const r = await analyze(`import java.io.IOException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import org.apache.commons.lang.StringEscapeUtils;
+
+public class ProfileSaveServlet extends HttpServlet {
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        String nick = request.getParameter("nickname");
+        String data = StringEscapeUtils.escapeHtml(nick);
+        request.getSession().setAttribute("displayName", data);
+    }
+}
+`, 'ProfileSaveServlet.java', 'java');
+    expect(sinksAt(r, 12)).toContain('trust_boundary');
+    expect(flowTypesFrom(r, 10, 12)).toContain('trust_boundary');
+  });
+});

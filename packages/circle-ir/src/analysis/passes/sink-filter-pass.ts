@@ -757,10 +757,11 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
  *  (b) the receiver never escapes — it is not passed as an argument to any
  *      call. `helper(m)` could `put` into it out of sight, so once it escapes
  *      the contents are no longer knowable from this file.
- *  (c) the read key is a string literal with **no** `put` of that same literal
- *      anywhere in the file. A matching `put` keeps the source regardless of
- *      whether the stored value looks tainted — this gate only removes reads
- *      that provably yield `null`, never reads whose value it judged clean.
+ *  (c) the read key is a string literal. A matching `put` of that literal no
+ *      longer keeps the source automatically: when every put value is itself a
+ *      string literal (`isLiteralOnlyLocalMap`), the read is still dropped as
+ *      non-tainted (#584). This gate only removes reads that provably yield
+ *      `null` or a literal-only local map, never reads whose value is uncertain.
  *
  * Deliberately narrow: `plugin_param` only, literal keys only, and any
  * uncertainty leaves the source untouched. Non-literal keys (`m.get(k)`) are
@@ -3064,11 +3065,25 @@ export function filterCleanVariableSinks(
             const scopedName = methodName ? `${methodName}:${varName}` : varName;
 
             if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
-            if (sanitizedVars?.has(scopedName) || sanitizedVars?.has(varName)) {
+            // #589 review: when any `method:var` sanitizer exists, decide from
+            // the scoped name only — do not treat a sibling method's encoder
+            // (or its unscoped alias) as sanitizing this method's local.
+            const suffix = `:${varName}`;
+            let hasScopedSanitizer = false;
+            if (sanitizedVars) {
+              for (const s of sanitizedVars) {
+                if (s !== varName && s.endsWith(suffix)) { hasScopedSanitizer = true; break; }
+              }
+            }
+            const isSanitizedHere = sanitizedVars?.has(scopedName)
+              || (!hasScopedSanitizer && !!sanitizedVars?.has(varName));
+            if (isSanitizedHere) {
               // #589: a context-specific encoder (`escapeHtml`, `encodeForHTML`, …)
               // does not clean `trust_boundary`; that sink on the same
               // variable stays.
-              const uncovered = sanitizedVarUncovered?.get(scopedName) ?? sanitizedVarUncovered?.get(varName);
+              const uncovered = hasScopedSanitizer
+                ? sanitizedVarUncovered?.get(scopedName)
+                : (sanitizedVarUncovered?.get(scopedName) ?? sanitizedVarUncovered?.get(varName));
               if (!uncovered || !uncovered.has(sink.type)) continue;
               argClean = false; break;
             }

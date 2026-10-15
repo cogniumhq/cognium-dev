@@ -187,15 +187,15 @@ export class ConstantPropagator {
         resultTainted.add(unscoped);
       }
     }
+    // #589 review: do NOT copy sanitizedVarUncovered onto the bare name.
+    // The unscoped sanitizedVars alias stays for legacy readers, but uncovered
+    // sink types are decided from the scoped `method:var` key only — otherwise
+    // a sibling method's local of the same name inherits the encoder set.
     const resultScopes = new Map(this.sanitizedVarUncovered);
     for (const name of this.sanitizedVars) {
       if (name.includes(':')) {
         const unscoped = name.substring(name.indexOf(':') + 1);
         resultSanitized.add(unscoped);
-        // The unscoped alias inherits the entry only while no unscoped
-        // sanitizer of another family claimed the same name.
-        const sc = this.sanitizedVarUncovered.get(name);
-        if (sc && !resultScopes.has(unscoped) && !this.sanitizedVars.has(unscoped)) resultScopes.set(unscoped, sc);
       }
     }
     // Add unscoped symbols for backward compatibility with tests
@@ -1264,6 +1264,7 @@ export class ConstantPropagator {
             if (isTainted) {
               this.tainted.add(scopedName);
               this.sanitizedVars.delete(scopedName); // No longer sanitized if receiving tainted value
+              this.sanitizedVarUncovered.delete(scopedName);
               this.definitionNodes.set(scopedName, valueNode);
               this.symbols.set(scopedName, createUnknown(line));
             } else {
@@ -1276,10 +1277,15 @@ export class ConstantPropagator {
               const value = this.evaluateExpression(valueNode);
               this.symbols.set(scopedName, value);
 
-              // Track if this variable was explicitly assigned from a sanitizer call
+              // Track if this variable was explicitly assigned from a sanitizer call.
+              // A constant / non-sanitizer overwrite must clear any prior encoder
+              // scope (#589 review: `data = escapeHtml(x); data = "safe"`).
               if (this.isSanitizerMethodCall(valueNode)) {
                 this.sanitizedVars.add(scopedName);
                 this.recordSanitizerScope(scopedName, valueNode);
+              } else {
+                this.sanitizedVars.delete(scopedName);
+                this.sanitizedVarUncovered.delete(scopedName);
               }
 
               // Check if this is an anti-sanitizer call that reintroduces taint
@@ -1287,6 +1293,7 @@ export class ConstantPropagator {
               if (this.antiSanitizerReintroducesTaint(valueNode)) {
                 this.tainted.add(scopedName);
                 this.sanitizedVars.delete(scopedName);
+                this.sanitizedVarUncovered.delete(scopedName);
               }
             }
           } else {
@@ -1326,6 +1333,7 @@ export class ConstantPropagator {
     if (this.isTaintedExpression(right)) {
       this.tainted.add(scopedName);
       this.sanitizedVars.delete(scopedName); // No longer sanitized if receiving tainted value
+      this.sanitizedVarUncovered.delete(scopedName);
       this.definitionNodes.set(scopedName, right);
       this.symbols.set(scopedName, createUnknown(line));
 
@@ -1374,10 +1382,14 @@ export class ConstantPropagator {
         const value = this.evaluateExpression(right);
         this.symbols.set(scopedName, value);
 
-        // Track if this variable was explicitly assigned from a sanitizer call
+        // Track if this variable was explicitly assigned from a sanitizer call.
+        // Constant / non-sanitizer overwrite clears prior encoder scope (#589).
         if (this.isSanitizerMethodCall(right)) {
           this.sanitizedVars.add(scopedName);
           this.recordSanitizerScope(scopedName, right);
+        } else {
+          this.sanitizedVars.delete(scopedName);
+          this.sanitizedVarUncovered.delete(scopedName);
         }
       }
 
@@ -1386,6 +1398,7 @@ export class ConstantPropagator {
       if (this.antiSanitizerReintroducesTaint(right)) {
         this.tainted.add(scopedName);
         this.sanitizedVars.delete(scopedName);
+        this.sanitizedVarUncovered.delete(scopedName);
       }
     }
   }

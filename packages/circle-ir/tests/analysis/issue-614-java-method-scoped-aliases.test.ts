@@ -136,4 +136,41 @@ public class FieldHop {
     const lines = await flowSinkLines(code, 'xss');
     expect(lines).toContain(17);
   });
+
+  it('a local that shadows a tainted field stays clean; this.name still fires', async () => {
+    const code = `import java.io.IOException;
+import java.io.PrintWriter;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class FieldHop {
+    private String name;
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        name = req.getParameter("name");
+        f(resp);
+        good(resp);
+    }
+
+    private void f(ServletResponse resp) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        writer.println(this.name);
+    }
+
+    private void good(ServletResponse resp) throws IOException {
+        PrintWriter writer = resp.getWriter();
+        String name = "readme.txt";
+        writer.println(name);
+    }
+}
+`;
+    const ir = await analyze(code, 'T.java', 'java');
+    const xss = (ir.taint.flows ?? []).filter(f => f.sink_type === 'xss');
+    const sinkLines = [...new Set(xss.map(f => f.sink_line))].sort((a, b) => a - b);
+    // this.name in f() — line 18
+    expect(sinkLines).toContain(18);
+    // local name in good() — line 24
+    expect(sinkLines).not.toContain(24);
+  });
 });

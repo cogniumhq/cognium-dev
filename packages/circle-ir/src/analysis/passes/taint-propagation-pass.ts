@@ -94,8 +94,15 @@ function makeConstPropVeto(
     // (`escapeHtml`, `encodeForHTML`, …), which does not clean `trust_boundary`
     // (a `session.setAttribute` sink). It is "not tainted" only for the other
     // sink types, so this flow is not vetoed.
-    if (sinkType !== undefined && constProp.sanitizedVarUncovered?.get(step.variable)?.has(sinkType)) {
-      return false;
+    // Uncovered entries are scoped (`method:var`); also accept a bare key for
+    // legacy maps that still carry one. Do not invent a bare copy from siblings.
+    if (sinkType !== undefined && constProp.sanitizedVarUncovered) {
+      const unc = constProp.sanitizedVarUncovered;
+      if (unc.get(step.variable)?.has(sinkType)) return false;
+      const suffix = `:${step.variable}`;
+      for (const [k, set] of unc) {
+        if (k.endsWith(suffix) && set.has(sinkType)) return false;
+      }
     }
     // cognium-dev#579: const-prop has no C# source model, so its tainted set is
     // empty for C# and "not tainted" there means "never looked", not "clean".
@@ -427,10 +434,26 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       const coversFlow = (name: string): boolean => {
         return !(sanitizedUncovered?.get(name)?.has(f.sink_type));
       };
-      if (sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
+      // #589 review: when any `method:var` sanitizer exists, only that scoped
+      // entry can drop the flow — never a sibling's scoped name via endsWith,
+      // and never the bare unscoped alias alone.
+      const suffix = `:${sourceVar}`;
+      const scopedHits: string[] = [];
       for (const s of sanitizedNames) {
-        if (s.endsWith(`:${sourceVar}`) && coversFlow(s)) return false;
+        if (s !== sourceVar && s.endsWith(suffix)) scopedHits.push(s);
       }
+      if (scopedHits.length > 0) {
+        // Drop only when every scoped sanitizer for this name covers the sink
+        // type would be too strong; drop when the bare name is absent from the
+        // path's own method... We lack method on the step, so keep the flow
+        // unless the sourceVar itself is already scoped and covers.
+        if (sourceVar.includes(':') && sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
+        // If exactly one method sanitized this name and it covers, drop — the
+        // classic single-method case. Multiple methods → do not bleed.
+        if (scopedHits.length === 1 && coversFlow(scopedHits[0])) return false;
+        return true;
+      }
+      if (sanitizedNames.has(sourceVar) && coversFlow(sourceVar)) return false;
       return true;
     });
 
@@ -1000,20 +1023,62 @@ function detectGoPackageGlobalFlows(
  * exists, membership is decided by the sink's own scoped name, so a same-named
  * local in a safe sibling method (the Juliet `bad()` / `good*()` layout) is not
  * treated as tainted. A name with no scoped entry (a field, a parameter) keeps
- * the unscoped match, and so does a field.
+ * the unscoped match. A field use (`this.name` / bare field read) is shared by
+ * every method of its class (SecuriBench Inter4); a local that merely shares a
+ * field's name is not.
  */
+
+/** True when `methodName` declares a local (or param) named `varName`. */
+function methodHasLocalDecl(code: string | undefined, methodName: string | null | undefined, varName: string): boolean {
+  if (!code || !methodName) return false;
+  // Find `methodName(...) [throws ...] {` then scan the body for a local decl.
+  const esc = methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const v = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const methodRe = new RegExp(
+    '(?:^|[\\s;{}])' + esc + '\\s*\\([^;{]*\\)\\s*(?:throws\\s+[^{]+)?\\{',
+    'm',
+  );
+  const m = methodRe.exec(code);
+  if (!m || m.index === undefined) return false;
+  let i = m.index + m[0].length;
+  let depth = 1;
+  while (i < code.length && depth > 0) {
+    const c = code[i++];
+    if (c === '{') depth++;
+    else if (c === '}') depth--;
+  }
+  const body = code.slice(m.index + m[0].length, i - 1);
+  // Parameter named varName counts as shadowing the field.
+  if (new RegExp('[(,]\\s*(?:final\\s+)?[\\w.<>,\\[\\]\\s]+\\s+' + v + '\\s*[,)]').test(m[0])) return true;
+  const declRe = new RegExp(
+    '(?:^|[;{}])\\s*(?:(?:final|volatile)\\s+)?(?:[A-Za-z_][\\w.<>,\\[\\]\\s]*?)\\s+' + v + '\\s*(?:=|;|,)',
+    'm',
+  );
+  return declRe.test(body);
+}
+
+function isFieldUseExpression(expression: string | undefined, varName: string): boolean {
+  if (!expression) return false;
+  const e = expression.trim();
+  // Explicit field access: this.name / self.name / obj.name
+  if (e === `this.${varName}` || e === `self.${varName}`) return true;
+  if (new RegExp('^[A-Za-z_]\\w*\\.' + varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$').test(e)) return true;
+  return false;
+}
+
+
 function isTaintedInMethod(
   taintedVars: ReadonlySet<string>,
   varName: string,
   scopedName: string,
   fieldNames: ReadonlySet<string>,
+  isFieldUse: boolean,
 ): boolean {
   if (taintedVars.has(scopedName)) return true;
   if (!taintedVars.has(varName)) return false;
   if (scopedName === varName) return true;
-  // A field is shared by every method of its class: assigned in one method and
-  // used in another (SecuriBench Inter4), it is tainted in both.
-  if (fieldNames.has(varName)) return true;
+  // Field exception only when THIS use is a field, not when any field has the name.
+  if (isFieldUse && fieldNames.has(varName)) return true;
   const suffix = `:${varName}`;
   for (const t of taintedVars) {
     if (t.endsWith(suffix)) return false;
@@ -1054,7 +1119,16 @@ function detectCollectionFlows(
         if (arg.variable) {
           const varName = arg.variable;
           const scopedName = call.in_method ? `${call.in_method}:${varName}` : varName;
-          if (isTaintedInMethod(taintedVars, varName, scopedName, fieldNames)) {
+          // Bare `name` that is a field read (no local of that name in this
+          // method) still counts as a field use — Inter4-style. A shadowing
+          // local declaration in the method does not.
+          const expr = arg.expression ?? '';
+          const explicitField = isFieldUseExpression(expr, varName);
+          const bareFieldRead = fieldNames.has(varName)
+            && expr === varName
+            && !methodHasLocalDecl(code, call.in_method, varName);
+          const isFieldUse = explicitField || bareFieldRead;
+          if (isTaintedInMethod(taintedVars, varName, scopedName, fieldNames, isFieldUse)) {
             // Sprint 13 #70 — pick a source in the same method scope as the
             // sink, not blanket sources[0]. The varName-based match is
             // primary; method-scope is the tiebreaker; sources[0] is the
