@@ -103,6 +103,12 @@ function buildSanitizersByLine(sanitizers: TaintSanitizer[]): Map<number, TaintS
  * for backward compatibility with existing call sites and tests.
  */
 /** True when `+` appears outside string literals. */
+/** Number of `${…}` interpolations in a JS/TS template-literal argument. */
+function templateInterpolationCount(expression: string): number {
+  if (!expression.trimStart().startsWith('`')) return 0;
+  return (expression.match(/\$\{/g) ?? []).length;
+}
+
 function concatOutsideStrings(expression: string): boolean {
   return expression.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').includes('+');
 }
@@ -143,6 +149,7 @@ export function propagateTaint(
   const taintedVars: TaintedVariable[] = [];
   const flows: TaintFlow[] = [];
   const javaConcat = graph.ir.meta.language === 'java';
+  const jsLike = graph.ir.meta.language === 'javascript' || graph.ir.meta.language === 'typescript';
   const reachableSinks = new Map<TaintSink, TaintSource[]>();
 
   // Use pre-computed indexes from CodeGraph — no local map building needed
@@ -230,7 +237,12 @@ export function propagateTaint(
         //     A constant prefix must not hide a later tainted operand
         //     (cognium-dev#627).
         const expr = typeof arg.expression === 'string' ? arg.expression : '';
-        const compoundConcat = javaConcat && !!arg.variable && expr !== arg.variable && concatOutsideStrings(expr);
+        // cognium-dev#563: a JS/TS template literal names its first
+        // interpolated identifier as `arg.variable`; a sanitized first value
+        // (`${n}` from `parseInt`) must not hide a raw `${to}` after it.
+        const compoundConcat = !!arg.variable && expr !== arg.variable && (
+          (javaConcat && concatOutsideStrings(expr)) ||
+          (jsLike && templateInterpolationCount(expr) > 1));
         const candidateUses = arg.variable && !compoundConcat
           ? usesAtSink.filter(u => u.variable === arg.variable)
           : usesAtSink;
@@ -454,7 +466,15 @@ function findInitialTaint(
     // (`if (request.getParameter("a") != null)`) is a condition, not the start
     // of an expression that continues on the next line. The next line is the
     // body, so `target = "safe";` there must not be seeded by adjacency.
-    const defsNextLine = isCompleteConditionHeader(source.code) ? [] : (defsByLine.get(source.line + 1) ?? []);
+    //
+    // cognium-dev#563: a source line that is a complete assignment
+    // (`const qty = parseInt(req.query.qty, 10);`) does not continue on the
+    // next line either; a local declared there (`const label = 'units';`)
+    // is a new statement and gets no taint by adjacency.
+    const closesOwnStatement = defsOnLine.length > 0 && /;\s*(?:\/\/.*)?$/.test(source.code ?? '');
+    const defsNextLine = isCompleteConditionHeader(source.code)
+      ? []
+      : (defsByLine.get(source.line + 1) ?? []).filter(d => !(closesOwnStatement && d.kind === 'local'));
     for (const def of defsNextLine) {
       // Only include if there's a call on the source line
       const callsOnSourceLine = callsByLine.get(source.line) ?? [];
