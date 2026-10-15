@@ -2141,15 +2141,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'redos') return true;
         const m = (sourceLines[sink.line - 1] ?? '').match(/new\s+RegExp\s*\(\s*`((?:\\.|[^`\\])*)`/);
         if (!m) return true;
-        const parts = [...m[1].matchAll(/\$\{([^}]*)\}/g)].map(x => x[1].trim());
-        if (parts.length === 0) return true;
         let pattern = m[1];
-        for (const name of parts) {
-          if (!/^[A-Za-z_$][\w$]*$/.test(name)) return true;
+        let interpolations = 0;
+        let allConst = true;
+        // Replace each `${ NAME }` as written (whitespace inside the braces
+        // included) by the const's literal value.
+        pattern = pattern.replace(/\$\{([^}]*)\}/g, (_full, raw: string) => {
+          interpolations++;
+          const name = raw.trim();
+          if (!/^[A-Za-z_$][\w$]*$/.test(name)) { allConst = false; return ''; }
           const value = constStringLiteralValue(ctx.code, name);
-          if (value === null) return true;
-          pattern = pattern.split('${' + name + '}').join(value);
-        }
+          if (value === null) { allConst = false; return ''; }
+          return value;
+        });
+        if (interpolations === 0 || !allConst) return true;
         // A constant pattern can still backtrack on a tainted subject.
         return NESTED_QUANTIFIER_RE.test(pattern);
       });

@@ -44,6 +44,16 @@ describe('cognium-dev#681 — constant template RegExp pattern', () => {
     expect((await redos(code)).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('still fires: whitespace inside ${ } with a nested-quantifier constant', async () => {
+    const code = masker("const CRED_KEY = '(\\\\w+)+';", '`^${ CRED_KEY }`');
+    expect((await redos(code)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('whitespace inside ${ } with a safe constant is still clean', async () => {
+    const code = masker("const CRED_KEY = '(?:apikey|passwd)';", '`^(\\\\s*${ CRED_KEY }\\\\s*=\\\\s*).*$`');
+    expect(await redos(code)).toHaveLength(0);
+  });
+
   it('still fires: attacker-controlled pattern in an express handler', async () => {
     const code = `
 const express = require('express');
