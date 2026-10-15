@@ -141,6 +141,13 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
       // `someRandomInstance.nextInt()` — receiver_type is Random / SplittableRandom / ThreadLocalRandom
       if (JAVA_RANDOM_METHODS.has(method)) {
         const rt = call.receiver_type ?? '';
+        if (rt === 'Random' && this.receiverIsRandomParameter(call, ctx)) {
+          // #612 — a `Random`-typed method parameter is whatever the caller
+          // passes (often a SecureRandom, often from another file): unknown,
+          // not weak. Locals, fields, `Math.random()` and `ThreadLocalRandom`
+          // are unaffected.
+          return null;
+        }
         if (rt === 'Random' || rt === 'SplittableRandom' || rt === 'ThreadLocalRandom') {
           return `${rt}.${method}`;
         }
@@ -190,6 +197,27 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
     }
 
     return null;
+  }
+
+  /**
+   * True when the call's receiver is a parameter of the innermost enclosing
+   * method (or constructor) that is declared with the type `Random`.
+   */
+  private receiverIsRandomParameter(call: CallInfo, ctx: PassContext): boolean {
+    const receiver = (call.receiver ?? '').trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(receiver)) return false;
+    const line = call.location.line;
+    let best: { span: number; isParam: boolean } | null = null;
+    for (const type of ctx.graph.ir.types ?? []) {
+      for (const m of type.methods ?? []) {
+        if (line < m.start_line || line > m.end_line) continue;
+        const span = m.end_line - m.start_line;
+        if (best && span >= best.span) continue;
+        const p = m.parameters.find((x) => x.name === receiver);
+        best = { span, isParam: !!p && /^(?:[A-Za-z_$][\w$]*\.)*Random$/.test((p.type ?? '').trim()) };
+      }
+    }
+    return best?.isParam ?? false;
   }
 
   /**

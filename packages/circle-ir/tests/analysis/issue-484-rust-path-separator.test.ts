@@ -33,17 +33,17 @@ describe('#484 Rust `::` path separator in resolved sink targets', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
   it.each([
-    ['use serde_json::from_str', 'use serde_json::from_str;\npub fn p(b: String) { let v: serde_json::Value = from_str(&b).unwrap(); }'],
-    ['use serde_json::{from_str, Value}', 'use serde_json::{from_str, Value};\npub fn p(b: String) { let v: Value = from_str(&b).unwrap(); }'],
+    ['use serde_json::from_str', 'use serde_json::from_str;\npub fn p(b: String) { let v: Settings = from_str(&b).unwrap(); }'],
+    ['use serde_json::{from_str, Value}', 'use serde_json::{from_str, Value};\npub fn p(b: String) { let v: Settings = from_str(&b).unwrap(); }'],
     ['use serde_yaml::from_str', 'use serde_yaml::from_str;\npub fn p(b: String) { let v: serde_yaml::Value = from_str(&b).unwrap(); }'],
     ['use toml::from_str', 'use toml::from_str;\npub fn p(b: String) { let v: toml::Value = from_str(&b).unwrap(); }'],
-    ['use serde_json::from_slice', 'use serde_json::from_slice;\npub fn p(b: &[u8]) { let v: serde_json::Value = from_slice(b).unwrap(); }'],
+    ['use serde_json::from_slice', 'use serde_json::from_slice;\npub fn p(b: &[u8]) { let v: Settings = from_slice(b).unwrap(); }'],
   ])('the imported form %s is a deserialization sink', async (_label, code) => {
     expect(await deser(code)).not.toHaveLength(0);
   });
 
   it('the path-qualified form still matches', async () => {
-    expect(await deser('pub fn p(b: String) { let v: serde_json::Value = serde_json::from_str(&b).unwrap(); }')).not.toHaveLength(0);
+    expect(await deser('pub fn p(b: String) { let v: Settings = serde_json::from_str(&b).unwrap(); }')).not.toHaveLength(0);
   });
 
   it.each([
