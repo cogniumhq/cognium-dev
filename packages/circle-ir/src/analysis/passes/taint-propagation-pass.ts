@@ -3306,6 +3306,9 @@ function detectExpressionScanFlows(
     const aliases = csharpMethodScopedAliases(code, seeds, csMethods, csFieldNames);
     const fileAnchor = sourcesWithVar.reduce((a, sv) => (sv.line < a.line ? sv : a), sourcesWithVar[0]);
     const have = new Set(sourcesWithVar.map(sv => `${sv.variable}@${methodStartOf(sv.line)}`));
+    const seedVars = new Set(sourcesWithVar.map(s => s.variable));
+    const derivedForAnchor = buildJavaTaintedVars(code, seedVars);
+    const codeLinesForAnchor = code.split('\n');
     for (const alias of aliases) {
       const fn = methodStartOf(alias.line);
       const isField = csFieldNames.has(alias.variable);
@@ -3317,9 +3320,22 @@ function detectExpressionScanFlows(
       // call), which also keeps it ahead of a sink in a method declared
       // earlier in the file than the method holding the source.
       const inMethod = sourcesWithVar.filter(sv => methodStartOf(sv.line) === fn && sv.line <= alias.line);
-      const from = !alias.carried && inMethod.length > 0
+      let from = !alias.carried && inMethod.length > 0
         ? inMethod.reduce((a, sv) => (sv.line < a.line ? sv : a), inMethod[0])
         : fileAnchor;
+      // cognium-dev#515: same RHS anchor as Java — do not credit an earlier decoy read.
+      if (!alias.carried && derivedForAnchor.size > 0) {
+        const methodRealSourceByVar = new Map<string, typeof sourcesWithVar[0]>();
+        for (const s of sourcesWithVar) {
+          if (methodStartOf(s.line) !== fn) continue;
+          const prev = methodRealSourceByVar.get(s.variable);
+          if (!prev || s.line < prev.line) methodRealSourceByVar.set(s.variable, s);
+        }
+        const referenced = resolveJavaDerivedAnchor(
+          alias.variable, derivedForAnchor, methodRealSourceByVar, codeLinesForAnchor, new Set(),
+        );
+        if (referenced) from = referenced;
+      }
       const aliasEntry: typeof sourcesWithVar[0] = {
         ...from,
         variable: alias.variable,
