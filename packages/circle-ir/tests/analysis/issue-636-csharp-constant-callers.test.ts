@@ -125,6 +125,62 @@ public class Mixed
     expect(cmdAt(flows, 'Worker.cs', lineOf(worker, 'Process.Start', 1))).toBe(true);
   });
 
+  const entryRelayRunner = {
+    entry: `using System.Web;
+public class Entry
+{
+    public void Live(HttpRequest req)
+    {
+        string item = req.QueryString["item"];
+        Relay.WithInput(item);
+    }
+    public void Nightly()
+    {
+        string label = "nightly-report";
+        Relay.WithLabel(label);
+    }
+}
+`,
+    relay: `public class Relay
+{
+    public static void WithInput(string arg) { Runner.RunInput(arg); }
+    public static void WithLabel(string arg) { Runner.RunLabel(arg); }
+}
+`,
+    runner: `using System.Diagnostics;
+public class Runner
+{
+    public static void RunInput(string arg) { Process.Start("tool.exe " + arg); }
+    public static void RunLabel(string arg) { Process.Start("tool.exe " + arg); }
+}
+`,
+  };
+
+  it('drops a sink when constants reach it through forwarded parameters', async () => {
+    const { flows, pa } = await project([
+      { filePath: 'Entry.cs', code: entryRelayRunner.entry },
+      { filePath: 'Relay.cs', code: entryRelayRunner.relay },
+      { filePath: 'Runner.cs', code: entryRelayRunner.runner },
+    ]);
+    expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunInput', 0))).toBe(true);
+    expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunLabel', 0))).toBe(false);
+    expect(pa.taint_paths.some(p => p.sink.file === 'Runner.cs' && p.sink.line === lineOf(entryRelayRunner.runner, 'RunInput', 0))).toBe(true);
+  });
+
+  it('keeps forwarding when a second caller passes tainted data into the relay', async () => {
+    const entry = entryRelayRunner.entry.replace(
+      'Relay.WithLabel(label);',
+      `Relay.WithLabel(label);
+        Relay.WithLabel(req.QueryString["extra"]);`,
+    );
+    const { flows } = await project([
+      { filePath: 'Entry.cs', code: entry },
+      { filePath: 'Relay.cs', code: entryRelayRunner.relay },
+      { filePath: 'Runner.cs', code: entryRelayRunner.runner },
+    ]);
+    expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunLabel', 0))).toBe(true);
+  });
+
   it('keeps a method when a local is reassigned to a non-constant before the call', async () => {
     const caller = `using System.Web;
 public class Reassign

@@ -18,8 +18,10 @@
  *      resolution `CrossFilePass` uses) either to `M` or to some other exact
  *      target; one unresolved, inferred or polymorphic call keeps the flow.
  *   4. At least one call resolves to `M`, and at every such call the argument at
- *      `P`'s position is a plain string literal, a literal local (`#636`), or a
- *      local array whose element writes are all literals (`#638` step 1).
+ *      `P`'s position is a plain string literal, a literal local (`#636`), a
+ *      local array whose element writes are all literals (`#638` step 1), or a
+ *      parameter of the caller when every in-project caller of that method passes
+ *      a constant at that parameter (transitive, depth ≤ 4, cycle-safe).
  */
 
 import type { CircleIR, CallInfo, MethodInfo, TypeInfo } from '../types/index.js';
@@ -149,13 +151,72 @@ export function isLiteralArrayLocal(ir: CircleIR, lines: string[], call: CallInf
   return true;
 }
 
-export function isConstantArg(ir: CircleIR, lines: string[], call: CallInfo, position: number): boolean {
+function isDirectConstantArg(ir: CircleIR, lines: string[], call: CallInfo, position: number): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
   const expr = (arg.expression ?? '').trim();
   if (STRING_LITERAL.test(expr)) return true;
   if (arg.variable && expr === arg.variable && isLiteralLocal(ir, lines, call, arg.variable)) return true;
   return !!arg.variable && expr === arg.variable && isLiteralArrayLocal(ir, lines, call, arg.variable);
+}
+
+/** Direct constant at a call argument (exported for #638 unit tests). */
+export function isConstantArg(ir: CircleIR, lines: string[], call: CallInfo, position: number): boolean {
+  return isDirectConstantArg(ir, lines, call, position);
+}
+
+interface ConstantCallerCtx {
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>;
+  callsByName: Map<string, CallSite[]>;
+  resolver: ProjectGraph['resolver'];
+  sourceLinesByFile: ReadonlyMap<string, string[]>;
+}
+
+const TRANSITIVE_MAX_DEPTH = 4;
+
+function isConstantArgRecursive(
+  ctx: ConstantCallerCtx,
+  ir: CircleIR,
+  lines: string[],
+  call: CallInfo,
+  position: number,
+  depth: number,
+  visiting: Set<string>,
+): boolean {
+  if (isDirectConstantArg(ir, lines, call, position)) return true;
+  if (depth >= TRANSITIVE_MAX_DEPTH) return false;
+
+  const arg = call.arguments.find(a => a.position === position);
+  if (!arg?.variable || (arg.expression ?? '').trim() !== arg.variable) return false;
+
+  const encl = enclosingMethod(ir, call.location.line);
+  if (!encl) return false;
+  const paramIdx = encl.method.parameters.findIndex(p => p.name === arg.variable);
+  if (paramIdx < 0) return false;
+
+  const fqn = `${typeFqn(encl.type, ir)}.${encl.method.name}`;
+  const visitKey = `${fqn}:${paramIdx}`;
+  if (visiting.has(visitKey)) return false;
+  visiting.add(visitKey);
+
+  let resolvedToMethod = 0;
+  for (const site of ctx.callsByName.get(encl.method.name) ?? []) {
+    const r = ctx.resolver.resolveCall(site.call, site.file);
+    if (!r || r.resolution !== 'exact' || r.targetMethod !== fqn) continue;
+    const callerIr = ctx.fileAnalyses.find(f => f.file === site.file)?.analysis;
+    const callerLines = ctx.sourceLinesByFile.get(site.file);
+    if (!callerIr || !callerLines) {
+      visiting.delete(visitKey);
+      return false;
+    }
+    if (!isConstantArgRecursive(ctx, callerIr, callerLines, site.call, paramIdx, depth + 1, visiting)) {
+      visiting.delete(visitKey);
+      return false;
+    }
+    resolvedToMethod++;
+  }
+  visiting.delete(visitKey);
+  return resolvedToMethod > 0;
 }
 
 export function applyConstantCallerGate(
@@ -183,6 +244,13 @@ export function applyConstantCallerGate(
       for (const i of type.implements) derivedFrom.add(i.split('.').pop() ?? i);
     }
   }
+
+  const gateCtx: ConstantCallerCtx = {
+    fileAnalyses,
+    callsByName,
+    resolver,
+    sourceLinesByFile,
+  };
 
   for (const fa of candidates) {
     const ir = fa.analysis;
@@ -215,7 +283,7 @@ export function applyConstantCallerGate(
         if (r.targetMethod !== fqn) continue;
         const callerIr = fileAnalyses.find(f => f.file === site.file)?.analysis;
         const lines = sourceLinesByFile.get(site.file);
-        if (!callerIr || !lines || !isConstantArg(callerIr, lines, site.call, position)) return true;
+        if (!callerIr || !lines || !isConstantArgRecursive(gateCtx, callerIr, lines, site.call, position, 0, new Set())) return true;
         resolvedToMethod++;
       }
       return resolvedToMethod === 0;
