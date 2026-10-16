@@ -203,6 +203,34 @@ public class MixedEscape {
     expect(xssFlowLines(r)).toEqual([11]);
   });
 
+  it('ResponseEntity.ok().body(x) reports xss on markup; numeric param and non-markup stay clean', async () => {
+    const code = `package com.acme.board;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class BadgeController {
+    @GetMapping("/badge")
+    public ResponseEntity<String> badge(@RequestParam String label) {
+        return ResponseEntity.ok().body("<b>" + label + "</b>");
+    }
+
+    @GetMapping("/count")
+    public ResponseEntity<String> count(@RequestParam int n) {
+        return ResponseEntity.ok().body("<b>" + n + "</b>");
+    }
+
+    @GetMapping("/plain")
+    public ResponseEntity<String> plain(@RequestParam String label) {
+        return ResponseEntity.ok().body(label.length() < 3 ? "short" : "long");
+    }
+}
+`;
+    const r = await analyze(code, 'BadgeController.java', 'java');
+    expect(xssFlowLines(r)).toEqual([10]);
+  });
+
   it('static-import htmlEscape and same-line concat must not suppress unsanitized carrier', async () => {
     const staticImport = `package com.acme.board;
 

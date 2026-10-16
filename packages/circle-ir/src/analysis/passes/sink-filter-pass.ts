@@ -1424,6 +1424,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // Build merged sinks, deduplicating JS DOM sinks that may overlap with config sinks.
     const sinks: TaintSink[] = [...taintMatcher.sinks];
     for (const s of langSources.additionalSinks) {
+      const springReturn =
+        s.type === 'xss' &&
+        typeof s.location === 'string' &&
+        s.location.startsWith('Spring handler returns HTML');
+      if (springReturn) {
+        const i = sinks.findIndex(x => x.line === s.line && x.type === 'xss');
+        if (i >= 0) sinks[i] = s;
+        else if (!sinks.some(x => x.line === s.line && x.cwe === s.cwe && x.type === s.type)) sinks.push(s);
+        continue;
+      }
       if (!sinks.some(x => x.line === s.line && x.cwe === s.cwe && x.type === s.type)) {
         sinks.push(s);
       }

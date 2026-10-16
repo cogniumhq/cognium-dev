@@ -711,7 +711,6 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
         const tm = ctx.getResult<TaintMatcherResult>('taint-matcher');
         const xssSan = tm.sanitizers.filter(sa => sa.sanitizes.includes('xss')).map(sa => sa.line);
         for (const r of findJavaSpringReturnXSSSinks(code, types, tm.sources, xssSan)) {
-          if (additionalSinks.some(s => s.line === r.sinkLine && s.type === 'xss')) continue;
           additionalSinks.push({
             type: 'xss',
             cwe: 'CWE-79',
@@ -12210,8 +12209,8 @@ function javaParensBalanced(expr: string): boolean {
  *   - the method carries a `@*Mapping` annotation;
  *   - it returns `String` under a body-writing controller, or
  *     `ResponseEntity<String>` via `ResponseEntity.ok(x)` /
- *     `new ResponseEntity<>(x, …)` (the builder `.body(x)` form is left to
- *     SinkFilterPass Stage 15c's text/html content-type rule);
+ *     `new ResponseEntity<>(x, …)`, or `ResponseEntity.ok().body(x)` /
+ *     `ResponseEntity.status(...).body(x)` on a body-writing controller);
  *   - the returned expression references a request-bound parameter
  *     (`@RequestParam`, `@PathVariable`, `@RequestHeader`, `@CookieValue`,
  *     `@MatrixVariable`, a `String` `@RequestBody`) or an in-method source,
@@ -12294,13 +12293,18 @@ export function findJavaSpringReturnXSSSinks(
 
         let expr = stmt;
         if (entity) {
-          // `ResponseEntity.ok(x)` / `new ResponseEntity<>(x, status)` only. The
-          // builder `.body(x)` form stays with SinkFilterPass Stage 15c, which
-          // keeps it only next to an explicit text/html signal.
-          const em = /^\s*ResponseEntity\s*\.\s*ok\s*\(([\s\S]+)\)\s*$/.exec(stmt)
+          // `ResponseEntity.ok(x)` / `new ResponseEntity<>(x, status)` /
+          // `ResponseEntity.ok().body(x)` / `ResponseEntity.status(...).body(x)`.
+          const em =
+            /^\s*ResponseEntity\s*\.\s*ok\s*\(\s*\)\s*\.\s*body\s*\(([\s\S]+)\)\s*$/.exec(stmt)
+            ?? /^\s*ResponseEntity\s*\.\s*status\s*\(([\s\S]+)\)\s*\.\s*body\s*\(([\s\S]+)\)\s*$/.exec(stmt)
+            ?? /^\s*ResponseEntity\s*\.\s*ok\s*\(([\s\S]+)\)\s*$/.exec(stmt)
             ?? /^\s*new\s+ResponseEntity\s*(?:<[^>]*>)?\s*\(([\s\S]+),[^,()]*\)\s*$/.exec(stmt);
-          if (!em || !javaParensBalanced(em[1])) continue;
-          expr = em[1];
+          if (!em) continue;
+          const payload = em.length === 3 ? em[2] : em[1];
+          if (!payload || !javaParensBalanced(payload)) continue;
+          if (em.length === 3 && !javaParensBalanced(em[1])) continue;
+          expr = payload;
         }
         const hit = [...carriers].find(([c, info]) => info.assignLine <= sinkLine && refers(expr, c));
         if (!hit) continue;
