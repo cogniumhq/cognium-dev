@@ -1024,7 +1024,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
       addPatternDefs(nameNode, line);
       return;
     }
-    if (patternNode.type === 'assignment_pattern') {
+    if (isDestructuringDefaultPattern(patternNode.type)) {
       const leftNode = patternNode.childForFieldName('left');
       if (leftNode) addPatternDefs(leftNode, line);
       return;
@@ -1068,7 +1068,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
       }
     }
     // Assignment pattern (default value): name = defaultValue
-    else if (param.type === 'assignment_pattern') {
+    else if (isDestructuringDefaultPattern(param.type)) {
       const leftNode = param.childForFieldName('left');
       if (leftNode && leftNode.type === 'identifier') {
         defs.push({
@@ -1134,6 +1134,11 @@ function extractJSFieldDefs(body: Node, startId: number): DFGDef[] {
   return defs;
 }
 
+/** Tree-sitter-javascript object destructuring default (`{ sort = "name" }`). */
+function isDestructuringDefaultPattern(type: string): boolean {
+  return type === 'assignment_pattern' || type === 'object_assignment_pattern';
+}
+
 /**
  * Extract definitions from destructuring patterns.
  */
@@ -1181,7 +1186,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             kind: 'local',
           });
         }
-      } else if (child.type === 'assignment_pattern') {
+      } else if (isDestructuringDefaultPattern(child.type)) {
         // { foo = defaultValue }
         const leftNode = child.childForFieldName('left');
         if (leftNode && leftNode.type === 'shorthand_property_identifier_pattern') {
@@ -1223,7 +1228,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             kind: 'local',
           });
         }
-      } else if (child.type === 'assignment_pattern') {
+      } else if (isDestructuringDefaultPattern(child.type)) {
         // [x = defaultValue]
         const leftNode = child.childForFieldName('left');
         if (leftNode && leftNode.type === 'identifier') {
