@@ -18,8 +18,8 @@
  *      resolution `CrossFilePass` uses) either to `M` or to some other exact
  *      target; one unresolved, inferred or polymorphic call keeps the flow.
  *   4. At least one call resolves to `M`, and at every such call the argument at
- *      `P`'s position is a plain string literal, or a local declared in the
- *      caller with exactly one assignment, a string literal.
+ *      `P`'s position is a plain string literal, a literal local (`#636`), or a
+ *      local array whose element writes are all literals (`#638` step 1).
  */
 
 import type { CircleIR, CallInfo, MethodInfo, TypeInfo } from '../types/index.js';
@@ -83,12 +83,83 @@ function isLiteralLocal(ir: CircleIR, lines: string[], call: CallInfo, name: str
   return assignments === 1 && assignLine > 0 && assignLine < call.location.line && (assignIsDecl || declared);
 }
 
-function isConstantArg(ir: CircleIR, lines: string[], call: CallInfo, position: number): boolean {
+const LITERAL_IN_BRACES = /^@?"(?:[^"\\]|\\.)*"(?:\s*,\s*@?"(?:[^"\\]|\\.)*")*\s*$/;
+
+/** True when local array `name` is declared in the caller and only ever holds string literals (cognium-dev#638 step 1). */
+export function isLiteralArrayLocal(ir: CircleIR, lines: string[], call: CallInfo, name: string): boolean {
+  if (!/^[A-Za-z_]\w*$/.test(name)) return false;
+  const encl = enclosingMethod(ir, call.location.line);
+  if (!encl) return false;
+  const { method } = encl;
+  if (method.parameters.some(p => p.name === name)) return false;
+
+  const literal = '@?"(?:[^"\\\\]|\\\\.)*"';
+  const declNew = new RegExp(
+    `^\\s*(?:var\\s+)?[\\w<>\\[\\],\\s]*\\b${name}\\s*=\\s*new\\s+[\\w<>\\[\\],\\s]+\\[\\s*\\d+\\s*\\]\\s*;\\s*(?://.*)?$`,
+  );
+  const declInit = new RegExp(
+    `^\\s*(?:var\\s+)?[\\w<>\\[\\],\\s]*\\b${name}\\s*=\\s*(?:new\\s+[\\w<>\\[\\],\\s]+\\[\\s*\\]\\s*)?\\{([^}]*)\\}\\s*;\\s*(?://.*)?$`,
+  );
+  const plainReassign = new RegExp(`^\\s*${name}\\s*(?![\\[])(?:[-+*/%&|^?]|<<|>>)?=(?!=)`);
+  const elementWrite = new RegExp(`^\\s*${name}\\s*\\[[^\\]]+\\]\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`);
+  const alias = new RegExp(`^\\s*\\w+\\s*=\\s*${name}\\s*;`);
+  const mutate = new RegExp(`\\b(?:out|ref)\\s+${name}\\b|(?:\\+\\+|--)\\s*${name}\\b|\\b${name}\\s*(?:\\+\\+|--)`);
+  const copyStyle = new RegExp(`\\b(?:Array\\.Copy|CopyTo|\\.Add)\\s*\\([^)]*\\b${name}\\b`);
+
+  let declared = false;
+  let initLiteralOnly = false;
+  let declLine = -1;
+
+  for (let l = method.start_line; l <= method.end_line; l++) {
+    const text = lines[l - 1] ?? '';
+    if (mutate.test(text) || alias.test(text) || copyStyle.test(text)) return false;
+
+    const initMatch = declInit.exec(text);
+    if (initMatch) {
+      declared = true;
+      declLine = l;
+      const inner = (initMatch[1] ?? '').trim();
+      initLiteralOnly = inner.length === 0 || LITERAL_IN_BRACES.test(inner);
+      if (!initLiteralOnly) return false;
+      continue;
+    }
+    if (declNew.test(text)) {
+      declared = true;
+      declLine = l;
+      initLiteralOnly = false;
+      continue;
+    }
+
+    const ew = elementWrite.exec(text);
+    if (ew) {
+      const rhs = ew[1].trim();
+      if (STRING_LITERAL.test(rhs)) continue;
+      if (/^[A-Za-z_]\w*$/.test(rhs) && isLiteralLocal(ir, lines, call, rhs)) continue;
+      return false;
+    }
+
+    if (l !== declLine && plainReassign.test(text)) return false;
+  }
+
+  if (!declared) return false;
+
+  for (const c of ir.calls) {
+    if (c.location.line < method.start_line || c.location.line > method.end_line) continue;
+    if (c.location.line >= call.location.line) continue;
+    if (c === call) continue;
+    if (c.arguments.some(a => (a.variable ?? a.expression?.trim()) === name)) return false;
+  }
+
+  return true;
+}
+
+export function isConstantArg(ir: CircleIR, lines: string[], call: CallInfo, position: number): boolean {
   const arg = call.arguments.find(a => a.position === position);
   if (!arg) return false;
   const expr = (arg.expression ?? '').trim();
   if (STRING_LITERAL.test(expr)) return true;
-  return !!arg.variable && expr === arg.variable && isLiteralLocal(ir, lines, call, arg.variable);
+  if (arg.variable && expr === arg.variable && isLiteralLocal(ir, lines, call, arg.variable)) return true;
+  return !!arg.variable && expr === arg.variable && isLiteralArrayLocal(ir, lines, call, arg.variable);
 }
 
 export function applyConstantCallerGate(
