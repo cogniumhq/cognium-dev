@@ -43,6 +43,8 @@ export class ConstantPropagator {
   private methodReturnsConstant: Set<string> = new Set();
   // Track which methods always return sanitized values (inter-procedural analysis)
   private methodReturnsSanitized: Set<string> = new Set();
+  /** #581: same-file helpers named like a class-less sanitizer but not actually sanitizing. */
+  private localNonSanitizing: Set<string> = new Set();
   /**
    * #589: same-file helpers whose every reachable return is a direct call to a
    * context-specific HTML encoder (`return StringEscapeUtils.escapeHtml(v);`).
@@ -123,6 +125,7 @@ export class ConstantPropagator {
     this.inConditionalBranch = false;
     this.methodReturnsConstant.clear();
     this.methodReturnsSanitized.clear();
+    this.localNonSanitizing.clear();
     this.methodReturnsHtmlEncoderOnly.clear();
     this.methodNotHtmlEncoderOnly.clear();
     this.methodReturnsParameter.clear();
@@ -402,6 +405,9 @@ export class ConstantPropagator {
         if (allReturnsSanitized) {
           this.methodReturnsSanitized.add(methodName);
         }
+        if (hasReachableReturn && SANITIZER_METHODS.has(methodName) && !allReturnsSanitized) {
+          this.localNonSanitizing.add(methodName);
+        }
         if (returnedParamIndex >= 0) {
           this.methodReturnsParameter.set(methodName, returnedParamIndex);
         }
@@ -544,7 +550,7 @@ export class ConstantPropagator {
       const nameNode = node.childForFieldName('name');
       if (nameNode) {
         const methodName = getNodeText(nameNode, this.source);
-        if (SANITIZER_METHODS.has(methodName)) {
+        if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
           return true;
         }
       }
@@ -2047,7 +2053,8 @@ export class ConstantPropagator {
   isSanitizerMethodCall(node: Node): boolean {
     const methodName = this.extractCallName(node);
     if (!methodName) return false;
-    return SANITIZER_METHODS.has(methodName) || this.methodReturnsSanitized.has(methodName);
+    return (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName))
+      || this.methodReturnsSanitized.has(methodName);
   }
 
   /**
@@ -2308,7 +2315,7 @@ export class ConstantPropagator {
       if (nameNode) {
         const methodName = getNodeText(nameNode, this.source);
 
-        if (SANITIZER_METHODS.has(methodName)) {
+        if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
           return false;
         }
 
