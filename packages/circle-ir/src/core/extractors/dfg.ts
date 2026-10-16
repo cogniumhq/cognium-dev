@@ -185,6 +185,7 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
  * Build DFG for Java code.
  */
 function buildJavaDFG(tree: Tree, cache?: NodeCache): DFG {
+  multiLineValueLinks = [];
   const defs: DFGDef[] = [];
   const uses: DFGUse[] = [];
   let defIdCounter = 1;
@@ -244,6 +245,7 @@ function buildJavaDFG(tree: Tree, cache?: NodeCache): DFG {
 
   // Compute def-use chains
   const chains = computeChains(defs, uses);
+  linkMultiLineValues(chains, uses);
 
   return { defs, uses, chains };
 }
@@ -411,6 +413,47 @@ function processBlock(
 }
 
 /**
+ * Java: a local whose initializer / assigned value wraps over several lines
+ * (`label = new String(\n  Base64.decode(\n    picked.getBytes()));`) holds uses on
+ * lines after the definition's own line, and `computeChains` links a use to a
+ * definition only on the same line. Each such definition is recorded here with
+ * the uses of its value, and `buildJavaDFG` links them once every use has its
+ * final reaching definition (cognium-dev#597).
+ */
+let multiLineValueLinks: Array<{ defId: number; useIds: number[] }> = [];
+
+function recordMultiLineValue(value: Node, defId: number, valueUses: DFGUse[], isJavaScript: boolean): void {
+  if (isJavaScript || value.endPosition.row <= value.startPosition.row) return;
+  // A lambda, anonymous class or switch expression inside the value has its own
+  // statements; their uses do not feed the value itself. Leave those alone.
+  if (findNodes(value, 'lambda_expression').length > 0
+    || findNodes(value, 'class_body').length > 0
+    || findNodes(value, 'switch_expression').length > 0) return;
+  const useIds = valueUses.filter(u => u.line > value.startPosition.row + 1).map(u => u.id);
+  if (useIds.length > 0) multiLineValueLinks.push({ defId, useIds });
+}
+
+/** Chain each use inside a wrapped value to the definition it feeds (#597). */
+function linkMultiLineValues(chains: DFGChain[], uses: DFGUse[]): void {
+  if (multiLineValueLinks.length === 0) return;
+  const useById = new Map<number, DFGUse>();
+  for (const u of uses) useById.set(u.id, u);
+  const seen = new Set(chains.map(c => `${c.from_def}|${c.to_def}|${c.via}`));
+  for (const { defId, useIds } of multiLineValueLinks) {
+    for (const id of useIds) {
+      const u = useById.get(id);
+      if (!u || u.def_id === null || u.def_id === defId) continue;
+      const key = `${u.def_id}|${defId}|${u.variable}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      chains.push({ from_def: u.def_id, to_def: defId, via: u.variable });
+    }
+  }
+  chains.sort((a, b) => a.from_def - b.from_def || a.to_def - b.to_def);
+  multiLineValueLinks = [];
+}
+
+/**
  * Process a single statement.
  */
 function processStatement(
@@ -433,6 +476,7 @@ function processStatement(
       const declarators = findNodes(stmt, 'variable_declarator');
       for (const decl of declarators) {
         const nameNode = decl.childForFieldName('name');
+        let declaredDefId: number | null = null;
         if (nameNode) {
           // Handle simple identifiers
           if (nameNode.type === 'identifier') {
@@ -446,6 +490,7 @@ function processStatement(
             defs.push(def);
             currentScope(scopeStack).set(name, def.id);
             markDeclared(currentScope(scopeStack), name);
+            declaredDefId = def.id;
           } else if (isJavaScript) {
             // Handle destructuring patterns in JavaScript
             const destructDefs = extractDestructuringDefs(nameNode, defId);
@@ -462,6 +507,7 @@ function processStatement(
             const initUses = extractUses(init, useId, scopeStack, isJavaScript);
             uses.push(...initUses.uses);
             useId = initUses.nextId;
+            if (declaredDefId !== null) recordMultiLineValue(init, declaredDefId, initUses.uses, isJavaScript);
           }
         }
       }
@@ -732,6 +778,7 @@ function processExpression(
     // 2. Then create a def for the left side
     const left = expr.childForFieldName('left');
     const right = expr.childForFieldName('right');
+    let assignedValueUses: DFGUse[] = [];
 
     // Process right side first - may contain nested assignments
     if (right) {
@@ -747,6 +794,7 @@ function processExpression(
         const rightUses = extractUses(right, useId, scopeStack, isJavaScript);
         uses.push(...rightUses.uses);
         useId = rightUses.nextId;
+        assignedValueUses = rightUses.uses;
       }
     }
 
@@ -761,6 +809,7 @@ function processExpression(
       };
       defs.push(def);
       currentScope(scopeStack).set(name, def.id);
+      if (right && assignedValueUses.length > 0) recordMultiLineValue(right, def.id, assignedValueUses, isJavaScript);
       // A straight-line reassignment replaces any branch defs carried out (#596).
       alternateDefs.get(currentScope(scopeStack))?.delete(name);
     } else if (left) {
