@@ -38,6 +38,8 @@ export interface ConstantPropagatorResult {
   synchronizedLines: Set<number>;
   /** Instance field taint tracking: field name → taint info from constructor assignment */
   instanceFieldTaint: Map<string, FieldTaintInfo>;
+  /** Method/function names whose reachable returns are compile-time constants. */
+  constantReturningMethods?: ReadonlySet<string>;
 }
 
 export interface TaintedParameter {

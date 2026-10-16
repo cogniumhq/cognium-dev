@@ -326,7 +326,12 @@ function makeConstPropVeto(
     return use ? graph.defById.get(use.def_id!) : undefined;
   };
   return (step, sourceLine, sinkLine, sinkType) => {
-    const r = isFalsePositive(constProp, step.line, step.variable);
+    const method = methodAtLine(graph, step.line);
+    const scopedVar = method ? `${method}:${step.variable}` : step.variable;
+    let r = isFalsePositive(constProp, step.line, scopedVar);
+    if (!r.isFalsePositive && scopedVar !== step.variable) {
+      r = isFalsePositive(constProp, step.line, step.variable);
+    }
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
     // #589: the step variable came from a context-specific encoder
@@ -406,7 +411,20 @@ function makeConstPropVeto(
     // "untainted" can only mean it has no pattern for this source. Container
     // reads are excluded: const-prop tracks collection keys, and there its
     // verdict is informed (`bar = map.get("safeKey")` — 10 OWASP FP files).
-    if (d.line === sourceLine && sources.some(s => s.line === sourceLine && !CONTAINER_READ_SOURCES.has(s.type))) return false;
+    if (d.line === sourceLine && sources.some(s => s.line === sourceLine && !CONTAINER_READ_SOURCES.has(s.type))) {
+      // cognium-dev#751: sink use after `uid := constantHelper(tainted)` must veto
+      // when the helper is in `constantReturningMethods`, even if the flow's
+      // source_line is the assignment line (rule E would otherwise keep it).
+      if (step.line === sinkLine && !constProp.tainted.has(scopedVar)) {
+        for (let ln = sourceLine; ln <= sinkLine; ln++) {
+          const calleeMatch = (lines[ln - 1] ?? '').match(/:=\s*(\w+)\s*\(/);
+          if (calleeMatch && constProp.constantReturningMethods?.has(calleeMatch[1])) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
     // (A) the chain crossed at least one `x = f(x)` and ends inside the span.
     if (selfHops > 0 && d.line >= lo) return false;
     return true;

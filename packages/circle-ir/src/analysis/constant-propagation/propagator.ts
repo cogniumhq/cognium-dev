@@ -234,6 +234,7 @@ export class ConstantPropagator {
       lineConditions: new Map(this.lineConditions),
       synchronizedLines: new Set(this.synchronizedLines),
       instanceFieldTaint: new Map(this.instanceFieldTaint),
+      constantReturningMethods: new Set(this.methodReturnsConstant),
     };
   }
 
@@ -330,9 +331,7 @@ export class ConstantPropagator {
 
         hasReachableReturn = true;
 
-        const valueNode = ret.children.find(c =>
-          c.type !== 'return' && c.type !== ';' && c.type !== 'comment'
-        );
+        const valueNode = this.returnExpressionValueNode(ret);
 
         if (!valueNode) {
           allReturnsConstant = false;
@@ -529,6 +528,22 @@ export class ConstantPropagator {
     return null;
   }
 
+  /** Return the expression node from a `return_statement` (Java, Go, Python, …). */
+  private returnExpressionValueNode(ret: Node): Node | undefined {
+    const byField = ret.childForFieldName('result');
+    if (byField) return byField;
+    const candidates = ret.children.filter(
+      (c) => c.type !== 'return' && c.type !== ';' && c.type !== 'comment',
+    );
+    let valueNode: Node | undefined = candidates[0];
+    if (valueNode?.type === 'expression_list') {
+      valueNode = valueNode.children.find(
+        (c) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+      );
+    }
+    return valueNode;
+  }
+
   private getMethodParameters(method: Node): string[] {
     const params: string[] = [];
     const paramsNode = method.childForFieldName('parameters');
@@ -539,6 +554,17 @@ export class ConstantPropagator {
         const nameNode = child.childForFieldName('name');
         if (nameNode) {
           params.push(getNodeText(nameNode, this.source));
+        }
+      } else if (child.type === 'parameter_declaration') {
+        const nameNode = child.childForFieldName('name');
+        if (nameNode) {
+          if (nameNode.type === 'identifier') {
+            params.push(getNodeText(nameNode, this.source));
+          } else {
+            for (const id of nameNode.children) {
+              if (id.type === 'identifier') params.push(getNodeText(id, this.source));
+            }
+          }
         }
       }
     }
@@ -929,6 +955,7 @@ export class ConstantPropagator {
 
     switch (node.type) {
       case 'method_declaration':
+      case 'function_declaration':
       case 'constructor_declaration':
         this.handleMethodDeclaration(node);
         return true; // Don't visit children directly, handleMethodDeclaration does it
@@ -958,6 +985,11 @@ export class ConstantPropagator {
 
       case 'assignment_expression':
         this.handleAssignment(node);
+        return false;
+
+      case 'short_var_declaration':
+      case 'assignment_statement':
+        this.handleGoAssignment(node);
         return false;
 
       case 'update_expression':
@@ -1395,6 +1427,48 @@ export class ConstantPropagator {
           } else {
             this.symbols.set(scopedName, createUnknown(line));
           }
+        }
+      }
+    }
+  }
+
+  private handleGoAssignment(node: Node): void {
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (!left || !right) return;
+
+    const names: string[] = [];
+    if (left.type === 'identifier') {
+      names.push(getNodeText(left, this.source));
+    } else if (left.type === 'expression_list') {
+      for (const c of left.children) {
+        if (c.type === 'identifier') names.push(getNodeText(c, this.source));
+      }
+    }
+
+    for (const varName of names) {
+      const scopedName = this.getScopedName(varName);
+      const line = getNodeLine(node);
+      if (this.isTaintedExpression(right)) {
+        this.tainted.add(scopedName);
+        this.sanitizedVars.delete(scopedName);
+        this.sanitizedVarUncovered.delete(scopedName);
+        this.definitionNodes.set(scopedName, right);
+        this.symbols.set(scopedName, createUnknown(line));
+      } else {
+        if (this.inConditionalBranch) {
+          this.symbols.set(scopedName, createUnknown(line));
+          continue;
+        }
+        this.tainted.delete(scopedName);
+        this.definitionNodes.delete(scopedName);
+        this.symbols.set(scopedName, this.evaluateExpression(right));
+        if (this.isSanitizerMethodCall(right)) {
+          this.sanitizedVars.add(scopedName);
+          this.recordSanitizerScope(scopedName, right);
+        } else {
+          this.sanitizedVars.delete(scopedName);
+          this.sanitizedVarUncovered.delete(scopedName);
         }
       }
     }
@@ -2497,6 +2571,36 @@ export class ConstantPropagator {
           }
           if (this.isTaintedExpression(objectNode)) {
             return true;
+          }
+        }
+      }
+    }
+
+    if (node.type === 'call_expression' || node.type === 'call') {
+      const methodName = this.extractCallName(node);
+      if (methodName) {
+        if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
+          return false;
+        }
+        if (this.methodReturnsConstant.has(methodName)) {
+          return false;
+        }
+        if (this.methodReturnsSanitized.has(methodName)) {
+          return false;
+        }
+        if (this.methodReturnsSafeValue.has(methodName)) {
+          return false;
+        }
+        const returnedParamIdx = this.methodReturnsParameter.get(methodName);
+        if (returnedParamIdx !== undefined && returnedParamIdx >= 0) {
+          const argsNode = node.childForFieldName('arguments');
+          if (argsNode) {
+            const args = argsNode.children.filter(
+              (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ','
+            );
+            if (args.length > returnedParamIdx && this.isTaintedExpression(args[returnedParamIdx]!)) {
+              return true;
+            }
           }
         }
       }

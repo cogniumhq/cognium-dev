@@ -38,7 +38,13 @@ export class ExpressionEvaluator {
         return createConstant(parseFloat(text), 'float', line);
 
       case 'string_literal':
-        return createConstant(text.slice(1, -1), 'string', line);
+      case 'interpreted_string_literal':
+      case 'raw_string_literal':
+        return createConstant(
+          node.type === 'raw_string_literal' ? text.slice(1, -1) : text.slice(1, -1),
+          'string',
+          line,
+        );
 
       case 'character_literal': {
         let char = text.slice(1, -1);
