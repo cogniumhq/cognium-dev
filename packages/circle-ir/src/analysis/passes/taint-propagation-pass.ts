@@ -1769,6 +1769,21 @@ function detectArrayElementFlows(
   return flows;
 }
 
+/** Parameter names referenced as identifiers inside a compound sink argument (#685). */
+function compoundArgParamNames(expression: string, paramNames: Iterable<string>): string[] {
+  const stripped = expression.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, (m) => ' '.repeat(m.length));
+  const matched: string[] = [];
+  for (const raw of paramNames) {
+    const name = raw.startsWith('*') ? raw.slice(1) : raw;
+    if (!/^[\w$]+$/.test(name)) continue;
+    const re = new RegExp(
+      `(?<![\\w$.])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`,
+    );
+    if (re.test(stripped)) matched.push(name);
+  }
+  return matched;
+}
+
 function detectParameterSinkFlows(
   types: CircleIR['types'],
   calls: CircleIR['calls'],
@@ -1814,14 +1829,17 @@ function detectParameterSinkFlows(
       if (!methodParamSources) continue;
 
       for (const arg of call.arguments) {
-        if (arg.variable) {
-          // Skip arguments that are not in the sink's dangerous positions.
-          // E.g., execSync(cmd, { cwd: path }) — only arg 0 is a command injection sink.
-          if (sink.argPositions && sink.argPositions.length > 0 &&
-              !sink.argPositions.includes(arg.position)) {
-            continue;
-          }
-          const paramSource = methodParamSources.get(arg.variable);
+        if (sink.argPositions && sink.argPositions.length > 0 &&
+            !sink.argPositions.includes(arg.position)) {
+          continue;
+        }
+        const varNames: string[] = arg.variable
+          ? [arg.variable]
+          : (arg.expression
+            ? compoundArgParamNames(arg.expression, methodParamSources.keys())
+            : []);
+        for (const varName of varNames) {
+          const paramSource = methodParamSources.get(varName);
           if (paramSource) {
             // Sprint 82 (#189) — sink-type-aware dedup so a sink registered
             // under multiple types at the same call site (e.g. `redirect` as
@@ -1830,7 +1848,7 @@ function detectParameterSinkFlows(
             if (!exists) {
               if (
                 typeof code === 'string' &&
-                isReassignedToLiteralBetween(code, arg.variable, paramSource.line, sink.line, unreachableLines)
+                isReassignedToLiteralBetween(code, varName, paramSource.line, sink.line, unreachableLines)
               ) {
                 continue;
               }
@@ -1840,8 +1858,8 @@ function detectParameterSinkFlows(
                 source_line: paramSource.line, sink_line: sink.line,
                 source_type: paramSource.type, sink_type: sink.type,
                 path: [
-                  { variable: arg.variable, line: paramSource.line, type: 'source' as const },
-                  { variable: arg.variable, line: sink.line,        type: 'sink'   as const },
+                  { variable: varName, line: paramSource.line, type: 'source' as const },
+                  { variable: varName, line: sink.line,        type: 'sink'   as const },
                 ],
                 confidence: 0.75, sanitized: false,
               });
