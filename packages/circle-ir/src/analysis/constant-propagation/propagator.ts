@@ -1460,6 +1460,11 @@ export class ConstantPropagator {
           this.symbols.set(scopedName, createUnknown(line));
           continue;
         }
+        const callee =
+          right.type === 'call_expression' || right.type === 'call' ? this.extractCallName(right) : null;
+        if (callee === 'Get' || callee === 'get') {
+          continue;
+        }
         this.tainted.delete(scopedName);
         this.definitionNodes.delete(scopedName);
         this.symbols.set(scopedName, this.evaluateExpression(right));
