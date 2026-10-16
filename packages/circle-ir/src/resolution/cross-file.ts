@@ -962,17 +962,28 @@ export class CrossFileResolver {
             }
           }
 
+          // The method the value ends in: the callee itself, or, for C#, the methods
+          // at the end of a pure forwarder chain (cognium-dev#637).
+          const startIR = this.fileIRs.get(resolved.targetFile);
+          const terminals: Array<{ file: string; method: string; positions: number[] }> =
+            startIR?.meta.language === 'csharp'
+              ? this.csharpChainTerminals(resolved.targetFile, resolved.targetMethod,
+                  carriedPositions ?? call.arguments.map((_, i) => i), 0, new Set())
+              : [{ file: resolved.targetFile, method: resolved.targetMethod,
+                   positions: carriedPositions ?? call.arguments.map((_, i) => i) }];
+
+          for (const term of terminals) {
           // Only proceed if the target file has any YAML-matched sinks at all.
           // Skipping sink-free files prevents the cartesian explosion of flows into
           // utility modules (AST helpers, string utilities, etc.) that have no
           // dangerous operations.
-          const targetIR = this.fileIRs.get(resolved.targetFile);
+          const targetIR = this.fileIRs.get(term.file);
           if (!targetIR || targetIR.taint.sinks.length === 0) continue;
 
           // Find the target method in the target file so we can locate sinks within it.
           // `resolved.targetMethod` is a FQN like "ClassName.methodName"; we match on
           // the suffix after the last dot.
-          const shortName = resolved.targetMethod.split('.').pop() ?? resolved.targetMethod;
+          const shortName = term.method.split('.').pop() ?? term.method;
           let targetMethod: MethodInfo | undefined;
           for (const type of targetIR.types) {
             const m = type.methods.find(m => m.name === shortName);
@@ -988,7 +999,7 @@ export class CrossFileResolver {
           if (sinksInMethod.length === 0) continue;
 
           for (const sink of sinksInMethod) {
-            const key = `${filePath}:${source.line}→${resolved.targetFile}:${sink.line}`;
+            const key = `${filePath}:${source.line}→${term.file}:${sink.line}`;
             if (seen.has(key)) continue;
             seen.add(key);
 
@@ -996,19 +1007,63 @@ export class CrossFileResolver {
               sourceFile: filePath,
               sourceLine: source.line,
               sourceType: source.type,
-              targetFile: resolved.targetFile,
+              targetFile: term.file,
               targetLine: sink.line,           // actual sink line in target file
-              targetMethod: resolved.targetMethod,
+              targetMethod: term.method,
               flowType: 'call_arg',
-              taintedArgPositions: carriedPositions ?? call.arguments.map((_, i) => i),
+              taintedArgPositions: term.positions,
               callLine: call.location.line,
             });
+          }
           }
         }
       }
     }
 
     return flows;
+  }
+
+  /**
+   * C# (cognium-dev#637): the methods a value ends in after a chain of pure
+   * forwarders. A callee that holds a sink is its own terminal. One that holds no
+   * sink only passes the tainted parameter, as a bare argument, to calls that each
+   * resolve exactly to a method in another file; those are followed (depth <= 4,
+   * a visited set stops loops). Anything else — a transformed argument, an
+   * unresolved call, a forwarder with no onward call — contributes no terminal.
+   */
+  private csharpChainTerminals(
+    file: string,
+    methodFqn: string,
+    positions: number[],
+    depth: number,
+    visited: Set<string>,
+  ): Array<{ file: string; method: string; positions: number[] }> {
+    const ir = this.fileIRs.get(file);
+    if (!ir) return [];
+    const shortName = methodFqn.split('.').pop() ?? methodFqn;
+    const method = ir.types.flatMap(t => t.methods).find(m => m.name === shortName);
+    if (!method) return [];
+    const idx = this.getFileIndex(ir);
+    const here = [{ file, method: methodFqn, positions }];
+    if ((idx.sinksByMethod.get(method) ?? []).length > 0) return here;
+    if (depth >= 4) return [];
+    const key = `${file}#${methodFqn}`;
+    if (visited.has(key)) return [];
+    visited.add(key);
+    const names = positions.map(i => method.parameters[i]?.name).filter((n): n is string => !!n);
+    if (names.length === 0) return [];
+    const out: Array<{ file: string; method: string; positions: number[] }> = [];
+    for (const call of idx.callsByMethod.get(method) ?? []) {
+      const carried = call.arguments.flatMap((a, i) =>
+        names.some(n => new RegExp(`(?<![\\w.])${escapeRegExp(n)}(?!\\w)`).test(a.expression ?? '')) ? [i] : []);
+      if (carried.length === 0) continue;
+      if (!carried.every(i => names.includes((call.arguments[i].expression ?? '').trim()))) continue;
+      const r = this.resolveCall(call, file);
+      if (!r || r.resolution !== 'exact' || r.targetFile === file) continue;
+      out.push(...this.csharpChainTerminals(r.targetFile, r.targetMethod, carried, depth + 1, visited));
+    }
+    visited.delete(key);
+    return out;
   }
 
   /**
