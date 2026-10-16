@@ -73,10 +73,8 @@ const JS_LOG_INJECTION_SANITIZERS = [
   /\bstripCRLF\s*\(/,
   /\bremoveNewlines\s*\(/,
   /\bsanitizeLogValue\s*\(/,
-  // Inline CRLF-stripping regex literal: .replace(/[\r\n]/g, '')
-  /\.replace\(\s*\/\[\s*\\r\s*\\n\s*\]\/[gimsu]*\s*,\s*['"`]['"`]\s*\)/,
-  // Inline CRLF sequence: .replace(/\r\n/g, '')
-  /\.replace\(\s*\/\\r\\n\/[gimsu]*\s*,\s*['"`]['"`]\s*\)/,
+  // Inline CRLF-stripping regex literal: .replace(/[\r\n]/g, '') — global required
+  /\.replace\(\s*\/\[\s*\\r\s*\\n\s*\]\/[gimsu]*g[gimsu]*\s*,\s*['"`]['"`]\s*\)/,
 ];
 
 // ---------------------------------------------------------------------------
