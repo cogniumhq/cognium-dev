@@ -443,6 +443,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       // recognition.
       additionalSanitizers.push(...findPythonRegexAllowlistWrapperSanitizers(code));
       additionalSanitizers.push(...findPythonSetMembershipXssGuardSanitizers(code));
+      additionalSanitizers.push(...findPythonLiteralMembershipGuardSanitizers(code));
       additionalSanitizers.push(...findPythonTraversalRejectGuardSanitizers(code));
       additionalSanitizers.push(...findPythonStringLiteralGuardSanitizers(code));
       additionalSanitizers.push(...findPythonDefaultSaxParserXxeSanitizers(code));
@@ -5397,6 +5398,181 @@ function findPythonRegexAllowlistWrapperSanitizers(code: string): TaintSanitizer
           });
         }
       }
+    }
+  }
+
+  return sanitizers;
+}
+
+function isPythonQuotedStringLiteral(token: string): boolean {
+  const t = token.trim();
+  return (
+    /^"(?:[^"\\]|\\.)*"$/.test(t) ||
+    /^'(?:[^'\\]|\\.)*'$/.test(t)
+  );
+}
+
+function pythonRhsIsLiteralStringCollection(rhs: string): boolean {
+  let s = rhs.trim();
+  if (/^frozenset\s*\(/.test(s) && s.endsWith(')')) {
+    s = s.slice(s.indexOf('(') + 1, -1).trim();
+  }
+  const splitElems = (inner: string): string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let quote: string | null = null;
+    let start = 0;
+    for (let i = 0; i < inner.length; i++) {
+      const c = inner[i]!;
+      if (quote) {
+        if (c === '\\') { i++; continue; }
+        if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { quote = c; continue; }
+      if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ',' && depth === 0) {
+        parts.push(inner.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    const last = inner.slice(start).trim();
+    if (last || parts.length > 0) parts.push(last);
+    return parts.filter(Boolean);
+  };
+  if (s.startsWith('{') && s.endsWith('}')) {
+    const inner = s.slice(1, -1).trim();
+    if (!inner) return true;
+    return splitElems(inner).every(isPythonQuotedStringLiteral);
+  }
+  if (s.startsWith('[') && s.endsWith(']')) {
+    const inner = s.slice(1, -1).trim();
+    if (!inner) return false;
+    return splitElems(inner).every(isPythonQuotedStringLiteral);
+  }
+  if (s.startsWith('(') && s.endsWith(')')) {
+    const inner = s.slice(1, -1).trim();
+    if (!inner || !inner.includes(',')) return false;
+    return splitElems(inner).every(isPythonQuotedStringLiteral);
+  }
+  return false;
+}
+
+function collectPythonLiteralMembershipCollections(code: string): Set<string> {
+  const names = new Set<string>();
+  const lines = code.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]!;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const indent = raw.length - raw.trimStart().length;
+    if (indent !== 0) continue;
+    const am = /^([A-Za-z_]\w*)\s*=\s*(.+)$/.exec(trimmed);
+    if (!am) continue;
+    const name = am[1]!;
+    if (!pythonRhsIsLiteralStringCollection(am[2]!)) continue;
+    if (new RegExp(String.raw`\b${name}\s*(?:\.add\s*\(|\.update\s*\(|\|=)|\b${name}\s*\[[^\]]+\]\s*=`).test(code)) {
+      continue;
+    }
+    names.add(name);
+  }
+  return names;
+}
+
+function pythonEnclosingDefEndLine(lines: string[], fromLine: number): number {
+  let defLine = -1;
+  let defIndent = -1;
+  for (let k = fromLine; k >= 0; k--) {
+    const dm = /^(\s*)def\s+/.exec(lines[k]!);
+    if (dm) {
+      defLine = k;
+      defIndent = dm[1]!.length;
+      break;
+    }
+  }
+  if (defLine < 0) return lines.length;
+  for (let j = defLine + 1; j < lines.length; j++) {
+    const line = lines[j]!;
+    if (line.trim() === '') continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent <= defIndent && /^\s*(?:def\s+|@|class\s+)/.test(line)) {
+      return j;
+    }
+  }
+  return lines.length;
+}
+
+/**
+ * Python literal set/list/tuple membership guard (cognium-dev #563).
+ *
+ *   if theme not in THEMES:
+ *       abort(400)
+ *   session["theme"] = theme
+ *
+ * Past the guard, `theme` is one of the module-level string literals in
+ * `THEMES`. The collection must be a literal of string constants that the
+ * file never mutates.
+ */
+function findPythonLiteralMembershipGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const literalCollections = collectPythonLiteralMembershipCollections(code);
+  if (literalCollections.size === 0) return sanitizers;
+
+  const guardOpen =
+    /^(\s*)if\s+([A-Za-z_][A-Za-z0-9_]*)\s+not\s+in\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*$/;
+  const terminator = /\b(return|raise|abort\s*\(|sys\.exit\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]!);
+    if (!m) continue;
+    const guardIndent = m[1]!.length;
+    const guardedVar = m[2]!;
+    const collectionName = m[3]!;
+    if (!literalCollections.has(collectionName)) continue;
+
+    let bodyHasTerminator = false;
+    let blockEnd = -1;
+    const maxScan = Math.min(lines.length, i + 26);
+    for (let j = i + 1; j < maxScan; j++) {
+      const line = lines[j]!;
+      if (line.trim() === '') continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent <= guardIndent) {
+        blockEnd = j - 1;
+        break;
+      }
+      if (terminator.test(line)) bodyHasTerminator = true;
+    }
+    if (blockEnd === -1) blockEnd = Math.min(lines.length - 1, i + 25);
+    if (!bodyHasTerminator) continue;
+
+    const varRe = new RegExp(String.raw`\b${guardedVar}\b`);
+    const reassign = new RegExp(String.raw`^\s*${guardedVar}\s*=(?!=)`);
+    const funcEnd = pythonEnclosingDefEndLine(lines, i);
+    for (let l = blockEnd + 2; l <= funcEnd; l++) {
+      const lineText = lines[l - 1];
+      if (!lineText || !varRe.test(lineText)) continue;
+      if (reassign.test(lineText)) break;
+      sanitizers.push({
+        type: 'python_literal_membership_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'trust_boundary',
+          'sql_injection',
+          'command_injection',
+          'path_traversal',
+          'ssrf',
+          'ldap_injection',
+          'xpath_injection',
+          'log_injection',
+          'xss',
+          'open_redirect',
+          'external_taint_escape',
+        ],
+      });
     }
   }
 
