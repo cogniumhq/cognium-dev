@@ -126,6 +126,7 @@ export interface CsMethodRange {
 
 const IDENT = '[A-Za-z_]\\w*';
 const ASSIGN_RE = new RegExp(`^\\s*(?:var\\s+|[A-Za-z_][\\w.<>\\[\\]?]*\\s+)?(${IDENT})\\s*=(?!=)\\s*(.+?);?\\s*$`);
+const INNER_ASSIGN_RE = new RegExp(`\\b(${IDENT})\\s*=(?!=)\\s*([^;{}]+)`, 'g');
 const APPEND_RE = new RegExp(`^\\s*(${IDENT})\\s*\\+=\\s*(.+?);?\\s*$`);
 const ENDS_STATEMENT_RE = /[;{}]\s*(?:\/\/.*)?$/;
 
@@ -316,21 +317,31 @@ export class CSharpCredit {
     return ids.length > 0 && ids.every(id => sanitized.has(id));
   }
 
+  /** Assignments and appends in one statement line, in source order. */
+  private creditOpsInStatement(text: string): Array<{ kind: 'append' | 'assign'; lhs: string; rhs: string }> {
+    const append = APPEND_RE.exec(text);
+    if (append) return [{ kind: 'append', lhs: append[1], rhs: append[2] }];
+    const head = ASSIGN_RE.exec(text);
+    if (head) return [{ kind: 'assign', lhs: head[1], rhs: head[2] }];
+    const out: Array<{ kind: 'append' | 'assign'; lhs: string; rhs: string }> = [];
+    for (const m of text.matchAll(INNER_ASSIGN_RE)) {
+      out.push({ kind: 'assign', lhs: m[1], rhs: m[2].trim() });
+    }
+    return out;
+  }
+
   private sanitizedVarsIn(type: string, from: number, to: number, withHelpers: boolean): Set<string> {
     const sanitized = new Set<string>();
     for (const st of this.statements(from, to)) {
-      const append = APPEND_RE.exec(st.text);
-      if (append) {
-        const [, lhs, rhs] = append;
-        if (!sanitized.has(lhs)) continue;
-        if (!this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers, true)) sanitized.delete(lhs);
-        continue;
+      for (const op of this.creditOpsInStatement(st.text)) {
+        if (op.kind === 'append') {
+          if (!sanitized.has(op.lhs)) continue;
+          if (!this.rhsKeepsSanitizerCredit(type, op.rhs, sanitized, withHelpers, true)) sanitized.delete(op.lhs);
+          continue;
+        }
+        if (this.rhsKeepsSanitizerCredit(type, op.rhs, sanitized, withHelpers, false)) sanitized.add(op.lhs);
+        else sanitized.delete(op.lhs);
       }
-      const m = ASSIGN_RE.exec(st.text);
-      if (!m) continue;
-      const [, lhs, rhs] = m;
-      if (this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers, false)) sanitized.add(lhs);
-      else sanitized.delete(lhs);
     }
     return sanitized;
   }
