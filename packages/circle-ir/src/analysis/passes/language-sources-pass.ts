@@ -3809,6 +3809,37 @@ export function buildRustTaintedVars(
 }
 
 /**
+ * Join an assignment / declaration whose call argument list wraps over several
+ * lines into one line (`label = String.format("%s.tar",\n    picked);`), or null
+ * when line `i` does not start such a statement. The statement must start with
+ * `[Type] name =`, leave a parenthesis open on its first line, and close it and
+ * end in `;` within a few lines, with no `{`, `}`, lambda arrow or second `;`
+ * on the way (a lambda, anonymous class, switch expression or block is not a
+ * plain wrapped value).
+ */
+function joinWrappedJavaStatement(lines: readonly string[], i: number): string | null {
+  const strip = (l: string): string => l.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'/g, '""').replace(/\/\/.*$/, '');
+  const first = strip(lines[i]);
+  if (!/^\s*(?:(?:final\s+)?[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*\s+)?[A-Za-z_]\w*\s*=(?!=)/.test(first)) return null;
+  if (/[;{}]|->/.test(first)) return null;
+  const depthOf = (t: string): number => (t.match(/\(/g)?.length ?? 0) - (t.match(/\)/g)?.length ?? 0);
+  let depth = depthOf(first);
+  if (depth <= 0) return null;
+  let text = lines[i].replace(/\/\/.*$/, '');
+  for (let j = i + 1; j < lines.length && j <= i + 12; j++) {
+    const next = strip(lines[j]);
+    if (/[{}]|->/.test(next)) return null;
+    const semi = next.indexOf(';');
+    if (semi >= 0 && next.slice(semi + 1).trim() !== '') return null;
+    depth += depthOf(next);
+    if (depth < 0) return null;
+    text += ' ' + lines[j].replace(/\/\/.*$/, '').trim();
+    if (semi >= 0) return depth === 0 && text.trimEnd().endsWith(';') ? text : null;
+  }
+  return null;
+}
+
+/**
  * cognium-dev #220 — Java derived-taint expansion.
  *
  * Mirrors {@link buildRustTaintedVars} for Java: given a seed set of
@@ -3878,8 +3909,19 @@ export function buildJavaTaintedVars(
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-      const declMatch = declRe.exec(line);
-      const assignMatch = !declMatch ? assignRe.exec(line) : null;
+      let statement = line;
+      let declMatch = declRe.exec(statement);
+      let assignMatch = !declMatch ? assignRe.exec(statement) : null;
+      if (!declMatch && !assignMatch) {
+        // cognium-dev#753: `label = String.format("%s.tar",\n  picked);` — a
+        // statement whose call argument list wraps over several lines reads like
+        // the same statement on one line.
+        const joined = joinWrappedJavaStatement(lines, i);
+        if (joined === null) continue;
+        statement = joined;
+        declMatch = declRe.exec(statement);
+        assignMatch = !declMatch ? assignRe.exec(statement) : null;
+      }
       const m = declMatch ?? assignMatch;
       if (!m) continue;
       const lhs = m[1];
