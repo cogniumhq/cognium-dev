@@ -7,8 +7,6 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 import { buildJavaTaintedVars } from '../../src/analysis/passes/language-sources-pass.js';
 
-type IR = Awaited<ReturnType<typeof analyze>>;
-
 const pageBadgeGetName = `package com.example.wikiext;
 
 import java.io.IOException;
@@ -28,7 +26,7 @@ public class PageBadgeGetNameTag extends WikiTagBase {
 }
 `;
 
-const xssFlows = (r: IR) =>
+const xssFlows = (r: Awaited<ReturnType<typeof analyze>>) =>
   (r.taint.flows ?? []).filter(f => f.sink_type === 'xss' && !f.sanitized);
 
 beforeAll(async () => {
