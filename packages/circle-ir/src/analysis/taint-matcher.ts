@@ -3682,18 +3682,18 @@ function findSanitizers(
   }
 
   // Sprint 9 #79 (Phase L): derive wrapper sanitizers.
-  // A method qualifies as a derived sanitizer when its body is exactly
-  // `return <known_sanitizer>(<param>)` (optionally `await`-prefixed).
+  // A method qualifies when its body is `return <sanitizer-expr>(<param>)`
+  // (optionally `await`-prefixed), span ≤ 2 lines (signature + single return).
   // We require:
-  //   1. Method body span ≤ 2 lines (signature + single return).
-  //   2. Exactly one non-recursive call inside the method's line range.
-  //   3. That call matches a configured sanitizer pattern with non-empty
-  //      `removes`.
-  //   4. The inner call's argument is exactly one of the wrapper's params.
-  //   5. When source is available, the inner call's source line, after
-  //      `return ` / `return await `, starts with the inner call's
-  //      `[receiver.]method(` prefix and ends with `)` — rejecting
-  //      unsafe shapes like `return x + shlex.quote(x)`.
+  //   1. One non-recursive call, OR every inner call is `replace` / `replaceAll`
+  //      (#517): use the call with the longest receiver for argument-aware credit.
+  //   2. That call matches a configured sanitizer pattern with non-empty
+  //      `removes` (Java `replace` chains use `javaReplaceChainCredit`).
+  //   3. The inner call's argument is a wrapper param, or (replace-chain only)
+  //      the receiver text starts with a param name.
+  //   4. When source is available, the return expression is a single sanitizer
+  //      call or a param-rooted replace chain ending with `)` — rejecting shapes
+  //      like `return x + shlex.quote(x)`.
   const wrapperSanitizers = new Map<string, SinkType[]>();
   // #589: wrappers whose single inner call is a context-specific HTML encoder
   // (every same-named wrapper, so an overload cannot lend its credit).
