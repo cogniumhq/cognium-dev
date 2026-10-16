@@ -305,10 +305,15 @@ export class CSharpCredit {
     rhs: string,
     sanitized: ReadonlySet<string>,
     withHelpers: boolean,
+    append: boolean,
   ): boolean {
     if (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) return true;
-    if (!hasBareIdentifier(rhs)) return true;
-    return bareIdentifiers(rhs).every(id => sanitized.has(id));
+    if (append) {
+      if (!hasBareIdentifier(rhs)) return true;
+      return bareIdentifiers(rhs).every(id => sanitized.has(id));
+    }
+    const ids = bareIdentifiers(rhs);
+    return ids.length > 0 && ids.every(id => sanitized.has(id));
   }
 
   private sanitizedVarsIn(type: string, from: number, to: number, withHelpers: boolean): Set<string> {
@@ -318,13 +323,13 @@ export class CSharpCredit {
       if (append) {
         const [, lhs, rhs] = append;
         if (!sanitized.has(lhs)) continue;
-        if (!this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers)) sanitized.delete(lhs);
+        if (!this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers, true)) sanitized.delete(lhs);
         continue;
       }
       const m = ASSIGN_RE.exec(st.text);
       if (!m) continue;
       const [, lhs, rhs] = m;
-      if (this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers)) sanitized.add(lhs);
+      if (this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers, false)) sanitized.add(lhs);
       else sanitized.delete(lhs);
     }
     return sanitized;
