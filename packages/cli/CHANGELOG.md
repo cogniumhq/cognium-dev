@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A C# scan reports `command_injection` for a `ProcessStartInfo` local with a tainted `FileName` (or tainted `Arguments` behind a shell) passed to `Process.Start(psi)` (#594, partial).
 - A JS/TS scan reports a command, path or SQL sink fed by a variable that is assigned the tainted value inside an `if` / `else` / loop body or a `switch` case before the sink (#582, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
+- A Java scan reports `weak-hash` for a `getProperty` algorithm that a `Properties` object loaded from a file path (`new FileInputStream("conf/x.properties")`, `FileReader`, `Files.newInputStream(Paths.get(...))`, `getSystemResourceAsStream`) takes from a scanned `.properties` file (#591, partial).
 
 ## [4.15.0] - 2026-10-15
 
