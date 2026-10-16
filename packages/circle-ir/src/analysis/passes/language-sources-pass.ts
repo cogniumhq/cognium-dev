@@ -3939,6 +3939,34 @@ export function buildJavaTaintedVars(
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      // cognium-dev#476: non-assignment statements (must run before the #753
+      // wrap-join early-continue, which would skip them).
+      const arrayCopyRe =
+        /\bSystem\.arraycopy\s*\(\s*([A-Za-z_]\w*)\s*,\s*[^,]+\s*,\s*([A-Za-z_]\w*)\s*,/;
+      const acMatch = arrayCopyRe.exec(line);
+      if (acMatch) {
+        const srcArr = acMatch[1];
+        const dstArr = acMatch[2];
+        if (knownTainted.has(srcArr) && !knownTainted.has(dstArr)) {
+          derived.set(dstArr, i + 1);
+          knownTainted.add(dstArr);
+          changed = true;
+        }
+        continue;
+      }
+      const listAddRe = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
+      const addMatch = listAddRe.exec(line.trimEnd());
+      if (addMatch) {
+        const listVar = addMatch[1];
+        const elem = addMatch[2];
+        if (knownTainted.has(elem) && !knownTainted.has(listVar)) {
+          derived.set(listVar, i + 1);
+          knownTainted.add(listVar);
+          changed = true;
+        }
+        continue;
+      }
+
       let statement = line;
       let declMatch = declRe.exec(statement);
       let assignMatch = !declMatch ? assignRe.exec(statement) : null;
@@ -3951,21 +3979,6 @@ export function buildJavaTaintedVars(
         statement = joined;
         declMatch = declRe.exec(statement);
         assignMatch = !declMatch ? assignRe.exec(statement) : null;
-      }
-      // cognium-dev#476: `System.arraycopy(taintedSrc, …, dst, …)` taints the destination
-      // array as a whole (same as `dst = src` for element reads like `dst[0]`).
-      const arrayCopyRe =
-        /\bSystem\.arraycopy\s*\(\s*([A-Za-z_]\w*)\s*,\s*[^,]+\s*,\s*([A-Za-z_]\w*)\s*,/;
-      const acMatch = arrayCopyRe.exec(statement);
-      if (acMatch) {
-        const srcArr = acMatch[1];
-        const dstArr = acMatch[2];
-        if (knownTainted.has(srcArr) && !knownTainted.has(dstArr)) {
-          derived.set(dstArr, i + 1);
-          knownTainted.add(dstArr);
-          changed = true;
-        }
-        continue;
       }
 
       const m = declMatch ?? assignMatch;
