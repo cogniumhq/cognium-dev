@@ -233,7 +233,7 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
     }
     let bodyText = body.join('');
     bodyText = bodyText.replace(/\|\s*[\w\s,&:()]*?\s*\|\s*[^;{}]*/g, ' ');
-    if (!/(?<![\w.])(?:return\b|panic\s*!|unreachable\s*!|bail\s*!|(?:std\s*::\s*)?process\s*::\s*exit\s*\()/.test(bodyText)) continue;
+    if (!/(?<![\w.#])(?:return\b|panic\s*!|unreachable\s*!|bail\s*!|(?:std\s*::\s*)?process\s*::\s*exit\s*\()/.test(bodyText)) continue;
 
     // Credit region: after the guard block to the end of the enclosing block.
     let end = masked.length;
