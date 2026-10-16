@@ -3953,6 +3953,22 @@ export function buildJavaTaintedVars(
         declMatch = declRe.exec(statement);
         assignMatch = !declMatch ? assignRe.exec(statement) : null;
       }
+      // cognium-dev#476: `System.arraycopy(taintedSrc, …, dst, …)` taints the destination
+      // array as a whole (same as `dst = src` for element reads like `dst[0]`).
+      const arrayCopyRe =
+        /\bSystem\.arraycopy\s*\(\s*([A-Za-z_]\w*)\s*,\s*[^,]+\s*,\s*([A-Za-z_]\w*)\s*,/;
+      const acMatch = arrayCopyRe.exec(statement);
+      if (acMatch) {
+        const srcArr = acMatch[1];
+        const dstArr = acMatch[2];
+        if (knownTainted.has(srcArr) && !knownTainted.has(dstArr)) {
+          derived.set(dstArr, i + 1);
+          knownTainted.add(dstArr);
+          changed = true;
+        }
+        continue;
+      }
+
       const m = declMatch ?? assignMatch;
       if (!m) continue;
       const lhs = m[1];

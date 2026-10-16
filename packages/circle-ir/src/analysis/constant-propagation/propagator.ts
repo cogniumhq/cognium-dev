@@ -2073,6 +2073,7 @@ export class ConstantPropagator {
     for (const child of node.children) {
       if (child.type === 'method_invocation') {
         this.checkCollectionTaint(child);
+        this.handleSystemArrayCopy(child);
       }
     }
 
@@ -2825,6 +2826,33 @@ export class ConstantPropagator {
 
     // No verdict at this node — let the wrapper descend into children.
     return undefined;
+  }
+
+  /** cognium-dev#476: copy tainted array element indices across `System.arraycopy`. */
+  private handleSystemArrayCopy(node: Node): void {
+    const objectNode = node.childForFieldName('object');
+    const nameNode = node.childForFieldName('name');
+    const argsNode = node.childForFieldName('arguments');
+    if (!nameNode || !argsNode) return;
+    if (getNodeText(nameNode, this.source) !== 'arraycopy') return;
+    if (!objectNode || getNodeText(objectNode, this.source) !== 'System') return;
+
+    const args = argsNode.children.filter(
+      (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+    );
+    if (args.length < 3) return;
+    const srcName = getNodeText(args[0], this.source);
+    const dstName = getNodeText(args[2], this.source);
+    const srcTainted = this.taintedArrayElements.get(srcName);
+    if (!srcTainted || srcTainted.size === 0) return;
+
+    if (!this.taintedArrayElements.has(dstName)) {
+      this.taintedArrayElements.set(dstName, new Set());
+    }
+    const dstSet = this.taintedArrayElements.get(dstName)!;
+    for (const idx of srcTainted) {
+      dstSet.add(idx);
+    }
   }
 
   private checkCollectionTaint(node: Node): void {
