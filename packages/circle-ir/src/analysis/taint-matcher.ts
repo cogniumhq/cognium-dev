@@ -770,6 +770,10 @@ function isInterproceduralTaintableType(typeName: string, language?: SupportedLa
     if (elementType === 'String' || elementType === 'Object' || elementType === 'byte') {
       return true;
     }
+    // C# aliases (cognium-dev#638): `string[]` / `object[]` cross-file carriers.
+    if (language === 'csharp' && (elementType === 'string' || elementType === 'object')) {
+      return true;
+    }
   }
 
   return false;

@@ -1821,6 +1821,11 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // the scanner never looked at.
   const assignRe =
     /^\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+  // cognium-dev#638 — `arr[i] = req.QueryString["k"]` does not match `assignRe`
+  // (LHS is an indexer). Seed the array base so cross-file calls that pass
+  // `arr` carry taint into `string[]` / `object[]` callee parameters.
+  const arrayElementAssignRe =
+    /^\s*([A-Za-z_]\w*)\s*\[[^\]]+\]\s*=\s*(.+?);?\s*$/;
   // `Request.*` is the inherited controller member. A parameter typed
   // `HttpRequest` / `HttpRequestBase` is the same surface under whatever
   // name the method uses (`req` in Juliet) — cognium-dev#501.
@@ -1953,6 +1958,25 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
 
   for (let i = 0; i < lines.length; i++) {
     for (const stmt of splitCSharpDepth0Statements(lines[i])) {
+    const arrEl = arrayElementAssignRe.exec(stmt);
+    if (arrEl) {
+      const [, baseName, rhs] = arrEl;
+      const type = classify(rhs);
+      if (type && baseName) {
+        const lineNumber = i + 1;
+        if (!sources.some(s => s.line === lineNumber && s.variable === baseName)) {
+          sources.push({
+            type,
+            location: `${baseName}[…] = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+            severity: type === 'db_input' ? 'medium' : 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: baseName,
+          });
+        }
+        continue;
+      }
+    }
     const m = assignRe.exec(stmt);
     // cognium-dev#502 — `assignRe` is anchored and greedy, so on a one-line
     // block header that also contains the real assignment
