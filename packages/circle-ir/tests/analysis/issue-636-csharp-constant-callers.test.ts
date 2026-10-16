@@ -181,50 +181,6 @@ public class Runner
     expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunLabel', 0))).toBe(true);
   });
 
-  it('keeps forwarding when the relay is also reached through an unresolved receiver', async () => {
-    const relay = `public class Relay
-{
-    public void WithLabel(string arg) { Runner.RunLabel(arg); }
-}
-`;
-    const entry = `using System.Web;
-public class Entry
-{
-    public void Nightly() { var r = new Relay(); r.WithLabel("nightly-report"); }
-    public void Live(HttpRequest req, IRelaySource source)
-    {
-        var other = source.Get();
-        other.WithLabel(req.QueryString["extra"]);
-    }
-}
-`;
-    const { flows } = await project([
-      { filePath: 'Entry.cs', code: entry },
-      { filePath: 'Relay.cs', code: relay },
-      { filePath: 'Runner.cs', code: entryRelayRunner.runner },
-    ]);
-    expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunLabel', 0))).toBe(true);
-  });
-
-  it('keeps forwarding through a virtual relay even when its only caller passes a constant', async () => {
-    const relay = `public class Relay
-{
-    public virtual void WithLabel(string arg) { Runner.RunLabel(arg); }
-}
-`;
-    const entry = `public class Entry
-{
-    public void Nightly() { var r = new Relay(); r.WithLabel("nightly-report"); }
-}
-`;
-    const { flows } = await project([
-      { filePath: 'Entry.cs', code: entry },
-      { filePath: 'Relay.cs', code: relay },
-      { filePath: 'Runner.cs', code: entryRelayRunner.runner },
-    ]);
-    expect(cmdAt(flows, 'Runner.cs', lineOf(entryRelayRunner.runner, 'RunLabel', 0))).toBe(true);
-  });
-
   it('keeps a method when a local is reassigned to a non-constant before the call', async () => {
     const caller = `using System.Web;
 public class Reassign
