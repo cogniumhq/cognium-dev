@@ -4,7 +4,8 @@
  * Matches method calls and annotations against taint configurations.
  */
 
-import type { ArgumentInfo, CallInfo, TypeInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
+import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
+import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
 import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
 import type { TaintConfig, SourcePattern, SinkPattern, SanitizerPattern } from '../types/config.js';
 import type { TypeHierarchyResolver } from '../resolution/type-hierarchy.js';
@@ -105,9 +106,10 @@ export function analyzeTaint(
   typeHierarchy?: TypeHierarchyResolver,
   language?: SupportedLanguage,
   code?: string,
+  imports?: ReadonlyArray<ImportInfo>,
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
-  const sources = findSources(calls, types, config.sources, sourceLines, language);
+  const sources = findSources(calls, types, config.sources, sourceLines, language, imports);
   let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
   sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
@@ -302,6 +304,7 @@ function findSources(
   patterns: SourcePattern[],
   sourceLines?: string[],
   language?: SupportedLanguage,
+  imports?: ReadonlyArray<ImportInfo>,
 ): TaintSource[] {
   const sources: TaintSource[] = [];
 
@@ -324,7 +327,7 @@ function findSources(
   // Check method calls
   for (const call of calls) {
     for (const pattern of patternsForLanguage) {
-      if (matchesSourcePattern(call, pattern)) {
+      if (matchesSourcePattern(call, pattern, language, types, imports)) {
         sources.push({
           type: pattern.type,
           location: formatCallLocation(call),
@@ -2552,7 +2555,13 @@ function findSinks(
 /**
  * Check if a call matches a source pattern.
  */
-function matchesSourcePattern(call: CallInfo, pattern: SourcePattern): boolean {
+function matchesSourcePattern(
+  call: CallInfo,
+  pattern: SourcePattern,
+  language?: SupportedLanguage,
+  types?: TypeInfo[],
+  imports?: ReadonlyArray<ImportInfo>,
+): boolean {
   // Method-based matching
   if (pattern.method) {
     if (call.method_name !== pattern.method) {
@@ -2582,6 +2591,15 @@ function matchesSourcePattern(call: CallInfo, pattern: SourcePattern): boolean {
           // metric helper `const get = (name) => acc.find(...)`).
           return false;
         }
+      } else if (
+        language === 'java' &&
+        types &&
+        imports &&
+        call.receiver &&
+        pattern.class &&
+        javaWikiTagInheritedContextReceiver(call.receiver, pattern.class, call, types, imports)
+      ) {
+        // JSPWiki tag handler inherited m_wikiContext (cognium-dev#624)
       } else if (!receiverMightBeClass(call.receiver, pattern.class)) {
         // The receiver might be a variable name, not the class name
         // For now, we do a simple match - in a full implementation,

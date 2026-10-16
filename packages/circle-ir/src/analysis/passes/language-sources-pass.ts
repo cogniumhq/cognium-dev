@@ -14,7 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, ImportInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, ImportInfo, CallInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import {
   DOM_ASSIGNMENT_SINK_METHODS,
@@ -3561,6 +3561,50 @@ export function findJavaWikiPluginReturnXSSSinks(
     }
   }
   return out;
+}
+
+const JSPWIKI_TAG_PKG = 'org.apache.wiki.tags';
+const JSPWIKI_TAG_SUPER_NAMES = ['WikiTagBase', 'WikiBodyTag', 'WikiLinkTag'] as const;
+
+/**
+ * cognium-dev#624 (WikiTag slice) — JSPWiki tag handlers inherit `protected
+ * WikiContext m_wikiContext` from `WikiTagBase`. The configured
+ * `WikiContext.getPage` source is class-scoped, so `m_wikiContext.getPage()`
+ * misses unless the enclosing type extends a JSPWiki tag base (import-gated,
+ * never from the field name alone).
+ */
+export function javaWikiTagInheritedContextReceiver(
+  receiver: string,
+  className: string,
+  call: CallInfo,
+  types: ReadonlyArray<TypeInfo>,
+  imports: ReadonlyArray<ImportInfo>,
+): boolean {
+  if (className !== 'WikiContext' || receiver !== 'm_wikiContext') return false;
+  const line = call.location.line;
+  const enclosing = types.find(t =>
+    line >= t.start_line && line <= t.end_line &&
+    (!call.in_method || t.methods.some(m => m.name === call.in_method && line >= m.start_line && line <= m.end_line)));
+  if (!enclosing?.extends) return false;
+
+  const importedSimple = new Set<string>();
+  let wildcardImported = false;
+  for (const i of imports) {
+    if (i.from_package !== JSPWIKI_TAG_PKG) continue;
+    if (i.is_wildcard) wildcardImported = true;
+    else if (JSPWIKI_TAG_SUPER_NAMES.includes(i.imported_name as typeof JSPWIKI_TAG_SUPER_NAMES[number])) {
+      importedSimple.add(i.imported_name);
+    }
+  }
+  const isTagSuper = (name: string): boolean => {
+    const bare = name.replace(/<.*$/, '').trim();
+    if (bare === `${JSPWIKI_TAG_PKG}.WikiTagBase` ||
+        bare === `${JSPWIKI_TAG_PKG}.WikiBodyTag` ||
+        bare === `${JSPWIKI_TAG_PKG}.WikiLinkTag`) return true;
+    return JSPWIKI_TAG_SUPER_NAMES.includes(bare as typeof JSPWIKI_TAG_SUPER_NAMES[number]) &&
+      (wildcardImported || importedSimple.has(bare));
+  };
+  return isTagSuper(enclosing.extends);
 }
 
 export function findPythonReturnXSSSinks(
