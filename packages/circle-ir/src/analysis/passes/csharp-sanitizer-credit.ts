@@ -77,7 +77,13 @@ export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string; unlessDecla
   { re: /\bHtmlEncoder\s*\.\s*(?:Default\s*\.\s*)?Encode\s*\(/, type: 'xss' },
   // `UrlEncoder.Default.Encode(x)` percent-encodes `<`, `"` and `'` (#564). A
   // project type that declares its own `UrlEncoder` is not the framework's.
-  { re: /\bUrlEncoder\s*\.\s*Default\s*\.\s*Encode\s*\(/, type: 'xss', unlessDeclared: 'UrlEncoder' },
+  // Qualified `Evil.UrlEncoder` must not match (#736 case 6); only the framework
+  // type or an unqualified `UrlEncoder` after `using System.Text.Encodings.Web`.
+  {
+    re: /(?:System\.Text\.Encodings\.Web\.UrlEncoder|(?<![\w.])UrlEncoder)\s*\.\s*Default\s*\.\s*Encode\s*\(/,
+    type: 'xss',
+    unlessDeclared: 'UrlEncoder',
+  },
   { re: /\bPath\s*\.\s*GetFileName\s*\(/, type: 'path_traversal' },
   // XML-escapes `< > & " '`. A value escaped this way cannot close the quoted
   // literal it is placed in, which is what XPath injection needs.
