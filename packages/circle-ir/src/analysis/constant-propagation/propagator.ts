@@ -1449,6 +1449,8 @@ export class ConstantPropagator {
     for (const varName of names) {
       const scopedName = this.getScopedName(varName);
       const line = getNodeLine(node);
+      const callee =
+        right.type === 'call_expression' || right.type === 'call' ? this.extractCallName(right) : null;
       if (this.isTaintedExpression(right)) {
         this.tainted.add(scopedName);
         this.sanitizedVars.delete(scopedName);
@@ -1460,8 +1462,6 @@ export class ConstantPropagator {
           this.symbols.set(scopedName, createUnknown(line));
           continue;
         }
-        const callee =
-          right.type === 'call_expression' || right.type === 'call' ? this.extractCallName(right) : null;
         if (callee === 'Get' || callee === 'get') {
           continue;
         }
