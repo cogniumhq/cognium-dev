@@ -3808,6 +3808,58 @@ function findSanitizers(
     }
   }
 
+  // #589: delegate to an encoder-only wrapper in one hop (wrapEncode → encodeForPage → escapeHtml).
+  let transitiveWrapperAdded = true;
+  while (transitiveWrapperAdded) {
+    transitiveWrapperAdded = false;
+    for (const type of types) {
+      for (const method of type.methods) {
+        if (wrapperSanitizers.has(method.name)) continue;
+        const bodySize = method.end_line - method.start_line;
+        if (bodySize < 0 || bodySize > 2) continue;
+        const paramNames = new Set(method.parameters.map(p => p.name));
+        if (paramNames.size === 0) continue;
+
+        const inside: CallInfo[] = [];
+        for (const c of calls) {
+          if (c.location.line < method.start_line || c.location.line > method.end_line) continue;
+          if (c.method_name === method.name) continue;
+          inside.push(c);
+        }
+        if (inside.length !== 1) continue;
+        const innerCall = inside[0]!;
+        const delegateRemoves = wrapperSanitizers.get(innerCall.method_name);
+        if (!delegateRemoves || delegateRemoves.length === 0) continue;
+
+        let argOk = false;
+        for (const arg of innerCall.arguments) {
+          if (arg.variable && paramNames.has(arg.variable)) {
+            argOk = true;
+            break;
+          }
+        }
+        if (!argOk) continue;
+
+        if (sourceLines) {
+          const lineText = sourceLines[innerCall.location.line - 1] ?? '';
+          const stripped = lineText.trim();
+          const returnMatch = stripped.match(/^return\s+(?:await\s+)?(.*)$/);
+          if (!returnMatch) continue;
+          const after = returnMatch[1]!.replace(/;\s*$/, '').trimEnd();
+          const callPrefix = innerCall.receiver
+            ? `${innerCall.receiver}.${innerCall.method_name}(`
+            : `${innerCall.method_name}(`;
+          if (!after.startsWith(callPrefix) || !after.endsWith(')')) continue;
+        }
+
+        const encoderDelegate = wrapperEncoderOnly.get(innerCall.method_name) === true;
+        wrapperEncoderOnly.set(method.name, encoderDelegate);
+        wrapperSanitizers.set(method.name, [...delegateRemoves]);
+        transitiveWrapperAdded = true;
+      }
+    }
+  }
+
   // Emit a derived-sanitizer entry at each call site to a wrapper method.
   for (const call of calls) {
     const removes = wrapperSanitizers.get(call.method_name);
