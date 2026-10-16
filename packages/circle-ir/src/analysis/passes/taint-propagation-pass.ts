@@ -2319,6 +2319,7 @@ function isReassignedToLiteralBetween(
     // A literal assigned in one case of a switch only overwrites the value
     // when no case gives the variable anything else. `case 'A': bar = param;`
     // next to `default: bar = "safe";` leaves `bar` tainted on the 'A' path.
+    if (javaCatchLiteralHasTaintedTryArm(lines, i, variable, strLit, unreachableLines)) continue;
     if (siblingBranchAssignsNonLiteral(lines, i, variable, strLit, unreachableLines)) continue;
     return true;
   }
@@ -2366,6 +2367,44 @@ function matchingClose(lines: string[], line: number, col: number): { line: numb
     }
   }
   return null;
+}
+
+/**
+ * True when line `idx` is a literal assignment in a `catch` block and the
+ * paired `try` assigns `variable` a non-literal value (cognium-dev#753).
+ */
+function javaCatchLiteralHasTaintedTryArm(
+  lines: string[],
+  idx: number,
+  variable: string,
+  strLit: string,
+  unreachableLines?: ReadonlySet<number>,
+): boolean {
+  const block = enclosingBrace(lines, idx, 0);
+  if (!block || !/\bcatch\b/.test(block.header)) return false;
+  let h = block.headerLine;
+  while (h >= 0 && !/\btry\b/.test(lines[h])) h--;
+  if (h < 0) return false;
+  const tryIdx = lines[h].search(/\btry\b/);
+  let openLine = h;
+  let openCol = lines[h].indexOf('{', tryIdx);
+  if (openCol < 0) {
+    openLine = h + 1;
+    while (openLine < lines.length && lines[openLine].trim() === '') openLine++;
+    if (openLine >= lines.length) return false;
+    openCol = lines[openLine].indexOf('{');
+    if (openCol < 0) return false;
+  }
+  const tryEnd = matchingClose(lines, openLine, openCol);
+  if (!tryEnd) return false;
+  const assignTry = new RegExp(`(?:^|[^\\w.$])${variable}\\s*(?::?=)(?!=)\\s*(.*?)\\s*;?\\s*$`);
+  const literalOnly = new RegExp(`^${strLit}$`);
+  for (let i = openLine; i <= tryEnd.line; i++) {
+    if (unreachableLines?.has(i + 1)) continue;
+    const m = assignTry.exec(lines[i]);
+    if (m && m[1] && !literalOnly.test(m[1])) return true;
+  }
+  return false;
 }
 
 /**
@@ -2444,6 +2483,8 @@ function siblingBranchAssignsNonLiteral(
       close = next;
       last = next.line;
     }
+  } else if (/\bcatch\b/.test(block.header)) {
+    return javaCatchLiteralHasTaintedTryArm(lines, idx, variable, strLit, unreachableLines);
   } else {
     return false;
   }
@@ -3224,6 +3265,7 @@ function detectExpressionScanFlows(
         sourcesWithVar.push({
           ...scopedAnchor,
           variable: varName,
+          line: derivedLine,
           ...(owner ? { in_method: owner } : {}),
         });
         existingVars.add(varName);

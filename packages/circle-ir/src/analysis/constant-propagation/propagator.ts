@@ -986,6 +986,11 @@ export class ConstantPropagator {
         this.handleSynchronizedStatement(node);
         return true;
 
+      case 'try_statement':
+      case 'try_with_resources_statement':
+        this.handleTryStatement(node);
+        return true;
+
       default:
         return false;
     }
@@ -1212,6 +1217,61 @@ export class ConstantPropagator {
    * Handle synchronized statements.
    * Operations inside synchronized blocks are atomic, so field strong updates are safe.
    */
+  /**
+   * cognium-dev#753 — try/catch must not let a catch-arm literal assignment
+   * erase taint established on the normal-completion path through the try body
+   * (`try { label = format(picked); } catch (…) { label = ""; }` then
+   * `exec(tool + label)`).
+   */
+  private handleTryStatement(node: Node): void {
+    const body = node.childForFieldName('body');
+    const catches = node.children.filter((c) => c.type === 'catch_clause');
+    const finallyClause = node.children.find((c) => c.type === 'finally_clause');
+
+    const taintedBefore = new Set(this.tainted);
+    const symbolsBefore = new Map(this.symbols);
+
+    if (body) this.visit(body);
+    const taintedAfterTry = new Set(this.tainted);
+    const symbolsAfterTry = new Map(this.symbols);
+
+    this.tainted = new Set(taintedBefore);
+    this.symbols = new Map(symbolsBefore);
+    for (const c of catches) this.visit(c);
+    const taintedAfterCatch = new Set(this.tainted);
+    const symbolsAfterCatch = new Map(this.symbols);
+
+    this.tainted = new Set([...taintedBefore, ...taintedAfterTry, ...taintedAfterCatch]);
+
+    this.symbols = new Map(symbolsBefore);
+    const keys = new Set([...symbolsAfterTry.keys(), ...symbolsAfterCatch.keys()]);
+    for (const key of keys) {
+      const merged = this.mergeTryCatchSymbol(symbolsAfterTry.get(key), symbolsAfterCatch.get(key));
+      if (merged) this.symbols.set(key, merged);
+    }
+
+    if (finallyClause) this.visit(finallyClause);
+  }
+
+  /** Prefer unknown / non-literal over a definite literal when paths disagree. */
+  private mergeTryCatchSymbol(
+    tryVal: ConstantValue | undefined,
+    catchVal: ConstantValue | undefined,
+  ): ConstantValue | undefined {
+    if (!tryVal && !catchVal) return undefined;
+    if (!tryVal) return catchVal;
+    if (!catchVal) return tryVal;
+    if (!isKnown(tryVal) || tryVal.type === 'unknown') return tryVal;
+    if (!isKnown(catchVal) || catchVal.type === 'unknown') return catchVal;
+    if (tryVal.type !== catchVal.type) {
+      return createUnknown(Math.max(tryVal.sourceLine ?? 0, catchVal.sourceLine ?? 0));
+    }
+    if (tryVal.type === 'string' && catchVal.type === 'string' && tryVal.value !== catchVal.value) {
+      return createUnknown(Math.max(tryVal.sourceLine ?? 0, catchVal.sourceLine ?? 0));
+    }
+    return tryVal;
+  }
+
   private handleSynchronizedStatement(node: Node): void {
     const wasInSyncBlock = this.inSynchronizedBlock;
     this.inSynchronizedBlock = true;

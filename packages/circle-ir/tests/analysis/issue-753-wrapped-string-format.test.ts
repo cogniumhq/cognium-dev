@@ -71,6 +71,13 @@ describe('cognium-dev#753 — wrapped String.format reaches exec(tool + label)',
     expect(await cmdi(code, 'WrapLoop.java')).toBeGreaterThanOrEqual(1);
   });
 
+  it('reports for a try with a catch that resets label to a literal', async () => {
+    const code = servlet('TryCatchServlet', `        try {\n            label = String.format("%s.tar", picked);\n        } catch (Exception e) {\n            label = "";\n        }\n${SINK}`);
+    const r = await analyze(code, 'TryCatchServlet.java', 'java');
+    expect((r.taint.sinks ?? []).length).toBeGreaterThan(0);
+    expect(await cmdi(code, 'TryCatchServlet.java')).toBeGreaterThanOrEqual(1);
+  });
+
   it('is not keyed on names: a renamed value, local and parameter', async () => {
     const code = `import java.io.IOException;
 import javax.servlet.http.HttpServlet;
