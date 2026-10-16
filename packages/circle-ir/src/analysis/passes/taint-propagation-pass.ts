@@ -2192,17 +2192,37 @@ function csharpLastUnconditionalAssignIsLiteral(
   return last === 'literal';
 }
 
-/** True when line `idx` sits in a control-flow block (if/else/switch/loop/…). */
+/** True when `header` opens a non-bare control-flow block (not a method/type body). */
+function csharpBlockHeaderIsConditional(header: string): boolean {
+  const h = header.trim();
+  if (!h || h === '{') return false;
+  if (/^(?:case\b.*|default\s*):$/.test(h)) return true;
+  if (/\bswitch\b/.test(h)) return true;
+  if (/^(?:\}\s*)?(?:else\s+)?if\s*\(/.test(h)) return true;
+  if (/^(?:\}\s*)?else\b/.test(h)) return true;
+  if (/\b(?:for|foreach|while|do|using|lock|try|catch|finally)\b/.test(h)) return true;
+  return false;
+}
+
+/**
+ * True when line `idx` sits in a control-flow block. Walks outward through
+ * enclosing braces so an Allman `for` / `while` header above a lone `{` line
+ * is recognised (#475).
+ */
 function csharpAssignInConditionalBlock(lines: string[], idx: number): boolean {
-  const block = enclosingBrace(lines, idx, 0);
-  if (!block) return false;
-  if (/^(?:case\b.*|default\s*):$/.test(block.header)) {
-    return true;
+  let at = idx;
+  for (let guard = 0; guard < 16; guard++) {
+    const block = enclosingBrace(lines, at, 0);
+    if (!block) return false;
+    let header = block.header.trim();
+    if (!header || header === '{') {
+      const prev = block.headerLine > 0 ? (lines[block.headerLine - 1] ?? '').trim() : '';
+      if (prev) header = prev;
+    }
+    if (csharpBlockHeaderIsConditional(header)) return true;
+    if (block.headerLine <= 0) return false;
+    at = block.headerLine - 1;
   }
-  if (/\bswitch\b/.test(block.header)) return true;
-  if (/^(?:\}\s*)?(?:else\s+)?if\s*\(/.test(block.header)) return true;
-  if (/^(?:\}\s*)?else\b/.test(block.header)) return true;
-  if (/\b(?:for|foreach|while|do|using|lock|try)\b/.test(block.header)) return true;
   return false;
 }
 
