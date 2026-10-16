@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- A Java scan reports `command_injection` for `label = String.format("%s.tar",\n    picked);` followed by `Runtime.exec(tool + label)`, as for the one-line form (#753, partial).
 - A Java scan reports `command_injection` for a value built over several lines (a wrapped Base64 round-trip, a call with its argument on the next line) that is concatenated with a constant local before `Runtime.exec` (#597, partial).
 - A JS/TS scan reports `sql_injection` and the other injection sinks for a GraphQL resolver whose `args` parameter is destructured or type-annotated (#586, partial).
 - A Go scan reports a finding for a value passed through a same-file `strings.TrimSpace` / `ToLower` / `ToUpper`-only helper named like a sanitizer (#581, partial).
