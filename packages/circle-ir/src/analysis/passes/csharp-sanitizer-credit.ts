@@ -126,6 +126,7 @@ export interface CsMethodRange {
 
 const IDENT = '[A-Za-z_]\\w*';
 const ASSIGN_RE = new RegExp(`^\\s*(?:var\\s+|[A-Za-z_][\\w.<>\\[\\]?]*\\s+)?(${IDENT})\\s*=(?!=)\\s*(.+?);?\\s*$`);
+const APPEND_RE = new RegExp(`^\\s*(${IDENT})\\s*\\+=\\s*(.+?);?\\s*$`);
 const ENDS_STATEMENT_RE = /[;{}]\s*(?:\/\/.*)?$/;
 
 function escapeRegex(s: string): string {
@@ -138,6 +139,12 @@ function withoutStringLiterals(text: string): string {
 
 function mentions(text: string, name: string): boolean {
   return new RegExp(`(?<![\\w])${escapeRegex(name)}(?![\\w])`).test(text);
+}
+
+/** True when `text` still names a variable after literals are stripped (cognium-dev#736). */
+function hasBareIdentifier(text: string): boolean {
+  if (/\$"/.test(text)) return true;
+  return /\b[A-Za-z_]\w*\b/.test(withoutStringLiterals(text));
 }
 
 /** Text inside the parentheses opening at `open`, or null when unbalanced. */
@@ -286,6 +293,17 @@ export class CSharpCredit {
   private sanitizedVarsIn(type: string, from: number, to: number, withHelpers: boolean): Set<string> {
     const sanitized = new Set<string>();
     for (const st of this.statements(from, to)) {
+      const append = APPEND_RE.exec(st.text);
+      if (append) {
+        const [, lhs, rhs] = append;
+        const credited =
+          (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) ||
+          [...sanitized].some(v => mentions(rhs, v));
+        const keep = credited || !hasBareIdentifier(rhs);
+        if (keep) sanitized.add(lhs);
+        else sanitized.delete(lhs);
+        continue;
+      }
       const m = ASSIGN_RE.exec(st.text);
       if (!m) continue;
       const [, lhs, rhs] = m;
