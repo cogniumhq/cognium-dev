@@ -2430,7 +2430,7 @@ function objectPatternBindings(text: string, from: number, to: number): Array<{ 
  * cognium-dev#586 — GraphQL resolver-map arguments. The second parameter of a
  * function under `Query` / `Mutation` / `Subscription` in the object passed as
  * `resolvers` to `new ApolloServer({…})` / `makeExecutableSchema({…})` (inline,
- * or a same-file `const resolvers = {…}`) is client-supplied. Parameter 0
+ * or a same-file `const resolvers = {…}`, optionally type-annotated) is client-supplied. Parameter 0
  * (`parent`) and 2 (`context`) are never seeded.
  */
 function findGraphqlResolverArgSources(sourceCode: string): TaintSource[] {
@@ -2447,7 +2447,12 @@ function findGraphqlResolverArgSources(sourceCode: string): TaintSource[] {
     const named = opts.match(/\bresolvers\s*(?::\s*(\w+))?\s*[,}]/);
     if (!named) continue;
     const ident = named[1] ?? 'resolvers';
-    const decl = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\{`).exec(sourceCode);
+    // cognium-dev#752: an annotation between the name and `=` (`: Resolvers`,
+    // `: Resolvers<Context>`, `: gql.Resolvers<Ctx, Parent>`) does not hide the map.
+    const decl = new RegExp(
+      `\\b(?:const|let|var)\\s+${ident}\\s*(?::\\s*[A-Za-z_$][\\w$]*(?:\\s*\\.\\s*[A-Za-z_$][\\w$]*)*` +
+        `(?:\\s*<[^<>=]*(?:<[^<>=]*>[^<>=]*)*>)?\\s*)?=\\s*\\{`,
+    ).exec(sourceCode);
     if (decl) maps.push(decl.index + decl[0].length - 1);
   }
   // `name: (…) =>`, `name: async (…) =>`, `name: function (…)`, `name(…) {` and `async name(…)`.
