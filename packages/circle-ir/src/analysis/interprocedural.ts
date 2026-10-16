@@ -295,6 +295,31 @@ function isJavaNonEscapeCall(
   return JAVA_LANG_EXCEPTION_TYPES.has(simple);
 }
 
+/**
+ * Go: `<re>.MatchString(subject)` where `<re>` is a plain identifier whose every
+ * definition in the file is `regexp.MustCompile(<one string literal>)`. The call
+ * returns a bool and neither retains nor writes its subject, so a tainted subject
+ * has not left the program (#349). A pattern built from a variable, a receiver
+ * that is a parameter / field / reassigned or shadowed name, or a string-returning
+ * matcher (`FindString`) is not covered and keeps its escape.
+ */
+function isGoConstRegexMatchCall(call: CallInfo, graph: CodeGraph, calls: readonly CallInfo[]): boolean {
+  if (call.method_name !== 'MatchString' || call.arguments.length !== 1) return false;
+  const re = call.receiver ?? '';
+  if (!/^[A-Za-z_]\w*$/.test(re)) return false;
+  const defs = graph.defsByVar.get(re);
+  if (!defs || defs.length === 0) return false;
+  return defs.every(def =>
+    def.kind === 'local' &&
+    calls.some(c =>
+      c.location.line === def.line &&
+      c.method_name === 'MustCompile' &&
+      c.receiver === 'regexp' &&
+      c.arguments.length === 1 &&
+      typeof c.arguments[0].literal === 'string' &&
+      /^(?:`[^`]*`|"(?:[^"\\]|\\.)*")$/.test(c.arguments[0].expression.trim())));
+}
+
 function isGoNonEscapeCall(call: CallInfo): boolean {
   const name = call.method_name;
   const recv = (call.receiver ?? '').split('.').pop() ?? '';
@@ -541,6 +566,10 @@ export function analyzeInterprocedural(
         // `len` alone at 709 — so a handler file with a single request read
         // produced a page of CWE-668 before any real sink was reached.
         if (graph.ir.meta.language === 'go' && isGoNonEscapeCall(call)) {
+          continue;
+        }
+        // Go: a bool test of the value against a constant-pattern regexp (#349).
+        if (graph.ir.meta.language === 'go' && isGoConstRegexMatchCall(call, graph, calls)) {
           continue;
         }
         // C# — same gate, same reason (#474, sibling of #455/#468).

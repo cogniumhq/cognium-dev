@@ -3047,6 +3047,68 @@ function detectExpressionScanFlows(
     // `ArgumentList.Clear()`, or an `Add(` that wraps over several lines seeds nothing.
     const argListRe = /(?<![\w.])(\w+)\s*\.\s*(StartInfo\s*\.\s*)?ArgumentList\s*\.\s*Add\s*\(\s*(.+?)\s*\)\s*;?\s*(?:\/\/.*)?$/;
     const shellFlagRe = /^(?:[-/](?:c|k|command|encodedcommand|ec))$/i;
+    // cognium-dev#750: the program may also be written by the `ProcessStartInfo`
+    // constructor's single argument or by a `FileName = …` entry of its object
+    // initializer, on the statement that creates `obj` (`var psi = new
+    // ProcessStartInfo("/bin/sh");`, `new ProcessStartInfo { FileName = "/bin/sh",
+    // … }`, possibly wrapped over several lines). Each counts as one `FileName`
+    // write, so the exactly-one-write rule still holds, and they apply only when the
+    // method has no explicit `obj.FileName = …` write. Any shape that is not
+    // plainly one constant program (two constructor arguments, an `Arguments`
+    // entry, a non-literal value) counts as a non-constant write.
+    const splitTopLevel = (text: string): string[] => {
+      const parts: string[] = [];
+      let depth = 0;
+      let quote = '';
+      let cur = '';
+      for (let k = 0; k < text.length; k++) {
+        const ch = text[k];
+        if (quote) {
+          cur += ch;
+          if (ch === '\\' && quote === '"' ) { cur += text[++k] ?? ''; continue; }
+          if (ch === quote) quote = '';
+          continue;
+        }
+        if (ch === '"') { quote = ch; cur += ch; continue; }
+        if (ch === '(' || ch === '{' || ch === '[') depth++;
+        if (ch === ')' || ch === '}' || ch === ']') depth--;
+        if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) parts.push(cur.trim());
+      return parts;
+    };
+    const constLiteral = (expr: string): string | null => {
+      const m = /^@?"([^"]*)"$/.exec(expr.trim());
+      return m ? (m[1].split(/[\\/]/).pop() ?? '') : null;
+    };
+    // Returns null when line j does not create `obj` or the creation writes no program.
+    const startInfoCreation = (obj: string, j: number): { program: string | null } | null => {
+      const head = new RegExp(`(?<![\\w.])${obj}(?:\\s*\\.\\s*StartInfo)?\\s*=(?!=)\\s*new\\s+ProcessStartInfo\\b`).exec(lines[j]);
+      if (!head) return null;
+      let text = '';
+      for (let k = j; k < lines.length && k < j + 40; k++) {
+        text += (k === j ? lines[k].slice(head.index) : ' ' + lines[k]).replace(/\/\/.*$/, '');
+        if (text.includes(';')) break;
+      }
+      const m = /new\s+ProcessStartInfo\s*(?:\(([^()]*)\))?\s*(?:\{([\s\S]*)\})?\s*;/.exec(text);
+      if (!m) return { program: null };
+      let program: string | null | undefined;
+      const ctorArgs = splitTopLevel(m[1] ?? '');
+      if (ctorArgs.length > 1) return { program: null };
+      if (ctorArgs.length === 1) program = constLiteral(ctorArgs[0]);
+      for (const member of splitTopLevel(m[2] ?? '')) {
+        const em = /^(\w+)\s*=(?!=)\s*([\s\S]*)$/.exec(member);
+        if (!em) return { program: null };
+        if (em[1] === 'FileName') {
+          if (program !== undefined) return { program: null };
+          program = constLiteral(em[2]);
+        } else if (em[1] === 'Arguments' || em[1] === 'ArgumentList') {
+          return { program: null };
+        }
+      }
+      return program === undefined ? null : { program };
+    };
     const argListReachesShell = (obj: string, line: number): boolean => {
       const fnStart = csFnStart(line);
       const nameRe = fileNameRe(obj);
@@ -3054,6 +3116,8 @@ function detectExpressionScanFlows(
       const addRe = new RegExp(`(?<![\\w.])${obj}\\s*\\.\\s*(?:StartInfo\\s*\\.\\s*)?ArgumentList\\s*\\.\\s*Add\\s*\\(\\s*@?"([^"]*)"\\s*\\)`);
       let program: string | null = null;
       let writes = 0;
+      let creations = 0;
+      let createdProgram: string | null = null;
       let flag = false;
       for (let j = 0; j < lines.length; j++) {
         if (csFnStart(j + 1) !== fnStart) continue;
@@ -3064,8 +3128,21 @@ function detectExpressionScanFlows(
           const lit = /^\s*@?"([^"]*)"\s*;?\s*(?:\/\/.*)?$/.exec(fm[1]);
           program = lit ? (lit[1].split(/[\\/]/).pop() ?? '') : null;
         }
+        const created = startInfoCreation(obj, j);
+        if (created) {
+          creations++;
+          createdProgram = created.program;
+        }
         const am = addRe.exec(lines[j]);
         if (am && shellFlagRe.test(am[1])) flag = true;
+      }
+      // An explicit `obj.FileName = …` decides the program, as before. Only when the
+      // method has none does the creating statement's constant program count, and
+      // then it must be the only creation (a second `new ProcessStartInfo(…)` for
+      // the same variable could replace it).
+      if (writes === 0 && creations > 0) {
+        writes = creations;
+        program = createdProgram;
       }
       return writes === 1 && program !== null && shellProgramRe.test(program) && flag;
     };
