@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- A JS/TS scan reports `sql_injection` and the other injection sinks for a GraphQL resolver whose `args` parameter is destructured or type-annotated (#586, partial).
 - A Go scan reports a finding for a value passed through a same-file `strings.TrimSpace` / `ToLower` / `ToUpper`-only helper named like a sanitizer (#581, partial).
 - A C# scan reports `command_injection` for a tainted `ArgumentList.Add(...)` behind a constant shell program and a command flag (`-c`, `/c`) before `proc.Start()` / `Process.Start(psi)` (#594).
 - A directory scan collects `*.properties` files (same skip rules as source files, `--exclude-tests` and config `exclude`; files over 1 MB are ignored) and passes them to circle-ir as resources (#591, partial).
