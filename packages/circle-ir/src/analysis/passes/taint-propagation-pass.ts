@@ -1110,6 +1110,43 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
     }
 
+    // cognium-dev#475: DFG paths may label a receiver (`cmd`) while taint
+    // actually rides a local (`v`) rewritten to a literal between source and
+    // sink. C# only — other languages rely on branch-aware sibling checks inside
+    // `isReassignedToLiteralBetween` and must not scan every intermediate LHS.
+    if (ctx.language === 'csharp' && typeof ctx.code === 'string') {
+      const code = ctx.code;
+      finalFlows = finalFlows.filter(f => {
+        const vars = new Set<string>();
+        for (const step of f.path) {
+          if (step.variable) vars.add(step.variable);
+        }
+        const lines = code.split('\n');
+        const lo = Math.max(0, f.source_line);
+        const hi = Math.min(lines.length, f.sink_line);
+        for (let i = lo; i < hi; i++) {
+          const line = lines[i] ?? '';
+          for (const m of line.matchAll(/\b([A-Za-z_][\w]*)\s*(?::?=)\s*/g)) {
+            vars.add(m[1]);
+          }
+        }
+        for (const v of vars) {
+          if (
+            isReassignedToLiteralBetween(
+              code,
+              v,
+              f.source_line,
+              f.sink_line,
+              constProp.unreachableLines,
+            )
+          ) {
+            return false;
+          }
+        }
+        return true;
+      });
+    }
+
     return { flows: finalFlows };
   }
 }
@@ -2057,11 +2094,22 @@ function isReassignedToLiteralBetween(
   const reSwitchCase = new RegExp(
     `^\\s*(?:case\\b.*?|default\\s*):\\s*${variable}\\s*=\\s*${strLit}\\s*;?\\s*(?:break\\s*;?)?\\s*$`,
   );
+  const lineHasNakedLiteralReassign = (line: string) => {
+    if (reNaked.test(line) || reSwitchCase.test(line)) return true;
+    // cognium-dev#475: `var v = input; v = "const";` on one line — only the
+    // trailing statement is a literal kill, not the whole physical line.
+    for (const seg of line.split(';')) {
+      const t = seg.trim();
+      if (!t) continue;
+      if (reNaked.test(t) || reSwitchCase.test(t)) return true;
+    }
+    return false;
+  };
   for (let i = lo; i < hi; i++) {
     const line = lines[i];
     if (!line) continue;
     if (reGuarded.test(line)) return true;
-    if (!reNaked.test(line) && !reSwitchCase.test(line)) continue;
+    if (!lineHasNakedLiteralReassign(line)) continue;
     // A literal assigned in one case of a switch only overwrites the value
     // when no case gives the variable anything else. `case 'A': bar = param;`
     // next to `default: bar = "safe";` leaves `bar` tainted on the 'A' path.
