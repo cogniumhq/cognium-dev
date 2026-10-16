@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A C# scan reports `command_injection` for a `ProcessStartInfo` local with a tainted `FileName` (or tainted `Arguments` behind a shell) passed to `Process.Start(psi)` (#594, partial).
 - A JS/TS scan reports a command, path or SQL sink fed by a variable that is assigned the tainted value inside an `if` / `else` / loop body or a `switch` case before the sink (#582, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
+- A C# scan reports the sink at the end of a forwarding chain (`A → Relay.Forward(data) → Store.FindRaw(data)` across three files) instead of an `external_taint_escape` at the first call; a chain that ends in a parameterised query reports nothing (#637, partial).
 
 ## [4.15.0] - 2026-10-15
 
