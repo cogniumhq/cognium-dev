@@ -21,7 +21,10 @@
  *      `P`'s position is a plain string literal, a literal local (`#636`), a
  *      local array whose element writes are all literals (`#638` step 1), or a
  *      parameter of the caller when every in-project caller of that method passes
- *      a constant at that parameter (transitive, depth ≤ 4, cycle-safe).
+ *      a constant at that parameter (transitive, depth ≤ 4, cycle-safe). Each relay
+ *      method on the way must itself meet rules 2 and 3, so a relay that is
+ *      virtual, overloaded or reached by a call that does not resolve exactly
+ *      keeps the flow.
  */
 
 import type { CircleIR, CallInfo, MethodInfo, TypeInfo } from '../types/index.js';
@@ -170,6 +173,19 @@ interface ConstantCallerCtx {
   callsByName: Map<string, CallSite[]>;
   resolver: ProjectGraph['resolver'];
   sourceLinesByFile: ReadonlyMap<string, string[]>;
+  derivedFrom: ReadonlySet<string>;
+}
+
+/**
+ * Rule 2 of the header: a method whose callers can be enumerated exactly. Applied to the
+ * sink's method and to every relay method the transitive step walks through, so a virtual,
+ * overridden, interface or overloaded relay keeps the flow.
+ */
+function hasEnumerableCallers(type: TypeInfo, method: MethodInfo, derivedFrom: ReadonlySet<string>): boolean {
+  if (type.kind !== 'class') return false;
+  if (method.modifiers.some(m => m === 'virtual' || m === 'abstract' || m === 'override')) return false;
+  if (derivedFrom.has(type.name)) return false;
+  return type.methods.filter(m => m.name === method.name).length === 1;
 }
 
 const TRANSITIVE_MAX_DEPTH = 4;
@@ -191,6 +207,7 @@ function isConstantArgRecursive(
 
   const encl = enclosingMethod(ir, call.location.line);
   if (!encl) return false;
+  if (!hasEnumerableCallers(encl.type, encl.method, ctx.derivedFrom)) return false;
   const paramIdx = encl.method.parameters.findIndex(p => p.name === arg.variable);
   if (paramIdx < 0) return false;
 
@@ -202,7 +219,13 @@ function isConstantArgRecursive(
   let resolvedToMethod = 0;
   for (const site of ctx.callsByName.get(encl.method.name) ?? []) {
     const r = ctx.resolver.resolveCall(site.call, site.file);
-    if (!r || r.resolution !== 'exact' || r.targetMethod !== fqn) continue;
+    // Rule 3, as at the sink: one call of this name that does not resolve exactly might be
+    // this relay receiving tainted data, so the relay's argument is not known to be constant.
+    if (!r || r.resolution !== 'exact') {
+      visiting.delete(visitKey);
+      return false;
+    }
+    if (r.targetMethod !== fqn) continue;
     const callerIr = ctx.fileAnalyses.find(f => f.file === site.file)?.analysis;
     const callerLines = ctx.sourceLinesByFile.get(site.file);
     if (!callerIr || !callerLines) {
@@ -250,6 +273,7 @@ export function applyConstantCallerGate(
     callsByName,
     resolver,
     sourceLinesByFile,
+    derivedFrom,
   };
 
   for (const fa of candidates) {
@@ -268,10 +292,7 @@ export function applyConstantCallerGate(
       if (!encl || encl.method.name !== src.in_method) return true;
       const { type, method } = encl;
 
-      if (type.kind !== 'class') return true;
-      if (method.modifiers.some(m => m === 'virtual' || m === 'abstract' || m === 'override')) return true;
-      if (derivedFrom.has(type.name)) return true;
-      if (type.methods.filter(m => m.name === method.name).length !== 1) return true;
+      if (!hasEnumerableCallers(type, method, derivedFrom)) return true;
       const position = method.parameters.findIndex(p => p.name === variable);
       if (position < 0) return true;
 
