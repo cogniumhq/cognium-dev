@@ -315,8 +315,15 @@ export class CrossFileResolver {
     // type can be resolved via imports/locals/fields. Honour it before
     // falling through to context-derived inference (which only handles a
     // few common abbreviations and constructor-defined locals).
-    const receiverType: string | undefined =
+    let receiverType: string | undefined =
       call.receiver_type_fqn ?? this.inferReceiverType(receiver, fromFile);
+
+    if (!receiverType) {
+      const startIR = this.fileIRs.get(fromFile);
+      if (startIR?.meta.language === 'csharp' && call.receiver_type) {
+        receiverType = this.symbolTable.resolveTypeName(call.receiver_type, fromFile);
+      }
+    }
 
     if (receiverType) {
       // Look for method in the type
