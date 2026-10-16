@@ -2819,6 +2819,9 @@ function detectExpressionScanFlows(
   // is every Juliet C# file.
   const csFnRanges = methodRanges(['csharp']);
   const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
+
+  const jsFnRanges = methodRanges(['javascript', 'typescript']);
+  const jsFnStart = (line: number): number => enclosingStart(jsFnRanges, line);
   // cognium-dev#548 — names declared as class fields. A field is the one kind
   // of variable whose value legitimately crosses from one method to another, so
   // the per-method gate below must not apply to it.
@@ -3754,6 +3757,21 @@ function detectExpressionScanFlows(
             const srcFn = goFnStart(source.line);
             const sinkFn = goFnStart(sink.line);
             if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
+          }
+
+          // cognium-dev#752: GraphQL resolver args are seeded by name only; scope
+          // them to the resolver (or factory) they came from so a same-named
+          // local in another recorded function does not inherit the seed.
+          if (
+            jsFnRanges.length > 0 &&
+            typeof source.location === 'string' &&
+            source.location.startsWith('GraphQL ')
+          ) {
+            const sinkFn = jsFnStart(sink.line);
+            if (sinkFn !== -1) {
+              const range = jsFnRanges.find(([start]) => start === sinkFn);
+              if (range && (source.line < range[0] || source.line > range[1])) continue;
+            }
           }
 
           // cognium-dev#530: a builder-seeded source must not escape its method.
