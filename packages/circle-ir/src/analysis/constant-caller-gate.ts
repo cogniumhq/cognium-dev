@@ -93,7 +93,6 @@ export function isLiteralArrayLocal(ir: CircleIR, lines: string[], call: CallInf
   const { method } = encl;
   if (method.parameters.some(p => p.name === name)) return false;
 
-  const literal = '@?"(?:[^"\\\\]|\\\\.)*"';
   const declNew = new RegExp(
     `^\\s*(?:var\\s+)?[\\w<>\\[\\],\\s]*\\b${name}\\s*=\\s*new\\s+[\\w<>\\[\\],\\s]+\\[\\s*\\d+\\s*\\]\\s*;\\s*(?://.*)?$`,
   );
@@ -107,7 +106,6 @@ export function isLiteralArrayLocal(ir: CircleIR, lines: string[], call: CallInf
   const copyStyle = new RegExp(`\\b(?:Array\\.Copy|CopyTo|\\.Add)\\s*\\([^)]*\\b${name}\\b`);
 
   let declared = false;
-  let initLiteralOnly = false;
   let declLine = -1;
 
   for (let l = method.start_line; l <= method.end_line; l++) {
@@ -119,14 +117,12 @@ export function isLiteralArrayLocal(ir: CircleIR, lines: string[], call: CallInf
       declared = true;
       declLine = l;
       const inner = (initMatch[1] ?? '').trim();
-      initLiteralOnly = inner.length === 0 || LITERAL_IN_BRACES.test(inner);
-      if (!initLiteralOnly) return false;
+      if (inner.length > 0 && !LITERAL_IN_BRACES.test(inner)) return false;
       continue;
     }
     if (declNew.test(text)) {
       declared = true;
       declLine = l;
-      initLiteralOnly = false;
       continue;
     }
 
