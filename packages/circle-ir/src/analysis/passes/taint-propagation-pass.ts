@@ -3426,6 +3426,20 @@ function detectExpressionScanFlows(
       }
       return program === undefined ? null : { program };
     };
+    const constStringFieldProgram = (fieldName: string): string | null => {
+      const declRe = new RegExp(
+        `\\b(?:\\w+\\s+)*const\\s+string\\s+${fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*@?"([^"]*)"\\s*;`,
+      );
+      let hits = 0;
+      let base: string | null = null;
+      for (const srcLine of lines) {
+        const dm = declRe.exec(srcLine);
+        if (!dm) continue;
+        hits++;
+        base = dm[1].split(/[\\/]/).pop() ?? '';
+      }
+      return hits === 1 ? base : null;
+    };
     const argListReachesShell = (obj: string, line: number): boolean => {
       const fnStart = csFnStart(line);
       const nameRe = fileNameRe(obj);
@@ -3443,7 +3457,12 @@ function detectExpressionScanFlows(
         if (fm) {
           writes++;
           const lit = /^\s*@?"([^"]*)"\s*;?\s*(?:\/\/.*)?$/.exec(fm[1]);
-          program = lit ? (lit[1].split(/[\\/]/).pop() ?? '') : null;
+          if (lit) {
+            program = lit[1].split(/[\\/]/).pop() ?? '';
+          } else {
+            const id = /^\s*(\w+)\s*;?\s*(?:\/\/.*)?$/.exec(fm[1]);
+            program = id ? constStringFieldProgram(id[1]) : null;
+          }
         }
         const created = startInfoCreation(obj, j);
         if (created) {
