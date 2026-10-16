@@ -1214,10 +1214,6 @@ export class ConstantPropagator {
   }
 
   /**
-   * Handle synchronized statements.
-   * Operations inside synchronized blocks are atomic, so field strong updates are safe.
-   */
-  /**
    * cognium-dev#753 — try/catch must not let a catch-arm literal assignment
    * erase taint established on the normal-completion path through the try body
    * (`try { label = format(picked); } catch (…) { label = ""; }` then
@@ -1272,6 +1268,10 @@ export class ConstantPropagator {
     return tryVal;
   }
 
+  /**
+   * Handle synchronized statements.
+   * Operations inside synchronized blocks are atomic, so field strong updates are safe.
+   */
   private handleSynchronizedStatement(node: Node): void {
     const wasInSyncBlock = this.inSynchronizedBlock;
     this.inSynchronizedBlock = true;
