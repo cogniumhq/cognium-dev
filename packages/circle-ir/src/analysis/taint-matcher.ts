@@ -3711,8 +3711,21 @@ function findSanitizers(
         if (c.method_name === method.name) continue; // recursion guard
         inside.push(c);
       }
-      if (inside.length !== 1) continue;
-      const innerCall = inside[0]!;
+      if (inside.length === 0) continue;
+      const allReplaceCalls = inside.every(
+        c => c.method_name === 'replace' || c.method_name === 'replaceAll',
+      );
+      let innerCall: CallInfo;
+      let replaceChainHelper = false;
+      if (inside.length === 1) {
+        innerCall = inside[0]!;
+      } else if (allReplaceCalls) {
+        replaceChainHelper = true;
+        innerCall = inside.reduce((best, c) =>
+          (c.receiver ?? '').length > (best.receiver ?? '').length ? c : best);
+      } else {
+        continue;
+      }
 
       let matched: SanitizerPattern | undefined;
       const replaceCredit = javaReplace(innerCall);
@@ -3729,8 +3742,18 @@ function findSanitizers(
       if (!matched || !matched.removes || matched.removes.length === 0) continue;
 
       let argOk = false;
-      for (const arg of innerCall.arguments) {
-        if (arg.variable && paramNames.has(arg.variable)) { argOk = true; break; }
+      if (replaceChainHelper) {
+        const recv = innerCall.receiver?.trim() ?? '';
+        for (const p of paramNames) {
+          if (recv === p || recv.startsWith(`${p}.`)) {
+            argOk = true;
+            break;
+          }
+        }
+      } else {
+        for (const arg of innerCall.arguments) {
+          if (arg.variable && paramNames.has(arg.variable)) { argOk = true; break; }
+        }
       }
       if (!argOk) continue;
 
@@ -3740,10 +3763,17 @@ function findSanitizers(
         const returnMatch = stripped.match(/^return\s+(?:await\s+)?(.*)$/);
         if (!returnMatch) continue;
         const after = returnMatch[1]!.replace(/;\s*$/, '').trimEnd();
-        const callPrefix = innerCall.receiver
-          ? `${innerCall.receiver}.${innerCall.method_name}(`
-          : `${innerCall.method_name}(`;
-        if (!after.startsWith(callPrefix)) continue;
+        if (replaceChainHelper) {
+          const startsWithParam = [...paramNames].some(
+            p => after === p || after.startsWith(`${p}.`),
+          );
+          if (!startsWithParam) continue;
+        } else {
+          const callPrefix = innerCall.receiver
+            ? `${innerCall.receiver}.${innerCall.method_name}(`
+            : `${innerCall.method_name}(`;
+          if (!after.startsWith(callPrefix)) continue;
+        }
         if (!after.endsWith(')')) continue;
       }
 
