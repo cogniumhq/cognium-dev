@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
+import { CSharpCredit } from '../../src/analysis/passes/csharp-sanitizer-credit.js';
 
 async function xss(code: string) {
   const r = await analyze(code, 'PermalinkBuilder.cs', 'csharp');
@@ -51,10 +52,24 @@ return Html.Raw("<a href=\\"/p/" + slug + "\\">link</a>");`);
     expect(await xss(code)).toHaveLength(0);
   });
 
-  it('stays clean when only a literal is appended', async () => {
+  it('stays clean when only a literal is appended after encode', async () => {
     const code = link(`var slug = UrlEncoder.Default.Encode(title);
 slug += "/edit";
 return Html.Raw("<a href=\\"/p/" + slug + "\\">link</a>");`);
     expect(await xss(code)).toHaveLength(0);
+  });
+
+  it('literal += does not grant sanitizer credit to an uncredited name', () => {
+    const code = `using System.Text.Encodings.Web;
+public class PermalinkBuilder {
+  public object Run(string title) {
+    var slug = title;
+    slug += "/edit";
+    return Html.Raw("<a href=\\"/p/" + slug + "\\">link</a>");
+  }
+}`;
+    const methods = [{ name: 'Run', start_line: 3, end_line: 8 }];
+    const credit = new CSharpCredit(code, methods);
+    expect(credit.sanitizedVarsAt('xss', 6).has('slug')).toBe(false);
   });
 });

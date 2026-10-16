@@ -296,12 +296,12 @@ export class CSharpCredit {
       const append = APPEND_RE.exec(st.text);
       if (append) {
         const [, lhs, rhs] = append;
+        if (!sanitized.has(lhs)) continue;
         const credited =
           (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) ||
           [...sanitized].some(v => mentions(rhs, v));
         const keep = credited || !hasBareIdentifier(rhs);
-        if (keep) sanitized.add(lhs);
-        else sanitized.delete(lhs);
+        if (!keep) sanitized.delete(lhs);
         continue;
       }
       const m = ASSIGN_RE.exec(st.text);
