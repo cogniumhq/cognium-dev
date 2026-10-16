@@ -3086,6 +3086,38 @@ function detectExpressionScanFlows(
       }
       return false;
     };
+    // cognium-dev#594: `X.StartInfo.ArgumentList.Add(<tainted>)` (or `psi.ArgumentList.Add(…)`
+    // on a local `ProcessStartInfo`) is argv, so it only reaches a command when the
+    // program is a shell that is told to run a command string. Seed only when the
+    // method writes `FileName` exactly once, to a constant shell program, and an
+    // `ArgumentList.Add` of a command flag (`-c`, `/c`, …) is in the same method.
+    // A non-constant or non-shell program, a second `FileName` write, an
+    // `ArgumentList.Clear()`, or an `Add(` that wraps over several lines seeds nothing.
+    const argListRe = /(?<![\w.])(\w+)\s*\.\s*(StartInfo\s*\.\s*)?ArgumentList\s*\.\s*Add\s*\(\s*(.+?)\s*\)\s*;?\s*(?:\/\/.*)?$/;
+    const shellFlagRe = /^(?:[-/](?:c|k|command|encodedcommand|ec))$/i;
+    const argListReachesShell = (obj: string, line: number): boolean => {
+      const fnStart = csFnStart(line);
+      const nameRe = fileNameRe(obj);
+      const clearRe = new RegExp(`(?<![\\w.])${obj}\\s*\\.\\s*(?:StartInfo\\s*\\.\\s*)?ArgumentList\\s*\\.\\s*(?:Clear|Remove\\w*|Insert\\w*)\\s*\\(`);
+      const addRe = new RegExp(`(?<![\\w.])${obj}\\s*\\.\\s*(?:StartInfo\\s*\\.\\s*)?ArgumentList\\s*\\.\\s*Add\\s*\\(\\s*@?"([^"]*)"\\s*\\)`);
+      let program: string | null = null;
+      let writes = 0;
+      let flag = false;
+      for (let j = 0; j < lines.length; j++) {
+        if (csFnStart(j + 1) !== fnStart) continue;
+        if (clearRe.test(lines[j])) return false;
+        const fm = nameRe.exec(lines[j]);
+        if (fm) {
+          writes++;
+          const lit = /^\s*@?"([^"]*)"\s*;?\s*(?:\/\/.*)?$/.exec(fm[1]);
+          program = lit ? (lit[1].split(/[\\/]/).pop() ?? '') : null;
+        }
+        const am = addRe.exec(lines[j]);
+        if (am && shellFlagRe.test(am[1])) flag = true;
+      }
+      return writes === 1 && program !== null && shellProgramRe.test(program) && flag;
+    };
+
     // cognium-dev#548: seed per method, from sources in that method. The seed
     // used to be made once per file and matched by name, so `cmd.CommandText =
     // … + data` in `Bad()` tainted `cmd.ExecuteScalar()` in `GoodG2B()`, whose
@@ -3098,6 +3130,32 @@ function detectExpressionScanFlows(
       added = false;
       guard++;
       for (let i = 0; i < lines.length; i++) {
+        const am = argListRe.exec(lines[i]);
+        if (am) {
+          const [, aobj, viaStartInfo, aargs] = am;
+          const akey = `${aobj}@${csFnStart(i + 1)}`;
+          if ((viaStartInfo || psiVars.has(aobj)) && !seeded.has(akey) && argListReachesShell(aobj, i + 1)) {
+            // A value set to a literal after the source and before this `Add` no longer
+            // carries it (`cmd = name; cmd = "uptime"; …Add(cmd)`).
+            const literalSince = (v: string, from: number): boolean => {
+              const re = new RegExp(`(?<![\\w.])${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=(?!=)\\s*@?"[^"]*"\\s*;`);
+              const fn = csFnStart(i + 1);
+              for (let j = from; j < i; j++) if (csFnStart(j + 1) === fn && re.test(lines[j])) return true;
+              return false;
+            };
+            const reachableA = sourcesWithVar.filter(
+              sv => sv.line <= i + 1 && !csDifferentMethod(sv.variable, sv.line, i + 1) && !literalSince(sv.variable, sv.line),
+            );
+            const maskedArg = aargs.replace(/\b(?:int|uint|long|ulong|short|ushort|byte|double|float|decimal|bool|Int16|Int32|Int64|Double|Decimal|Boolean|Guid)\s*\.\s*(?:Try)?Parse\s*\((?:[^()]|\([^()]*\))*\)|\bConvert\s*\.\s*To(?:Int16|Int32|Int64|Double|Decimal|Boolean|Byte)\s*\((?:[^()]|\([^()]*\))*\)/g, '0');
+            if (reachableA.length > 0 && argsReferenceTaintedVar(maskedArg, reachableA)) {
+              const fromA = reachableA.reduce((a, sv) => (sv.line < a.line ? sv : a), reachableA[0]);
+              sourcesWithVar.push({ ...fromA, variable: aobj, line: i + 1 });
+              seeded.add(akey);
+              added = true;
+            }
+          }
+          continue;
+        }
         let m = ctRe.exec(lines[i]);
         let viaLocal = false;
         if (!m) {
