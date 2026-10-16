@@ -500,21 +500,6 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     const sinkFilter  = ctx.getResult<SinkFilterResult>('sink-filter');
     const { sources, sinks, sanitizers } = sinkFilter;
 
-    // cognium-dev#624: `detectExpressionScanFlows` synthesizes derived locals
-    // (e.g. `label` from `page.getName()`) that const-prop never seeds; without
-    // this, `makeConstPropVeto` drops those flows as `variable_not_tainted`.
-    if ((ctx.language === 'java' || ctx.language === 'csharp') && typeof ctx.code === 'string') {
-      const seedVars = new Set<string>();
-      for (const s of sources) {
-        if (s.variable) seedVars.add(s.variable);
-      }
-      if (seedVars.size > 0) {
-        for (const [v] of buildJavaTaintedVars(ctx.code, seedVars)) {
-          constProp.tainted.add(v);
-        }
-      }
-    }
-
     if (sinks.length === 0) {
       return { flows: [] };
     }
