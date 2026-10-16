@@ -1769,6 +1769,36 @@ function findGoRequestBodySources(sourceCode: string, language: string): TaintSo
   return sources;
 }
 
+/** cognium-dev#490 — split `a; b; c` on one line (no `{`), respecting string literals. */
+function splitCSharpDepth0Statements(line: string): string[] {
+  if (line.includes('{')) return [line];
+  const statements: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inStr: '"' | "'" | null = null;
+  let esc = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = c; continue; }
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (c === ';' && depth === 0) {
+      const part = line.slice(start, i + 1).trim();
+      if (part) statements.push(part);
+      start = i + 1;
+    }
+  }
+  const tail = line.slice(start).trim();
+  if (tail) statements.push(tail);
+  return statements.length > 1 ? statements : [line];
+}
+
 function findCSharpRequestSources(sourceCode: string, language: string): TaintSource[] {
   if (language !== 'csharp') return [];
   const sources: TaintSource[] = [];
@@ -1922,7 +1952,8 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     /(?:^|[{;])\s*(?:await\s+)?(?:using\s*\(?\s*)?(?:var\s+|[A-Za-z_][\w.<>\[\]]*\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;{}]+)/;
 
   for (let i = 0; i < lines.length; i++) {
-    const m = assignRe.exec(lines[i]);
+    for (const stmt of splitCSharpDepth0Statements(lines[i])) {
+    const m = assignRe.exec(stmt);
     // cognium-dev#502 — `assignRe` is anchored and greedy, so on a one-line
     // block header that also contains the real assignment
     //
@@ -1937,7 +1968,6 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
     // there `assignRe` did not match and the inner assignment was lost.)
     const rhsCrossesBlock = m !== null && m[2].includes('{');
     if (!m || rhsCrossesBlock) {
-      const stmt = lines[i];
       if (stmt.includes('{') && !/^\s*(?:\/\/|\/\*|\*)/.test(stmt)) {
         const emb = new RegExp(embeddedAssignRe.source, 'g');
         let em: RegExpExecArray | null;
@@ -2005,6 +2035,7 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
       confidence: 1.0,
       variable: varName,
     });
+    }
   }
   return sources;
 }

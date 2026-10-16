@@ -3816,6 +3816,52 @@ function detectExpressionScanFlows(
     }
   }
 
+  // cognium-dev#490 — same helper as `splitCSharpDepth0Statements` in language-sources-pass.
+  const splitCSharpDepth0Statements = (line: string): string[] => {
+    if (line.includes('{')) return [line];
+    const statements: string[] = [];
+    let start = 0;
+    let depth = 0;
+    let inStr: '"' | "'" | null = null;
+    let esc = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i]!;
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (c === '\\') { esc = true; continue; }
+        if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { inStr = c; continue; }
+      if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+      else if (c === ';' && depth === 0) {
+        const part = line.slice(start, i + 1).trim();
+        if (part) statements.push(part);
+        start = i + 1;
+      }
+    }
+    const tail = line.slice(start).trim();
+    if (tail) statements.push(tail);
+    return statements.length > 1 ? statements : [line];
+  };
+  const boundInEarlierStatement = (code: string, variable: string, sinkMethod?: string): boolean => {
+    if (!variable || variable === '<inline>' || !sinkMethod) return false;
+    const stmts = splitCSharpDepth0Statements(code);
+    if (stmts.length < 2) return false;
+    const methodRe = new RegExp(`\\b${sinkMethod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`);
+    let sinkIdx = -1;
+    for (let i = 0; i < stmts.length; i++) {
+      if (methodRe.test(stmts[i]!)) { sinkIdx = i; break; }
+    }
+    if (sinkIdx <= 0) return false;
+    const varAssign = new RegExp(`\\b${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=(?!=)`);
+    for (let i = 0; i < sinkIdx; i++) {
+      if (varAssign.test(stmts[i]!)) return true;
+    }
+    return false;
+  };
+
   // cognium-dev #83: inline-source colocation.
   //
   // When a source expression is used INLINE as a sink argument — e.g.
@@ -3898,6 +3944,9 @@ function detectExpressionScanFlows(
         const assignMatch = sinkCode.match(/^\s*(?:[A-Za-z_][\w.<>[\]\s,?]*\s+)?[A-Za-z_]\w*\s*=(?!=)\s*/);
         const rhs = assignMatch ? sinkCode.slice(assignMatch[0].length) : sinkCode;
         if (new RegExp(`\\b${sourceVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(rhs)) {
+          continue;
+        }
+        if (boundInEarlierStatement(sinkCode, sourceVar, sink.method)) {
           continue;
         }
       }
