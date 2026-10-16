@@ -2050,7 +2050,16 @@ function csharpMethodScopedAliases(
         continue;
       }
 
-      const d = declRe.exec(text) ?? assignRe.exec(text);
+      let d = declRe.exec(text) ?? assignRe.exec(text);
+      if (!d && text.includes('{')) {
+        const inner = text.slice(text.indexOf('{') + 1, text.lastIndexOf('}'));
+        for (const stmt of inner.split(';')) {
+          const trimmedStmt = stmt.trim();
+          if (!trimmedStmt) continue;
+          d = declRe.exec(`${trimmedStmt};`) ?? assignRe.exec(`${trimmedStmt};`);
+          if (d) break;
+        }
+      }
       if (!d) continue;
       const [, lhs, rhs] = d;
       if (KEYWORDS.has(lhs)) continue;
@@ -3255,11 +3264,17 @@ function detectExpressionScanFlows(
       const from = !alias.carried && inMethod.length > 0
         ? inMethod.reduce((a, sv) => (sv.line < a.line ? sv : a), inMethod[0])
         : fileAnchor;
-      sourcesWithVar.push({
+      const aliasEntry: typeof sourcesWithVar[0] = {
         ...from,
         variable: alias.variable,
         ...(alias.carried || inMethod.length === 0 ? { line: alias.line } : {}),
-      });
+      };
+      // cognium-dev#327: field aliases must not keep the writing method's
+      // `in_method` tag — readers in other methods need to see the taint.
+      if (isField) {
+        delete aliasEntry.in_method;
+      }
+      sourcesWithVar.push(aliasEntry);
     }
   } else if ((language === 'java' || language === 'csharp') && typeof code === 'string' && sourcesWithVar.length > 0) {
     const seedVars = new Set(sourcesWithVar.map(s => s.variable));
@@ -3287,10 +3302,21 @@ function detectExpressionScanFlows(
         }
         return null;
       };
+      const typeAt = (line: number) => {
+        for (const t of types ?? []) {
+          if (line >= t.start_line && line <= t.end_line) return t;
+        }
+        return undefined;
+      };
+      const isDeclaredField = (line: number, name: string): boolean => {
+        const t = typeAt(line);
+        return t?.fields?.some(f => f.name === name) ?? false;
+      };
       const existingVars = new Set(sourcesWithVar.map(s => s.variable));
       for (const [varName, derivedLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
         const owner = methodAt(derivedLine);
+        const fieldAlias = isDeclaredField(derivedLine, varName);
         let scopedAnchor = anchor;
         if (owner) {
           let best: typeof anchor | undefined;
@@ -3304,12 +3330,25 @@ function detectExpressionScanFlows(
         // Keep scopedAnchor.line for in_method / preceding-source matching
         // (#614). Pass derivedLine only for literal-kill (#753), so a safe
         // sibling method's earlier sink cannot pick up this alias by line.
-        sourcesWithVar.push({
-          ...scopedAnchor,
-          variable: varName,
-          literal_kill_line: derivedLine,
-          ...(owner ? { in_method: owner } : {}),
-        });
+        // cognium-dev#327: a declared field written from a method parameter
+        // must not inherit the writing method as `in_method` — same exemption
+        // as request sources on fields (4.12.0), so readers in other methods
+        // can see the taint.
+        if (fieldAlias) {
+          const { in_method: _drop, ...rest } = scopedAnchor;
+          sourcesWithVar.push({
+            ...rest,
+            variable: varName,
+            literal_kill_line: derivedLine,
+          });
+        } else {
+          sourcesWithVar.push({
+            ...scopedAnchor,
+            variable: varName,
+            literal_kill_line: derivedLine,
+            ...(owner ? { in_method: owner } : {}),
+          });
+        }
         existingVars.add(varName);
       }
     }
