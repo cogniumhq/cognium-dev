@@ -328,10 +328,10 @@ function makeConstPropVeto(
   return (step, sourceLine, sinkLine, sinkType) => {
     const method = methodAtLine(graph, step.line);
     const scopedVar = method ? `${method}:${step.variable}` : step.variable;
-    let r = isFalsePositive(constProp, step.line, scopedVar);
-    if (!r.isFalsePositive && scopedVar !== step.variable) {
-      r = isFalsePositive(constProp, step.line, step.variable);
-    }
+    // cognium-dev#751: Go locals are recorded method-scoped only (no unscoped
+    // alias) by handleGoAssignment, so Go looks up the scoped name. Other
+    // languages keep the unscoped lookup (#614).
+    const r = isFalsePositive(constProp, step.line, language === 'go' ? scopedVar : step.variable);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
     // #589: the step variable came from a context-specific encoder
