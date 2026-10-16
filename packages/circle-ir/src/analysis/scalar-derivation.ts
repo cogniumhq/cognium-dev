@@ -186,7 +186,8 @@ function goBraceText(text: string): string {
  * Names `n` bounded by `if <... n > K | n >= K ...> { ...; return|panic|continue }`
  * in `lines[from .. to)` where the guard still dominates line `to`. The condition
  * may join the bound with `||` only: under `&&` the branch would not reject every
- * large value. K is an integer literal.
+ * large value. K is an integer literal or a name in `consts` (a same-file integer
+ * `const`, see `goIntConstNames`).
  *
  * A guard only holds while the block it sits in is open: once the brace depth
  * falls below the guard's depth (the enclosing `if`, loop, closure or `else`
@@ -195,7 +196,13 @@ function goBraceText(text: string): string {
  * guard (`n = …`, `n op= …`, `n++`, `n--`, or `&n` handed to a callee such as
  * `fmt.Sscanf`) voids every bound on it.
  */
-function goUpperBoundGuardedAt(lines: readonly string[], from: number, to: number, name: string): boolean {
+function goUpperBoundGuardedAt(
+  lines: readonly string[],
+  from: number,
+  to: number,
+  name: string,
+  consts: ReadonlySet<string>,
+): boolean {
   const esc = name.replace(/[$]/g, '\\$');
   const bound = new RegExp(`^\\(*\\s*${esc}\\s*>=?\\s*([\\w]+)\\s*\\)*$`);
   const reassign = new RegExp(
@@ -216,7 +223,7 @@ function goUpperBoundGuardedAt(lines: readonly string[], from: number, to: numbe
         const parts = cond.split('||').map((p) => p.trim());
         const hit = parts.some((p) => {
           const m = bound.exec(p);
-          return m !== null && GO_INT_LITERAL.test(m[1]!);
+          return m !== null && (GO_INT_LITERAL.test(m[1]!) || consts.has(m[1]!));
         });
         if (hit) {
           // The guard block must end in an exit before its closing brace.
@@ -253,6 +260,57 @@ function goUpperBoundGuardedAt(lines: readonly string[], from: number, to: numbe
 }
 
 /**
+ * Names declared exactly once in the file, as a package- or function-level
+ * `const NAME [type] = <integer literal>` (alone or inside a `const ( … )` block),
+ * and never otherwise defined: no `:=` or `var` of the same name, no parameter,
+ * result or range variable of that name, no second `const` of it. A name that
+ * could be shadowed by a variable is not a constant bound.
+ */
+function goIntConstNames(lines: readonly string[]): Set<string> {
+  const decl = /^(?:const\s+)?([A-Za-z_]\w*)(?:\s+[\w.]+)?\s*=\s*([\w]+)\s*$/;
+  const found = new Map<string, number>();
+  let inBlock = false;
+  const declLines = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i]!.replace(/\s*\/\/.*$/, '').trim();
+    if (inBlock) {
+      if (text === ')') { inBlock = false; continue; }
+      const m = decl.exec(text);
+      if (m && GO_INT_LITERAL.test(m[2]!) && !/^const\b/.test(text)) {
+        found.set(m[1]!, (found.get(m[1]!) ?? 0) + 1);
+        declLines.add(i);
+      }
+      continue;
+    }
+    if (/^const\s*\($/.test(text)) { inBlock = true; continue; }
+    if (/^const\s/.test(text)) {
+      const m = decl.exec(text);
+      if (m && GO_INT_LITERAL.test(m[2]!)) {
+        found.set(m[1]!, (found.get(m[1]!) ?? 0) + 1);
+        declLines.add(i);
+      }
+    }
+  }
+  const out = new Set<string>();
+  for (const [name, count] of found) {
+    if (count !== 1) continue;
+    const esc = name.replace(/[$]/g, '\\$');
+    const other = new RegExp(
+      `(?:^|[\\s,(])${esc}(?:\\s*,\\s*[\\w]+)*\\s*(?::=|=(?!=))` +
+        `|\\b(?:var|const|type|func)\\s+${esc}\\b` +
+        `|[(,]\\s*${esc}(?:\\s*,\\s*\\w+)*\\s+[\\w*\\[.]`,
+    );
+    const shadowed = lines.some((l, i) => {
+      if (declLines.has(i)) return false;
+      const t = l.replace(/\s*\/\/.*$/, '');
+      return new RegExp(`(?<![\\w.])${esc}(?![\\w])`).test(t) && other.test(t);
+    });
+    if (!shadowed) out.add(name);
+  }
+  return out;
+}
+
+/**
  * DFG def ids of a Go local initialised by `make(<type>, <len>[, <cap>])` whose
  * every size argument is an integer literal or a variable rejected above a
  * constant earlier in the same function (`if n > K { return }`). The buffer
@@ -263,6 +321,7 @@ export function boundedMakeDefIds(defs: readonly DFGDef[], code: string, languag
   const out = new Set<number>();
   if (language !== 'go') return out;
   const lines = code.split('\n');
+  const consts = goIntConstNames(lines);
   for (const def of defs) {
     if (def.kind !== 'local') continue;
     const text = lines[def.line - 1];
@@ -275,7 +334,7 @@ export function boundedMakeDefIds(defs: readonly DFGDef[], code: string, languag
     let fnStart = def.line - 1;
     while (fnStart > 0 && !/^func\b/.test(lines[fnStart]!)) fnStart--;
     const ok = sizes.every(
-      (s) => GO_INT_LITERAL.test(s) || (/^[A-Za-z_]\w*$/.test(s) && goUpperBoundGuardedAt(lines, fnStart, def.line - 1, s)),
+      (s) => GO_INT_LITERAL.test(s) || (/^[A-Za-z_]\w*$/.test(s) && goUpperBoundGuardedAt(lines, fnStart, def.line - 1, s, consts)),
     );
     if (ok) out.add(def.id);
   }
