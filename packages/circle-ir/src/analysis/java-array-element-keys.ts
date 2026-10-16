@@ -24,11 +24,21 @@ export function parseJavaArrayAccessExpression(expr: string | undefined): {
 } | null {
   const trimmed = expr?.trim();
   if (!trimmed) return null;
-  const m = trimmed.match(/^(\w+)((?:\[\d+\])+)$/);
-  if (!m) return null;
-  const base = m[1];
-  const indices = [...m[2].matchAll(/\[(\d+)\]/g)].map(part => part[1]);
-  if (indices.length === 0) return null;
-  const { arrayName, indexKey } = javaArrayElementStorageKey(base, indices);
-  return { base, arrayName, indexKey, displayVar: trimmed };
+
+  // `grid[0][0]` — numeric indices only (matches constant-prop storage keys).
+  const multiNumeric = trimmed.match(/^(\w+)((?:\[\d+\])+)$/);
+  if (multiNumeric) {
+    const base = multiNumeric[1];
+    const indices = [...multiNumeric[2].matchAll(/\[(\d+)\]/g)].map(part => part[1]);
+    if (indices.length === 0) return null;
+    const { arrayName, indexKey } = javaArrayElementStorageKey(base, indices);
+    return { base, arrayName, indexKey, displayVar: trimmed };
+  }
+
+  // `arr[0]`, `params[i]` — single subscript (legacy matcher shape).
+  const single = trimmed.match(/^(\w+)\[([^\]]+)\]$/);
+  if (!single) return null;
+  const base = single[1];
+  const indexKey = single[2].trim();
+  return { base, arrayName: base, indexKey, displayVar: trimmed };
 }
