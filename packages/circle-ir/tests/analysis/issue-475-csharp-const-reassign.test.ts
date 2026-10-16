@@ -161,7 +161,7 @@ public class e287_a_copy {
     expect(sql.length).toBeGreaterThan(0);
   });
 
-  it('literal reset after value copied into query still reports', async () => {
+  it('literal reset after value copied into SqlCommand still reports (cmd.ExecuteNonQuery sink)', async () => {
     const code = `using System.Data.SqlClient;
 public class e287_reset_after_copy {
     static SqlConnection conn;

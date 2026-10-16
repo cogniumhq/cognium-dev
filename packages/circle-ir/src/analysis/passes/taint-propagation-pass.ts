@@ -1110,12 +1110,13 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
     }
 
-    // cognium-dev#475: DFG paths may label a receiver (`cmd`) while taint
-    // actually rides a local (`v`) rewritten to a literal between source and
-    // sink. Restrict the kill to variables that carry THIS flow's taint (path
-    // vars + locals derived from them) — never every assignment target in the
-    // range (an unrelated `label = "b"` must not drop a real finding). Last
-    // unconditional assignment wins so conditionals and re-taint stay sound.
+    // cognium-dev#475: DFG may keep a flow when a local (`v`) was rewritten to
+    // a literal before the sink even though the sink reads a copy (`cmd`) built
+    // earlier. Walk backward from the sink through assignments into the sink
+    // argument; for each upstream local, literal-kill only on lines strictly
+    // before the assignment that copied it into that chain (so `v = "safe"`
+    // after `new SqlCommand(... + v)` does not drop the finding). Unrelated
+    // locals and conditional / re-taint shapes stay sound.
     if (ctx.language === 'csharp' && typeof ctx.code === 'string') {
       const code = ctx.code;
       finalFlows = finalFlows.filter(f => {
