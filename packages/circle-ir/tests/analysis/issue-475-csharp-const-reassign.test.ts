@@ -123,6 +123,44 @@ public class e287_cond_brace {
     expect(sql.length).toBeGreaterThan(0);
   });
 
+  it('reset of v after q copied v still reports through q', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_q_copy {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        var q = "SELECT * FROM u WHERE id=" + v;
+        v = "safe";
+        var cmd = new SqlCommand(q, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('reset of a after v copied a still reports through v', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_a_copy {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var a = input;
+        var v = a;
+        a = "const";
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
   it('literal reset after value copied into query still reports', async () => {
     const code = `using System.Data.SqlClient;
 public class e287_reset_after_copy {

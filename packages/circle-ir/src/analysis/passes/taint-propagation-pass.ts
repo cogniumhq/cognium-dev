@@ -1119,14 +1119,14 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     if (ctx.language === 'csharp' && typeof ctx.code === 'string') {
       const code = ctx.code;
       finalFlows = finalFlows.filter(f => {
-        const deps = csharpSinkDependencyVars(code, f);
-        for (const v of deps) {
+        const deriveLine = csharpSinkDependencyKillVars(code, f);
+        for (const [v, beforeLine] of deriveLine) {
           if (
-            csharpLiteralResetKillsFlow(
+            csharpLastUnconditionalAssignIsLiteral(
               code,
               v,
               f.source_line,
-              f.sink_line,
+              beforeLine,
               constProp.unreachableLines,
             )
           ) {
@@ -2066,18 +2066,20 @@ const CSHARP_ASSIGN_RE =
   /^\s*(?:(?:var|string|String|[\w.<>\[\]?]+\s+)?([A-Za-z_]\w*)|([A-Za-z_]\w*))\s*=\s*(.+)$/;
 
 /**
- * Locals whose values at the sink are built from the flow — backward from
- * identifiers read on the sink line through assignment RHS chains (#475).
+ * For each upstream local, the 1-based line of the assignment that copied it
+ * into the sink dependency chain (closest to the sink). A literal reset of
+ * `v` after `var q = ... + v` must not kill a flow that only reads `q` (#475).
  */
-function csharpSinkDependencyVars(
+function csharpSinkDependencyKillVars(
   code: string,
   flow: { sink_line: number; source_line: number },
-): Set<string> {
+): Map<string, number> {
   const lines = splitLinesCached(code);
   const sinkIdx = flow.sink_line - 1;
-  if (sinkIdx < 0 || sinkIdx >= lines.length) return new Set();
+  const deriveLine = new Map<string, number>();
+  if (sinkIdx < 0 || sinkIdx >= lines.length) return deriveLine;
 
-  const deps = new Set(csharpIdentifiersInExpr(lines[sinkIdx] ?? ''));
+  const need = new Set(csharpIdentifiersInExpr(lines[sinkIdx] ?? ''));
   for (let i = sinkIdx - 1; i >= flow.source_line - 1; i--) {
     const line = lines[i] ?? '';
     for (const seg of line.split(';')) {
@@ -2086,61 +2088,14 @@ function csharpSinkDependencyVars(
       const m = CSHARP_ASSIGN_RE.exec(t);
       if (!m) continue;
       const lhs = m[1] ?? m[2];
-      if (!lhs || !deps.has(lhs)) continue;
-      for (const id of csharpIdentifiersInExpr(m[3])) deps.add(id);
-    }
-  }
-  return deps;
-}
-
-/** Last line (1-based) strictly before the sink where `variable` is read. */
-function csharpLastReadLineBeforeSink(
-  code: string,
-  variable: string,
-  srcLine: number,
-  sinkLine: number,
-): number {
-  if (!/^[A-Za-z_][\w]*$/.test(variable)) return 0;
-  const lines = splitLinesCached(code);
-  const reRead = new RegExp('\\b' + variable + '\\b');
-  const reLhs = new RegExp(
-    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*(?<![+\\-*/%&|^])=\\s*(.+)$',
-  );
-  let last = 0;
-  const hi = Math.min(lines.length, sinkLine);
-  for (let i = Math.max(0, srcLine - 1); i < hi; i++) {
-    const line = lines[i] ?? '';
-    for (const seg of line.split(';')) {
-      const t = seg.trim();
-      if (!t || !reRead.test(t)) continue;
-      const m = reLhs.exec(t);
-      if (m) {
-        if (csharpIdentifiersInExpr(m[1]).includes(variable)) last = i + 1;
-      } else {
-        last = i + 1;
+      if (!lhs || !need.has(lhs)) continue;
+      for (const id of csharpIdentifiersInExpr(m[3])) {
+        if (!deriveLine.has(id)) deriveLine.set(id, i + 1);
+        need.add(id);
       }
     }
   }
-  return last;
-}
-
-/** True when a literal reset of `variable` can still affect taint reaching the sink. */
-function csharpLiteralResetKillsFlow(
-  code: string,
-  variable: string,
-  srcLine: number,
-  sinkLine: number,
-  unreachableLines?: ReadonlySet<number>,
-): boolean {
-  const lastRead = csharpLastReadLineBeforeSink(code, variable, srcLine, sinkLine);
-  if (lastRead === 0) return false;
-  return csharpLastUnconditionalAssignIsLiteral(
-    code,
-    variable,
-    srcLine,
-    lastRead,
-    unreachableLines,
-  );
+  return deriveLine;
 }
 
 function csharpLastUnconditionalAssignIsLiteral(
