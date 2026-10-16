@@ -2169,7 +2169,7 @@ function csharpLastUnconditionalAssignIsLiteral(
 
 /** True when line `idx` sits in an if/else/switch arm (brace-delimited). */
 function csharpAssignInConditionalBlock(lines: string[], idx: number): boolean {
-  let block = enclosingBrace(lines, idx, 0);
+  const block = enclosingBrace(lines, idx, 0);
   if (!block) return false;
   if (/^(?:case\b.*|default\s*):$/.test(block.header)) {
     return true;
