@@ -3973,6 +3973,10 @@ function isGoNoopBody(
   const m = /^return\s+([^;{}]+)$/.exec(body);
   if (!m) return false;
   const params = new Set(method.parameters.map(p => p.name.replace(/^\.+/, '')));
+  for (const seg of header[1]!.split(',')) {
+    const name = seg.trim().split(/\s+/)[0]?.replace(/^\.+/, '');
+    if (name) params.add(name);
+  }
   const expr = m[1]!
     .replace(/"(?:\\.|[^"\\])*"|`[^`]*`/g, '""')
     .replace(/\bstrings\s*\.\s*(?:TrimSpace|ToLower|ToUpper)\s*\(/g, '(')
