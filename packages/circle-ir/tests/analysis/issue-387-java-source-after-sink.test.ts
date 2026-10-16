@@ -96,10 +96,10 @@ describe('#387 Java: a source read after the sink does not pair with it when no 
     expect(backwards.map(f => `${f.type}@${f.source.line}->${f.sink.line}`)).toEqual([]);
   });
 
-  it('leaves the source-before-sink rows of the same file unchanged', async () => {
+  it('drops proximity-only pairings at setAttribute when every argument is an untainted local', async () => {
     const { findings } = await run(PREF, 'PrefCookieServlet.java');
     const forward = findings.filter(f => f.source.line === 14 && f.sink.line === 15);
-    expect(forward.length).toBeGreaterThan(0);
+    expect(forward).toHaveLength(0);
   });
 
   it('keeps every loop-carried, flow-backed finding including the backwards pair', async () => {

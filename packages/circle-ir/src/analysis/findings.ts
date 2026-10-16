@@ -28,6 +28,7 @@ import {
 import { isNonExecutableSourceLine } from './non-executable-lines.js';
 import { sanitizerCoversSink } from './sanitizer-index.js';
 import { walkBackwardDefs } from './dfg-walk.js';
+import { isProvablyLiteralExpression } from './literal-expression.js';
 
 /**
  * Generate vulnerability findings from taint analysis results.
@@ -82,6 +83,25 @@ export function generateFindings(
   const methodRanges = buildMethodRanges(types);
   const fieldNames = buildFieldNames(types);
   let findingId = 1;
+
+  const defByIdForProximity = new Map<number, DFGDef>();
+  const chainsByToDefForProximity = new Map<number, DFGChain[]>();
+  const usesByLineForProximity = new Map<number, DFGUse[]>();
+  const proximityArgGate =
+    language === 'java' && flowsKnown && sourceCode !== undefined && sourceCode.length > 0;
+  if (proximityArgGate) {
+    for (const d of dfg.defs) defByIdForProximity.set(d.id, d);
+    for (const c of dfg.chains ?? []) {
+      const arr = chainsByToDefForProximity.get(c.to_def) ?? [];
+      arr.push(c);
+      chainsByToDefForProximity.set(c.to_def, arr);
+    }
+    for (const u of dfg.uses) {
+      const arr = usesByLineForProximity.get(u.line) ?? [];
+      arr.push(u);
+      usesByLineForProximity.set(u.line, arr);
+    }
+  }
 
   // cognium-dev: sanitizer-awareness for the scan path. Historically
   // `generateFindings` did its own source→sink DFG path-finding and ignored the
@@ -278,6 +298,24 @@ export function generateFindings(
       }
 
       if (pathResult.pathExists || isProximityVulnerability(source, sink, methodRanges, fieldNames)) {
+        // cognium-dev#387 — proximity-only pairings whose sink arguments are
+        // locals with no tainted reaching defs (literals, UUID, etc.) are not
+        // backed by flows and are dropped.
+        if (
+          proximityArgGate &&
+          !pathResult.pathExists &&
+          isFlowBacked(sink.type, sink.line) === false &&
+          proximitySinkArgsAllUntaintedLocals(
+            sink,
+            sourceCode!,
+            fieldNames,
+            defByIdForProximity,
+            chainsByToDefForProximity,
+            usesByLineForProximity,
+          )
+        ) {
+          continue;
+        }
         // Drop the pair when a sanitizer covers the sink (at the sink line, or
         // on a reaching-def line feeding the sink var) — aligns the scan path
         // with taint.flows. No-op when the caller passed no sanitizers.
@@ -888,6 +926,116 @@ function sharedMethod(a: number, b: number, ranges: MethodRange[]): boolean {
  * round. Method scoping already rejects the reported case; ordering needs its
  * own evidence.
  */
+/** Request / user-input shapes in a Java expression — not an untainted initializer. */
+const JAVA_UNTAINTED_BLOCK =
+  /\b(getParameter|getHeader|getQueryString|getCookies|getReader|getInputStream|getAttribute|getParameterValues|getParameterMap|getRequestURI|getRequestURL|getPathInfo|getServletPath|getCookie)\s*\(|\b(request|req)\s*\./i;
+
+function lineTextAt(sourceCode: string, line: number): string {
+  const lines = sourceCode.split(/\r?\n/);
+  return lines[line - 1] ?? '';
+}
+
+/** Argument expressions inside the sink call on `sink.line` (Java). */
+function javaSinkCallArguments(sink: TaintSink, sourceCode: string): string[] | null {
+  const method = sink.method;
+  if (!method) return null;
+  const line = lineTextAt(sourceCode, sink.line);
+  const escaped = method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\s*\\(([^)]*)\\)`);
+  const m = re.exec(line);
+  if (!m) return null;
+  const inner = m[1].trim();
+  if (inner.length === 0) return [];
+  const args: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of inner) {
+    if (ch === '(' || ch === '<') depth++;
+    else if (ch === ')' || ch === '>') depth--;
+    if (ch === ',' && depth === 0) {
+      args.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim().length > 0) args.push(cur.trim());
+  return args;
+}
+
+function javaArgIsUntaintedLocal(
+  arg: string,
+  sinkLine: number,
+  sourceCode: string,
+  fieldNames: Set<string>,
+  defById: ReadonlyMap<number, DFGDef>,
+  chainsByToDef: ReadonlyMap<number, DFGChain[]>,
+  usesByLine: ReadonlyMap<number, DFGUse[]>,
+): boolean {
+  const trimmed = arg.trim();
+  if (trimmed.length === 0) return true;
+  if (/^["']/.test(trimmed) && /["']$/.test(trimmed)) return true;
+  if (!/^[a-zA-Z_][\w$]*$/.test(trimmed)) return false;
+  if (fieldNames.has(trimmed)) return false;
+
+  const uses = (usesByLine.get(sinkLine) ?? []).filter((u) => u.variable === trimmed);
+  if (uses.length === 0) return false;
+
+  for (const use of uses) {
+    if (use.def_id === null || use.def_id === undefined) return false;
+    const walk = walkBackwardDefs(use.def_id, chainsByToDef, defById, { maxHops: 32 });
+    for (const defId of walk.visited) {
+      const def = defById.get(defId);
+      if (!def) continue;
+      if (def.kind === 'param' || def.kind === 'field') return false;
+      const expr = (def.expression ?? lineTextAt(sourceCode, def.line)).trim();
+      if (expr.length === 0) return false;
+      if (JAVA_UNTAINTED_BLOCK.test(expr)) return false;
+      const rhs = expr.includes('=') ? expr.slice(expr.indexOf('=') + 1).trim() : expr;
+      if (isProvablyLiteralExpression(rhs)) continue;
+      // Safe non-user patterns (e.g. UUID.randomUUID().toString()).
+      if (!/\b(getParameter|getHeader|getQueryString|request\.|req\.)\b/i.test(rhs)) {
+        if (/UUID|randomUUID|toString\s*\(/.test(rhs) && !JAVA_UNTAINTED_BLOCK.test(rhs)) {
+          continue;
+        }
+      }
+      // Helper / call-shaped initializer — not provably untainted.
+      if (/\w+\s*\(/.test(rhs) && JAVA_UNTAINTED_BLOCK.test(rhs)) return false;
+      if (/\b\w+\s*\([^)]*\)/.test(rhs) && /decorate|helper|sanitize|escape/i.test(rhs)) {
+        return false;
+      }
+      if (!isProvablyLiteralExpression(rhs) && /\w+\s*\(/.test(rhs)) {
+        // Unknown call (not UUID-only) — keep proximity pairing.
+        if (!/^java\.util\.UUID\.randomUUID\s*\(\s*\)/.test(rhs.replace(/\s+/g, ''))) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function proximitySinkArgsAllUntaintedLocals(
+  sink: TaintSink,
+  sourceCode: string,
+  fieldNames: Set<string>,
+  defById: ReadonlyMap<number, DFGDef>,
+  chainsByToDef: ReadonlyMap<number, DFGChain[]>,
+  usesByLine: ReadonlyMap<number, DFGUse[]>,
+): boolean {
+  const args = javaSinkCallArguments(sink, sourceCode);
+  if (args === null) return false;
+  if (args.length === 0) return false;
+  for (const arg of args) {
+    if (!javaArgIsUntaintedLocal(
+      arg, sink.line, sourceCode, fieldNames, defById, chainsByToDef, usesByLine,
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isProximityVulnerability(
   source: TaintSource,
   sink: TaintSink,
