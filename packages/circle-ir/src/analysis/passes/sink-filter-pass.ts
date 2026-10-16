@@ -27,6 +27,7 @@ import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
+import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import {
   resolveIdentifierType,
   resolveCallReturnType,
@@ -3220,14 +3221,13 @@ function filterCleanArraySinks(
     const callsAtSink = callsByLine.get(sink.line) ?? [];
     for (const call of callsAtSink) {
       for (const arg of call.arguments) {
-        const arrayAccessMatch = arg.expression?.match(/^(\w+)\[(\d+|[^[\]]+)\]$/);
-        if (arrayAccessMatch) {
-          const arrayName = arrayAccessMatch[1];
-          let indexStr = arrayAccessMatch[2];
-          indexStr = evaluateSimpleExpression(indexStr, symbols);
-          const taintedIndices = taintedArrayElements.get(arrayName);
+        const arrayAccess = parseJavaArrayAccessExpression(arg.expression);
+        if (arrayAccess) {
+          let indexKey = arrayAccess.indexKey;
+          indexKey = evaluateSimpleExpression(indexKey, symbols);
+          const taintedIndices = taintedArrayElements.get(arrayAccess.arrayName);
           if (taintedIndices !== undefined) {
-            const isTainted = taintedIndices.has(indexStr) || taintedIndices.has('*');
+            const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
             if (!isTainted) return false;
           }
         }

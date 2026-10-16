@@ -13,6 +13,7 @@ import {
   TAINT_PATTERN_REGEX, SANITIZER_METHODS, PROPAGATOR_METHODS, ANTI_SANITIZER_METHODS,
   HTML_CONTEXT_ENCODER_METHODS, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS,
 } from './patterns.js';
+import { javaArrayElementStorageKey } from '../java-array-element-keys.js';
 
 /**
  * Constant Propagator for taint analysis.
@@ -1635,16 +1636,23 @@ export class ConstantPropagator {
     }
   }
 
-  private handleArrayElementAssignment(left: Node, right: Node, node: Node): void {
-    // Extract array name and index from array[index]
-    const arrayNode = left.childForFieldName('array') || left.child(0);
-    const indexNode = left.childForFieldName('index') || left.child(2);
+  private handleArrayElementAssignment(left: Node, right: Node, _node: Node): void {
+    const chain = this.parseArrayAccessChain(left);
+    if (!chain) return;
 
-    if (!arrayNode) return;
+    const { arrayName, indexKey } = this.arrayElementStorageKey(chain);
+    const isTainted = this.isTaintedExpression(right);
+    this.setArrayElementTaint(arrayName, indexKey, isTainted);
+  }
 
-    const arrayName = getNodeText(arrayNode, this.source);
-
-    // Determine the index key (numeric or '*' for unknown)
+  /** cognium-dev#476: `grid[0][0]` and deeper element paths. */
+  private parseArrayAccessChain(
+    node: Node,
+  ): { base: string; indices: string[] } | null {
+    if (node.type !== 'array_access' && node.type !== 'subscript_expression') {
+      return null;
+    }
+    const indexNode = node.childForFieldName('index') || node.child(2);
     let indexKey = '*';
     if (indexNode) {
       const indexValue = this.evaluateExpression(indexNode);
@@ -1652,24 +1660,56 @@ export class ConstantPropagator {
         indexKey = String(indexValue.value);
       }
     }
+    const arrayNode = node.childForFieldName('array') || node.child(0);
+    if (!arrayNode) return null;
+    if (arrayNode.type === 'identifier') {
+      return { base: getNodeText(arrayNode, this.source), indices: [indexKey] };
+    }
+    if (arrayNode.type === 'array_access' || arrayNode.type === 'subscript_expression') {
+      const inner = this.parseArrayAccessChain(arrayNode);
+      if (!inner) return null;
+      return { base: inner.base, indices: [...inner.indices, indexKey] };
+    }
+    return null;
+  }
 
-    const isTainted = this.isTaintedExpression(right);
+  private arrayElementStorageKey(chain: { base: string; indices: string[] }): {
+    arrayName: string;
+    indexKey: string;
+  } {
+    return javaArrayElementStorageKey(chain.base, chain.indices);
+  }
 
+  private setArrayElementTaint(arrayName: string, indexKey: string, isTainted: boolean): void {
     if (isTainted) {
-      // Mark this array element as tainted
       if (!this.taintedArrayElements.has(arrayName)) {
         this.taintedArrayElements.set(arrayName, new Set());
       }
       this.taintedArrayElements.get(arrayName)!.add(indexKey);
     } else {
-      // Mark this array element as clean (remove from tainted set)
       const taintedIndices = this.taintedArrayElements.get(arrayName);
       if (taintedIndices) {
         taintedIndices.delete(indexKey);
-        // If we're assigning to a specific index and '*' is in the set,
-        // we can't remove '*' because other indices might still be tainted
       }
     }
+  }
+
+  private isArrayElementAccessTainted(chain: { base: string; indices: string[] }): boolean {
+    if (this.tainted.has(chain.base)) {
+      return true;
+    }
+    const { arrayName, indexKey } = this.arrayElementStorageKey(chain);
+    const taintedIndices = this.taintedArrayElements.get(arrayName);
+    if (!taintedIndices) {
+      return false;
+    }
+    if (taintedIndices.has('*')) {
+      return true;
+    }
+    if (indexKey === '*') {
+      return taintedIndices.size > 0;
+    }
+    return taintedIndices.has(indexKey);
   }
 
   private handleUpdateExpression(node: Node): void {
@@ -2670,47 +2710,22 @@ export class ConstantPropagator {
     }
 
     if (node.type === 'array_access' || node.type === 'subscript_expression') {
+      const chain = this.parseArrayAccessChain(node);
+      if (chain) {
+        if (this.isArrayElementAccessTainted(chain)) {
+          return true;
+        }
+        if (chain.indices.length === 1 && chain.indices[0] !== '*') {
+          // Known 1-D index with no element taint recorded — not tainted.
+          const taintedIndices = this.taintedArrayElements.get(chain.base);
+          if (taintedIndices && !this.tainted.has(chain.base)) {
+            return false;
+          }
+        }
+      }
       const arrayNode = node.childForFieldName('array') || node.child(0);
-      const indexNode = node.childForFieldName('index') || node.child(2);
-
-      if (arrayNode) {
-        const arrayName = getNodeText(arrayNode, this.source);
-
-        // Check if the whole array is tainted
-        if (arrayNode.type === 'identifier' && this.tainted.has(arrayName)) {
-          return true;
-        }
-
-        // Check element-level taint tracking
-        const taintedIndices = this.taintedArrayElements.get(arrayName);
-        if (taintedIndices) {
-          // If '*' is in the set, the whole array has tainted elements
-          if (taintedIndices.has('*')) {
-            return true;
-          }
-
-          // Check specific index
-          if (indexNode) {
-            const indexValue = this.evaluateExpression(indexNode);
-            if (isKnown(indexValue) && (indexValue.type === 'int' || indexValue.type === 'string')) {
-              const indexKey = String(indexValue.value);
-              if (taintedIndices.has(indexKey)) {
-                return true;
-              }
-              // Specific index is NOT tainted - return false for this access
-              return false;
-            }
-            // Unknown index - check if ANY element is tainted
-            if (taintedIndices.size > 0) {
-              return true;
-            }
-          }
-        }
-
-        // Recursively check if arrayNode itself is tainted
-        if (this.isTaintedExpression(arrayNode)) {
-          return true;
-        }
+      if (arrayNode && this.isTaintedExpression(arrayNode)) {
+        return true;
       }
     }
 

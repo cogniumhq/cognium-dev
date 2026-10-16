@@ -20,6 +20,7 @@ import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
+import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -1756,23 +1757,22 @@ function detectArrayElementFlows(
             !sink.argPositions.includes(arg.position)) {
           continue;
         }
-        const arrayAccessMatch = arg.expression?.match(/^(\w+)\[(\d+|[^[\]]+)\]$/);
-        if (arrayAccessMatch) {
-          const arrayName = arrayAccessMatch[1];
-          const indexStr  = arrayAccessMatch[2];
+        const arrayAccess = parseJavaArrayAccessExpression(arg.expression);
+        if (arrayAccess) {
+          const { base, arrayName, indexKey, displayVar } = arrayAccess;
           const taintedIndices = taintedArrayElements.get(arrayName);
           if (taintedIndices) {
-            const isTainted = taintedIndices.has(indexStr) || taintedIndices.has('*');
+            const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
-              const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, arrayName);
+              const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, base);
               if (source) {
                 flows.push({
                   source_line: source.line, sink_line: sink.line,
                   source_type: source.type, sink_type: sink.type,
                   path: [
-                    { variable: arrayName,                    line: source.line, type: 'source' as const },
-                    { variable: `${arrayName}[${indexStr}]`, line: sink.line,   type: 'sink'   as const },
+                    { variable: base, line: source.line, type: 'source' as const },
+                    { variable: displayVar, line: sink.line, type: 'sink' as const },
                   ],
                   confidence: 0.85, sanitized: false,
                 });
