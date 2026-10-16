@@ -147,6 +147,15 @@ function hasBareIdentifier(text: string): boolean {
   return /\b[A-Za-z_]\w*\b/.test(withoutStringLiterals(text));
 }
 
+/** Identifier tokens in `text` after literals are stripped (cognium-dev#736 case 2). */
+function bareIdentifiers(text: string): string[] {
+  if (/\$"/.test(text)) return ['__interpolated__'];
+  const stripped = withoutStringLiterals(text);
+  const out: string[] = [];
+  for (const m of stripped.matchAll(/\b([A-Za-z_]\w*)\b/g)) out.push(m[1]);
+  return out;
+}
+
 /** Text inside the parentheses opening at `open`, or null when unbalanced. */
 function insideParens(text: string, open: number): string | null {
   let depth = 0;
@@ -290,6 +299,18 @@ export class CSharpCredit {
     return false;
   }
 
+  /** True when a value built from `rhs` is still safe for `type` given `sanitized` so far. */
+  private rhsKeepsSanitizerCredit(
+    type: string,
+    rhs: string,
+    sanitized: ReadonlySet<string>,
+    withHelpers: boolean,
+  ): boolean {
+    if (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) return true;
+    if (!hasBareIdentifier(rhs)) return true;
+    return bareIdentifiers(rhs).every(id => sanitized.has(id));
+  }
+
   private sanitizedVarsIn(type: string, from: number, to: number, withHelpers: boolean): Set<string> {
     const sanitized = new Set<string>();
     for (const st of this.statements(from, to)) {
@@ -297,20 +318,13 @@ export class CSharpCredit {
       if (append) {
         const [, lhs, rhs] = append;
         if (!sanitized.has(lhs)) continue;
-        const credited =
-          (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) ||
-          [...sanitized].some(v => mentions(rhs, v));
-        const keep = credited || !hasBareIdentifier(rhs);
-        if (!keep) sanitized.delete(lhs);
+        if (!this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers)) sanitized.delete(lhs);
         continue;
       }
       const m = ASSIGN_RE.exec(st.text);
       if (!m) continue;
       const [, lhs, rhs] = m;
-      const credited =
-        (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) ||
-        [...sanitized].some(v => mentions(rhs, v));
-      if (credited) sanitized.add(lhs);
+      if (this.rhsKeepsSanitizerCredit(type, rhs, sanitized, withHelpers)) sanitized.add(lhs);
       else sanitized.delete(lhs);
     }
     return sanitized;
