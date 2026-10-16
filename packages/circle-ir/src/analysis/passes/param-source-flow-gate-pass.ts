@@ -138,6 +138,18 @@ export function isFrameworkHandler(method: MethodInfo, language: string, lines: 
   return false;
 }
 
+/** React function components that render `dangerouslySetInnerHTML` from a prop (cognium-dev #686). */
+const REACT_COMPONENT_NAME = /^[A-Z][A-Za-z0-9]*$/;
+
+function isReactHtmlComponent(m: MethodInfo, f: TaintFlowInfo, lines: string[]): boolean {
+  if (f.sink_type !== 'xss') return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  if (!sinkLine.includes('dangerouslySetInnerHTML')) return false;
+  if (m.parameters.length !== 1 || !REACT_COMPONENT_NAME.test(m.name)) return false;
+  const sig = lines[m.start_line - 1] ?? '';
+  return /\bfunction\s+[A-Z][A-Za-z0-9]*\s*\(\s*\{/.test(sig);
+}
+
 /** Sources that stand for a constructor-injected field or a getter over one (#78). */
 const FIELD_CARRIED_SOURCE = /constructor-injected field|returns tainted field/;
 
@@ -334,7 +346,7 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
       let keep = true;
       if (f.source_type === 'interprocedural_param' && !realSourceLines.has(f.source_line)) {
         const m = enclosingMethod(methods, f.source_line);
-        keep = m !== undefined && (isHandler(m) || fedByRealSource(f, m));
+        keep = m !== undefined && (isHandler(m) || fedByRealSource(f, m) || isReactHtmlComponent(m, f, lines));
       }
       if (keep) flows[w++] = f;
       else {
