@@ -129,6 +129,9 @@ const ASSIGN_RE = new RegExp(`^\\s*(?:var\\s+|[A-Za-z_][\\w.<>\\[\\]?]*\\s+)?(${
 const INNER_ASSIGN_RE = new RegExp(`\\b(${IDENT})\\s*=(?!=)\\s*([^;{}]+)`, 'g');
 const APPEND_RE = new RegExp(`^\\s*(${IDENT})\\s*\\+=\\s*(.+?);?\\s*$`);
 const ENDS_STATEMENT_RE = /[;{}]\s*(?:\/\/.*)?$/;
+/** Percent-decoding after encode restores raw bytes (cognium-dev#736 case 4). */
+const CSHARP_DECODE_CALL_HEAD_RE =
+  /\b(?:System\.Net\.)?WebUtility\s*\.\s*UrlDecode\s*\(|HttpUtility\s*\.\s*UrlDecode\s*\(|Uri\s*\.\s*UnescapeDataString\s*\(/g;
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -300,6 +303,16 @@ export class CSharpCredit {
     return false;
   }
 
+  /** Decode applied to a built-in sanitizer call undoes the encode (cognium-dev#736). */
+  private rhsDecodeUndoesSanitizer(type: string, rhs: string): boolean {
+    for (const m of rhs.matchAll(CSHARP_DECODE_CALL_HEAD_RE)) {
+      const open = m.index! + m[0].length - 1;
+      const inner = insideParens(rhs, open);
+      if (inner !== null && this.builtinSanitizes(type, inner)) return true;
+    }
+    return false;
+  }
+
   /** True when a value built from `rhs` is still safe for `type` given `sanitized` so far. */
   private rhsKeepsSanitizerCredit(
     type: string,
@@ -308,6 +321,7 @@ export class CSharpCredit {
     withHelpers: boolean,
     append: boolean,
   ): boolean {
+    if (!append && this.rhsDecodeUndoesSanitizer(type, rhs)) return false;
     if (withHelpers ? this.sanitizes(type, rhs) : this.builtinSanitizes(type, rhs)) return true;
     if (append) {
       if (!hasBareIdentifier(rhs)) return true;
