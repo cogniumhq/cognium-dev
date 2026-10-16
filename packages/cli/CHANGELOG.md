@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A JS/TS scan reports a command, path or SQL sink fed by a variable that is assigned the tainted value inside an `if` / `else` / loop body or a `switch` case before the sink (#582, partial).
 - Bundles the circle-ir changes listed under circle-ir [Unreleased].
 - A TypeScript scan no longer reports a second, type-annotated variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
+- A C# scan reports the sink at the end of a forwarding chain (`A → Relay.Forward(data) → Store.FindRaw(data)` across three files) instead of an `external_taint_escape` at the first call; a chain that ends in a parameterised query reports nothing (#637, partial).
 
 ## [4.15.0] - 2026-10-15
 
