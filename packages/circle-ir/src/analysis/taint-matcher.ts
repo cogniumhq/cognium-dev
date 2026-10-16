@@ -3780,7 +3780,9 @@ function findSanitizers(
       ? findJavaNoopHelpers(types, sourceLines)
       : language === 'python'
         ? findPythonNoopHelpers(types, sourceLines)
-        : new Set<string>();
+        : language === 'go'
+          ? findGoNoopHelpers(types, sourceLines)
+          : new Set<string>();
 
   // Check method calls for sanitizer methods
   for (const call of calls) {
@@ -3923,6 +3925,58 @@ function isPythonNoopBody(
     .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""')
     .replace(/\.(?:strip|lstrip|rstrip|lower|upper)\(\)/g, '')
     .replace(/\bstr\(/g, '(');
+  const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
+  if (leftovers === '') return true;
+  return leftovers.split(/\s+/).every(tok => params.has(tok));
+}
+
+/**
+ * Go twin of `findJavaNoopHelpers` (#581): a `func` whose body is one
+ * `return <expr>` built only from its own parameters, string literals, `+`, the
+ * pass-through calls `strings.TrimSpace` / `strings.ToLower` / `strings.ToUpper`
+ * and the `string()` conversion. Any other body (a `strings.ReplaceAll`, an
+ * escaper call, a branch, a loop, a second statement) keeps the by-name credit,
+ * and so does a name with a non-no-op definition elsewhere in the file, a method
+ * or a function alike.
+ */
+function findGoNoopHelpers(types: TypeInfo[], sourceLines: string[]): Set<string> {
+  const noop = new Set<string>();
+  const other = new Set<string>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      (isGoNoopBody(method, sourceLines) ? noop : other).add(method.name);
+    }
+  }
+  for (const name of other) noop.delete(name);
+  // A local of the same name (`sanitize := func(v string) string { … }`) is a
+  // different helper whose body is not read here.
+  const src = sourceLines.join('\n');
+  for (const name of [...noop]) {
+    if (new RegExp(`(?<![\\w.])${name}\\s*(?::=|=(?!=)|,\\s*\\w+\\s*:=)`).test(src)) noop.delete(name);
+  }
+  return noop;
+}
+
+function isGoNoopBody(
+  method: { name: string; parameters: { name: string }[]; start_line: number; end_line: number },
+  sourceLines: string[],
+): boolean {
+  if (method.parameters.length === 0) return false;
+  const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
+  // `func name(params) T {` — a plain function; a method (`func (s *T) name`) is judged by a
+  // call through its receiver, which is never skipped, so it is not a no-op helper here.
+  const header = /^\s*func\s+\w+\s*\(([^()]*)\)\s*\(?[\w.\[\]*, ]*\)?\s*\{/.exec(text);
+  if (!header) return false;
+  const close = text.lastIndexOf('}');
+  if (close < header[0].length) return false;
+  const body = text.slice(header[0].length, close).replace(/\/\/.*$/gm, '').trim();
+  const m = /^return\s+([^;{}]+)$/.exec(body);
+  if (!m) return false;
+  const params = new Set(method.parameters.map(p => p.name.replace(/^\.+/, '')));
+  const expr = m[1]!
+    .replace(/"(?:\\.|[^"\\])*"|`[^`]*`/g, '""')
+    .replace(/\bstrings\s*\.\s*(?:TrimSpace|ToLower|ToUpper)\s*\(/g, '(')
+    .replace(/\bstring\s*\(/g, '(');
   const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
   if (leftovers === '') return true;
   return leftovers.split(/\s+/).every(tok => params.has(tok));

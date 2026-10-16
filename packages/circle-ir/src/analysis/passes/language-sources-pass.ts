@@ -2217,7 +2217,7 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // / `.on('close', cb)` etc. that carry non-user-input.
   sources.push(...findJavaScriptCallbackParamSources(sourceCode));
   sources.push(...findExpressDestructuredRequestSources(sourceCode));
-  if (language === 'javascript') {
+  if (language === 'javascript' || language === 'typescript') {
     sources.push(...findGraphqlResolverArgSources(sourceCode));
   }
 
@@ -2327,6 +2327,103 @@ function findExpressDestructuredRequestSources(sourceCode: string): TaintSource[
 }
 
 /**
+ * The parameters of the call / function whose `(` is at `open`: each top-level,
+ * comma-separated entry with its offset into `text`. A comma inside `()`, `[]`,
+ * `{}` or a type's `<>` (the `>` of `=>` excluded) does not split. Returns null
+ * when the list does not close.
+ */
+function readParameterList(text: string, open: number): { params: Array<{ text: string; start: number }> } | null {
+  const params: Array<{ text: string; start: number }> = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++;
+    else if (ch === '>' && text[i - 1] !== '=') depth--;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) {
+        if (text.slice(start, i).trim() !== '') params.push({ text: text.slice(start, i), start });
+        return { params };
+      }
+    } else if (ch === ',' && depth === 1) {
+      params.push({ text: text.slice(start, i), start });
+      start = i + 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * The names a resolver's `args` parameter binds: the identifier itself
+ * (`args`, `args: Args`, `args?: Args`), or every name bound by an object
+ * pattern (`{ sku }`, `{ sku: s }`, `{ filter: { id } }`, `{ id = 1 }`,
+ * `{ ...rest }`), each with its offset into `param`. An array pattern or a
+ * computed key binds nothing here.
+ */
+function graphqlArgBindings(param: string): Array<{ name: string; offset: number }> {
+  const trimmed = param.replace(/^\s+/, '');
+  const lead = param.length - trimmed.length;
+  const ident = /^(?:\.\.\.)?([A-Za-z_$][\w$]*)\s*\??\s*(?::[\s\S]*|=[\s\S]*)?$/.exec(trimmed);
+  if (ident) return [{ name: ident[1]!, offset: lead + trimmed.indexOf(ident[1]!) }];
+  if (!trimmed.startsWith('{')) return [];
+  const close = matchBrace(trimmed, 0);
+  if (close < 0) return [];
+  return objectPatternBindings(trimmed, 1, close - 1).map(b => ({ name: b.name, offset: lead + b.offset }));
+}
+
+/** Every name a destructured (non-`args`) parameter binds, for the ambiguity check above. */
+function graphqlPatternNames(param: string): string[] {
+  const t = param.trim();
+  if (!t.startsWith('{')) return [];
+  const close = matchBrace(t, 0);
+  if (close < 0) return [];
+  return objectPatternBindings(t, 1, close - 1).map(b => b.name);
+}
+
+function objectPatternBindings(text: string, from: number, to: number): Array<{ name: string; offset: number }> {
+  const out: Array<{ name: string; offset: number }> = [];
+  let depth = 0;
+  let start = from;
+  const entries: Array<[number, number]> = [];
+  for (let i = from; i < to; i++) {
+    const ch = text[i];
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === ',' && depth === 0) { entries.push([start, i]); start = i + 1; }
+  }
+  entries.push([start, to]);
+  for (const [a, b] of entries) {
+    const raw = text.slice(a, b);
+    const body = raw.trimStart();
+    const at = a + (raw.length - body.length);
+    if (body.trim() === '') continue;
+    const rest = /^\.\.\.\s*([A-Za-z_$][\w$]*)\s*$/.exec(body.trimEnd());
+    if (rest) { out.push({ name: rest[1]!, offset: at + body.indexOf(rest[1]!) }); continue; }
+    const keyed = /^(?:[A-Za-z_$][\w$]*|'[^']*'|"[^"]*")\s*:\s*/.exec(body);
+    if (keyed) {
+      const targetAt = at + keyed[0].length;
+      const target = body.slice(keyed[0].length);
+      if (target.startsWith('{')) {
+        const end = matchBrace(text, targetAt);
+        if (end > 0) out.push(...objectPatternBindings(text, targetAt + 1, end - 1));
+        continue;
+      }
+      const id = /^([A-Za-z_$][\w$]*)\s*(?:=[\s\S]*)?$/.exec(target.trimEnd());
+      if (id) out.push({ name: id[1]!, offset: targetAt });
+      continue;
+    }
+    const short = /^([A-Za-z_$][\w$]*)\s*(?:=[\s\S]*)?$/.exec(body.trimEnd());
+    if (short) out.push({ name: short[1]!, offset: at });
+  }
+  return out;
+}
+
+/**
  * cognium-dev#586 — GraphQL resolver-map arguments. The second parameter of a
  * function under `Query` / `Mutation` / `Subscription` in the object passed as
  * `resolvers` to `new ApolloServer({…})` / `makeExecutableSchema({…})` (inline,
@@ -2350,7 +2447,10 @@ function findGraphqlResolverArgSources(sourceCode: string): TaintSource[] {
     const decl = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\{`).exec(sourceCode);
     if (decl) maps.push(decl.index + decl[0].length - 1);
   }
-  const FN_RE = /(?:^|[\s,{])(\w+)\s*(?::\s*(?:async\s+)?(?:function\s*\w*\s*)?\(|\()\s*\w+\s*,\s*(\w+)\s*[,)]/g;
+  // `name: (…) =>`, `name: async (…) =>`, `name: function (…)`, `name(…) {` and `async name(…)`.
+  // The parameter list is read whole, so a type annotation or a destructured
+  // pattern on any parameter does not hide the second one.
+  const FN_RE = /(?:^|[\s,{])(\w+)\s*(?::\s*(?:async\s+)?(?:function\s*\w*\s*)?\(|\()/g;
   for (const open of maps) {
     const close = matchBrace(sourceCode, open);
     if (close < 0) continue;
@@ -2369,17 +2469,40 @@ function findGraphqlResolverArgSources(sourceCode: string): TaintSource[] {
         if (ch === '{' || ch === '(') depth++;
         else if (ch === '}' || ch === ')') depth--;
       }
+      const found: Array<{ fn: string; b: { name: string; line: number } }> = [];
+      // Names the resolvers in this type object bind from `parent` or `context`.
+      // A name shared with an `args` binding is ambiguous across functions, so
+      // it is not seeded.
+      const otherNames = new Set<string>();
       for (const f of typeBody.matchAll(FN_RE)) {
         const at = f.index! + f[0].indexOf(f[1]);
         if (depthAt[at] !== 0) continue;
-        const line = sourceCode.slice(0, tOpen + 1 + at).split('\n').length;
+        const parenAt = f.index! + f[0].length - 1;
+        const list = readParameterList(typeBody, parenAt);
+        if (!list) continue;
+        list.params.forEach((param, idx) => {
+          if (idx === 1) return;
+          for (const b of graphqlPatternNames(param.text)) otherNames.add(b);
+        });
+        // Only the second parameter (`args`) is client-supplied. `parent` and
+        // `context` are never seeded, destructured or not.
+        const second = list.params[1];
+        if (!second) continue;
+        const absStart = tOpen + 1 + second.start;
+        for (const b of graphqlArgBindings(second.text)) {
+          const line = sourceCode.slice(0, absStart + b.offset).split('\n').length;
+          found.push({ fn: f[1], b: { name: b.name, line } });
+        }
+      }
+      for (const { fn, b } of found) {
+        if (otherNames.has(b.name)) continue;
         sources.push({
           type: 'http_param',
-          location: `GraphQL ${t[1]}.${f[1]} resolver args '${f[2]}' at line ${line}`,
+          location: `GraphQL ${t[1]}.${fn} resolver args '${b.name}' at line ${b.line}`,
           severity: 'high',
-          line,
+          line: b.line,
           confidence: 0.9,
-          variable: f[2],
+          variable: b.name,
         });
       }
     }
