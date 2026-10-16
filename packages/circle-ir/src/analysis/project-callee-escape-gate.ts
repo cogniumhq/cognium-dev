@@ -23,6 +23,13 @@
  * it. When the call's receiver is a type-like name it must match the resolved
  * class, so a second same-line call such as `Unknown.Run(data)` cannot inherit
  * another call's cached resolution.
+ *
+ * The decision is transitive for a pure forwarder: a callee with no sink of its
+ * own whose only use of the parameter is to pass it to calls that each resolve
+ * exactly to a method in another project file is decided by those methods, to a
+ * depth of four hops with a visited set (so a loop stops). Any hop that does not
+ * resolve, ends without a sink, forwards elsewhere as well, stores or returns the
+ * value, or lies beyond the depth keeps the escape.
  */
 
 import type { CircleIR, CallInfo, DFGDef, MethodInfo } from '../types/index.js';
@@ -105,8 +112,20 @@ function isVoidReturn(m: MethodInfo): boolean {
  * of the parameter from a non-void method. Null-checks and transforms like
  * `data.Split(...)` are not forwarding.
  */
-function calleeDecidedBySinks(ir: CircleIR | undefined, targetFqn: string): boolean {
+const MAX_FORWARD_DEPTH = 4;
+
+function calleeDecidedBySinks(
+  projectGraph: ProjectGraph,
+  file: string,
+  targetFqn: string,
+  depth = 0,
+  visited: Set<string> = new Set(),
+): boolean {
+  const ir = projectGraph.getIR(file);
   if (!ir) return false;
+  const visitKey = `${file}#${targetFqn}`;
+  if (visited.has(visitKey)) return false;
+  visited.add(visitKey);
   const name = targetFqn.split('.').pop();
   const methods = ir.types.flatMap(t => t.methods).filter(m => m.name === name);
   if (methods.length === 0) return false;
@@ -117,18 +136,40 @@ function calleeDecidedBySinks(ir: CircleIR | undefined, targetFqn: string): bool
   const uses = ir.dfg?.uses ?? [];
 
   return methods.every(m => {
-    if (!sinks.some(k => k.type !== ESCAPE && k.line >= m.start_line && k.line <= m.end_line)) return false;
+    const hasSink = sinks.some(k => k.type !== ESCAPE && k.line >= m.start_line && k.line <= m.end_line);
     const params = m.parameters.map(p => p.name).filter(Boolean);
-    if (params.length === 0) return true;
+    if (params.length === 0) return hasSink;
     const aliases = identityAliases(ir, m.start_line, m.end_line, params);
 
     // Call-argument forwarding (direct, identity alias, or interpolated hole).
-    const callForward = ir.calls.some(c =>
+    const forwards = ir.calls.filter(c =>
       c.location.line >= m.start_line && c.location.line <= m.end_line
       && !sinkLines.has(c.location.line)
       && !/(?:^|\.)Parameters$/.test(c.receiver ?? '')
       && c.arguments.some(a => [...aliases].some(p => mentionsName(a.expression ?? '', p))));
-    if (callForward) return false;
+    if (forwards.length > 0) {
+      // A callee with its own sink that forwards elsewhere leaks there. One without
+      // a sink is decided by the methods it forwards to, when every forward resolves
+      // exactly to a method in another project file and that method is decided.
+      if (hasSink || depth >= MAX_FORWARD_DEPTH) return false;
+      // Only a bare parameter handed on as an argument counts: a transform, alias or
+      // interpolation of it is not followed (the cross-file phase does not either).
+      const bare = forwards.every(c => c.arguments.every(a => {
+        const e = (a.expression ?? '').trim();
+        return params.includes(e) || ![...aliases].some(p => mentionsName(e, p));
+      }));
+      if (!bare) return false;
+      const resolver = projectGraph.resolver;
+      const chained = forwards.every(call => {
+        const r = resolver.resolveCall(call, file);
+        return !!r && r.resolution === 'exact' && r.targetFile !== file
+          && receiverMatchesTarget(call, r.targetClass)
+          && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod, depth + 1, new Set(visited));
+      });
+      if (!chained) return false;
+    } else if (!hasSink) {
+      return false;
+    }
 
     // Field/property store: `saved = data` / `this.saved = data` / `Prop = data`.
     for (const u of uses) {
@@ -186,7 +227,7 @@ export function dropEscapesToProjectCallees(
         const r = resolver.resolveCall(call, fa.file);
         return !!r && r.resolution === 'exact' && r.targetFile !== fa.file
           && receiverMatchesTarget(call, r.targetClass)
-          && calleeDecidedBySinks(projectGraph.getIR(r.targetFile), r.targetMethod);
+          && calleeDecidedBySinks(projectGraph, r.targetFile, r.targetMethod);
       });
       if (projectCall) dropped.add(sink.line);
     }

@@ -2166,14 +2166,17 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // assignment, that assignment owns only its own statement so a condition's
   // read is not bound to a body variable (`if (req.query.m) { t = "a"; } else
   // if (req.query.n) { … }`).
-  const assignmentRe = /(?:(?:var|let|const)\s+)?(\w+)\s*=\s*/g;
+  // cognium-dev#490: a TypeScript declaration may carry a type annotation
+  // (`const q: string = req.query.q`); the binding is the name before the colon,
+  // not the annotation, so the source's own definition is found on the line.
+  const assignmentRe = /(?:(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])|(?:(?:var|let|const)\s+)?(\w+)\s*=)\s*/g;
   const rhsOwnStmt = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/;
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
     const line = lines[lineNum];
     const lineNumber = lineNum + 1;
     assignmentRe.lastIndex = 0;
     for (const assignmentMatch of line.matchAll(assignmentRe)) {
-      const varName = assignmentMatch[1];
+      const varName = assignmentMatch[1] ?? assignmentMatch[2];
       if (!varName) continue;
       let rhs = line.slice((assignmentMatch.index ?? 0) + assignmentMatch[0].length);
       if (/\b(?:if|while|switch|else)\b/.test(line.slice(0, assignmentMatch.index ?? 0))) {

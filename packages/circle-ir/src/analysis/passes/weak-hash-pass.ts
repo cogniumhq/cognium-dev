@@ -158,6 +158,36 @@ const lineOfIndex = (code: string, index: number): number => {
   return n;
 };
 
+const STREAM_NAME = /get(?:System)?ResourceAsStream\s*\(\s*"([^"]+)"\s*\)/;
+const FILE_SOURCE = new RegExp(
+  String.raw`^\s*(?:` +
+    // new FileInputStream("p") / new FileReader("p"), optionally through new File("p")
+    String.raw`new\s+(?:java\s*\.\s*io\s*\.\s*)?(?:FileInputStream|FileReader)\s*\(\s*` +
+    String.raw`(?:new\s+(?:java\s*\.\s*io\s*\.\s*)?File\s*\(\s*"([^"\\]+)"\s*\)|"([^"\\]+)")\s*\)` +
+    '|' +
+    // Files.newInputStream(Paths.get("p")) / Files.newBufferedReader(Path.of("p"))
+    String.raw`(?:java\s*\.\s*nio\s*\.\s*file\s*\.\s*)?Files\s*\.\s*(?:newInputStream|newBufferedReader)\s*\(\s*` +
+    String.raw`(?:(?:java\s*\.\s*nio\s*\.\s*file\s*\.\s*)?(?:Paths\s*\.\s*get|Path\s*\.\s*of))\s*\(\s*"([^"\\]+)"\s*\)\s*\)` +
+    String.raw`)(?:\s*\))*\s*$`,
+);
+
+/**
+ * The resource or file a `Properties.load(...)` argument reads, as a path to match
+ * against the supplied resources, or null when it is anything but a single string
+ * literal in one of the recognised shapes (concatenation, variables, several path
+ * segments, wrappers, `..` segments).
+ */
+function resourceNameOf(expr: string): string | null {
+  const viaClassLoader = STREAM_NAME.exec(expr)?.[1];
+  if (viaClassLoader) return viaClassLoader;
+  const f = FILE_SOURCE.exec(expr);
+  const path = f?.[1] ?? f?.[2] ?? f?.[3];
+  if (!path) return null;
+  const clean = path.replace(/^(?:\.\/)+/, '');
+  if (!clean || clean.split('/').includes('..')) return null;
+  return clean;
+}
+
 /**
  * cognium-dev#591: resolve a `Properties.getProperty(key[, default])` algorithm
  * through the resource the `Properties` object was loaded from. Driven by the
@@ -232,18 +262,18 @@ function resolveViaResources(
   }
   if (loadArg === undefined) return null;
 
-  const streamName = /getResourceAsStream\s*\(\s*"([^"]+)"\s*\)/;
-  let name = streamName.exec(loadArg)?.[1];
+  let name = resourceNameOf(loadArg);
   if (!name && /^\s*[A-Za-z_]\w*\s*$/.test(loadArg)) {
     const stream = loadArg.trim();
-    const bind = new RegExp(String.raw`(?:^|[^\w.])${stream}\s*=\s*([^;{]*)`, 'g');
+    // The last binding of the stream local before the load decides; one that is not a
+    // recognised resource or file source leaves the load unresolved.
+    const bind = new RegExp(String.raw`(?:^|[^\w.])${stream}\s*=(?!=)\s*([^;{]*)`, 'g');
     let bm: RegExpExecArray | null;
     while ((bm = bind.exec(code)) !== null) {
       const line = lineOfIndex(code, bm.index);
       if (line < methodStart) continue;
       if (line > loadLine) break;
-      const n = streamName.exec(bm[1]!)?.[1];
-      if (n) name = n;
+      name = resourceNameOf(bm[1]!);
     }
   }
   if (!name) return null;
