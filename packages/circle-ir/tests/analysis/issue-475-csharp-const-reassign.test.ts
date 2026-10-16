@@ -1,5 +1,10 @@
 /**
  * cognium-dev #475 — C#: reassigning a tainted local to a constant clears taint.
+ *
+ * The kill must target variables that carry THIS flow's taint only. An unrelated
+ * literal reassignment between source and sink must not drop a real finding;
+ * a conditional literal assign must not kill when another path stays tainted;
+ * a re-taint after a literal (`v = "const"; v = input;`) must still report.
  */
 
 import { describe, it, beforeAll, expect } from 'vitest';
@@ -37,6 +42,102 @@ describe('#475 C# literal reassignment kills taint', () => {
   it('no literal overwrite: still reports', async () => {
     const code = PROBE.replace('v = "const"', 'v = input');
     const ir = await analyze(code, 'e287_tp.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('unrelated literal reassignment between source and sink still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_unrelated {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        string label = "a";
+        label = "b";
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'e287_unrelated.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('unrelated var w literal reassignment still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_unrelated_w {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        var w = "x";
+        w = "y";
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'e287_unrelated_w.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('conditional literal reassign does not kill when path still tainted', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_cond {
+    static SqlConnection conn;
+    public void Run(string input, bool c)
+    {
+        var v = input;
+        if (c) v = "const";
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'e287_cond.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('braced conditional literal reassign does not kill', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_cond_brace {
+    static SqlConnection conn;
+    public void Run(string input, bool c)
+    {
+        var v = input;
+        if (c)
+        {
+            v = "const";
+        }
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'e287_cond_brace.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('re-taint after literal still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_retain {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        v = "const";
+        v = input;
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'e287_retain.cs', 'csharp');
     const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
     expect(sql.length).toBeGreaterThan(0);
   });
