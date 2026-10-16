@@ -335,6 +335,45 @@ public class e287_format {
     expect(sql.length).toBeGreaterThan(0);
   });
 
+  it('literal-reassigned column beside tainted v still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_col {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        string col = "a";
+        col = "b";
+        var q = "SELECT " + col + " FROM t WHERE id=" + v;
+        var cmd = new SqlCommand(q, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('tainted copy v with literal table in query still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_table_q {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        string table = "users";
+        var q = "SELECT * FROM " + table + " WHERE id=" + v;
+        var cmd = new SqlCommand(q, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
   it('query rewritten to literal after building from v stays clean', async () => {
     const code = `using System.Data.SqlClient;
 public class e287_q_reset {
