@@ -291,6 +291,62 @@ function resolvePythonDerivedAnchor<S extends { line: number }>(
   return best;
 }
 
+/** Drop a trailing `//…` comment, leaving `//` inside string literals alone. */
+function stripJavaTrailingComment(text: string): string {
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      i++;
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      if (i < text.length) i++;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') return text.slice(0, i);
+    i++;
+  }
+  return text;
+}
+
+/**
+ * #515 (Java/C#) — like `resolvePythonDerivedAnchor`, pick the real source
+ * named on the derivation's right-hand side (following derived chains).
+ */
+function resolveJavaDerivedAnchor<S extends { line: number }>(
+  varName: string,
+  derived: ReadonlyMap<string, number>,
+  realSourceByVar: ReadonlyMap<string, S>,
+  codeLines: readonly string[],
+  visiting: Set<string>,
+): S | undefined {
+  if (visiting.has(varName)) return undefined;
+  visiting.add(varName);
+  const originLine = derived.get(varName);
+  if (originLine === undefined) return undefined;
+  const text = codeLines[originLine - 1];
+  if (!text) return undefined;
+  const eq = text.search(/(?<![=!<>+\-*/%&|^:])=(?!=)/);
+  if (eq < 0) return undefined;
+  const rhs = maskStringLiteralsForTokenScan(stripJavaTrailingComment(text.slice(eq + 1)));
+  let best: S | undefined;
+  for (const m of rhs.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    const id = m[0];
+    if (id === varName) continue;
+    const real = realSourceByVar.get(id);
+    const derivedLine = derived.get(id);
+    let cand: S | undefined;
+    if (derivedLine !== undefined && (!real || derivedLine > real.line)) {
+      cand = resolveJavaDerivedAnchor(id, derived, realSourceByVar, codeLines, visiting);
+    }
+    if (!cand) cand = real;
+    if (cand && (!best || cand.line < best.line)) best = cand;
+  }
+  return best;
+}
+
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -3313,6 +3369,12 @@ function detectExpressionScanFlows(
         return t?.fields?.some(f => f.name === name) ?? false;
       };
       const existingVars = new Set(sourcesWithVar.map(s => s.variable));
+      const codeLines = code.split('\n');
+      const realSourceByVar = new Map<string, typeof sourcesWithVar[0]>();
+      for (const s of sourcesWithVar) {
+        const prev = realSourceByVar.get(s.variable);
+        if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
+      }
       for (const [varName, derivedLine] of derived) {
         if (!varName || existingVars.has(varName)) continue;
         const owner = methodAt(derivedLine);
@@ -3320,12 +3382,19 @@ function detectExpressionScanFlows(
         let scopedAnchor = anchor;
         if (owner) {
           let best: typeof anchor | undefined;
+          const methodRealSourceByVar = new Map<string, typeof anchor>();
           for (const s of sourcesWithVar) {
             const sOwner = s.in_method ?? methodAt(s.line);
             if (sOwner !== owner) continue;
+            const prev = methodRealSourceByVar.get(s.variable);
+            if (!prev || s.line < prev.line) methodRealSourceByVar.set(s.variable, s);
             if (!best || s.line < best.line) best = s;
           }
-          if (best) scopedAnchor = best;
+          const referenced = resolveJavaDerivedAnchor(
+            varName, derived, methodRealSourceByVar, codeLines, new Set(),
+          );
+          if (referenced) scopedAnchor = referenced;
+          else if (best) scopedAnchor = best;
         }
         // Keep scopedAnchor.line for in_method / preceding-source matching
         // (#614). Pass derivedLine only for literal-kill (#753), so a safe
