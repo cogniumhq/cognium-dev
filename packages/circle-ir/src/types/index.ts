@@ -385,6 +385,15 @@ export interface TaintSource {
   in_method?: string;
 
   /**
+   * For a derived alias source (Java/C# name-keyed expansion), the 1-based line
+   * of the assignment that created the alias. Literal-kill scans from this line
+   * rather than `line`, so an earlier literal init of the alias does not erase
+   * taint that only begins at the derivation — while `line` stays on the
+   * in-method anchor for method-scoped matching (cognium-dev #753 / #614).
+   */
+  literal_kill_line?: number;
+
+  /**
    * How this source was discovered. `'static'` (or absent) = identified by
    * circle-ir's deterministic pattern-matching. `'llm'` = identified by an
    * upstream LLM-enhanced consumer (e.g. circle-ir-ai). Used by

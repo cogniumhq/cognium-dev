@@ -3262,10 +3262,13 @@ function detectExpressionScanFlows(
           }
           if (best) scopedAnchor = best;
         }
+        // Keep scopedAnchor.line for in_method / preceding-source matching
+        // (#614). Pass derivedLine only for literal-kill (#753), so a safe
+        // sibling method's earlier sink cannot pick up this alias by line.
         sourcesWithVar.push({
           ...scopedAnchor,
           variable: varName,
-          line: derivedLine,
+          literal_kill_line: derivedLine,
           ...(owner ? { in_method: owner } : {}),
         });
         existingVars.add(varName);
@@ -3770,15 +3773,23 @@ function detectExpressionScanFlows(
             break;
           }
 
-          // Sprint 9 #58.3 / #56: between source.line and sink.line, if
-          // the tainted variable is reassigned to a pure string literal
-          // (either naked `var = "lit"` or guarded by an allowlist check
-          // such as `if (!ALLOWLIST.contains(var)) var = "lit"` /
+          // Sprint 9 #58.3 / #56: between the alias derivation (or source)
+          // line and sink.line, if the tainted variable is reassigned to a
+          // pure string literal (either naked `var = "lit"` or guarded by an
+          // allowlist check such as `if (!ALLOWLIST.contains(var)) var = "lit"` /
           // `if var not in ALLOWLIST: var = "lit"`), the original taint
-          // no longer reaches the sink — suppress the flow.
+          // no longer reaches the sink — suppress the flow. Derived aliases
+          // carry `literal_kill_line` so kill starts at the assignment that
+          // created them (#753), while `source.line` stays on the anchor (#614).
           if (
             typeof code === 'string' &&
-            isReassignedToLiteralBetween(code, source.variable, source.line, sink.line, unreachableLines)
+            isReassignedToLiteralBetween(
+              code,
+              source.variable,
+              source.literal_kill_line ?? source.line,
+              sink.line,
+              unreachableLines,
+            )
           ) {
             break;
           }
