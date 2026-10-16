@@ -347,30 +347,6 @@ function resolveJavaDerivedAnchor<S extends { line: number }>(
   return best;
 }
 
-/**
- * cognium-dev#624 — expression-scan flows through `lhs = seed.receiverCall()`
- * (e.g. `label = page.getName()`) are vetoed as `variable_not_tainted` because
- * const-prop never seeds those derived names. Argument-style derivations
- * (`shown = encodeForPage(nick)`) must keep the veto so sanitizer credit holds.
- */
-function javaReceiverChainDerivedVar(code: string, localVar: string, seedVar: string): boolean {
-  if (!seedVar || localVar === seedVar) return false;
-  const esc = seedVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const receiverOnRhs = new RegExp(`(?:^|[^\\w.$])${esc}\\s*\\.`, 'u');
-  const declRe =
-    /^\s*(?:public|private|protected|static|final|volatile|transient|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
-  const assignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
-  for (const line of code.split('\n')) {
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    const m = declRe.exec(line) ?? assignRe.exec(line);
-    if (!m || m[1] !== localVar) continue;
-    const rhs = stripJavaTrailingComment(m[2]);
-    if (receiverOnRhs.test(rhs)) return true;
-  }
-  return false;
-}
-
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -524,18 +500,17 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     const sinkFilter  = ctx.getResult<SinkFilterResult>('sink-filter');
     const { sources, sinks, sanitizers } = sinkFilter;
 
-    // cognium-dev#624: seed receiver-chain derived locals (`label = page.getName()`)
-    // into const-prop's tainted set so DFG + expression-scan vetoes keep them.
-    // Per-source seeding + receiver filter avoids argument-style derivations
-    // (`shown = encodeForPage(nick)`) that must stay vetoed for sanitizer credit.
-    if (ctx.language === 'java' && typeof ctx.code === 'string') {
+    // cognium-dev#624: `detectExpressionScanFlows` synthesizes derived locals
+    // (e.g. `label` from `page.getName()`) that const-prop never seeds; without
+    // this, `makeConstPropVeto` drops those flows as `variable_not_tainted`.
+    if ((ctx.language === 'java' || ctx.language === 'csharp') && typeof ctx.code === 'string') {
+      const seedVars = new Set<string>();
       for (const s of sources) {
-        if (!s.variable) continue;
-        for (const [v] of buildJavaTaintedVars(ctx.code, new Set([s.variable]))) {
-          if (v === s.variable) continue;
-          if (javaReceiverChainDerivedVar(ctx.code, v, s.variable)) {
-            constProp.tainted.add(v);
-          }
+        if (s.variable) seedVars.add(s.variable);
+      }
+      if (seedVars.size > 0) {
+        for (const [v] of buildJavaTaintedVars(ctx.code, seedVars)) {
+          constProp.tainted.add(v);
         }
       }
     }
