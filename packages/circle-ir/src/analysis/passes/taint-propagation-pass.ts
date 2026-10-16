@@ -2118,6 +2118,7 @@ function csharpLastUnconditionalAssignIsLiteral(
   const reCompound = new RegExp(
     '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*[+\\-*/%&|^]=\\s*(.+)\\s*$',
   );
+  const reRefOut = new RegExp('\\b(?:ref|out)\\s+' + variable + '\\b');
 
   let last: 'literal' | 'other' | null = null;
   const lo = Math.max(0, srcLine);
@@ -2132,6 +2133,10 @@ function csharpLastUnconditionalAssignIsLiteral(
       const t = seg.trim();
       if (!t) continue;
       if (reCompound.test(t)) {
+        last = 'other';
+        continue;
+      }
+      if (reRefOut.test(csharpStripStringLiterals(t))) {
         last = 'other';
         continue;
       }

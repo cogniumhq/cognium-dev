@@ -179,6 +179,46 @@ public class e287_reset_after_copy {
     expect(sql.length).toBeGreaterThan(0);
   });
 
+  it('ref argument re-taint after literal still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_ref {
+    static SqlConnection conn;
+    static void Append(ref string v, string input) { v += input; }
+    public void Run(string input)
+    {
+        var v = input;
+        v = "const";
+        Append(ref v, input);
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('out argument re-taint after literal still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_out {
+    static SqlConnection conn;
+    static void CopyOut(string input, out string v) { v = input; }
+    public void Run(string input)
+    {
+        var v = input;
+        v = "const";
+        CopyOut(input, out v);
+        var cmd = new SqlCommand("SELECT * FROM u WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
   it('compound += re-taint after literal still reports', async () => {
     const code = `using System.Data.SqlClient;
 public class e287_compound {
