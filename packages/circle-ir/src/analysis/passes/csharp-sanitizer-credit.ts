@@ -102,9 +102,27 @@ export const CSHARP_SANITIZER_RES: Array<{ re: RegExp; type: string; unlessDecla
  * The built-in sanitizers that apply to `code`: those gated on a type name
  * (`unlessDeclared`) are dropped when the file declares a type of that name.
  */
+const FRAMEWORK_URL_ENCODER = 'System.Text.Encodings.Web.UrlEncoder';
+
+/** True when `UrlEncoder` in source text is not the framework encoder (#736 case 5). */
+function csharpUrlEncoderShadowed(code: string): boolean {
+  if (new RegExp(`\\b(?:class|struct|record|interface|enum)\\s+UrlEncoder\\b`).test(code)) {
+    return true;
+  }
+  const aliasRe = /\busing\s+UrlEncoder\s*=\s*([^;\n]+)\s*;/g;
+  for (const m of code.matchAll(aliasRe)) {
+    const target = m[1]!.trim();
+    if (target === FRAMEWORK_URL_ENCODER || target.endsWith('.' + FRAMEWORK_URL_ENCODER)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function csharpSanitizersFor(code: string): ReadonlyArray<{ re: RegExp; type: string }> {
   const declared = (name: string) =>
-    new RegExp(`\\b(?:class|struct|record|interface|enum)\\s+${name}\\b`).test(code);
+    name === 'UrlEncoder'
+      ? csharpUrlEncoderShadowed(code)
+      : new RegExp(`\\b(?:class|struct|record|interface|enum)\\s+${name}\\b`).test(code);
   return CSHARP_SANITIZER_RES.filter(r => !r.unlessDeclared || !declared(r.unlessDeclared));
 }
 
