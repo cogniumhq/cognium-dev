@@ -1285,6 +1285,13 @@ function inAlwaysRunBlock(arm: Node): boolean {
  * a braceless body there must not assign into it: the write may not run, and it
  * would hide an earlier write in the same block.
  */
+/** Braceless `if` / `else` arm at statement level (parent has an alternative). */
+function isBracelessIfElseArm(arm: Node): boolean {
+  const parent = arm.parent;
+  if (!parent || parent.type !== 'if_statement') return false;
+  return parent.childForFieldName('alternative') != null;
+}
+
 function inNestedBlock(arm: Node): boolean {
   let n: Node | null = arm.parent;
   while (n && (n.type === 'if_statement' || n.type === 'for_statement' || n.type === 'enhanced_for_statement' ||
@@ -1325,7 +1332,8 @@ function processArm(
   isJavaScript: boolean,
 ): BlockResult & { popped: Map<string, number> | null } {
   const isBlock = node.type === 'block' || node.type === 'statement_block';
-  if (isJavaScript || (isBlock ? !inAlwaysRunBlock(node) : !inNestedBlock(node))) {
+  const bracelessTopIfElse = !isBlock && isBracelessIfElseArm(node);
+  if (isJavaScript || (isBlock ? !inAlwaysRunBlock(node) : !inNestedBlock(node) && !bracelessTopIfElse)) {
     lastPoppedBlock = null;
     const result = processStatement(node, defId, useId, scopeStack, isJavaScript);
     return { ...result, popped: null };
