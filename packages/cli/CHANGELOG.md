@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changes
 
 - A Java scan reports `command_injection` for `label = String.format("%s.tar",\n    picked);` followed by `Runtime.exec(tool + label)`, as for the one-line form (#753, partial).
+- A JS/TS scan reports `sql_injection` and the other injection sinks for a GraphQL resolver in a type-annotated map (`const resolvers: Resolvers<Context> = { … }`) passed to `new ApolloServer` (#752, partial).
 - A C# scan reports `command_injection` for a tainted `ArgumentList.Add(...)` behind a constant shell program set through `new ProcessStartInfo("/bin/sh")` or an object initializer `FileName = "/bin/sh"` (#750, partial).
 - A Go scan no longer reports `external_taint_escape` for a value tested with `MatchString` on a package-level `regexp.MustCompile("<literal>")`, and no longer reports xss for a `make` sized by a value rejected above a named integer `const` (#349, partial).
 - A Java scan reports `command_injection` for a value built over several lines (a wrapped Base64 round-trip, a call with its argument on the next line) that is concatenated with a constant local before `Runtime.exec` (#597, partial).
