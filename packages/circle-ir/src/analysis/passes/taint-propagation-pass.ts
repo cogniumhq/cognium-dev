@@ -1119,10 +1119,10 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     if (ctx.language === 'csharp' && typeof ctx.code === 'string') {
       const code = ctx.code;
       finalFlows = finalFlows.filter(f => {
-        const carriers = csharpFlowTaintCarriers(code, f);
-        for (const v of carriers) {
+        const deps = csharpSinkDependencyVars(code, f);
+        for (const v of deps) {
           if (
-            csharpLastUnconditionalAssignIsLiteral(
+            csharpLiteralResetKillsFlow(
               code,
               v,
               f.source_line,
@@ -2043,119 +2043,144 @@ function splitLinesCached(code: string): string[] {
   return _reassignSplitLines;
 }
 
+const CSHARP_ID_KW = new Set([
+  'if', 'else', 'for', 'foreach', 'while', 'do', 'switch', 'case', 'default', 'break',
+  'return', 'new', 'var', 'string', 'int', 'bool', 'void', 'static', 'public', 'class',
+  'using', 'lock', 'try', 'catch', 'finally', 'throw', 'null', 'true', 'false',
+]);
+
+function csharpStripStringLiterals(text: string): string {
+  return text
+    .replace(/\$@?"(?:[^"\\]|\\.)*"/g, ' ')
+    .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+    .replace(/'(?:[^'\\]|\\.)'/g, ' ')
+    .replace(/`(?:[^`\\]|\\.)*`/g, ' ');
+}
+
+function csharpIdentifiersInExpr(text: string): string[] {
+  const ids = csharpStripStringLiterals(text).match(/\b[A-Za-z_][\w]*\b/g) ?? [];
+  return ids.filter(id => !CSHARP_ID_KW.has(id));
+}
+
+const CSHARP_ASSIGN_RE =
+  /^\s*(?:(?:var|string|String|[\w.<>\[\]?]+\s+)?([A-Za-z_]\w*)|([A-Za-z_]\w*))\s*=\s*(.+)$/;
+
 /**
- * cognium-dev#475 — variables that carry THIS C# flow's taint.
- *
- * Starts from the flow path, then:
- *   - forward: locals assigned from a carrier (`var v = input`);
- *   - backward: locals that feed an assignment TO a carrier and themselves
- *     previously held a non-literal (`cmd = new SqlCommand(... + v)` when
- *     `v = input` earlier). Pure-literal locals like Juliet's `osCommand`
- *     are not added, so their literal reassigns cannot drop the flow.
+ * Locals whose values at the sink are built from the flow — backward from
+ * identifiers read on the sink line through assignment RHS chains (#475).
  */
-function csharpFlowTaintCarriers(
+function csharpSinkDependencyVars(
   code: string,
-  flow: { path: ReadonlyArray<{ variable?: string | null }>; source_line: number; sink_line: number },
+  flow: { sink_line: number; source_line: number },
 ): Set<string> {
-  const carriers = new Set<string>();
-  for (const step of flow.path) {
-    if (step.variable) carriers.add(step.variable);
-  }
-  if (carriers.size === 0) return carriers;
-
   const lines = splitLinesCached(code);
-  const lo = Math.max(0, flow.source_line - 1);
-  const hi = Math.min(lines.length, flow.sink_line);
-  const assignRe =
-    /^\s*(?:(?:var|string|String|[\w.<>\[\]?]+\s+)?([A-Za-z_]\w*)|([A-Za-z_]\w*))\s*=\s*(.+)$/;
-  const stripLits = (rhs: string): string =>
-    rhs
-      .replace(/\$@?"(?:[^"\\]|\\.)*"/g, ' ')
-      .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
-      .replace(/'(?:[^'\\]|\\.)'/g, ' ')
-      .replace(/`(?:[^`\\]|\\.)*`/g, ' ');
+  const sinkIdx = flow.sink_line - 1;
+  if (sinkIdx < 0 || sinkIdx >= lines.length) return new Set();
 
-  type Assign = { lhs: string; rhsIdents: string[]; literal: boolean };
-  const assigns: Assign[] = [];
-  for (let i = lo; i < hi; i++) {
+  const deps = new Set(csharpIdentifiersInExpr(lines[sinkIdx] ?? ''));
+  for (let i = sinkIdx - 1; i >= flow.source_line - 1; i--) {
     const line = lines[i] ?? '';
-    if (/^\s*if\b/.test(line)) continue;
     for (const seg of line.split(';')) {
       const t = seg.trim();
       if (!t) continue;
-      const m = assignRe.exec(t);
+      const m = CSHARP_ASSIGN_RE.exec(t);
       if (!m) continue;
       const lhs = m[1] ?? m[2];
-      const rhs = m[3];
-      if (!lhs) continue;
-      const rhsCode = stripLits(rhs);
-      // Pure string-literal RHS: nothing but whitespace left after stripping lits.
-      const literal = rhsCode.replace(/\s+/g, '') === '';
-      const rhsIdents = rhsCode.match(/\b[A-Za-z_][\w]*\b/g) ?? [];
-      assigns.push({ lhs, rhsIdents, literal });
+      if (!lhs || !deps.has(lhs)) continue;
+      for (const id of csharpIdentifiersInExpr(m[3])) deps.add(id);
     }
   }
-
-  const hadNonLiteral = new Set<string>();
-  for (const a of assigns) {
-    if (!a.literal) hadNonLiteral.add(a.lhs);
-  }
-
-  let changed = true;
-  for (let guard = 0; changed && guard < assigns.length + 2; guard++) {
-    changed = false;
-    for (const a of assigns) {
-      // Forward: lhs derives from a carrier.
-      if (!carriers.has(a.lhs) && a.rhsIdents.some(id => carriers.has(id))) {
-        carriers.add(a.lhs);
-        changed = true;
-      }
-      // Backward: a carrier is built from a local that previously held
-      // non-literal data (taint-shaped), not from a pure-literal helper.
-      if (carriers.has(a.lhs)) {
-        for (const id of a.rhsIdents) {
-          if (!carriers.has(id) && hadNonLiteral.has(id)) {
-            carriers.add(id);
-            changed = true;
-          }
-        }
-      }
-    }
-  }
-  return carriers;
+  return deps;
 }
 
-function csharpLastUnconditionalAssignIsLiteral(
+/** Last line (1-based) strictly before the sink where `variable` is read. */
+function csharpLastReadLineBeforeSink(
+  code: string,
+  variable: string,
+  srcLine: number,
+  sinkLine: number,
+): number {
+  if (!/^[A-Za-z_][\w]*$/.test(variable)) return 0;
+  const lines = splitLinesCached(code);
+  const reRead = new RegExp('\\b' + variable + '\\b');
+  const reLhs = new RegExp(
+    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*(?<![+\\-*/%&|^])=\\s*(.+)$',
+  );
+  let last = 0;
+  const hi = Math.min(lines.length, sinkLine);
+  for (let i = Math.max(0, srcLine - 1); i < hi; i++) {
+    const line = lines[i] ?? '';
+    for (const seg of line.split(';')) {
+      const t = seg.trim();
+      if (!t || !reRead.test(t)) continue;
+      const m = reLhs.exec(t);
+      if (m) {
+        if (csharpIdentifiersInExpr(m[1]).includes(variable)) last = i + 1;
+      } else {
+        last = i + 1;
+      }
+    }
+  }
+  return last;
+}
+
+/** True when a literal reset of `variable` can still affect taint reaching the sink. */
+function csharpLiteralResetKillsFlow(
   code: string,
   variable: string,
   srcLine: number,
   sinkLine: number,
   unreachableLines?: ReadonlySet<number>,
 ): boolean {
+  const lastRead = csharpLastReadLineBeforeSink(code, variable, srcLine, sinkLine);
+  if (lastRead === 0) return false;
+  return csharpLastUnconditionalAssignIsLiteral(
+    code,
+    variable,
+    srcLine,
+    lastRead,
+    unreachableLines,
+  );
+}
+
+function csharpLastUnconditionalAssignIsLiteral(
+  code: string,
+  variable: string,
+  srcLine: number,
+  /** Scan assignments on lines strictly before this 1-based line. */
+  beforeLine: number,
+  unreachableLines?: ReadonlySet<number>,
+): boolean {
   if (!variable || !/^[A-Za-z_][\w]*$/.test(variable)) return false;
-  if (sinkLine - srcLine < 1) return false;
+  if (beforeLine - srcLine < 1) return false;
   const lines = splitLinesCached(code);
   const reLit = new RegExp(
-    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*=\\s*(?:"(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)\\s*$',
+    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*(?<![+\\-*/%&|^])=\\s*(?:"(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)\\s*$',
   );
-  const reAny = new RegExp(
-    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*=\\s*(.+)\\s*$',
+  const rePlain = new RegExp(
+    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*(?<![+\\-*/%&|^])=\\s*(.+)\\s*$',
+  );
+  const reCompound = new RegExp(
+    '^(?:(?:var|string|String)\\s+)?' + variable + '\\s*[+\\-*/%&|^]=\\s*(.+)\\s*$',
   );
 
   let last: 'literal' | 'other' | null = null;
   const lo = Math.max(0, srcLine);
-  const hi = Math.min(lines.length, sinkLine - 1);
+  const hi = Math.min(lines.length, beforeLine - 1);
   for (let i = lo; i < hi; i++) {
     if (unreachableLines?.has(i + 1)) continue;
     const line = lines[i];
     if (!line) continue;
-    // Whole-line `if (...) v = "x"` is conditional — skip every segment.
     if (/^\s*if\b/.test(line)) continue;
 
     for (const seg of line.split(';')) {
       const t = seg.trim();
       if (!t) continue;
-      if (!reAny.test(t)) continue;
+      if (reCompound.test(t)) {
+        last = 'other';
+        continue;
+      }
+      if (!rePlain.test(t)) continue;
       if (csharpAssignInConditionalBlock(lines, i)) continue;
       if (reLit.test(t)) {
         last = 'literal';
@@ -2167,7 +2192,7 @@ function csharpLastUnconditionalAssignIsLiteral(
   return last === 'literal';
 }
 
-/** True when line `idx` sits in an if/else/switch arm (brace-delimited). */
+/** True when line `idx` sits in a control-flow block (if/else/switch/loop/…). */
 function csharpAssignInConditionalBlock(lines: string[], idx: number): boolean {
   const block = enclosingBrace(lines, idx, 0);
   if (!block) return false;
@@ -2177,6 +2202,7 @@ function csharpAssignInConditionalBlock(lines: string[], idx: number): boolean {
   if (/\bswitch\b/.test(block.header)) return true;
   if (/^(?:\}\s*)?(?:else\s+)?if\s*\(/.test(block.header)) return true;
   if (/^(?:\}\s*)?else\b/.test(block.header)) return true;
+  if (/\b(?:for|foreach|while|do|using|lock|try)\b/.test(block.header)) return true;
   return false;
 }
 
