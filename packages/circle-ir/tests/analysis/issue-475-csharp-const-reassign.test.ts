@@ -281,6 +281,60 @@ public class e287_while {
     expect(sql.length).toBeGreaterThan(0);
   });
 
+  it('literal table name beside tainted input still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_table {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        string table = "users";
+        var q = "SELECT * FROM " + table + " WHERE id=" + input;
+        var cmd = new SqlCommand(q, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('literal table in SqlCommand argument beside tainted v still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_table_inline {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var v = input;
+        string table = "users";
+        var cmd = new SqlCommand("SELECT * FROM " + table + " WHERE id=" + v, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
+  it('string.Format with literal table and tainted input still reports', async () => {
+    const code = `using System.Data.SqlClient;
+public class e287_format {
+    static SqlConnection conn;
+    public void Run(string input)
+    {
+        var t = "users";
+        var q = string.Format("SELECT * FROM {0} WHERE id={1}", t, input);
+        var cmd = new SqlCommand(q, conn);
+        cmd.ExecuteNonQuery();
+    }
+}
+`;
+    const ir = await analyze(code, 'UserController.cs', 'csharp');
+    const sql = (ir.taint.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sql.length).toBeGreaterThan(0);
+  });
+
   it('query rewritten to literal after building from v stays clean', async () => {
     const code = `using System.Data.SqlClient;
 public class e287_q_reset {

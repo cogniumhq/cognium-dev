@@ -1121,7 +1121,9 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       const code = ctx.code;
       finalFlows = finalFlows.filter(f => {
         const deriveLine = csharpSinkDependencyKillVars(code, f);
+        const carriers = csharpFlowTaintCarriers(code, f);
         for (const [v, beforeLine] of deriveLine) {
+          if (!carriers.has(v)) continue;
           if (
             csharpLastUnconditionalAssignIsLiteral(
               code,
@@ -2065,6 +2067,76 @@ function csharpIdentifiersInExpr(text: string): string[] {
 
 const CSHARP_ASSIGN_RE =
   /^\s*(?:(?:var|string|String|[\w.<>\[\]?]+\s+)?([A-Za-z_]\w*)|([A-Za-z_]\w*))\s*=\s*(.+)$/;
+
+/**
+ * Variables that carry THIS C# flow's taint (path locals plus forward/backward
+ * derivation). Pure-literal helpers (`table = "users"` next to tainted `input`)
+ * are excluded so their literal assignments cannot drop the flow (#475).
+ */
+function csharpFlowTaintCarriers(
+  code: string,
+  flow: {
+    path: ReadonlyArray<{ variable?: string | null }>;
+    source_line: number;
+    sink_line: number;
+  },
+): Set<string> {
+  const carriers = new Set<string>();
+  for (const step of flow.path) {
+    if (step.variable) carriers.add(step.variable);
+  }
+  if (carriers.size === 0) return carriers;
+
+  const lines = splitLinesCached(code);
+  const lo = Math.max(0, flow.source_line - 1);
+  const hi = Math.min(lines.length, flow.sink_line);
+  const stripLits = (rhs: string): string => csharpStripStringLiterals(rhs);
+
+  type Assign = { lhs: string; rhsIdents: string[]; literal: boolean };
+  const assigns: Assign[] = [];
+  for (let i = lo; i < hi; i++) {
+    const line = lines[i] ?? '';
+    if (/^\s*if\b/.test(line)) continue;
+    for (const seg of line.split(';')) {
+      const t = seg.trim();
+      if (!t) continue;
+      const m = CSHARP_ASSIGN_RE.exec(t);
+      if (!m) continue;
+      const lhs = m[1] ?? m[2];
+      const rhs = m[3];
+      if (!lhs) continue;
+      const rhsCode = stripLits(rhs);
+      const literal = rhsCode.replace(/\s+/g, '') === '';
+      const rhsIdents = rhsCode.match(/\b[A-Za-z_][\w]*\b/g) ?? [];
+      assigns.push({ lhs, rhsIdents, literal });
+    }
+  }
+
+  const hadNonLiteral = new Set<string>();
+  for (const a of assigns) {
+    if (!a.literal) hadNonLiteral.add(a.lhs);
+  }
+
+  let changed = true;
+  for (let guard = 0; changed && guard < assigns.length + 2; guard++) {
+    changed = false;
+    for (const a of assigns) {
+      if (!carriers.has(a.lhs) && a.rhsIdents.some(id => carriers.has(id))) {
+        carriers.add(a.lhs);
+        changed = true;
+      }
+      if (carriers.has(a.lhs)) {
+        for (const id of a.rhsIdents) {
+          if (!carriers.has(id) && hadNonLiteral.has(id)) {
+            carriers.add(id);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return carriers;
+}
 
 /**
  * For each upstream local, the 1-based line of the assignment that copied it
