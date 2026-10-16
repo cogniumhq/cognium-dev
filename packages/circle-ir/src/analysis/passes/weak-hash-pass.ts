@@ -159,6 +159,9 @@ const lineOfIndex = (code: string, index: number): number => {
 };
 
 const STREAM_NAME = /get(?:System)?ResourceAsStream\s*\(\s*"([^"]+)"\s*\)/;
+/** `Class.getResource("name").openStream()` — cognium-dev#591 URL load style. */
+const URL_RESOURCE_STREAM =
+  /\bgetResource\s*\(\s*"([^"]+)"\s*\)\s*\.\s*openStream\s*\(\s*\)\s*$/;
 const FILE_SOURCE = new RegExp(
   String.raw`^\s*(?:` +
     // new FileInputStream("p") / new FileReader("p"), optionally through new File("p")
@@ -180,6 +183,8 @@ const FILE_SOURCE = new RegExp(
 function resourceNameOf(expr: string): string | null {
   const viaClassLoader = STREAM_NAME.exec(expr)?.[1];
   if (viaClassLoader) return viaClassLoader;
+  const viaUrl = URL_RESOURCE_STREAM.exec(expr)?.[1];
+  if (viaUrl) return viaUrl;
   const f = FILE_SOURCE.exec(expr);
   const path = f?.[1] ?? f?.[2] ?? f?.[3];
   if (!path) return null;
@@ -273,7 +278,12 @@ function resolveViaResources(
       const line = lineOfIndex(code, bm.index);
       if (line < methodStart) continue;
       if (line > loadLine) break;
-      name = resourceNameOf(bm[1]!);
+      // try-with-resources: `try (InputStream in = EXPR) {` — the bind capture keeps a trailing `)`.
+      let bound = bm[1]!.trim();
+      if (bound.endsWith(')') && !resourceNameOf(bound)) {
+        bound = bound.slice(0, -1).trimEnd();
+      }
+      name = resourceNameOf(bound);
     }
   }
   if (!name) return null;
