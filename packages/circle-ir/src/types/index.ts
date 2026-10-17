@@ -69,6 +69,14 @@ export interface TypeInfo {
    * also the only way a record appears in `ir.types` at all.
    */
   is_record?: boolean;
+  /**
+   * The type's own type parameter names, in order — `["T"]` for
+   * `class Box<T extends Serializable>`. Present only under
+   * `AnalyzerOptions.navigationTypes`, and only on a generic type: a
+   * supertype's type arguments (`extends Box<Long>`) are mapped onto them to
+   * type what an inherited member returns.
+   */
+  type_parameters?: string[];
 }
 
 export interface MethodInfo {
@@ -134,6 +142,20 @@ export interface ArgumentInfo {
   variable?: string | null;  // Variable name if simple reference
   literal?: string | null;  // Literal value if constant
   value?: string | null;  // Argument value (for simple values)
+  /**
+   * The argument's static type as the source spells it (`String`, `long`,
+   * `Money`, `List<Foo>`), or `null` where it cannot be read off the syntax
+   * and the declarations in scope. `null` (the literal) is spelled `null`.
+   * Java only, and present only under `AnalyzerOptions.navigationTypes`;
+   * overload selection reads it.
+   */
+  type?: string | null;
+  /**
+   * Where the argument expression starts. Java only, and present only under
+   * `AnalyzerOptions.navigationTypes`: an argument that is itself a call is
+   * typed by binding that call, which is found in `calls` at this position.
+   */
+  location?: { line: number; column: number };
 }
 
 export interface CallResolution {

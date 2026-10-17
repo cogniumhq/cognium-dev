@@ -88,7 +88,24 @@ function detectLanguageFromTree(tree: Tree, cache?: NodeCache): 'javascript' | '
  * @param cache Optional node cache for performance
  * @param language Optional language hint ('java' | 'javascript' | 'typescript' | 'python' | 'rust')
  */
-export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): CallInfo[] {
+/**
+ * Options for `extractCalls`. Every field is off by default, and the default
+ * output is unchanged: `ir.calls` is read by the SAST passes.
+ */
+export interface CallExtractionOptions {
+  /**
+   * Java only: give each argument its static type and start position
+   * (`ArgumentInfo.type` / `.location`), which overload selection needs.
+   */
+  navigationTypes?: boolean;
+}
+
+export function extractCalls(
+  tree: Tree,
+  cache?: NodeCache,
+  language?: string,
+  options: CallExtractionOptions = {},
+): CallInfo[] {
   const calls: CallInfo[] = [];
 
   // Use language hint if provided, otherwise detect from tree
@@ -126,14 +143,15 @@ export function extractCalls(tree: Tree, cache?: NodeCache, language?: string): 
 
   // Find all method invocations
   const invocations = getNodesFromCache(tree.rootNode, 'method_invocation', cache);
+  const typed = options.navigationTypes === true;
   for (const inv of invocations) {
-    calls.push(extractCallInfo(inv, context));
+    calls.push(extractCallInfo(inv, context, typed));
   }
 
   // Find object creation expressions (constructor calls)
   const objectCreations = getNodesFromCache(tree.rootNode, 'object_creation_expression', cache);
   for (const creation of objectCreations) {
-    const callInfo = extractObjectCreation(creation, context);
+    const callInfo = extractObjectCreation(creation, context, typed);
     if (callInfo) {
       calls.push(callInfo);
     }
@@ -1653,7 +1671,7 @@ const JAVA_LANG_TYPES = new Set([
 /**
  * Extract call information from a method_invocation node.
  */
-function extractCallInfo(node: Node, context: ResolutionContext): CallInfo {
+function extractCallInfo(node: Node, context: ResolutionContext, typed = false): CallInfo {
   // Get method name
   const nameNode = node.childForFieldName('name');
   const methodName = nameNode ? getNodeText(nameNode) : 'unknown';
@@ -1664,7 +1682,7 @@ function extractCallInfo(node: Node, context: ResolutionContext): CallInfo {
 
   // Get arguments
   const argsNode = node.childForFieldName('arguments');
-  const args = argsNode ? extractArguments(argsNode) : [];
+  const args = argsNode ? extractArguments(argsNode, typed) : [];
 
   // Find enclosing method
   const enclosingMethod = findEnclosingMethod(node);
@@ -1672,8 +1690,16 @@ function extractCallInfo(node: Node, context: ResolutionContext): CallInfo {
   // Resolve the call
   const { resolved, resolution } = resolveMethodCall(methodName, receiver, context);
 
-  // Resolve the receiver's declared type and FQN
-  const { simpleName, fqn } = resolveReceiverType(receiver, context);
+  // Resolve the receiver's declared type and FQN. For navigation, a plain
+  // variable is looked up where it is used, so a lambda parameter or a name
+  // two methods declare differently gets its own type, or none; the
+  // file-wide table is the fallback for what no enclosing scope declares.
+  let { simpleName, fqn } = resolveReceiverType(receiver, context);
+  if (typed && objectNode?.type === 'identifier') {
+    const scoped = lookupInScope(objectNode, getNodeText(objectNode));
+    if (scoped === null) ({ simpleName, fqn } = { simpleName: null, fqn: null });
+    else if (scoped !== undefined) ({ simpleName, fqn } = resolveFqn(stripGenerics(scoped), context));
+  }
 
   return {
     method_name: methodName,
@@ -1694,7 +1720,7 @@ function extractCallInfo(node: Node, context: ResolutionContext): CallInfo {
 /**
  * Extract call information from an object_creation_expression (new ...).
  */
-function extractObjectCreation(node: Node, context: ResolutionContext): CallInfo | null {
+function extractObjectCreation(node: Node, context: ResolutionContext, typed = false): CallInfo | null {
   // Get the type being instantiated
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return null;
@@ -1703,7 +1729,7 @@ function extractObjectCreation(node: Node, context: ResolutionContext): CallInfo
 
   // Get arguments
   const argsNode = node.childForFieldName('arguments');
-  const args = argsNode ? extractArguments(argsNode) : [];
+  const args = argsNode ? extractArguments(argsNode, typed) : [];
 
   // Find enclosing method
   const enclosingMethod = findEnclosingMethod(node);
@@ -1739,7 +1765,7 @@ function extractObjectCreation(node: Node, context: ResolutionContext): CallInfo
 /**
  * Extract arguments from an argument_list node.
  */
-function extractArguments(argsNode: Node): ArgumentInfo[] {
+function extractArguments(argsNode: Node, typed = false): ArgumentInfo[] {
   const args: ArgumentInfo[] = [];
   let position = 0;
 
@@ -1755,17 +1781,273 @@ function extractArguments(argsNode: Node): ArgumentInfo[] {
     const expression = getNodeText(child);
     const { variable, literal } = analyzeArgument(child);
 
-    args.push({
+    const arg: ArgumentInfo = {
       position,
       expression,
       variable,
       literal,
-    });
+    };
+    if (typed) {
+      arg.type = javaStaticType(child);
+      arg.location = { line: child.startPosition.row + 1, column: child.startPosition.column };
+    }
+    args.push(arg);
 
     position++;
   }
 
   return args;
+}
+
+const NUMERIC_RANK: Record<string, number> = { byte: 1, short: 2, char: 2, int: 3, long: 4, float: 5, double: 6 };
+const BOOLEAN_OPERATORS = new Set(['==', '!=', '<', '>', '<=', '>=', '&&', '||', 'instanceof']);
+
+/**
+ * The static type of a Java expression, as far as the syntax and the
+ * declarations in scope say it — and `null` past that.
+ *
+ * Read for overload selection, so it errs one way only: a type it cannot be
+ * sure of is `null` ("could be anything"), never a guess. A method call's
+ * result is not typed here; the navigation index types it by binding that
+ * call, which needs the whole tree.
+ */
+function javaStaticType(node: Node): string | null {
+  const text = getNodeText(node);
+  switch (node.type) {
+    case 'string_literal':
+    case 'text_block':
+      return 'String';
+    case 'character_literal':
+      return 'char';
+    case 'decimal_integer_literal':
+    case 'hex_integer_literal':
+    case 'octal_integer_literal':
+    case 'binary_integer_literal':
+      return /[lL]$/.test(text) ? 'long' : 'int';
+    case 'decimal_floating_point_literal':
+    case 'hex_floating_point_literal':
+      return /[fF]$/.test(text) ? 'float' : 'double';
+    case 'true':
+    case 'false':
+    case 'instanceof_expression':
+      return 'boolean';
+    case 'null_literal':
+      return 'null';
+    case 'class_literal':
+      return 'Class';
+    case 'parenthesized_expression': {
+      const inner = node.namedChild(0);
+      return inner ? javaStaticType(inner) : null;
+    }
+    case 'cast_expression': {
+      const t = node.childForFieldName('type');
+      return t ? getNodeText(t) : null;
+    }
+    case 'object_creation_expression': {
+      const t = node.childForFieldName('type');
+      return t ? getNodeText(t) : null;
+    }
+    case 'array_creation_expression': {
+      const t = node.childForFieldName('type');
+      if (!t) return null;
+      const dims = (text.match(/\[/g) ?? []).length - (getNodeText(t).match(/\[/g) ?? []).length;
+      return `${getNodeText(t)}${'[]'.repeat(Math.max(dims, 1))}`;
+    }
+    case 'unary_expression': {
+      const op = node.childForFieldName('operator');
+      const operand = node.childForFieldName('operand');
+      if (op && getNodeText(op) === '!') return 'boolean';
+      const t = operand ? javaStaticType(operand) : null;
+      return t && t in NUMERIC_RANK ? (NUMERIC_RANK[t] < 3 ? 'int' : t) : null;
+    }
+    case 'binary_expression': {
+      const op = node.childForFieldName('operator');
+      const opText = op ? getNodeText(op) : '';
+      if (BOOLEAN_OPERATORS.has(opText)) return 'boolean';
+      const left = node.childForFieldName('left');
+      const right = node.childForFieldName('right');
+      const lt = left ? javaStaticType(left) : null;
+      const rt = right ? javaStaticType(right) : null;
+      if (opText === '+' && (lt === 'String' || rt === 'String')) return 'String';
+      // Binary numeric promotion, only when both sides are known primitives.
+      if (lt && rt && lt in NUMERIC_RANK && rt in NUMERIC_RANK) {
+        const wider = NUMERIC_RANK[lt] >= NUMERIC_RANK[rt] ? lt : rt;
+        return NUMERIC_RANK[wider] < 3 ? 'int' : wider;
+      }
+      return null;
+    }
+    case 'ternary_expression': {
+      const a = node.childForFieldName('consequence');
+      const b = node.childForFieldName('alternative');
+      const at = a ? javaStaticType(a) : null;
+      const bt = b ? javaStaticType(b) : null;
+      return at !== null && at === bt ? at : null;
+    }
+    case 'identifier':
+      return declaredTypeInScope(node, text);
+    case 'field_access': {
+      const obj = node.childForFieldName('object');
+      const field = node.childForFieldName('field');
+      if (obj?.type !== 'this' || !field) return null;
+      const body = findAncestor(node, 'class_body') ?? findAncestor(node, 'enum_body_declarations');
+      return body ? fieldTypeIn(body, getNodeText(field)) : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * The declared type of the variable `name` as seen from `node`: the nearest
+ * enclosing local, parameter, resource, loop or catch variable, then a field
+ * of an enclosing type. `null` when the nearest declaration has no written
+ * type (a lambda's inferred parameter, `var` without a readable initializer)
+ * or when nothing in the file declares it — an inherited field, say.
+ */
+function declaredTypeInScope(node: Node, name: string): string | null {
+  return lookupInScope(node, name) ?? null;
+}
+
+/** `declaredTypeInScope`, telling "declared without a written type" (`null`) from "not declared here" (`undefined`). */
+function lookupInScope(node: Node, name: string): string | null | undefined {
+  const typeOf = (typeNode: Node | null, value: Node | null): string | null => {
+    if (!typeNode) return null;
+    const t = getNodeText(typeNode);
+    if (t !== 'var') return t;
+    return value ? javaStaticType(value) : null;
+  };
+  const fromDeclaration = (decl: Node): string | null | undefined => {
+    for (const d of decl.namedChildren) {
+      if (d?.type !== 'variable_declarator') continue;
+      const n = d.childForFieldName('name');
+      if (n && getNodeText(n) === name) return typeOf(decl.childForFieldName('type'), d.childForFieldName('value'));
+    }
+    return undefined;
+  };
+  const fromParameters = (params: Node): string | null | undefined => {
+    for (const p of params.namedChildren) {
+      if (!p) continue;
+      if (p.type === 'formal_parameter') {
+        const n = p.childForFieldName('name');
+        if (n && getNodeText(n) === name) return typeOf(p.childForFieldName('type'), null);
+      } else if (p.type === 'spread_parameter') {
+        const d = p.namedChildren.find(c => c?.type === 'variable_declarator');
+        const n = d?.childForFieldName('name');
+        const t = p.namedChildren.find(c => c !== null && /type/.test(c.type));
+        if (n && getNodeText(n) === name) return t ? `${getNodeText(t)}[]` : null;
+      } else if (p.type === 'identifier' && getNodeText(p) === name) {
+        return null;   // an inferred lambda parameter
+      }
+    }
+    return undefined;
+  };
+
+  let child = node;
+  for (let scope = node.parent; scope; child = scope, scope = scope.parent) {
+    let found: string | null | undefined;
+    switch (scope.type) {
+      case 'block':
+      case 'constructor_body':
+      case 'switch_block_statement_group':
+        for (const stmt of scope.namedChildren) {
+          if (!stmt || stmt.startIndex >= child.startIndex) break;
+          if (stmt.type === 'local_variable_declaration') found = fromDeclaration(stmt) ?? found;
+        }
+        break;
+      case 'for_statement':
+        for (const init of scope.childrenForFieldName('init')) {
+          if (init?.type === 'local_variable_declaration') found = fromDeclaration(init) ?? found;
+        }
+        break;
+      case 'enhanced_for_statement': {
+        const n = scope.childForFieldName('name');
+        if (n && getNodeText(n) === name) found = typeOf(scope.childForFieldName('type'), null);
+        break;
+      }
+      case 'catch_clause': {
+        const p = scope.namedChildren.find(c => c?.type === 'catch_formal_parameter');
+        const n = p?.childForFieldName('name');
+        if (p && n && getNodeText(n) === name) {
+          const ct = p.namedChildren.find(c => c?.type === 'catch_type');
+          // A multi-catch has no single static type that names a class here.
+          found = ct && ct.namedChildCount === 1 ? getNodeText(ct) : null;
+        }
+        break;
+      }
+      case 'try_with_resources_statement': {
+        const spec = scope.childForFieldName('resources');
+        for (const r of spec?.namedChildren ?? []) {
+          const n = r?.childForFieldName('name');
+          if (r && n && getNodeText(n) === name) found = typeOf(r.childForFieldName('type'), r.childForFieldName('value'));
+        }
+        break;
+      }
+      case 'lambda_expression': {
+        const params = scope.childForFieldName('parameters');
+        if (params?.type === 'identifier') found = getNodeText(params) === name ? forEachElementType(scope) : undefined;
+        else if (params?.type === 'inferred_parameters') {
+          found = params.namedChildren.some(c => c && getNodeText(c) === name) ? null : undefined;
+        } else if (params) found = fromParameters(params);
+        break;
+      }
+      case 'method_declaration':
+      case 'constructor_declaration':
+      case 'record_declaration': {
+        const params = scope.childForFieldName('parameters');
+        if (params) found = fromParameters(params);
+        break;
+      }
+      case 'class_body':
+      case 'interface_body':
+      case 'enum_body_declarations': {
+        const t = fieldTypeIn(scope, name);
+        if (t !== null) found = t;
+        break;
+      }
+      default:
+        break;
+    }
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+const ITERABLE_TYPES = new Set([
+  'Iterable', 'Collection', 'List', 'Set', 'SortedSet', 'NavigableSet', 'Queue', 'Deque',
+  'ArrayList', 'LinkedList', 'HashSet', 'LinkedHashSet', 'TreeSet', 'ArrayDeque',
+]);
+
+/**
+ * The parameter type of `xs.forEach(x -> …)`, where `xs` is declared as a JDK
+ * collection of one element type: `List<Loan> xs` gives `Loan`. Anything
+ * else — another method, a wildcard, a map, an untyped receiver — is `null`.
+ */
+function forEachElementType(lambda: Node): string | null {
+  const args = lambda.parent;
+  const inv = args?.parent;
+  if (args?.type !== 'argument_list' || inv?.type !== 'method_invocation' || args.namedChildCount !== 1) return null;
+  const name = inv.childForFieldName('name');
+  const obj = inv.childForFieldName('object');
+  if (!name || getNodeText(name) !== 'forEach' || obj?.type !== 'identifier') return null;
+  const declared = declaredTypeInScope(obj, getNodeText(obj));
+  const m = declared ? /^(?:java\.util\.|java\.lang\.)?(\w+)\s*<\s*([\w.]+)\s*>$/.exec(declared.trim()) : null;
+  return m && ITERABLE_TYPES.has(m[1]) ? m[2] : null;
+}
+
+/** The written type of field `name` declared directly in a type body, or `null`. */
+function fieldTypeIn(body: Node, name: string): string | null {
+  for (const f of body.namedChildren) {
+    if (f?.type !== 'field_declaration' && f?.type !== 'constant_declaration') continue;
+    for (const d of f.namedChildren) {
+      if (d?.type !== 'variable_declarator') continue;
+      const n = d.childForFieldName('name');
+      if (n && getNodeText(n) === name) {
+        const t = f.childForFieldName('type');
+        return t ? getNodeText(t) : null;
+      }
+    }
+  }
+  return null;
 }
 
 /**

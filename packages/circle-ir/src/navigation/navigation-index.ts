@@ -28,12 +28,27 @@
  * repository, of which 7,246 are correctly unanswered (the target is outside
  * the tree) and 455 are these.
  *
- * What it deliberately does **not** do: invent a receiver type. Where no type
- * is known the answer is `inferred` or there is no answer, and `inferred` is a
- * permanent floor — see `Tier`.
+ * Two more, found by asking for the callers of overloaded and of overridden
+ * methods in a 6,900-file Java repository, where every such answer was wrong:
+ *
+ *   - **Overloads.** A call binds to one overload, chosen the way the compiler
+ *     chooses — by arity, then by argument types in the compiler's three
+ *     phases, then the most specific — and only where the types read off the
+ *     source make the choice certain. Where they do not, the site is
+ *     `unresolved` with `overload-ambiguous` and the candidates. A symbol may
+ *     carry a parameter list to ask about one overload; a query without one
+ *     on an overloaded method gets its answers grouped per overload.
+ *   - **Dispatch.** A call through a supertype's declaration can land on an
+ *     override, and a call to an override is a caller of the operation it
+ *     overrides. Both are answered `polymorphic`, with `via` naming what the
+ *     site binds to, and the query's `scope` says what dispatch it cannot see.
+ *
+ * What it deliberately does **not** do: invent a receiver type, or an
+ * argument type. Where no type is known the answer is `inferred`, ambiguous,
+ * or absent, and `inferred` is a permanent floor — see `Tier`.
  */
 
-import type { CircleIR, CallInfo, TypeInfo, SupportedLanguage } from '../types/index.js';
+import type { CircleIR, CallInfo, ArgumentInfo, TypeInfo, SupportedLanguage } from '../types/index.js';
 import type {
   AnswerEntry,
   CallSite,
@@ -42,7 +57,6 @@ import type {
   QueryKind,
   QueryOptions,
   Scope,
-  Tier,
   UnresolvedEntry,
   UnresolvedReason,
 } from './types.js';
@@ -75,6 +89,9 @@ export interface BuildOptions {
   parseMs?: number;
 }
 
+/** What `bind` decides: everything in an answer that is not about the site. */
+type BoundTarget = Omit<AnswerEntry, 'site' | 'methodName'>;
+
 /**
  * What is known about a receiver's static type.
  *
@@ -84,12 +101,23 @@ export interface BuildOptions {
  * answer and a scope reason. A receiver with no type at all is a different
  * situation, and the floor tier exists for it.
  */
-/** What `bind` decides: everything in an answer that is not about the site. */
-type BoundTarget = Omit<AnswerEntry, 'site' | 'methodName'>;
-
 type ReceiverType =
   | { kind: 'project'; fqn: string; evidence: string }
   | { kind: 'foreign'; name: string; evidence: string };
+
+/** One declaration of a method or constructor. A name can have several. */
+interface Overload {
+  name: string;
+  /** Parameter types as written, `String...` for varargs. */
+  params: string[];
+  varargs: boolean;
+  /** `null` for a constructor. */
+  returnType: string | null;
+  isConstructor: boolean;
+  startLine: number;
+  endLine: number;
+  modifiers: string[];
+}
 
 interface TypeRecord {
   fqn: string;
@@ -99,12 +127,21 @@ interface TypeRecord {
   file: string;
   /** Simple names, as written in the source. */
   superNames: string[];
+  /** The superclass as written, when the type names one. */
+  extendsName: string | null;
   annotations: string[];
   fieldNames: string[];
+  /** Field name → its type as written. */
+  fieldTypes: Map<string, string>;
+  /** The type's own type parameter names, in order. */
+  typeParams: string[];
   /** Field names carrying a field-level `@Getter` / `@Setter`. */
   getterFields: string[];
   setterFields: string[];
+  /** One entry per name, overloads merged: the name-level view. */
   methods: Map<string, { returnType: string | null; startLine: number; endLine: number; modifiers: string[] }>;
+  /** Every declaration, by name. A constructor is filed under the type's simple name. */
+  overloads: Map<string, Overload[]>;
   startLine: number;
   endLine: number;
 }
@@ -125,6 +162,69 @@ interface FileRecord {
   lines?: string[];
 }
 
+/** One overload, with the type that declares it. */
+interface Candidate {
+  owner: TypeRecord;
+  overload: Overload;
+}
+
+/**
+ * What binding a call site decides.
+ *
+ * `bound` names one declaration (`overload` is absent only for a constructor
+ * of a type that declares none, or whose declared ones the call fits none
+ * of). `ambiguous` names the type and several overloads the call could be
+ * calling, which is not an answer.
+ */
+type Binding =
+  | {
+      kind: 'bound';
+      owner: TypeRecord;
+      name: string;
+      overload?: Overload;
+      /** The receiver's static type, where one was known. */
+      receiver?: string;
+      result: BoundTarget;
+    }
+  | {
+      kind: 'ambiguous';
+      owner: TypeRecord;
+      name: string;
+      candidates: Candidate[];
+      receiver?: string;
+      evidence: string;
+    };
+
+/** How overload selection ended. */
+type Selection =
+  | { kind: 'one'; pick: Candidate; how: string }
+  | { kind: 'ambiguous'; candidates: Candidate[] }
+  | { kind: 'none' };
+
+/** A type as overload selection compares it: erased, with its array depth. */
+interface TypeRef {
+  /** Simple name, generics and qualification removed: `String`, `int`, `null`. */
+  simple: string;
+  /** Fully-qualified, where it could be resolved. */
+  fqn: string | null;
+  dims: number;
+  prim: boolean;
+  /** A type variable — `T`, `E` — which any reference type may fill. */
+  typeVar: boolean;
+}
+
+type Fit = 'yes' | 'maybe' | 'no';
+
+/** A query symbol, split. */
+interface ParsedSymbol {
+  /** `pkg.Type.method`, without a parameter list. */
+  base: string;
+  owner: string;
+  name: string;
+  /** The parameter list, when the symbol carried one. */
+  params?: string[];
+}
+
 const REFLECTIVE_TYPES = new Set([
   'Class', 'Method', 'Field', 'Constructor', 'AccessibleObject',
   'MethodHandle', 'MethodHandles', 'Proxy', 'InvocationHandler', 'ClassLoader',
@@ -137,8 +237,64 @@ const REFLECTIVE_METHODS = new Set([
 const LOMBOK_ACCESSOR = new Set(['Getter', 'Setter', 'Data', 'Value']);
 const LOMBOK_BUILDER = new Set(['Builder', 'SuperBuilder']);
 
+const PRIMITIVES = new Set(['byte', 'short', 'char', 'int', 'long', 'float', 'double', 'boolean']);
+/** Primitive widening: what each primitive may be passed as, itself included. */
+const WIDENS_TO: Record<string, string[]> = {
+  byte: ['byte', 'short', 'int', 'long', 'float', 'double'],
+  short: ['short', 'int', 'long', 'float', 'double'],
+  char: ['char', 'int', 'long', 'float', 'double'],
+  int: ['int', 'long', 'float', 'double'],
+  long: ['long', 'float', 'double'],
+  float: ['float', 'double'],
+  double: ['double'],
+  boolean: ['boolean'],
+};
+const BOXES: Record<string, string> = {
+  byte: 'Byte', short: 'Short', char: 'Character', int: 'Integer',
+  long: 'Long', float: 'Float', double: 'Double', boolean: 'Boolean',
+};
+const UNBOXES: Record<string, string> = Object.fromEntries(Object.entries(BOXES).map(([p, b]) => [b, p]));
+/**
+ * JDK classes whose supertypes are known here, so a value of one can be ruled
+ * in or out of a parameter type without the JDK on hand. Every one is a class,
+ * not an interface; the `final` ones can only ever be themselves.
+ */
+const JDK_SUPERS: Record<string, { final: boolean; supers: string[] }> = (() => {
+  const num = ['Number', 'Comparable', 'Serializable', 'Object'];
+  const temporal = ['Temporal', 'TemporalAccessor', 'TemporalAdjuster', 'Comparable', 'Serializable', 'Object'];
+  return {
+    String: { final: true, supers: ['CharSequence', 'Comparable', 'Serializable', 'Constable', 'ConstantDesc', 'Object'] },
+    Long: { final: true, supers: num }, Integer: { final: true, supers: num },
+    Short: { final: true, supers: num }, Byte: { final: true, supers: num },
+    Double: { final: true, supers: num }, Float: { final: true, supers: num },
+    Boolean: { final: true, supers: ['Comparable', 'Serializable', 'Object'] },
+    Character: { final: true, supers: ['Comparable', 'Serializable', 'Object'] },
+    BigDecimal: { final: false, supers: num }, BigInteger: { final: false, supers: num },
+    LocalDate: { final: true, supers: ['ChronoLocalDate', ...temporal] },
+    LocalDateTime: { final: true, supers: ['ChronoLocalDateTime', ...temporal] },
+    LocalTime: { final: true, supers: temporal },
+    ZonedDateTime: { final: true, supers: ['ChronoZonedDateTime', ...temporal] },
+    OffsetDateTime: { final: true, supers: temporal },
+    Instant: { final: true, supers: temporal },
+    Duration: { final: true, supers: ['TemporalAmount', 'Comparable', 'Serializable', 'Object'] },
+    Period: { final: true, supers: ['ChronoPeriod', 'TemporalAmount', 'Serializable', 'Object'] },
+    UUID: { final: true, supers: ['Comparable', 'Serializable', 'Object'] },
+    Locale: { final: true, supers: ['Cloneable', 'Serializable', 'Object'] },
+    Class: { final: true, supers: ['Type', 'GenericDeclaration', 'AnnotatedElement', 'Serializable', 'Object'] },
+    Date: { final: false, supers: ['Cloneable', 'Comparable', 'Serializable', 'Object'] },
+    StringBuilder: { final: true, supers: ['CharSequence', 'Appendable', 'Comparable', 'Serializable', 'Object'] },
+    Object: { final: false, supers: [] },
+  };
+})();
+/** JDK interfaces with no supertype of their own. */
+const LEAF_INTERFACES = new Set(['Serializable', 'Cloneable', 'Comparable', 'AutoCloseable', 'Runnable', 'Iterable', 'CharSequence']);
+const JAVA_LANG = new Set([
+  'String', 'Long', 'Integer', 'Short', 'Byte', 'Double', 'Float', 'Boolean', 'Character',
+  'Object', 'Number', 'Class', 'StringBuilder', 'CharSequence', 'Comparable', 'Iterable', 'Enum',
+]);
+
 /** Bumped when the shape of a cached per-file record changes. */
-const CACHE_VERSION = 'nav-1';
+const CACHE_VERSION = 'nav-3';
 const fileCache = new Map<string, FileRecord>();
 
 export function buildNavigationIndex(
@@ -161,6 +317,10 @@ export class NavigationIndex {
   private readonly parseMs: number;
   /** Direct subtypes, by supertype FQN. */
   private readonly subtypes = new Map<string, Set<string>>();
+  /** A call's binding, once made. The index is immutable, so it never goes stale. */
+  private readonly bindings = new Map<CallInfo, Binding | null>();
+  /** Calls by `line:column`, per file, built on first use. */
+  private readonly callsAt = new Map<string, Map<string, CallInfo[]>>();
 
   constructor(input: NavigationFile[], options: BuildOptions) {
     const t0 = now();
@@ -234,6 +394,10 @@ export class NavigationIndex {
    * reported 147 callers of one method where the right answer was 0 `exact`,
    * 69 unverified and 78 contradicted by the resolver's own receiver type. Here
    * the 78 do not appear as answers at all, and the 69 arrive labelled.
+   *
+   * An overloaded method is answered per overload: with a parameter list in
+   * the symbol, for that overload alone; without one, for every overload,
+   * grouped and labelled, with a `note` saying so.
    */
   resolveCallers(query: Query, opts: QueryOptions = {}): NavigationAnswer {
     const t0 = now();
@@ -244,25 +408,110 @@ export class NavigationIndex {
     if (symbol === undefined) {
       return this.finish('callers', query, answers, unresolved, t0, opts);
     }
-    const wantedName = lastSegment(symbol);
+    const q = parseSymbol(symbol);
+    const target = this.typesByFqn.get(q.owner);
+    const declared = target ? this.declaredOverloads(target, q.name) : [];
+    const wanted = q.params ? declared.filter(o => this.signatureMatches(o, q.params!, target!)) : declared;
+    const overloaded = declared.length > 1;
+    const extra: Pick<NavigationAnswer, 'note' | 'overloads'> = {};
+
+    if (q.params && target && declared.length > 0 && wanted.length === 0) {
+      extra.note =
+        `no overload of ${q.base} has the parameter list (${q.params.join(',')}); ` +
+        `declared: ${declared.map(o => `${q.base}${signatureOf(o)}`).join(', ')}`;
+      return this.finish('callers', query, answers, unresolved, t0, opts, extra);
+    }
+    const wantedSet = new Set(wanted);
+    const dispatchOpen = target !== undefined && q.name !== '<init>' && wanted.some(o => this.dispatchIsOpen(target, o));
 
     for (const rec of this.files.values()) {
       for (const call of rec.calls) {
-        if (!this.nameCouldMatch(call, wantedName, symbol, rec)) continue;
-        const bound = this.bind(call, rec);
-        if (bound && bound.target === symbol) {
-          answers.push({ ...bound, methodName: call.method_name, site: this.siteOf(call, rec) });
-        } else if (!bound) {
+        if (!this.nameCouldMatch(call, q.name, q.owner)) continue;
+        const b = this.bindCall(call, rec);
+        if (!b) {
           unresolved.push({
             site: this.siteOf(call, rec),
             reason: this.reasonFor(call, rec),
             methodName: call.method_name,
           });
+          continue;
         }
-        // A site bound to a different target is neither: it is answered, elsewhere.
+        if (!target) continue;
+
+        if (b.kind === 'ambiguous') {
+          // Ambiguous among overloads none of which is the target is not this
+          // query's business; among overloads that include it, it is the
+          // honest half of the answer.
+          const relevant = b.candidates.some(
+            c => (c.owner === target && wantedSet.has(c.overload)) || this.dispatchRelation(c.owner, c.overload, b.receiver, target, wanted) !== undefined,
+          );
+          if (relevant) {
+            unresolved.push({
+              site: this.siteOf(call, rec),
+              reason: 'overload-ambiguous',
+              methodName: call.method_name,
+              candidates: b.candidates.map(c => `${memberName(c.owner, c.overload)}${signatureOf(c.overload)}`),
+            });
+          }
+          continue;
+        }
+
+        if (b.owner === target && b.name === q.name) {
+          if (!b.overload) {
+            // A constructor call that fits none of the declared constructors,
+            // or a type that declares none: the type is certain, the overload
+            // is not, so a query about one overload cannot count it.
+            if (q.params && declared.length > 0) {
+              unresolved.push({
+                site: this.siteOf(call, rec),
+                reason: 'overload-ambiguous',
+                methodName: call.method_name,
+                candidates: declared.map(o => `${q.base}${signatureOf(o)}`),
+              });
+            } else {
+              answers.push({ ...b.result, methodName: call.method_name, site: this.siteOf(call, rec) });
+            }
+            continue;
+          }
+          if (!wantedSet.has(b.overload)) continue;   // another overload: answered elsewhere
+          answers.push({
+            ...b.result,
+            ...(overloaded ? { signature: signatureOf(b.overload) } : {}),
+            methodName: call.method_name,
+            site: this.siteOf(call, rec),
+          });
+          continue;
+        }
+
+        if (!dispatchOpen || !b.overload) continue;
+        const rel = this.dispatchRelation(b.owner, b.overload, b.receiver, target, wanted);
+        if (!rel) continue;
+        const via = `${memberName(b.owner, b.overload)}`;
+        answers.push({
+          target: q.base,
+          tier: 'polymorphic',
+          ...(b.result.candidates ? { candidates: b.result.candidates } : {}),
+          ...(overloaded ? { signature: signatureOf(rel.overload) } : {}),
+          via: { member: via, relation: rel.relation },
+          evidence:
+            rel.relation === 'supertype'
+              ? `the site calls ${via}, declared on supertype ${b.owner.fqn}; ${q.base} overrides it, so the call lands on it when the receiver is a ${target.fqn}`
+              : `the site calls ${via}, which overrides ${q.base}; it reaches ${q.base}'s body only through super, and is a caller of the operation ${q.base} declares`,
+          methodName: call.method_name,
+          site: this.siteOf(call, rec),
+        });
       }
     }
-    return this.finish('callers', query, answers, unresolved, t0, opts);
+
+    if (overloaded && !q.params) {
+      extra.overloads = declared.map(o => ({
+        signature: signatureOf(o),
+        answers: answers.filter(a => a.signature === signatureOf(o)).length,
+      }));
+      extra.note = `${declared.length} overloads; pass a signature to narrow, e.g. ${q.base}${signatureOf(declared[0])}`;
+    }
+    const scope = dispatchOpen ? this.dispatchScope(q.base) : undefined;
+    return this.finish('callers', query, answers, unresolved, t0, opts, extra, scope);
   }
 
   /** Every call made from inside `symbol`'s body, bound the same way. */
@@ -275,9 +524,11 @@ export class NavigationIndex {
     if (symbol === undefined) {
       return this.finish('callees', query, answers, unresolved, t0, opts);
     }
-    const owner = this.typesByFqn.get(stripLast(symbol));
-    const method = owner?.methods.get(lastSegment(symbol));
-    if (!owner || !method) {
+    const q = parseSymbol(symbol);
+    const owner = this.typesByFqn.get(q.owner);
+    const declared = owner ? this.declaredOverloads(owner, q.name) : [];
+    const bodies = q.params ? declared.filter(o => this.signatureMatches(o, q.params!, owner!)) : declared;
+    if (!owner || bodies.length === 0) {
       return this.finish('callees', query, answers, unresolved, t0, opts);
     }
     const rec = this.files.get(owner.file);
@@ -285,10 +536,23 @@ export class NavigationIndex {
 
     for (const call of rec.calls) {
       const line = call.location.line;
-      if (line < method.startLine || line > method.endLine) continue;
-      const bound = this.bind(call, rec);
-      if (bound) answers.push({ ...bound, methodName: call.method_name, site: this.siteOf(call, rec) });
-      else {
+      if (!bodies.some(o => line >= o.startLine && line <= o.endLine)) continue;
+      const b = this.bindCall(call, rec);
+      if (b?.kind === 'bound') {
+        answers.push({
+          ...b.result,
+          ...(b.overload && this.declaredOverloads(b.owner, b.name).length > 1 ? { signature: signatureOf(b.overload) } : {}),
+          methodName: call.method_name,
+          site: this.siteOf(call, rec),
+        });
+      } else if (b?.kind === 'ambiguous') {
+        unresolved.push({
+          site: this.siteOf(call, rec),
+          reason: 'overload-ambiguous',
+          methodName: call.method_name,
+          candidates: b.candidates.map(c => `${memberName(c.owner, c.overload)}${signatureOf(c.overload)}`),
+        });
+      } else {
         unresolved.push({
           site: this.siteOf(call, rec),
           reason: this.reasonFor(call, rec),
@@ -309,9 +573,11 @@ export class NavigationIndex {
    *
    * For `callers` the symbol is the call's own target — "who else calls what
    * this line calls". For `callees` it is the method whose body holds the
-   * line — "what does the method I am looking at call". Returns nothing when
-   * the site names no call, when the call cannot be bound to a target, or
-   * when the name is written twice on one line, which the key cannot separate.
+   * line — "what does the method I am looking at call". Either carries a
+   * parameter list when the name is overloaded, so the follow-up query asks
+   * about that overload alone. Returns nothing when the site names no call,
+   * when the call cannot be bound to one target, or when the name is written
+   * twice on one line, which the key cannot separate.
    */
   symbolAt(
     file: string,
@@ -322,14 +588,7 @@ export class NavigationIndex {
     const rec = this.files.get(file);
     if (!rec) return undefined;
 
-    if (kind === 'callees') {
-      const t = this.enclosingTypeAt(rec, line);
-      if (!t) return undefined;
-      for (const [name, m] of t.methods) {
-        if (line >= m.startLine && line <= m.endLine) return `${t.fqn}.${name}`;
-      }
-      return undefined;
-    }
+    if (kind === 'callees') return this.methodAt(rec, line);
 
     const at = rec.calls.filter(
       (c) => c.location.line === line && c.method_name === methodName,
@@ -337,21 +596,43 @@ export class NavigationIndex {
     // The same name twice on one line is beyond this key, and picking one of
     // them would be a guess presented as an answer.
     if (at.length !== 1) return undefined;
-    return this.bind(at[0], rec)?.target;
+    return this.symbolOfCall(at[0], rec);
   }
 
   // ------------------------------------------------------------ the binding
 
+  /** `bindCall`, reduced to what callers outside the query paths need. */
+  private symbolOfCall(call: CallInfo, rec: FileRecord): string | undefined {
+    const b = this.bindCall(call, rec);
+    if (b?.kind !== 'bound') return undefined;
+    if (b.overload && this.declaredOverloads(b.owner, b.name).length > 1) {
+      return `${b.result.target}${signatureOf(b.overload)}`;
+    }
+    return b.result.target;
+  }
+
   /**
-   * Bind one call site to a target, or to nothing.
+   * Bind one call site to a target, to several candidates, or to nothing.
    *
    * The order matters and is the whole contract: a receiver type is sought
    * first, and only when none can be had does a name-only bind happen, which
-   * is labelled `inferred` and never anything better.
+   * is labelled `inferred` and never anything better. Within the type the
+   * receiver names, the overload is chosen by `selectOverload`, and a choice
+   * it cannot make is `ambiguous`, not a pick.
    */
-  private bind(call: CallInfo, rec: FileRecord): BoundTarget | undefined {
+  private bindCall(call: CallInfo, rec: FileRecord, depth = 0): Binding | undefined {
+    const memo = this.bindings.get(call);
+    if (memo !== undefined) return memo ?? undefined;
+    const b = this.bindUncached(call, rec, depth);
+    // A bind made too deep inside another call's argument typing may have
+    // been cut short, so only a top-level result is remembered.
+    if (depth === 0) this.bindings.set(call, b ?? null);
+    return b;
+  }
+
+  private bindUncached(call: CallInfo, rec: FileRecord, depth: number): Binding | undefined {
     // A constructor arrives as a call named after the type, with no receiver.
-    const ctor = this.asConstructor(call, rec);
+    const ctor = this.bindConstructor(call, rec, depth);
     if (ctor) return ctor;
 
     const recv = this.receiverTypeOf(call, rec);
@@ -364,18 +645,26 @@ export class NavigationIndex {
     if (recv?.kind === 'foreign') return undefined;
 
     if (recv?.kind === 'project') {
-      const hit = this.lookupThroughHierarchy(recv.fqn, call.method_name);
-      if (hit) return this.tierFor(hit.owner, call.method_name, recv.evidence);
-      // The receiver's type is known and does not have this method. Binding by
-      // name here would be the contradiction the audit found 78 of, so no.
+      // The receiver's type is known; a method it does not have (at this
+      // arity) would be the contradiction the audit found 78 of, so no.
+      return this.bindInType(recv.fqn, call, rec, depth, recv.evidence, recv.fqn);
+    }
+
+    // `super.m()` names the superclass's member outright.
+    if (call.receiver === 'super') {
+      const encl = this.enclosingTypeOf(call, rec);
+      const sup = encl?.extendsName ? this.resolveTypeName(encl.extendsName, rec) : undefined;
+      if (sup && this.typesByFqn.has(sup)) {
+        return this.bindInType(sup, call, rec, depth, `super call inside ${encl!.fqn}`, sup);
+      }
       return undefined;
     }
 
     // A statically imported member names its owner outright.
     const owner = this.staticOwnerFor(call, rec);
     if (owner) {
-      const hit = this.lookupThroughHierarchy(owner.fqn, call.method_name);
-      if (hit) return this.tierFor(hit.owner, call.method_name, owner.evidence);
+      const b = this.bindInType(owner.fqn, call, rec, depth, owner.evidence, undefined);
+      if (b) return b;
     }
 
     // No receiver at all: an unqualified call is `this` or the enclosing type's
@@ -385,11 +674,8 @@ export class NavigationIndex {
     // lives in a subclass. Every path to a target now goes through `tierFor`.
     if (call.receiver === null && !call.receiver_type) {
       const encl = this.enclosingTypeOf(call, rec);
-      if (encl) {
-        const hit = this.lookupThroughHierarchy(encl.fqn, call.method_name);
-        if (hit) {
-          return this.tierFor(hit.owner, call.method_name, `unqualified call inside ${encl.fqn}`);
-        }
+      if (encl && this.lookupThroughHierarchy(encl.fqn, call.method_name)) {
+        return this.bindInType(encl.fqn, call, rec, depth, `unqualified call inside ${encl.fqn}`, encl.fqn);
       }
     }
 
@@ -398,13 +684,53 @@ export class NavigationIndex {
     // not evidence of anything.
     const byName = this.uniqueByName(call.method_name);
     if (byName) {
+      const evidence = `bound by method name alone — no receiver type was available; ${call.method_name} is declared exactly once in the searched tree, on ${byName.fqn}`;
+      const cands = this.visibleOverloads(byName.fqn, call.method_name);
+      const sel = this.selectOverload(cands, call, rec, depth);
+      if (sel.kind === 'ambiguous') {
+        return { kind: 'ambiguous', owner: byName, name: call.method_name, candidates: sel.candidates, evidence };
+      }
+      if (sel.kind === 'none') return undefined;
       return {
-        target: `${byName.fqn}.${call.method_name}`,
-        tier: 'inferred',
-        evidence: `bound by method name alone — no receiver type was available; ${call.method_name} is declared exactly once in the searched tree, on ${byName.fqn}`,
+        kind: 'bound',
+        owner: sel.pick.owner,
+        name: call.method_name,
+        overload: sel.pick.overload,
+        result: { target: `${sel.pick.owner.fqn}.${call.method_name}`, tier: 'inferred', evidence },
       };
     }
     return undefined;
+  }
+
+  /** Bind `call` to a member of `fqn` or of a supertype of it, choosing the overload. */
+  private bindInType(
+    fqn: string,
+    call: CallInfo,
+    rec: FileRecord,
+    depth: number,
+    evidence: string,
+    receiver: string | undefined,
+  ): Binding | undefined {
+    const cands = this.visibleOverloads(fqn, call.method_name);
+    if (cands.length === 0) return undefined;
+    const sel = this.selectOverload(cands, call, rec, depth);
+    if (sel.kind === 'none') return undefined;
+    if (sel.kind === 'ambiguous') {
+      const owner = sel.candidates[0].owner;
+      return { kind: 'ambiguous', owner, name: call.method_name, candidates: sel.candidates, receiver, evidence };
+    }
+    const { owner, overload } = sel.pick;
+    const overloaded = this.declaredOverloads(owner, call.method_name).length > 1 || cands.length > 1;
+    return {
+      kind: 'bound',
+      owner,
+      name: call.method_name,
+      overload,
+      receiver,
+      result: overloaded
+        ? this.tierFor(owner, call.method_name, overload, `${evidence}; ${sel.how}`, true)
+        : this.tierFor(owner, call.method_name, overload, evidence),
+    };
   }
 
   /**
@@ -419,9 +745,15 @@ export class NavigationIndex {
    * member named. The target stays the declaring member, which is what a
    * static resolver answers; only the tier changes.
    */
-  private tierFor(owner: TypeRecord, method: string, evidence: string): BoundTarget {
-    const impls = this.implementorsWith(owner.fqn, method);
-    const bodyless = this.isBodyless(owner, method);
+  private tierFor(
+    owner: TypeRecord,
+    method: string,
+    overload: Overload,
+    evidence: string,
+    overloaded = false,
+  ): BoundTarget {
+    const impls = this.implementorsWith(owner.fqn, overload);
+    const bodyless = this.isBodyless(owner, overload);
     if (impls.length > 1 || bodyless) {
       return {
         target: `${owner.fqn}.${method}`,
@@ -435,12 +767,14 @@ export class NavigationIndex {
     return {
       target: `${owner.fqn}.${method}`,
       tier: 'exact',
-      evidence: `${evidence}; ${method} is the unique method of that name on ${owner.fqn}, and it has a body`,
+      evidence: overloaded
+        ? `${evidence}; it is declared on ${owner.fqn}, and it has a body`
+        : `${evidence}; ${method} is the unique method of that name on ${owner.fqn}, and it has a body`,
     };
   }
 
-  /** `new Widget()` → `app.Widget.<init>`. */
-  private asConstructor(call: CallInfo, rec: FileRecord): BoundTarget | undefined {
+  /** `new Widget()` → `app.Widget.<init>`, with the constructor chosen like any overload. */
+  private bindConstructor(call: CallInfo, rec: FileRecord, depth: number): Binding | undefined {
     const looksCtor =
       call.is_constructor === true ||
       (call.receiver === null &&
@@ -450,12 +784,588 @@ export class NavigationIndex {
     if (!looksCtor) return undefined;
     const t = this.resolveTypeRecord(call.receiver_type ?? call.method_name, rec);
     if (!t) return undefined;
-    return {
+    const result: BoundTarget = {
       target: `${t.fqn}.<init>`,
       tier: 'exact',
       evidence: `object creation of ${t.fqn}, declared at ${t.file}:${t.startLine}`,
     };
+    const ctors = this.declaredOverloads(t, '<init>').map(overload => ({ owner: t, overload }));
+    // A type with no declared constructor has the implicit one; a call that
+    // fits none of the declared ones (a record's canonical constructor, say)
+    // still certainly creates this type. Either way the type is the answer
+    // and the overload is not known.
+    if (ctors.length === 0) return { kind: 'bound', owner: t, name: '<init>', result };
+    const sel = this.selectOverload(ctors, call, rec, depth);
+    if (sel.kind === 'ambiguous') {
+      return { kind: 'ambiguous', owner: t, name: '<init>', candidates: sel.candidates, evidence: result.evidence ?? '' };
+    }
+    if (sel.kind === 'none') return { kind: 'bound', owner: t, name: '<init>', result };
+    return {
+      kind: 'bound',
+      owner: t,
+      name: '<init>',
+      overload: sel.pick.overload,
+      result: ctors.length > 1 ? { ...result, evidence: `${result.evidence}; ${sel.how}` } : result,
+    };
   }
+
+  // ---------------------------------------------------- overload selection
+
+  /**
+   * The overloads of `name` a receiver of type `fqn` can see: its own, then
+   * its supertypes', nearest first, leaving out any a nearer type overrides.
+   */
+  private visibleOverloads(fqn: string, name: string): Candidate[] {
+    const out: Candidate[] = [];
+    const seen = new Set<string>();
+    const queue = [fqn];
+    while (queue.length > 0) {
+      const f = queue.shift()!;
+      if (seen.has(f)) continue;
+      seen.add(f);
+      const t = this.typesByFqn.get(f);
+      if (!t) continue;
+      for (const o of t.overloads.get(name) ?? []) {
+        if (o.isConstructor) continue;
+        if (out.some(c => this.sameErasure(c, { owner: t, overload: o }))) continue;
+        out.push({ owner: t, overload: o });
+      }
+      const rec = this.files.get(t.file);
+      for (const sup of t.superNames) {
+        const supFqn = rec ? this.resolveTypeName(sup, rec) : undefined;
+        if (supFqn) queue.push(supFqn);
+      }
+    }
+    return out;
+  }
+
+  /** The declarations of `name` on `t` itself. `<init>` is its constructors. */
+  private declaredOverloads(t: TypeRecord, name: string): Overload[] {
+    if (name === '<init>') return (t.overloads.get(t.simpleName) ?? []).filter(o => o.isConstructor);
+    return (t.overloads.get(name) ?? []).filter(o => !o.isConstructor);
+  }
+
+  /**
+   * Choose the overload a call invokes, the way the compiler does — or say
+   * that the types read off the source do not decide it.
+   *
+   * Arity first. Then the compiler's three phases: without boxing or
+   * varargs, with boxing, with varargs. In the first phase that has any
+   * applicable overload, the most specific one wins. Every argument type here
+   * is a lower bound on what is known — an argument that cannot be typed fits
+   * anything — so the rule is applied only where it is sound: an overload is
+   * picked when it is **certainly** applicable and more specific than every
+   * overload that **might** be. Anything less is `ambiguous`.
+   */
+  private selectOverload(cands: Candidate[], call: CallInfo, rec: FileRecord, depth: number): Selection {
+    const n = call.arguments.length;
+    const byArity = cands.filter(c => fitsArity(c.overload, n));
+    if (byArity.length === 0) return { kind: 'none' };
+    const args = call.arguments.map(a => this.argumentType(a, call, rec, depth));
+    if (byArity.length === 1) {
+      // The only declaration in the tree at this arity, but the argument
+      // types certainly rule it out: what is called is an overload this
+      // index cannot see, inherited from a library type. Not ours.
+      if ([1, 2, 3].every(p => this.applicable(byArity[0], args, p) === 'no')) return { kind: 'none' };
+      return {
+        kind: 'one',
+        pick: byArity[0],
+        how: `overload ${signatureOf(byArity[0].overload)} is the only one taking ${n} argument(s)`,
+      };
+    }
+    const fit = new Map<Candidate, Fit[]>();
+    for (const c of byArity) fit.set(c, [1, 2, 3].map(p => this.applicable(c, args, p)));
+
+    const possible = byArity.filter(c => fit.get(c)!.some(f => f !== 'no'));
+    if (possible.length === 1) {
+      return {
+        kind: 'one',
+        pick: possible[0],
+        how: `overload ${signatureOf(possible[0].overload)} is the only one the argument types admit`,
+      };
+    }
+    // The argument types rule out every overload: something read off the
+    // source is wrong, so nothing is chosen.
+    if (possible.length === 0) return { kind: 'ambiguous', candidates: byArity };
+
+    for (const phase of [1, 2, 3]) {
+      const P = possible.filter(c => fit.get(c)![phase - 1] !== 'no');
+      if (P.length === 0) continue;
+      const C = P.filter(c => fit.get(c)![phase - 1] === 'yes');
+      if (C.length === 0) return { kind: 'ambiguous', candidates: possible };
+      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase)));
+      if (best) {
+        return {
+          kind: 'one',
+          pick: best,
+          how: `overload ${signatureOf(best.overload)} is the most specific one the argument types admit`,
+        };
+      }
+      return { kind: 'ambiguous', candidates: P };
+    }
+    return { kind: 'ambiguous', candidates: possible };
+  }
+
+  /** Whether `c` applies to arguments of these types in compiler phase 1, 2 or 3. */
+  private applicable(c: Candidate, args: Array<TypeRef | null>, phase: number): Fit {
+    const o = c.overload;
+    const declRec = this.files.get(c.owner.file);
+    const params = o.params.map(p => this.typeRef(p, declRec));
+    let worst: Fit = 'yes';
+    const meet = (f: Fit): void => {
+      if (f === 'no') worst = 'no';
+      else if (f === 'maybe' && worst === 'yes') worst = 'maybe';
+    };
+    if (phase < 3) {
+      if (args.length !== params.length) return 'no';
+      args.forEach((a, i) => meet(this.fits(a, params[i], phase)));
+      return worst;
+    }
+    if (!o.varargs || args.length < params.length - 1) return 'no';
+    const last = params[params.length - 1];
+    const elem: TypeRef = { ...last, dims: Math.max(0, last.dims - 1) };
+    args.forEach((a, i) => meet(this.fits(a, i < params.length - 1 ? params[i] : elem, 2)));
+    return worst;
+  }
+
+  /** `m` is more specific than `o`: each of its parameter types fits the other's. */
+  private moreSpecific(m: Candidate, o: Candidate, phase: number): boolean {
+    if (phase === 3) return false;
+    const mp = m.overload.params.map(p => this.typeRef(p, this.files.get(m.owner.file)));
+    const op = o.overload.params.map(p => this.typeRef(p, this.files.get(o.owner.file)));
+    if (mp.length !== op.length) return false;
+    return mp.every((t, i) => this.fits(t, op[i], 1) === 'yes');
+  }
+
+  /**
+   * Whether a value of type `a` can be passed as `p` — certainly, possibly,
+   * or certainly not. `a === null` is an argument that could not be typed.
+   */
+  private fits(a: TypeRef | null, p: TypeRef, phase: number): Fit {
+    if (!a) return 'maybe';
+    if (p.typeVar) return a.prim && a.dims === 0 && phase === 1 ? 'no' : 'maybe';
+    if (a.simple === 'null' && a.dims === 0) return p.prim && p.dims === 0 ? 'no' : 'yes';
+    if (a.typeVar) return 'maybe';
+    if (a.dims > 0 || p.dims > 0) {
+      if (a.dims === p.dims) {
+        const ae = { ...a, dims: 0 };
+        const pe = { ...p, dims: 0 };
+        if (ae.prim || pe.prim) return ae.prim && pe.prim && ae.simple === pe.simple ? 'yes' : 'no';
+        return this.fits(ae, pe, 1);
+      }
+      if (a.dims > 0 && p.dims === 0) {
+        if (['Object', 'Cloneable', 'Serializable'].includes(p.simple)) return 'yes';
+        return p.prim || this.isProjectRef(p) || p.simple in JDK_SUPERS ? 'no' : 'maybe';
+      }
+      if (a.dims > p.dims && p.simple === 'Object' && !p.prim) return 'yes';
+      return 'no';
+    }
+    if (a.prim && p.prim) return WIDENS_TO[a.simple]?.includes(p.simple) ? 'yes' : 'no';
+    if (a.prim) {
+      if (phase === 1) return 'no';
+      const boxed = BOXES[a.simple];
+      return boxed ? this.refFits({ simple: boxed, fqn: `java.lang.${boxed}`, dims: 0, prim: false, typeVar: false }, p) : 'no';
+    }
+    if (p.prim) {
+      if (phase === 1) return 'no';
+      const unboxed = UNBOXES[a.simple];
+      if (unboxed && (!a.fqn || a.fqn === `java.lang.${a.simple}`)) return WIDENS_TO[unboxed].includes(p.simple) ? 'yes' : 'no';
+      return this.isProjectRef(a) || a.simple in JDK_SUPERS ? 'no' : 'maybe';
+    }
+    return this.refFits(a, p);
+  }
+
+  /** Reference to reference: subtyping, as far as the tree and the JDK table know it. */
+  private refFits(a: TypeRef, p: TypeRef): Fit {
+    if (a.fqn && p.fqn && a.fqn === p.fqn) return 'yes';
+    if (p.simple === 'Object' && (!p.fqn || p.fqn === 'java.lang.Object')) return 'yes';
+    const aProject = this.isProjectRef(a);
+    const pProject = this.isProjectRef(p);
+    if (aProject) {
+      const sup = this.supertypesOf(a.fqn!);
+      if (pProject) {
+        if (sup.project.has(p.fqn!)) return 'yes';
+        // A library type never extends one of ours, so only a supertype name
+        // this index could not resolve keeps the door open.
+        return sup.unresolved.length > 0 ? 'maybe' : 'no';
+      }
+      if (sup.foreign.includes(p.simple)) return 'yes';
+      // Every supertype is in the tree or a JDK type whose own supertypes are
+      // known, and none of them is `p`: it cannot be one.
+      const closed = sup.unresolved.length === 0 && sup.foreign.every(f => LEAF_INTERFACES.has(f) || (JDK_SUPERS[f] && !JDK_SUPERS[f].supers.includes(p.simple)));
+      if (closed && this.isKnownForeignRef(p)) return 'no';
+      const jdk = JDK_SUPERS[p.simple];
+      if (jdk) {
+        // A JDK class (not interface) is reachable only through a superclass
+        // chain that leaves the tree.
+        return sup.foreignClassChain ? 'maybe' : 'no';
+      }
+      return 'maybe';
+    }
+    if (pProject) {
+      // A library type cannot be a subtype of a type in this tree. Only an
+      // argument whose type could not be placed at all might still be ours.
+      return a.fqn || a.simple in JDK_SUPERS ? 'no' : 'maybe';
+    }
+    if (a.simple === p.simple) return a.fqn && p.fqn && a.fqn !== p.fqn ? 'no' : 'yes';
+    const ja = JDK_SUPERS[a.simple];
+    if (ja) {
+      if (ja.supers.includes(p.simple)) return 'yes';
+      if (p.simple in JDK_SUPERS) return 'no';
+      return ja.final ? 'no' : 'maybe';
+    }
+    const jp = JDK_SUPERS[p.simple];
+    if (jp?.final) return 'no';
+    return 'maybe';
+  }
+
+  /** Is `t` certainly a type outside this tree? */
+  private isKnownForeignRef(t: TypeRef): boolean {
+    if (t.fqn) return !this.isProjectFqn(t.fqn) && !this.typesByFqn.has(t.fqn);
+    return JAVA_LANG.has(t.simple) || t.simple in JDK_SUPERS;
+  }
+
+  /** Is `t` a type declared in this tree? */
+  private isProjectRef(t: TypeRef): boolean {
+    return !!t.fqn && this.typesByFqn.has(t.fqn);
+  }
+
+  /** Every supertype of a project type, split into what the tree holds and what it does not. */
+  private supertypesOf(fqn: string): {
+    project: Set<string>;
+    foreign: string[];
+    unresolved: string[];
+    foreignClassChain: boolean;
+  } {
+    const project = new Set<string>();
+    const foreign: string[] = [];
+    const unresolved: string[] = [];
+    let foreignClassChain = false;
+    const walk = (f: string, viaClass: boolean): void => {
+      if (project.has(f)) return;
+      project.add(f);
+      const t = this.typesByFqn.get(f);
+      const rec = t ? this.files.get(t.file) : undefined;
+      if (!t || !rec) return;
+      for (const sup of t.superNames) {
+        const resolved = this.resolveTypeName(sup, rec);
+        const isClassEdge = viaClass && sup === t.extendsName;
+        if (resolved && this.typesByFqn.has(resolved)) {
+          walk(resolved, isClassEdge);
+          continue;
+        }
+        const simple = eraseType(sup).split('.').pop() ?? sup;
+        if (this.isKnownForeign(sup, rec)) foreign.push(simple);
+        else unresolved.push(simple);
+        if (isClassEdge) foreignClassChain = true;
+      }
+    };
+    walk(fqn, true);
+    return { project, foreign, unresolved, foreignClassChain };
+  }
+
+  /** A type name that certainly names something outside the tree. */
+  private isKnownForeign(name: string, rec: FileRecord): boolean {
+    const bare = eraseType(name);
+    const simple = bare.split('.').pop() ?? bare;
+    if (bare.includes('.')) return !this.isProjectFqn(bare);
+    const imported = rec.imports.get(simple);
+    if (imported) return !this.isProjectFqn(imported);
+    return JAVA_LANG.has(simple) || simple in JDK_SUPERS;
+  }
+
+  /**
+   * The static type of one argument, or `null` when it cannot be known. The
+   * extractor types what the syntax and the declarations in scope say; an
+   * argument that is itself a call is typed here by binding that call and
+   * reading the chosen overload's return type.
+   */
+  private argumentType(arg: ArgumentInfo, call: CallInfo, rec: FileRecord, depth: number): TypeRef | null {
+    if (arg.type) return this.typeRef(arg.type, rec);
+    if (!arg.location || depth >= 4) return null;
+    const name = outerCallName(arg.expression);
+    if (!name) return null;
+    const inner = this.callAt(rec, arg.location.line, arg.location.column, name);
+    if (!inner || inner === call) return null;
+    const b = this.bindCall(inner, rec, depth + 1);
+    let returned: { text: string; owner: TypeRecord } | undefined;
+    let receiver: string | undefined;
+    if (b?.kind === 'bound' && b.overload?.returnType) {
+      returned = { text: b.overload.returnType, owner: b.owner };
+      receiver = b.receiver;
+    } else if (!b) {
+      // An accessor that annotation processing writes: what it returns is the
+      // field it reads.
+      const recv = this.receiverTypeOf(inner, rec);
+      receiver = recv?.kind === 'project' ? recv.fqn : inner.receiver === null ? this.enclosingTypeOf(inner, rec)?.fqn : undefined;
+      if (receiver && inner.arguments.length === 0) returned = this.generatedGetterType(receiver, inner.method_name);
+    }
+    if (!returned) return null;
+    const sub = this.substitute(returned.text, returned.owner, receiver);
+    if (!sub) return null;
+    const t = this.typeRef(sub.text, sub.rec);
+    return t.typeVar ? null : t;
+  }
+
+  /**
+   * The type a generated `getX()` / `isX()` returns on `fqn`: the written
+   * type of field `x`, with the type that declares the field.
+   */
+  private generatedGetterType(fqn: string, method: string): { text: string; owner: TypeRecord } | undefined {
+    const m = /^(get|is)([A-Z]\w*)$/.exec(method);
+    const t = this.typesByFqn.get(fqn);
+    if (!m || !t || !this.wouldBeGenerated(t, method)) return undefined;
+    const field = m[2].charAt(0).toLowerCase() + m[2].slice(1);
+    const seen = new Set<string>();
+    const queue = [fqn];
+    while (queue.length > 0) {
+      const f = queue.shift()!;
+      if (seen.has(f)) continue;
+      seen.add(f);
+      const ft = this.typesByFqn.get(f);
+      const frec = ft ? this.files.get(ft.file) : undefined;
+      if (!ft || !frec) continue;
+      const type = ft.fieldTypes.get(field);
+      if (type) return { text: type, owner: ft };
+      for (const sup of ft.superNames) {
+        const s = this.resolveTypeName(sup, frec);
+        if (s) queue.push(s);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * A member's written type as seen from a receiver of type `from`: a type
+   * parameter of the declaring type is replaced by the argument the
+   * superclass chain from `from` up to it supplies — `Loan extends
+   * Base<Long>` makes `Base<T>.getId()`'s `T` a `Long`. Returns the text and
+   * the file it must be resolved in, or nothing when a type parameter is
+   * left unbound.
+   */
+  private substitute(
+    written: string,
+    owner: TypeRecord,
+    from: string | undefined,
+  ): { text: string; rec: FileRecord | undefined } | undefined {
+    const ownRec = this.files.get(owner.file);
+    const bare = eraseType(written).replace(/(\[\])+$/, '');
+    if (!owner.typeParams.includes(bare)) return { text: written, rec: ownRec };
+    if (!from || from === owner.fqn) return undefined;
+    // Breadth-first up from `from`, carrying each type's parameter bindings.
+    type Env = Map<string, { text: string; rec: FileRecord | undefined }>;
+    const queue: Array<{ fqn: string; env: Env }> = [{ fqn: from, env: new Map() }];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const { fqn, env } = queue.shift()!;
+      if (fqn === owner.fqn) {
+        const bound = env.get(bare);
+        if (!bound) return undefined;
+        const dims = written.slice(written.lastIndexOf(bare) + bare.length).match(/\[\]/g)?.length ?? 0;
+        return { text: `${bound.text}${'[]'.repeat(dims)}`, rec: bound.rec };
+      }
+      if (seen.has(fqn)) continue;
+      seen.add(fqn);
+      const t = this.typesByFqn.get(fqn);
+      const rec = t ? this.files.get(t.file) : undefined;
+      if (!t || !rec) continue;
+      for (const sup of t.superNames) {
+        const supFqn = this.resolveTypeName(sup, rec);
+        const st = supFqn ? this.typesByFqn.get(supFqn) : undefined;
+        if (!st) continue;
+        const open = sup.indexOf('<');
+        const args = open === -1 ? [] : splitTopLevel(sup.slice(open + 1, sup.lastIndexOf('>'))).map(a => a.trim());
+        const next: Env = new Map();
+        st.typeParams.forEach((p, i) => {
+          const a = args[i];
+          if (!a) return;
+          next.set(p, env.get(a) ?? { text: a, rec });
+        });
+        queue.push({ fqn: st.fqn, env: next });
+      }
+    }
+    return undefined;
+  }
+
+  /** The outermost call named `name` that starts at `line:column` in `rec`. */
+  private callAt(rec: FileRecord, line: number, column: number, name: string): CallInfo | undefined {
+    let byPos = this.callsAt.get(rec.path);
+    if (!byPos) {
+      byPos = new Map();
+      for (const c of rec.calls) push(byPos, `${c.location.line}:${c.location.column}`, c);
+      this.callsAt.set(rec.path, byPos);
+    }
+    const here = (byPos.get(`${line}:${column}`) ?? []).filter(c => c.method_name === name);
+    // `a.x().x()` puts two calls named `x` at one position; the outer one has
+    // the longer receiver.
+    return here.sort((x, y) => (y.receiver?.length ?? 0) - (x.receiver?.length ?? 0))[0];
+  }
+
+  /** A written type, resolved from one file's point of view. */
+  private typeRef(written: string, rec: FileRecord | undefined): TypeRef {
+    let t = written.replace(/@[\w.]+(\([^)]*\))?\s*/g, '').replace(/\bfinal\s+/g, '').trim();
+    let dims = 0;
+    if (t.endsWith('...')) { dims++; t = t.slice(0, -3).trim(); }
+    t = eraseType(t);
+    while (t.endsWith('[]')) { dims++; t = t.slice(0, -2).trim(); }
+    const simple = t.split('.').pop() ?? t;
+    if (PRIMITIVES.has(t)) return { simple: t, fqn: t, dims, prim: true, typeVar: false };
+    if (t === 'null') return { simple: 'null', fqn: null, dims: 0, prim: false, typeVar: false };
+    let fqn: string | null = null;
+    if (t.includes('.')) {
+      fqn = (rec ? this.resolveTypeName(t, rec) : undefined) ?? t;
+    } else if (rec) {
+      // An import names the type outright, ours or not. Failing that, a JDK
+      // name is the JDK's unless this package declares its own — the tree-wide
+      // unique-simple-name fallback must not turn `Date` into a project type.
+      const imported = rec.imports.get(t);
+      if (imported) fqn = imported;
+      else if ((JAVA_LANG.has(t) || t in JDK_SUPERS) && !this.typesByFqn.has(rec.pkg ? `${rec.pkg}.${t}` : t)) fqn = null;
+      else fqn = this.resolveTypeName(t, rec) ?? null;
+    }
+    if (!fqn && JAVA_LANG.has(t)) fqn = `java.lang.${t}`;
+    const typeVar = !fqn && /^[A-Z][A-Z0-9]?$/.test(t);
+    return { simple, fqn, dims, prim: false, typeVar };
+  }
+
+  /** Whether overload `o` of `owner` is what a query's parameter list names. */
+  private signatureMatches(o: Overload, params: string[], owner: TypeRecord): boolean {
+    if (o.params.length !== params.length) return false;
+    const rec = this.files.get(owner.file);
+    return o.params.every((p, i) => {
+      const want = this.typeRef(params[i], undefined);
+      const have = this.typeRef(p, rec);
+      if (want.dims !== have.dims) return false;
+      const wantBare = eraseType(params[i].replace(/\.\.\.$/, '').replace(/(\[\])+$/, ''));
+      if (wantBare.includes('.')) {
+        if (have.fqn && !have.prim) return have.fqn === wantBare;
+        return have.simple === want.simple;
+      }
+      return have.simple === want.simple;
+    });
+  }
+
+  /** Same name and same erased parameter types: one overrides the other. */
+  private sameErasure(a: Candidate, b: Candidate): boolean {
+    const pa = a.overload.params;
+    const pb = b.overload.params;
+    if (a.overload.name !== b.overload.name || pa.length !== pb.length) return false;
+    const ra = this.files.get(a.owner.file);
+    const rb = this.files.get(b.owner.file);
+    return pa.every((p, i) => {
+      const x = this.typeRef(p, ra);
+      const y = this.typeRef(pb[i], rb);
+      if (x.typeVar || y.typeVar) return x.dims === y.dims;
+      return x.simple === y.simple && x.dims === y.dims;
+    });
+  }
+
+  // --------------------------------------------------------------- dispatch
+
+  /**
+   * How a site bound to `owner.overload` reaches `target`'s overload, if it
+   * does: through a supertype's declaration the target overrides, or by
+   * calling an override of the target.
+   */
+  private dispatchRelation(
+    owner: TypeRecord,
+    overload: Overload,
+    receiver: string | undefined,
+    target: TypeRecord,
+    wanted: Overload[],
+  ): { relation: 'supertype' | 'override'; overload: Overload } | undefined {
+    if (owner === target || overload.isConstructor || overload.modifiers.includes('static')) return undefined;
+    for (const w of wanted) {
+      if (w.modifiers.includes('static') || w.modifiers.includes('private')) continue;
+      if (!this.sameErasure({ owner, overload }, { owner: target, overload: w })) continue;
+      if (this.isSubtype(target.fqn, owner.fqn)) {
+        // The receiver's static type must admit the target's type, or the
+        // object can never be one: a sibling's call does not land here.
+        if (!receiver || this.isSubtype(target.fqn, receiver)) return { relation: 'supertype', overload: w };
+      } else if (this.isSubtype(owner.fqn, target.fqn)) {
+        return { relation: 'override', overload: w };
+      }
+    }
+    return undefined;
+  }
+
+  /** Whether calls to `o` on `t` can dispatch anywhere but `t`'s own body. */
+  private dispatchIsOpen(t: TypeRecord, o: Overload): boolean {
+    if (o.isConstructor || o.modifiers.includes('static') || o.modifiers.includes('private')) return false;
+    if (this.isBodyless(t, o)) return true;
+    const self: Candidate = { owner: t, overload: o };
+    // Not `visibleOverloads`: it leaves out exactly the declarations an
+    // override hides, which are the ones that make dispatch open.
+    const declaresAbove = (f: string, seen: Set<string>): boolean => {
+      if (seen.has(f)) return false;
+      seen.add(f);
+      const st = this.typesByFqn.get(f);
+      const rec = st ? this.files.get(st.file) : undefined;
+      if (!st || !rec) return false;
+      if (st !== t && (st.overloads.get(o.name) ?? []).some(x => this.sameErasure({ owner: st, overload: x }, self))) return true;
+      return st.superNames.some(sup => {
+        const s = this.resolveTypeName(sup, rec);
+        return s !== undefined && declaresAbove(s, seen);
+      });
+    };
+    if (declaresAbove(t.fqn, new Set())) return true;
+    const seen = new Set<string>();
+    const below = (f: string): boolean => {
+      for (const sub of this.subtypes.get(f) ?? []) {
+        if (seen.has(sub)) continue;
+        seen.add(sub);
+        const st = this.typesByFqn.get(sub);
+        if (st && (st.overloads.get(o.name) ?? []).some(x => this.sameErasure({ owner: st, overload: x }, self))) return true;
+        if (below(sub)) return true;
+      }
+      return false;
+    };
+    return below(t.fqn);
+  }
+
+  /** `a` is `b` or a subtype of it, by the edges the tree holds. */
+  private isSubtype(a: string, b: string): boolean {
+    if (a === b) return true;
+    const seen = new Set<string>();
+    const walk = (f: string): boolean => {
+      if (seen.has(f)) return false;
+      seen.add(f);
+      const t = this.typesByFqn.get(f);
+      const rec = t ? this.files.get(t.file) : undefined;
+      if (!t || !rec) return false;
+      for (const sup of t.superNames) {
+        const s = this.resolveTypeName(sup, rec);
+        if (!s) continue;
+        if (s === b || walk(s)) return true;
+      }
+      return false;
+    };
+    return walk(a);
+  }
+
+  /** The query's scope, with what dispatch it cannot see said out loud. */
+  private dispatchScope(symbol: string): Scope {
+    return {
+      searched: this.scope.searched,
+      excluded: [
+        ...this.scope.excluded,
+        {
+          pattern: 'subtypes outside the searched tree',
+          reason: `dispatch: an override of ${symbol}, or a call through a supertype, in a library or module not indexed here is not seen`,
+        },
+        {
+          pattern: 'reflection',
+          reason: 'dynamic: Method.invoke, proxies and method handles are not followed',
+        },
+        {
+          pattern: 'framework dispatch',
+          reason: 'a framework that invokes a method by annotation, configuration or naming convention leaves no call site to answer',
+        },
+      ],
+    };
+  }
+
+  // ---------------------------------------------------------- receiver type
 
   /**
    * The receiver's static type, where it can be had without inventing one.
@@ -508,7 +1418,8 @@ export class NavigationIndex {
    * `Builder.of().step("a")` is typed by resolving `Builder`, then taking
    * `of`'s declared return type, then `step`'s. A step whose return type is
    * unknown ends the walk and the whole expression is untyped — a half-walked
-   * chain is not a type.
+   * chain is not a type. So does a step whose overloads of that arity
+   * disagree on what they return.
    */
   private typeOfExpression(
     expr: string | null | undefined,
@@ -542,23 +1453,33 @@ export class NavigationIndex {
         rec.staticWildcards.find(w => this.typesByFqn.get(w)?.methods.has(root.name)) ??
         rec.types.find(t => t.methods.has(root.name))?.fqn;
       const owner = ownerFqn ? this.typesByFqn.get(ownerFqn) : undefined;
-      const m = owner?.methods.get(root.name);
-      if (!owner || !m || !m.returnType) return undefined;
-      current = this.resolveTypeRecord(m.returnType, rec);
+      const returnType = owner ? this.returnTypeAt(owner.fqn, root.name, root.argc) : undefined;
+      if (!owner || !returnType) return undefined;
+      current = this.resolveTypeRecord(returnType, rec);
       if (!current) return undefined;
-      evidence = `chain rooted at ${owner.fqn}.${root.name}, which returns ${m.returnType}`;
+      evidence = `chain rooted at ${owner.fqn}.${root.name}, which returns ${returnType}`;
     }
 
     for (const step of chain.steps) {
-      const hit = this.lookupThroughHierarchy(current.fqn, step.name);
-      const m = hit?.owner.methods.get(step.name);
-      if (!m || !m.returnType) return undefined;
-      const next = this.resolveTypeRecord(m.returnType, rec);
+      const returnType = this.returnTypeAt(current.fqn, step.name, step.argc);
+      if (!returnType) return undefined;
+      const next = this.resolveTypeRecord(returnType, rec);
       if (!next) return undefined;
-      evidence += ` → ${step.name}() returns ${m.returnType}`;
+      evidence += ` → ${step.name}() returns ${returnType}`;
       current = next;
     }
     return { kind: 'project', fqn: current.fqn, evidence };
+  }
+
+  /**
+   * The return type of `name` called with `argc` arguments on `fqn`, when
+   * every overload of that arity agrees on it.
+   */
+  private returnTypeAt(fqn: string, name: string, argc: number): string | undefined {
+    const cands = this.visibleOverloads(fqn, name).filter(c => fitsArity(c.overload, argc));
+    const types = new Set(cands.map(c => c.overload.returnType));
+    if (types.size !== 1) return undefined;
+    return [...types][0] ?? undefined;
   }
 
   /** The owner named by a static import of this call's method. */
@@ -591,6 +1512,20 @@ export class NavigationIndex {
       if (!best || t.startLine > best.startLine) best = t;
     }
     return best ?? rec.types[0];
+  }
+
+  /** The method whose body holds `line`, with a parameter list when its name is overloaded. */
+  private methodAt(rec: FileRecord, line: number): string | undefined {
+    const t = this.enclosingTypeAt(rec, line);
+    if (!t) return undefined;
+    for (const [name, list] of t.overloads) {
+      for (const o of list) {
+        if (line < o.startLine || line > o.endLine) continue;
+        const member = o.isConstructor ? `${t.fqn}.<init>` : `${t.fqn}.${name}`;
+        return list.length > 1 ? `${member}${signatureOf(o)}` : member;
+      }
+    }
+    return undefined;
   }
 
   /** Find `method` on `fqn` or on a supertype of it, inside the tree. */
@@ -628,20 +1563,18 @@ export class NavigationIndex {
    * That is the conservative direction: it costs an answer its `exact` label
    * and never grants one.
    */
-  private isBodyless(owner: TypeRecord, method: string): boolean {
-    const m = owner.methods.get(method);
-    if (!m) return false;
-    if (m.modifiers.includes('abstract')) return true;
+  private isBodyless(owner: TypeRecord, o: Overload): boolean {
+    if (o.modifiers.includes('abstract')) return true;
     if (owner.kind !== 'interface') return false;
-    if (m.modifiers.includes('static') || m.modifiers.includes('default')) return false;
-    const line = this.files.get(owner.file)?.lines?.[m.startLine - 1];
+    if (o.modifiers.includes('static') || o.modifiers.includes('default')) return false;
+    const line = this.files.get(owner.file)?.lines?.[o.startLine - 1];
     if (line === undefined) return true;
     return !/\b(default|static)\b/.test(line);
   }
 
   /**
-   * Types in the tree that declare a **runnable** `method` and are `fqn` or
-   * below it.
+   * Types in the tree that declare a **runnable** override of `o` and are
+   * `fqn` or below it.
    *
    * "Runnable" is the whole of it: `candidates` answers "which body could
    * run", so an abstract declaration does not belong there even when it is
@@ -649,14 +1582,17 @@ export class NavigationIndex {
    * with nothing overriding `step` has no candidates, and saying so is the
    * honest answer — listing `Base.step` would name a body that does not exist.
    */
-  private implementorsWith(fqn: string, method: string): string[] {
+  private implementorsWith(fqn: string, o: Overload): string[] {
     const out: string[] = [];
+    const start = this.typesByFqn.get(fqn);
+    const self: Candidate | undefined = start ? { owner: start, overload: o } : undefined;
     const walk = (f: string, seen: Set<string>): void => {
       if (seen.has(f)) return;
       seen.add(f);
       const t = this.typesByFqn.get(f);
-      if (t && t.methods.has(method) && t.kind !== 'interface' && !this.isBodyless(t, method)) {
-        out.push(f);
+      if (t && t.kind !== 'interface' && self) {
+        const own = (t.overloads.get(o.name) ?? []).find(x => !x.isConstructor && this.sameErasure({ owner: t, overload: x }, self));
+        if (own && !this.isBodyless(t, own)) out.push(f);
       }
       for (const sub of this.subtypes.get(f) ?? []) walk(sub, seen);
     };
@@ -802,18 +1738,11 @@ export class NavigationIndex {
   // -------------------------------------------------------------- plumbing
 
   /** A site whose method name could be the one asked for. */
-  private nameCouldMatch(
-    call: CallInfo,
-    wantedName: string,
-    symbol: string,
-    rec: FileRecord,
-  ): boolean {
+  private nameCouldMatch(call: CallInfo, wantedName: string, owner: string): boolean {
     if (wantedName === '<init>') {
-      const typeFqn = stripLast(symbol);
-      const t = this.typesByFqn.get(typeFqn);
+      const t = this.typesByFqn.get(owner);
       return !!t && (call.is_constructor === true || call.method_name === t.simpleName);
     }
-    void rec;
     return call.method_name === wantedName;
   }
 
@@ -833,16 +1762,9 @@ export class NavigationIndex {
     const call = at.length === 1 ? at[0] : undefined;
     if (kind === 'callers') {
       if (!call) return undefined;
-      return this.bind(call, rec)?.target;
+      return this.symbolOfCall(call, rec);
     }
-    const t = this.enclosingTypeAt(rec, query.site.line);
-    if (!t) return undefined;
-    for (const [name, m] of t.methods) {
-      if (query.site.line >= m.startLine && query.site.line <= m.endLine) {
-        return `${t.fqn}.${name}`;
-      }
-    }
-    return undefined;
+    return this.methodAt(rec, query.site.line);
   }
 
   private siteOf(call: CallInfo, rec: FileRecord): CallSite {
@@ -864,11 +1786,19 @@ export class NavigationIndex {
     unresolved: UnresolvedEntry[],
     t0: number,
     opts: QueryOptions,
+    extra: Pick<NavigationAnswer, 'note' | 'overloads'> = {},
+    scope: Scope = this.scope,
   ): NavigationAnswer {
     let kept = answers;
     if (opts.tiers) kept = kept.filter(a => opts.tiers!.includes(a.tier));
+    // Answers to an overloaded method arrive grouped per overload; the order
+    // of the groups is the order of `overloads`, i.e. of declaration.
+    const group = new Map((extra.overloads ?? []).map((o, i) => [o.signature, i]));
     kept = [...kept].sort(
-      (a, b) => a.site.file.localeCompare(b.site.file) || a.site.line - b.site.line,
+      (a, b) =>
+        (group.get(a.signature ?? '') ?? 0) - (group.get(b.signature ?? '') ?? 0) ||
+        a.site.file.localeCompare(b.site.file) ||
+        a.site.line - b.site.line,
     );
     const total = kept.length;
     let truncated: NavigationAnswer['truncated'];
@@ -882,7 +1812,7 @@ export class NavigationIndex {
       unresolved: [...unresolved].sort(
         (a, b) => a.site.file.localeCompare(b.site.file) || a.site.line - b.site.line,
       ),
-      scope: this.scope,
+      scope,
       timing: {
         parseMs: round(this.parseMs),
         indexMs: round(this.indexMs),
@@ -890,6 +1820,8 @@ export class NavigationIndex {
       },
     };
     if (truncated) out.truncated = truncated;
+    if (extra.overloads) out.overloads = extra.overloads;
+    if (extra.note) out.note = extra.note;
     return out;
   }
 }
@@ -923,6 +1855,7 @@ function buildFileRecord(f: NavigationFile): FileRecord {
     const tpkg = t.package ?? pkg;
     const path = [tpkg, t.enclosing_type, t.name].filter(Boolean).join('.');
     const methods = new Map<string, { returnType: string | null; startLine: number; endLine: number; modifiers: string[] }>();
+    const overloads = new Map<string, Overload[]>();
     for (const m of t.methods ?? []) {
       // A later overload does not replace an earlier one's range; the widest
       // range wins, so a callee query over the method's body sees all of it.
@@ -933,6 +1866,20 @@ function buildFileRecord(f: NavigationFile): FileRecord {
         endLine: prev ? Math.max(prev.endLine, m.end_line) : m.end_line,
         modifiers: [...new Set([...(prev?.modifiers ?? []), ...(m.modifiers ?? [])])],
       });
+      const params = (m.parameters ?? []).map(p => p.type ?? '?');
+      // The extraction reports a constructor's return type as `null` and a
+      // method's as at least `void`; a constructor is named after its type.
+      const isConstructor = m.return_type === null && m.name === t.name;
+      push(overloads, m.name, {
+        name: m.name,
+        params,
+        varargs: params.length > 0 && params[params.length - 1].endsWith('...'),
+        returnType: m.return_type ?? null,
+        isConstructor,
+        startLine: m.start_line,
+        endLine: m.end_line,
+        modifiers: m.modifiers ?? [],
+      });
     }
     types.push({
       fqn: path,
@@ -941,11 +1888,15 @@ function buildFileRecord(f: NavigationFile): FileRecord {
       isRecord: t.is_record === true,
       file: f.path,
       superNames: [t.extends, ...(t.implements ?? [])].filter((x): x is string => !!x),
+      extendsName: t.extends ?? null,
       annotations: (t.annotations ?? []).map(stripAnnotation),
       fieldNames: (t.fields ?? []).map(x => x.name),
+      fieldTypes: new Map((t.fields ?? []).filter(x => x.type).map(x => [x.name, x.type!])),
+      typeParams: t.type_parameters ?? [],
       getterFields: lombokFields(f.source, 'Getter'),
       setterFields: lombokFields(f.source, 'Setter'),
       methods,
+      overloads,
       startLine: t.start_line,
       endLine: t.end_line,
     });
@@ -976,6 +1927,115 @@ function stripAnnotation(a: string): string {
   return a.replace(/^@/, '').replace(/\(.*$/, '').split('.').pop() ?? a;
 }
 
+/** `pkg.Type.method(A,B)` → its parts. The parameter list may hold generics with commas. */
+function parseSymbol(symbol: string): ParsedSymbol {
+  const open = symbol.indexOf('(');
+  const base = (open === -1 ? symbol : symbol.slice(0, open)).trim();
+  const out: ParsedSymbol = { base, owner: stripLast(base), name: lastSegment(base) };
+  if (open !== -1) {
+    const close = symbol.lastIndexOf(')');
+    out.params = splitTopLevel(symbol.slice(open + 1, close === -1 ? undefined : close))
+      .map(p => p.trim())
+      .filter(Boolean);
+  }
+  return out;
+}
+
+/** Split on commas outside `<...>`. */
+function splitTopLevel(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let buf = '';
+  for (const ch of text) {
+    if (ch === '<') depth++;
+    if (ch === '>') depth--;
+    if (ch === ',' && depth === 0) { out.push(buf); buf = ''; continue; }
+    buf += ch;
+  }
+  out.push(buf);
+  return out;
+}
+
+/** `(Long,String)` — simple names, generics erased, `String...` for varargs. */
+function signatureOf(o: Overload): string {
+  return `(${o.params.map(p => {
+    const varargs = p.endsWith('...');
+    let t = eraseType(p.replace(/@[\w.]+(\([^)]*\))?\s*/g, '').replace(/\bfinal\s+/g, '').replace(/\.\.\.$/, '').trim());
+    let dims = '';
+    while (t.endsWith('[]')) { dims += '[]'; t = t.slice(0, -2).trim(); }
+    return `${t.split('.').pop() ?? t}${dims}${varargs ? '...' : ''}`;
+  }).join(',')})`;
+}
+
+/** `pkg.Type.method`, or `pkg.Type.<init>` for a constructor. */
+function memberName(owner: TypeRecord, o: Overload): string {
+  return o.isConstructor ? `${owner.fqn}.<init>` : `${owner.fqn}.${o.name}`;
+}
+
+/** Remove every `<...>` from a written type. */
+function eraseType(t: string): string {
+  let out = '';
+  let depth = 0;
+  for (const ch of t) {
+    if (ch === '<') { depth++; continue; }
+    if (ch === '>') { depth--; continue; }
+    if (depth === 0) out += ch;
+  }
+  return out.trim();
+}
+
+/** Whether a call with `n` arguments can reach overload `o` at all. */
+function fitsArity(o: Overload, n: number): boolean {
+  if (o.params.length === n) return true;
+  return o.varargs && n >= o.params.length - 1;
+}
+
+/**
+ * The name of the outermost call an expression is, or nothing when it is not
+ * a call: `a.b(x).c(y)` → `c`, `make(x)` → `make`, `a.<T>m()` → `m`.
+ */
+function outerCallName(expr: string): string | undefined {
+  const text = expr.trim();
+  if (!text.endsWith(')')) return undefined;
+  let depth = 0;
+  let open = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      depth--;
+      if (depth === 0) { open = i; break; }
+    }
+  }
+  if (open <= 0) return undefined;
+  const m = /([A-Za-z_$][\w$]*)\s*$/.exec(text.slice(0, open));
+  if (!m) return undefined;
+  const before = text.slice(0, open - m[0].length).trimEnd();
+  // `new Foo(…)` is a constructor, typed by the extractor, not here.
+  if (/\bnew$/.test(before)) return undefined;
+  return m[1];
+}
+
+/** Top-level arguments in an argument list's text, counted. */
+function countArgs(argText: string): number {
+  if (argText.trim() === '') return 0;
+  let depth = 0;
+  let quote: string | null = null;
+  let n = 1;
+  for (let i = 0; i < argText.length; i++) {
+    const ch = argText[i];
+    if (quote) {
+      if (ch === quote && argText[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') depth--;
+    else if (ch === ',' && depth === 0) n++;
+  }
+  return n;
+}
+
 /**
  * Split a receiver expression into a root and a list of `.name(...)` steps.
  *
@@ -985,7 +2045,10 @@ function stripAnnotation(a: string): string {
  */
 function splitCallChain(
   text: string,
-): { root: { kind: 'type' | 'this' | 'call'; name: string }; steps: Array<{ name: string; line: number }> } | null {
+): {
+  root: { kind: 'type' | 'this' | 'call'; name: string; argc: number };
+  steps: Array<{ name: string; line: number; argc: number }>;
+} | null {
   // Walk the string, splitting on top-level dots only, so a dot inside an
   // argument list or a string literal does not end a step.
   const parts: string[] = [];
@@ -1008,19 +2071,24 @@ function splitCallChain(
   parts.push(buf);
   if (parts.length === 0) return null;
 
+  const argcOf = (p: string): number => {
+    const open = p.indexOf('(');
+    const close = p.lastIndexOf(')');
+    return open === -1 || close < open ? 0 : countArgs(p.slice(open + 1, close));
+  };
   const head = parts[0].trim();
-  let root: { kind: 'type' | 'this' | 'call'; name: string };
-  if (head === 'this') root = { kind: 'this', name: 'this' };
-  else if (/^[A-Z]\w*$/.test(head)) root = { kind: 'type', name: head };
-  else if (/^[a-zA-Z_]\w*\s*\(/.test(head)) root = { kind: 'call', name: head.slice(0, head.indexOf('(')).trim() };
+  let root: { kind: 'type' | 'this' | 'call'; name: string; argc: number };
+  if (head === 'this') root = { kind: 'this', name: 'this', argc: 0 };
+  else if (/^[A-Z]\w*$/.test(head)) root = { kind: 'type', name: head, argc: 0 };
+  else if (/^[a-zA-Z_]\w*\s*\(/.test(head)) root = { kind: 'call', name: head.slice(0, head.indexOf('(')).trim(), argc: argcOf(head) };
   else return null;   // a plain identifier, an index, an expression — not typed here
 
-  const steps: Array<{ name: string; line: number }> = [];
+  const steps: Array<{ name: string; line: number; argc: number }> = [];
   for (const raw of parts.slice(1)) {
     const p = raw.trim();
     const m = /^([a-zA-Z_]\w*)\s*\(/.exec(p);
     if (!m) return null;   // a field access mid-chain is not walked
-    steps.push({ name: m[1], line: 0 });
+    steps.push({ name: m[1], line: 0, argc: argcOf(p) });
   }
   return { root, steps };
 }

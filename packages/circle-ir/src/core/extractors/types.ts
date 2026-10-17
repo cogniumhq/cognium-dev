@@ -76,7 +76,11 @@ function detectLanguage(tree: Tree): 'javascript' | 'java' | 'python' | 'rust' {
  * corpora gates, not in a navigation change.
  */
 export interface TypeExtractionOptions {
-  /** Emit `record_declaration` types, and set `enclosing_type` on nested types. */
+  /**
+   * Emit `record_declaration` types, set `enclosing_type` and
+   * `type_parameters`, emit an enum's methods and fields, and type a varargs
+   * parameter. Every one is additive to what the default path emits.
+   */
   navigationTypes?: boolean;
 }
 
@@ -332,6 +336,54 @@ function extractJavaTypes(
 
   if (!options?.navigationTypes) return types;
 
+  // An enum's members, which the default path misses: after the constants,
+  // methods, constructors and fields sit inside `enum_body_declarations`, one
+  // level below the `enum_body` that `extractMethods` walks. A static factory
+  // such as `Kind.fromInt(…)` is then declared nowhere, and every call to it
+  // is unanswerable.
+  for (const enumDecl of enums) {
+    const info = types.find(
+      t => t.kind === 'enum' && t.start_line === enumDecl.startPosition.row + 1 && t.name === getIdentifier(enumDecl, 'name'),
+    );
+    const body = enumDecl.childForFieldName('body');
+    if (!info || !body) continue;
+    for (let i = 0; i < body.childCount; i++) {
+      const decls = body.child(i);
+      if (decls?.type !== 'enum_body_declarations') continue;
+      info.methods.push(...extractMethods(decls));
+      info.fields.push(...extractFields(decls));
+    }
+  }
+
+  // A varargs parameter, which the default path reports with no type and a
+  // placeholder name: `spread_parameter` carries neither a `type` nor a
+  // `name` field. Overload selection needs both the element type and the
+  // fact that it is varargs, so it is spelled `String...` here.
+  const methodsByStart = new Map<string, MethodInfo>();
+  for (const t of types) {
+    for (const m of t.methods) methodsByStart.set(`${m.start_line}:${m.name}`, m);
+  }
+  for (const kind of ['method_declaration', 'constructor_declaration']) {
+    for (const node of getNodesFromCache(tree.rootNode, kind, cache)) {
+      const params = node.childForFieldName('parameters');
+      const name = getIdentifier(node, 'name');
+      const info = name ? methodsByStart.get(`${node.startPosition.row + 1}:${name}`) : undefined;
+      if (!params || !info) continue;
+      let pos = 0;
+      for (let i = 0; i < params.childCount; i++) {
+        const child = params.child(i);
+        if (child?.type !== 'formal_parameter' && child?.type !== 'spread_parameter') continue;
+        const p = info.parameters[pos++];
+        if (child.type !== 'spread_parameter' || !p) continue;
+        const typeNode = child.namedChildren.find(c => c !== null && /type/.test(c.type));
+        const decl = child.namedChildren.find(c => c?.type === 'variable_declarator');
+        if (typeNode) p.type = `${getNodeText(typeNode)}...`;
+        const declName = decl ? getIdentifier(decl, 'name') : null;
+        if (declName) p.name = declName;
+      }
+    }
+  }
+
   // Records, which the default path omits entirely. A record's body holds
   // ordinary method declarations, so `extractClassInfo` reads it unchanged;
   // only the node type and the `is_record` marker differ.
@@ -379,6 +431,15 @@ function extractJavaTypes(
     );
     const path = node ? enclosingTypePath(node) : [];
     if (path.length > 0) t.enclosing_type = path.join('.');
+    const params = node?.childForFieldName('type_parameters');
+    if (params) {
+      const names = params.namedChildren
+        .filter(c => c?.type === 'type_parameter')
+        .map(c => c!.namedChildren.find(x => x?.type === 'type_identifier' || x?.type === 'identifier'))
+        .map(x => (x ? getNodeText(x) : ''))
+        .filter(Boolean);
+      if (names.length > 0) t.type_parameters = names;
+    }
   }
 
   return types;

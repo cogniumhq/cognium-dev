@@ -61,7 +61,11 @@ describe('an interface-typed receiver answers about the interface', () => {
     for (const sym of ['app.Polite.greet', 'app.Blunt.greet']) {
       const a = idx.resolveCallers({ symbol: sym });
       const viaInterface = a.answers.filter(x => x.site.inMethod === 'viaInterface');
-      expect(viaInterface).toHaveLength(0);
+      // The call can land on either implementation, so it is answered for
+      // both — as dispatch through the interface, never as `exact`.
+      expect(viaInterface).toHaveLength(1);
+      expect(viaInterface[0].tier).toBe('polymorphic');
+      expect(viaInterface[0].via).toEqual({ member: 'app.Greeter.greet', relation: 'supertype' });
     }
   });
 

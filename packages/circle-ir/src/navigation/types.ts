@@ -45,7 +45,8 @@ export interface CallSite {
  *
  * - `exact` — **a promise.** The receiver's static type is known to the
  *   resolver and the target is the unique method of that name in that type's
- *   hierarchy slice. Nothing else may carry this label.
+ *   hierarchy slice — or, where the name is overloaded, the one overload the
+ *   call's arity and argument types admit. Nothing else may carry this label.
  * - `polymorphic` — the receiver's type is known and dispatch is open; every
  *   implementor found is in `candidates`.
  * - `inferred` — bound by name alone, with no receiver type to confirm it.
@@ -65,6 +66,12 @@ export type UnresolvedReason =
   | 'dynamic'
   /** The target exists only after annotation processing or code generation. */
   | 'generated'
+  /**
+   * The site calls a method of the target's name on the target's type, and
+   * more than one overload could be the one it calls. Not an answer: the
+   * candidate signatures are in `candidates`, and choosing one would be a guess.
+   */
+  | 'overload-ambiguous'
   /** The file did not parse cleanly, so the site's context is incomplete. */
   | 'parse-error'
   /** The site is in a language this index does not parse. */
@@ -90,6 +97,29 @@ export interface AnswerEntry {
    */
   candidates?: string[];
   /**
+   * The parameter list of the overload this site calls, as `(Long,String)` —
+   * simple type names, `String...` for varargs. Present only when the target's
+   * type declares more than one method of that name; pass it back as
+   * `Type.method(Long,String)` to ask about one overload alone.
+   */
+  signature?: string;
+  /**
+   * Set when the site does not bind to `target` itself but reaches it through
+   * dispatch. `member` is what the site binds to statically.
+   *
+   * - `supertype` — the site calls a supertype's or interface's declaration
+   *   that `target` overrides, through a receiver whose static type `target`'s
+   *   type is a subtype of. At run time it lands on `target` when the object
+   *   is of that type.
+   * - `override` — the site calls a method that overrides or implements
+   *   `target`. It reaches `target`'s body only through `super`, but it is a
+   *   caller of the operation `target` declares, which is what a question
+   *   about an abstract or interface method is usually asking.
+   *
+   * Always `polymorphic`: which body runs is decided at run time.
+   */
+  via?: { member: string; relation: 'supertype' | 'override' };
+  /**
    * The method name as written at the call site.
    *
    * It is not always `target`'s last segment and cannot be derived from it: a
@@ -111,6 +141,11 @@ export interface UnresolvedEntry {
   reason: UnresolvedReason;
   /** The method name the site called, which the reason alone does not say. */
   methodName?: string;
+  /**
+   * On `overload-ambiguous`: every overload the site could be calling, as
+   * `pkg.Type.method(Long,String)`.
+   */
+  candidates?: string[];
 }
 
 export interface Scope {
@@ -130,7 +165,14 @@ export interface Timing {
 
 export type QueryKind = 'callers' | 'callees';
 
-/** A query names either a symbol or a site; never both. */
+/**
+ * A query names either a symbol or a site; never both.
+ *
+ * A symbol is `pkg.Type.method`, optionally with a parameter list —
+ * `pkg.Type.method(Long,String)`, simple or qualified type names, `()` for
+ * none, `String...` or `String[]` for varargs — which narrows the query to one
+ * overload. A constructor is `pkg.Type.<init>`, with the same optional list.
+ */
 export type Query =
   | { symbol: string; site?: never }
   | { site: CallSite; symbol?: never };
@@ -146,6 +188,15 @@ export interface NavigationAnswer {
    * say so is a wrong denominator, which is worse than a short answer.
    */
   truncated?: { returned: number; total: number };
+  /**
+   * Set when the queried method is overloaded and the query named no
+   * signature: every overload, with how many answers it has. `answers` is
+   * grouped the same way, each entry carrying its `signature`. Overloads are
+   * never merged silently.
+   */
+  overloads?: Array<{ signature: string; answers: number }>;
+  /** One line a reader must not miss — "3 overloads; pass a signature to narrow". */
+  note?: string;
 }
 
 export interface QueryOptions {
