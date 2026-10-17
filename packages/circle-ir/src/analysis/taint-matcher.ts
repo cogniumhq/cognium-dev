@@ -3886,7 +3886,9 @@ function findSanitizers(
         ? findPythonNoopHelpers(types, sourceLines)
         : language === 'go'
           ? findGoNoopHelpers(types, sourceLines)
-          : new Set<string>();
+          : language === 'javascript' || language === 'typescript' || language === 'tsx'
+            ? findJsNoopHelpers(types, sourceLines)
+            : new Set<string>();
 
   // Check method calls for sanitizer methods
   for (const call of calls) {
@@ -4086,6 +4088,59 @@ function isGoNoopBody(
     .replace(/\bstrings\s*\.\s*(?:TrimSpace|ToLower|ToUpper)\s*\(/g, '(')
     .replace(/\bstring\s*\(/g, '(');
   const leftovers = expr.replace(/""|[+()\s]/g, ' ').trim();
+  if (leftovers === '') return true;
+  return leftovers.split(/\s+/).every(tok => params.has(tok));
+}
+
+/**
+ * JavaScript / TypeScript twin of `findJavaNoopHelpers` (#581): a `function` or
+ * method whose body is one `return <expr>` (or an arrow expression) built only
+ * from its own parameters, string literals, `+`, and the pass-through calls
+ * `trim` / `toLowerCase` / `toUpperCase` / `toString` / `String()`. Any other
+ * body keeps the by-name credit, and so does a name with a non-no-op overload.
+ */
+function findJsNoopHelpers(types: TypeInfo[], sourceLines: string[]): Set<string> {
+  const noop = new Set<string>();
+  const other = new Set<string>();
+  for (const type of types) {
+    for (const method of type.methods) {
+      (isJsNoopBody(method, sourceLines) ? noop : other).add(method.name);
+    }
+  }
+  for (const name of other) noop.delete(name);
+  const src = sourceLines.join('\n');
+  for (const name of [...noop]) {
+    if (new RegExp(`(?:const|let|var)\\s+${name}\\s*=`).test(src)) noop.delete(name);
+  }
+  return noop;
+}
+
+function isJsNoopBody(
+  method: { parameters: { name: string }[]; start_line: number; end_line: number },
+  sourceLines: string[],
+): boolean {
+  if (method.parameters.length === 0) return false;
+  const text = sourceLines.slice(method.start_line - 1, method.end_line).join('\n');
+  const params = new Set(method.parameters.map(p => p.name.replace(/^\.\.\./, '')));
+  const arrowExpr = /(?:\([^)]*\)|[\w$]+)\s*=>\s*([^{;]+?)\s*$/.exec(text.trim());
+  if (arrowExpr) {
+    return jsNoopReturnExpr(arrowExpr[1]!, params);
+  }
+  const open = text.indexOf('{');
+  const close = text.lastIndexOf('}');
+  if (open < 0 || close < open) return false;
+  const body = text.slice(open + 1, close).replace(/\/\/.*$/gm, '').trim();
+  const m = /^\s*return\s+([^;{}]+);\s*$/.exec(body);
+  if (!m) return false;
+  return jsNoopReturnExpr(m[1]!, params);
+}
+
+function jsNoopReturnExpr(expr: string, params: Set<string>): boolean {
+  const stripped = expr
+    .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g, '""')
+    .replace(/\.(?:trim|toLowerCase|toUpperCase|toString)\(\)/g, '')
+    .replace(/\bString\s*\(/g, '(');
+  const leftovers = stripped.replace(/""|[+()\s]/g, ' ').trim();
   if (leftovers === '') return true;
   return leftovers.split(/\s+/).every(tok => params.has(tok));
 }
