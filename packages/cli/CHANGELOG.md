@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.16.0] - 2026-10-17
 
 ### Changes
 
@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Java scan reports `weak-hash` for a `getProperty` algorithm that a `Properties` object loaded from a file path (`new FileInputStream("conf/x.properties")`, `FileReader`, `Files.newInputStream(Paths.get(...))`, `getSystemResourceAsStream`) takes from a scanned `.properties` file (#591, partial).
 - A TypeScript scan no longer reports a second, type-annotated variable declared on the same line as a tainted read when that variable does not use the tainted value (#490, partial).
 - A C# scan reports the sink at the end of a forwarding chain (`A → Relay.Forward(data) → Store.FindRaw(data)` across three files) instead of an `external_taint_escape` at the first call; a chain that ends in a parameterised query reports nothing (#637, partial).
+- A C# directory scan no longer reports a `string`-parameter sink whose every in-project caller passes a constant, and no longer reports an `external_taint_escape` at a call whose callee in another file holds the deciding sink (#636, #637).
+- A C# directory scan reports taint carried across files in a `string[]` / `object[]` argument or a container field, and through a field written from a parameter in another method (#638, #327).
+- A C# scan no longer credits `UrlEncoder.Default.Encode` after a raw append, reassignment, mixed concatenation or URL-decode, or when the `UrlEncoder` is namespace-qualified (#736).
+- A Java scan reports taint through `System.arraycopy`, 2-D arrays and `ArrayList.add` / `get` (#476), and through a trim-only helper named like a sanitizer (#581).
+- A Java scan reports `path_traversal` for `ClassLoader.getResource` / `getResourceAsStream` with a non-constant name (#621), and no longer reports weak-random on a `Random`-typed method parameter (#612).
+- A Python scan keeps taint from a sibling `if` / `elif` / `else` arm past a literal arm (#582), and no longer reports `plaintext-password-storage` for a write to an owner-only file (#672).
+- Exported AWS Lambda `handler(event, context)` (JS/TS) and `lambda_handler(event, context)` (Python) entry points keep their parameter-sourced flows (#685).
+- A Rust scan no longer reports xss for `.body(x)` after a literal non-HTML content type (#478), or deserialization for `serde_json` parsed into `serde_json::Value` (#674).
+- Stripe `pk_test_` publishable keys are reported at informational severity (#718).
 
 ## [4.15.0] - 2026-10-15
 
