@@ -246,25 +246,62 @@ function isJavaStaticFormatterCall(
     if (other === call || other.method_name === 'format') continue;
     if (other.arguments.some(a => a.expression.includes(needle))) return false;
   }
-  const receiver = call.receiver;
+  return isJdkClassReceiver(call.receiver, JAVA_FORMATTER_CLASSES, declaredTypeNames, imports);
+}
+
+/**
+ * Is `receiver` the JDK class named in `classes` (simple name → package)?
+ * Fully qualified it must be exactly `<pkg>.<Class>`; written bare it must not
+ * be shadowed by a class declared in this file or by an import (or alias) of
+ * that simple name from another package. A `java.lang` class is implicit; any
+ * other package must be imported (explicitly or by wildcard), otherwise the
+ * bare name may be a same-package class.
+ */
+function isJdkClassReceiver(
+  receiver: string,
+  classes: ReadonlyMap<string, string>,
+  declaredTypeNames: ReadonlySet<string>,
+  imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
+): boolean {
   const dot = receiver.lastIndexOf('.');
   const simple = dot < 0 ? receiver : receiver.slice(dot + 1);
-  const pkg = JAVA_FORMATTER_CLASSES.get(simple);
+  const pkg = classes.get(simple);
   if (pkg === undefined) return false;
-  // Fully-qualified receiver: exactly `<pkg>.<Class>`.
   if (dot >= 0) return receiver === `${pkg}.${simple}`;
-  // Bare receiver: a class declared in this file, or an import of the simple
-  // name (or an alias for it) from another package, shadows the JDK class.
   if (declaredTypeNames.has(simple)) return false;
   for (const imp of imports) {
     if (imp.alias === simple) return false;
     if (!imp.is_wildcard && imp.imported_name === simple && imp.from_package !== pkg) return false;
   }
-  // `String` is implicit; `MessageFormat` must be imported from java.text (or
-  // java.text.*), otherwise it may be a same-package class.
   if (pkg === 'java.lang') return true;
   return imports.some(imp =>
     imp.from_package === pkg && (imp.imported_name === simple || imp.is_wildcard));
+}
+
+// Java (#807): `java.lang.Character` classification predicates. Each returns a
+// boolean about its argument and keeps no reference to it, so a tainted char or
+// code point tested with `Character.isLetter(ch)` has not left the program —
+// the counterpart of the Go const-regexp `MatchString` row (#349). Same
+// receiver gate as the formatters: a declared or differently-imported
+// `Character` class still escapes.
+const JAVA_CHARACTER_CLASS: ReadonlyMap<string, string> = new Map([['Character', 'java.lang']]);
+const JAVA_CHARACTER_PREDICATES = new Set([
+  'isLetter', 'isDigit', 'isLetterOrDigit', 'isAlphabetic', 'isWhitespace',
+  'isSpaceChar', 'isUpperCase', 'isLowerCase', 'isTitleCase', 'isISOControl',
+  'isDefined', 'isIdeographic', 'isMirrored', 'isJavaIdentifierStart',
+  'isJavaIdentifierPart', 'isUnicodeIdentifierStart', 'isUnicodeIdentifierPart',
+  'isIdentifierIgnorable', 'isHighSurrogate', 'isLowSurrogate', 'isSurrogate',
+  'isSurrogatePair', 'isValidCodePoint', 'isBmpCodePoint',
+  'isSupplementaryCodePoint',
+]);
+
+function isJavaCharacterPredicateCall(
+  call: CallInfo,
+  declaredTypeNames: ReadonlySet<string>,
+  imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
+): boolean {
+  if (!call.receiver || !JAVA_CHARACTER_PREDICATES.has(call.method_name)) return false;
+  return isJdkClassReceiver(call.receiver, JAVA_CHARACTER_CLASS, declaredTypeNames, imports);
 }
 
 function isJavaNonEscapeCall(
@@ -274,6 +311,7 @@ function isJavaNonEscapeCall(
   calls: readonly CallInfo[],
 ): boolean {
   if (isJavaStaticFormatterCall(call, declaredTypeNames, imports, calls)) return true;
+  if (isJavaCharacterPredicateCall(call, declaredTypeNames, imports)) return true;
   // Only a constructor call `new X(...)`: no receiver, and the resolved target
   // is `X.<init>` (the extractor does not set `is_constructor` for Java).
   if (call.receiver) return false;
@@ -576,7 +614,8 @@ export function analyzeInterprocedural(
         if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
           continue;
         }
-        // Java — JDK exception construction and static formatters (#468, minimal slices).
+        // Java — JDK exception construction, static formatters (#468, minimal slices)
+        // and Character predicates (#807).
         if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames, graph.ir.imports ?? [], calls)) {
           continue;
         }
