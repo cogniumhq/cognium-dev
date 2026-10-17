@@ -82,27 +82,34 @@ describe('#638 step 1: isLiteralArrayLocal / isConstantArg for arrays', () => {
     expect(isConstantArg(feederIr, lines, runArgs!, 0)).toBe(false);
   });
 
-  it('analyzeProject flows unchanged (string[] params not seeded yet)', async () => {
-    const snap = async () => {
-      const pa = await analyzeProject(
-        [
-          { filePath: 'Feeder.cs', code: feeder, language: 'csharp' },
-          { filePath: 'Executor.cs', code: executor, language: 'csharp' },
-        ],
-        {},
-      );
-      return JSON.stringify(
-        pa.files.map(f => ({
-          file: f.file,
-          flows: (f.analysis.taint.flows ?? []).map(fl => ({
-            sink_type: fl.sink_type,
-            sink_line: fl.sink_line,
-            source_type: fl.source_type,
-          })),
-        })),
-      );
-    };
-    expect(await snap()).toBe(await snap());
+  it('step 2: cross-file array carrier reaches tainted sink; constant path stays clean', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'Feeder.cs', code: feeder, language: 'csharp' },
+        { filePath: 'Executor.cs', code: executor, language: 'csharp' },
+      ],
+      {},
+    );
+    const runArgsSink = lineOf(executor, 'Process.Start', 1);
+    const runSlotSink = lineOf(executor, 'Process.Start', 0);
+    expect(
+      pa.taint_paths.some(
+        p =>
+          p.sink.file === 'Executor.cs' &&
+          p.sink.line === runArgsSink &&
+          p.sink.type === 'command_injection' &&
+          p.source.file === 'Feeder.cs',
+      ),
+    ).toBe(true);
+    expect(
+      pa.taint_paths.some(p => p.sink.file === 'Executor.cs' && p.sink.line === runSlotSink),
+    ).toBe(false);
+    const execIr = pa.files.find(f => f.file === 'Executor.cs')!.analysis;
+    expect(
+      execIr.taint.sources?.some(
+        s => s.type === 'interprocedural_param' && s.variable === 'args' && s.in_method === 'RunArgs',
+      ),
+    ).toBe(true);
   });
 
   const mustStayFalse = [
