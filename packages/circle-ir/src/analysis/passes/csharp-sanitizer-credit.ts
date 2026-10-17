@@ -184,6 +184,14 @@ function bareIdentifiers(text: string): string[] {
   return out;
 }
 
+/** `""`, `null`, `0`, `string.Empty`: a value that carries nothing from input. */
+function isLiteralValue(rhs: string): boolean {
+  if (/\$"/.test(rhs)) return false;
+  const ids = bareIdentifiers(rhs);
+  return ids.every(id => id === 'null' || id === 'true' || id === 'false' || id === 'default')
+    || /^\s*(?:string|String)\s*\.\s*Empty\s*$/.test(rhs);
+}
+
 /** Text inside the parentheses opening at `open`, or null when unbalanced. */
 function insideParens(text: string, open: number): string | null {
   let depth = 0;
@@ -394,6 +402,40 @@ export class CSharpCredit {
    */
   sanitizedVarsAt(type: string, sinkLine: number): Set<string> {
     return this.sanitizedVarsIn(type, this.methodAt(sinkLine)?.start_line ?? 1, sinkLine, true);
+  }
+
+  /**
+   * Class fields judged across every method that writes them (cognium-dev#808).
+   * A field is read in one method and written in others, so each write is
+   * judged in its own method with the same in-method credit as a local, and
+   * the field is safe for `type` only when every write is: `sanitized` holds
+   * the fields with at least one credited write and no uncredited one,
+   * `unsanitized` the fields with an uncredited write. A literal write
+   * (`_v = "";`, `_v = null;`) is neutral.
+   */
+  fieldWrites(type: string, fields: ReadonlySet<string>): { sanitized: Set<string>; unsanitized: Set<string> } {
+    const credited = new Set<string>();
+    const unsanitized = new Set<string>();
+    for (const m of this.methods) {
+      const sanitized = new Set<string>();
+      for (const st of this.statements(m.start_line, m.end_line + 1)) {
+        // A nested method's statements belong to it, not to `m`.
+        if (this.methodAt(st.line) !== m) continue;
+        for (const op of this.creditOpsInStatement(st.text)) {
+          const lhs = op.lhs;
+          const keeps = op.kind === 'append'
+            ? sanitized.has(lhs) && this.rhsKeepsSanitizerCredit(type, op.rhs, sanitized, true, true)
+            : this.rhsKeepsSanitizerCredit(type, op.rhs, sanitized, true, false);
+          if (keeps) sanitized.add(lhs);
+          else sanitized.delete(lhs);
+          if (!fields.has(lhs) || isLiteralValue(op.rhs)) continue;
+          if (keeps) credited.add(lhs);
+          else unsanitized.add(lhs);
+        }
+      }
+    }
+    for (const f of unsanitized) credited.delete(f);
+    return { sanitized: credited, unsanitized };
   }
 
   /**

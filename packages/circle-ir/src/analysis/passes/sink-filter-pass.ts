@@ -2490,6 +2490,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       const csFields = new Set(ctx.graph.ir.types.flatMap(t => (t.fields ?? []).map(f => f.name)));
       const credit = new CSharpCredit(ctx.code, ctx.graph.ir.types.flatMap(t => t.methods));
       const csSeeds = mergedSources.flatMap(s => (s.variable ? [{ variable: s.variable, line: s.line }] : []));
+      const fieldWritesByType = new Map<string, ReturnType<CSharpCredit['fieldWrites']>>();
+      const fieldWritesFor = (type: string): ReturnType<CSharpCredit['fieldWrites']> => {
+        let w = fieldWritesByType.get(type);
+        if (!w) { w = credit.fieldWrites(type, csFields); fieldWritesByType.set(type, w); }
+        return w;
+      };
       // File-level XXE hardening (cognium-dev#272). `XmlResolver = null` and
       // `DtdProcessing = Prohibit|Ignore` are the documented XXE mitigations —
       // an external entity cannot resolve once either is set. Deterministic
@@ -2517,7 +2523,15 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         const scoped = credit.sanitizedVarsAt(sink.type, sink.line);
         const fileWide = sanitizedByType.get(sink.type);
         const sanitizedVars = new Set(scoped);
-        if (fileWide) for (const v of fileWide) if (csFields.has(v)) sanitizedVars.add(v);
+        // A field is credited only when every write to it is credited; each
+        // write is judged in its own method, one-line bodies included (#808).
+        const fieldWrites = fieldWritesFor(sink.type);
+        if (fileWide) {
+          for (const v of fileWide) {
+            if (csFields.has(v) && !fieldWrites.unsanitized.has(v)) sanitizedVars.add(v);
+          }
+        }
+        for (const v of fieldWrites.sanitized) sanitizedVars.add(v);
         // (c) a check that dominates the sink proves the value inert: an
         // allowlist or numeric check, or for ssrf a host allowlist (#518).
         for (const v of credit.guardedVarsAt(sink.type, sink.line)) sanitizedVars.add(v);
