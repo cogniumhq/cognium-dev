@@ -353,22 +353,38 @@ function resolveJavaDerivedAnchor<S extends { line: number }>(
  * const-prop never seeds those derived names. Argument-style derivations
  * (`shown = encodeForPage(nick)`) must keep the veto so sanitizer credit holds.
  */
-function javaReceiverChainDerivedVar(code: string, localVar: string, seedVar: string): boolean {
+function javaReceiverChainDerivedVar(rhsByLocal: Map<string, string[]>, localVar: string, seedVar: string): boolean {
   if (!seedVar || localVar === seedVar) return false;
+  const rhsList = rhsByLocal.get(localVar);
+  if (!rhsList) return false;
   const esc = seedVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const receiverOnRhs = new RegExp(`(?:^|[^\\w.$])${esc}\\s*\\.`, 'u');
+  return rhsList.some(rhs => receiverOnRhs.test(rhs));
+}
+
+/**
+ * cognium-dev#806 — the assignment RHS texts of each Java local, indexed once
+ * per file. `javaReceiverChainDerivedVar` used to re-run its declaration regex
+ * over every line for every (source, derived local) pair, which made large
+ * files take seconds. Same per-line matching, done once.
+ */
+function indexJavaLocalAssignments(code: string): Map<string, string[]> {
   const declRe =
     /^\s*(?:public|private|protected|static|final|volatile|transient|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
   const assignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const index = new Map<string, string[]>();
   for (const line of code.split('\n')) {
     const trimmed = line.trimStart();
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    // Cheap pre-check: neither regex can match a line without `=` and `;`.
+    if (!line.includes('=') || !line.includes(';')) continue;
     const m = declRe.exec(line) ?? assignRe.exec(line);
-    if (!m || m[1] !== localVar) continue;
+    if (!m) continue;
+    const list = index.get(m[1]);
     const rhs = stripJavaTrailingComment(m[2]);
-    if (receiverOnRhs.test(rhs)) return true;
+    if (list) list.push(rhs); else index.set(m[1], [rhs]);
   }
-  return false;
+  return index;
 }
 
 function makeConstPropVeto(
@@ -528,14 +544,22 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     // into const-prop's tainted set so DFG + expression-scan vetoes keep them.
     // Per-source seeding + receiver filter avoids argument-style derivations
     // (`shown = encodeForPage(nick)`) that must stay vetoed for sanitizer credit.
+    // cognium-dev#806: index the assignments once, visit each seed name once,
+    // and skip the file-wide derivation when no local not already tainted has
+    // a `seed.` receiver on its RHS (only such locals can be added).
     if (ctx.language === 'java' && typeof ctx.code === 'string') {
+      const rhsByLocal = indexJavaLocalAssignments(ctx.code);
+      const seen = new Set<string>();
       for (const s of sources) {
-        if (!s.variable) continue;
-        for (const [v] of buildJavaTaintedVars(ctx.code, new Set([s.variable]))) {
-          if (v === s.variable) continue;
-          if (javaReceiverChainDerivedVar(ctx.code, v, s.variable)) {
-            constProp.tainted.add(v);
-          }
+        if (!s.variable || seen.has(s.variable)) continue;
+        seen.add(s.variable);
+        const seedVar = s.variable;
+        const candidates = [...rhsByLocal.keys()].filter(v =>
+          !constProp.tainted.has(v) && javaReceiverChainDerivedVar(rhsByLocal, v, seedVar));
+        if (candidates.length === 0) continue;
+        const derived = buildJavaTaintedVars(ctx.code, new Set([seedVar]));
+        for (const v of candidates) {
+          if (derived.has(v)) constProp.tainted.add(v);
         }
       }
     }

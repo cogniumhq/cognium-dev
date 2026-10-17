@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **C#: a rejecting `Array.IndexOf` guard over a `static readonly` string-literal array credits the guarded value (#809).** `if (System.Array.IndexOf(Allowed, host) < 0) throw …;` and `== -1` with `throw` or `return` now clear the sinks after the guard like `Array.IndexOf(…) < 0` already did, so `GetStringAsync("https://" + host + "/health")` no longer reports `ssrf`. The `IndexOf` guard now credits only a field initialised with string literals only, declared `static readonly` and never written in the file (no assignment, element store, `ref`/`out`, `SetValue` or `Array.Clear`/`Copy`/`Fill`/`Resize`/`Reverse`/`Sort`); a non-`readonly` array, one assigned from a parameter, an element write, a non-literal element, a reassignment of the guarded value after the guard, a guard that falls through and a guard on another variable report again.
+- **Java: `analyze()` is back to 4.15.0 speed on large classes (#806).** The receiver-chain seeding added for #624 re-ran the file-wide derivation once per source and re-scanned every line with its declaration pattern once per derived local, so a class with many sources took seconds (one 3,000-line file went from 0.2 s to 22 s). The assignments are now indexed once per file, each seed name is visited once, and the derivation runs only when a local not already tainted reads `seed.` on its right-hand side. Results are unchanged.
 
 ## [4.16.0] - 2026-10-17
 
