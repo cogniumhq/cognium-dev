@@ -449,6 +449,8 @@ function findSources(
   // entry-point classification gate lives at the flow-construction
   // boundary in `interprocedural-pass.ts` instead, where it can drop
   // speculative flows without breaking the propagator's seed set.
+  const csharpUserDefinedTypes =
+    language === 'csharp' ? new Set(types.map((t) => t.name)) : undefined;
   for (const type of types) {
     for (const method of type.methods) {
       // Skip private methods (can only be called from within the class)
@@ -482,7 +484,7 @@ function findSources(
           : isDestructureBinding
             ? true
             : param.type
-              ? isInterproceduralTaintableType(param.type, language)
+              ? isInterproceduralTaintableType(param.type, language, csharpUserDefinedTypes)
               : true; // JavaScript/Python - no type means any value
 
         if (isTaintable) {
@@ -699,7 +701,11 @@ const CSHARP_BINDING_ATTRS = new Set([
  * Check if a parameter type could carry tainted data in inter-procedural analysis.
  * These are types commonly used to pass user-controlled data between methods.
  */
-function isInterproceduralTaintableType(typeName: string, language?: SupportedLanguage): boolean {
+function isInterproceduralTaintableType(
+  typeName: string,
+  language?: SupportedLanguage,
+  csharpUserDefinedTypes?: ReadonlySet<string>,
+): boolean {
   // Normalize type name (remove generics)
   const baseType = typeName.split('<')[0].trim();
 
@@ -761,12 +767,8 @@ function isInterproceduralTaintableType(typeName: string, language?: SupportedLa
     // C# types are often fully qualified (`System.IO.Stream`); match the leaf.
     const leaf = baseType.split('.').pop() ?? baseType;
     if (csharpTaintable.includes(baseType) || csharpTaintable.includes(leaf)) return true;
-    // User-defined reference types (cognium-dev#638 container carriers).
-    const csharpPrimitives = new Set([
-      'bool', 'byte', 'sbyte', 'char', 'decimal', 'double', 'float', 'int', 'uint', 'long', 'ulong',
-      'short', 'ushort', 'nint', 'nuint', 'void',
-    ]);
-    if (!csharpPrimitives.has(leaf) && /^[A-Z][A-Za-z0-9_]*$/.test(leaf)) return true;
+    // User-defined classes in this compilation unit (#638 container carriers).
+    if (csharpUserDefinedTypes?.has(leaf)) return true;
   }
 
   // Check for array types
