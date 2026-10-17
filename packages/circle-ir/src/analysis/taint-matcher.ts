@@ -761,6 +761,12 @@ function isInterproceduralTaintableType(typeName: string, language?: SupportedLa
     // C# types are often fully qualified (`System.IO.Stream`); match the leaf.
     const leaf = baseType.split('.').pop() ?? baseType;
     if (csharpTaintable.includes(baseType) || csharpTaintable.includes(leaf)) return true;
+    // User-defined reference types (cognium-dev#638 container carriers).
+    const csharpPrimitives = new Set([
+      'bool', 'byte', 'sbyte', 'char', 'decimal', 'double', 'float', 'int', 'uint', 'long', 'ulong',
+      'short', 'ushort', 'nint', 'nuint', 'void',
+    ]);
+    if (!csharpPrimitives.has(leaf) && /^[A-Z][A-Za-z0-9_]*$/.test(leaf)) return true;
   }
 
   // Check for array types

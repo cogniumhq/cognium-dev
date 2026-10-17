@@ -172,3 +172,83 @@ public class X {
     expect(isConstantArg(ir, lines, call!, 0)).toBe(false);
   });
 });
+
+const boxFeeder = `using System.Web;
+public class Pod { public string payload; }
+public class Feeder
+{
+    public void Holder(HttpRequest req)
+    {
+        Pod pod = new Pod();
+        pod.payload = req.QueryString["host"];
+        Executor.BoxSink(pod);
+    }
+    public void LiteralOnly()
+    {
+        Pod pod = new Pod();
+        pod.payload = "localhost";
+        Executor.BoxSink(pod);
+    }
+}
+`;
+
+const boxExecutor = `using System.Diagnostics;
+public class Executor
+{
+    public static void BoxSink(Pod pod)
+    {
+        string target = pod.payload;
+        Process.Start("cmd.exe", "/c ping " + target);
+    }
+}
+`;
+
+describe('#638 step 3: container field cross-file carrier', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('cross-file path when container field is tainted; literal-only path stays clean', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'Feeder.cs', code: boxFeeder, language: 'csharp' },
+        { filePath: 'Executor.cs', code: boxExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    const taintedSink = lineOf(boxExecutor, 'Process.Start', 0);
+    expect(
+      pa.taint_paths.some(
+        p =>
+          p.sink.file === 'Executor.cs' &&
+          p.sink.line === taintedSink &&
+          p.sink.type === 'command_injection' &&
+          p.source.file === 'Feeder.cs',
+      ),
+    ).toBe(true);
+    const literalFeeder = `using System.Web;
+public class Pod { public string payload; }
+public class Feeder
+{
+    public void LiteralOnly()
+    {
+        Pod pod = new Pod();
+        pod.payload = "localhost";
+        Executor.BoxSink(pod);
+    }
+}
+`;
+    const literalPa2 = await analyzeProject(
+      [
+        { filePath: 'Feeder.cs', code: literalFeeder, language: 'csharp' },
+        { filePath: 'Executor.cs', code: boxExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    expect(
+      literalPa2.taint_paths.some(
+        p => p.sink.file === 'Executor.cs' && p.sink.line === taintedSink,
+      ),
+    ).toBe(false);
+  });
+});
