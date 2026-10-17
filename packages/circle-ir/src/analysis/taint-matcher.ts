@@ -4100,19 +4100,46 @@ function isGoNoopBody(
  * body keeps the by-name credit, and so does a name with a non-no-op overload.
  */
 function findJsNoopHelpers(types: TypeInfo[], sourceLines: string[]): Set<string> {
-  const noop = new Set<string>();
-  const other = new Set<string>();
+  const fromDecl = new Set<string>();
+  const otherDecl = new Set<string>();
   for (const type of types) {
     for (const method of type.methods) {
-      (isJsNoopBody(method, sourceLines) ? noop : other).add(method.name);
+      (isJsNoopBody(method, sourceLines) ? fromDecl : otherDecl).add(method.name);
     }
   }
-  for (const name of other) noop.delete(name);
+  for (const name of otherDecl) fromDecl.delete(name);
   const src = sourceLines.join('\n');
-  for (const name of [...noop]) {
-    if (new RegExp(`(?:const|let|var)\\s+${name}\\s*=`).test(src)) noop.delete(name);
+  for (const name of [...fromDecl]) {
+    if (new RegExp(`(?:const|let|var)\\s+${name}\\s*=`).test(src)) fromDecl.delete(name);
   }
-  return noop;
+
+  const fromBinding = new Set<string>();
+  const otherBinding = new Set<string>();
+  for (const line of sourceLines) {
+    const arrow = /(?:const|let|var)\s+(\w+)\s*=\s*\(([^)]*)\)\s*=>\s*([^;{]+)\s*;/.exec(line);
+    if (arrow) {
+      const params = jsParamNamesFromList(arrow[2]!);
+      if (params.size > 0 && jsNoopReturnExpr(arrow[3]!, params)) fromBinding.add(arrow[1]!);
+      else otherBinding.add(arrow[1]!);
+    }
+    const fnExpr = /(?:const|let|var)\s+(\w+)\s*=\s*function\s*\(([^)]*)\)\s*\{\s*return\s+([^;{}]+);\s*\}\s*;/.exec(line);
+    if (fnExpr) {
+      const params = jsParamNamesFromList(fnExpr[2]!);
+      if (params.size > 0 && jsNoopReturnExpr(fnExpr[3]!, params)) fromBinding.add(fnExpr[1]!);
+      else otherBinding.add(fnExpr[1]!);
+    }
+  }
+  for (const name of otherBinding) fromBinding.delete(name);
+  return new Set([...fromDecl, ...fromBinding]);
+}
+
+function jsParamNamesFromList(list: string): Set<string> {
+  const params = new Set<string>();
+  for (const seg of list.split(',')) {
+    const name = seg.trim().split(':')[0]?.trim().replace(/^\.\.\./, '');
+    if (name) params.add(name);
+  }
+  return params;
 }
 
 function isJsNoopBody(

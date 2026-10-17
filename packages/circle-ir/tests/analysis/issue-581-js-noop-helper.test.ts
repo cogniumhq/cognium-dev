@@ -17,8 +17,8 @@ async function sqlLines(code: string, file = 'lookup.js'): Promise<number[]> {
   return [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'sql_injection').map((f) => f.sink_line))].sort((a, b) => a - b);
 }
 
-async function xssLines(code: string, file = 'page.js'): Promise<number[]> {
-  const r = await analyze(code, file, 'javascript');
+async function xssLines(code: string, file = 'page.js', lang: 'javascript' | 'typescript' = 'javascript'): Promise<number[]> {
+  const r = await analyze(code, file, lang);
   return [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === 'xss').map((f) => f.sink_line))].sort((a, b) => a - b);
 }
 
@@ -94,5 +94,31 @@ app.get("/p", (req, res) => {
 });
 `;
     expect(await xssLines(code, 'page_branch.js')).toEqual([]);
+  });
+
+  it('arrow trim-only escape is not credited as xss sanitizer', async () => {
+    const code = `const escape = (v) => v.trim();
+const express = require("express");
+const app = express();
+app.get("/p", (req, res) => {
+  const x = req.query.x;
+  res.write(escape(x));
+  res.end();
+});
+`;
+    expect(await xssLines(code, 'arrow_page.js')).toEqual([lineOf(code, 'res.write(escape')]);
+  });
+
+  it('TypedPreview.tsx: trim-only escape reports xss', async () => {
+    const code = `const escape = (v: string) => v.trim();
+const express = require("express");
+const app = express();
+app.get("/p", (req, res) => {
+  const x = req.query.x as string;
+  res.write(escape(x));
+  res.end();
+});
+`;
+    expect(await xssLines(code, 'TypedPreview.tsx', 'typescript')).toEqual([lineOf(code, 'res.write(escape')]);
   });
 });
