@@ -29,7 +29,7 @@ describe('#272 C# early-return guards are credited', () => {
     // The guard validates `u.Host`; the sink uses `input`, from which `u` was
     // built. Allow-listing the host constrains where `input` can point.
     expect(await flows(`using System; using System.Net.Http; using System.Threading.Tasks;
-public class P { static string[] Allowed = {"a.com"};
+public class P { static readonly string[] Allowed = {"a.com"};
  public async Task R(string input) {
   var u = new Uri(input);
   if (Array.IndexOf(Allowed, u.Host) < 0) return;

@@ -7518,10 +7518,15 @@ function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): T
   const terminatorRe = /\b(throw|return)\b/;
 
   // Allow-list membership, rejecting form:
-  //   if (Array.IndexOf(Allowed, x) < 0) return;
+  //   if (Array.IndexOf(Allowed, x) < 0) return;          (also System.Array, == -1)
   //   if (!Allowed.Contains(x)) return;
+  // cognium-dev#809: the IndexOf form credits only a `static readonly`
+  // string-literal array field the file never writes (see
+  // `collectCSharpLiteralArrayFields`); any other array may hold the value.
+  const literalArrays = collectCSharpLiteralArrayFields(code);
+  const indexOfRe =
+    /\bif\s*\(\s*(?:System\s*\.\s*)?Array\s*\.\s*IndexOf\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_][\w.]*)\s*\)\s*(?:<\s*0|==\s*-\s*1)\s*\)/;
   const allowlistRes = [
-    /\bif\s*\(\s*Array\s*\.\s*IndexOf\s*\([^,]+,\s*([A-Za-z_][\w.]*)\s*\)\s*<\s*0\s*\)/,
     /\bif\s*\(\s*!\s*[A-Za-z_][\w.]*\s*\.\s*Contains\s*\(\s*([A-Za-z_][\w.]*)\s*\)\s*\)/,
   ];
   // Character-class validation, rejecting form:
@@ -7531,7 +7536,9 @@ function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): T
 
   for (let i = 0; i < lines.length; i++) {
     let guardedExpr: string | null = null;
-    for (const re of allowlistRes) {
+    const im = indexOfRe.exec(lines[i]);
+    if (im && literalArrays.has(im[1])) guardedExpr = im[2];
+    if (!guardedExpr) for (const re of allowlistRes) {
       const m = re.exec(lines[i]);
       if (m) { guardedExpr = m[1]; break; }
     }
@@ -7571,6 +7578,9 @@ function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): T
     for (let l = i + 1; l < lines.length; l++) {
       const a = assignRe.exec(lines[l]);
       if (a && mentions(a[2])) guarded.add(a[1]);
+      // cognium-dev#809: a reassignment from anything unguarded ends the
+      // credit (`target = Console.ReadLine();` after the guard).
+      else if (a) guarded.delete(a[1]);
       if (mentions(lines[l])) {
         sanitizers.push({
           type: 'csharp_early_return_guard',
@@ -7583,6 +7593,45 @@ function findCSharpEarlyReturnGuardSanitizers(code: string, language: string): T
     }
   }
   return sanitizers;
+}
+
+/**
+ * cognium-dev#809 — names of `static readonly string[]` fields initialised
+ * with string literals only, that the file never writes:
+ *
+ *   private static readonly string[] KnownHosts = { "a.example", "b.example" };
+ *
+ * Past `if (Array.IndexOf(KnownHosts, x) < 0) throw …;`, `x` is one of those
+ * literals. The C# counterpart of the Python literal-collection membership
+ * guard (#563) and the Rust literal-equality guard (#293).
+ *
+ * `readonly` stops the field being rebound outside an initialiser, but array
+ * elements stay writable, so any element store, `ref`/`out` pass,
+ * `SetValue`, `Array.<mutator>(…)` naming the field, or plain assignment
+ * after the declaration disqualifies it.
+ */
+function collectCSharpLiteralArrayFields(code: string): Set<string> {
+  const names = new Set<string>();
+  const lit = String.raw`(?:@"(?:[^"]|"")*"|"(?:[^"\\\n]|\\.)*")`;
+  const elems = new RegExp(String.raw`^\s*${lit}(?:\s*,\s*${lit})*\s*,?\s*$`);
+  const declRe =
+    /((?:\b(?:public|private|protected|internal|static|readonly)\s+)+)string\s*\[\s*\]\s+([A-Za-z_]\w*)\s*=\s*(?:new\s+(?:string\s*)?\[\s*\]\s*)?\{([^{}]*)\}\s*;/g;
+  for (const m of code.matchAll(declRe)) {
+    const mods = m[1]!;
+    const name = m[2]!;
+    if (!/\bstatic\b/.test(mods) || !/\breadonly\b/.test(mods)) continue;
+    if (!elems.test(m[3]!)) continue;
+    const rest = code.slice(0, m.index) + code.slice(m.index! + m[0].length);
+    const written = new RegExp(
+      String.raw`\b${name}\s*(?:\[[^\]]*\]\s*)?(?:[-+*/%&|^]|\?\?)?=(?!=)` +
+      String.raw`|\b(?:ref|out)\s+${name}\b` +
+      String.raw`|\b${name}\s*\.\s*SetValue\s*\(` +
+      String.raw`|\bArray\s*\.\s*(?:Clear|Copy|ConstrainedCopy|Fill|Resize|Reverse|Sort)\s*\([^;]*\b${name}\b`,
+    );
+    if (written.test(rest)) continue;
+    names.add(name);
+  }
+  return names;
 }
 
 function findCSharpFullPathStartsWithGuardSanitizers(code: string): TaintSanitizer[] {
