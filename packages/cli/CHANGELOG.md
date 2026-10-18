@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.16.1] - 2026-10-17
+
+### Changes
+
+- A Java scan of a large class is back to 4.15.0 speed; one 3,000-line file went from 22 s back to 0.2 s (#806).
+- A Java scan no longer reports an `external_taint_escape` at a `java.lang.Character` predicate (`isLetter`, `isDigit`, …) on a tainted char, such as inside a character-filtering `@sanitizer` helper (#807).
+- A C# scan no longer reports a field written through a sanitizer in one method at a matching sink in another (#808).
+- A C# scan credits a rejecting `System.Array.IndexOf(...) < 0` / `== -1` guard over a `static readonly` string-literal array, and no longer credits one over a mutable or non-literal array (#809).
+
 ## [4.16.0] - 2026-10-17
 
 ### Changes

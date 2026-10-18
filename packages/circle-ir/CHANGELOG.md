@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.16.1] - 2026-10-17
 
 ### Fixed
 - **C#: a rejecting `Array.IndexOf` guard over a `static readonly` string-literal array credits the guarded value (#809).** `if (System.Array.IndexOf(Allowed, host) < 0) throw …;` and `== -1` with `throw` or `return` now clear the sinks after the guard like `Array.IndexOf(…) < 0` already did, so `GetStringAsync("https://" + host + "/health")` no longer reports `ssrf`. The `IndexOf` guard now credits only a field initialised with string literals only, declared `static readonly` and never written in the file (no assignment, element store, `ref`/`out`, `SetValue` or `Array.Clear`/`Copy`/`Fill`/`Resize`/`Reverse`/`Sort`); a non-`readonly` array, one assigned from a parameter, an element write, a non-literal element, a reassignment of the guarded value after the guard, a guard that falls through and a guard on another variable report again.
