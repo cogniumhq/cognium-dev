@@ -203,6 +203,71 @@ public class Executor
 }
 `;
 
+const staticFeeder = `using System.Web;
+public class A {
+    public static string stored;
+    public void Field(HttpRequest req) {
+        stored = req.QueryString["name"];
+        new B().FieldSink();
+    }
+}`;
+
+const staticExecutor = `using System.Diagnostics;
+public class B {
+    public void FieldSink() {
+        string data = A.stored;
+        Process.Start("cmd.exe /c dir " + data);
+    }
+}`;
+
+describe('#638 step 4: static field cross-file carrier', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('cross-file path when a static field is tainted; literal write stays clean', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'A.cs', code: staticFeeder, language: 'csharp' },
+        { filePath: 'B.cs', code: staticExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    const taintedSink = lineOf(staticExecutor, 'Process.Start', 0);
+    expect(
+      pa.taint_paths.some(
+        p =>
+          p.sink.file === 'B.cs' &&
+          p.sink.line === taintedSink &&
+          p.sink.type === 'command_injection' &&
+          p.source.file === 'A.cs',
+      ),
+    ).toBe(true);
+
+    const literalFeeder = `using System.Web;
+public class A {
+    public static string stored;
+    public void LiteralOnly() {
+        stored = "localhost";
+        new B().FieldSink();
+    }
+}
+`;
+    const literalPa = await analyzeProject(
+      [
+        { filePath: 'A.cs', code: literalFeeder, language: 'csharp' },
+        { filePath: 'B.cs', code: staticExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    expect(
+      literalPa.taint_paths.some(
+        p => p.sink.file === 'B.cs' && p.sink.line === taintedSink,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('#638 step 3: container field cross-file carrier', () => {
   beforeAll(async () => {
     await initAnalyzer();

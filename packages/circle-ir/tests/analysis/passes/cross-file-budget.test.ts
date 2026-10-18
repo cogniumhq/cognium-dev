@@ -88,6 +88,7 @@ function makeProjectGraph(hooks: ResolverHooks, irMap?: Map<string, CircleIR>): 
           if (hooks.phase3DelayMs) sleepSync(hooks.phase3DelayMs);
           return [];
         },
+        findCSharpStaticFieldTaintPaths: () => [],
         getResolvedCallsFromFile: () => [],
         getMethodTaintInfo: () => undefined,
       };

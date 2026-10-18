@@ -178,8 +178,10 @@ export class CrossFilePass {
       logger.debug('cross-file: phase 3/4 starting (findFieldBindingTaintPaths)');
       const phase3 = resolver.findFieldBindingTaintPaths(budgetExceeded);
       ipPaths.push(...phase3);
+      const phase3b = resolver.findCSharpStaticFieldTaintPaths(budgetExceeded);
+      ipPaths.push(...phase3b);
       logger.info('cross-file: phase 3/4 done', {
-        paths: phase3.length, elapsedMs: Date.now() - phase3Start,
+        paths: phase3.length + phase3b.length, elapsedMs: Date.now() - phase3Start,
       });
     }
 

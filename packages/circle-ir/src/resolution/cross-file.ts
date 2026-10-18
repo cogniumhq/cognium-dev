@@ -252,6 +252,12 @@ export class CrossFileResolver {
   // Cache: `${typeFqn}.${fieldName}` -> field taint info
   private fieldTaintInfo: Map<string, FieldTaintInfo> = new Map();
 
+  /** cognium-dev#638 step 4 — `ClassName.staticField` written from a real source. */
+  private csharpStaticFieldWriters: Map<
+    string,
+    { file: string; line: number; type: string; methodName: string }
+  > = new Map();
+
   // Resolved calls cache
   private resolvedCalls: Map<string, ResolvedCall> = new Map();
 
@@ -276,6 +282,7 @@ export class CrossFileResolver {
 
     // Analyze cross-instance field bindings (constructor + setter writers)
     this.analyzeFieldTaint(ir, filePath);
+    this.analyzeCSharpStaticFieldWriters(ir, filePath);
   }
 
   /**
@@ -1540,6 +1547,146 @@ export class CrossFileResolver {
     }
 
     return paths;
+  }
+
+  /**
+   * Cross-file C# flows through a static field (`A.stored = req…` in file A,
+   * `data = A.stored` → sink in file B). cognium-dev#638 `_68`.
+   */
+  findCSharpStaticFieldTaintPaths(deadline?: () => boolean): InterproceduralTaintPath[] {
+    const paths: InterproceduralTaintPath[] = [];
+    const seen = new Set<string>();
+    if (this.csharpStaticFieldWriters.size === 0) return paths;
+
+    for (const [readerFile, callerIR] of this.fileIRs) {
+      if (deadline?.()) break;
+      if (callerIR.meta.language !== 'csharp') continue;
+      const callerIdx = this.getFileIndex(callerIR);
+
+      for (const type of callerIR.types) {
+        for (const method of type.methods) {
+          type Origin = {
+            file: string;
+            line: number;
+            type: string;
+            hopChain: InterproceduralTaintPath['hops'];
+          };
+          const tainted = new Map<string, Origin>();
+
+          const defsInMethod = (callerIdx.defsByMethod.get(method) ?? []).filter(
+            d => d.kind === 'local' && !!d.variable,
+          );
+
+          for (const def of defsInMethod) {
+            const usesAtLine = callerIdx.usesByLine.get(def.line) ?? [];
+            const fieldKey = this.resolveCSharpStaticFieldReadKey(type, usesAtLine);
+            if (!fieldKey) continue;
+            const writer = this.csharpStaticFieldWriters.get(fieldKey);
+            if (!writer) continue;
+
+            const hopChain: InterproceduralTaintPath['hops'] = [
+              { file: writer.file, line: writer.line, method: writer.methodName, kind: 'source' },
+              { file: writer.file, line: writer.line, method: writer.methodName, kind: 'field_write' },
+              { file: readerFile, line: def.line, method: method.name, kind: 'field_read' },
+            ];
+            tainted.set(def.variable!, {
+              file: writer.file,
+              line: writer.line,
+              type: writer.type,
+              hopChain,
+            });
+          }
+
+          if (tainted.size === 0) continue;
+
+          const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
+          for (const sink of sinksInCaller) {
+            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+            for (const sinkCall of callsAtSink) {
+              for (const arg of sinkCall.arguments ?? []) {
+                const matched = this.matchTaintedArg(arg, tainted);
+                if (!matched) continue;
+                const key = `csf:${matched.origin.file}:${matched.origin.line}→${readerFile}:${sink.line}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const hops: InterproceduralTaintPath['hops'] = [
+                  ...matched.origin.hopChain,
+                  { file: readerFile, line: sink.line, method: method.name, kind: 'sink' },
+                ];
+                const decay = Math.max(0.3, Math.pow(0.85, Math.max(hops.length - 1, 0)));
+                paths.push({
+                  source: {
+                    file: matched.origin.file,
+                    line: matched.origin.line,
+                    type: matched.origin.type,
+                  },
+                  sink: {
+                    file: readerFile,
+                    line: sink.line,
+                    type: sink.type,
+                    cwe: sink.cwe,
+                  },
+                  hops,
+                  confidence: decay,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return paths;
+  }
+
+  private analyzeCSharpStaticFieldWriters(ir: CircleIR, filePath: string): void {
+    if (ir.meta.language !== 'csharp') return;
+    for (const type of ir.types) {
+      const staticFields = new Set(
+        (type.fields ?? [])
+          .filter(f => f.modifiers?.includes('static'))
+          .map(f => f.name),
+      );
+      if (staticFields.size === 0) continue;
+      for (const src of ir.taint.sources ?? []) {
+        if (src.type === 'interprocedural_param') continue;
+        if (!src.variable) continue;
+        const fieldName = src.variable.replace(/^this\./, '');
+        if (!staticFields.has(fieldName)) continue;
+        const method = type.methods.find(
+          m => src.line >= m.start_line && src.line <= m.end_line,
+        );
+        const key = `${type.name}.${fieldName}`;
+        this.csharpStaticFieldWriters.set(key, {
+          file: filePath,
+          line: src.line,
+          type: src.type,
+          methodName: method?.name ?? '',
+        });
+      }
+    }
+  }
+
+  private resolveCSharpStaticFieldReadKey(
+    containingType: { name: string; fields?: Array<{ name: string; modifiers?: string[] }> },
+    usesAtLine: DFGUse[],
+  ): string | null {
+    const extUses = usesAtLine.filter(u => u.def_id === null && u.variable);
+    const names = extUses.map(u => u.variable!);
+    for (let i = 0; i < names.length; i++) {
+      for (let j = 0; j < names.length; j++) {
+        if (i === j) continue;
+        const key = `${names[i]}.${names[j]}`;
+        if (this.csharpStaticFieldWriters.has(key)) return key;
+      }
+    }
+    for (const name of names) {
+      const field = containingType.fields?.find(f => f.name === name);
+      if (!field?.modifiers?.includes('static')) continue;
+      const key = `${containingType.name}.${name}`;
+      if (this.csharpStaticFieldWriters.has(key)) return key;
+    }
+    return null;
   }
 
   /**

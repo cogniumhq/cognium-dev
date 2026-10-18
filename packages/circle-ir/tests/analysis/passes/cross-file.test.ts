@@ -80,6 +80,7 @@ function makeProjectGraph(opts: {
         findCrossFileTaintFlows: () => opts.flows ?? [],
         findInterproceduralTaintPaths: () => [],
         findFieldBindingTaintPaths: () => [],
+        findCSharpStaticFieldTaintPaths: () => [],
         getResolvedCallsFromFile: (path: string) => opts.resolvedCallsMap?.get(path) ?? [],
         getMethodTaintInfo: () => undefined,
       };
@@ -398,6 +399,7 @@ describe('CrossFilePass — dedup by type (PR A)', () => {
           findCrossFileTaintFlows: () => flows,
           findInterproceduralTaintPaths: () => [],
           findFieldBindingTaintPaths: () => ipPaths,
+          findCSharpStaticFieldTaintPaths: () => [],
           getResolvedCallsFromFile: () => [],
           getMethodTaintInfo: () => undefined,
         };
