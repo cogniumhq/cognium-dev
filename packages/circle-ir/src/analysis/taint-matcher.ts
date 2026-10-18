@@ -757,6 +757,7 @@ function isInterproceduralTaintableType(
   if (language === 'csharp') {
     const csharpTaintable = [
       'string', 'object', 'IEnumerable', 'ICollection', 'IList',
+      'List', 'Hashtable', 'ArrayList',
       'Dictionary', 'IDictionary', 'IReadOnlyList', 'IReadOnlyCollection',
       // Byte/stream payloads carry deserialization / upload input.
       'Stream', 'byte[]', 'Byte[]', 'MemoryStream',

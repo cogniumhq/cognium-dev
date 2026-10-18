@@ -317,3 +317,157 @@ public class Feeder
     ).toBe(false);
   });
 });
+
+const htFeeder = `using System.Collections;
+using System.Web;
+public class Feeder
+{
+    public void Holder(HttpRequest req)
+    {
+        Hashtable table = new Hashtable();
+        table["k"] = req.QueryString["host"];
+        Executor.TableSink(table);
+    }
+    public void LiteralOnly()
+    {
+        Hashtable table = new Hashtable();
+        table["k"] = "localhost";
+        Executor.TableSink(table);
+    }
+}
+`;
+
+const htExecutor = `using System.Collections;
+using System.Diagnostics;
+public class Executor
+{
+    public static void TableSink(Hashtable table)
+    {
+        string target = (string)table["k"];
+        Process.Start("cmd.exe", "/c ping " + target);
+    }
+}
+`;
+
+const listFeeder = `using System.Collections.Generic;
+using System.Web;
+public class Feeder
+{
+    public void Holder(HttpRequest req)
+    {
+        List<string> list = new List<string>();
+        list.Add(req.QueryString["host"]);
+        Executor.ListSink(list);
+    }
+    public void LiteralOnly()
+    {
+        List<string> list = new List<string>();
+        list.Add("localhost");
+        Executor.ListSink(list);
+    }
+}
+`;
+
+const listExecutor = `using System.Collections.Generic;
+using System.Diagnostics;
+public class Executor
+{
+    public static void ListSink(List<string> list)
+    {
+        string target = list[0];
+        Process.Start("cmd.exe", "/c ping " + target);
+    }
+}
+`;
+
+describe('#638 step 5: Hashtable / List cross-file carriers', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  it('Hashtable indexer write reaches cross-file sink; literal path stays clean', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'Feeder.cs', code: htFeeder, language: 'csharp' },
+        { filePath: 'Executor.cs', code: htExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    const taintedSink = lineOf(htExecutor, 'Process.Start', 0);
+    expect(
+      pa.taint_paths.some(
+        p =>
+          p.sink.file === 'Executor.cs' &&
+          p.sink.line === taintedSink &&
+          p.sink.type === 'command_injection' &&
+          p.source.file === 'Feeder.cs',
+      ),
+    ).toBe(true);
+    const literalPa = await analyzeProject(
+      [
+        {
+          filePath: 'Feeder.cs',
+          code: `using System.Collections;
+public class Feeder {
+  public void LiteralOnly() {
+    Hashtable table = new Hashtable();
+    table["k"] = "localhost";
+    Executor.TableSink(table);
+  }
+}`,
+          language: 'csharp',
+        },
+        { filePath: 'Executor.cs', code: htExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    expect(
+      literalPa.taint_paths.some(
+        p => p.sink.file === 'Executor.cs' && p.sink.line === taintedSink,
+      ),
+    ).toBe(false);
+  });
+
+  it('List.Add write reaches cross-file sink; literal Add stays clean', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'Feeder.cs', code: listFeeder, language: 'csharp' },
+        { filePath: 'Executor.cs', code: listExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    const taintedSink = lineOf(listExecutor, 'Process.Start', 0);
+    expect(
+      pa.taint_paths.some(
+        p =>
+          p.sink.file === 'Executor.cs' &&
+          p.sink.line === taintedSink &&
+          p.sink.type === 'command_injection' &&
+          p.source.file === 'Feeder.cs',
+      ),
+    ).toBe(true);
+    const literalPa = await analyzeProject(
+      [
+        {
+          filePath: 'Feeder.cs',
+          code: `using System.Collections.Generic;
+public class Feeder {
+  public void LiteralOnly() {
+    List<string> list = new List<string>();
+    list.Add("localhost");
+    Executor.ListSink(list);
+  }
+}`,
+          language: 'csharp',
+        },
+        { filePath: 'Executor.cs', code: listExecutor, language: 'csharp' },
+      ],
+      {},
+    );
+    expect(
+      literalPa.taint_paths.some(
+        p => p.sink.file === 'Executor.cs' && p.sink.line === taintedSink,
+      ),
+    ).toBe(false);
+  });
+});

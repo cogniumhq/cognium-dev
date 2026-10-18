@@ -1830,6 +1830,10 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
   // container local so cross-file calls that pass `box` carry taint.
   const memberFieldAssignRe =
     /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);?\s*$/;
+  // cognium-dev#638 step 5 — `list.Add(req.QueryString["k"])` seeds the list
+  // local so cross-file calls that pass `list` carry taint into callee reads.
+  const collectionAddRe =
+    /^\s*([A-Za-z_]\w*)\s*\.\s*Add\s*\(\s*(.+?)\s*\)\s*;?\s*$/;
   // `Request.*` is the inherited controller member. A parameter typed
   // `HttpRequest` / `HttpRequestBase` is the same surface under whatever
   // name the method uses (`req` in Juliet) — cognium-dev#501.
@@ -1991,6 +1995,25 @@ function findCSharpRequestSources(sourceCode: string, language: string): TaintSo
           sources.push({
             type,
             location: `${baseName}.${fieldName} = ${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''}`,
+            severity: type === 'db_input' ? 'medium' : 'high',
+            line: lineNumber,
+            confidence: 1.0,
+            variable: baseName,
+          });
+        }
+        continue;
+      }
+    }
+    const addEl = collectionAddRe.exec(stmt);
+    if (addEl) {
+      const [, baseName, rhs] = addEl;
+      const type = classify(rhs);
+      if (type && baseName) {
+        const lineNumber = i + 1;
+        if (!sources.some(s => s.line === lineNumber && s.variable === baseName)) {
+          sources.push({
+            type,
+            location: `${baseName}.Add(${rhs.trim().substring(0, 50)}${rhs.length > 50 ? '...' : ''})`,
             severity: type === 'db_input' ? 'medium' : 'high',
             line: lineNumber,
             confidence: 1.0,
