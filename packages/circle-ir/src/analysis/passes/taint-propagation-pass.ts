@@ -897,6 +897,23 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       }
     }
 
+    // cognium-dev#686 — JS/TS module-scope `let`/`var` store-then-read across
+    // route handlers (variant xss stored). Mirrors #243 Go package globals.
+    if (
+      (ctx.language === 'javascript' || ctx.language === 'typescript') &&
+      typeof ctx.code === 'string'
+    ) {
+      const jsModuleFlows = detectJsModuleScopeFlows(
+        ctx.code,
+        sources,
+        sinks,
+        constProp.unreachableLines,
+      ) ?? [];
+      for (const f of jsModuleFlows) {
+        pushIfNew(f);
+      }
+    }
+
     // Sprint 9 #58.1 — final pass: drop any flow whose source variable was
     // explicitly marked sanitized by a guard (e.g. regex-allowlist).
     // Applied to ALL flow generators (DFG-built and the four supplements)
@@ -1561,6 +1578,109 @@ function detectGoPackageGlobalFlows(
     if (!sinkLineText) continue;
     for (const w of writes) {
       if (w.line >= sink.line) continue; // write must precede sink lexically
+      const re = new RegExp(`(?<![A-Za-z0-9_$])${w.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`);
+      if (!re.test(sinkLineText)) continue;
+      flows.push({
+        source_line: w.sourceLine,
+        sink_line: sink.line,
+        source_type: w.sourceType as CircleIR['taint']['sources'][number]['type'],
+        sink_type: sink.type,
+        path: [
+          { variable: w.varName, line: w.sourceLine, type: 'source' },
+          { variable: w.varName, line: w.line, type: 'assignment' },
+          { variable: w.varName, line: sink.line, type: 'sink' },
+        ],
+        confidence: 0.9,
+        sanitized: false,
+      });
+    }
+  }
+
+  return flows;
+}
+
+/**
+ * cognium-dev#686 — module-level `let`/`var` written in one handler and read
+ * in another. Per-function DFG cannot link these; text-scan supplement.
+ */
+function detectJsModuleScopeFlows(
+  code: string,
+  sources: CircleIR['taint']['sources'],
+  sinks: CircleIR['taint']['sinks'],
+  unreachableLines: Set<number>,
+): CircleIR['taint']['flows'] {
+  const flows: CircleIR['taint']['flows'] = [];
+  if (!code || sinks.length === 0) return flows;
+
+  const lines = code.split('\n');
+  const moduleVars = new Set<string>();
+  for (const line of lines) {
+    const stripped = line.replace(/\s+$/, '');
+    if (!stripped || /^[ \t]/.test(line)) continue;
+    const m = stripped.match(/^(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/);
+    if (m) moduleVars.add(m[1]);
+  }
+  if (moduleVars.size === 0) return flows;
+
+  const sourceVarNames = new Set<string>();
+  for (const s of sources) {
+    if (typeof s.variable === 'string' && s.variable.length > 0) {
+      sourceVarNames.add(s.variable);
+    }
+  }
+  const JS_HTTP_SOURCE_RE =
+    /\b(?:req|request)\.(?:body|query|params|headers|cookies|get)\b|\breq\.(?:param|query|body)\(/;
+
+  interface ModuleWrite {
+    varName: string;
+    line: number;
+    sourceLine: number;
+    sourceType: string;
+  }
+  const writes: ModuleWrite[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (unreachableLines.has(i + 1)) continue;
+    for (const lhs of moduleVars) {
+      const declRe = new RegExp(`\\b(?:let|const|var)\\s+${lhs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      if (declRe.test(line)) continue;
+      const m = line.match(
+        new RegExp(`\\b${lhs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*([^;]+)`),
+      );
+      if (!m) continue;
+      const rhs = m[1];
+
+      let taintedBy: { line: number; type: string } | null = null;
+      const onLine = sources.filter(s => s.line === i + 1);
+      if (onLine.length > 0) {
+        taintedBy = { line: onLine[0].line, type: onLine[0].type };
+      } else if (JS_HTTP_SOURCE_RE.test(rhs)) {
+        taintedBy = { line: i + 1, type: 'http_body' };
+      } else {
+        for (const v of sourceVarNames) {
+          const re = new RegExp(`(?<![A-Za-z0-9_$])${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`);
+          if (re.test(rhs)) {
+            const src = sources.find(s => s.variable === v);
+            if (src) {
+              taintedBy = { line: src.line, type: src.type };
+              break;
+            }
+          }
+        }
+      }
+      if (!taintedBy) continue;
+      writes.push({ varName: lhs, line: i + 1, sourceLine: taintedBy.line, sourceType: taintedBy.type });
+    }
+  }
+  if (writes.length === 0) return flows;
+
+  for (const sink of sinks) {
+    if (unreachableLines.has(sink.line)) continue;
+    const sinkLineText = lines[sink.line - 1] ?? '';
+    if (!sinkLineText) continue;
+    for (const w of writes) {
+      if (w.line >= sink.line) continue;
       const re = new RegExp(`(?<![A-Za-z0-9_$])${w.varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`);
       if (!re.test(sinkLineText)) continue;
       flows.push({
