@@ -150,6 +150,17 @@ function isReactHtmlComponent(m: MethodInfo, f: TaintFlowInfo, lines: string[]):
   return /\bfunction\s+[A-Z][A-Za-z0-9]*\s*\(\s*\{/.test(sig);
 }
 
+/** cognium-dev#804 — SCA reachability: direct `yaml.load(param)` on a parameter. */
+function isPythonYamlLoadParamDeser(f: TaintFlowInfo, lines: string[]): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'deserialization') return false;
+  const head = f.path[0]?.variable;
+  if (!head || f.path.length < 2) return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  if (!/\byaml\.load\s*\(/.test(sinkLine) || /\bLoader\s*=\s*yaml\.SafeLoader/.test(sinkLine)) return false;
+  const esc = head.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\byaml\\.load\\s*\\(\\s*${esc}\\b`).test(sinkLine);
+}
+
 /** Sources that stand for a constructor-injected field or a getter over one (#78). */
 const FIELD_CARRIED_SOURCE = /constructor-injected field|returns tainted field/;
 
@@ -346,7 +357,12 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
       let keep = true;
       if (f.source_type === 'interprocedural_param' && !realSourceLines.has(f.source_line)) {
         const m = enclosingMethod(methods, f.source_line);
-        keep = m !== undefined && (isHandler(m) || fedByRealSource(f, m) || isReactHtmlComponent(m, f, lines));
+        keep = m !== undefined && (
+          isHandler(m) ||
+          fedByRealSource(f, m) ||
+          isReactHtmlComponent(m, f, lines) ||
+          (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines))
+        );
       }
       if (keep) flows[w++] = f;
       else {
