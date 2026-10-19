@@ -35,6 +35,10 @@ def run(data):
       (p) => p.source.file === 'controller.py' && p.sink.file === 'helper.py',
     );
     expect(xfile, 'expected controller.py → helper.py deserialization').toBeTruthy();
+
+    const helperFlows = (r.files.find(f => f.file === 'helper.py')?.analysis.taint.flows ?? [])
+      .filter(f => f.sink_type === 'deserialization');
+    expect(helperFlows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('helper alone — no spurious deserialization without tainted param', async () => {

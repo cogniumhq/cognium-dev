@@ -35,6 +35,10 @@ def run(target):
       (p) => p.source.file === 'controller.py' && p.sink.file === 'helper.py',
     );
     expect(xfile, 'expected controller.py → helper.py open_redirect').toBeTruthy();
+
+    const helperFlows = (r.files.find(f => f.file === 'helper.py')?.analysis.taint.flows ?? [])
+      .filter(f => f.sink_type === 'open_redirect');
+    expect(helperFlows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('helper alone — no spurious open_redirect without tainted param', async () => {

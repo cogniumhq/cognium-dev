@@ -38,6 +38,10 @@ module.exports = { run };
       (p) => p.source.file === 'controller.js' && p.sink.file === 'helper.js',
     );
     expect(xfile, 'expected controller.js → helper.js open_redirect').toBeTruthy();
+
+    const helperFlows = (r.files.find(f => f.file === 'helper.js')?.analysis.taint.flows ?? [])
+      .filter(f => f.sink_type === 'open_redirect');
+    expect(helperFlows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('helper alone — no spurious open_redirect without tainted param', async () => {

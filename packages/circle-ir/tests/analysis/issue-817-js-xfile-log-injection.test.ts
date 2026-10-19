@@ -38,6 +38,10 @@ module.exports = { run };
       (p) => p.source.file === 'controller.js' && p.sink.file === 'helper.js',
     );
     expect(xfile, 'expected controller.js → helper.js log_injection').toBeTruthy();
+
+    const helperFlows = (r.files.find(f => f.file === 'helper.js')?.analysis.taint.flows ?? [])
+      .filter(f => f.sink_type === 'log_injection');
+    expect(helperFlows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('helper alone — no spurious log_injection without tainted param', async () => {
