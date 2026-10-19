@@ -1651,21 +1651,31 @@ function isLiteralOnlyLocalMapKey(lines: string[], recv: string, key: string): b
 }
 
 /**
- * cognium-dev#818 (src14) — `class: 'cache'` seeds `cache.get()` as db_input for
- * redis `createClient()` bindings. Drop when the receiver is a local `new Map()`
- * (same shape, not a cache round-trip).
+ * cognium-dev#818 (src14) / #888 — `class: 'cache'` seeds `cache.get()` as db_input for
+ * redis `createClient()` bindings. Drop in-memory shapes: local `new Map()`, object
+ * property caches (`scope.cache.get`), and a bare `cache` variable not assigned from
+ * `createClient()`.
  */
-function isJsLocalMapDisguisedAsCacheRead(code: string, source: TaintSource): boolean {
+function isJsDisguisedCacheDbInputRead(code: string, source: TaintSource): boolean {
   if (source.type !== 'db_input') return false;
+  const loc = source.location ?? '';
+  if (!/\.cache\.get\s*\(/i.test(loc) && !/\bcache\.get\s*\(/i.test(loc)) return false;
   const lines = code.split('\n');
   const lineText = lines[source.line - 1] ?? '';
+  // In-object texture / loader caches: `scope.cache.get`, `this.cache.get`, etc.
+  if (/\w+\.cache\.get\s*\(/.test(lineText)) return true;
   const read = /\b([A-Za-z_]\w*)\s*\.\s*get\s*\(/.exec(lineText);
   if (!read) return false;
   const recv = read[1];
+  if (recv !== 'cache') return false;
   const mapCtor = new RegExp(
     `\\b${recv}\\s*=\\s*new\\s+(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
   );
-  return lines.some(l => mapCtor.test(l));
+  if (lines.some(l => mapCtor.test(l))) return true;
+  const redisClient = new RegExp(
+    `\\b${recv}\\s*=\\s*(?:await\\s+)?(?:redis\\.)?createClient\\s*\\(`,
+  );
+  return !lines.some(l => redisClient.test(l));
 }
 
 function isLiteralOnlyLocalMap(lines: string[], recv: string): boolean {
@@ -2201,7 +2211,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     const sources: TaintSource[] = ctx.code
       ? executableSources
           .filter(s => !isUnwrittenLocalMapKeyRead(ctx.code as string, s))
-          .filter(s => !isJsLocalMapDisguisedAsCacheRead(ctx.code as string, s))
+          .filter(s => !isJsDisguisedCacheDbInputRead(ctx.code as string, s))
       : executableSources;
 
     // Build merged sinks, deduplicating JS DOM sinks that may overlap with config sinks.
