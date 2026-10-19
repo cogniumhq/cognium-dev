@@ -480,7 +480,7 @@ and move on.
 
   | language | corpus dir (under `$CORPUS_ROOT/`) | expected CSV | note |
   |---|---|---|---|
-  | java | `.owasp-benchmark-java/src/main/java/org/owasp/benchmark/testcode` + `securibench-micro` | `.owasp-benchmark-java/expectedresults-1.2.csv` | OWASP ≈ 22 min per snapshot |
+  | java | `.owasp-benchmark-java/src/main/java/org/owasp/benchmark/testcode` + `securibench-micro`; Juliet: `juliet-java/Java/src/testcases` with `--filter 'CWE<nn>_'` | `.owasp-benchmark-java/expectedresults-1.2.csv` (OWASP only) | OWASP ≈ 22 min per snapshot. Juliet: NIST SARD archive pinned by SHA-256; `Good*` / `Bad*` method labels same as csharp row |
   | python | `benchmark-python/testcode` | `benchmark-python/expectedresults-0.1.csv` | |
   | csharp | `juliet-csharp/src/testcases` with `--filter 'CWE<nn>_'` for the fix's CWE (47,126 files under `CWE*/`) | none | NIST SARD archive pinned by SHA-256. Labels are in the method names: a finding inside a `Bad*` method (`Bad`, `BadSink`, …) should fire, one inside `Good*` (`GoodG2B`, `GoodB2GSink`, …) should not. A removal inside a `Bad*` method is a TP loss |
   | javascript / typescript | `nodegoat`, `juice-shop`, `dvna` | none | small; no TP labels → treat every removal as review |

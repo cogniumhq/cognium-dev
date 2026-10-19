@@ -41,6 +41,7 @@ bash|semgrep-rules|https://github.com/semgrep/semgrep-rules.git|9bbf021d0acffa30
 # writes $MARKER there: the archive hash plus a hash of every extracted file. check
 # recomputes the file hash, so a corpus with local edits, added or deleted files fails.
 ARCHIVES='
+java|juliet-java|https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-java-v1-3.zip|d985f4177c2bcd7b03455a05c1c8f2e755f55c9eb250accd052f05f877347e60|76798417
 csharp|juliet-csharp|https://samate.nist.gov/SARD/downloads/test-suites/2020-08-01-juliet-test-suite-for-csharp-v1-3.zip|2e6dbac4741fb020a0b1c2db69e98aed165987df2bd70bd51f7c8c5302c8e8f8|68976634
 '
 MARKER='.fetch-corpora-pin'
