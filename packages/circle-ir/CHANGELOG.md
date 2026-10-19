@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Java: nested `File(parent, child)` path_traversal on one line (#590, partial).** Sink dedup and clean-variable filtering key off call column so an inner `new File(constant)` on the same line no longer drops the outer constructor's child-argument sink.
 - **Java: helper-return taint reaches caller sinks on DFG-derived locals (#590, partial).** `InterproceduralPass` extends callee-to-caller flow synthesis through same-file DFG chains so `sql = "…" + invoice` sinks fire when `invoice` comes from a helper return.
 - **Java: inner-class helper return connects callee sources to caller sinks (#590, partial).** `InterproceduralPass` synthesizes flows when a source is discovered inside a callee and the caller sink uses the call's assignee; callee resolution uses receiver type for nested classes.
 - **Project scan: cross-file taint paths mirrored on sink-file `taint.flows` (#684, partial).** `analyzeProject` copies each resolved `taint_paths` entry onto the sink file's per-file flow list so directory scans report the same sink types in per-file vulnerabilities that `cross_file_taint_paths` already carries.

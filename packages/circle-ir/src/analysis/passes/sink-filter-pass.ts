@@ -3680,7 +3680,11 @@ export function filterCleanVariableSinks(
     // same line (e.g. System.getProperty("user.dir") inside r.exec(args,...,new File(...))).
     // sink.method is set by findSinks to call.method_name; language-sources sinks also carry it.
     const relevantCalls = sink.method
-      ? callsAtSink.filter(c => c.method_name === sink.method)
+      ? callsAtSink.filter(
+          c =>
+            c.method_name === sink.method &&
+            (sink.callColumn === undefined || c.location.column === sink.callColumn),
+        )
       : callsAtSink;
 
     // Whether to trust sink.argPositions for narrowing the cleanness check. In shell-like

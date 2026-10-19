@@ -483,6 +483,8 @@ export interface TaintSink {
   location: string;
   line: number;
   confidence: number;
+  /** Start column of the matched call (disambiguates multiple sinks on one line). */
+  callColumn?: number;
 
   // Optional fields for LLM enrichment
   method?: string;          // Method being called

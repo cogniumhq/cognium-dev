@@ -2521,7 +2521,9 @@ function findSinks(
         }
 
         const location = formatCallLocation(call);
-        const key = `${location}:${call.location.line}:${pattern.cwe}`;
+        // Column disambiguates multiple constructor sinks on one line (e.g.
+        // `new File(new File(parent), child)` — cognium-dev#590).
+        const key = `${location}:${call.location.line}:${call.location.column}:${pattern.cwe}`;
         const confidence = calculateSinkConfidence(call, pattern);
 
         const existing = sinkMap.get(key);
@@ -2541,6 +2543,7 @@ function findSinks(
             cwe: pattern.cwe,
             location,
             line: call.location.line,
+            callColumn: call.location.column,
             confidence,
             method: call.method_name,
             argPositions: pattern.arg_positions,
