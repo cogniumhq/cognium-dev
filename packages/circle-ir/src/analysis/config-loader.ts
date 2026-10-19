@@ -2846,7 +2846,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // receiver-taint or operator-LHS-taint tracking — the format string is the
   // receiver, not an argument. Deferred to Sprint 6 (#86 follow-up).
   // C-style: printf / fprintf / sprintf / snprintf via ctypes/cffi.
-  { method: 'printf',  type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'printf',  type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [0], languages: ['python', 'rust'] },
   { method: 'fprintf', type: 'format_string', cwe: 'CWE-134', severity: 'high', arg_positions: [1], languages: ['python'] },
   // Go: fmt.Sprintf/Printf/Fprintf/Errorf — format string is first/second arg
   { method: 'Sprintf', class: 'fmt', type: 'format_string', cwe: 'CWE-134', severity: 'medium', arg_positions: [0], languages: ['go'] },
