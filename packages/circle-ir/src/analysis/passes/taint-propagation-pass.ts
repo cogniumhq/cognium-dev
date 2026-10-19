@@ -18,7 +18,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
-import { isFalsePositive, isCorrelatedPredicateFP } from '../constant-propagation.js';
+import { isFalsePositive, isCorrelatedPredicateFP, constPropScopedVar } from '../constant-propagation.js';
 import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
@@ -424,11 +424,17 @@ function makeConstPropVeto(
   };
   return (step, sourceLine, sinkLine, sinkType) => {
     const method = methodAtLine(graph, step.line);
-    const scopedVar = method ? `${method}:${step.variable}` : step.variable;
+    const scopedVar = constPropScopedVar(method, step.variable, step.line, constProp);
     // cognium-dev#751: Go locals are recorded method-scoped only (no unscoped
     // alias) by handleGoAssignment, so Go looks up the scoped name. Other
-    // languages keep the unscoped lookup (#614).
-    const r = isFalsePositive(constProp, step.line, language === 'go' ? scopedVar : step.variable);
+    // languages keep the unscoped lookup (#614), except block-scoped locals (#476).
+    const fpLookup =
+      language === 'go'
+        ? scopedVar
+        : constProp.lineBlockScopes?.has(step.line)
+          ? scopedVar
+          : step.variable;
+    const r = isFalsePositive(constProp, step.line, fpLookup);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
     // #589: the step variable came from a context-specific encoder
@@ -444,7 +450,9 @@ function makeConstPropVeto(
       } else {
         const method = methodAtLine(graph, step.line);
         if (method) {
-          if (unc.get(`${method}:${step.variable}`)?.has(sinkType)) return false;
+          if (unc.get(constPropScopedVar(method, step.variable, step.line, constProp))?.has(sinkType)) {
+            return false;
+          }
         } else if (unc.get(step.variable)?.has(sinkType)) {
           return false;
         }
@@ -512,7 +520,10 @@ function makeConstPropVeto(
       // cognium-dev#751: sink use after `uid := constantHelper(tainted)` must veto
       // when the helper is in `constantReturningMethods`, even if the flow's
       // source_line is the assignment line (rule E would otherwise keep it).
-      if (step.line === sinkLine && !constProp.tainted.has(scopedVar)) {
+      if (
+        step.line === sinkLine &&
+        !constProp.tainted.has(constPropScopedVar(method, step.variable, step.line, constProp))
+      ) {
         for (let ln = sourceLine; ln <= sinkLine; ln++) {
           const calleeMatch = (lines[ln - 1] ?? '').match(/:=\s*(\w+)\s*\(/);
           if (calleeMatch && constProp.constantReturningMethods?.has(calleeMatch[1])) {
@@ -811,7 +822,17 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     }
 
     // Supplement: collection/iterator flows — with FP filtering
-    const collectionFlows = detectCollectionFlows(calls, sources, sinks, constProp.tainted, constProp.unreachableLines, ctx.code, types) ?? [];
+    const collectionFlows =
+      detectCollectionFlows(
+        calls,
+        sources,
+        sinks,
+        constProp.tainted,
+        constProp.unreachableLines,
+        ctx.code,
+        types,
+        constProp.lineBlockScopes,
+      ) ?? [];
     for (const f of collectionFlows) {
       if (flowKeys.has(flowKey(f))) continue;
 
@@ -1824,6 +1845,7 @@ function detectCollectionFlows(
   unreachableLines: Set<number>,
   code?: string,
   types?: CircleIR['types'],
+  lineBlockScopes?: Map<number, number>,
 ): CircleIR['taint']['flows'] {
   const flows: CircleIR['taint']['flows'] = [];
   const fieldNames = new Set<string>();
@@ -1848,7 +1870,14 @@ function detectCollectionFlows(
         }
         if (arg.variable) {
           const varName = arg.variable;
-          const scopedName = call.in_method ? `${call.in_method}:${varName}` : varName;
+          let scopedName = varName;
+          if (call.in_method) {
+            const blockId = lineBlockScopes?.get(call.location.line);
+            scopedName =
+              blockId !== undefined
+                ? `${call.in_method}:b${blockId}:${varName}`
+                : `${call.in_method}:${varName}`;
+          }
           // Bare `name` that is a field read (no local of that name in this
           // method) still counts as a field use — Inter4-style. A shadowing
           // local declaration in the method does not.

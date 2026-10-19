@@ -35,4 +35,5 @@ export {
   analyzeConstantPropagation,
   isFalsePositive,
   isCorrelatedPredicateFP,
+  constPropScopedVar,
 } from './constant-propagation/index.js';

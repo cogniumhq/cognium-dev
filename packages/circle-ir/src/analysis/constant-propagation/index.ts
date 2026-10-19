@@ -55,6 +55,21 @@ export function analyzeConstantPropagation(
  * @param taintedVar - Name of the potentially tainted variable
  * @returns Object indicating if it's a false positive and the reason
  */
+/** Const-prop variable key for a use at `line` (block-scoped locals when recorded). */
+export function constPropScopedVar(
+  method: string | null | undefined,
+  varName: string,
+  line: number,
+  result: ConstantPropagatorResult,
+): string {
+  if (!method) return varName;
+  const blockId = result.lineBlockScopes?.get(line);
+  if (blockId !== undefined) {
+    return `${method}:b${blockId}:${varName}`;
+  }
+  return `${method}:${varName}`;
+}
+
 export function isFalsePositive(
   result: ConstantPropagatorResult,
   sinkLine: number,

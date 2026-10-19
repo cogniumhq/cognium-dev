@@ -71,6 +71,11 @@ export class ConstantPropagator {
   private taintedArrayElements: Map<string, Set<string>> = new Map();
   // Track current method name for scoping local variables
   private currentMethod: string | null = null;
+  /** Start lines of nested `{ ... }` blocks — disambiguate same-named locals (#476 Collections10). */
+  private blockScopeStack: number[] = [];
+  private lineBlockScopes: Map<number, number> = new Map();
+  /** Skip block-scope push on the method/constructor body `{ ... }` (#476). */
+  private skipMethodBodyBlockScope = false;
   // Track conditional taints: which variables were tainted under which conditions
   // Maps condition expression string → set of variables tainted under that condition
   private conditionalTaints: Map<string, Set<string>> = new Map();
@@ -145,6 +150,9 @@ export class ConstantPropagator {
     this.sanitizedVars.clear();
     this.sanitizedVarUncovered.clear();
     this.currentMethod = null;
+    this.blockScopeStack = [];
+    this.lineBlockScopes.clear();
+    this.skipMethodBodyBlockScope = false;
     this.conditionalTaints.clear();
     this.conditionStack = [];
     this.lineConditions.clear();
@@ -205,6 +213,9 @@ export class ConstantPropagator {
     // Add unscoped versions of scoped names for backward compatibility
     for (const name of this.tainted) {
       if (name.includes(':')) {
+        if (/^[^:]+:b\d+:/.test(name)) {
+          continue;
+        }
         const unscoped = name.substring(name.indexOf(':') + 1);
         resultTainted.add(unscoped);
       }
@@ -228,6 +239,9 @@ export class ConstantPropagator {
       // every other function's `query` look clean to the veto.
       if (this.goScopedNames.has(name)) continue;
       if (name.includes(':')) {
+        if (/^[^:]+:b\d+:/.test(name)) {
+          continue;
+        }
         const unscoped = name.substring(name.indexOf(':') + 1);
         // Only add if not already present (scoped version wins on conflict)
         if (!resultSymbols.has(unscoped)) {
@@ -239,6 +253,7 @@ export class ConstantPropagator {
     return {
       symbols: resultSymbols,
       tainted: resultTainted,
+      lineBlockScopes: new Map(this.lineBlockScopes),
       unreachableLines: new Set(this.unreachableLines),
       taintedCollections: new Map(this.taintedCollections),
       taintedArrayElements: new Map(this.taintedArrayElements),
@@ -978,6 +993,10 @@ export class ConstantPropagator {
       return true; // skip subtree
     }
 
+    if (this.blockScopeStack.length > 0) {
+      this.lineBlockScopes.set(line, this.blockScopeStack[this.blockScopeStack.length - 1]!);
+    }
+
     // Track which condition this line is under for correlated predicate analysis
     if (this.conditionStack.length > 0 && !this.lineConditions.has(line)) {
       // Use the innermost (most recent) condition
@@ -1030,6 +1049,22 @@ export class ConstantPropagator {
       case 'if_statement':
         this.handleIfStatement(node);
         return true;
+
+      case 'block': {
+        const skipScope = this.skipMethodBodyBlockScope;
+        if (skipScope) {
+          this.skipMethodBodyBlockScope = false;
+        } else {
+          this.blockScopeStack.push(getNodeLine(node));
+        }
+        for (const child of node.children) {
+          this.visit(child);
+        }
+        if (!skipScope) {
+          this.blockScopeStack.pop();
+        }
+        return true;
+      }
 
       case 'switch_expression':
       case 'switch_statement':
@@ -1135,10 +1170,12 @@ export class ConstantPropagator {
       }
     }
 
-    // Visit the method body
+    // Visit the method body (do not treat the outer `{ ... }` as a nested block scope)
     const body = node.childForFieldName('body');
     if (body) {
+      this.skipMethodBodyBlockScope = true;
       this.visit(body);
+      this.skipMethodBodyBlockScope = false;
     }
 
     // Restore the previous method context
@@ -1156,11 +1193,37 @@ export class ConstantPropagator {
     if (varName.includes('.') || varName.includes(':')) {
       return varName;
     }
-    // Scope local variables by method name
+    const blockId =
+      this.blockScopeStack.length > 0
+        ? this.blockScopeStack[this.blockScopeStack.length - 1]
+        : undefined;
     if (this.currentMethod) {
-      return `${this.currentMethod}:${varName}`;
+      return blockId !== undefined
+        ? `${this.currentMethod}:b${blockId}:${varName}`
+        : `${this.currentMethod}:${varName}`;
     }
-    return varName;
+    return blockId !== undefined ? `b${blockId}:${varName}` : varName;
+  }
+
+  /** Innermost block → method → unscoped, for reads that may bind to an outer declaration. */
+  private getScopedNameCandidates(varName: string): string[] {
+    if (varName.includes('.') || varName.includes(':')) {
+      return [varName];
+    }
+    const out: string[] = [];
+    for (let i = this.blockScopeStack.length - 1; i >= 0; i--) {
+      const blockId = this.blockScopeStack[i]!;
+      if (this.currentMethod) {
+        out.push(`${this.currentMethod}:b${blockId}:${varName}`);
+      } else {
+        out.push(`b${blockId}:${varName}`);
+      }
+    }
+    if (this.currentMethod) {
+      out.push(`${this.currentMethod}:${varName}`);
+    }
+    out.push(varName);
+    return out;
   }
 
   /**
@@ -1169,12 +1232,12 @@ export class ConstantPropagator {
    * either local (scoped) or global (unscoped, like class fields).
    */
   private lookupSymbol(varName: string): ConstantValue | undefined {
-    // First try the scoped name (local variable in current method)
-    if (this.currentMethod && !varName.includes('.') && !varName.includes(':')) {
-      const scopedName = `${this.currentMethod}:${varName}`;
-      const scopedValue = this.symbols.get(scopedName);
-      if (scopedValue) {
-        return scopedValue;
+    if (!varName.includes('.') && !varName.includes(':')) {
+      for (const scopedName of this.getScopedNameCandidates(varName)) {
+        const scopedValue = this.symbols.get(scopedName);
+        if (scopedValue) {
+          return scopedValue;
+        }
       }
     }
     // Fall back to unscoped name (class fields, etc.)
@@ -2851,17 +2914,21 @@ export class ConstantPropagator {
     }
 
     if (node.type === 'identifier') {
-      // Check both scoped and unscoped taint
-      // Scoped: methodName:varName (for local variables)
-      // Unscoped: varName (for class fields or when not in a method)
-      const scopedName = this.currentMethod ? `${this.currentMethod}:${text}` : text;
-      const isTainted = this.tainted.has(scopedName) || this.tainted.has(text);
+      let isTainted = false;
+      let boundName: string | null = null;
+      for (const candidate of this.getScopedNameCandidates(text)) {
+        if (this.tainted.has(candidate)) {
+          isTainted = true;
+          boundName = candidate;
+          break;
+        }
+      }
 
-      if (isTainted) {
+      if (isTainted && boundName) {
         // Check if this taint is excluded by correlated predicate analysis
         // If the variable was tainted under condition C, and we're now under !C,
         // the taint doesn't apply in this context
-        if (this.isExcludedByCondition(scopedName) || this.isExcludedByCondition(text)) {
+        if (this.isExcludedByCondition(boundName) || this.isExcludedByCondition(text)) {
           return false;
         }
       }

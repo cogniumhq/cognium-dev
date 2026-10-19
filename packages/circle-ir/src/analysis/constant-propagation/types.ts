@@ -40,6 +40,8 @@ export interface ConstantPropagatorResult {
   instanceFieldTaint: Map<string, FieldTaintInfo>;
   /** Method/function names whose reachable returns are compile-time constants. */
   constantReturningMethods?: ReadonlySet<string>;
+  /** Line → `{` block start line for block-scoped locals (#476 Collections10). */
+  lineBlockScopes?: Map<number, number>;
 }
 
 export interface TaintedParameter {
