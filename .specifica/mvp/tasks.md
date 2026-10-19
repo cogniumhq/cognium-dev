@@ -6,6 +6,8 @@
 
 ## In Progress
 
+- **`@cognium/html-index` 0.3.0 — draft PR #882, unpublished.** Schema 0.3: `css.cursor`, `inlineHandlers`, `markupHandlers` (caller table); accname fixes (WPT 421→536/645). Expected-0.3 77/77; pack parity: 2 names changed, no other field.
+
 - **`@cognium/mcp-server` 0.2.0 — published 2026-10-01 from `main` at `f4727dd` (#550, #487; tag `mcp-server-v0.2.0`); registry install verified. The package and the plugin have since moved out of this repo to `cogniumhq/cognium-mcp` (#556, `a98aa5e`), with history; 0.2.1 was released from there on 2026-10-02 with an identical `tools/list`. Nothing further for the server is tracked here.** The package becomes importable as a library (`dist/index.js` is side-effect-free; the stdio bin moves to `dist/bin.js`, bin name unchanged) and gains an optional tool-module seam, three reported states (`floor` / `extended` / `commercial`) and offline Ed25519 licence verification. `tools/list` on a default install is the same eleven tools as 0.1.21.
   - **Breaking:** anything executing `dist/index.js` by file path must point at `dist/bin.js`.
   - **Review fixes (`c3b6cd5`):** a date-only `expiry` is in date through that whole UTC day; the signature covers every payload member, including ones the verifier does not read; a refusal no longer claims floor-only next to a loaded module.
