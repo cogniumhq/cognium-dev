@@ -91,14 +91,16 @@ module.exports.other = handler2;
     expect(await fires(code, 'safe.js', 'javascript')).toBe(false);
   });
 
-  it('a one-argument handler(event) / handle(req) stays gated', async () => {
-    expect(await fires(js('function handler(event)', 'module.exports = { handler };'), 'a.js', 'javascript')).toBe(false);
-    expect(await fires(js('function handle(event)', 'module.exports = { handle };'), 'a.js', 'javascript')).toBe(false);
+  it('exported handler(event) is an entry point (#818 serverless shape)', async () => {
+    expect(await fires(js('function handler(event)', 'module.exports = { handler };'), 'a.js', 'javascript')).toBe(true);
+  });
+
+  it('exported channel handle(req) keeps the flow (#818)', async () => {
     const req = `const { exec } = require('child_process');
 function handle(req) { exec("ls " + req.cmd); }
 module.exports = { handle };
 `;
-    expect(await fires(req, 'a.js', 'javascript')).toBe(false);
+    expect(await fires(req, 'a.js', 'javascript')).toBe(true);
   });
 
   it('exported functions with arbitrary parameters stay gated', async () => {

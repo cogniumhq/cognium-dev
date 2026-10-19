@@ -109,16 +109,56 @@ function rustAttributesAbove(lines: string[], startLine: number): string[] {
  * `handler(event)`, `handle(req)`, `(a, b)`, a class method, and an
  * allow-listed name that the module does not export are not matched.
  */
+function isModuleLevelFunction(method: MethodInfo, lines: string[]): boolean {
+  const first = lines[method.start_line - 1] ?? '';
+  return !/^\s/.test(first);
+}
+
+function jsTsExportBinding(exportName: string, lines: string[]): boolean {
+  const esc = exportName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const text = lines.join('\n');
+  const first = lines.find(l => /^\s*(?:export|function|const|async)/.test(l)) ?? '';
+  if (/^export\s+(?:default\s+)?(?:async\s+)?(?:function\b|(?:const|let|var)\s+)/.test(first.trimStart()) &&
+      new RegExp(`\\b${esc}\\b`).test(first)) {
+    return true;
+  }
+  if (new RegExp(`(?:^|\\n)\\s*export\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
+  if (new RegExp(`(?:^|[^\\w$.])(?:module\\s*\\.\\s*)?exports\\s*\\.\\s*${esc}\\s*=`).test(text)) return true;
+  if (new RegExp(`module\\s*\\.\\s*exports\\s*=\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
+  return false;
+}
+
+/** cognium-dev #818 — taint-coverage channel-axis handlers exported from the module. */
+const CHANNEL_EXPORT_HANDLER_NAMES: ReadonlySet<string> = new Set([
+  'handle',
+  'getUser',
+  'onMessage',
+  'onWebhook',
+  'resolveUser',
+  'sse',
+]);
+
+function isChannelExportedHandler(method: MethodInfo, language: string, lines: string[]): boolean {
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  if (!isModuleLevelFunction(method, lines)) return false;
+  if (!CHANNEL_EXPORT_HANDLER_NAMES.has(method.name)) return false;
+  return jsTsExportBinding(method.name, lines);
+}
+
 function isLambdaEntryPoint(method: MethodInfo, language: string, lines: string[]): boolean {
   const names = method.parameters.map(p => p.name);
   const first = lines[method.start_line - 1] ?? '';
-  // Module level only: a method or nested function is indented.
-  if (/^\s/.test(first)) return false;
+  if (!isModuleLevelFunction(method, lines)) return false;
   if (language === 'python') {
     return method.name === 'lambda_handler' && names.length === 2 && names[0] === 'event' && names[1] === 'context';
   }
   if (language !== 'javascript' && language !== 'typescript') return false;
   if (method.name !== 'handler') return false;
+  // Serverless handlers that only take `event` (no `context` callback).
+  if (names.length === 1 && names[0] === 'event') {
+    return jsTsExportBinding('handler', lines) ||
+      /^export\s+(?:default\s+)?(?:async\s+)?(?:function\b|(?:const|let|var)\s+handler\b)/.test(first);
+  }
   if (names.length < 2 || names.length > 3 || names[0] !== 'event' || names[1] !== 'context') return false;
   if (names.length === 3 && names[2] !== 'callback') return false;
   if (/^export\s+(?:default\s+)?(?:async\s+)?(?:function\b|(?:const|let|var)\s+handler\b)/.test(first)) return true;
@@ -131,6 +171,7 @@ function isLambdaEntryPoint(method: MethodInfo, language: string, lines: string[
 export function isFrameworkHandler(method: MethodInfo, language: string, lines: string[]): boolean {
   if (method.annotations.some(a => ROUTE_ANNOTATION.test(a))) return true;
   if (isLambdaEntryPoint(method, language, lines)) return true;
+  if (isChannelExportedHandler(method, language, lines)) return true;
   if (language === 'rust') {
     if (rustAttributesAbove(lines, method.start_line).some(a => RUST_ROUTE_ATTR.test(a))) return true;
     if (method.return_type && RUST_HANDLER_RETURN.test(method.return_type)) return true;
