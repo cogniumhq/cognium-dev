@@ -84,6 +84,8 @@ export class ConstantPropagator {
   private inSynchronizedBlock: boolean = false;
   // Track iterator sources: iterator variable name → collection name it was created from
   private iteratorSources: Map<string, string> = new Map();
+  /** Vars assigned from `iter.next()` — do not retro-clear on later iterator rebind (#476). */
+  private taintedFromIteratorNext: Set<string> = new Set();
   // Track class field names (declared at class level, not local variables)
   private classFields: Set<string> = new Set();
   // Track tainted method parameters for inter-procedural analysis
@@ -149,6 +151,7 @@ export class ConstantPropagator {
     this.synchronizedLines.clear();
     this.inSynchronizedBlock = false;
     this.iteratorSources.clear();
+    this.taintedFromIteratorNext.clear();
     this.classFields.clear();
     this.instanceFieldTaint.clear();
     this.currentClassName = null;
@@ -877,6 +880,19 @@ export class ConstantPropagator {
   // Taint Refinement
   // ===========================================================================
 
+  /** True when `node` is `iter.next()` (possibly under a cast). */
+  private isIteratorNextExpression(node: Node): boolean {
+    const text = getNodeText(node, this.source);
+    if (/\.\s*next\s*\(/.test(text)) return true;
+    let current: Node | null = node;
+    if (current.type === 'cast_expression' || current.type === 'parenthesized_expression') {
+      current = current.childForFieldName('operand') ?? current.childForFieldName('expression');
+    }
+    if (!current || current.type !== 'method_invocation') return false;
+    const nameNode = current.childForFieldName('name');
+    return nameNode ? getNodeText(nameNode, this.source) === 'next' : false;
+  }
+
   private refineTaintFromConstants(): void {
     let changed = true;
     let iterations = 0;
@@ -888,6 +904,10 @@ export class ConstantPropagator {
       const toRemove: string[] = [];
 
       for (const varName of this.tainted) {
+        if (this.taintedFromIteratorNext.has(varName)) {
+          continue;
+        }
+
         const symbol = this.symbols.get(varName);
 
         if (symbol && symbol.type !== 'unknown') {
@@ -1405,6 +1425,10 @@ export class ConstantPropagator {
               this.sanitizedVars.delete(scopedName); // No longer sanitized if receiving tainted value
               this.sanitizedVarUncovered.delete(scopedName);
               this.definitionNodes.set(scopedName, valueNode);
+              if (this.isIteratorNextExpression(valueNode)) {
+                this.taintedFromIteratorNext.add(scopedName);
+                this.taintedFromIteratorNext.add(varName);
+              }
               this.symbols.set(scopedName, createUnknown(line));
             } else {
               if (this.inConditionalBranch) {
@@ -1568,6 +1592,12 @@ export class ConstantPropagator {
       this.sanitizedVars.delete(scopedName); // No longer sanitized if receiving tainted value
       this.sanitizedVarUncovered.delete(scopedName);
       this.definitionNodes.set(scopedName, right);
+      if (this.isIteratorNextExpression(right)) {
+        this.taintedFromIteratorNext.add(scopedName);
+        if (!varName.includes('.')) {
+          this.taintedFromIteratorNext.add(varName);
+        }
+      }
       this.symbols.set(scopedName, createUnknown(line));
 
       // Track constructor field assignments: this.field = taintedParam
