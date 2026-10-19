@@ -220,6 +220,10 @@ const JAVA_LANG_EXCEPTION_TYPES = new Set([
   'Error', 'AssertionError',
 ]);
 
+// Java (#468, slice 4): in-memory string accumulators. Wrapping a tainted value in a
+// `StringBuilder` / `StringBuffer` keeps it in-process; publishing `toString()` still escapes.
+const JAVA_LANG_STRING_ACCUMULATOR_TYPES = new Set(['StringBuilder', 'StringBuffer']);
+
 // Java (#468, slice 2): JDK static formatters. Building a string sends the
 // value nowhere, the counterpart of the formatter row in the Go gate (#455).
 // Receiver-gated: only the exact JDK class, written bare (and not shadowed by a
@@ -343,13 +347,14 @@ function isJavaNonEscapeCall(
   // or library class.
   if (written.includes('.')) {
     return written.startsWith('java.lang.') &&
-      (JAVA_LANG_EXCEPTION_TYPES.has(simple) || /(Exception|Error)$/.test(simple));
+      (JAVA_LANG_EXCEPTION_TYPES.has(simple) || JAVA_LANG_STRING_ACCUMULATOR_TYPES.has(simple) ||
+        /(Exception|Error)$/.test(simple));
   }
   // An explicit import of the same simple name from another package, or a class
   // declared in this file, shadows the java.lang type.
   if (call.receiver_type_fqn && !call.receiver_type_fqn.startsWith('java.lang.')) return false;
   if (declaredTypeNames.has(simple)) return false;
-  return JAVA_LANG_EXCEPTION_TYPES.has(simple);
+  return JAVA_LANG_EXCEPTION_TYPES.has(simple) || JAVA_LANG_STRING_ACCUMULATOR_TYPES.has(simple);
 }
 
 /**
