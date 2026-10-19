@@ -75,6 +75,27 @@ module.exports = { resolveUser };
     expect(hasSqlFlow(r)).toBe(true);
   });
 
+  it('typescript export function onWebhook(event) reaches execSync', async () => {
+    const code = `import { execSync } from 'child_process';
+export function onWebhook(event: { repository: { name: string } }) {
+  execSync('git clone /srv/' + event.repository.name);
+}
+`;
+    const r = await analyze(code, 'webhook_evt.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
+  it('typescript export { handler } with typed event reaches exec', async () => {
+    const code = `import { exec } from 'child_process';
+function handler(event: { q?: string }) {
+  exec('grep ' + (event.q || ''), () => {});
+}
+export { handler };
+`;
+    const r = await analyze(code, 'serverless_evt.ts', 'typescript');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
   it('negative: exported runJob with arbitrary params stays gated', async () => {
     const code = `const { exec } = require('child_process');
 function runJob(a, b) { exec('ls ' + a); }

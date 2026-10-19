@@ -767,6 +767,20 @@ function isInterproceduralTaintableType(
     if (csharpTaintable.includes(baseType) || csharpTaintable.includes(leaf)) return true;
   }
 
+  // JavaScript / TypeScript: untyped params are already seeded; typed TS annotations
+  // must match that posture so framework handlers (cognium-dev #818 channel axis)
+  // keep interprocedural_param sources before the #292 gate.
+  if (language === 'javascript' || language === 'typescript') {
+    const trimmed = typeName.trim();
+    const jsScalars = ['string', 'number', 'boolean', 'bigint', 'any', 'unknown', 'object'];
+    if (jsScalars.includes(baseType)) return true;
+    if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('(')) return true;
+    if (/\bRecord\s*</.test(trimmed)) return true;
+    if (['void', 'undefined', 'null', 'never'].includes(baseType)) return false;
+    // Interface / alias / enum references (e.g. APIGatewayProxyEvent).
+    if (/^[A-Za-z_][\w.$]*$/.test(baseType)) return true;
+  }
+
   // Check for array types
   if (typeName.endsWith('[]')) {
     const elementType = typeName.slice(0, -2);
