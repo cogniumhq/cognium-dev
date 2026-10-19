@@ -1737,9 +1737,12 @@ export class CrossFileResolver {
    * Find which method a tainted arg expression references.
    */
   /**
-   * After wrapper-return (or in-method source) seeding, add same-file locals
-   * DFG-derived from each tainted name so caller-body sinks see `sql` as well
-   * as `invoice` (cognium-dev#590).
+   * After cross-file wrapper-return seeding (step 2a), add same-file locals
+   * DFG-derived from that assignment so caller-body sinks see `sql` as well
+   * as `invoice` (cognium-dev#590). In-method sources already reach derived
+   * names via `findCrossFileTaintFlows` / `collectTaintReachable`; extending
+   * those here duplicates paths and emits `external_taint_escape` on calls
+   * that bypass pass-level suppressions (cognium-dev#412).
    */
   private extendInterproceduralTaintedVars(
     callerIR: CircleIR,
@@ -1756,13 +1759,8 @@ export class CrossFileResolver {
       const wrapperHop = origin.hopChain.find(
         h => h.kind === 'wrapper_return' && h.file === callerFile,
       );
-      const anchorLine =
-        wrapperHop?.line ??
-        (origin.file === callerFile ? origin.line : undefined) ??
-        callerIR.dfg.defs
-          .filter(d => d.kind === 'local' && d.variable === varName)
-          .sort((a, b) => a.line - b.line)[0]?.line;
-      if (anchorLine === undefined) continue;
+      if (!wrapperHop) continue;
+      const anchorLine = wrapperHop.line;
 
       const reachable = this.collectTaintReachable(callerIR, varName, anchorLine, callerFile);
       for (const derived of reachable.names) {
