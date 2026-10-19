@@ -567,7 +567,7 @@ interface CompiledMarkupRule { rule: MarkupHandlerRule; attr: RegExp; value: Reg
 export function compileMarkupHandlers(rules: MarkupHandlerRule[]): CompiledMarkupRule[] {
   return rules.map((rule, i) => {
     const re = (src: string, flags: string): RegExp => {
-      try { return new RegExp(src, flags); } catch (e) { throw new Error(`html-index: markupHandlers[${i}] (${rule.framework}): ${(e as Error).message}`); }
+      try { return new RegExp(src, flags); } catch (e) { throw new Error(`html-index: markupHandlers[${i}] (${rule.framework}): ${(e as Error).message}`, { cause: e }); }
     };
     const value = rule.event && 'value' in rule.event ? re(rule.event.value, 'g') : null;
     return { rule, attr: re(`^(?:${rule.attr})$`, 'i'), value };
