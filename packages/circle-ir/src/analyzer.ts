@@ -116,6 +116,7 @@ import {
   filterCleanVariableSinks,
   filterSanitizedSinks,
   filterJavaArgvWrapperFlowsWithoutShellCaller,
+  synthesizeCrossFileArgvWrapperFlows,
 } from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
@@ -1869,6 +1870,13 @@ export async function analyzeProject(
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
+
+  synthesizeCrossFileArgvWrapperFlows(
+    fileAnalyses,
+    projectGraph,
+    sourceLinesByFile,
+    crossFileResult.taintPaths,
+  );
 
   filterJavaArgvWrapperFlowsWithoutShellCaller(fileAnalyses, projectGraph, sourceLinesByFile);
 
