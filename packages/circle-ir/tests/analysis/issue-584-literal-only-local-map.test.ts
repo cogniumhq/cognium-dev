@@ -144,6 +144,69 @@ public class WelcomeServlet extends HttpServlet {
     expect(sinkTypes(r).has('xss')).toBe(true);
   });
 
+  it('field-held map filled with literals in the constructor is not a source (named-query shape)', async () => {
+    const r = await analyze(
+      `import java.io.IOException;
+import java.sql.Statement;
+import java.util.HashMap;
+import java.util.Map;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class NamedQueryServlet extends HttpServlet {
+  private final Map<String, String> queries = new HashMap<>();
+
+  public NamedQueryServlet() {
+    queries.put("all", "SELECT id FROM users");
+  }
+
+  @Override
+  protected void doGet(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    Statement st = null;
+    st.executeQuery(queries.get("all"));
+    response.getWriter().println(queries.get("all"));
+  }
+}
+`,
+      'NamedQueryServlet.java',
+      'java',
+    );
+    expect(mapSources(r)).toHaveLength(0);
+    expect(sinkTypes(r).has('xss')).toBe(false);
+    expect(sinkTypes(r).has('sql_injection')).toBe(false);
+  });
+
+  it('field map with a tainted put still reports xss', async () => {
+    const r = await analyze(
+      `import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+public class MutableFieldMapServlet extends HttpServlet {
+  private final Map<String, String> labels = new HashMap<>();
+
+  public MutableFieldMapServlet() {
+    labels.put("title", "Welcome");
+  }
+
+  @Override
+  protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    labels.put("title", request.getParameter("t"));
+    response.getWriter().println(labels.get("title"));
+  }
+}
+`,
+      'MutableFieldMapServlet.java',
+      'java',
+    );
+    expect(mapSources(r).length).toBeGreaterThan(0);
+    expect(sinkTypes(r).has('xss')).toBe(true);
+  });
+
   it('keeps the source for a map that is not locally constructed, or that escapes (#328 negatives)', async () => {
     const a = await servlet([
       'Map<String, String> m = getConfig();',
