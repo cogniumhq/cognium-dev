@@ -117,6 +117,19 @@ interface Overload {
   startLine: number;
   endLine: number;
   modifiers: string[];
+  /** The method's own type parameter names. */
+  typeParams: string[];
+  /** Bounded ones' leftmost bound, as written. */
+  typeBounds: Record<string, string>;
+  /**
+   * Each parameter's type as the compiler erases it — a type variable
+   * replaced by its leftmost bound or `Object` — else as written. What
+   * `signature` shows, so overloads differing only in a variable's bound
+   * (`copy(T...)` three times) stay distinguishable.
+   */
+  erased: string[];
+  /** For each parameter that is a type variable: its name and how certain an erased fit is. */
+  vars: Array<{ name: string; certain: boolean } | null>;
 }
 
 interface TypeRecord {
@@ -135,6 +148,8 @@ interface TypeRecord {
   fieldTypes: Map<string, string>;
   /** The type's own type parameter names, in order. */
   typeParams: string[];
+  /** Bounded ones' leftmost bound, as written. */
+  typeBounds: Record<string, string>;
   /** Field names carrying a field-level `@Getter` / `@Setter`. */
   getterFields: string[];
   setterFields: string[];
@@ -211,6 +226,31 @@ interface TypeRef {
   prim: boolean;
   /** A type variable — `T`, `E` — which any reference type may fill. */
   typeVar: boolean;
+  /**
+   * For a type variable declared on the method or its type: the name it was
+   * written with, and what it erases to — its leftmost bound, else `Object`.
+   * `simple` / `fqn` / `dims` then describe the erasure.
+   */
+  varName?: string;
+  erasure?: TypeRef;
+  /**
+   * A parameter whose type is a type variable the call site itself sees —
+   * a generic class calling its own method — so exactly that variable: only
+   * it, `null`, or a variable bounded by it can be passed.
+   */
+  opaque?: boolean;
+  /**
+   * An argument whose type is what a generic method's call infers for its
+   * variable: known only to be some subtype of the erasure.
+   */
+  inferred?: boolean;
+  /**
+   * Whether an argument that fits the erasure certainly fits the variable: so
+   * for a method's own unbounded or plainly bounded variable, which the
+   * compiler infers from the arguments; not for the type's, which the
+   * receiver fixes, nor for a bound naming a type variable itself.
+   */
+  certain?: boolean;
 }
 
 type Fit = 'yes' | 'maybe' | 'no';
@@ -234,6 +274,8 @@ const REFLECTIVE_METHODS = new Set([
   'getDeclaredConstructor', 'newProxyInstance', 'getAnnotation',
   'getAnnotationsByType', 'isAnnotationPresent', 'getGenericReturnType',
 ]);
+/** What every class inherits from `java.lang.Object`. */
+const OBJECT_METHODS = new Set(['toString', 'hashCode', 'equals', 'getClass', 'clone', 'finalize', 'notify', 'notifyAll', 'wait']);
 const LOMBOK_ACCESSOR = new Set(['Getter', 'Setter', 'Data', 'Value']);
 const LOMBOK_BUILDER = new Set(['Builder', 'SuperBuilder']);
 
@@ -294,7 +336,7 @@ const JAVA_LANG = new Set([
 ]);
 
 /** Bumped when the shape of a cached per-file record changes. */
-const CACHE_VERSION = 'nav-3';
+const CACHE_VERSION = 'nav-4';
 const fileCache = new Map<string, FileRecord>();
 
 export function buildNavigationIndex(
@@ -420,6 +462,15 @@ export class NavigationIndex {
         `no overload of ${q.base} has the parameter list (${q.params.join(',')}); ` +
         `declared: ${declared.map(o => `${q.base}${signatureOf(o)}`).join(', ')}`;
       return this.finish('callers', query, answers, unresolved, t0, opts, extra);
+    }
+    if (target && declared.length === 0 && q.name !== '<init>' && this.visibleOverloads(target.fqn, q.name).length === 0) {
+      // `MapIterator.toString()`: the type is in the tree, the method is
+      // not — it is inherited from outside, so no call site can bind to the
+      // query's target, and "no callers" would read as a finding.
+      extra.note =
+        `${q.owner} declares no method ${q.name}, and no supertype in the searched tree does: it is inherited from ` +
+        `${OBJECT_METHODS.has(q.name) ? 'java.lang.Object' : 'a type outside the tree'}, so no call site here binds to ${q.base}. ` +
+        `A call reached only through string conversion or library code has no call site at all.`;
     }
     const wantedSet = new Set(wanted);
     const dispatchOpen = target !== undefined && q.name !== '<init>' && wanted.some(o => this.dispatchIsOpen(target, o));
@@ -655,7 +706,7 @@ export class NavigationIndex {
       const encl = this.enclosingTypeOf(call, rec);
       const sup = encl?.extendsName ? this.resolveTypeName(encl.extendsName, rec) : undefined;
       if (sup && this.typesByFqn.has(sup)) {
-        return this.bindInType(sup, call, rec, depth, `super call inside ${encl!.fqn}`, sup);
+        return this.bindInType(sup, call, rec, depth, `super call inside ${encl!.fqn}`, sup, true);
       }
       return undefined;
     }
@@ -710,6 +761,7 @@ export class NavigationIndex {
     depth: number,
     evidence: string,
     receiver: string | undefined,
+    nonVirtual = false,
   ): Binding | undefined {
     const cands = this.visibleOverloads(fqn, call.method_name);
     if (cands.length === 0) return undefined;
@@ -728,8 +780,8 @@ export class NavigationIndex {
       overload,
       receiver,
       result: overloaded
-        ? this.tierFor(owner, call.method_name, overload, `${evidence}; ${sel.how}`, true)
-        : this.tierFor(owner, call.method_name, overload, evidence),
+        ? this.tierFor(owner, call.method_name, overload, `${evidence}; ${sel.how}`, true, nonVirtual)
+        : this.tierFor(owner, call.method_name, overload, evidence, false, nonVirtual),
     };
   }
 
@@ -744,6 +796,9 @@ export class NavigationIndex {
    * the first; what runs there is a subclass's body or a lambda, never the
    * member named. The target stays the declaring member, which is what a
    * static resolver answers; only the tier changes.
+   *
+   * A `super.m()` call is not dispatched: it runs the body it names, whatever
+   * overrides it below.
    */
   private tierFor(
     owner: TypeRecord,
@@ -751,10 +806,11 @@ export class NavigationIndex {
     overload: Overload,
     evidence: string,
     overloaded = false,
+    nonVirtual = false,
   ): BoundTarget {
     const impls = this.implementorsWith(owner.fqn, overload);
     const bodyless = this.isBodyless(owner, overload);
-    if (impls.length > 1 || bodyless) {
+    if ((impls.length > 1 && !nonVirtual) || bodyless) {
       return {
         target: `${owner.fqn}.${method}`,
         tier: 'polymorphic',
@@ -862,11 +918,16 @@ export class NavigationIndex {
     const byArity = cands.filter(c => fitsArity(c.overload, n));
     if (byArity.length === 0) return { kind: 'none' };
     const args = call.arguments.map(a => this.argumentType(a, call, rec, depth));
+    // An implicit, `this.` or `super.` receiver is the enclosing type itself,
+    // which fixes what the declaring type's variables are.
+    const self = call.receiver === null || call.receiver === 'this' || call.receiver === 'super'
+      ? this.enclosingTypeOf(call, rec)
+      : undefined;
     if (byArity.length === 1) {
       // The only declaration in the tree at this arity, but the argument
       // types certainly rule it out: what is called is an overload this
       // index cannot see, inherited from a library type. Not ours.
-      if ([1, 2, 3].every(p => this.applicable(byArity[0], args, p) === 'no')) return { kind: 'none' };
+      if ([1, 2, 3].every(p => this.applicable(byArity[0], args, p, self) === 'no')) return { kind: 'none' };
       return {
         kind: 'one',
         pick: byArity[0],
@@ -874,7 +935,7 @@ export class NavigationIndex {
       };
     }
     const fit = new Map<Candidate, Fit[]>();
-    for (const c of byArity) fit.set(c, [1, 2, 3].map(p => this.applicable(c, args, p)));
+    for (const c of byArity) fit.set(c, [1, 2, 3].map(p => this.applicable(c, args, p, self)));
 
     const possible = byArity.filter(c => fit.get(c)!.some(f => f !== 'no'));
     if (possible.length === 1) {
@@ -893,7 +954,7 @@ export class NavigationIndex {
       if (P.length === 0) continue;
       const C = P.filter(c => fit.get(c)![phase - 1] === 'yes');
       if (C.length === 0) return { kind: 'ambiguous', candidates: possible };
-      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase)));
+      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase, self)));
       if (best) {
         return {
           kind: 'one',
@@ -907,10 +968,9 @@ export class NavigationIndex {
   }
 
   /** Whether `c` applies to arguments of these types in compiler phase 1, 2 or 3. */
-  private applicable(c: Candidate, args: Array<TypeRef | null>, phase: number): Fit {
+  private applicable(c: Candidate, args: Array<TypeRef | null>, phase: number, self?: TypeRecord): Fit {
     const o = c.overload;
-    const declRec = this.files.get(c.owner.file);
-    const params = o.params.map(p => this.typeRef(p, declRec));
+    const params = this.paramRefsFrom(c, self);
     let worst: Fit = 'yes';
     const meet = (f: Fit): void => {
       if (f === 'no') worst = 'no';
@@ -922,17 +982,16 @@ export class NavigationIndex {
       return worst;
     }
     if (!o.varargs || args.length < params.length - 1) return 'no';
-    const last = params[params.length - 1];
-    const elem: TypeRef = { ...last, dims: Math.max(0, last.dims - 1) };
+    const elem = elementOf(params[params.length - 1]);
     args.forEach((a, i) => meet(this.fits(a, i < params.length - 1 ? params[i] : elem, 2)));
     return worst;
   }
 
   /** `m` is more specific than `o`: each of its parameter types fits the other's. */
-  private moreSpecific(m: Candidate, o: Candidate, phase: number): boolean {
+  private moreSpecific(m: Candidate, o: Candidate, phase: number, self?: TypeRecord): boolean {
     if (phase === 3) return false;
-    const mp = m.overload.params.map(p => this.typeRef(p, this.files.get(m.owner.file)));
-    const op = o.overload.params.map(p => this.typeRef(p, this.files.get(o.owner.file)));
+    const mp = this.paramRefsFrom(m, self);
+    const op = this.paramRefsFrom(o, self);
     if (mp.length !== op.length) return false;
     return mp.every((t, i) => this.fits(t, op[i], 1) === 'yes');
   }
@@ -943,9 +1002,39 @@ export class NavigationIndex {
    */
   private fits(a: TypeRef | null, p: TypeRef, phase: number): Fit {
     if (!a) return 'maybe';
-    if (p.typeVar) return a.prim && a.dims === 0 && phase === 1 ? 'no' : 'maybe';
+    if (p.opaque) {
+      if (a.simple === 'null' && a.dims === 0) return 'yes';
+      if (a.typeVar) return a.varName !== undefined && a.varName === p.varName && a.dims === p.dims ? 'yes' : 'maybe';
+      // Nothing but the variable itself is a subtype of it.
+      return a.prim || a.fqn ? 'no' : 'maybe';
+    }
+    if (p.typeVar) {
+      // Whatever fills a type variable is a subtype of its erasure, so an
+      // argument the erasure rules out is ruled out. One it admits is
+      // certainly admitted only where the compiler infers the variable from
+      // the arguments.
+      if (p.erasure) {
+        const f = this.fits(a, p.erasure, phase);
+        return f === 'no' ? 'no' : p.certain ? f : 'maybe';
+      }
+      return a.prim && a.dims === 0 && phase === 1 ? 'no' : 'maybe';
+    }
     if (a.simple === 'null' && a.dims === 0) return p.prim && p.dims === 0 ? 'no' : 'yes';
-    if (a.typeVar) return 'maybe';
+    if (a.typeVar) {
+      // A value of a type variable is a value of its erasure, and maybe of
+      // something narrower.
+      // A type variable's supertypes are its bound's; what a generic call
+      // infers is only known to be below the erasure.
+      if (a.erasure) {
+        // An unbounded variable's only supertype is Object.
+        if (!a.inferred && a.erasure.fqn === 'java.lang.Object' && a.erasure.dims === 0) {
+          return !p.prim && p.dims === 0 && p.simple === 'Object' && (!p.fqn || p.fqn === 'java.lang.Object') ? 'yes' : 'no';
+        }
+        const f = this.fits(a.erasure, p, phase);
+        return a.inferred && f !== 'yes' ? 'maybe' : f;
+      }
+      return 'maybe';
+    }
     if (a.dims > 0 || p.dims > 0) {
       if (a.dims === p.dims) {
         const ae = { ...a, dims: 0 };
@@ -1081,7 +1170,7 @@ export class NavigationIndex {
    * reading the chosen overload's return type.
    */
   private argumentType(arg: ArgumentInfo, call: CallInfo, rec: FileRecord, depth: number): TypeRef | null {
-    if (arg.type) return this.typeRef(arg.type, rec);
+    if (arg.type) return this.callSiteRef(arg.type, call, rec);
     if (!arg.location || depth >= 4) return null;
     const name = outerCallName(arg.expression);
     if (!name) return null;
@@ -1091,6 +1180,10 @@ export class NavigationIndex {
     let returned: { text: string; owner: TypeRecord } | undefined;
     let receiver: string | undefined;
     if (b?.kind === 'bound' && b.overload?.returnType) {
+      // `<M extends Map<K, V>> M invert(…)` returns whatever the call infers
+      // for `M`: known only to be some subtype of the erasure.
+      const own = this.paramRef(b.overload.returnType, { owner: b.owner, overload: b.overload });
+      if (own.varName && b.overload.typeParams.includes(own.varName)) return { ...own, inferred: true };
       returned = { text: b.overload.returnType, owner: b.owner };
       receiver = b.receiver;
     } else if (!b) {
@@ -1231,33 +1324,127 @@ export class NavigationIndex {
   /** Whether overload `o` of `owner` is what a query's parameter list names. */
   private signatureMatches(o: Overload, params: string[], owner: TypeRecord): boolean {
     if (o.params.length !== params.length) return false;
-    const rec = this.files.get(owner.file);
-    return o.params.every((p, i) => {
+    const have = this.paramRefs({ owner, overload: o });
+    return have.every((h, i) => {
       const want = this.typeRef(params[i], undefined);
-      const have = this.typeRef(p, rec);
-      if (want.dims !== have.dims) return false;
+      if (want.dims !== h.dims) return false;
       const wantBare = eraseType(params[i].replace(/\.\.\.$/, '').replace(/(\[\])+$/, ''));
-      if (wantBare.includes('.')) {
-        if (have.fqn && !have.prim) return have.fqn === wantBare;
-        return have.simple === want.simple;
-      }
-      return have.simple === want.simple;
+      // A type variable is named as written (`K`) or by its erasure (`Object`,
+      // `java.lang.Object`), the way the compiler and bytecode name it.
+      if (h.varName && wantBare === h.varName) return true;
+      return this.sameAsWritten(h, want, wantBare);
     });
   }
 
-  /** Same name and same erased parameter types: one overrides the other. */
+  /** Whether a declared parameter type is the one a query wrote. */
+  private sameAsWritten(have: TypeRef, want: TypeRef, wantBare: string): boolean {
+    if (wantBare.includes('.') && have.fqn && !have.prim) return have.fqn === wantBare;
+    return have.simple === want.simple;
+  }
+
+  /**
+   * Same name and same parameter types: one overrides the other. Within one
+   * type that is the erasure, which the compiler requires to differ between
+   * two declarations. Across types, a type parameter of the declaring type
+   * stands for whatever a subtype's supertype clause fills it with —
+   * `Fn<T>.apply(T)` is overridden by `apply(String)` in a class implementing
+   * `Fn<String>` — so it matches any type its erasure admits.
+   */
   private sameErasure(a: Candidate, b: Candidate): boolean {
-    const pa = a.overload.params;
-    const pb = b.overload.params;
-    if (a.overload.name !== b.overload.name || pa.length !== pb.length) return false;
-    const ra = this.files.get(a.owner.file);
-    const rb = this.files.get(b.owner.file);
-    return pa.every((p, i) => {
-      const x = this.typeRef(p, ra);
-      const y = this.typeRef(pb[i], rb);
-      if (x.typeVar || y.typeVar) return x.dims === y.dims;
-      return x.simple === y.simple && x.dims === y.dims;
+    if (a.overload.name !== b.overload.name || a.overload.params.length !== b.overload.params.length) return false;
+    const pa = this.paramRefs(a);
+    const pb = this.paramRefs(b);
+    const across = a.owner !== b.owner;
+    const open = (t: TypeRef, c: Candidate): boolean =>
+      across && t.typeVar && (!t.varName || !c.overload.typeParams.includes(t.varName));
+    return pa.every((x, i) => {
+      const y = pb[i];
+      if (x.dims !== y.dims) return false;
+      const xo = open(x, a);
+      const yo = open(y, b);
+      if (xo && yo) return true;
+      if (xo) return !x.erasure || this.fits({ ...y, dims: 0 }, { ...x.erasure, dims: 0 }, 1) !== 'no';
+      if (yo) return !y.erasure || this.fits({ ...x, dims: 0 }, { ...y.erasure, dims: 0 }, 1) !== 'no';
+      // A type variable no declaration in scope names: as lenient as before.
+      if ((x.typeVar && !x.erasure) || (y.typeVar && !y.erasure)) return true;
+      return x.simple === y.simple;
     });
+  }
+
+  /** A candidate's parameter types, each type variable carrying its erasure. */
+  private paramRefs(c: Candidate): TypeRef[] {
+    return c.overload.params.map(p => this.paramRef(p, c));
+  }
+
+  /**
+   * `c`'s parameter types as a call on `self` — the enclosing type, as an
+   * implicit, `this.` or `super.` receiver — sees them: a variable of the
+   * declaring type is that of `self` when `self` declares it, and what
+   * `self`'s supertype clauses fill it with when it is inherited
+   * (`Lru extends Base<String>` makes `Base<K>.put(K)` a `put(String)`).
+   */
+  private paramRefsFrom(c: Candidate, self: TypeRecord | undefined): TypeRef[] {
+    const refs = this.paramRefs(c);
+    if (!self) return refs;
+    return refs.map((r, i) => {
+      if (!r.typeVar || !r.varName || c.overload.typeParams.includes(r.varName)) return r;
+      if (c.owner === self) return { ...r, opaque: true };
+      const sub = this.substitute(c.overload.params[i], c.owner, self.fqn);
+      if (!sub) return r;
+      const e = eraseWritten(sub.text, this.scopeOf(self, undefined));
+      if (e) return { ...this.withErasure(sub.text, e, sub.rec), opaque: true };
+      return this.typeRef(sub.text, sub.rec);
+    });
+  }
+
+  /**
+   * An argument's written type at a call site: a type variable of the
+   * enclosing method or type carries its erasure.
+   */
+  private callSiteRef(written: string, call: CallInfo, rec: FileRecord): TypeRef {
+    const encl = this.enclosingTypeOf(call, rec);
+    if (!encl) return this.typeRef(written, rec);
+    const line = call.location.line;
+    let method: Overload | undefined;
+    for (const list of encl.overloads.values()) {
+      for (const o of list) {
+        if (line < o.startLine || line > o.endLine) continue;
+        if (!method || o.endLine - o.startLine < method.endLine - method.startLine) method = o;
+      }
+    }
+    return this.withErasure(written, eraseWritten(written, this.scopeOf(encl, method)), rec);
+  }
+
+  /** One written parameter (or return) type of `c`, from its declaring file's point of view. */
+  private paramRef(written: string, c: Candidate): TypeRef {
+    const i = c.overload.params.indexOf(written);
+    const e = i !== -1 && c.overload.vars[i]
+      ? { ...c.overload.vars[i]!, text: c.overload.erased[i] }
+      : eraseWritten(written, this.scopeOf(c.owner, c.overload));
+    return this.withErasure(written, e, this.files.get(c.owner.file));
+  }
+
+  /** A written type, with the erasure `eraseWritten` found for it when it is a type variable. */
+  private withErasure(
+    written: string,
+    e: { name: string; text: string; certain: boolean } | undefined,
+    rec: FileRecord | undefined,
+  ): TypeRef {
+    if (!e) return this.typeRef(written, rec);
+    const erased = this.typeRef(e.text, rec);
+    return { ...erased, typeVar: true, varName: e.name, erasure: erased, certain: e.certain };
+  }
+
+  /** The type variables visible in a member of `owner` (`overload`), innermost first. */
+  private scopeOf(owner: TypeRecord, overload: Overload | undefined): VarScope {
+    const types: TypeRecord[] = [];
+    let t: TypeRecord | undefined = owner;
+    while (t) {
+      types.push(t);
+      const outer = this.typesByFqn.get(stripLast(t.fqn));
+      t = outer && outer.file === owner.file ? outer : undefined;
+    }
+    return { method: overload ?? null, types };
   }
 
   // --------------------------------------------------------------- dispatch
@@ -1879,6 +2066,10 @@ function buildFileRecord(f: NavigationFile): FileRecord {
         startLine: m.start_line,
         endLine: m.end_line,
         modifiers: m.modifiers ?? [],
+        typeParams: m.type_parameters ?? [],
+        typeBounds: m.type_parameter_bounds ?? {},
+        erased: params,
+        vars: params.map(() => null),
       });
     }
     types.push({
@@ -1893,6 +2084,7 @@ function buildFileRecord(f: NavigationFile): FileRecord {
       fieldNames: (t.fields ?? []).map(x => x.name),
       fieldTypes: new Map((t.fields ?? []).filter(x => x.type).map(x => [x.name, x.type!])),
       typeParams: t.type_parameters ?? [],
+      typeBounds: t.type_parameter_bounds ?? {},
       getterFields: lombokFields(f.source, 'Getter'),
       setterFields: lombokFields(f.source, 'Setter'),
       methods,
@@ -1900,6 +2092,22 @@ function buildFileRecord(f: NavigationFile): FileRecord {
       startLine: t.start_line,
       endLine: t.end_line,
     });
+  }
+
+  // Erase each parameter's type variables. Everything a declaration's
+  // variables can name — the method, its type, the types enclosing it — is in
+  // this file, so the result is per file and cached with it.
+  for (const t of types) {
+    const chain: TypeRecord[] = [];
+    for (let c: TypeRecord | undefined = t; c; c = types.find(x => x.fqn === stripLast(c!.fqn))) chain.push(c);
+    for (const list of t.overloads.values()) {
+      for (const o of list) {
+        const scope: VarScope = { method: o, types: chain };
+        const es = o.params.map(p => eraseWritten(p, scope));
+        o.erased = o.params.map((p, i) => es[i]?.text ?? p);
+        o.vars = es.map(e => (e ? { name: e.name, certain: e.certain } : null));
+      }
+    }
   }
 
   return {
@@ -1956,9 +2164,13 @@ function splitTopLevel(text: string): string[] {
   return out;
 }
 
-/** `(Long,String)` — simple names, generics erased, `String...` for varargs. */
+/**
+ * `(Long,String)` — simple names, generics erased, `String...` for varargs, a
+ * type variable shown as its erasure: `getNumber(Map,Object)` for
+ * `<K> getNumber(Map<? super K, ?>, K)`, as javadoc and bytecode name it.
+ */
 function signatureOf(o: Overload): string {
-  return `(${o.params.map(p => {
+  return `(${o.erased.map(p => {
     const varargs = p.endsWith('...');
     let t = eraseType(p.replace(/@[\w.]+(\([^)]*\))?\s*/g, '').replace(/\bfinal\s+/g, '').replace(/\.\.\.$/, '').trim());
     let dims = '';
@@ -1972,6 +2184,50 @@ function memberName(owner: TypeRecord, o: Overload): string {
   return o.isConstructor ? `${owner.fqn}.<init>` : `${owner.fqn}.${o.name}`;
 }
 
+/** The type variables in scope at a declaration: the method's own, then each type's from the innermost out. */
+interface VarScope {
+  method: { typeParams: string[]; typeBounds: Record<string, string> } | null;
+  types: Array<{ typeParams: string[]; typeBounds: Record<string, string> }>;
+}
+
+/**
+ * What a written type that is a type variable erases to, the way the compiler
+ * erases it: its leftmost bound, erased in turn when the bound is itself a
+ * variable (`W extends U`), else `Object`; array and varargs suffixes kept.
+ * Nothing when it is not a type variable in scope. The innermost declaration
+ * of a name hides the outer ones.
+ *
+ * `certain` says whether an argument that fits the erasure certainly fits the
+ * variable: so for a method's own variable, which the compiler infers from
+ * the arguments, unless its bound names the variable itself
+ * (`T extends Comparable<T>`); never for a type's, which the receiver fixes.
+ */
+function eraseWritten(
+  written: string,
+  scope: VarScope,
+  seen: Set<string> = new Set(),
+): { name: string; text: string; certain: boolean } | undefined {
+  let t = written.replace(/@[\w.]+(\([^)]*\))?\s*/g, '').replace(/\bfinal\s+/g, '').trim();
+  let suffix = '';
+  if (t.endsWith('...')) { suffix = '...'; t = t.slice(0, -3).trim(); }
+  t = eraseType(t);
+  while (t.endsWith('[]')) { suffix = `[]${suffix}`; t = t.slice(0, -2).trim(); }
+  if (!/^[A-Za-z_$][\w$]*$/.test(t) || seen.has(t)) return undefined;
+  let v: { bound: string | null; kind: 'method' | 'type' } | undefined;
+  if (scope.method?.typeParams.includes(t)) v = { bound: scope.method.typeBounds[t] ?? null, kind: 'method' };
+  else {
+    const owner = scope.types.find(x => x.typeParams.includes(t));
+    if (owner) v = { bound: owner.typeBounds[t] ?? null, kind: 'type' };
+  }
+  if (!v) return undefined;
+  if (v.bound === null) return { name: t, text: `Object${suffix}`, certain: v.kind === 'method' };
+  const inner = eraseWritten(v.bound, scope, new Set([...seen, t]));
+  if (inner) return { name: t, text: `${inner.text}${suffix}`, certain: v.kind === 'method' && inner.certain };
+  const args = v.bound.includes('<') ? v.bound.slice(v.bound.indexOf('<') + 1) : '';
+  const selfBounded = new RegExp(`\\b${t}\\b`).test(args);
+  return { name: t, text: `${eraseType(v.bound)}${suffix}`, certain: v.kind === 'method' && !selfBounded };
+}
+
 /** Remove every `<...>` from a written type. */
 function eraseType(t: string): string {
   let out = '';
@@ -1982,6 +2238,12 @@ function eraseType(t: string): string {
     if (depth === 0) out += ch;
   }
   return out.trim();
+}
+
+/** A varargs parameter's element type. */
+function elementOf(t: TypeRef): TypeRef {
+  const dims = Math.max(0, t.dims - 1);
+  return { ...t, dims, ...(t.erasure ? { erasure: { ...t.erasure, dims } } : {}) };
 }
 
 /** Whether a call with `n` arguments can reach overload `o` at all. */

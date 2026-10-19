@@ -431,18 +431,55 @@ function extractJavaTypes(
     );
     const path = node ? enclosingTypePath(node) : [];
     if (path.length > 0) t.enclosing_type = path.join('.');
-    const params = node?.childForFieldName('type_parameters');
-    if (params) {
-      const names = params.namedChildren
-        .filter(c => c?.type === 'type_parameter')
-        .map(c => c!.namedChildren.find(x => x?.type === 'type_identifier' || x?.type === 'identifier'))
-        .map(x => (x ? getNodeText(x) : ''))
-        .filter(Boolean);
-      if (names.length > 0) t.type_parameters = names;
+    const tp = typeParameters(node);
+    if (tp.names.length > 0) t.type_parameters = tp.names;
+    if (Object.keys(tp.bounds).length > 0) t.type_parameter_bounds = tp.bounds;
+  }
+
+  // A generic method's own type parameters. A parameter declared `K` or
+  // `M extends Map<K, V>` is matched against a query by its erasure — `Object`,
+  // `Map` — the way the compiler and every bytecode-level tool name it.
+  const allMethods = new Map<string, MethodInfo>();
+  for (const t of types) {
+    for (const m of t.methods) allMethods.set(`${m.start_line}:${m.name}`, m);
+  }
+  for (const kind of ['method_declaration', 'constructor_declaration']) {
+    for (const node of getNodesFromCache(tree.rootNode, kind, cache)) {
+      const name = getIdentifier(node, 'name');
+      const info = name ? allMethods.get(`${node.startPosition.row + 1}:${name}`) : undefined;
+      if (!info) continue;
+      const tp = typeParameters(node);
+      if (tp.names.length > 0) info.type_parameters = tp.names;
+      if (Object.keys(tp.bounds).length > 0) info.type_parameter_bounds = tp.bounds;
     }
   }
 
   return types;
+}
+
+/**
+ * A declaration's `<…>` type parameters: names in order, and each bounded
+ * one's leftmost bound as written (`T extends A<T> & B` → `A<T>`), which is
+ * what it erases to.
+ */
+function typeParameters(node: Node | undefined): { names: string[]; bounds: Record<string, string> } {
+  const names: string[] = [];
+  const bounds: Record<string, string> = {};
+  const list = node
+    ? node.childForFieldName('type_parameters') ?? node.namedChildren.find(c => c?.type === 'type_parameters') ?? null
+    : null;
+  if (!list) return { names, bounds };
+  for (const c of list.namedChildren) {
+    if (c?.type !== 'type_parameter') continue;
+    const id = c.namedChildren.find(x => x?.type === 'type_identifier' || x?.type === 'identifier');
+    const name = id ? getNodeText(id) : '';
+    if (!name) continue;
+    names.push(name);
+    const bound = c.namedChildren.find(x => x?.type === 'type_bound');
+    const first = bound?.namedChildren.find(x => x !== null && x.type !== 'annotation' && x.type !== 'marker_annotation');
+    if (first) bounds[name] = getNodeText(first);
+  }
+  return { names, bounds };
 }
 
 /** The `(String host, int port)` header of a `record_declaration`. */

@@ -77,6 +77,14 @@ export interface TypeInfo {
    * type what an inherited member returns.
    */
   type_parameters?: string[];
+  /**
+   * Each bounded type parameter's leftmost bound, as written —
+   * `{ T: "Comparable<T>" }` for `class Box<T extends Comparable<T> & Serializable>`.
+   * A type parameter with no bound is absent: it erases to `Object`. Present
+   * only under `AnalyzerOptions.navigationTypes`, and only when some type
+   * parameter is bounded.
+   */
+  type_parameter_bounds?: Record<string, string>;
 }
 
 export interface MethodInfo {
@@ -87,6 +95,16 @@ export interface MethodInfo {
   modifiers: string[];  // ["public", "static", etc.]
   start_line: number;
   end_line: number;
+  /**
+   * The method's (or constructor's) own type parameter names, in order —
+   * `["K", "M"]` for `<K, M extends Map<K, ?>> M invert(…)`. A parameter
+   * declared with one of these types is matched by its erasure. Present only
+   * under `AnalyzerOptions.navigationTypes` (Java), and only on a generic
+   * method.
+   */
+  type_parameters?: string[];
+  /** Each bounded method type parameter's leftmost bound, as written. See `TypeInfo.type_parameter_bounds`. */
+  type_parameter_bounds?: Record<string, string>;
 }
 
 export interface ParameterInfo {
