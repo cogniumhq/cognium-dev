@@ -522,6 +522,11 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     if (language === 'rust') {
       additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
+      // cognium-dev #816 — PAT-INPUT-01 rust safe mirror: parse + range guards
+      // before actix/axum response body (same credit model as JS twin).
+      additionalSanitizers.push(
+        ...findRustNumericRangeCheckGuardSanitizers(code),
+      );
       // cognium-dev#293: `if x != "a" && x != "b" { return Err(..) }` literal-equality guard.
       additionalSanitizers.push(...findRustLiteralEqualityGuardSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form Command::new(literal).arg(...)
@@ -5355,6 +5360,100 @@ function findJsNumericRangeCheckGuardSanitizers(
       if (!varRefRe.test(lines[l])) continue;
       sanitizers.push({
         type: 'js_numeric_range_check_guard',
+        method: 'if',
+        line: l + 1,
+        sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Rust numeric range-check guards on `.parse()`-coerced values
+ * (cognium-dev #816, PAT-INPUT-01 safe mirror).
+ *
+ *   let amount: i32 = amount_str.parse().unwrap_or(0);
+ *   if amount <= 0 { return HttpResponse::BadRequest().finish(); }
+ *   if amount > MAX { return HttpResponse::BadRequest().finish(); }
+ *   HttpResponse::Ok().body(format!("xfer {}", amount))
+ */
+function findRustNumericRangeCheckGuardSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const coerceDecl =
+    /^\s*let\s+([A-Za-z_]\w*)\s*(?::\s*(?:i\d+|u\d+|isize|usize))?\s*=\s*[^;]*\.parse\s*(?:\(\s*\)|::<)/;
+  const lowerGuard = /\bif\s+([A-Za-z_]\w*)\s*<=\s*0\b/;
+  const upperGuard =
+    /\bif\s+([A-Za-z_]\w*)\s*>\s*(?:\d+|[A-Z][A-Z0-9_]+)\b/;
+  const terminator =
+    /\b(?:return\s+HttpResponse::|return\s+StatusCode::|return\s+Err\s*\(|panic!\s*\()/;
+
+  const coerced = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = coerceDecl.exec(lines[i]);
+    if (m) coerced.set(m[1], i);
+  }
+  if (coerced.size === 0) return sanitizers;
+
+  type GuardState = { lower: boolean; upper: boolean; lastGuardEnd: number };
+  const state = new Map<string, GuardState>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let varName: string | null = null;
+    let kind: 'lower' | 'upper' | null = null;
+    const low = lowerGuard.exec(line);
+    if (low) {
+      varName = low[1];
+      kind = 'lower';
+    } else {
+      const up = upperGuard.exec(line);
+      if (up) {
+        varName = up[1];
+        kind = 'upper';
+      }
+    }
+    if (!varName || !kind || !coerced.has(varName)) continue;
+    if (!terminator.test(line)) {
+      let bodyHasTerminator = false;
+      let blockEnd = i;
+      let braceDepth = 0;
+      let started = false;
+      const maxScan = Math.min(lines.length, i + 26);
+      for (let j = i; j < maxScan; j++) {
+        const ln = lines[j];
+        for (const ch of ln) {
+          if (ch === '{') { braceDepth++; started = true; }
+          else if (ch === '}') {
+            braceDepth--;
+            if (started && braceDepth === 0) { blockEnd = j; break; }
+          }
+        }
+        if (j > i && terminator.test(ln)) bodyHasTerminator = true;
+        if (started && braceDepth === 0 && blockEnd !== i) break;
+      }
+      if (!bodyHasTerminator && !started) continue;
+      if (!bodyHasTerminator) continue;
+    }
+    const st = state.get(varName) ?? { lower: false, upper: false, lastGuardEnd: i };
+    if (kind === 'lower') st.lower = true;
+    else st.upper = true;
+    st.lastGuardEnd = i;
+    state.set(varName, st);
+  }
+
+  for (const [varName, st] of state) {
+    if (!st.lower || !st.upper) continue;
+    const varRefRe = new RegExp(`\\b${varName}\\b`);
+    for (let l = st.lastGuardEnd + 1; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'rust_numeric_range_check_guard',
         method: 'if',
         line: l + 1,
         sanitizes: ['xss', 'external_taint_escape'],
