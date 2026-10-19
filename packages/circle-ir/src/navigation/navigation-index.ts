@@ -1343,15 +1343,23 @@ export class NavigationIndex {
   }
 
   /**
-   * Same name and same parameter types: one overrides the other. Within one
-   * type that is the erasure, which the compiler requires to differ between
-   * two declarations. Across types, a type parameter of the declaring type
-   * stands for whatever a subtype's supertype clause fills it with —
-   * `Fn<T>.apply(T)` is overridden by `apply(String)` in a class implementing
-   * `Fn<String>` — so it matches any type its erasure admits.
+   * Same name and same parameter types: one overrides the other, as the
+   * compiler decides it. Within one type that is the erasure, which the
+   * compiler requires to differ between two declarations. Between a type and
+   * its supertype, the supertype's parameter types are first read through the
+   * subtype's supertype clauses — `Fn<T>.apply(T)` is `apply(String)` to a
+   * class implementing `Fn<String>`, and `apply(T)` to one implementing
+   * `Fn<T>`, which then does not override it with `apply(Collection<T>)` —
+   * and the erasures compared. Between types neither of which is known to
+   * extend the other, a type variable still matches whatever its erasure
+   * admits.
    */
   private sameErasure(a: Candidate, b: Candidate): boolean {
     if (a.overload.name !== b.overload.name || a.overload.params.length !== b.overload.params.length) return false;
+    if (a.owner !== b.owner) {
+      const sub = this.isSubtype(a.owner.fqn, b.owner.fqn) ? a : this.isSubtype(b.owner.fqn, a.owner.fqn) ? b : undefined;
+      if (sub) return this.overridesBySubstitution(sub, sub === a ? b : a);
+    }
     const pa = this.paramRefs(a);
     const pb = this.paramRefs(b);
     const across = a.owner !== b.owner;
@@ -1368,6 +1376,27 @@ export class NavigationIndex {
       // A type variable no declaration in scope names: as lenient as before.
       if ((x.typeVar && !x.erasure) || (y.typeVar && !y.erasure)) return true;
       return x.simple === y.simple;
+    });
+  }
+
+  /** Whether `sub`'s declaration has `sup`'s parameter types as `sub`'s type sees them, erased. */
+  private overridesBySubstitution(sub: Candidate, sup: Candidate): boolean {
+    const mine = this.paramRefs(sub);
+    const scope = this.scopeOf(sub.owner, sub.overload);
+    return sup.overload.params.every((written, i) => {
+      const own = sup.overload.vars[i];
+      // The supertype method's own type variable: its erasure.
+      const s = own && sup.overload.typeParams.includes(own.name) ? undefined : this.substitute(written, sup.owner, sub.owner.fqn);
+      // No binding read for the variable (a raw supertype, or a clause this
+      // index cannot resolve): the supertype's own erasure.
+      const theirs = s
+        ? this.withErasure(s.text, eraseWritten(s.text, scope), s.rec)
+        : this.paramRef(written, sup);
+      const m = mine[i];
+      if (m.dims !== theirs.dims) return false;
+      if (m.typeVar && !m.erasure) return true;
+      if (theirs.typeVar && !theirs.erasure) return true;
+      return m.simple === theirs.simple;
     });
   }
 

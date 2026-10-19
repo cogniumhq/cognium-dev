@@ -312,3 +312,29 @@ describe('a call on the enclosing type sees the declaring type\'s variables as i
     expect(idx.resolveCallers({ symbol: 'app.Copy.copy(java.util.function.Predicate...)' }).note).toBeUndefined();
   });
 });
+
+const serializer = {
+  'app/Serializer.java': `package app;
+import java.util.Collection;
+public interface Serializer<T> {
+  String serialize(Collection<T> items);
+  String serialize(T single);
+}`,
+  'app/JsonSerializer.java': `package app;
+import java.util.Collection;
+public class JsonSerializer<T> implements Serializer<T> {
+  public String serialize(Collection<T> items) { return ""; }
+  public String serialize(T single) { return ""; }
+  String one(T x) { return serialize(x); }
+  String many(Collection<T> xs) { return serialize(xs); }
+}`,
+};
+
+describe('an implementation of a generic interface overrides what the interface declares, read through its clause', () => {
+  it('a call bound to one implementation overload is a caller of that interface overload only', async () => {
+    const idx = await indexOf(serializer);
+    // `JsonSerializer<T> implements Serializer<T>`: serialize(T) does not override serialize(Collection<T>).
+    expect(callers(idx, 'app.Serializer.serialize(Object)')).toEqual(['JsonSerializer.java:6']);
+    expect(callers(idx, 'app.Serializer.serialize(java.util.Collection)')).toEqual(['JsonSerializer.java:7']);
+  });
+});
