@@ -325,11 +325,8 @@ export class CrossFileResolver {
     let receiverType: string | undefined =
       call.receiver_type_fqn ?? this.inferReceiverType(receiver, fromFile);
 
-    if (!receiverType) {
-      const startIR = this.fileIRs.get(fromFile);
-      if (startIR?.meta.language === 'csharp' && call.receiver_type) {
-        receiverType = this.symbolTable.resolveTypeName(call.receiver_type, fromFile);
-      }
+    if (!receiverType && call.receiver_type) {
+      receiverType = this.symbolTable.resolveTypeName(call.receiver_type, fromFile);
     }
 
     if (receiverType) {
@@ -450,6 +447,11 @@ export class CrossFileResolver {
     // Check if receiver is a known type name directly
     const directType = this.symbolTable.resolveTypeName(receiver, fromFile);
     if (directType) return directType;
+
+    const newExpr = /^new\s+([A-Za-z_][\w.$]*)\s*(?:<[^>]*>)?\s*\(/.exec(receiver.trim());
+    if (newExpr) {
+      return this.symbolTable.resolveTypeName(newExpr[1], fromFile);
+    }
 
     // Check file's IR for variable declarations
     const ir = this.fileIRs.get(fromFile);
