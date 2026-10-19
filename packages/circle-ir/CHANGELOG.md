@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Java: `List<String>` argv wrapper keeps command_injection when the shell argv is stored in a local before the call (#626, partial).** `sameFileCallerPassesShellArgv` resolves a bare identifier argument to its last same-method initializer so `Arrays.asList("/bin/sh", "-c", …)` in a local still counts; non-shell locals and inline-argv fixtures unchanged.
 - **Java: constant-caller gate drops `interprocedural_param` sinks when every in-project caller passes a literal (#614, partial).** `analyzeProject` now applies the same relay forwarding rule as C# (#636): a callee parameter seeded as `interprocedural_param` is suppressed when all resolved callers pass a string literal (or literal local). Tainted and mixed callers keep the finding.
 
 ### Added
