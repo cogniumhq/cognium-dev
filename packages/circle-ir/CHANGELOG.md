@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Regression: ts-rust-parity quartet tier-1 rust `deserialization` safe mirror (#816).** Locks `v01_baseline_safe.rs` (`serde_json::from_str` into `Value`) as clean with recall on the `serde_yaml::from_str` tp twin.
+
 ## [4.17.0] - 2026-10-18
 
 ### Added
