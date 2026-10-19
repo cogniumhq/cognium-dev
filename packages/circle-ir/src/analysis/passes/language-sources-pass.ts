@@ -520,6 +520,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
 
     // -- Rust: safe-handler sanitizer detectors (cognium-dev #115 Sprint 31) --
     if (language === 'rust') {
+      additionalSanitizers.push(...findRustConstSliceMembershipGuardSanitizers(code));
       additionalSanitizers.push(...findRustSetAllowlistGuardSanitizers(code));
       additionalSanitizers.push(...findRustCanonicalizeGuardSanitizers(code));
       // cognium-dev #816 — PAT-INPUT-01 rust safe mirror: parse + range guards
@@ -6329,6 +6330,97 @@ function findPythonDefusedXmlSanitizers(code: string): TaintSanitizer[] {
       line: i + 1,
       sanitizes: ['xxe', 'external_taint_escape'],
     });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * Rust `const SLICE: &[&str] = &["a", "b"]` membership reject guard
+ * (cognium-dev #816 PAT-TRUST-01; Python twin #563).
+ *
+ *   if !THEMES.contains(&theme.as_str()) {
+ *       return HttpResponse::BadRequest().finish();
+ *   }
+ *   session.insert("theme", theme)
+ */
+function collectRustConstStrSliceNames(code: string): Set<string> {
+  const names = new Set<string>();
+  const re = /^\s*const\s+([A-Z][A-Z0-9_]*)\s*:\s*&\s*\[\s*&\s*str\s*\]\s*=\s*&\s*\[([^\]]*)\]\s*;/;
+  for (const line of code.split('\n')) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const inner = m[2].trim();
+    if (!inner) {
+      names.add(m[1]);
+      continue;
+    }
+    const elems = inner.split(',').map(s => s.trim()).filter(Boolean);
+    if (elems.every(e => /^"(?:[^"\\]|\\.)*"$/.test(e))) names.add(m[1]);
+  }
+  return names;
+}
+
+function findRustConstSliceMembershipGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const slices = collectRustConstStrSliceNames(code);
+  if (slices.size === 0) return sanitizers;
+
+  const lines = code.split('\n');
+  const guardOpen =
+    /^\s*if\s+!\s*([A-Z][A-Z0-9_]*)\s*\.\s*contains\s*\(\s*&\s*([A-Za-z_]\w*)(?:\s*\.\s*as_str\s*\(\s*\))?\s*\)\s*\{?\s*$/;
+  const terminator =
+    /\b(?:return\s+HttpResponse::|return\s+StatusCode::|return\s+Err\s*\(|panic!\s*\()/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = guardOpen.exec(lines[i]);
+    if (!m) continue;
+    const sliceName = m[1];
+    const guardedVar = m[2];
+    if (!slices.has(sliceName)) continue;
+
+    let depth = 0;
+    for (const ch of lines[i]) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+    let closeLine = i;
+    let bodyHasTerminator = terminator.test(lines[i]);
+    if (depth > 0) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 26); j++) {
+        if (terminator.test(lines[j])) bodyHasTerminator = true;
+        for (const ch of lines[j]) {
+          if (ch === '{') depth++;
+          else if (ch === '}') depth--;
+        }
+        if (depth === 0) {
+          closeLine = j;
+          break;
+        }
+      }
+    }
+    if (!bodyHasTerminator) continue;
+
+    const varRe = new RegExp(String.raw`\b${guardedVar}\b`);
+    const reassign = new RegExp(String.raw`^\s*(?:let\s+)?(?:mut\s+)?${guardedVar}\s*=(?!=)`);
+    for (let l = closeLine + 2; l <= lines.length; l++) {
+      const lineText = lines[l - 1];
+      if (!lineText || !varRe.test(lineText)) continue;
+      if (reassign.test(lineText)) break;
+      sanitizers.push({
+        type: 'rust_const_slice_membership_guard',
+        method: 'if',
+        line: l,
+        sanitizes: [
+          'trust_boundary',
+          'external_taint_escape',
+          'xss',
+          'open_redirect',
+          'ssrf',
+          'command_injection',
+        ],
+      });
+    }
   }
 
   return sanitizers;

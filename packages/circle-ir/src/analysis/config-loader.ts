@@ -1133,6 +1133,9 @@ const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
   { method: 'SetCookie', class: 'http',    type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['go'] },
   // gin: c.SetCookie(name, value, maxAge, path, domain, secure, httpOnly).
   { method: 'SetCookie', class: 'Context', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['go'] },
+
+  // --- Rust: actix-session / tower-sessions write -------------------------
+  { method: 'insert', class: 'Session', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['rust'] },
 ];
 
 export const DEFAULT_SINKS: SinkPattern[] = [
