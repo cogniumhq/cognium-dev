@@ -2,7 +2,7 @@
 
 All notable changes to `@cognium/html-index` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-10-19
 
 Additive: results carry `schemaVersion` `"0.3"`, and every input digest is unchanged. Every 0.2 value keeps its value on every page except accessible names the fixes below move (`name`, and with it `nameSource`, `visibleLabel` and `labelInName`); `texts` and `hasText` read as in 0.2.
 
