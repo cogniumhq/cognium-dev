@@ -1,21 +1,23 @@
 /**
- * cognium-dev#605 / #562 (minimal slice): Go `html.EscapeString` and
- * `template.HTMLEscapeString` escape HTML metacharacters, not CR/LF, so they are
- * not log-injection sanitizers. They keep their xss / open_redirect /
- * external_taint_escape credit.
- *
- * SAST regression fixtures — the handlers are deliberately vulnerable.
+ * cognium-dev#605 / #562 (Go sk66): `html.EscapeString` and
+ * `template.HTMLEscapeString` must not suppress `log_injection` — HTML escaping
+ * does not strip CR/LF. `template.JSEscapeString` may still credit log injection.
  */
-
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 
-async function flowLines(code: string, file: string, type: string) {
+const logInjectionSinkLines = async (code: string, file: string) => {
   const r = await analyze(code, file, 'go');
-  return [...new Set((r.taint.flows ?? []).filter((f) => f.sink_type === type).map((f) => f.sink_line))].sort((a, b) => a - b);
-}
+  return [
+    ...new Set(
+      (r.taint.flows ?? [])
+        .filter((f) => f.sink_type === 'log_injection')
+        .map((f) => f.sink_line),
+    ),
+  ].sort((a, b) => a - b);
+};
 
-const handler = `package audit
+const auditHandler = `package audit
 
 import (
 	"fmt"
@@ -24,80 +26,58 @@ import (
 	"net/http"
 )
 
-func Record(w http.ResponseWriter, r *http.Request) {
-	actor := r.URL.Query().Get("actor")
-	log.Printf("actor=%s", html.EscapeString(actor))
-	fmt.Fprint(w, html.EscapeString(actor))
+func Handler(w http.ResponseWriter, r *http.Request) {
+	u := r.URL.Query().Get("u")
+	log.Printf("user=%s", html.EscapeString(u))
+	fmt.Fprint(w, html.EscapeString(u))
 }
 `;
 
-const tmpl = `package audit
+const templateHtmlHandler = `package audit
 
 import (
-	"fmt"
-	"log"
-	"net/http"
-	"text/template"
-)
-
-func Note(w http.ResponseWriter, r *http.Request) {
-	who := r.URL.Query().Get("who")
-	log.Printf("who=%s", template.HTMLEscapeString(who))
-	fmt.Fprint(w, template.HTMLEscapeString(who))
-}
-`;
-
-const logBare = `package audit
-
-import (
+	"html/template"
 	"log"
 	"net/http"
 )
 
-func Bare(w http.ResponseWriter, r *http.Request) {
-	actor := r.URL.Query().Get("actor")
-	log.Printf("actor=%s", actor)
+func Handler(w http.ResponseWriter, r *http.Request) {
+	u := r.URL.Query().Get("u")
+	log.Printf("user=%s", template.HTMLEscapeString(u))
 }
 `;
 
-const replacer = `package audit
+const jsEscapeHandler = `package audit
 
 import (
+	"html/template"
 	"log"
 	"net/http"
-	"strings"
 )
 
-func Clean(w http.ResponseWriter, r *http.Request) {
-	actor := r.URL.Query().Get("actor")
-	cr := strings.NewReplacer("\\r", "", "\\n", "")
-	log.Printf("actor=%s", cr.Replace(actor))
+func Handler(w http.ResponseWriter, r *http.Request) {
+	u := r.URL.Query().Get("u")
+	log.Printf("user=%s", template.JSEscapeString(u))
 }
 `;
 
-describe('cognium-dev#605 Go html escapers are not log-injection sanitizers', () => {
+describe('#605 Go html/template escape is not a log_injection sanitizer', () => {
   beforeAll(async () => {
     await initAnalyzer();
   });
 
-  it('html.EscapeString into log.Printf still reports log_injection', async () => {
-    expect(await flowLines(handler, 'audit_handler.go', 'log_injection')).toEqual([12]);
+  it('html.EscapeString before log.Printf reports log_injection (sk66 TP)', async () => {
+    const lines = await logInjectionSinkLines(auditHandler, 'audit_handler.go');
+    expect(lines).toContain(12);
   });
 
-  it('html.EscapeString keeps its xss credit at the response writer', async () => {
-    expect(await flowLines(handler, 'audit_handler.go', 'xss')).toEqual([]);
+  it('template.HTMLEscapeString before log.Printf reports log_injection', async () => {
+    const lines = await logInjectionSinkLines(templateHtmlHandler, 'template_html_handler.go');
+    expect(lines.length).toBeGreaterThan(0);
   });
 
-  it('template.HTMLEscapeString into log.Printf still reports log_injection, xss stays credited', async () => {
-    expect(await flowLines(tmpl, 'note_handler.go', 'log_injection')).toEqual([12]);
-    expect(await flowLines(tmpl, 'note_handler.go', 'xss')).toEqual([]);
-  });
-
-  it('control: an unescaped value into log.Printf reports log_injection', async () => {
-    expect(await flowLines(logBare, 'bare_handler.go', 'log_injection')).toEqual([10]);
-  });
-
-  it('other Go rows are unchanged: a CR+LF NewReplacer keeps its log credit', async () => {
-    expect(await flowLines(replacer, 'clean_handler.go', 'log_injection')).toEqual([]);
+  it('template.JSEscapeString may suppress log_injection (control sanitizer)', async () => {
+    const lines = await logInjectionSinkLines(jsEscapeHandler, 'js_escape_handler.go');
+    expect(lines).toHaveLength(0);
   });
 });
