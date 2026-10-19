@@ -529,6 +529,8 @@ export function classifyEntryPointTier(
       return classifyJsTsEntryPoint(method, enclosingType, ctx);
     case 'go':
       return classifyGoEntryPoint(method, enclosingType, ctx);
+    case 'csharp':
+      return classifyCSharpEntryPoint(method, enclosingType, ctx);
     case 'bash':
     case 'shell':
       return classifyBashEntryPoint(method, enclosingType, ctx);
@@ -983,6 +985,59 @@ function fileHasJsTsFrameworkRegistration(
     }
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// C# classifier (cognium-dev #816 / #496 — PAT-PERMS library-parameter FPs)
+// ---------------------------------------------------------------------------
+
+const CSHARP_TIER_1_METHOD_ANNOTATIONS: ReadonlySet<string> = new Set([
+  'HttpGet', 'HttpPost', 'HttpPut', 'HttpDelete', 'HttpPatch', 'HttpHead', 'HttpOptions',
+  'Route', 'AcceptVerbs',
+  'MapGet', 'MapPost', 'MapPut', 'MapDelete', 'MapPatch',
+]);
+
+const CSHARP_TIER_1_CLASS_ANNOTATIONS: ReadonlySet<string> = new Set([
+  'ApiController', 'Controller', 'Route',
+]);
+
+function csharpTypeLooksLikeController(enclosingType: TypeInfo | undefined): boolean {
+  if (!enclosingType) return false;
+  if (annotationsInclude(enclosingType.annotations, CSHARP_TIER_1_CLASS_ANNOTATIONS)) return true;
+  const name = enclosingType.name ?? '';
+  return name.endsWith('Controller') && name !== 'Controller';
+}
+
+function looksLikeCSharpMain(method: MethodInfo): boolean {
+  const mods = method.modifiers ?? [];
+  if (!mods.includes('static')) return false;
+  if (method.name !== 'Main') return false;
+  const params = method.parameters ?? [];
+  return params.length === 0 || (params.length === 1 && /\bstring\s*\[\s*\]/.test(params[0]?.type ?? ''));
+}
+
+function classifyCSharpEntryPoint(
+  method: MethodInfo,
+  enclosingType: TypeInfo | undefined,
+  ctx: EntryPointContext,
+): EntryPointTier {
+  if (pathLooksLikeLibraryOrTest(ctx.filePath)) {
+    return 'TIER_3_LIBRARY_API';
+  }
+
+  if (annotationsInclude(method.annotations, CSHARP_TIER_1_METHOD_ANNOTATIONS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  if (csharpTypeLooksLikeController(enclosingType)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  if (looksLikeCSharpMain(method)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  return 'TIER_3_LIBRARY_API';
 }
 
 // ---------------------------------------------------------------------------
