@@ -210,9 +210,9 @@ function isCSharpNonEscapeCall(call: CallInfo): boolean {
 
 // Java (#468, slice): JDK exception / error types. Constructing one wraps the
 // value into an object that has not left the program, the counterpart of the
-// error-construction rows in the Go (#455) and C# (#474) gates. Loggers,
-// formatters, StringBuilder and project-defined exception classes are NOT
-// gated here: an unknown callee still escapes.
+// error-construction rows in the Go (#455) and C# (#474) gates. Formatters,
+// StringBuilder, loggers and project-defined exception classes are gated in
+// `isJavaNonEscapeCall`; an unknown callee still escapes.
 const JAVA_LANG_EXCEPTION_TYPES = new Set([
   'Exception', 'RuntimeException', 'IllegalArgumentException',
   'IllegalStateException', 'UnsupportedOperationException',
@@ -233,6 +233,20 @@ const JAVA_FORMATTER_CLASSES: ReadonlyMap<string, string> = new Map([
   ['String', 'java.lang'],
   ['MessageFormat', 'java.text'],
 ]);
+
+// Java (#468, slice 5): logging verbs. A tainted value written to a logger has
+// not left the program under the #455 gate — `log_injection` governs the sink.
+// Matched by method name on any receiver (SLF4J, Log4j, java.util.logging, …).
+const JAVA_LOGGER_METHODS = new Set([
+  'severe', 'warning', 'config', 'fine', 'finer', 'finest', 'logp', 'logrb',
+  'log', 'trace', 'debug', 'info', 'warn', 'error', 'fatal',
+  'Log', 'LogInformation', 'LogWarning', 'LogError', 'LogDebug', 'LogTrace',
+  'LogCritical', 'Information', 'Warning', 'Verbose', 'Fatal', 'BeginScope',
+]);
+
+function isJavaLoggerCall(call: CallInfo): boolean {
+  return JAVA_LOGGER_METHODS.has(call.method_name);
+}
 
 // Java (#468, slice 3): `java.util.Objects` null checks. They validate or return
 // the reference and do not send the value outside the program.
@@ -334,6 +348,7 @@ function isJavaNonEscapeCall(
 ): boolean {
   if (isJavaStaticFormatterCall(call, declaredTypeNames, imports, calls)) return true;
   if (isJavaObjectsNullCheckCall(call, declaredTypeNames, imports)) return true;
+  if (isJavaLoggerCall(call)) return true;
   if (isJavaCharacterPredicateCall(call, declaredTypeNames, imports)) return true;
   // Only a constructor call `new X(...)`: no receiver, and the resolved target
   // is `X.<init>` (the extractor does not set `is_constructor` for Java).
