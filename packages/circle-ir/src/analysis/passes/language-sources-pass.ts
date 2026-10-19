@@ -28,6 +28,7 @@ import { javaCallArgument, javaCanonicalBaseLacksSeparator } from '../java-canon
 import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
 import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js';
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
+import { jsReplaceChainVerdict } from '../js-crlf-strip.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -6793,6 +6794,15 @@ function findJsCsvFormulaPrefixSanitizers(code: string): TaintSanitizer[] {
  * threat-set. Custom wrappers using different escape strategies (e.g.
  * URL encode) are not yet covered.
  */
+/** Return expression of a small JS wrapper (function or arrow) for #562 chain verdict. */
+function jsWrapperBodyReplaceChainText(body: string): string | null {
+  const returnM = /\breturn\s+([^;}\n]+)/.exec(body);
+  if (returnM) return returnM[1]!.trim();
+  const arrowM = /=>\s*([^;}\n]+)/.exec(body);
+  if (arrowM) return arrowM[1]!.trim();
+  return null;
+}
+
 function findJsWrapperFunctionSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');
@@ -6818,8 +6828,13 @@ function findJsWrapperFunctionSanitizers(code: string): TaintSanitizer[] {
       kinds.add('external_taint_escape');
     }
     if (crlfCharClass.test(body)) {
-      kinds.add('log_injection');
-      kinds.add('external_taint_escape');
+      const chainText = jsWrapperBodyReplaceChainText(body);
+      const verdict = chainText ? jsReplaceChainVerdict(chainText) : 'undecided';
+      // #562 / #605: LF-only or CRLF-pair-only strips must not credit log_injection.
+      if (verdict !== 'leaves-crlf') {
+        kinds.add('log_injection');
+        kinds.add('external_taint_escape');
+      }
     }
     if (kinds.size > 0) wrappers.set(name, kinds);
   }
