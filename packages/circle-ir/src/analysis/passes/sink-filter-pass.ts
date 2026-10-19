@@ -345,6 +345,27 @@ function argvFirstLiteralIsShell(lineText: string): boolean {
   return SHELL_PROGRAMS.has(base);
 }
 
+/** cognium-dev#626 — shell argv written to instance field `fieldName` before `beforeLine`. */
+function javaFieldShellArgvWrittenBeforeLine(
+  fieldName: string,
+  beforeLine: number,
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+): boolean {
+  const cap = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+  const beanSetter = new RegExp(`\\bset${escapeReSf(cap)}\\s*\\((.+)\\)\\s*;?\\s*$`);
+  const fieldAssign = new RegExp(`^\\s*(?:this\\.)?${escapeReSf(fieldName)}\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`);
+  for (let l = methodStart; l < beforeLine && l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const sm = beanSetter.exec(line);
+    if (sm && callArgLooksLikeShellArgv(sm[1]!.trim(), 'new ProcessBuilder(')) return true;
+    const fm = fieldAssign.exec(line);
+    if (fm && callArgLooksLikeShellArgv(fm[1]!.trim(), 'new ProcessBuilder(')) return true;
+  }
+  return false;
+}
+
 /** Last RHS assigned to `varName` on a line before `beforeLine` inside the method span. */
 function javaLocalInitRhsBeforeLine(
   varName: string,
@@ -401,7 +422,27 @@ function sameFileCallerPassesShellArgv(
     const m = t.methods.find(mm => mm.name === methodName && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
     if (!m) continue;
     const pos = m.parameters.findIndex(p => p.name === paramName);
-    if (pos < 0) return false;
+    if (pos < 0) {
+      const isField = t.fields?.some(f => f.name === paramName);
+      if (!isField) return false;
+      return calls.some(c => {
+        if (c.method_name !== methodName) return false;
+        if (c.receiver != null && c.receiver !== 'this') return false;
+        if (c.location.line < t.start_line || c.location.line > t.end_line) return false;
+        if (c.arguments.length !== m.parameters.length) return false;
+        const callerMethod = t.methods.find(
+          mm => c.location.line >= mm.start_line && c.location.line <= mm.end_line,
+        );
+        if (!callerMethod) return false;
+        return javaFieldShellArgvWrittenBeforeLine(
+          paramName,
+          c.location.line,
+          callerMethod.start_line,
+          callerMethod.end_line,
+          sourceLines,
+        );
+      });
+    }
     return calls.some(c => {
       if (c.method_name !== methodName) return false;
       if (c.receiver != null && c.receiver !== 'this') return false;
@@ -495,7 +536,46 @@ function projectCallerPassesShellArgvForWrapper(
     .flatMap(t => t.methods)
     .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
   const pos = calleeMethod?.parameters.findIndex(p => p.name === paramName) ?? -1;
-  if (pos < 0) return false;
+  if (pos < 0) {
+    const isField = calleeTypes.some(
+      t =>
+        t.fields?.some(f => f.name === paramName)
+        && t.methods.some(
+          mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line,
+        ),
+    );
+    if (!isField || !calleeMethod) return false;
+    let found = false;
+    const setterName = `set${paramName.charAt(0).toUpperCase()}${paramName.slice(1)}`;
+    forEachCrossFileCall((callerFile, call, targetMethod) => {
+      const ctx = getCallerContext(callerFile);
+      if (!ctx) return;
+      const callerMethod = ctx.types
+        .flatMap(t => t.methods)
+        .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+      if (!callerMethod) return;
+      if (targetMethod.endsWith(`.${setterName}`) || targetMethod.endsWith(setterName)) {
+        if (call.arguments.length > 0 && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines)) {
+          found = true;
+        }
+        return;
+      }
+      if (!wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+      if (call.arguments.length !== calleeMethod.parameters.length) return;
+      if (
+        javaFieldShellArgvWrittenBeforeLine(
+          paramName,
+          call.location.line,
+          callerMethod.start_line,
+          callerMethod.end_line,
+          ctx.lines,
+        )
+      ) {
+        found = true;
+      }
+    });
+    return found;
+  }
 
   let found = false;
   forEachCrossFileCall((callerFile, call, targetMethod) => {
@@ -601,14 +681,46 @@ export function synthesizeCrossFileArgvWrapperFlows(
         .flatMap(ty => ty.methods)
         .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
       const pos = calleeMethod?.parameters.findIndex(p => p.name === varName) ?? -1;
-      if (pos < 0) continue;
+      const fieldArgv = pos < 0 && ir.types.some(
+        ty =>
+          ty.fields?.some(f => f.name === varName)
+          && ty.methods.some(
+            mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line,
+          ),
+      );
+      if (pos < 0 && !fieldArgv) continue;
 
       forEachCrossFileCall(fa.file, (callerFile, call, targetMethod) => {
-        if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
-        if (call.arguments.length <= pos) return;
         const ctx = getCallerContext(callerFile);
         if (!ctx) return;
-        if (!callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines)) return;
+        const setterName = `set${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
+        let shellProof = false;
+        if (pos >= 0) {
+          if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+          if (call.arguments.length <= pos) return;
+          shellProof = callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines);
+        } else {
+          const callerMethod = ctx.types
+            .flatMap(ty => ty.methods)
+            .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+          if (!callerMethod || !calleeMethod) return;
+          if (targetMethod.endsWith(`.${setterName}`) || targetMethod.endsWith(setterName)) {
+            shellProof =
+              call.arguments.length > 0
+              && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines);
+          } else if (wrapperMethod && wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) {
+            shellProof =
+              call.arguments.length === calleeMethod.parameters.length
+              && javaFieldShellArgvWrittenBeforeLine(
+                varName,
+                call.location.line,
+                callerMethod.start_line,
+                callerMethod.end_line,
+                ctx.lines,
+              );
+          }
+        }
+        if (!shellProof) return;
 
         const source = pickCallerTaintSource(ctx.ir, call.location.line);
         if (!source) return;
