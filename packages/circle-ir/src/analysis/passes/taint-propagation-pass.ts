@@ -429,14 +429,37 @@ function indexJavaLocalAssignments(code: string): Map<string, string[]> {
   return index;
 }
 
+function goCalleeBaseName(callee: string): string {
+  const dot = callee.lastIndexOf('.');
+  return dot === -1 ? callee : callee.slice(dot + 1);
+}
+
 /** cognium-dev#783: callee from a Go `:=` or `var x =` assignment line (unqualified or dotted). */
 function goConstantHelperCalleeOnLine(line: string): string | null {
   const m =
     line.match(/:=\s*([\w.]+)\s*\(/) ?? line.match(/\bvar\s+\w+\s*=\s*([\w.]+)\s*\(/);
   if (!m) return null;
-  const callee = m[1];
-  const dot = callee.lastIndexOf('.');
-  return dot === -1 ? callee : callee.slice(dot + 1);
+  return goCalleeBaseName(m[1]);
+}
+
+/** Same as {@link goConstantHelperCalleeOnLine} when the call spans the next lines after `:=` / `var`. */
+function goConstantHelperCalleeFromLines(lines: string[], lineNumber: number): string | null {
+  const direct = goConstantHelperCalleeOnLine(lines[lineNumber - 1] ?? '');
+  if (direct) return direct;
+  const cur = lines[lineNumber - 1] ?? '';
+  const partial =
+    cur.match(/:=\s*([\w.]+)\s*$/) ?? cur.match(/\bvar\s+\w+\s*=\s*([\w.]+)\s*$/);
+  if (partial) {
+    const next = (lines[lineNumber] ?? '').trimStart();
+    if (next.startsWith('(')) return goCalleeBaseName(partial[1]);
+  }
+  if (!cur.includes(':=') && !/\bvar\s+\w+\s*=/.test(cur)) return null;
+  if (cur.includes('(')) return null;
+  for (let i = lineNumber + 1; i <= Math.min(lines.length, lineNumber + 4); i++) {
+    const m = (lines[i - 1] ?? '').match(/^\s*([\w.]+)\s*\(/);
+    if (m) return goCalleeBaseName(m[1]);
+  }
+  return null;
 }
 
 function makeConstPropVeto(
@@ -588,7 +611,7 @@ function makeConstPropVeto(
         !constProp.tainted.has(fpLookup)
       ) {
         for (let ln = sourceLine; ln <= sinkLine; ln++) {
-          const callee = goConstantHelperCalleeOnLine(lines[ln - 1] ?? '');
+          const callee = goConstantHelperCalleeFromLines(lines, ln);
           if (callee && constProp.constantReturningMethods?.has(callee)) {
             return true;
           }

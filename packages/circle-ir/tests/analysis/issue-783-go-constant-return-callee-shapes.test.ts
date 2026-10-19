@@ -65,6 +65,22 @@ func byID(w http.ResponseWriter, r *http.Request, db *sql.DB) {
     expect(await sinkLines(code, 'sql_injection')).toEqual([]);
   });
 
+  it('multiline uid := sanitize(...) stays clean when callee is on the next line', async () => {
+    const code = sqlApp(
+      `uid :=\n\t\tsanitize(r.URL.Query().Get("id"))`,
+      helper,
+    );
+    expect(await sinkLines(code, 'sql_injection')).toEqual([]);
+  });
+
+  it('multiline var uid = sanitize(...) stays clean', async () => {
+    const code = sqlApp(
+      `var uid = sanitize(\n\t\tr.URL.Query().Get("id"))`,
+      helper,
+    );
+    expect(await sinkLines(code, 'sql_injection')).toEqual([]);
+  });
+
   it('pass-through helper with var form still reports', async () => {
     const leaky = `func sanitize(v string) string {
 	return v
