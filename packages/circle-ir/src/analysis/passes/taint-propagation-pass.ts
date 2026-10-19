@@ -368,6 +368,48 @@ function javaReceiverChainDerivedVar(rhsByLocal: Map<string, string[]>, localVar
  * over every line for every (source, derived local) pair, which made large
  * files take seconds. Same per-line matching, done once.
  */
+/** Line whose block scope owns `varName` as read on `useLine` (#476 / #597). */
+function defLineForUse(
+  graph: PassContext['graph'],
+  varName: string,
+  useLine: number,
+): number {
+  const own = (graph.defsByLine.get(useLine) ?? []).find(d => d.variable === varName);
+  if (own) return own.line;
+  const use = (graph.usesByLine.get(useLine) ?? []).find(u => u.variable === varName && u.def_id != null);
+  const d = use ? graph.defById.get(use.def_id!) : undefined;
+  return d?.line ?? useLine;
+}
+
+/** Const-prop key for a flow step: block locals vs method-body locals (#476 / #597). */
+function constPropFlowLookup(
+  language: string | undefined,
+  method: string | null | undefined,
+  varName: string,
+  blockLine: number,
+  constProp: ConstantPropagatorResult,
+  preferMethodScoped = false,
+): string {
+  if (language === 'go') {
+    return constPropScopedVar(method, varName, blockLine, constProp);
+  }
+  if (!method || varName.includes(':')) return varName;
+  const blockScoped = constPropScopedVar(method, varName, blockLine, constProp);
+  const hasTaintBinding = (name: string) =>
+    constProp.tainted.has(name) || constProp.sanitizedVars.has(name);
+  if (blockScoped.includes(':b') && hasTaintBinding(blockScoped)) {
+    return blockScoped;
+  }
+  const methodScoped = `${method}:${varName}`;
+  if (hasTaintBinding(methodScoped)) {
+    return methodScoped;
+  }
+  if (preferMethodScoped && method) {
+    return methodScoped;
+  }
+  return constProp.lineBlockScopes?.has(blockLine) ? blockScoped : varName;
+}
+
 function indexJavaLocalAssignments(code: string): Map<string, string[]> {
   const declRe =
     /^\s*(?:public|private|protected|static|final|volatile|transient|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
@@ -424,19 +466,30 @@ function makeConstPropVeto(
   };
   return (step, sourceLine, sinkLine, sinkType) => {
     const method = methodAtLine(graph, step.line);
-    const scopedVar = constPropScopedVar(method, step.variable, step.line, constProp);
-    // cognium-dev#751: Go locals are recorded method-scoped only (no unscoped
-    // alias) by handleGoAssignment, so Go looks up the scoped name. Other
-    // languages keep the unscoped lookup (#614), except block-scoped locals (#476).
-    const fpLookup =
-      language === 'go'
-        ? scopedVar
-        : constProp.lineBlockScopes?.has(step.line)
-          ? scopedVar
-          : step.variable;
+    const blockLine = defLineForUse(graph, step.variable, step.line);
+    const fpLookup = constPropFlowLookup(
+      language,
+      method,
+      step.variable,
+      blockLine,
+      constProp,
+    );
     const r = isFalsePositive(constProp, step.line, fpLookup);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
+    if (
+      r.reason === 'variable_not_tainted' &&
+      language === 'java' &&
+      method &&
+      fpLookup === step.variable &&
+      !step.variable.includes('.')
+    ) {
+      const v = step.variable;
+      if (constProp.tainted.has(`${method}:${v}`)) return false;
+      for (const t of constProp.tainted) {
+        if (t.startsWith(`${method}:b`) && t.endsWith(`:${v}`)) return false;
+      }
+    }
     // #589: the step variable came from a context-specific encoder
     // (`escapeHtml`, `encodeForHTML`, …), which does not clean `trust_boundary`
     // (a `session.setAttribute` sink). It is "not tainted" only for the other
@@ -450,7 +503,7 @@ function makeConstPropVeto(
       } else {
         const method = methodAtLine(graph, step.line);
         if (method) {
-          if (unc.get(constPropScopedVar(method, step.variable, step.line, constProp))?.has(sinkType)) {
+          if (unc.get(fpLookup)?.has(sinkType)) {
             return false;
           }
         } else if (unc.get(step.variable)?.has(sinkType)) {
@@ -522,7 +575,7 @@ function makeConstPropVeto(
       // source_line is the assignment line (rule E would otherwise keep it).
       if (
         step.line === sinkLine &&
-        !constProp.tainted.has(constPropScopedVar(method, step.variable, step.line, constProp))
+        !constProp.tainted.has(fpLookup)
       ) {
         for (let ln = sourceLine; ln <= sinkLine; ln++) {
           const calleeMatch = (lines[ln - 1] ?? '').match(/:=\s*(\w+)\s*\(/);
@@ -588,7 +641,6 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
 
     // DFG-based taint propagation
     const propagationResult = propagateTaint(graph, sources, sinks, sanitizers, undefined, ctx.code);
-
     // cognium-dev#328 — scoped exemption from const-prop's `variable_not_tainted`
     // veto for self-derived reassignment (`x = f(x)`, `x += y`), the #287 shape.
     const isVetoed = makeConstPropVeto(constProp, graph, sources, ctx.code, ctx.language, sanitizers);
@@ -827,11 +879,10 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         calls,
         sources,
         sinks,
-        constProp.tainted,
-        constProp.unreachableLines,
+        constProp,
         ctx.code,
         types,
-        constProp.lineBlockScopes,
+        graph,
       ) ?? [];
     for (const f of collectionFlows) {
       if (flowKeys.has(flowKey(f))) continue;
@@ -1841,12 +1892,13 @@ function detectCollectionFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
   sinks: CircleIR['taint']['sinks'],
-  taintedVars: Set<string>,
-  unreachableLines: Set<number>,
+  constProp: ConstantPropagatorResult,
   code?: string,
   types?: CircleIR['types'],
-  lineBlockScopes?: Map<number, number>,
+  graph?: PassContext['graph'],
 ): CircleIR['taint']['flows'] {
+  const taintedVars = constProp.tainted;
+  const unreachableLines = constProp.unreachableLines;
   const flows: CircleIR['taint']['flows'] = [];
   const fieldNames = new Set<string>();
   for (const t of types ?? []) for (const f of t.fields ?? []) fieldNames.add(f.name);
@@ -1872,11 +1924,17 @@ function detectCollectionFlows(
           const varName = arg.variable;
           let scopedName = varName;
           if (call.in_method) {
-            const blockId = lineBlockScopes?.get(call.location.line);
-            scopedName =
-              blockId !== undefined
-                ? `${call.in_method}:b${blockId}:${varName}`
-                : `${call.in_method}:${varName}`;
+            const blockLine = graph
+              ? defLineForUse(graph, varName, call.location.line)
+              : call.location.line;
+            scopedName = constPropFlowLookup(
+              'java',
+              call.in_method,
+              varName,
+              blockLine,
+              constProp,
+              true,
+            );
           }
           // Bare `name` that is a field read (no local of that name in this
           // method) still counts as a field use — Inter4-style. A shadowing

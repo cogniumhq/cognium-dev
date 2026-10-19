@@ -1051,17 +1051,11 @@ export class ConstantPropagator {
         return true;
 
       case 'block': {
-        const skipScope = this.skipMethodBodyBlockScope;
-        if (skipScope) {
+        if (this.skipMethodBodyBlockScope) {
           this.skipMethodBodyBlockScope = false;
-        } else {
-          this.blockScopeStack.push(getNodeLine(node));
         }
         for (const child of node.children) {
           this.visit(child);
-        }
-        if (!skipScope) {
-          this.blockScopeStack.pop();
         }
         return true;
       }
@@ -1310,9 +1304,23 @@ export class ConstantPropagator {
       }
     }
 
-    // Visit all children (condition, body, etc.)
-    for (const child of node.children) {
-      this.visit(child);
+    // #476: shadowing loop locals (`String str` per while) — scope the body block only.
+    if (node.type === 'while_statement' || node.type === 'do_statement') {
+      const body = node.childForFieldName('body');
+      for (const child of node.children) {
+        if (child !== body) this.visit(child);
+      }
+      if (body?.type === 'block') {
+        this.blockScopeStack.push(getNodeLine(body));
+        this.visit(body);
+        this.blockScopeStack.pop();
+      } else if (body) {
+        this.visit(body);
+      }
+    } else {
+      for (const child of node.children) {
+        this.visit(child);
+      }
     }
 
     // After visiting children, ensure loop variables stay unknown (they may have been overwritten)
