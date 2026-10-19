@@ -330,13 +330,19 @@ const JAVA_CHARACTER_PREDICATES = new Set([
   'isSurrogatePair', 'isValidCodePoint', 'isBmpCodePoint',
   'isSupplementaryCodePoint',
 ]);
+// #814: metadata queries on a code point (name / general category) do not retain
+// the char; same receiver gate as the boolean predicates (#807).
+const JAVA_CHARACTER_METADATA = new Set(['getName', 'getType', 'getNumericValue']);
 
 function isJavaCharacterPredicateCall(
   call: CallInfo,
   declaredTypeNames: ReadonlySet<string>,
   imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
 ): boolean {
-  if (!call.receiver || !JAVA_CHARACTER_PREDICATES.has(call.method_name)) return false;
+  if (!call.receiver) return false;
+  if (!JAVA_CHARACTER_PREDICATES.has(call.method_name) && !JAVA_CHARACTER_METADATA.has(call.method_name)) {
+    return false;
+  }
   return isJdkClassReceiver(call.receiver, JAVA_CHARACTER_CLASS, declaredTypeNames, imports);
 }
 
