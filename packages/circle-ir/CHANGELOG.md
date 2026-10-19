@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Java: helper-return shell argv at field setter (#626, partial).** Stage-11 argv suppression now credits `setArgv(helper(...))` when the callee's return is a shell `Arrays.asList` / `List.of` shape (same-file or cross-file static helper).
 - **Java: nested `File(parent, child)` path_traversal on one line (#590, partial).** Sink dedup and clean-variable filtering key off call column so an inner `new File(constant)` on the same line no longer drops the outer constructor's child-argument sink.
 - **Java: helper-return taint reaches caller sinks on DFG-derived locals (#590, partial).** `InterproceduralPass` extends callee-to-caller flow synthesis through same-file DFG chains so `sql = "…" + invoice` sinks fire when `invoice` comes from a helper return.
 - **Java: inner-class helper return connects callee sources to caller sinks (#590, partial).** `InterproceduralPass` synthesizes flows when a source is discovered inside a callee and the caller sink uses the call's assignee; callee resolution uses receiver type for nested classes.

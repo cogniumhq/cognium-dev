@@ -345,27 +345,6 @@ function argvFirstLiteralIsShell(lineText: string): boolean {
   return SHELL_PROGRAMS.has(base);
 }
 
-/** cognium-dev#626 — shell argv written to instance field `fieldName` before `beforeLine`. */
-function javaFieldShellArgvWrittenBeforeLine(
-  fieldName: string,
-  beforeLine: number,
-  methodStart: number,
-  methodEnd: number,
-  sourceLines: string[],
-): boolean {
-  const cap = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
-  const beanSetter = new RegExp(`\\bset${escapeReSf(cap)}\\s*\\((.+)\\)\\s*;?\\s*$`);
-  const fieldAssign = new RegExp(`^\\s*(?:this\\.)?${escapeReSf(fieldName)}\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`);
-  for (let l = methodStart; l < beforeLine && l <= methodEnd; l++) {
-    const line = (sourceLines[l - 1] ?? '').trim();
-    const sm = beanSetter.exec(line);
-    if (sm && callArgLooksLikeShellArgv(sm[1]!.trim(), 'new ProcessBuilder(')) return true;
-    const fm = fieldAssign.exec(line);
-    if (fm && callArgLooksLikeShellArgv(fm[1]!.trim(), 'new ProcessBuilder(')) return true;
-  }
-  return false;
-}
-
 /** Last RHS assigned to `varName` on a line before `beforeLine` inside the method span. */
 function javaLocalInitRhsBeforeLine(
   varName: string,
@@ -389,6 +368,123 @@ function javaLocalInitRhsBeforeLine(
 
 function callArgLooksLikeShellArgv(expr: string, probePrefix: string): boolean {
   return argvFirstLiteralIsShell(`${probePrefix}${expr}`);
+}
+
+type ShellArgvLookupContext = {
+  projectGraph?: {
+    filePaths: string[];
+    getIR: (f: string) => CircleIR | undefined;
+  };
+  sourceLinesByFile?: Map<string, string[]>;
+};
+
+function parseSimpleJavaCall(expr: string): { qualifier?: string; method: string } | null {
+  const trimmed = expr.trim();
+  const m = /^([\w][\w.]*)\s*\(/.exec(trimmed);
+  if (!m) return null;
+  const head = m[1];
+  const dot = head.lastIndexOf('.');
+  if (dot < 0) return { method: head };
+  return { qualifier: head.slice(0, dot), method: head.slice(dot + 1) };
+}
+
+function javaMethodBodyReturnLooksLikeShellArgv(
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+): boolean {
+  for (let l = methodStart; l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const ret = /\breturn\s+(.+?)\s*;/.exec(line);
+    if (!ret) continue;
+    if (callArgLooksLikeShellArgv(ret[1]!.trim(), 'new ProcessBuilder(')) return true;
+  }
+  return false;
+}
+
+function javaResolveCalleeMethodLines(
+  methodName: string,
+  qualifier: string | undefined,
+  refLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  sourceLines: string[],
+  ctx?: ShellArgvLookupContext,
+): { start: number; end: number; lines: string[] } | undefined {
+  const enclosing = types.find(t => refLine >= t.start_line && refLine <= t.end_line);
+  const typeName = qualifier
+    ? (qualifier.includes('.') ? qualifier.split('.').pop()! : qualifier)
+    : enclosing?.name;
+  if (!typeName) return undefined;
+
+  const tryType = (t: TypeInfo, lines: string[]) => {
+    const mm = t.methods.find(m => m.name === methodName);
+    if (!mm) return undefined;
+    return { start: mm.start_line, end: mm.end_line, lines };
+  };
+
+  if (ctx?.projectGraph && ctx.sourceLinesByFile) {
+    for (const fp of ctx.projectGraph.filePaths) {
+      const ir = ctx.projectGraph.getIR(fp);
+      if (!ir) continue;
+      const t = ir.types.find(tt => tt.name === typeName);
+      if (!t) continue;
+      const lines = ctx.sourceLinesByFile.get(fp);
+      if (!lines) continue;
+      const hit = tryType(t, lines);
+      if (hit) return hit;
+    }
+  }
+
+  const local = types.find(t => t.name === typeName);
+  if (local) return tryType(local, sourceLines);
+  return undefined;
+}
+
+function javaExpressionLooksLikeShellArgv(
+  expr: string,
+  refLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  sourceLines: string[],
+  ctx?: ShellArgvLookupContext,
+): boolean {
+  if (callArgLooksLikeShellArgv(expr, 'new ProcessBuilder(')) return true;
+  const parsed = parseSimpleJavaCall(expr);
+  if (!parsed) return false;
+  const body = javaResolveCalleeMethodLines(
+    parsed.method,
+    parsed.qualifier,
+    refLine,
+    types,
+    sourceLines,
+    ctx,
+  );
+  if (!body) return false;
+  return javaMethodBodyReturnLooksLikeShellArgv(body.start, body.end, body.lines);
+}
+
+/** cognium-dev#626 — shell argv written to instance field `fieldName` before `beforeLine`. */
+function javaFieldShellArgvWrittenBeforeLine(
+  fieldName: string,
+  beforeLine: number,
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+  types: ReadonlyArray<TypeInfo>,
+  ctx?: ShellArgvLookupContext,
+): boolean {
+  const cap = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+  const beanSetter = new RegExp(`\\bset${escapeReSf(cap)}\\s*\\((.+)\\)\\s*;?\\s*$`);
+  const fieldAssign = new RegExp(`^\\s*(?:this\\.)?${escapeReSf(fieldName)}\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`);
+  for (let l = methodStart; l < beforeLine && l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const sm = beanSetter.exec(line);
+    if (sm && javaExpressionLooksLikeShellArgv(sm[1]!.trim(), l, types, sourceLines, ctx)) {
+      return true;
+    }
+    const fm = fieldAssign.exec(line);
+    if (fm && callArgLooksLikeShellArgv(fm[1]!.trim(), 'new ProcessBuilder(')) return true;
+  }
+  return false;
 }
 
 /**
@@ -440,6 +536,7 @@ function sameFileCallerPassesShellArgv(
           callerMethod.start_line,
           callerMethod.end_line,
           sourceLines,
+          types,
         );
       });
     }
@@ -461,7 +558,9 @@ function sameFileCallerPassesShellArgv(
       if (shadowed) return false;
       const expr = (c.arguments[pos]?.expression ?? '').trim();
       if (!expr) return false;
-      if (callArgLooksLikeShellArgv(expr, 'new ProcessBuilder(')) return true;
+      if (javaExpressionLooksLikeShellArgv(expr, c.location.line, types, sourceLines)) {
+        return true;
+      }
       const argVar = c.arguments[pos]?.variable;
       if (argVar && expr === argVar && !/[.(]/.test(expr)) {
         const callerMethod = t.methods.find(
@@ -475,7 +574,9 @@ function sameFileCallerPassesShellArgv(
             callerMethod.end_line,
             sourceLines,
           );
-          if (rhs && callArgLooksLikeShellArgv(rhs, 'new ProcessBuilder(')) return true;
+          if (rhs && javaExpressionLooksLikeShellArgv(rhs, c.location.line, types, sourceLines)) {
+            return true;
+          }
         }
       }
       return false;
@@ -489,10 +590,13 @@ function callArgumentIsShellArgv(
   argPos: number,
   types: ReadonlyArray<TypeInfo>,
   sourceLines: string[],
+  ctx?: ShellArgvLookupContext,
 ): boolean {
   const expr = (call.arguments[argPos]?.expression ?? '').trim();
   if (!expr) return false;
-  if (callArgLooksLikeShellArgv(expr, 'new ProcessBuilder(')) return true;
+  if (javaExpressionLooksLikeShellArgv(expr, call.location.line, types, sourceLines, ctx)) {
+    return true;
+  }
   const argVar = call.arguments[argPos]?.variable;
   if (argVar && expr === argVar && !/[.(]/.test(expr)) {
     const callerType = types.find(
@@ -509,7 +613,9 @@ function callArgumentIsShellArgv(
         callerMethod.end_line,
         sourceLines,
       );
-      if (rhs && callArgLooksLikeShellArgv(rhs, 'new ProcessBuilder(')) return true;
+      if (rhs && javaExpressionLooksLikeShellArgv(rhs, call.location.line, types, sourceLines, ctx)) {
+        return true;
+      }
     }
   }
   return false;
@@ -523,11 +629,13 @@ function projectCallerPassesShellArgvForWrapper(
   calleeCalls: ReadonlyArray<CallInfo>,
   calleeLines: string[],
   projectGraph: JavaProjectGraph,
+  sourceLinesByFile: Map<string, string[]>,
   getCallerContext: (file: string) => { types: TypeInfo[]; calls: CallInfo[]; lines: string[] } | undefined,
   forEachCrossFileCall: (
     cb: (callerFile: string, call: CallInfo, targetMethod: string) => void,
   ) => void,
 ): boolean {
+  const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
   if (sameFileCallerPassesShellArgv(paramName, wrapperMethod, sinkLine, calleeTypes, calleeCalls, calleeLines)) {
     return true;
   }
@@ -553,7 +661,10 @@ function projectCallerPassesShellArgvForWrapper(
         .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
       if (!callerMethod) return;
       if (targetMethod.endsWith(`.${setterName}`) || targetMethod.endsWith(setterName)) {
-        if (call.arguments.length > 0 && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines)) {
+        if (
+          call.arguments.length > 0
+          && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines, shellArgvCtx)
+        ) {
           found = true;
         }
         return;
@@ -567,6 +678,8 @@ function projectCallerPassesShellArgvForWrapper(
           callerMethod.start_line,
           callerMethod.end_line,
           ctx.lines,
+          ctx.types,
+          shellArgvCtx,
         )
       ) {
         found = true;
@@ -581,7 +694,7 @@ function projectCallerPassesShellArgvForWrapper(
     if (call.arguments.length <= pos) return;
     const ctx = getCallerContext(callerFile);
     if (!ctx) return;
-    if (callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines)) found = true;
+    if (callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines, shellArgvCtx)) found = true;
   });
   return found;
 }
@@ -820,6 +933,7 @@ export function synthesizeCrossFileArgvWrapperFlows(
       if (pos < 0 && !fieldArgv) continue;
 
       const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
+      const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
       for (const calleeFile of relatedCalleeFiles) {
         forEachCrossFileCall(calleeFile, (callerFile, call, targetMethod) => {
         const ctx = getCallerContext(callerFile);
@@ -829,7 +943,7 @@ export function synthesizeCrossFileArgvWrapperFlows(
         if (pos >= 0) {
           if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
           if (call.arguments.length <= pos) return;
-          shellProof = callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines);
+          shellProof = callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines, shellArgvCtx);
         } else {
           const callerMethod = ctx.types
             .flatMap(ty => ty.methods)
@@ -838,7 +952,7 @@ export function synthesizeCrossFileArgvWrapperFlows(
           if (targetMethod.endsWith(`.${setterName}`) || targetMethod.endsWith(setterName)) {
             shellProof =
               call.arguments.length > 0
-              && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines);
+              && callArgumentIsShellArgv(call, 0, ctx.types, ctx.lines, shellArgvCtx);
           } else if (wrapperMethod && wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) {
             shellProof =
               call.arguments.length === calleeMethod.parameters.length
@@ -848,6 +962,8 @@ export function synthesizeCrossFileArgvWrapperFlows(
                 callerMethod.start_line,
                 callerMethod.end_line,
                 ctx.lines,
+                ctx.types,
+                shellArgvCtx,
               );
           }
         }
@@ -1002,6 +1118,7 @@ export function filterJavaArgvWrapperFlowsWithoutShellCaller(
         ir.calls,
         lines,
         projectGraph,
+        sourceLinesByFile,
         getCallerContext,
         cb => {
           for (const calleeFile of relatedCalleeFiles) {
