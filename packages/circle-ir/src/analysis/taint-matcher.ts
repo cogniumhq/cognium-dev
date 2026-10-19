@@ -767,6 +767,26 @@ function isInterproceduralTaintableType(
     if (csharpTaintable.includes(baseType) || csharpTaintable.includes(leaf)) return true;
   }
 
+  // Rust: handler DTO parameters (`WebhookEvent`, `&Request`) must seed like `String`
+  // so actix/rocket route handlers keep flows past the #292 gate (cognium-dev #818).
+  if (language === 'rust') {
+    const trimmed = typeName.trim();
+    const unref = trimmed.replace(/^&mut\s+/, '').replace(/^&\s*/, '');
+    const rustBase = unref.split('<')[0].trim();
+    const rustScalars = [
+      'String', 'str', 'bool', 'char',
+      'i8', 'i16', 'i32', 'i64', 'i128', 'isize',
+      'u8', 'u16', 'u32', 'u64', 'u128', 'usize',
+      'f32', 'f64',
+    ];
+    if (rustScalars.includes(rustBase)) return true;
+    if (rustBase === '()' || rustBase === '!') return false;
+    if (unref.startsWith('Vec<') || unref.startsWith('Option<') || unref.startsWith('Result<')) {
+      return true;
+    }
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(rustBase)) return true;
+  }
+
   // JavaScript / TypeScript: untyped params are already seeded; typed TS annotations
   // must match that posture so framework handlers (cognium-dev #818 channel axis)
   // keep interprocedural_param sources before the #292 gate.

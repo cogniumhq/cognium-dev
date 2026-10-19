@@ -96,6 +96,53 @@ export { handler };
     expect(hasCmdFlow(r)).toBe(true);
   });
 
+  it('rust #[post] handler with DTO param reaches command_injection', async () => {
+    const code = `use std::process::Command;
+
+#[post("/webhook")]
+fn on_webhook(event: WebhookEvent) -> HttpResponse {
+    let name = event.name;
+    Command::new("sh").arg("-c").arg(format!("git clone /srv/{}", name)).spawn();
+    HttpResponse::Ok()
+}
+struct WebhookEvent { name: String }
+`;
+    const r = await analyze(code, 'webhook_evt.rs', 'rust');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
+  it('rust HttpResponse handler without route attr keeps DTO param flow', async () => {
+    const code = `use std::process::Command;
+
+pub fn handle(req: RequestPayload) -> HttpResponse {
+    let cmd = req.payload;
+    Command::new("sh").arg("-c").arg(format!("handle {}", cmd)).spawn();
+    HttpResponse::Ok()
+}
+
+struct RequestPayload {
+    payload: String,
+}
+`;
+    const r = await analyze(code, 'grpc_handle.rs', 'rust');
+    expect(hasCmdFlow(r)).toBe(true);
+  });
+
+  it('negative: rust helper with DTO param stays gated', async () => {
+    const code = `use std::process::Command;
+
+fn run_job(event: WebhookEvent) {
+    Command::new("sh").arg("-c").arg(format!("ls {}", event.name)).spawn();
+}
+
+struct WebhookEvent {
+    name: String,
+}
+`;
+    const r = await analyze(code, 'run_job.rs', 'rust');
+    expect(hasCmdFlow(r)).toBe(false);
+  });
+
   it('negative: exported runJob with arbitrary params stays gated', async () => {
     const code = `const { exec } = require('child_process');
 function runJob(a, b) { exec('ls ' + a); }

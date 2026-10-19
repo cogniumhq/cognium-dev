@@ -91,6 +91,7 @@ function rustAttributesAbove(lines: string[], startLine: number): string[] {
     const t = (lines[i] ?? '').trim();
     if (t.startsWith('#[')) { out.push(t); continue; }
     if (t === '' || t.startsWith('//')) continue;
+    if (out.length > 0) break;
     break;
   }
   return out;
