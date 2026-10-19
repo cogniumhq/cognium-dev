@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: channel export gate requires request-shaped handler params (#818, partial).** Exported `handle` / `onWebhook` / … only bypass the #292 param gate when a parameter is named like `event`, `req`, `payload`, etc.; arbitrary names such as `handle(n)` stay gated (sk06 wrong-context FPs).
 - **Rust: DTO route-handler parameters seed `interprocedural_param` (#818, partial).** Custom struct/`Vec`/`Option` handler params are taintable like `String`; `#[post]` attributes above a blank line still classify as framework handlers.
 - **Java: `Character.getName` / `getType` / `getNumericValue` are not `external_taint_escape` (#814, partial).** Same `java.lang.Character` receiver gate as the #807 boolean predicates; user-declared `Character` types and sinks that write metadata output are unchanged.
 - **Java: helper-return shell argv at field setter (#626, partial).** Stage-11 argv suppression now credits `setArgv(helper(...))` when the callee's return is a shell `Arrays.asList` / `List.of` shape (same-file or cross-file static helper).

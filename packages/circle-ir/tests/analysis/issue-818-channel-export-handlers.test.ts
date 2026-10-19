@@ -151,4 +151,16 @@ module.exports = { runJob };
     const r = await analyze(code, 'run_job.js', 'javascript');
     expect(hasCmdFlow(r)).toBe(false);
   });
+
+  it('negative: exported handle(n) without request param stays gated (sk06 wrong-context)', async () => {
+    const code = `const { exec } = require('child_process');
+function handle(n) {
+  const x = encodeURIComponent(n);
+  exec('grep ' + x, () => {});
+}
+module.exports = { handle };
+`;
+    const r = await analyze(code, 'sk06_wrong_context_cmdi.js', 'javascript');
+    expect(hasCmdFlow(r)).toBe(false);
+  });
 });

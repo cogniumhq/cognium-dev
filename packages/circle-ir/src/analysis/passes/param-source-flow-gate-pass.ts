@@ -139,10 +139,19 @@ const CHANNEL_EXPORT_HANDLER_NAMES: ReadonlySet<string> = new Set([
   'sse',
 ]);
 
+/** Request / message shapes for channel-axis handlers (not arbitrary callback params). */
+const CHANNEL_HANDLER_PARAM = /^(event|req|request|ctx|context|message|payload|topic|id|user|_|args|info)$/;
+
+function hasChannelHandlerParamSignature(method: MethodInfo): boolean {
+  if (method.parameters.length === 0) return false;
+  return method.parameters.some(p => CHANNEL_HANDLER_PARAM.test(p.name));
+}
+
 function isChannelExportedHandler(method: MethodInfo, language: string, lines: string[]): boolean {
   if (language !== 'javascript' && language !== 'typescript') return false;
   if (!isModuleLevelFunction(method, lines)) return false;
   if (!CHANNEL_EXPORT_HANDLER_NAMES.has(method.name)) return false;
+  if (!hasChannelHandlerParamSignature(method)) return false;
   return jsTsExportBinding(method.name, lines);
 }
 
