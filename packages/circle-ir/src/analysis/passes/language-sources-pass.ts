@@ -4041,6 +4041,8 @@ export function buildJavaTaintedVars(
   const declRe =
     /^\s*(?:public|private|protected|static|final|volatile|transient|\s)*\s*(?:[A-Za-z_][\w.]*(?:\s*<[^>]*>)?(?:\s*\[\s*\])*)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
   const assignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const thisFieldAssignRe = /^\s*this\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const beanSetterCallRe = /\bset([A-Z]\w*)\s*\((.*)\)\s*;?\s*$/;
   const JAVA_KEYWORDS = new Set([
     'if', 'else', 'while', 'for', 'do', 'switch', 'case', 'return',
     'throw', 'try', 'catch', 'finally', 'new', 'this', 'super',
@@ -4106,10 +4108,69 @@ export function buildJavaTaintedVars(
         // statement whose call argument list wraps over several lines reads like
         // the same statement on one line.
         const joined = joinWrappedJavaStatement(lines, i);
-        if (joined === null) continue;
-        statement = joined;
-        declMatch = declRe.exec(statement);
-        assignMatch = !declMatch ? assignRe.exec(statement) : null;
+        if (joined !== null) {
+          statement = joined;
+          declMatch = declRe.exec(statement);
+          assignMatch = !declMatch ? assignRe.exec(statement) : null;
+        }
+      }
+
+      const thisFieldMatch = thisFieldAssignRe.exec(statement.trim());
+      if (thisFieldMatch) {
+        const fieldName = thisFieldMatch[1];
+        const rhs = thisFieldMatch[2];
+        const rhsCode = rhs
+          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit =>
+            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+          .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+        const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+        const ref =
+          (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+          (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
+        if (ref) {
+          const thisField = `this.${fieldName}`;
+          if (!knownTainted.has(thisField)) {
+            derived.set(thisField, i + 1);
+            knownTainted.add(thisField);
+            changed = true;
+          }
+          if (!knownTainted.has(fieldName)) {
+            derived.set(fieldName, i + 1);
+            knownTainted.add(fieldName);
+            changed = true;
+          }
+        }
+        continue;
+      }
+
+      const setterCall = beanSetterCallRe.exec(statement);
+      if (setterCall) {
+        const fieldName = setterCall[1].charAt(0).toLowerCase() + setterCall[1].slice(1);
+        const arg = setterCall[2];
+        const rhsCode = arg
+          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit =>
+            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+          .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+        const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+        const ref =
+          (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+          (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
+        if (ref) {
+          const thisField = `this.${fieldName}`;
+          if (!knownTainted.has(thisField)) {
+            derived.set(thisField, i + 1);
+            knownTainted.add(thisField);
+            changed = true;
+          }
+          if (!knownTainted.has(fieldName)) {
+            derived.set(fieldName, i + 1);
+            knownTainted.add(fieldName);
+            changed = true;
+          }
+        }
+        continue;
       }
 
       const m = declMatch ?? assignMatch;
