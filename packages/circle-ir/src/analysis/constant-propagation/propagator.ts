@@ -1042,6 +1042,10 @@ export class ConstantPropagator {
         this.handleGoAssignment(node);
         return false;
 
+      case 'var_declaration':
+        this.handleGoVarDeclaration(node);
+        return false;
+
       case 'update_expression':
         this.handleUpdateExpression(node);
         return false;
@@ -1549,6 +1553,66 @@ export class ConstantPropagator {
    * helper that always returns a constant — clears the variable. Anything else stops being tracked here, which is what Go
    * assignments got before this handler existed: the DFG decides.
    */
+  /** `var x = expr` / `var x T = expr` — same clean/taint rules as `:=` (#783). */
+  private handleGoVarDeclaration(node: Node): void {
+    for (let i = 0; i < node.childCount; i++) {
+      const spec = node.child(i);
+      if (!spec || spec.type !== 'var_spec') continue;
+      const nameNode = spec.childForFieldName('name');
+      let valueNode = spec.childForFieldName('value');
+      if (!nameNode || !valueNode) continue;
+      const names: string[] = [];
+      if (nameNode.type === 'identifier') {
+        names.push(getNodeText(nameNode, this.source));
+      } else if (nameNode.type === 'identifier_list') {
+        for (const c of nameNode.children) {
+          if (c.type === 'identifier') names.push(getNodeText(c, this.source));
+        }
+      }
+      if (valueNode.type === 'expression_list') {
+        valueNode =
+          valueNode.children.find((c) => c.type !== ',' && c.type !== 'comment') ?? valueNode;
+      }
+      if (names.length === 0) continue;
+      const line = getNodeLine(node);
+      for (const varName of names) {
+        if (varName === '_') continue;
+        const scopedName = this.getScopedName(varName);
+        this.goScopedNames.add(scopedName);
+        if (this.isTaintedExpression(valueNode)) {
+          this.goUnknownVars.add(scopedName);
+          this.tainted.add(scopedName);
+          this.sanitizedVars.delete(scopedName);
+          this.sanitizedVarUncovered.delete(scopedName);
+          this.definitionNodes.set(scopedName, valueNode);
+          this.symbols.set(scopedName, createUnknown(line));
+          continue;
+        }
+        if (!this.isGoKnownCleanRhs(valueNode) || this.goUnknownVars.has(scopedName)) {
+          this.goUnknownVars.add(scopedName);
+          this.symbols.delete(scopedName);
+          this.sanitizedVars.delete(scopedName);
+          this.sanitizedVarUncovered.delete(scopedName);
+          if (!this.inConditionalBranch) {
+            this.tainted.delete(scopedName);
+            this.definitionNodes.delete(scopedName);
+          }
+          continue;
+        }
+        if (this.inConditionalBranch) {
+          this.goUnknownVars.add(scopedName);
+          this.symbols.delete(scopedName);
+          continue;
+        }
+        this.tainted.delete(scopedName);
+        this.definitionNodes.delete(scopedName);
+        this.symbols.set(scopedName, this.evaluateExpression(valueNode));
+        this.sanitizedVars.delete(scopedName);
+        this.sanitizedVarUncovered.delete(scopedName);
+      }
+    }
+  }
+
   private handleGoAssignment(node: Node): void {
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');

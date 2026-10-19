@@ -429,6 +429,16 @@ function indexJavaLocalAssignments(code: string): Map<string, string[]> {
   return index;
 }
 
+/** cognium-dev#783: callee from a Go `:=` or `var x =` assignment line (unqualified or dotted). */
+function goConstantHelperCalleeOnLine(line: string): string | null {
+  const m =
+    line.match(/:=\s*([\w.]+)\s*\(/) ?? line.match(/\bvar\s+\w+\s*=\s*([\w.]+)\s*\(/);
+  if (!m) return null;
+  const callee = m[1];
+  const dot = callee.lastIndexOf('.');
+  return dot === -1 ? callee : callee.slice(dot + 1);
+}
+
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -578,8 +588,8 @@ function makeConstPropVeto(
         !constProp.tainted.has(fpLookup)
       ) {
         for (let ln = sourceLine; ln <= sinkLine; ln++) {
-          const calleeMatch = (lines[ln - 1] ?? '').match(/:=\s*(\w+)\s*\(/);
-          if (calleeMatch && constProp.constantReturningMethods?.has(calleeMatch[1])) {
+          const callee = goConstantHelperCalleeOnLine(lines[ln - 1] ?? '');
+          if (callee && constProp.constantReturningMethods?.has(callee)) {
             return true;
           }
         }
