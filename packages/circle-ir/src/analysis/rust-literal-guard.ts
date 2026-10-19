@@ -185,6 +185,94 @@ function passesMutParam(line: string, n: string): boolean {
   return !new RegExp(String.raw`\b${n}\s*\.\s*\w+\s*\(`).test(line) || new RegExp(String.raw`(?<![\w.])\w+\s*\(\s*${n}\b`).test(line);
 }
 
+/** `let bound = if <allowlist contains var> { var } else { <literal-only> };` */
+function findRustAllowlistTernarySanitizers(code: string): TaintSanitizer[] {
+  const masked = maskRust(code);
+  const origLines = code.split('\n');
+  const maskedLines = masked.split('\n');
+  const out: TaintSanitizer[] = [];
+
+  const allowlistVar = (cond: string): string | null => {
+    const c = cond.trim();
+    let m = new RegExp(String.raw`^!?(\w+)\s*\.\s*contains\s*\(\s*&\s*(\w+)(?:\s*\.\s*as_str\s*\(\s*\))?\s*\)$`).exec(c);
+    if (m) return m[2];
+    if ((m = new RegExp(String.raw`^!\s*\[\s*${STR}(?:\s*,\s*${STR})*\s*,?\s*\]\s*\.\s*contains\s*\(\s*&\s*${VAR}\s*\)$`).exec(c))) {
+      return m[1];
+    }
+    return guardedVariable(c);
+  };
+
+  const LITERAL_CHAIN = new Set(['to_string', 'into', 'to_owned', 'clone']);
+  const literalOnly = (block: string): boolean => {
+    const maskedB = maskRust(block.trim());
+    if (!maskedB.trim()) return false;
+    const re = /[A-Za-z_]\w*/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(maskedB)) !== null) {
+      const id = m[0];
+      if (KEYWORDS.has(id) || /[A-Z]/.test(id[0]) || LITERAL_CHAIN.has(id)) continue;
+      return false;
+    }
+    return true;
+  };
+
+  const usesOnlyVar = (block: string, name: string): boolean => {
+    const b = block.trim();
+    if (!b) return false;
+    const maskedB = maskRust(b);
+    const re = new RegExp(String.raw`(?<![\w.])${name}\b`);
+    if (!re.test(maskedB)) return false;
+    return !readsOtherValue(b, maskedB, name);
+  };
+
+  for (const m of masked.matchAll(/\blet\s+(\w+)\s*=\s*if\b/g)) {
+    const bound = m[1]!;
+    const at = m.index! + m[0].length - 2;
+    let depth = 0;
+    let open = -1;
+    for (let i = at + 2; i < masked.length; i++) {
+      const ch = masked[i];
+      if (ch === '(' || ch === '[') depth++;
+      else if (ch === ')' || ch === ']') depth--;
+      else if (ch === '{' && depth === 0) {
+        open = i;
+        break;
+      } else if (ch === ';' || ch === '}') break;
+    }
+    if (open < 0) continue;
+    const cond = code.slice(at + 2, open).trim();
+    const guarded = allowlistVar(cond);
+    if (!guarded) continue;
+    const thenClose = matchBrace(masked, open);
+    if (thenClose < 0) continue;
+    const thenBody = code.slice(open + 1, thenClose);
+    if (!/^\s*else\b/.test(masked.slice(thenClose + 1, thenClose + 10))) continue;
+    const elseOpen = masked.indexOf('{', thenClose + 1);
+    if (elseOpen < 0) continue;
+    const elseClose = matchBrace(masked, elseOpen);
+    if (elseClose < 0) continue;
+    const elseBody = code.slice(elseOpen + 1, elseClose);
+    const inverted = /^\s*!/.test(cond);
+    const ok = inverted
+      ? literalOnly(thenBody) && usesOnlyVar(elseBody, guarded)
+      : usesOnlyVar(thenBody, guarded) && literalOnly(elseBody);
+    if (!ok) continue;
+
+    const assignLine = masked.slice(0, at).split('\n').length;
+    const mention = new RegExp(String.raw`(?<![\w.])${bound}\b`);
+    for (let l = assignLine; l < origLines.length; l++) {
+      if (!mention.test(maskedLines[l])) continue;
+      out.push({
+        type: 'rust_allowlist_ternary',
+        method: 'guard',
+        line: l + 1,
+        sanitizes: CREDITED_TYPES as TaintSanitizer['sanitizes'],
+      });
+    }
+  }
+  return out;
+}
+
 export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanitizer[] {
   const masked = maskRust(code);
   const origLines = code.split('\n');
@@ -307,7 +395,7 @@ export function findRustLiteralEqualityGuardSanitizers(code: string): TaintSanit
       });
     }
   }
-  return out;
+  return [...out, ...findRustAllowlistTernarySanitizers(code)];
 }
 
 /**
