@@ -1071,29 +1071,21 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     });
 
     if (ctx.language === 'csharp') {
-      finalFlows = finalFlows.filter((f) => {
-        if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'path_traversal') return true;
-        const src = sources.find(
-          (s) => s.line === f.source_line && s.type === 'interprocedural_param',
-        );
-        const methodName = src?.in_method;
-        if (!methodName) return true;
-        const enclosingType = types.find((t) =>
-          t.methods.some((m) => m.name === methodName),
-        );
-        const enclosingMethod = enclosingType?.methods.find((m) => m.name === methodName);
-        return !shouldGateInterproceduralParam(
-          f.source_type,
-          enclosingMethod,
-          enclosingType,
-          {
-            language: ctx.language,
+      finalFlows = finalFlows.filter(
+        (f) =>
+          !shouldGateCSharpPatPermsLibraryParamFlow(
+            f,
+            sources,
+            sinks,
             types,
-            filePath: graph.ir.meta.file,
-            calls,
-          },
-        );
-      });
+            {
+              language: ctx.language,
+              types,
+              filePath: graph.ir.meta.file,
+              calls,
+            },
+          ),
+      );
     }
 
     // Sprint 24 (cognium-dev #102) — uniform line-keyed sanitizer
@@ -2225,6 +2217,60 @@ function detectArrayElementFlows(
   return flows;
 }
 
+/**
+ * cognium-dev #816 — PAT-PERMS-01: suppress only direct library-parameter →
+ * FileStream path_traversal on non-entry methods. Derived paths (Path.Combine,
+ * GetFullPath chains) and other sinks stay gated only by sanitizer / DFG logic.
+ */
+function csharpPatPermsDirectParamSink(
+  sink: CircleIR['taint']['sinks'][0],
+  paramVar: string,
+): boolean {
+  const method = (sink.method ?? '').replace(/^.*\./, '');
+  if (method !== 'FileStream') return false;
+  const code = (sink as { code?: string }).code ?? '';
+  if (!code) return true;
+  const escaped = paramVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\bFileStream\\s*\\(\\s*${escaped}\\b`).test(code);
+}
+
+function shouldGateCSharpPatPermsLibraryParamFlow(
+  flow: TaintFlowInfo,
+  sources: CircleIR['taint']['sources'],
+  sinks: CircleIR['taint']['sinks'],
+  types: CircleIR['types'],
+  ctx: {
+    language?: string;
+    types?: CircleIR['types'];
+    filePath?: string;
+    calls?: CircleIR['calls'];
+  },
+): boolean {
+  if (flow.source_type !== 'interprocedural_param' || flow.sink_type !== 'path_traversal') {
+    return false;
+  }
+  const srcVar = flow.path?.[0]?.variable;
+  const sinkVar = flow.path?.[flow.path.length - 1]?.variable;
+  if (!srcVar || srcVar !== sinkVar) return false;
+  const sink = sinks.find(
+    (s) => s.line === flow.sink_line && s.type === 'path_traversal',
+  );
+  if (!sink || !csharpPatPermsDirectParamSink(sink, srcVar)) return false;
+  const src = sources.find(
+    (s) => s.line === flow.source_line && s.type === 'interprocedural_param',
+  );
+  const methodName = src?.in_method;
+  if (!methodName) return false;
+  const enclosingType = types.find((t) => t.methods.some((m) => m.name === methodName));
+  const enclosingMethod = enclosingType?.methods.find((m) => m.name === methodName);
+  return shouldGateInterproceduralParam(
+    flow.source_type,
+    enclosingMethod,
+    enclosingType,
+    ctx,
+  );
+}
+
 /** Parameter names referenced as identifiers inside a compound sink argument (#685). */
 function compoundArgParamNames(expression: string, paramNames: Iterable<string>): string[] {
   const stripped = expression.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, (m) => ' '.repeat(m.length));
@@ -2302,7 +2348,8 @@ function detectParameterSinkFlows(
             if (
               language === 'csharp' &&
               paramSource.type === 'interprocedural_param' &&
-              sink.type === 'path_traversal'
+              sink.type === 'path_traversal' &&
+              csharpPatPermsDirectParamSink(sink, varName)
             ) {
               const enclosingType = types.find((t) =>
                 t.methods.some((m) => m.name === methodName),
