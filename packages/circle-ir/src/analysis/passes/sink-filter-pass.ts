@@ -519,10 +519,10 @@ function projectCallerPassesShellArgvForWrapper(
   paramName: string,
   wrapperMethod: string | null | undefined,
   sinkLine: number,
-  calleeFile: string,
   calleeTypes: ReadonlyArray<TypeInfo>,
   calleeCalls: ReadonlyArray<CallInfo>,
   calleeLines: string[],
+  projectGraph: JavaProjectGraph,
   getCallerContext: (file: string) => { types: TypeInfo[]; calls: CallInfo[]; lines: string[] } | undefined,
   forEachCrossFileCall: (
     cb: (callerFile: string, call: CallInfo, targetMethod: string) => void,
@@ -537,14 +537,12 @@ function projectCallerPassesShellArgvForWrapper(
     .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
   const pos = calleeMethod?.parameters.findIndex(p => p.name === paramName) ?? -1;
   if (pos < 0) {
-    const isField = calleeTypes.some(
-      t =>
-        t.fields?.some(f => f.name === paramName)
-        && t.methods.some(
-          mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line,
-        ),
-    );
-    if (!isField || !calleeMethod) return false;
+    if (
+      !calleeMethod
+      || !javaFieldArgvAtSink(projectGraph, calleeTypes, paramName, wrapperMethod, sinkLine)
+    ) {
+      return false;
+    }
     let found = false;
     const setterName = `set${paramName.charAt(0).toUpperCase()}${paramName.slice(1)}`;
     forEachCrossFileCall((callerFile, call, targetMethod) => {
@@ -611,6 +609,131 @@ function wrapperMethodMatchesTarget(wrapperMethod: string, targetMethod: string)
   return targetMethod.endsWith(`.${wrapperMethod}`) || targetMethod.endsWith(wrapperMethod);
 }
 
+type JavaProjectGraph = {
+  filePaths: string[];
+  getIR: (f: string) => CircleIR | undefined;
+};
+
+/** Type that owns `wrapperMethod` at `sinkLine` in `types`. */
+function javaHostTypeAtSink(
+  types: ReadonlyArray<TypeInfo>,
+  wrapperMethod: string,
+  sinkLine: number,
+): string | undefined {
+  for (const t of types) {
+    if (
+      t.methods.some(
+        mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line,
+      )
+    ) {
+      return t.name;
+    }
+  }
+  return undefined;
+}
+
+/** Field on `typeName` or a supertype declared anywhere in the project. */
+function javaProjectTypeDeclaresField(
+  projectGraph: JavaProjectGraph,
+  typeName: string,
+  fieldName: string,
+): boolean {
+  const seen = new Set<string>();
+  const queue = [typeName];
+  while (queue.length > 0) {
+    const tn = queue.pop()!;
+    if (seen.has(tn)) continue;
+    seen.add(tn);
+    for (const fp of projectGraph.filePaths) {
+      const ir = projectGraph.getIR(fp);
+      if (!ir) continue;
+      for (const t of ir.types) {
+        if (t.name !== tn) continue;
+        if (t.fields?.some(f => f.name === fieldName)) return true;
+        if (t.extends) queue.push(t.extends);
+      }
+    }
+  }
+  return false;
+}
+
+/** Callee files for cross-file argv recall: sink file plus supertype declaration files. */
+function javaRelatedCalleeFiles(
+  projectGraph: JavaProjectGraph,
+  primaryCalleeFile: string,
+  hostTypeName: string | undefined,
+): string[] {
+  const files = new Set<string>([primaryCalleeFile]);
+  if (!hostTypeName) return [...files];
+  const seen = new Set<string>();
+  const queue = [hostTypeName];
+  while (queue.length > 0) {
+    const tn = queue.pop()!;
+    if (seen.has(tn)) continue;
+    seen.add(tn);
+    for (const fp of projectGraph.filePaths) {
+      const ir = projectGraph.getIR(fp);
+      const t = ir?.types.find(tt => tt.name === tn);
+      if (!t) continue;
+      files.add(fp);
+      if (t.extends) queue.push(t.extends);
+    }
+  }
+  return [...files];
+}
+
+function javaFieldArgvAtSink(
+  projectGraph: JavaProjectGraph,
+  calleeTypes: ReadonlyArray<TypeInfo>,
+  paramName: string,
+  wrapperMethod: string,
+  sinkLine: number,
+): boolean {
+  const hostType = javaHostTypeAtSink(calleeTypes, wrapperMethod, sinkLine);
+  if (!hostType) return false;
+  return javaProjectTypeDeclaresField(projectGraph, hostType, paramName);
+}
+
+function javaProjectFieldType(
+  projectGraph: JavaProjectGraph,
+  typeName: string,
+  fieldName: string,
+): string | null {
+  const seen = new Set<string>();
+  const queue = [typeName];
+  while (queue.length > 0) {
+    const tn = queue.pop()!;
+    if (seen.has(tn)) continue;
+    seen.add(tn);
+    for (const fp of projectGraph.filePaths) {
+      const ir = projectGraph.getIR(fp);
+      if (!ir) continue;
+      for (const t of ir.types) {
+        if (t.name !== tn) continue;
+        const f = t.fields?.find(ff => ff.name === fieldName);
+        if (f?.type) return f.type;
+        if (t.extends) queue.push(t.extends);
+      }
+    }
+  }
+  return null;
+}
+
+function resolveJavaArgvIdentifierType(
+  varName: string,
+  wrapperMethod: string | null | undefined,
+  sinkLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  projectGraph: JavaProjectGraph,
+): string | null {
+  const direct = resolveIdentifierType(varName, wrapperMethod, [...types]);
+  if (direct) return direct;
+  if (!wrapperMethod) return null;
+  const hostType = javaHostTypeAtSink(types, wrapperMethod, sinkLine);
+  if (!hostType) return null;
+  return javaProjectFieldType(projectGraph, hostType, varName);
+}
+
 /**
  * cognium-dev#626 — per-file argv suppression drops the ProcessBuilder sink on
  * isolated `List<String>` wrappers; restore cross-file recall by synthesizing
@@ -668,9 +791,15 @@ export function synthesizeCrossFileArgvWrapperFlows(
       const varName = arg0.variable ?? '';
       const argExpr = (arg0.expression ?? '').trim();
       if (!varName || argExpr !== varName || /[(.]/.test(argExpr)) continue;
-      const t = resolveIdentifierType(varName, ctorCall.in_method, ir.types);
-      if (!isArgvContainerType(t)) continue;
       const wrapperMethod = ctorCall.in_method;
+      const t = resolveJavaArgvIdentifierType(
+        varName,
+        wrapperMethod,
+        sinkLine,
+        ir.types,
+        projectGraph,
+      );
+      if (!isArgvContainerType(t)) continue;
       if (
         sameFileCallerPassesShellArgv(varName, wrapperMethod, sinkLine, ir.types, ir.calls, lines)
       ) {
@@ -681,16 +810,18 @@ export function synthesizeCrossFileArgvWrapperFlows(
         .flatMap(ty => ty.methods)
         .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
       const pos = calleeMethod?.parameters.findIndex(p => p.name === varName) ?? -1;
-      const fieldArgv = pos < 0 && ir.types.some(
-        ty =>
-          ty.fields?.some(f => f.name === varName)
-          && ty.methods.some(
-            mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line,
-          ),
-      );
+      const hostType = wrapperMethod
+        ? javaHostTypeAtSink(ir.types, wrapperMethod, sinkLine)
+        : undefined;
+      const fieldArgv =
+        pos < 0
+        && wrapperMethod
+        && javaFieldArgvAtSink(projectGraph, ir.types, varName, wrapperMethod, sinkLine);
       if (pos < 0 && !fieldArgv) continue;
 
-      forEachCrossFileCall(fa.file, (callerFile, call, targetMethod) => {
+      const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
+      for (const calleeFile of relatedCalleeFiles) {
+        forEachCrossFileCall(calleeFile, (callerFile, call, targetMethod) => {
         const ctx = getCallerContext(callerFile);
         if (!ctx) return;
         const setterName = `set${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
@@ -796,7 +927,8 @@ export function synthesizeCrossFileArgvWrapperFlows(
           path_exists: true,
           confidence: 0.7,
         });
-      });
+        });
+      }
     }
   }
 }
@@ -850,18 +982,32 @@ export function filterJavaArgvWrapperFlowsWithoutShellCaller(
       const varName = arg0.variable ?? '';
       const argExpr = (arg0.expression ?? '').trim();
       if (!varName || argExpr !== varName || /[(.]/.test(argExpr)) return true;
-      const t = resolveIdentifierType(varName, ctorCall.in_method, ir.types);
+      const t = resolveJavaArgvIdentifierType(
+        varName,
+        ctorCall.in_method,
+        flow.sink_line,
+        ir.types,
+        projectGraph,
+      );
       if (!isArgvContainerType(t)) return true;
+      const hostType = ctorCall.in_method
+        ? javaHostTypeAtSink(ir.types, ctorCall.in_method, flow.sink_line)
+        : undefined;
+      const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
       return projectCallerPassesShellArgvForWrapper(
         varName,
         ctorCall.in_method,
         flow.sink_line,
-        fa.file,
         ir.types,
         ir.calls,
         lines,
+        projectGraph,
         getCallerContext,
-        cb => forEachCrossFileCall(fa.file, cb),
+        cb => {
+          for (const calleeFile of relatedCalleeFiles) {
+            forEachCrossFileCall(calleeFile, cb);
+          }
+        },
       );
     });
   }

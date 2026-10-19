@@ -37,6 +37,43 @@ public class CallerServlet extends HttpServlet {
 }
 `;
 
+const baseHost = `import java.util.List;
+
+public class BaseHost {
+    protected List<String> argv;
+
+    public void setArgv(List<String> argv) {
+        this.argv = argv;
+    }
+}
+`;
+
+const derivedHost = `import java.io.IOException;
+import java.util.List;
+
+public class ShellHost extends BaseHost {
+    public void runShell() throws IOException {
+        new ProcessBuilder(argv).start(); // SINK_LINE
+    }
+}
+`;
+
+const derivedCaller = `import java.io.IOException;
+import java.util.Arrays;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+
+public class DerivedCallerServlet extends HttpServlet {
+    @Override
+    protected void doGet(HttpServletRequest request) throws IOException {
+        String step = request.getParameter("step");
+        ShellHost host = new ShellHost();
+        host.setArgv(Arrays.asList("/bin/sh", "-c", "make " + step));
+        host.runShell();
+    }
+}
+`;
+
 const sameFile = `import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
@@ -87,6 +124,25 @@ describe('#626 probe field-carried argv', () => {
     );
 
     const sinkLine = host.split('\n').findIndex(l => l.includes('SINK_LINE')) + 1;
+    const flows =
+      pa.files.find(f => f.file === 'ShellHost.java')?.analysis.taint?.flows ?? [];
+
+    expect(
+      flows.some(f => f.sink_type === 'command_injection' && f.sink_line === sinkLine),
+    ).toBe(true);
+  });
+
+  it('field on supertype with setter in another file reports command_injection', async () => {
+    const pa = await analyzeProject(
+      [
+        { filePath: 'BaseHost.java', code: baseHost, language: 'java' },
+        { filePath: 'ShellHost.java', code: derivedHost, language: 'java' },
+        { filePath: 'DerivedCallerServlet.java', code: derivedCaller, language: 'java' },
+      ],
+      {},
+    );
+
+    const sinkLine = derivedHost.split('\n').findIndex(l => l.includes('SINK_LINE')) + 1;
     const flows =
       pa.files.find(f => f.file === 'ShellHost.java')?.analysis.taint?.flows ?? [];
 
