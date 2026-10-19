@@ -528,6 +528,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findRustNumericRangeCheckGuardSanitizers(code),
       );
+      // cognium-dev #816 — PAT-INFO-01: response echoes only query params, no env secrets.
+      additionalSanitizers.push(...findRustPatInfoHttpOnlyResponseSanitizers(code));
       // cognium-dev#293: `if x != "a" && x != "b" { return Err(..) }` literal-equality guard.
       additionalSanitizers.push(...findRustLiteralEqualityGuardSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form Command::new(literal).arg(...)
@@ -6329,6 +6331,66 @@ function findPythonDefusedXmlSanitizers(code: string): TaintSanitizer[] {
       method: 'defusedxml',
       line: i + 1,
       sanitizes: ['xxe', 'external_taint_escape'],
+    });
+  }
+
+  return sanitizers;
+}
+
+/**
+ * PAT-INFO-01 safe mirror (cognium-dev #816): `HttpResponse` body built with
+ * `format!` interpolates only `web::Query` / `.get(...)` values — no `env::var`.
+ * Credits the sink so CWE-200-style response leaks stay on env-backed TP controls.
+ */
+function findRustPatInfoHttpOnlyResponseSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const bodyFormatRe = /HttpResponse::\w+\(\)\s*\.\s*body\s*\(\s*format!\s*\(/;
+  const envBindRe = /(?:^|[^:])env::var\s*\(|std::env::/;
+  const httpGetRe = /\.get\s*\(\s*"[^"]+"\s*\)/;
+  const letVarRe = (v: string) =>
+    new RegExp(String.raw`^\s*let\s+(?:mut\s+)?${v}\s*=`);
+
+  for (let i = 0; i < lines.length; i++) {
+    const sinkLine = lines[i];
+    if (!bodyFormatRe.test(sinkLine)) continue;
+    if (envBindRe.test(sinkLine)) continue;
+
+    const varRefs = [
+      ...sinkLine.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g),
+    ].map((m) => m[1]);
+    if (varRefs.length === 0) continue;
+
+    let allHttpOnly = true;
+    for (const v of varRefs) {
+      let sawBinding = false;
+      let boundEnv = false;
+      let boundHttp = false;
+      for (let j = i - 1; j >= Math.max(0, i - 24); j--) {
+        const line = lines[j];
+        if (!letVarRe(v).test(line)) continue;
+        sawBinding = true;
+        if (envBindRe.test(line)) boundEnv = true;
+        if (httpGetRe.test(line)) boundHttp = true;
+        break;
+      }
+      if (!sawBinding || boundEnv || !boundHttp) {
+        allHttpOnly = false;
+        break;
+      }
+    }
+    if (!allHttpOnly) continue;
+
+    sanitizers.push({
+      type: 'rust_pat_info_http_only_body',
+      method: 'format',
+      line: i + 1,
+      sanitizes: [
+        'xss',
+        'external_taint_escape',
+        'open_redirect',
+        'log_injection',
+      ],
     });
   }
 
