@@ -40,6 +40,10 @@ module.exports = { run };
       (p) => p.source.file === 'controller.js' && p.sink.file === 'helper.js',
     );
     expect(xfile, 'expected controller.js → helper.js deserialization').toBeTruthy();
+
+    const helperFlows = (r.files.find(f => f.file === 'helper.js')?.analysis.taint.flows ?? [])
+      .filter(f => f.sink_type === 'deserialization');
+    expect(helperFlows.length).toBeGreaterThanOrEqual(1);
   });
 
   it('helper alone — no spurious deserialization without tainted param', async () => {
