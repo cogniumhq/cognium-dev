@@ -3843,9 +3843,21 @@ function detectExpressionScanFlows(
         if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
       }
       for (const [varName, derivedLine] of derived) {
-        if (!varName || existingVars.has(varName)) continue;
+        if (!varName) continue;
         const owner = methodAt(derivedLine);
         const fieldAlias = isDeclaredField(derivedLine, varName);
+        if (existingVars.has(varName)) {
+          if (!fieldAlias) continue;
+          // cognium-dev#626: a bean setter's `interprocedural_param` stub must not
+          // block the declared-field alias derived from a tainted `setFoo(...)` /
+          // `this.foo =` write — otherwise sinks in other methods never see `foo`.
+          const stubIdx = sourcesWithVar.findIndex(
+            s => s.variable === varName && s.type === 'interprocedural_param',
+          );
+          if (stubIdx < 0) continue;
+          sourcesWithVar.splice(stubIdx, 1);
+          existingVars.delete(varName);
+        }
         let scopedAnchor = anchor;
         if (owner) {
           let best: typeof anchor | undefined;
