@@ -230,6 +230,15 @@ const JAVA_FORMATTER_CLASSES: ReadonlyMap<string, string> = new Map([
   ['MessageFormat', 'java.text'],
 ]);
 
+// Java (#468, slice 3): `java.util.Objects` null checks. They validate or return
+// the reference and do not send the value outside the program.
+const JAVA_OBJECTS_CLASS: ReadonlyMap<string, string> = new Map([['Objects', 'java.util']]);
+const JAVA_OBJECTS_NULL_CHECK_METHODS = new Set([
+  'requireNonNull',
+  'requireNonNullElse',
+  'requireNonNullElseGet',
+]);
+
 function isJavaStaticFormatterCall(
   call: CallInfo,
   declaredTypeNames: ReadonlySet<string>,
@@ -247,6 +256,15 @@ function isJavaStaticFormatterCall(
     if (other.arguments.some(a => a.expression.includes(needle))) return false;
   }
   return isJdkClassReceiver(call.receiver, JAVA_FORMATTER_CLASSES, declaredTypeNames, imports);
+}
+
+function isJavaObjectsNullCheckCall(
+  call: CallInfo,
+  declaredTypeNames: ReadonlySet<string>,
+  imports: ReadonlyArray<{ imported_name: string; from_package: string | null; alias: string | null; is_wildcard: boolean }>,
+): boolean {
+  if (!call.receiver || !JAVA_OBJECTS_NULL_CHECK_METHODS.has(call.method_name)) return false;
+  return isJdkClassReceiver(call.receiver, JAVA_OBJECTS_CLASS, declaredTypeNames, imports);
 }
 
 /**
@@ -311,6 +329,7 @@ function isJavaNonEscapeCall(
   calls: readonly CallInfo[],
 ): boolean {
   if (isJavaStaticFormatterCall(call, declaredTypeNames, imports, calls)) return true;
+  if (isJavaObjectsNullCheckCall(call, declaredTypeNames, imports)) return true;
   if (isJavaCharacterPredicateCall(call, declaredTypeNames, imports)) return true;
   // Only a constructor call `new X(...)`: no receiver, and the resolved target
   // is `X.<init>` (the extractor does not set `is_constructor` for Java).
