@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en">
+<head><title>htmx</title></head>
+<body>
+<div id="search" hx-post="/search" hx-trigger="keyup changed delay:500ms, search" hx-target="#results">Search</div>
+<div id="more" hx-get="/more" hx-swap="outerHTML">Load more</div>
+<div id="results"></div>
+</body>
+</html>

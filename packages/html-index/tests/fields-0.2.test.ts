@@ -195,8 +195,8 @@ test('element css: author declarations of the two families, lowest precedence fi
   // a selector list matches through either selector; :focus does not hold at rest
   assert.deepEqual(brief(by('spinner').css.animation).map((d) => [d[0], d[1], d[8]]), [['animation-name', 'spin', '.spinner, .loader'], ['animation-duration', '1s', '.spinner, .loader']]);
   // a pseudo-element's declarations style the pseudo-element, not the element
-  assert.deepEqual(by('tag').css, { animation: [], textDecoration: [] });
-  assert.deepEqual(by('quiet').css, { animation: [], textDecoration: [] });
+  assert.deepEqual(by('tag').css, { animation: [], textDecoration: [], cursor: [] });
+  assert.deepEqual(by('quiet').css, { animation: [], textDecoration: [], cursor: [] });
 });
 
 test('element css: structural pseudo-classes, sibling combinators and attribute tests; an unevaluated selector is not listed', () => {

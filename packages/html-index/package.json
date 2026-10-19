@@ -1,6 +1,6 @@
 {
   "name": "@cognium/html-index",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Static index of built HTML: elements with roles, accessible names, visible labels, inherited language and matching CSS declarations, the IDREF graph, parse errors, stylesheets, media, frames and shadow trees, plus a file index and a cross-page route index. Observations only; ARIA tables are inputs.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

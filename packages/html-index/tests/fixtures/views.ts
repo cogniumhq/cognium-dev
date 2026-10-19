@@ -43,7 +43,7 @@ export const html: HtmlAriaViews = {
 export const aria: AriaViews = {
   'role-names': [
     'alert', 'banner', 'button', 'cell', 'checkbox', 'columnheader', 'combobox', 'contentinfo', 'dialog', 'generic', 'group', 'heading', 'img', 'link', 'list',
-    'listbox', 'listitem', 'main', 'navigation', 'none', 'option', 'paragraph', 'presentation', 'radio', 'row', 'rowgroup', 'slider',
+    'listbox', 'listitem', 'main', 'menu', 'menuitem', 'navigation', 'none', 'option', 'paragraph', 'presentation', 'radio', 'row', 'rowgroup', 'slider',
     'spinbutton', 'tab', 'table', 'tablist', 'tabpanel', 'textbox',
   ],
   'global-attributes': [

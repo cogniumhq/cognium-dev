@@ -15,7 +15,7 @@ import { dirname, extname, join, normalize } from 'node:path';
 import postcss from 'postcss';
 import { inOrder, parseHtml, type HNode, type PageIndex, type ParseError } from './parse.js';
 import { isUnder, isUnderReal } from './path.js';
-import { labelInName, markupHides, rendersText, visibleInnerText, type LabelInName } from './label-in-name.js';
+import { decode, labelInName, markupHides, rendersText, visibleInnerText, type LabelInName } from './label-in-name.js';
 import { couldMatchCount, selectorIndex } from './selector.js';
 import { compareSpecificity, matchSpecificity, matchTree, parseSelector, type Specificity } from './cascade.js';
 
@@ -35,6 +35,8 @@ export interface AriaViews {
 
 export interface HtmlIndexParams {
   idrefAttributes?: string[];
+  /** the framework handler table `elements[].markupHandlers` reads (schema 0.3); none, and every element has none */
+  markupHandlers?: MarkupHandlerRule[];
 }
 
 // ---------------------------------------------------------------- row matching
@@ -282,17 +284,32 @@ export interface CssDeclarationObs {
   source: { file: string; line: number; selector: string | null };
 }
 
-/** The author declarations of two property families that match the element, lowest precedence first. */
+/** A `cursor` declaration (schema 0.3): a `CssDeclarationObs`, and whose it is. */
+export interface CursorDeclarationObs extends CssDeclarationObs {
+  /** declared on an ancestor and inherited (`cursor` is an inherited property), not on the element itself */
+  inherited: boolean;
+  /** the id (in `elements`) of the element the declaration matches: the element itself, or the ancestor it inherits from */
+  from: number;
+}
+
+/** The author declarations of three property families that match the element, lowest precedence first. */
 export interface ElementCssObs {
   /** `animation` and `animation-*` (and their vendor-prefixed forms) */
   animation: CssDeclarationObs[];
   /** `text-decoration` and `text-decoration-*` (and their vendor-prefixed forms) */
   textDecoration: CssDeclarationObs[];
+  /**
+   * `cursor` (schema 0.3): the element's own declarations; when it has none, those of the nearest
+   * ancestor that has any, each marked `inherited`. Empty when no author rule reaches it: the user
+   * agent's own cursors (a link's pointer, a text field's I-beam) are not listed.
+   */
+  cursor: CursorDeclarationObs[];
 }
 
 const FAMILIES: [keyof ElementCssObs, RegExp][] = [
   ['animation', /^(-[a-z]+-)?animation(-|$)/],
   ['textDecoration', /^(-[a-z]+-)?text-decoration(-|$)/],
+  ['cursor', /^cursor$/],
 ];
 const familyOf = (prop: string): keyof ElementCssObs | null => FAMILIES.find(([, re]) => re.test(prop))?.[0] ?? null;
 
@@ -366,6 +383,20 @@ export interface ElementObs {
    * styles a pseudo-element is not listed; no user-agent default is listed.
    */
   css: ElementCssObs;
+  /**
+   * Every event handler content attribute on the element (schema 0.3), in source order: an `on*`
+   * attribute HTML defines for every element (`GlobalEventHandlers`, with what the Pointer Events,
+   * Touch Events, CSS Animations, CSS Transitions and Selection API specifications add) or, on
+   * `<body>` and `<frameset>`, for the window. An `on*` attribute no specification defines is not
+   * listed. Each with its event type and `handlerFamily`. A handler a script attaches is not in the markup.
+   */
+  inlineHandlers: InlineHandlerObs[];
+  /**
+   * The framework handler attributes on the element (schema 0.3), in source order, as the caller's
+   * table (`HtmlIndexParams.markupHandlers`) recognises them: only what survives into the built
+   * markup (a prerendered or declarative attribute), never a handler a framework compiled away.
+   */
+  markupHandlers: MarkupHandlerObs[];
 }
 
 /** one row per iframe/frame of a document, nested ones included, and whether its document was read. */
@@ -392,6 +423,26 @@ export function decodeEntities(s: string): string {
     return NAMED[e.toLowerCase()] ?? m;
   });
 }
+
+/**
+ * A name's white space: ASCII white space collapsed to one space and trimmed (HTML's "strip and
+ * collapse ASCII whitespace"). A no-break space is not ASCII white space and is kept (WPT accname
+ * `comp_text_node`, `comp_label`).
+ */
+const tidy = (s: string): string => s.replace(/[\t\n\f\r ]+/g, ' ').replace(/^ | $/g, '');
+/** an attribute value as a name reads it: character references decoded, white space tidied */
+const attrText = (v: string | undefined): string => tidy(decode(v ?? ''));
+
+/**
+ * HTML's text-level (phrasing) elements that render inline by default: name from content joins
+ * their text to their neighbours' with no space, as the rendered text does ("one<b>two</b>" is
+ * "onetwo"). Every other element is joined with a space either side, as in 0.2.
+ */
+const INLINE_TAGS = new Set(['a', 'abbr', 'b', 'bdi', 'bdo', 'big', 'cite', 'code', 'data', 'del', 'dfn', 'em', 'font', 'i', 'ins', 'kbd', 'label', 'mark', 'nobr',
+  'q', 's', 'samp', 'small', 'span', 'strike', 'strong', 'sub', 'sup', 'time', 'tt', 'u', 'var']);
+
+/** the ARIA range roles (AccName 1.2 §4.3.2 step 2C, "range") */
+const RANGE = new Set(['meter', 'progressbar', 'scrollbar', 'slider', 'spinbutton']);
 
 /** How deep frames are followed, and the documents already open on this chain (a page framing itself). */
 interface NestCtx { depth: number; chain: string[]; frame: string | null }
@@ -431,6 +482,120 @@ function nestedDocument(n: HNode, p: PageIndex, root: string, ctx: NestCtx):
 
 const POINTER = ['onclick', 'onmousedown', 'onmouseup', 'ondblclick', 'onpointerdown', 'onpointerup'];
 const KEY = ['onkeydown', 'onkeyup', 'onkeypress'];
+
+/** What kind of user input an event answers: `pointer`, `key`, `focus`, `input` (a form value or submission), `other`. */
+export type HandlerFamily = 'pointer' | 'key' | 'focus' | 'input' | 'other';
+
+/**
+ * The event handler content attributes of HTML elements: HTML §8.1.8.2 `GlobalEventHandlers`, with
+ * the members the Pointer Events, Touch Events, CSS Animations, CSS Transitions and Selection API
+ * specifications add to it. `WINDOW_HANDLERS` (§8.1.8.2 `WindowEventHandlers`) are handlers on
+ * `<body>` and `<frameset>` only.
+ */
+const GLOBAL_HANDLERS = ['abort', 'animationcancel', 'animationend', 'animationiteration', 'animationstart', 'auxclick', 'beforeinput', 'beforematch', 'beforetoggle',
+  'blur', 'cancel', 'canplay', 'canplaythrough', 'change', 'click', 'close', 'command', 'contextlost', 'contextmenu', 'contextrestored', 'copy', 'cuechange', 'cut',
+  'dblclick', 'drag', 'dragend', 'dragenter', 'dragleave', 'dragover', 'dragstart', 'drop', 'durationchange', 'emptied', 'ended', 'error', 'focus', 'formdata',
+  'gotpointercapture', 'input', 'invalid', 'keydown', 'keypress', 'keyup', 'load', 'loadeddata', 'loadedmetadata', 'loadstart', 'lostpointercapture',
+  'mousedown', 'mouseenter', 'mouseleave', 'mousemove', 'mouseout', 'mouseover', 'mouseup', 'paste', 'pause', 'play', 'playing',
+  'pointercancel', 'pointerdown', 'pointerenter', 'pointerleave', 'pointermove', 'pointerout', 'pointerover', 'pointerrawupdate', 'pointerup',
+  'progress', 'ratechange', 'reset', 'resize', 'scroll', 'scrollend', 'securitypolicyviolation', 'seeked', 'seeking', 'select', 'selectionchange', 'selectstart',
+  'slotchange', 'stalled', 'submit', 'suspend', 'timeupdate', 'toggle', 'touchcancel', 'touchend', 'touchmove', 'touchstart',
+  'transitioncancel', 'transitionend', 'transitionrun', 'transitionstart', 'volumechange', 'waiting',
+  'webkitanimationend', 'webkitanimationiteration', 'webkitanimationstart', 'webkittransitionend', 'wheel'];
+const WINDOW_HANDLERS = ['afterprint', 'beforeprint', 'beforeunload', 'hashchange', 'languagechange', 'message', 'messageerror', 'offline', 'online',
+  'pagehide', 'pagereveal', 'pageshow', 'pageswap', 'popstate', 'rejectionhandled', 'storage', 'unhandledrejection', 'unload'];
+const GLOBAL_SET = new Set(GLOBAL_HANDLERS);
+const WINDOW_SET = new Set(WINDOW_HANDLERS);
+/** the event type a handler attribute listens for, where it is not the attribute name less `on` (HTML §8.1.8.2) */
+const EVENT_TYPE: Record<string, string> = { webkitanimationend: 'webkitAnimationEnd', webkitanimationiteration: 'webkitAnimationIteration', webkitanimationstart: 'webkitAnimationStart', webkittransitionend: 'webkitTransitionEnd' };
+
+const FAMILY_OF_EVENT: Record<string, HandlerFamily> = {};
+for (const e of ['click', 'auxclick', 'dblclick', 'contextmenu', 'wheel', 'drag', 'dragend', 'dragenter', 'dragleave', 'dragover', 'dragstart', 'drop', 'gotpointercapture', 'lostpointercapture']) FAMILY_OF_EVENT[e] = 'pointer';
+for (const e of ['keydown', 'keyup', 'keypress']) FAMILY_OF_EVENT[e] = 'key';
+for (const e of ['focus', 'blur', 'focusin', 'focusout']) FAMILY_OF_EVENT[e] = 'focus';
+for (const e of ['input', 'beforeinput', 'change', 'invalid', 'submit', 'reset', 'formdata', 'select']) FAMILY_OF_EVENT[e] = 'input';
+/**
+ * The family of an event type: a click, a mouse, pointer, touch, wheel or drag event is `pointer`;
+ * a key event `key`; focus and blur `focus`; a form value or submission event `input`; anything else
+ * `other`. An unknown or null event is `other`.
+ */
+export function handlerFamily(event: string | null): HandlerFamily {
+  if (event === null) return 'other';
+  const e = event.toLowerCase();
+  return FAMILY_OF_EVENT[e] ?? (/^(mouse|pointer|touch)/.test(e) ? 'pointer' : 'other');
+}
+
+/** One event handler content attribute on an element. */
+export interface InlineHandlerObs { attr: string; event: string; handlerFamily: HandlerFamily }
+
+/** the element's event handler content attributes, in source order */
+function inlineHandlersOf(n: HNode): InlineHandlerObs[] {
+  const out: InlineHandlerObs[] = [];
+  const windowTarget = n.tag === 'body' || n.tag === 'frameset';
+  for (const attr of Object.keys(n.attrs)) {
+    if (!attr.startsWith('on')) continue;
+    const name = attr.slice(2);
+    if (!GLOBAL_SET.has(name) && !(windowTarget && WINDOW_SET.has(name))) continue;
+    const event = EVENT_TYPE[name] ?? name;
+    out.push({ attr, event, handlerFamily: handlerFamily(event) });
+  }
+  return out;
+}
+
+/**
+ * One row of the framework handler table a caller passes (`HtmlIndexParams.markupHandlers`). The
+ * engine knows no framework: what a framework's handler markup looks like is this data.
+ *  - `attr`: a regular expression (source text) the whole attribute name must match, case-insensitive
+ *    (attribute names are read lower case);
+ *  - `event`: where the event type comes from — `{ group: n }` the n-th capture group of `attr`;
+ *    `{ value: re, group?: n }` every match of `re` in the attribute's value, capture group `n`
+ *    (default 1), one row each; `{ fixed: type }` the type itself. Omitted: the event is not in the
+ *    markup (null).
+ */
+export interface MarkupHandlerRule {
+  framework: string;
+  attr: string;
+  event?: { group: number } | { value: string; group?: number } | { fixed: string };
+}
+
+/** One framework handler in the markup, as a `MarkupHandlerRule` recognised it. */
+export interface MarkupHandlerObs { attr: string; framework: string; event: string | null; handlerFamily: HandlerFamily }
+
+interface CompiledMarkupRule { rule: MarkupHandlerRule; attr: RegExp; value: RegExp | null }
+
+/** the table's patterns, compiled once; a pattern that does not compile is refused with its row */
+export function compileMarkupHandlers(rules: MarkupHandlerRule[]): CompiledMarkupRule[] {
+  return rules.map((rule, i) => {
+    const re = (src: string, flags: string): RegExp => {
+      try { return new RegExp(src, flags); } catch (e) { throw new Error(`html-index: markupHandlers[${i}] (${rule.framework}): ${(e as Error).message}`); }
+    };
+    const value = rule.event && 'value' in rule.event ? re(rule.event.value, 'g') : null;
+    return { rule, attr: re(`^(?:${rule.attr})$`, 'i'), value };
+  });
+}
+
+/** the element's framework handler attributes, in source order; an attribute is recognised by the first row that matches it */
+function markupHandlersOf(n: HNode, table: CompiledMarkupRule[]): MarkupHandlerObs[] {
+  const out: MarkupHandlerObs[] = [];
+  if (!table.length) return out;
+  for (const [attr, raw] of Object.entries(n.attrs)) {
+    for (const { rule, attr: re, value } of table) {
+      const m = re.exec(attr);
+      if (!m) continue;
+      const row = (event: string | null) => out.push({ attr, framework: rule.framework, event, handlerFamily: handlerFamily(event) });
+      const ev = rule.event;
+      if (!ev) row(null);
+      else if ('fixed' in ev) row(ev.fixed);
+      else if ('group' in ev && !('value' in ev)) row(m[ev.group] ?? null);
+      else {
+        const events = [...decodeEntities(raw).matchAll(value!)].map((x) => x[(ev as { group?: number }).group ?? 1]).filter((x): x is string => !!x);
+        if (events.length) for (const e of events) row(e); else row(null);
+      }
+      break;
+    }
+  }
+  return out;
+}
 const PRESENTATIONAL = new Set(['none', 'presentation']);
 
 /** a declarative shadow root: its contents are the host's shadow tree, rendered (unlike a plain `<template>`'s) */
@@ -469,6 +634,7 @@ export interface PageObservation {
 
 export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews, aria: AriaViews, params: HtmlIndexParams = {}, nest: NestCtx = { depth: 0, chain: [], frame: null }): PageObservation {
   const idOf = new Map<HNode, number>(p.nodes.map((n, i) => [n, i]));
+  const markupTable = compileMarkupHandlers(params.markupHandlers ?? []);
   const byId = new Map<string, HNode[]>();
   for (const n of p.nodes) if (n.attrs.id) byId.set(n.attrs.id, [...(byId.get(n.attrs.id) ?? []), n]);
   const roles = new Set(aria['role-names']);
@@ -498,23 +664,209 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     roleOf.set(n, effective);
   }
 
-  // label association: <label for> and wrapping <label>, labelable elements only (HTML §4.10.4)
-  const labelText = new Map<HNode, string>();
-  const textAlt = (n: HNode): string => nameFromContent(n, new Set());
-  for (const l of p.nodes.filter((n) => n.tag === 'label')) {
-    const text = textAlt(l);
-    if (!text) continue;
-    const f = (l.attrs.for ?? '').trim();
-    if (f) { const t = byId.get(f)?.[0]; if (t && LABELABLE.has(t.tag) && !labelText.has(t)) labelText.set(t, text); continue; }
-    const stack = [...l.children];
-    while (stack.length) {
-      const c = stack.shift()!;
-      if (LABELABLE.has(c.tag) && !(c.tag === 'input' && (c.attrs.type ?? '').toLowerCase() === 'hidden')) { if (!labelText.has(c)) labelText.set(c, text); break; }
-      stack.push(...c.children);
+  // the page's own rules, and how many sheets it links that the subject tree does not hold. Read
+  // before any name: whether a child is joined to its neighbours with a space is its `display`.
+  const sheetsRead = readSheets(p, root, idOf, nest.frame);
+  const pageRules = sheetsRead.rules.map((r) => r.obs);
+  // the rules that declare a property read here, with their selectors parsed once; a keyframe step styles no element
+  const tree = matchTree(p.root.children);
+  const LAYOUT = new Set(['display', 'position', 'float']);
+  const read = (prop: string): boolean => familyOf(prop) !== null || LAYOUT.has(prop);
+  const styleRules = sheetsRead.rules.map((r, order) => ({ r, order }))
+    .filter(({ r }) => !r.inKeyframes && r.decls.some((d) => read(d.prop)))
+    .map(({ r, order }) => ({ r, order, sel: parseSelector(r.obs.selector) }));
+  /** the author declarations of the properties `want` admits that match `n` at rest, lowest precedence first */
+  function declarationsOn(n: HNode, want: (prop: string) => boolean): CssDeclarationObs[] {
+    const host = shadowHostOf(n);
+    const hostId = host ? idOf.get(host) ?? null : null;
+    const hits: { d: CssDeclarationObs; important: number; inline: number; spec: Specificity; order: number; i: number }[] = [];
+    for (const { r, order, sel } of styleRules) {
+      if (!sel || r.obs.shadowHost !== hostId) continue;   // a rule styles its own document or shadow tree only
+      if (!r.decls.some((d) => want(d.prop))) continue;
+      const spec = matchSpecificity(n, sel, tree);
+      if (!spec) continue;
+      r.decls.forEach((d, i) => {
+        if (!want(d.prop)) return;
+        hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: r.obs.media, sheetMedia: r.sheetMedia, inline: false, source: { file: r.obs.file, line: r.obs.line, selector: r.obs.selector } }, important: d.important ? 1 : 0, inline: 0, spec, order, i });
+      });
     }
+    inlineDeclarations(n.attrs.style ?? '').forEach((d, i) => {
+      if (!want(d.prop)) return;
+      hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: '', sheetMedia: '', inline: true, source: { file: p.path, line: n.line, selector: null } }, important: d.important ? 1 : 0, inline: 1, spec: [0, 0, 0], order: 0, i });
+    });
+    hits.sort((a, b) => a.important - b.important || a.inline - b.inline || compareSpecificity(a.spec, b.spec) || a.order - b.order || a.i - b.i);
+    return hits.map((h) => h.d);
+  }
+  const ownCss = new Map<HNode, ElementCssObs>();
+  function ownElementCss(n: HNode): ElementCssObs {
+    let out = ownCss.get(n);
+    if (!out) {
+      out = { animation: [], textDecoration: [], cursor: [] };
+      for (const d of declarationsOn(n, (prop) => familyOf(prop) !== null)) {
+        const f = familyOf(d.property)!;
+        if (f === 'cursor') out.cursor.push({ ...d, inherited: false, from: idOf.get(n)! });
+        else out[f].push(d);
+      }
+      ownCss.set(n, out);
+    }
+    return out;
+  }
+  /**
+   * `css` as observed: the element's own declarations; and for `cursor`, an inherited property,
+   * when the element declares none, those of the nearest ancestor that does, marked `inherited`.
+   */
+  function elementCss(n: HNode): ElementCssObs {
+    const own = ownElementCss(n);
+    if (own.cursor.length) return own;
+    for (let a = n.parent; a; a = a.parent) {
+      const up = ownElementCss(a).cursor;
+      if (up.length) return { ...own, cursor: up.map((d) => ({ ...d, inherited: true })) };
+    }
+    return own;
+  }
+  /**
+   * The `display`, `position` and `float` the author gives the element at rest: for each, the
+   * declaration of highest precedence with no condition (`@media`, a sheet's `media`), lower case.
+   */
+  const layouts = new Map<HNode, Record<string, string>>();
+  function authorLayout(n: HNode): Record<string, string> {
+    let l = layouts.get(n);
+    if (!l) {
+      l = {};
+      for (const d of declarationsOn(n, (prop) => LAYOUT.has(prop))) if (!d.media && !d.sheetMedia) l[d.property] = d.value.trim().toLowerCase();
+      layouts.set(n, l);
+    }
+    return l;
+  }
+  /**
+   * The element sits inline in its parent's text: not floated or absolutely positioned (either
+   * makes it a block, CSS 2.1 §9.7), and an inline `display` when the author sets one, else an
+   * inline-by-default tag.
+   */
+  const joinsInline = (n: HNode): boolean => {
+    const l = authorLayout(n);
+    if (l.position === 'absolute' || l.position === 'fixed' || (l.float !== undefined && l.float !== 'none')) return false;
+    return l.display === undefined ? INLINE_TAGS.has(n.tag) : l.display === 'inline' || l.display === 'contents';
+  };
+
+  // label association: <label for> and wrapping <label>, labelable elements only (HTML §4.10.4).
+  // The label's text leaves out the control it labels: a control is embedded in the label of
+  // ANOTHER widget only (AccName 1.2 step 2C), so a text field does not name itself by its value.
+  const labelText = new Map<HNode, string>();
+  for (const l of p.nodes.filter((n) => n.tag === 'label')) {
+    const f = (l.attrs.for ?? '').trim();
+    let target: HNode | undefined;
+    if (f) { const t = byId.get(f)?.[0]; if (t && LABELABLE.has(t.tag)) target = t; }
+    else {
+      const stack = [...l.children];
+      while (stack.length) {
+        const c = stack.shift()!;
+        if (LABELABLE.has(c.tag) && !(c.tag === 'input' && (c.attrs.type ?? '').toLowerCase() === 'hidden')) { target = c; break; }
+        stack.push(...c.children);
+      }
+    }
+    if (!target || labelText.has(target)) continue;
+    const text = contentName(l, new Set([target]));
+    if (text) labelText.set(target, text);
   }
 
-  /** text of a subtree as name from content sees it: text, and each child's own text alternative */
+  /**
+   * The text alternative a subtree contributes to a name (AccName 1.2 steps 2C–2G): text runs with
+   * their character references decoded, each child's own text alternative, and the value of each
+   * control embedded in it. Text-level children join their neighbours with no space (`joinsInline`);
+   * any other child, a `<br>` and white space between tags are a word boundary. Hidden content is
+   * skipped as in `nameFromContent`.
+   */
+  function contentName(n: HNode, seen: Set<HNode>, includeHidden = false): string {
+    return tidy(contentFlow(n, seen, includeHidden));
+  }
+  function contentFlow(n: HNode, seen: Set<HNode>, includeHidden: boolean): string {
+    if (seen.has(n)) return '';
+    seen.add(n);
+    const runs = n.runs ?? (n.text ? [{ at: 0, text: n.text }] : []);
+    const gaps = new Set(n.gaps ?? []);
+    let s = '', r = 0;
+    const before = (i: number) => { if (gaps.has(i)) s += ' '; while (r < runs.length && runs[r].at <= i) s += decode(runs[r++].text); };
+    n.children.forEach((c, i) => {
+      before(i);
+      if (c.tag === 'br') { s += ' '; return; }
+      const part = childAlternative(c, seen, includeHidden);
+      s += joinsInline(c) ? part : ` ${part} `;
+    });
+    before(n.children.length);
+    return s;
+  }
+  function childAlternative(c: HNode, seen: Set<HNode>, includeHidden: boolean): string {
+    if (seen.has(c) || c.tag === 'script' || c.tag === 'style' || (c.tag === 'template' && !isShadowTemplate(c))) return '';
+    if (!includeHidden && hidesItself(c)) return '';
+    const ev = embeddedValue(c, seen);
+    if (ev !== null) return ev;
+    const al = attrText(c.attrs['aria-label']);
+    if (al) return al;
+    if (c.tag === 'img' || c.tag === 'area') return accName(c, roleOf.get(c) ?? null).name;
+    if (c.tag === 'input' && ['button', 'submit', 'reset'].includes((c.attrs.type ?? '').toLowerCase())) return attrText(c.attrs.value);
+    if (c.tag === 'svg') { const t = c.children.find((x) => x.tag === 'title'); return t ? tidy(decode(t.text)) : ''; }
+    return contentFlow(c, seen, includeHidden);
+  }
+
+  /** a `<select>`'s chosen options (HTML §4.10.7 selectedness): those marked `selected`, else the first option of a drop-down */
+  function optionText(o: HNode): string { return attrText(o.attrs.label) || contentName(o, new Set(), true); }
+  function chosenOptions(sel: HNode): HNode[] {
+    const options: HNode[] = [];
+    const walk = (x: HNode) => { for (const c of x.children) { if (c.tag === 'option') options.push(c); else if (c.tag === 'optgroup') walk(c); } };
+    walk(sel);
+    const marked = options.filter((o) => 'selected' in o.attrs);
+    const multiple = 'multiple' in sel.attrs;
+    const dropDown = !multiple && !(Number(sel.attrs.size) > 1);
+    if (marked.length) return multiple ? marked : [marked[marked.length - 1]];
+    return dropDown && options.length ? [options[0]] : [];
+  }
+  /** the `aria-selected` options inside an ARIA listbox or combobox */
+  function ariaChosen(x: HNode): HNode[] {
+    const out: HNode[] = [];
+    const walk = (y: HNode) => { for (const c of y.children) { if (roleOf.get(c) === 'option' && (c.attrs['aria-selected'] ?? '').toLowerCase() === 'true') out.push(c); else walk(c); } };
+    walk(x);
+    return out;
+  }
+  /**
+   * AccName 1.2 step 2C: what a control embedded in the label of another widget contributes — a
+   * text box its value, a combo box or list box its chosen option(s), a range its `aria-valuetext`,
+   * else `aria-valuenow`, else its native value; and a menu nothing (WPT accname, embedded menu).
+   * An ARIA combo box with no chosen option contributes its text. null when `c` is not such a
+   * control, or is a text box whose value is its content (a `textarea`, an ARIA `textbox`).
+   */
+  function embeddedValue(c: HNode, seen: Set<HNode>): string | null {
+    const role = roleOf.get(c) ?? null;
+    const a = c.attrs;
+    if (role === 'textbox' || role === 'searchbox') return c.tag === 'input' ? attrText(a.value) : null;
+    if (role === 'combobox' || role === 'listbox') {
+      if (c.tag === 'select') return chosenOptions(c).map(optionText).join(' ');
+      if (c.tag === 'input') return attrText(a.value);
+      const chosen = ariaChosen(c);
+      if (chosen.length) return chosen.map((o) => contentName(o, new Set(seen))).join(' ');
+      return role === 'listbox' ? '' : contentName(c, seen);   // an ARIA combo box's value is its text
+    }
+    if (role && RANGE.has(role)) {
+      const vt = attrText(a['aria-valuetext']);
+      if (vt) return vt;
+      const vn = attrText(a['aria-valuenow']);
+      if (vn) return vn;
+      if (c.tag === 'input' && (a.type ?? '').toLowerCase() === 'range' && !('value' in a)) {
+        // the default value of a range control: the midpoint of min and max (HTML §4.10.5.1.13)
+        const min = Number.parseFloat(a.min ?? ''), max = Number.parseFloat(a.max ?? '');
+        const lo = Number.isFinite(min) ? min : 0, hi = Number.isFinite(max) ? max : 100;
+        return String(hi < lo ? lo : lo + (hi - lo) / 2);
+      }
+      return ['input', 'progress', 'meter'].includes(c.tag) ? attrText(a.value) : '';
+    }
+    if (role === 'menu') return '';
+    return null;
+  }
+
+  /**
+   * Text of a subtree as 0.2 read it, kept for `hasText` and `texts` (which are not names): text,
+   * and each child's own text alternative.
+   */
   // Hidden content is skipped node by node as the traversal descends: what hides a node is its OWN
   // attributes, because an ancestor inside the subtree was already skipped on the way down and one
   // above it is not the traversal's business. That matters for aria-labelledby, whose referenced
@@ -536,35 +888,43 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     }).replace(/\s+/g, ' ').trim();
   }
 
-  const refText = (ids: string): { text: string; visible: boolean } => {
+  /**
+   * The text of the elements an `aria-labelledby` of `self` names (AccName 1.2 step 2B): each one's
+   * embedded-control value (unless it is `self`), else its `aria-label`, else its `<label>`, else its content.
+   */
+  const refText = (ids: string, self: HNode | null = null): { text: string; visible: boolean } => {
     const parts = ids.trim().split(/\s+/).map((x) => byId.get(x)?.[0]).filter((x): x is HNode => !!x);
-    return { text: parts.map((x) => (x.attrs['aria-label'] ?? '').trim() || nameFromContent(x, new Set(), hiddenNode(x))).join(' ').trim(), visible: parts.some((x) => !hiddenNode(x)) };
+    const one = (x: HNode): string => (x !== self ? embeddedValue(x, new Set()) : null) || attrText(x.attrs['aria-label']) || labelText.get(x) || contentName(x, new Set(), hiddenNode(x));
+    return { text: tidy(parts.map(one).join(' ')), visible: parts.some((x) => !hiddenNode(x)) };
   };
 
   /** AccName 1.2 step order with HTML-AAM sources. */
   function accName(n: HNode, role: string | null): { name: string; source: string | null } {
     const lb = (n.attrs['aria-labelledby'] ?? '').trim();
-    if (lb) { const r = refText(lb); if (r.text) return { name: r.text, source: 'aria-labelledby' }; }
-    const al = (n.attrs['aria-label'] ?? '').trim();
+    if (lb) { const r = refText(lb, n); if (r.text) return { name: r.text, source: 'aria-labelledby' }; }
+    const al = attrText(n.attrs['aria-label']);
     if (al) return { name: al, source: 'aria-label' };
     if (labelText.has(n)) return { name: labelText.get(n)!, source: 'label' };
     const type = (n.attrs.type ?? '').toLowerCase();
     if ((n.tag === 'img' || n.tag === 'area' || (n.tag === 'input' && type === 'image')) && 'alt' in n.attrs) {
       if (n.attrs.alt === '') return { name: '', source: 'alt-empty' };   // declared decorative: exactly empty
-      if (n.attrs.alt.trim()) return { name: n.attrs.alt.trim(), source: 'alt' };
+      const alt = attrText(n.attrs.alt);
+      if (alt) return { name: alt, source: 'alt' };
     }
-    if (n.tag === 'input' && ['button', 'submit', 'reset'].includes(type) && (n.attrs.value ?? '').trim()) return { name: n.attrs.value.trim(), source: 'value' };
+    const value = attrText(n.attrs.value);
+    if (n.tag === 'input' && ['button', 'submit', 'reset'].includes(type) && value) return { name: value, source: 'value' };
     if (n.tag === 'input' && (type === 'submit' || type === 'reset')) return { name: type === 'submit' ? 'Submit' : 'Reset', source: 'default' };
     if (n.tag === 'svg') {
       const t = n.children.find((c) => c.tag === 'title');
-      if (t && t.text.trim()) return { name: t.text.trim(), source: 'svg-title' };
+      const tt = t ? tidy(decode(t.text)) : '';
+      if (tt) return { name: tt, source: 'svg-title' };
     } else if (role && nameFromContents.has(role)) {
-      const s = nameFromContent(n, new Set());
+      const s = contentName(n, new Set());
       if (s) return { name: s, source: 'contents' };
     }
-    const title = (n.attrs.title ?? '').trim();
+    const title = attrText(n.attrs.title);
     if (title) return { name: title, source: 'title-fallback' };
-    const ph = (n.attrs.placeholder ?? '').trim();
+    const ph = attrText(n.attrs.placeholder);
     if (ph && (n.tag === 'input' || n.tag === 'textarea')) return { name: ph, source: 'placeholder' };
     return { name: '', source: null };
   }
@@ -642,36 +1002,6 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     return { lang: null, langFrom: null };
   }
 
-  // the page's own rules, and how many sheets it links that the subject tree does not hold
-  const sheetsRead = readSheets(p, root, idOf, nest.frame);
-  const pageRules = sheetsRead.rules.map((r) => r.obs);
-  // the rules that declare either family, with their selectors parsed once; a keyframe step styles no element
-  const tree = matchTree(p.root.children);
-  const familyRules = sheetsRead.rules.map((r, order) => ({ r, order }))
-    .filter(({ r }) => !r.inKeyframes && r.decls.some((d) => familyOf(d.prop)))
-    .map(({ r, order }) => ({ r, order, sel: parseSelector(r.obs.selector) }));
-  function elementCss(n: HNode): ElementCssObs {
-    const host = shadowHostOf(n);
-    const hostId = host ? idOf.get(host) ?? null : null;
-    const hits: { d: CssDeclarationObs; important: number; inline: number; spec: Specificity; order: number; i: number }[] = [];
-    for (const { r, order, sel } of familyRules) {
-      if (!sel || r.obs.shadowHost !== hostId) continue;   // a rule styles its own document or shadow tree only
-      const spec = matchSpecificity(n, sel, tree);
-      if (!spec) continue;
-      r.decls.forEach((d, i) => {
-        if (!familyOf(d.prop)) return;
-        hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: r.obs.media, sheetMedia: r.sheetMedia, inline: false, source: { file: r.obs.file, line: r.obs.line, selector: r.obs.selector } }, important: d.important ? 1 : 0, inline: 0, spec, order, i });
-      });
-    }
-    inlineDeclarations(n.attrs.style ?? '').forEach((d, i) => {
-      if (!familyOf(d.prop)) return;
-      hits.push({ d: { property: d.prop, value: d.value, important: d.important, media: '', sheetMedia: '', inline: true, source: { file: p.path, line: n.line, selector: null } }, important: d.important ? 1 : 0, inline: 1, spec: [0, 0, 0], order: 0, i });
-    });
-    hits.sort((a, b) => a.important - b.important || a.inline - b.inline || compareSpecificity(a.spec, b.spec) || a.order - b.order || a.i - b.i);
-    const out: ElementCssObs = { animation: [], textDecoration: [] };
-    for (const h of hits) out[familyOf(h.d.property)!].push(h.d);
-    return out;
-  }
   const unreadSheets = p.nodes.filter((n) => n.tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(n.attrs.rel ?? '') && n.attrs.href && !sheetInTree(p, root, n.attrs.href)).length;
   const elements: ElementObs[] = p.nodes.map((n) => {
     const ancestors: HNode[] = [];
@@ -691,7 +1021,7 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
       childElementCount: n.children.length,
       ariaAttrs: Object.keys(n.attrs).filter((k) => k.startsWith('aria-')),
       name, nameSource: source,
-      visibleLabel: labelText.has(n) || (!!lb && (() => { const r = refText(lb); return !!r.text && r.visible; })()),
+      visibleLabel: labelText.has(n) || (!!lb && (() => { const r = refText(lb, n); return !!r.text && r.visible; })()),
       hidden: hiddenNode(n), focusable: focusable(n), inSvg: n.inSvg,
       pointerHandlers: POINTER.filter((h) => h in n.attrs), keyHandlers: KEY.filter((h) => h in n.attrs),
       tabindex: tiN !== null && !Number.isNaN(tiN) ? tiN : null,
@@ -703,6 +1033,8 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
       visibleLabelText: visibleLabelText(n),
       ...langOf(n),
       css: elementCss(n),
+      inlineHandlers: inlineHandlersOf(n),
+      markupHandlers: markupHandlersOf(n, markupTable),
     };
   });
 
@@ -787,7 +1119,7 @@ export function pageObservation(p: PageIndex, root: string, html: HtmlAriaViews,
     const inner = pageObservation(d.page, root, html, aria, params, { depth: nest.depth + 1, chain: [...nest.chain, p.path], frame });
     const off = elements.length;
     const frameHidden = hiddenNode(n);
-    for (const e of inner.elements) elements.push({ ...e, id: e.id + off, ancestorIds: e.ancestorIds.map((x) => x + off), hidden: e.hidden || frameHidden, langFrom: e.langFrom === null ? null : e.langFrom + off });
+    for (const e of inner.elements) elements.push({ ...e, id: e.id + off, ancestorIds: e.ancestorIds.map((x) => x + off), hidden: e.hidden || frameHidden, langFrom: e.langFrom === null ? null : e.langFrom + off, css: { ...e.css, cursor: e.css.cursor.map((d) => ({ ...d, from: d.from + off })) } });
     for (const r of inner.idrefs) idrefs.push({ ...r, elementId: r.elementId + off });
     for (const r of inner.idrefEdges) idrefEdges.push({ ...r, from: r.from + off, to: r.to === null ? null : r.to + off });
     for (const d of inner.duplicateIds) duplicateIds.push({ ...d, elementIds: d.elementIds.map((x) => x + off) });

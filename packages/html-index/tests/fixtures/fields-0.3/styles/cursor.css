@@ -1,0 +1,8 @@
+.card { cursor: pointer; }
+.card.disabled { cursor: not-allowed; }
+.list { cursor: pointer; }
+.list .quiet { cursor: default; }
+.card:hover { cursor: grab; }
+@media (pointer: fine) {
+  .row { cursor: pointer; }
+}

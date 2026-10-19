@@ -22,10 +22,10 @@ import { pageObservation, type AriaViews, type HtmlAriaViews, type HtmlIndexPara
 import { routeIndexOf, type RouteIndexParams } from './route-index.js';
 
 /** The version of the observation shape. A consumer pins it and refuses any other. */
-export const SCHEMA_VERSION = '0.2' as const;
+export const SCHEMA_VERSION = '0.3' as const;
 
 /** Identity of this index, carried on every result and in the environment digest. */
-export const DRIVER = { id: 'html-index', family: 'static', version: '0.2.0' } as const;
+export const DRIVER = { id: 'html-index', family: 'static', version: '0.3.0' } as const;
 
 export function capabilities(): string[] {
   return ['html-index', 'file-index', 'route-index'];
@@ -130,8 +130,8 @@ export function runFileIndex(root: string, params: FileIndexParams = {}): RunRes
 }
 
 export { buildSiteIndex, parseHtml } from './parse.js';
-export { decodeEntities, hostRow, pageObservation } from './html-index.js';
-export type { AriaViews, CssDeclarationObs, CssRuleObs, ElementCssObs, ElementObs, FrameObs, HtmlAriaViews, HtmlIndexParams, PageObservation, StylesheetObs, TextObs } from './html-index.js';
+export { compileMarkupHandlers, decodeEntities, handlerFamily, hostRow, pageObservation } from './html-index.js';
+export type { AriaViews, CssDeclarationObs, CssRuleObs, CursorDeclarationObs, ElementCssObs, ElementObs, FrameObs, HandlerFamily, HtmlAriaViews, HtmlIndexParams, InlineHandlerObs, MarkupHandlerObs, MarkupHandlerRule, PageObservation, StylesheetObs, TextObs } from './html-index.js';
 export type { HNode, PageIndex, ParseError, SiteIndex } from './parse.js';
 export { destinationOf, normaliseName, routeIndexOf } from './route-index.js';
 export type { IdentificationRow, NavigationRow, RouteIndexObservation, RouteIndexParams, RoutePage } from './route-index.js';

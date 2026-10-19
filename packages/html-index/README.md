@@ -19,7 +19,9 @@ ESM only, Node.js 20.19 or later.
 | `elements` | Every element in document order: tag, attributes, line, ancestors, ARIA role (explicit, implicit, effective, context), owned roles, accessible name and its source, label association, hidden-ness, focusability, inline event handlers, `:nth-of-type` position, the visible text beside the name as normalised keys (`labelInName`), and the fields below. |
 | `elements[].visibleLabelText` | The text a sighted user reads as the label, beside `name`. A form field: its `<label>` text, else its rendered `aria-labelledby` targets'. A submit, reset or button input: its `value`. Anything else: its own visible text, else its labels'. `aria-hidden` text counts; text under `hidden`, `alt`, `title`, `aria-label` and `placeholder` never do. `""` when nothing is visible. |
 | `elements[].lang`, `langFrom` | The language in force: the nearest `lang` on the element or an ancestor, trimmed, and the id of the element that states it. `""` is a language declared unknown, inherited as such; null is no `lang` anywhere above. |
-| `elements[].css` | `{ animation, textDecoration }`: every author declaration of the `animation*` and `text-decoration*` families that matches the element at rest, lowest precedence first (normal before `!important`, stylesheets before the inline style, then specificity, then source order). Each has `property`, `value`, `important`, `media` (the rule's `@media`), `sheetMedia` (the `<link>` or `<style>` `media`), `inline` and `source` (`file`, `line`, `selector`). Conditions are listed, not evaluated. |
+| `elements[].css` | `{ animation, textDecoration, cursor }`: every author declaration of the `animation*`, `text-decoration*` and `cursor` families that matches the element at rest, lowest precedence first (normal before `!important`, stylesheets before the inline style, then specificity, then source order). Each has `property`, `value`, `important`, `media` (the rule's `@media`), `sheetMedia` (the `<link>` or `<style>` `media`), `inline` and `source` (`file`, `line`, `selector`). Conditions are listed, not evaluated. A `cursor` row also has `inherited` and `from`: when the element declares no cursor, the declarations of the nearest ancestor that does are listed, marked `inherited`, with that ancestor's id. The user agent's own cursors (a link's pointer) are not listed. |
+| `elements[].inlineHandlers` | Every event handler content attribute on the element, in source order, as `{ attr, event, handlerFamily }`: the `on*` attributes HTML defines for every element (`GlobalEventHandlers`, with what Pointer Events, Touch Events, CSS Animations, CSS Transitions and the Selection API add), and the window's on `<body>` and `<frameset>`. An `on*` attribute no specification defines is not listed. `handlerFamily` is `pointer`, `key`, `focus`, `input` (a form value or submission) or `other`. |
+| `elements[].markupHandlers` | Every framework handler attribute on the element, in source order, as `{ attr, framework, event, handlerFamily }`, recognised by the table you pass in `params.markupHandlers` (see below). Only what survives into the built markup is there: a handler a framework compiles away or a script attaches is not. |
 | `idrefs` | One row per IDREF token of the attributes you name in `params.idrefAttributes`: whether it resolves, whether the target id is duplicated, and table structure for `headers`. |
 | `idrefEdges`, `duplicateIds` | The same tokens as edges with both ends (`from`, `to` as element ids, with their lines), `dangling`, `duplicate`, `targets` (how many elements hold the id) and `selfReference`; and every id two or more elements hold, with their element ids and lines. |
 | `media` | `audio` and `video` elements with their tracks, `autoplay`, `muted`, `controls`. |
@@ -56,13 +58,20 @@ The role and name algorithms follow the W3C specifications (ARIA 1.2, ARIA in HT
 
 ```ts
 import { readFileSync } from 'node:fs';
-import { runHtmlIndex, SCHEMA_VERSION, type AriaViews, type HtmlAriaViews, type PageObservation } from '@cognium/html-index';
+import { runHtmlIndex, SCHEMA_VERSION, type AriaViews, type HtmlAriaViews, type MarkupHandlerRule, type PageObservation } from '@cognium/html-index';
 
 // Your own tables, built from the W3C specifications.
 const aria: AriaViews = JSON.parse(readFileSync('aria-views.json', 'utf8'));
 const html: HtmlAriaViews = JSON.parse(readFileSync('html-aria-views.json', 'utf8'));
 
-const result = runHtmlIndex('/path/to/site', { html, aria }, { idrefAttributes: ['aria-labelledby', 'for'] });
+// Your own framework handler table: what a handler attribute looks like, and where its event is.
+const markupHandlers: MarkupHandlerRule[] = [
+  { framework: 'vue', attr: '@([a-z][\\w-]*)[\\w.:-]*', event: { group: 1 } },                     // @click.prevent → click
+  { framework: 'htmx', attr: 'hx-trigger', event: { value: '(?:^|,)\\s*([a-z][\\w:-]*)' } },      // one row per trigger
+  { framework: 'htmx', attr: 'hx-(?:get|post)' },                                               // event not in the markup: null
+];
+
+const result = runHtmlIndex('/path/to/site', { html, aria }, { idrefAttributes: ['aria-labelledby', 'for'], markupHandlers });
 if (result.schemaVersion !== SCHEMA_VERSION) throw new Error(`unexpected schema ${result.schemaVersion}`);
 
 for (const { anchor, observation } of result.anchors) {
@@ -73,15 +82,18 @@ for (const { anchor, observation } of result.anchors) {
 
 ## Schema version
 
-Every result carries `schemaVersion`, currently `"0.2"` (exported as `SCHEMA_VERSION`). It names the shape of the observations, separately from the package version. Pin it and refuse any other value: while it is `0.x`, a change of shape changes the number.
+Every result carries `schemaVersion`, currently `"0.3"` (exported as `SCHEMA_VERSION`). It names the shape of the observations, separately from the package version. Pin it and refuse any other value: while it is `0.x`, a change of shape changes the number.
+
+`"0.3"` is additive over `"0.2"`: it adds `inlineHandlers` and `markupHandlers` to each element and `cursor` to `elements[].css`. Every other `"0.2"` value is the same on the same input, except accessible names (`name`, `nameSource`, `visibleLabel`, `labelInName`) that the accessible-name fixes of 0.3.0 move: see the [changelog](./CHANGELOG.md). Input digests are unchanged.
 
 `"0.2"` is additive over `"0.1"`: it adds `parseErrors`, `idrefEdges`, `duplicateIds` and `stylesheets` to each page, `visibleLabelText`, `lang`, `langFrom` and `css` to each element, and the `route-index` capability. Every `"0.1"` field has the same value on the same input, and every input digest is unchanged.
 
 ## Limits
 
-- The parser is forgiving and is not a conforming HTML parser. It does not create implied elements or decode character references in attributes.
+- The parser is forgiving and is not a conforming HTML parser. It does not create implied elements or decode character references in attributes: `attrs` holds them as written (an accessible name decodes the ones it reads).
 - Nothing is rendered. No script runs and no stylesheet is applied, so anything computed (generated content, CSS-hidden text, script-built DOM) is outside what it can see. `couldMatch` and `labelInName.styleRisks` over-report by design.
 - `elements[].css` matches selectors where a static tree decides them. `:has()`, `:nth-child(… of S)`, `:lang()`, `:dir()`, namespaced selectors and pseudo-classes it does not know are not evaluated, and a rule that needs one is not listed for the element. `@import` is not followed, and `@supports`, `@layer` and `@container` are not reported as conditions.
+- An accessible name joins a child to its neighbours with a space unless it sits inline: a text-level tag (`span`, `b`, `a` …) with no author `display`, `position: absolute | fixed` or `float` that says otherwise. Generated content (`::before`, `::after`, `::marker`) is not in any name.
 - `visibleLabelText` reads the markup only: text a stylesheet hides and generated content are not accounted for (`labelInName.styleRisks` says when that could matter).
 - It uses `node:fs`, `node:path` and `node:crypto`, so it runs in Node.js only.
 
@@ -101,7 +113,14 @@ npm run test:coverage -w packages/html-index
 node bench/wpt-accname.mjs --wpt <wpt checkout> --aria <aria views.json> --html <html-aria views.json>
 ```
 
-Version 0.1.0, WPT commit `718b59fdd6e89acdc5b67b19fb3182cf14dd2f46`, with complete ARIA 1.2 and ARIA in HTML tables as input: 645 cases, 421 pass, 209 fail, 15 not applicable. A case is not applicable when it expects something other than a name or its element is not in the markup.
+WPT commit `718b59fdd6e89acdc5b67b19fb3182cf14dd2f46`, with complete ARIA 1.2 and ARIA in HTML tables as input, 645 cases (15 not applicable):
+
+| Version | Pass | Fail |
+|---|---|---|
+| 0.1.0, 0.2.0 | 421 | 209 |
+| 0.3.0 | 536 | 94 |
+
+A case is not applicable when it expects something other than a name or its element is not in the markup.
 
 ## License
 

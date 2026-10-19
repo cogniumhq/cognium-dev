@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><title>Inline handlers</title></head>
+<body onload="boot()" onunload="bye()">
+<div id="card" onkeydown="key(event)" onclick="open()" onfoo="nothing()" onmouseenter="hint()" class="card">Open</div>
+<input id="qty" type="number" oninput="sum()" onchange="save()" onfocus="mark()" onblur="unmark()">
+<div id="anim" onwebkitanimationend="done()" onanimationend="done()" onunload="never()">Spinner</div>
+<span id="touch" ontouchstart="tap()" onpointerdown="press()" ondragstart="drag()">Drag me</span>
+<form id="f" onsubmit="send()" onreset="clear()"><button id="go">Send</button></form>
+<svg id="pic" onclick="zoom()" width="10" height="10"><title>Map</title></svg>
+<p id="plain">No handler</p>
+</body>
+</html>

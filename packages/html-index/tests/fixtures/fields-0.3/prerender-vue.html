@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><title>Vue prerender</title></head>
+<body>
+<div id="app" data-server-rendered="true">
+<div id="row" class="row" @click.prevent="select(1)" @keyup.enter="select(1)">Row one</div>
+<li id="item" v-on:click="pick" v-on:keydown.space.prevent="pick">Item</li>
+<span id="vbind" :class="{ on: active }" v-if="ready">Bound, no handler</span>
+</div>
+</body>
+</html>

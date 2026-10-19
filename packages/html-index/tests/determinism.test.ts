@@ -32,7 +32,7 @@ test('two runs over the same tree give the same bytes, and the envelope carries 
     const b = runHtmlIndex(dir, views, params);
     assert.equal(JSON.stringify(a), JSON.stringify(b));
     assert.equal(a.schemaVersion, SCHEMA_VERSION);
-    assert.equal(a.schemaVersion, '0.2');
+    assert.equal(a.schemaVersion, '0.3');
     assert.deepEqual(a.driver, DRIVER);
     assert.deepEqual(a.anchors.map((x) => x.anchor), ['b/page.html', 'index.html']);
     assert.ok(a.anchors.every((x) => /^sha256:[0-9a-f]{64}$/.test(x.inputDigest)));
@@ -41,7 +41,7 @@ test('two runs over the same tree give the same bytes, and the envelope carries 
     const f1 = runFileIndex(dir, { pathPattern: '\\.txt$', patterns: ['Overlay'] });
     const f2 = runFileIndex(dir, { pathPattern: '\\.txt$', patterns: ['Overlay'] });
     assert.equal(JSON.stringify(f1), JSON.stringify(f2));
-    assert.equal(f1.schemaVersion, '0.2');
+    assert.equal(f1.schemaVersion, '0.3');
     const obs = f1.anchors[0].observation as any;
     assert.deepEqual(obs.files.map((f: any) => f.path), ['a.css', 'b/page.html', 'index.html', 'notes.txt']);
     assert.deepEqual(obs.matches, [{ pattern: 'overlay', path: 'notes.txt', line: 2, excerpt: 'an Overlay widget' }]);

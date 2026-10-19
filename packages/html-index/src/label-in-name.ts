@@ -53,18 +53,20 @@ const NO_TEXT_TAGS = new Set(['script', 'style', 'noscript', 'svg', 'img', 'inpu
 
 /** the character references short interface text commonly carries */
 const ENTITIES: Record<string, string> = {
-  amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ', hellip: '…', times: '×', rarr: '→', larr: '←', raquo: '»', laquo: '«', mdash: '—', ndash: '–',
+  amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: '\u00a0', hellip: '…', times: '×', rarr: '→', larr: '←', raquo: '»', laquo: '«', mdash: '—', ndash: '–',
   middot: '·', bull: '•', copy: '©', reg: '®', trade: '™', rsaquo: '›', lsaquo: '‹', darr: '↓', uarr: '↑', check: '✓', ensp: ' ', emsp: ' ', thinsp: ' ', shy: '', zwnj: '', zwj: '',
 };
 const UNRESOLVED = /&[a-z][a-z0-9]*;/i;
-function decode(s: string): string {
+/** the character references of `ENTITIES` and every numeric one, decoded; any other left as written */
+export function decode(s: string): string {
   return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z][a-z0-9]*);/gi, (m, e: string) => {
     if (e[0] === '#') { const cp = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m; }
     return ENTITIES[e.toLowerCase()] ?? m;
   });
 }
 
-const inlineDisplay = (n: HNode): string | null => /(?:^|;)\s*display\s*:\s*([a-z-]+)/i.exec(n.attrs.style ?? '')?.[1].toLowerCase() ?? null;
+/** the `display` an inline `style` attribute gives the element, lower case, or null */
+export const inlineDisplay = (n: HNode): string | null => /(?:^|;)\s*display\s*:\s*([a-z-]+)/i.exec(n.attrs.style ?? '')?.[1].toLowerCase() ?? null;
 /** the markup itself keeps `c` from being rendered (`aria-hidden` does not: it hides from the accessibility tree, not the screen) */
 export const markupHides = (c: HNode): boolean =>
   'hidden' in c.attrs || (c.tag === 'dialog' && !('open' in c.attrs)) || /display\s*:\s*none/i.test(c.attrs.style ?? '') || /visibility\s*:\s*(hidden|collapse)/i.test(c.attrs.style ?? '');
