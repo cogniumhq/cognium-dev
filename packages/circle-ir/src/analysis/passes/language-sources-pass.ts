@@ -604,6 +604,11 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJsCommandAllowlistGuardSanitizers(code),
       );
+      // cognium-dev #816 — PAT-INPUT-01 js safe mirror: Number/parseInt
+      // coercion + finite/range guards before template response.
+      additionalSanitizers.push(
+        ...findJsNumericRangeCheckGuardSanitizers(code),
+      );
       // Sprint 78 (#190): JS misconfig pattern findings — libxmljs noent:true.
       for (const finding of findJsPatternFindings(code, graph.ir.meta.file)) {
         ctx.addFinding(finding);
@@ -5261,6 +5266,105 @@ function findPythonNetlocAllowlistGuardSanitizers(code: string): TaintSanitizer[
  * or UPPER_SNAKE constants (e.g. MAX_QTY). The guard body must contain
  * a terminator.
  */
+/**
+ * JS/TS numeric range-check guards on Number/parseInt-coerced values
+ * (cognium-dev #816, PAT-INPUT-01 safe mirror; Python twin #114).
+ *
+ *   const qty = parseInt(req.query.qty, 10);
+ *   if (!Number.isFinite(qty) || qty <= 0) return res.status(400).end();
+ *   if (qty > MAX) return res.status(400).end();
+ *   res.end(`xfer ${qty}`);
+ *
+ * Coercion strips xss in DEFAULT_SANITIZERS but template interpolation
+ * re-taints; a proven finite + bounded range guard shows the emitted
+ * scalar cannot carry markup.
+ */
+function findJsNumericRangeCheckGuardSanitizers(
+  code: string,
+): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const coerceDecl =
+    /^\s*(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:Number|parseInt)\s*\(/;
+  const lowerGuard =
+    /\bif\s*\(\s*!(?:Number\.)?isFinite\s*\(\s*([A-Za-z_]\w*)\s*\)|\bif\s*\([^)]*\b([A-Za-z_]\w*)\s*<=\s*0/;
+  const upperGuard =
+    /\bif\s*\(\s*([A-Za-z_]\w*)\s*>\s*(?:\d+|[A-Z][A-Z0-9_]+)\s*\)/;
+  const terminator =
+    /\b(?:return|throw|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+
+  const coerced = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = coerceDecl.exec(lines[i]);
+    if (m) coerced.set(m[1], i);
+  }
+  if (coerced.size === 0) return sanitizers;
+
+  type GuardState = { lower: boolean; upper: boolean; lastGuardEnd: number };
+  const state = new Map<string, GuardState>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let varName: string | null = null;
+    let kind: 'lower' | 'upper' | null = null;
+    const low = lowerGuard.exec(line);
+    if (low) {
+      varName = low[1] ?? low[2];
+      kind = 'lower';
+    } else {
+      const up = upperGuard.exec(line);
+      if (up) {
+        varName = up[1];
+        kind = 'upper';
+      }
+    }
+    if (!varName || !kind || !coerced.has(varName)) continue;
+    if (!terminator.test(line)) {
+      let bodyHasTerminator = false;
+      let blockEnd = i;
+      let braceDepth = 0;
+      let started = false;
+      const maxScan = Math.min(lines.length, i + 26);
+      for (let j = i; j < maxScan; j++) {
+        const ln = lines[j];
+        for (const ch of ln) {
+          if (ch === '{') { braceDepth++; started = true; }
+          else if (ch === '}') {
+            braceDepth--;
+            if (started && braceDepth === 0) { blockEnd = j; break; }
+          }
+        }
+        if (j > i && terminator.test(ln)) bodyHasTerminator = true;
+        if (started && braceDepth === 0 && blockEnd !== i) break;
+      }
+      if (!bodyHasTerminator && !started) continue;
+      if (!bodyHasTerminator) continue;
+    }
+    const st = state.get(varName) ?? { lower: false, upper: false, lastGuardEnd: i };
+    if (kind === 'lower') st.lower = true;
+    else st.upper = true;
+    st.lastGuardEnd = i;
+    state.set(varName, st);
+  }
+
+  for (const [varName, st] of state) {
+    if (!st.lower || !st.upper) continue;
+    const varRefRe = new RegExp(`\\b${varName}\\b`);
+    for (let l = st.lastGuardEnd + 1; l < lines.length; l++) {
+      if (!varRefRe.test(lines[l])) continue;
+      sanitizers.push({
+        type: 'js_numeric_range_check_guard',
+        method: 'if',
+        line: l + 1,
+        sanitizes: ['xss', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
 function findPythonRangeCheckGuardSanitizers(code: string): TaintSanitizer[] {
   const sanitizers: TaintSanitizer[] = [];
   const lines = code.split('\n');
