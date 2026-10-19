@@ -1751,7 +1751,7 @@ function detectJsModuleScopeFlows(
   for (const line of lines) {
     const stripped = line.replace(/\s+$/, '');
     if (!stripped || /^[ \t]/.test(line)) continue;
-    const m = stripped.match(/^(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/);
+    const m = stripped.match(/^(?:export\s+)?(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/);
     if (m) moduleVars.add(m[1]);
   }
   if (moduleVars.size === 0) return flows;
@@ -1777,7 +1777,9 @@ function detectJsModuleScopeFlows(
     const line = lines[i];
     if (unreachableLines.has(i + 1)) continue;
     for (const lhs of moduleVars) {
-      const declRe = new RegExp(`\\b(?:let|const|var)\\s+${lhs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      const declRe = new RegExp(
+        `\\b(?:export\\s+)?(?:let|const|var)\\s+${lhs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+      );
       if (declRe.test(line)) continue;
       const m = line.match(
         new RegExp(`\\b${lhs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*([^;]+)`),
