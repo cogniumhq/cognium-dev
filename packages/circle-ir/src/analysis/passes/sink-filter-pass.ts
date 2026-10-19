@@ -16,7 +16,7 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
-import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo } from '../../types/index.js';
+import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, MethodInfo, CallInfo, CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import { CSHARP_SANITIZER_RES, CSharpCredit, csharpSanitizersFor } from './csharp-sanitizer-credit.js';
@@ -378,6 +378,34 @@ function callArgLooksLikeShellArgv(expr: string, probePrefix: string): boolean {
  * type is found by its line range). A parameter that is not found answers
  * `false` and today's suppression stands.
  */
+/** True when a same-file call targets the wrapper method at `sinkLine` (any argument). */
+function sameFileHasWrapperCaller(
+  methodName: string | null | undefined,
+  sinkLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  calls: ReadonlyArray<CallInfo>,
+): boolean {
+  if (!methodName) return false;
+  for (const t of types) {
+    const m = t.methods.find(mm => mm.name === methodName && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
+    if (!m) continue;
+    return calls.some(c => {
+      if (c.method_name !== methodName) return false;
+      if (c.receiver != null && c.receiver !== 'this') return false;
+      if (c.location.line < t.start_line || c.location.line > t.end_line) return false;
+      if (c.arguments.length !== m.parameters.length) return false;
+      const shadowed = types.some(u =>
+        u !== t &&
+        u.start_line >= t.start_line && u.end_line <= t.end_line &&
+        (u.start_line > t.start_line || u.end_line < t.end_line) &&
+        c.location.line >= u.start_line && c.location.line <= u.end_line &&
+        u.methods.some(um => um.name === methodName && um.parameters.length === c.arguments.length));
+      return !shadowed;
+    });
+  }
+  return false;
+}
+
 function sameFileCallerPassesShellArgv(
   paramName: string,
   methodName: string | null | undefined,
@@ -431,6 +459,137 @@ function sameFileCallerPassesShellArgv(
     });
   }
   return false;
+}
+
+function callArgumentIsShellArgv(
+  call: CallInfo,
+  argPos: number,
+  types: ReadonlyArray<TypeInfo>,
+  sourceLines: string[],
+): boolean {
+  const expr = (call.arguments[argPos]?.expression ?? '').trim();
+  if (!expr) return false;
+  if (callArgLooksLikeShellArgv(expr, 'new ProcessBuilder(')) return true;
+  const argVar = call.arguments[argPos]?.variable;
+  if (argVar && expr === argVar && !/[.(]/.test(expr)) {
+    const callerType = types.find(
+      t => call.location.line >= t.start_line && call.location.line <= t.end_line,
+    );
+    const callerMethod = callerType?.methods.find(
+      mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line,
+    );
+    if (callerMethod) {
+      const rhs = javaLocalInitRhsBeforeLine(
+        argVar,
+        call.location.line,
+        callerMethod.start_line,
+        callerMethod.end_line,
+        sourceLines,
+      );
+      if (rhs && callArgLooksLikeShellArgv(rhs, 'new ProcessBuilder(')) return true;
+    }
+  }
+  return false;
+}
+
+function projectCallerPassesShellArgvForWrapper(
+  paramName: string,
+  wrapperMethod: string | null | undefined,
+  sinkLine: number,
+  calleeFile: string,
+  calleeTypes: ReadonlyArray<TypeInfo>,
+  calleeCalls: ReadonlyArray<CallInfo>,
+  calleeLines: string[],
+  getCallerContext: (file: string) => { types: TypeInfo[]; calls: CallInfo[]; lines: string[] } | undefined,
+  forEachCrossFileCall: (
+    cb: (callerFile: string, call: CallInfo, targetMethod: string) => void,
+  ) => void,
+): boolean {
+  if (sameFileCallerPassesShellArgv(paramName, wrapperMethod, sinkLine, calleeTypes, calleeCalls, calleeLines)) {
+    return true;
+  }
+  if (!wrapperMethod) return false;
+  const calleeMethod = calleeTypes
+    .flatMap(t => t.methods)
+    .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
+  const pos = calleeMethod?.parameters.findIndex(p => p.name === paramName) ?? -1;
+  if (pos < 0) return false;
+
+  let found = false;
+  forEachCrossFileCall((callerFile, call, targetMethod) => {
+    if (!targetMethod.endsWith(`.${wrapperMethod}`) && !targetMethod.endsWith(wrapperMethod)) return;
+    if (call.arguments.length <= pos) return;
+    const ctx = getCallerContext(callerFile);
+    if (!ctx) return;
+    if (callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines)) found = true;
+  });
+  return found;
+}
+
+/** cognium-dev#626 — drop argv-wrapper flows with no shell-argv caller (incl. cross-file). */
+export function filterJavaArgvWrapperFlowsWithoutShellCaller(
+  fileAnalyses: Array<{ file: string; analysis: { meta: { language: string }; calls: CallInfo[]; types: TypeInfo[]; taint: { flows?: CircleIR['taint']['flows'] } } }>,
+  projectGraph: { filePaths: string[]; getIR: (f: string) => CircleIR | undefined; resolver: { getResolvedCallsFromFile: (f: string) => Array<{ targetFile: string; targetMethod: string; call: CallInfo }> } },
+  sourceLinesByFile: Map<string, string[]>,
+): void {
+  const getCallerContext = (file: string) => {
+    const ir = projectGraph.getIR(file);
+    if (!ir) return undefined;
+    return {
+      types: ir.types,
+      calls: ir.calls,
+      lines: sourceLinesByFile.get(file) ?? [],
+    };
+  };
+  const forEachCrossFileCall = (
+    calleeFile: string,
+    cb: (callerFile: string, call: CallInfo, targetMethod: string) => void,
+  ) => {
+    for (const fromFile of projectGraph.filePaths) {
+      if (fromFile === calleeFile) continue;
+      for (const rc of projectGraph.resolver.getResolvedCallsFromFile(fromFile)) {
+        if (rc.targetFile !== calleeFile) continue;
+        cb(fromFile, rc.call, rc.targetMethod);
+      }
+    }
+  };
+
+  for (const fa of fileAnalyses) {
+    const ir = fa.analysis;
+    if (ir.meta.language !== 'java') continue;
+    const lines = sourceLinesByFile.get(fa.file) ?? [];
+    const flows = ir.taint.flows ?? [];
+    ir.taint.flows = flows.filter(flow => {
+      if (flow.sink_type !== 'command_injection') return true;
+      const sinkLineText = lines[flow.sink_line - 1] ?? '';
+      if (!/\bnew\s+ProcessBuilder\s*\(/.test(sinkLineText)) return true;
+      const ctorCall = ir.calls.find(
+        c =>
+          c.method_name === 'ProcessBuilder' &&
+          c.location.line === flow.sink_line &&
+          (c.receiver === null || c.receiver === undefined),
+      );
+      if (!ctorCall) return true;
+      const arg0 = ctorCall.arguments[0];
+      if (!arg0) return true;
+      const varName = arg0.variable ?? '';
+      const argExpr = (arg0.expression ?? '').trim();
+      if (!varName || argExpr !== varName || /[(.]/.test(argExpr)) return true;
+      const t = resolveIdentifierType(varName, ctorCall.in_method, ir.types);
+      if (!isArgvContainerType(t)) return true;
+      return projectCallerPassesShellArgvForWrapper(
+        varName,
+        ctorCall.in_method,
+        flow.sink_line,
+        fa.file,
+        ir.types,
+        ir.calls,
+        lines,
+        getCallerContext,
+        cb => forEachCrossFileCall(fa.file, cb),
+      );
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2053,11 +2212,17 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         // Bare identifier — parameter/field lookup.
         if (varName !== '' && argExpr === varName && !/[(.]/.test(argExpr)) {
           const t = resolveIdentifierType(varName, ctorCall.in_method, irTypes);
-          // cognium-dev#626: a `List<String>` PARAMETER is argv-form only while no
-          // same-file caller hands it a shell argv (`/bin/sh -c <script>`): then
-          // the tainted element is the script, so the suppression proves nothing.
-          if (isArgvContainerType(t) && !sameFileCallerPassesShellArgv(varName, ctorCall.in_method, ctorCall.location.line, irTypes, irCalls, sourceLines)) {
-            return false;
+          // cognium-dev#626: argv-form suppression for a `List<String>` parameter
+          // applies only when same-file callers exist and none pass a shell argv.
+          // Wrappers with cross-file callers only must keep the sink (#626 xfile).
+          if (isArgvContainerType(t)) {
+            const wrapperMethod = ctorCall.in_method;
+            const wrapperLine = ctorCall.location.line;
+            if (sameFileCallerPassesShellArgv(varName, wrapperMethod, wrapperLine, irTypes, irCalls, sourceLines)) {
+              // Caller passes shell argv — keep sink.
+            } else if (sameFileHasWrapperCaller(wrapperMethod, wrapperLine, irTypes, irCalls)) {
+              return false;
+            }
           }
         }
         // Method call — return-type lookup. `variable` field carries the
@@ -3165,8 +3330,6 @@ function pythonBodyHasInlineRegexAllowlistRaise(bodyLines: string[]): boolean {
 // ---------------------------------------------------------------------------
 // Helpers (moved verbatim from analyzer.ts)
 // ---------------------------------------------------------------------------
-
-import type { CircleIR } from '../../types/index.js';
 
 type Symbols = Map<string, { value: string | number | boolean | null; type: string; sourceLine: number }>;
 

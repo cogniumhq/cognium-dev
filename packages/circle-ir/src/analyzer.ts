@@ -111,7 +111,12 @@ import { LanguageSourcesPass } from './analysis/passes/language-sources-pass.js'
 import { SourceSemanticsPass } from './analysis/passes/source-semantics-pass.js';
 import { LibraryProfileSourceGatePass } from './analysis/passes/library-profile-source-gate-pass.js';
 import { MyBatisAnnotationSqlSinkPass } from './analysis/passes/mybatis-annotation-sql-sink-pass.js';
-import { SinkFilterPass, filterCleanVariableSinks, filterSanitizedSinks } from './analysis/passes/sink-filter-pass.js';
+import {
+  SinkFilterPass,
+  filterCleanVariableSinks,
+  filterSanitizedSinks,
+  filterJavaArgvWrapperFlowsWithoutShellCaller,
+} from './analysis/passes/sink-filter-pass.js';
 import { SinkSemanticsPass } from './analysis/passes/sink-semantics-pass.js';
 import { DeserializationSafetyGatePass } from './analysis/passes/deserialization-safety-gate-pass.js';
 import { PromptInjectionSafetyGatePass } from './analysis/passes/prompt-injection-safety-gate-pass.js';
@@ -1864,6 +1869,8 @@ export async function analyzeProject(
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
+
+  filterJavaArgvWrapperFlowsWithoutShellCaller(fileAnalyses, projectGraph, sourceLinesByFile);
 
   // 2.5 Cross-file security-header inheritance (CORS via virtual methods)
   const disabledPasses = options.disabledPasses ?? [];
