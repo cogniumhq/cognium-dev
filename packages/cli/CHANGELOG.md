@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.17.0] - 2026-10-18
+
+### Changes
+
+- Navigation queries (`find_callers`) match a Java type variable by its erasure: `getNumber(java.util.Map,java.lang.Object)` finds callers of `<K> getNumber(Map<? super K, ?>, K)`, overload selection reads type variables as their bounds, and two overloads differing only in a type-variable parameter are no longer merged. Signatures in answers now show the erasure (`getNumber(Map,Object)`, not `getNumber(Map,K)`); either spelling is accepted as a query.
+- A C# scan follows taint through a static field, `List.Add` and `Hashtable` across files (#638, partial).
+- A JS/TS scan reports stored XSS through a module-level variable written in one Express handler and sent in another (#686, partial).
+- A Python scan reports `deserialization` for `yaml.load` on a function parameter again (#804).
+- A Rust scan credits an allowlist ternary (`if ALLOWED.contains(&v) { v } else { "default" }`) before an actix `.body()` (#563, partial).
+- A Java scan keeps `Iterator.next()` taint when the iterator is rebound, and tracks same-named locals in sibling loops separately (#476, partial).
+
 ## [4.16.1] - 2026-10-17
 
 ### Changes
