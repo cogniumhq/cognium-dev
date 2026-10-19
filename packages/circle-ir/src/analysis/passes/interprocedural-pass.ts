@@ -435,14 +435,20 @@ function appendCalleeSourceCallerSinkFlows(
     const assignee = graph.ir.dfg.defs.find(
       d => d.line === edge.callLine && d.kind === 'local',
     );
-    if (!assignee) continue;
+    if (!assignee?.variable) continue;
+
+    const derivedLocals = localsDerivedFromAssignee(
+      graph,
+      assignee.variable,
+      assignee.line,
+    );
 
     for (const sink of sinks) {
       if (sink.type === 'external_taint_escape') continue;
       if (sink.line <= edge.callLine) continue;
       if (enclosingMethodName(types, sink.line) !== edge.callerMethod) continue;
-      const usesAtSink = graph.usesAtLine(sink.line);
-      if (!usesAtSink.some(u => u.variable === assignee.variable)) continue;
+      const sinkVar = sinkVariableConsumingDerived(graph, sink, derivedLocals);
+      if (!sinkVar) continue;
       if (additionalFlows.some(f => f.source_line === calleeSources[0].line && f.sink_line === sink.line)) {
         continue;
       }
@@ -456,13 +462,68 @@ function appendCalleeSourceCallerSinkFlows(
         path: [
           { variable: source.location, line: source.line, type: 'source' as const },
           { variable: assignee.variable, line: edge.callLine, type: 'use' as const },
-          { variable: sink.location, line: sink.line, type: 'sink' as const },
+          { variable: sinkVar, line: sink.line, type: 'sink' as const },
         ],
         confidence: sink.confidence * source.confidence * 0.85,
         sanitized: false,
       });
     }
   }
+}
+
+/** DFG-forward names reachable from a helper-return assignment LHS (same file). */
+function localsDerivedFromAssignee(
+  graph: PassContext['graph'],
+  seedVar: string,
+  seedLine: number,
+): Set<string> {
+  const defs = graph.ir.dfg.defs;
+  const chains = graph.ir.dfg.chains ?? [];
+  const seedDefs = defs.filter(
+    d => d.variable === seedVar && d.line === seedLine && d.kind === 'local',
+  );
+  if (seedDefs.length === 0) return new Set([seedVar]);
+
+  const defIds = new Set<number>(seedDefs.map(d => d.id));
+  const frontier = seedDefs.map(d => d.id);
+  const visited = new Set<number>(frontier);
+  while (frontier.length > 0) {
+    const cur = frontier.shift()!;
+    for (const ch of chains) {
+      if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
+      visited.add(ch.to_def);
+      defIds.add(ch.to_def);
+      frontier.push(ch.to_def);
+    }
+  }
+
+  const names = new Set<string>([seedVar]);
+  for (const d of defs) {
+    if (d.variable && defIds.has(d.id)) names.add(d.variable);
+  }
+  return names;
+}
+
+function sinkVariableConsumingDerived(
+  graph: PassContext['graph'],
+  sink: TaintSink,
+  derived: Set<string>,
+): string | undefined {
+  for (const u of graph.usesAtLine(sink.line)) {
+    if (u.variable && derived.has(u.variable)) return u.variable;
+  }
+  for (const call of graph.callsByLine.get(sink.line) ?? []) {
+    for (const arg of call.arguments ?? []) {
+      if (arg.variable && derived.has(arg.variable)) return arg.variable;
+      if (arg.expression) {
+        for (const v of derived) {
+          const re = new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+          if (re.test(arg.expression)) return v;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 function enclosingMethodName(types: TypeInfo[], line: number): string | null {

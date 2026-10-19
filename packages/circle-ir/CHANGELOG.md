@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Java: helper-return taint reaches caller sinks on DFG-derived locals (#590, partial).** `InterproceduralPass` extends callee-to-caller flow synthesis through same-file DFG chains so `sql = "…" + invoice` sinks fire when `invoice` comes from a helper return.
 - **Java: inner-class helper return connects callee sources to caller sinks (#590, partial).** `InterproceduralPass` synthesizes flows when a source is discovered inside a callee and the caller sink uses the call's assignee; callee resolution uses receiver type for nested classes.
 - **Project scan: cross-file taint paths mirrored on sink-file `taint.flows` (#684, partial).** `analyzeProject` copies each resolved `taint_paths` entry onto the sink file's per-file flow list so directory scans report the same sink types in per-file vulnerabilities that `cross_file_taint_paths` already carries.
 - **JavaScript: CRLF wrapper functions use argument-aware `replace` credit (#605 / #562).** `findJsWrapperFunctionSanitizers` no longer credits `log_injection` when the helper's replace chain leaves CR or LF (LF-only global strip, etc.); full CR+LF strips stay credited.
