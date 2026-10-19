@@ -335,6 +335,31 @@ function argvFirstLiteralIsShell(lineText: string): boolean {
   return SHELL_PROGRAMS.has(base);
 }
 
+/** Last RHS assigned to `varName` on a line before `beforeLine` inside the method span. */
+function javaLocalInitRhsBeforeLine(
+  varName: string,
+  beforeLine: number,
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+): string | undefined {
+  const declAssign = new RegExp(
+    `^\\s*(?:final\\s+)?[\\w<>,\\s\\[\\]]+\\s+${escapeReSf(varName)}\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`,
+  );
+  const reassign = new RegExp(`^\\s*${escapeReSf(varName)}\\s*=\\s*(.+?)\\s*;\\s*(?://.*)?$`);
+  let lastRhs: string | undefined;
+  for (let l = methodStart; l < beforeLine && l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const m = declAssign.exec(line) ?? reassign.exec(line);
+    if (m) lastRhs = m[1]!.trim();
+  }
+  return lastRhs;
+}
+
+function callArgLooksLikeShellArgv(expr: string, probePrefix: string): boolean {
+  return argvFirstLiteralIsShell(`${probePrefix}${expr}`);
+}
+
 /**
  * cognium-dev#626 — does a same-file call of the wrapper method that contains
  * the sink pass a shell argv (`Arrays.asList("/bin/sh", "-c", ...)`,
@@ -359,6 +384,7 @@ function sameFileCallerPassesShellArgv(
   sinkLine: number,
   types: ReadonlyArray<TypeInfo>,
   calls: ReadonlyArray<CallInfo>,
+  sourceLines: string[],
 ): boolean {
   if (!methodName) return false;
   for (const t of types) {
@@ -382,8 +408,26 @@ function sameFileCallerPassesShellArgv(
         c.location.line >= u.start_line && c.location.line <= u.end_line &&
         u.methods.some(um => um.name === methodName && um.parameters.length === c.arguments.length));
       if (shadowed) return false;
-      const expr = c.arguments[pos]?.expression;
-      return typeof expr === 'string' && argvFirstLiteralIsShell(`new ProcessBuilder(${expr}`);
+      const expr = (c.arguments[pos]?.expression ?? '').trim();
+      if (!expr) return false;
+      if (callArgLooksLikeShellArgv(expr, 'new ProcessBuilder(')) return true;
+      const argVar = c.arguments[pos]?.variable;
+      if (argVar && expr === argVar && !/[.(]/.test(expr)) {
+        const callerMethod = t.methods.find(
+          mm => c.location.line >= mm.start_line && c.location.line <= mm.end_line,
+        );
+        if (callerMethod) {
+          const rhs = javaLocalInitRhsBeforeLine(
+            argVar,
+            c.location.line,
+            callerMethod.start_line,
+            callerMethod.end_line,
+            sourceLines,
+          );
+          if (rhs && callArgLooksLikeShellArgv(rhs, 'new ProcessBuilder(')) return true;
+        }
+      }
+      return false;
     });
   }
   return false;
@@ -2012,7 +2056,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
           // cognium-dev#626: a `List<String>` PARAMETER is argv-form only while no
           // same-file caller hands it a shell argv (`/bin/sh -c <script>`): then
           // the tainted element is the script, so the suppression proves nothing.
-          if (isArgvContainerType(t) && !sameFileCallerPassesShellArgv(varName, ctorCall.in_method, ctorCall.location.line, irTypes, irCalls)) {
+          if (isArgvContainerType(t) && !sameFileCallerPassesShellArgv(varName, ctorCall.in_method, ctorCall.location.line, irTypes, irCalls, sourceLines)) {
             return false;
           }
         }

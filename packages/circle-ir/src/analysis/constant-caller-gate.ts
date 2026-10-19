@@ -1,5 +1,5 @@
 /**
- * Constant-caller gate (cognium-dev#636, C# slice).
+ * Constant-caller gate (cognium-dev#636 C#, cognium-dev#614 Java slice).
  *
  * Per-file analysis seeds every `string` parameter of a method as an
  * `interprocedural_param` source, so a sink that receives the parameter is
@@ -10,7 +10,7 @@
  * constant at that parameter.
  *
  * A flow is dropped only when ALL of these hold; otherwise nothing changes:
- *   1. C# file, flow seeded by `interprocedural_param` on parameter `P` of
+ *   1. C# or Java file, flow seeded by `interprocedural_param` on parameter `P` of
  *      method `M`, and no other flow reaches the same sink from a real source.
  *   2. `M` is not virtual / abstract / override / an interface member, and no
  *      project type derives from `M`'s type; the name is not overloaded in its type.
@@ -31,6 +31,8 @@ import type { CircleIR, CallInfo, MethodInfo, TypeInfo } from '../types/index.js
 import type { ProjectGraph } from '../graph/project-graph.js';
 
 const STRING_LITERAL = /^@?"(?:[^"\\]|\\.)*"$/;
+
+const GATE_LANGUAGES = new Set(['csharp', 'java']);
 
 interface CallSite {
   file: string;
@@ -64,9 +66,13 @@ function isLiteralLocal(ir: CircleIR, lines: string[], call: CallInfo, name: str
   if (method.parameters.some(p => p.name === name)) return false;
   const assignOp = new RegExp(`(?<![\\w.])${name}\\s*(?:[-+*/%&|^?]|<<|>>)?=(?!=)`, 'g');
   const literal = '@?"(?:[^"\\\\]|\\\\.)*"';
-  const declLiteral = new RegExp(`^\\s*(?:const\\s+)?[\\w<>\\[\\],.?]+\\s+${name}\\s*=\\s*${literal}\\s*;\\s*(?://.*)?$`);
+  const lang = ir.meta.language;
+  const typeDecl = lang === 'java'
+    ? `(?:final\\s+)?[\\w<>\\[\\],.?]+`
+    : `(?:const\\s+)?[\\w<>\\[\\],.?]+`;
+  const declLiteral = new RegExp(`^\\s*${typeDecl}\\s+${name}\\s*=\\s*${literal}\\s*;\\s*(?://.*)?$`);
   const plainLiteral = new RegExp(`^\\s*${name}\\s*=\\s*${literal}\\s*;\\s*(?://.*)?$`);
-  const bareDecl = new RegExp(`^\\s*(?:const\\s+)?[\\w<>\\[\\],.?]+\\s+${name}\\s*;`);
+  const bareDecl = new RegExp(`^\\s*${typeDecl}\\s+${name}\\s*;`);
   const mutate = new RegExp(`\\b(?:out|ref)\\s+${name}\\b|(?:\\+\\+|--)\\s*${name}\\b|\\b${name}\\s*(?:\\+\\+|--)`);
   let assignments = 0;
   let assignLine = -1;
@@ -181,9 +187,15 @@ interface ConstantCallerCtx {
  * sink's method and to every relay method the transitive step walks through, so a virtual,
  * overridden, interface or overloaded relay keeps the flow.
  */
-function hasEnumerableCallers(type: TypeInfo, method: MethodInfo, derivedFrom: ReadonlySet<string>): boolean {
+function hasEnumerableCallers(
+  type: TypeInfo,
+  method: MethodInfo,
+  derivedFrom: ReadonlySet<string>,
+  language: string,
+): boolean {
   if (type.kind !== 'class') return false;
-  if (method.modifiers.some(m => m === 'virtual' || m === 'abstract' || m === 'override')) return false;
+  if (method.modifiers.some(m => m === 'abstract')) return false;
+  if (language === 'csharp' && method.modifiers.some(m => m === 'virtual' || m === 'override')) return false;
   if (derivedFrom.has(type.name)) return false;
   return type.methods.filter(m => m.name === method.name).length === 1;
 }
@@ -207,7 +219,7 @@ function isConstantArgRecursive(
 
   const encl = enclosingMethod(ir, call.location.line);
   if (!encl) return false;
-  if (!hasEnumerableCallers(encl.type, encl.method, ctx.derivedFrom)) return false;
+  if (!hasEnumerableCallers(encl.type, encl.method, ctx.derivedFrom, ir.meta.language)) return false;
   const paramIdx = encl.method.parameters.findIndex(p => p.name === arg.variable);
   if (paramIdx < 0) return false;
 
@@ -248,15 +260,15 @@ export function applyConstantCallerGate(
   sourceLinesByFile: ReadonlyMap<string, string[]>,
 ): void {
   const candidates = fileAnalyses.filter(fa =>
-    fa.analysis.meta.language === 'csharp'
+    GATE_LANGUAGES.has(fa.analysis.meta.language)
     && (fa.analysis.taint?.flows ?? []).some(f => f.source_type === 'interprocedural_param'));
   if (candidates.length === 0) return;
 
   const resolver = projectGraph.resolver;
-  const csharp = fileAnalyses.filter(fa => fa.analysis.meta.language === 'csharp');
+  const gated = fileAnalyses.filter(fa => GATE_LANGUAGES.has(fa.analysis.meta.language));
   const callsByName = new Map<string, CallSite[]>();
   const derivedFrom = new Set<string>();
-  for (const fa of csharp) {
+  for (const fa of gated) {
     for (const call of fa.analysis.calls) {
       const arr = callsByName.get(call.method_name) ?? [];
       arr.push({ file: fa.file, call });
@@ -292,7 +304,7 @@ export function applyConstantCallerGate(
       if (!encl || encl.method.name !== src.in_method) return true;
       const { type, method } = encl;
 
-      if (!hasEnumerableCallers(type, method, derivedFrom)) return true;
+      if (!hasEnumerableCallers(type, method, derivedFrom, ir.meta.language)) return true;
       const position = method.parameters.findIndex(p => p.name === variable);
       if (position < 0) return true;
 
