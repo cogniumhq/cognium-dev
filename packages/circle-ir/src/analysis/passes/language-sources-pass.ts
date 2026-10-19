@@ -360,6 +360,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       }
       additionalSanitizers.push(...findBashRegexAllowlistSanitizers(code));
       additionalSanitizers.push(...findBashRealpathPrefixGuardSanitizers(code));
+      // #816 CVE-2026-8398: gpg/sha verify-then-install download scripts.
+      additionalSanitizers.push(...findBashVerifiedPackageDownloadSanitizers(code));
       // #213 twelfth slice: printf '%q' + ${var@Q} shell-quote helpers.
       additionalSanitizers.push(...findBashShellQuoteSanitizers(code));
     }
@@ -4969,6 +4971,39 @@ function findBashRealpathPrefixGuardSanitizers(code: string): TaintSanitizer[] {
     i = caseEnd + 1;
   }
 
+  return sanitizers;
+}
+
+/**
+ * cognium-dev #816 (CVE-2026-8398 `daemon_pkg_install` safe mirror): when a
+ * script downloads a package artifact with curl/wget and later verifies
+ * integrity (gpg/sha) before `dpkg`/`rpm` install, credit the download
+ * step's outbound fetch as gated — same whole-script idiom as
+ * `hasIntegrityVerifierAnywhere` for `unverified-package-install`.
+ */
+function findBashVerifiedPackageDownloadSanitizers(code: string): TaintSanitizer[] {
+  const lines = code.split('\n');
+  if (!hasIntegrityVerifierAnywhere(lines)) {
+    return [];
+  }
+  const hasDownload = lines.some((l) => /\b(curl|wget)\b/.test(l));
+  const hasInstall = lines.some((l) => matchUnverifiedPackageInstall(l.trim()) !== null);
+  if (!hasDownload || !hasInstall) {
+    return [];
+  }
+
+  const sanitizers: TaintSanitizer[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trimStart().startsWith('#')) continue;
+    if (!/\b(curl|wget)\b/.test(line)) continue;
+    sanitizers.push({
+      type: 'verified_package_download',
+      method: 'curl',
+      line: i + 1,
+      sanitizes: ['ssrf'],
+    });
+  }
   return sanitizers;
 }
 
