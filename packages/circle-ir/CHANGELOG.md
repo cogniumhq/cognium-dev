@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Java: constant-caller gate drops `interprocedural_param` sinks when every in-project caller passes a literal (#614, partial).** `analyzeProject` now applies the same relay forwarding rule as C# (#636): a callee parameter seeded as `interprocedural_param` is suppressed when all resolved callers pass a string literal (or literal local). Tainted and mixed callers keep the finding.
+
 ### Added
 - **Regression: ts-rust-parity quartet tier-1 rust `deserialization` safe mirror (#816).** Locks `v01_baseline_safe.rs` (`serde_json::from_str` into `Value`) as clean with recall on the `serde_yaml::from_str` tp twin.
 

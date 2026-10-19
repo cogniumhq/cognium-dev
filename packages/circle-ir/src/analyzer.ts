@@ -1904,7 +1904,7 @@ export async function analyzeProject(
     disabledPasses: options.disabledPasses,
   });
 
-  // 3.6 (#636) — constant-caller gate. Drops a C# parameter-seeded sink flow
+  // 3.6 (#636 / #614) — constant-caller gate. Drops a C#/Java parameter-seeded sink flow
   // when every in-project caller passes a constant at that parameter.
   applyConstantCallerGate(fileAnalyses, projectGraph, sourceLinesByFile);
 
