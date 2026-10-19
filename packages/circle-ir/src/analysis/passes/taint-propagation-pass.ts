@@ -1921,6 +1921,25 @@ function isTaintedInMethod(
   return true;
 }
 
+function mapGetLiteralKeyFromExpr(expr: string): { map: string; key: string } | null {
+  const m = expr.match(/\b([A-Za-z_]\w*)\s*\.\s*get\s*\(\s*"([^"]*)"\s*\)/);
+  return m ? { map: m[1]!, key: m[2]! } : null;
+}
+
+function isMapLiteralKeyTainted(
+  constProp: ConstantPropagatorResult,
+  mapName: string,
+  key: string,
+  inMethod: string | null | undefined,
+): boolean {
+  const scoped = inMethod ? `${inMethod}:${mapName}` : mapName;
+  const keys =
+    constProp.taintedCollections.get(mapName) ??
+    constProp.taintedCollections.get(scoped);
+  if (!keys || keys.size === 0) return false;
+  return keys.has(key) || keys.has('*');
+}
+
 function detectCollectionFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -1980,7 +1999,16 @@ function detectCollectionFlows(
             && expr === varName
             && !methodHasLocalDecl(code, call.in_method, varName, call.location.line);
           const isFieldUse = explicitField || bareFieldRead;
-          if (isTaintedInMethod(taintedVars, varName, scopedName, fieldNames, isFieldUse)) {
+          const mapKeyRead = mapGetLiteralKeyFromExpr(expr);
+          let argTainted = isTaintedInMethod(
+            taintedVars, varName, scopedName, fieldNames, isFieldUse,
+          );
+          if (mapKeyRead && mapKeyRead.map === varName) {
+            argTainted = isMapLiteralKeyTainted(
+              constProp, varName, mapKeyRead.key, call.in_method,
+            );
+          }
+          if (argTainted) {
             // Sprint 13 #70 — pick a source in the same method scope as the
             // sink, not blanket sources[0]. The varName-based match is
             // primary; method-scope is the tiebreaker; sources[0] is the
@@ -2040,12 +2068,25 @@ function detectCollectionFlows(
             { method: 'peek',     re: /(\w+)\.peek\(/ },
             { method: 'toArray',  re: /(\w+)\.toArray\(/ },
           ];
-          for (const { re } of collectionPatterns) {
+          for (const { method, re } of collectionPatterns) {
             const match = expr.match(re);
             if (match) {
               const collectionVar = match[1];
               const scopedCollection = call.in_method ? `${call.in_method}:${collectionVar}` : collectionVar;
-              if (taintedVars.has(collectionVar) || taintedVars.has(scopedCollection)) {
+              const mapKey =
+                method === 'get' ? mapGetLiteralKeyFromExpr(expr) : null;
+              let collectionTainted =
+                taintedVars.has(collectionVar) || taintedVars.has(scopedCollection);
+              if (mapKey && mapKey.map === collectionVar) {
+                collectionTainted = isMapLiteralKeyTainted(
+                  constProp,
+                  collectionVar,
+                  mapKey.key,
+                  call.in_method,
+                );
+              }
+              if (!collectionTainted) continue;
+              {
                 // Sprint 13 #70 — same method-scoped picker as above.
                 const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, collectionVar);
                 if (source) {

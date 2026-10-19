@@ -94,14 +94,15 @@ public class WelcomeServlet extends HttpServlet {
     expect((r.taint.flows ?? []).some(f => f.sink_type === 'xss' && f.source_type === 'http_param')).toBe(true);
   });
 
-  it('keeps the source when ANY value put on the map is not a string literal', async () => {
+  it('keeps the source on a tainted key when another key is literal-only', async () => {
     const r = await servlet([
       'Map<String, String> m = new HashMap<>();',
       'm.put("title", "Welcome");',
       'm.put("other", request.getParameter("o"));',
-      'response.getWriter().println(m.get("title"));',
+      'response.getWriter().println(m.get("other"));',
     ]);
     expect(mapSources(r).length).toBeGreaterThan(0);
+    expect(sinkTypes(r).has('xss')).toBe(true);
   });
 
   it('keeps the source when the map is mutated through putAll / compute / merge', async () => {
@@ -119,6 +120,28 @@ public class WelcomeServlet extends HttpServlet {
       ]);
       expect(mapSources(r).filter(s => s.line === 10).length, mut).toBeGreaterThan(0);
     }
+  });
+
+  it('key shuffle: literal key b stays clean when key a is tainted', async () => {
+    const r = await servlet([
+      'Map<String, String> m = new HashMap<>();',
+      'm.put("a", request.getParameter("x"));',
+      'm.put("b", "fixed");',
+      'response.getWriter().println(m.get("b"));',
+    ]);
+    expect(mapSources(r)).toHaveLength(0);
+    expect(sinkTypes(r).has('xss')).toBe(false);
+  });
+
+  it('key shuffle: read of key a still reports when that key is tainted', async () => {
+    const r = await servlet([
+      'Map<String, String> m = new HashMap<>();',
+      'm.put("a", request.getParameter("x"));',
+      'm.put("b", "fixed");',
+      'response.getWriter().println(m.get("a"));',
+    ]);
+    expect(mapSources(r).length).toBeGreaterThan(0);
+    expect(sinkTypes(r).has('xss')).toBe(true);
   });
 
   it('keeps the source for a map that is not locally constructed, or that escapes (#328 negatives)', async () => {

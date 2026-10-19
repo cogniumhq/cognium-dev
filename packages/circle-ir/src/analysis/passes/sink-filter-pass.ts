@@ -871,9 +871,10 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
     if (escapeRe.test(stripped)) return false;
   }
 
-  // (c2) was this literal key ever written? If so, drop only a literal-only map.
+  // (c2) was this literal key ever written? If so, drop when that key's puts are
+  // all literals (#584 key-shuffle), even if another key holds tainted data.
   const putRe = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
-  if (lines.some(l => putRe.test(l))) return isLiteralOnlyLocalMap(lines, recv);
+  if (lines.some(l => putRe.test(l))) return isLiteralOnlyLocalMapKey(lines, recv, key);
 
   return true;
 }
@@ -888,6 +889,26 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
  * a value out of sight. Combined with (a) local construction and (b) no escape
  * in the caller, a read of such a map yields a literal and is not a source.
  */
+/** Every `put` of `key` on `recv` stores a string literal (other keys ignored). */
+function isLiteralOnlyLocalMapKey(lines: string[], recv: string, key: string): boolean {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const otherMutator = new RegExp(
+    `\\b${recv}\\s*\\.\\s*(?:putAll|putIfAbsent|compute|computeIfAbsent|computeIfPresent|merge|replace|replaceAll|entrySet|values)\\s*\\(`,
+  );
+  if (lines.some(l => otherMutator.test(l))) return false;
+  const keyPut = new RegExp(
+    `\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${escapedKey}"\\s*,\\s*"(?:[^"\\\\]|\\\\.)*"\\s*\\)`,
+  );
+  const anyKeyPut = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(\\s*"${escapedKey}"`);
+  let putsForKey = 0;
+  let literalPutsForKey = 0;
+  for (const l of lines) {
+    putsForKey += (l.match(anyKeyPut) ?? []).length;
+    literalPutsForKey += (l.match(keyPut) ?? []).length;
+  }
+  return putsForKey > 0 && putsForKey === literalPutsForKey;
+}
+
 function isLiteralOnlyLocalMap(lines: string[], recv: string): boolean {
   const anyPut = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(`, 'g');
   const literalPut = new RegExp(
