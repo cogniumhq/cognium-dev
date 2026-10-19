@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Project scan: cross-file taint paths mirrored on sink-file `taint.flows` (#684, partial).** `analyzeProject` copies each resolved `taint_paths` entry onto the sink file's per-file flow list so directory scans report the same sink types in per-file vulnerabilities that `cross_file_taint_paths` already carries.
 - **JavaScript: CRLF wrapper functions use argument-aware `replace` credit (#605 / #562).** `findJsWrapperFunctionSanitizers` no longer credits `log_injection` when the helper's replace chain leaves CR or LF (LF-only global strip, etc.); full CR+LF strips stay credited.
 - **Java: `List<String>` argv wrapper keeps command_injection when the shell argv is stored in a local before the call (#626, partial).** `sameFileCallerPassesShellArgv` resolves a bare identifier argument to its last same-method initializer so `Arrays.asList("/bin/sh", "-c", …)` in a local still counts; non-shell locals and inline-argv fixtures unchanged.
 - **Java: constant-caller gate drops `interprocedural_param` sinks when every in-project caller passes a literal (#614, partial).** `analyzeProject` now applies the same relay forwarding rule as C# (#636): a callee parameter seeded as `interprocedural_param` is suppressed when all resolved callers pass a string literal (or literal local). Tainted and mixed callers keep the finding.
