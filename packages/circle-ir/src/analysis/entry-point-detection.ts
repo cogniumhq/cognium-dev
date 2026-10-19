@@ -997,15 +997,39 @@ const CSHARP_TIER_1_METHOD_ANNOTATIONS: ReadonlySet<string> = new Set([
   'MapGet', 'MapPost', 'MapPut', 'MapDelete', 'MapPatch',
 ]);
 
+/** MVC model-binding parameters mark an HTTP action even without a verb attribute. */
+const CSHARP_TIER_1_PARAM_ANNOTATIONS: ReadonlySet<string> = new Set([
+  'FromQuery', 'FromBody', 'FromRoute', 'FromHeader', 'FromForm', 'FromServices',
+]);
+
 const CSHARP_TIER_1_CLASS_ANNOTATIONS: ReadonlySet<string> = new Set([
   'ApiController', 'Controller', 'Route',
 ]);
 
+const CSHARP_MVC_BASE_SIMPLE_NAMES: ReadonlySet<string> = new Set([
+  'Controller', 'ControllerBase', 'PageModel',
+]);
+
+function csharpBaseTypeLooksLikeMvc(base: string): boolean {
+  const simple = (base.split('.').pop() ?? base).trim();
+  if (CSHARP_MVC_BASE_SIMPLE_NAMES.has(simple)) return true;
+  return simple.endsWith('Controller') && simple !== 'Controller';
+}
+
 function csharpTypeLooksLikeController(enclosingType: TypeInfo | undefined): boolean {
   if (!enclosingType) return false;
   if (annotationsInclude(enclosingType.annotations, CSHARP_TIER_1_CLASS_ANNOTATIONS)) return true;
+  if (enclosingType.extends && csharpBaseTypeLooksLikeMvc(enclosingType.extends)) return true;
   const name = enclosingType.name ?? '';
+  if (csharpBaseTypeLooksLikeMvc(name)) return true;
   return name.endsWith('Controller') && name !== 'Controller';
+}
+
+function csharpMethodHasMvcBindingParams(method: MethodInfo): boolean {
+  for (const p of method.parameters ?? []) {
+    if (annotationsInclude(p.annotations, CSHARP_TIER_1_PARAM_ANNOTATIONS)) return true;
+  }
+  return false;
 }
 
 function looksLikeCSharpMain(method: MethodInfo): boolean {
@@ -1026,6 +1050,10 @@ function classifyCSharpEntryPoint(
   }
 
   if (annotationsInclude(method.annotations, CSHARP_TIER_1_METHOD_ANNOTATIONS)) {
+    return 'TIER_1_ENTRY_POINT';
+  }
+
+  if (csharpMethodHasMvcBindingParams(method)) {
     return 'TIER_1_ENTRY_POINT';
   }
 

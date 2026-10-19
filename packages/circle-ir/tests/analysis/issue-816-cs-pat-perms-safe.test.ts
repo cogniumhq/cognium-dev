@@ -26,6 +26,15 @@ public class FilesController {
   }
 }`;
 
+const controllerBaseTp = `using System.IO;
+using Microsoft.AspNetCore.Mvc;
+
+public class Ctl : ControllerBase {
+  public void M([FromQuery] string p) {
+    using var fs = new FileStream(p, FileMode.Open);
+  }
+}`;
+
 beforeAll(async () => {
   await initAnalyzer();
 });
@@ -38,6 +47,11 @@ describe('#816 PAT-PERMS-01 C# library parameter', () => {
 
   it('recall: controller action parameter still reaches FileStream', async () => {
     const r = await analyze(controllerTp, 'FilesController.cs', 'csharp');
+    expect(pathFlows(r).length).toBeGreaterThan(0);
+  });
+
+  it('recall: ControllerBase with FromQuery still reaches FileStream', async () => {
+    const r = await analyze(controllerBaseTp, 'Ctl.cs', 'csharp');
     expect(pathFlows(r).length).toBeGreaterThan(0);
   });
 });
