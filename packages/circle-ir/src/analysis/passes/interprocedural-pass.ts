@@ -20,7 +20,7 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
-import { analyzeInterprocedural, findTaintBridges } from '../interprocedural.js';
+import { analyzeInterprocedural, findTaintBridges, type InterproceduralResult } from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -203,6 +203,8 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
           }
         }
       }
+
+      appendCalleeSourceCallerSinkFlows(graph, sources, sinks, interProc, additionalFlows);
 
       const taintBridges = findTaintBridges(interProc);
       interprocedural = {
@@ -412,6 +414,68 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
  * The sink is reached when its statement mentions a derived name that is not
  * sanitized or guarded there.
  */
+/** cognium-dev#590 — connect a source inside a callee to a sink in the caller. */
+function appendCalleeSourceCallerSinkFlows(
+  graph: PassContext['graph'],
+  sources: import('../../types/index.js').TaintSource[],
+  sinks: TaintSink[],
+  interProc: InterproceduralResult,
+  additionalFlows: TaintFlowInfo[],
+): void {
+  const types = graph.ir.types ?? [];
+  for (const edge of interProc.callEdges) {
+    const callee = interProc.methodNodes.get(edge.calleeMethod);
+    if (!callee) continue;
+
+    const calleeSources = sources.filter(
+      s => s.line >= callee.startLine && s.line <= callee.endLine,
+    );
+    if (calleeSources.length === 0) continue;
+
+    const assignee = graph.ir.dfg.defs.find(
+      d => d.line === edge.callLine && d.kind === 'local',
+    );
+    if (!assignee) continue;
+
+    for (const sink of sinks) {
+      if (sink.type === 'external_taint_escape') continue;
+      if (sink.line <= edge.callLine) continue;
+      if (enclosingMethodName(types, sink.line) !== edge.callerMethod) continue;
+      const usesAtSink = graph.usesAtLine(sink.line);
+      if (!usesAtSink.some(u => u.variable === assignee.variable)) continue;
+      if (additionalFlows.some(f => f.source_line === calleeSources[0].line && f.sink_line === sink.line)) {
+        continue;
+      }
+
+      const source = calleeSources[0];
+      additionalFlows.push({
+        source_line: source.line,
+        sink_line: sink.line,
+        source_type: source.type,
+        sink_type: sink.type,
+        path: [
+          { variable: source.location, line: source.line, type: 'source' as const },
+          { variable: assignee.variable, line: edge.callLine, type: 'use' as const },
+          { variable: sink.location, line: sink.line, type: 'sink' as const },
+        ],
+        confidence: sink.confidence * source.confidence * 0.85,
+        sanitized: false,
+      });
+    }
+  }
+}
+
+function enclosingMethodName(types: TypeInfo[], line: number): string | null {
+  for (const type of types) {
+    for (const method of type.methods) {
+      if (line >= method.start_line && line <= method.end_line) {
+        return method.name;
+      }
+    }
+  }
+  return null;
+}
+
 export function csharpParamReachesSink(
   code: string,
   method: { parameters: Array<{ name: string; position: number }>; startLine: number },

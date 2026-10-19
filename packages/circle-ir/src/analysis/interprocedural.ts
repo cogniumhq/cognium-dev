@@ -618,8 +618,11 @@ export function analyzeInterprocedural(
       }
     }
 
-    // Check if this is an internal method call (resolve using FQN or simple name)
-    const targetMethod = getMethodNode(methodNodes, call.method_name);
+    // Resolve callee by receiver type when available (nested / inner classes).
+    const resolvedCalleeFqn = resolveMethodCall(call, methodNodes, types);
+    const targetMethod = resolvedCalleeFqn
+      ? methodNodes.byFqn.get(resolvedCalleeFqn)
+      : getMethodNode(methodNodes, call.method_name);
 
     if (!targetMethod) {
       // External method call - check if tainted data is escaping
@@ -748,6 +751,17 @@ export function analyzeInterprocedural(
         if (pos < targetMethod.parameters.length) {
           targetMethod.parameters[pos].isTainted = true;
           targetMethod.parameters[pos].sourceLine = call.location.line;
+          const paramName = targetMethod.parameters[pos].name;
+          for (const def of graph.ir.dfg.defs) {
+            if (
+              def.kind === 'param' &&
+              def.variable === paramName &&
+              def.line >= targetMethod.startLine &&
+              def.line <= targetMethod.endLine
+            ) {
+              taintedDefIds.add(def.id);
+            }
+          }
         }
       }
       taintedMethods.add(targetMethod.fqn);
