@@ -888,6 +888,10 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'get', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
   { method: 'hget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
   { method: 'mget', class: 'Redis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
+  // Node redis clients are often bound to `cache` from `createClient()`; class
+  // `cache` is scoped to JS/TS (Python Django cache above) and Map.get is
+  // filtered in sink-filter-pass (#818 src14).
+  { method: 'get', class: 'cache', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['javascript', 'typescript'] },
   { method: 'get', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
   { method: 'hget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },
   { method: 'mget', class: 'Jedis', type: 'db_input', severity: 'medium', return_tainted: true, languages: ['java'] },

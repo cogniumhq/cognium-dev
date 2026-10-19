@@ -1650,6 +1650,24 @@ function isLiteralOnlyLocalMapKey(lines: string[], recv: string, key: string): b
   return putsForKey > 0 && putsForKey === literalPutsForKey;
 }
 
+/**
+ * cognium-dev#818 (src14) — `class: 'cache'` seeds `cache.get()` as db_input for
+ * redis `createClient()` bindings. Drop when the receiver is a local `new Map()`
+ * (same shape, not a cache round-trip).
+ */
+function isJsLocalMapDisguisedAsCacheRead(code: string, source: TaintSource): boolean {
+  if (source.type !== 'db_input') return false;
+  const lines = code.split('\n');
+  const lineText = lines[source.line - 1] ?? '';
+  const read = /\b([A-Za-z_]\w*)\s*\.\s*get\s*\(/.exec(lineText);
+  if (!read) return false;
+  const recv = read[1];
+  const mapCtor = new RegExp(
+    `\\b${recv}\\s*=\\s*new\\s+(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
+  );
+  return lines.some(l => mapCtor.test(l));
+}
+
 function isLiteralOnlyLocalMap(lines: string[], recv: string): boolean {
   const anyPut = new RegExp(`\\b${recv}\\s*\\.\\s*put\\s*\\(`, 'g');
   const literalPut = new RegExp(
@@ -2181,7 +2199,9 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
     // of a key that WAS put is also dropped when every value put on that local,
     // non-escaping map is a string literal (`isLiteralOnlyLocalMap`).
     const sources: TaintSource[] = ctx.code
-      ? executableSources.filter(s => !isUnwrittenLocalMapKeyRead(ctx.code as string, s))
+      ? executableSources
+          .filter(s => !isUnwrittenLocalMapKeyRead(ctx.code as string, s))
+          .filter(s => !isJsLocalMapDisguisedAsCacheRead(ctx.code as string, s))
       : executableSources;
 
     // Build merged sinks, deduplicating JS DOM sinks that may overlap with config sinks.
