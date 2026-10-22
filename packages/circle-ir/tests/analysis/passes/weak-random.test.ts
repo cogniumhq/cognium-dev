@@ -99,6 +99,33 @@ function tok(): number { return Math.random(); }
     expect(weakRandom(r).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('JS: module-scoped crypto.randomUUID() is flagged (cognium-dev#898)', async () => {
+    const code = `
+const sessionId = crypto.randomUUID();
+function getSessionId() { return sessionId; }
+`;
+    const r = await analyze(code, 'snapshot_entropy_reuse_tp.js', 'javascript');
+    expect(weakRandom(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: per-call crypto.randomUUID() inside a function is NOT flagged (#898 safe mirror)', async () => {
+    const code = `
+function getSessionId() { return crypto.randomUUID(); }
+`;
+    const r = await analyze(code, 'snapshot_entropy_reuse_safe.js', 'javascript');
+    expect(weakRandom(r)).toHaveLength(0);
+  });
+
+  it('JS: module-scoped bare randomUUID import is flagged (#898)', async () => {
+    const code = `
+import { randomUUID } from 'crypto';
+const token = randomUUID();
+export function getToken() { return token; }
+`;
+    const r = await analyze(code, 'snapshot_entropy_import_tp.js', 'javascript');
+    expect(weakRandom(r).length).toBeGreaterThanOrEqual(1);
+  });
+
   // ---------------- Go ----------------
   it('Go: math/rand.Intn is flagged', async () => {
     const code = `
