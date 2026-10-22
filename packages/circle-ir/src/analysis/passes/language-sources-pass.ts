@@ -665,6 +665,12 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      for (const finding of findJsZipHeaderFailopenFindings(
+        code,
+        graph.ir.meta.file,
+      )) {
+        ctx.addFinding(finding);
+      }
       // Sprint 89 (#189): JS insecure_deserialization —
       // JSON.parse(req.body) on raw / text bodies.
       for (const finding of findJsJsonParseBodyFindings(
@@ -11910,6 +11916,68 @@ export function findJsLdapInjectionFindings(
       file,
       line: i + 1,
       snippet: line.trim(),
+    });
+  }
+  return findings;
+}
+
+/**
+ * cognium-dev #897 — ZIP local-file-header validation that fail-opens: after
+ * rejecting an invalid PK\\x03\\x04 signature, returning a slice of the caller
+ * buffer instead of throwing lets untrusted bytes through (CWE-20).
+ */
+export function findJsZipHeaderFailopenFindings(
+  code: string,
+  file: string,
+): SastFinding[] {
+  const findings: SastFinding[] = [];
+  if (typeof code !== 'string' || code.length === 0) return findings;
+  const lines = code.split('\n');
+  const hasPkLocalSig = lines.some((l) => {
+    const t = l.trim();
+    if (t.startsWith('//')) return false;
+    return (
+      /0x50/.test(t) &&
+      /0x4[bB]/.test(t) &&
+      /0x03/.test(t) &&
+      /0x04/.test(t)
+    );
+  });
+  if (!hasPkLocalSig) return findings;
+
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('//')) continue;
+    const failBranch = trimmed.match(/^if\s*\(\s*!(\w+)\s*\)\s*(.+)$/);
+    if (!failBranch) continue;
+    const tail = failBranch[2];
+    if (/\bthrow\b/.test(tail)) continue;
+    if (!/\breturn\b/.test(tail)) continue;
+    if (
+      !/\.(subarray|slice)\s*\(/.test(tail) &&
+      !/Buffer\.from\s*\(/.test(tail)
+    ) {
+      continue;
+    }
+    const lineNo = i + 1;
+    if (seen.has(lineNo)) continue;
+    seen.add(lineNo);
+    findings.push({
+      id: `input_validation-${file}-${lineNo}-js-zip-header-failopen`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'input_validation',
+      cwe: 'CWE-20',
+      severity: 'high',
+      level: 'error',
+      message:
+        'Input validation fail-open: an invalid ZIP local header check still ' +
+        'returns a slice of the caller-controlled buffer. On parse failure, ' +
+        'throw or return empty — do not pass through untrusted bytes.',
+      file,
+      line: lineNo,
+      snippet: trimmed.substring(0, 120),
     });
   }
   return findings;
