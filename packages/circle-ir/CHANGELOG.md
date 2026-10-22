@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: ldapjs `client.search(base, <tainted-filter>, …)` positional filter (#899).** `findJsLdapInjectionFindings` now flags the 2nd positional LDAP filter argument (not only `{ filter: … }`), so concatenated mail filters reach `ldap_injection`.
 - **JS/TS: only redis `createClient()` bindings credit `cache.get` as db_input (#888).** `scope.cache.get` / `this.cache` in-memory loader caches no longer seed second-order taint; `createClient()` → `cache.get` (src14) is unchanged.
 - **JS/TS: ESM `export let` module bindings link cross-handler taint (#818, partial).** `detectJsModuleScopeFlows` treats top-level `export let` / `var` / `const` like unexported module vars so a write in one export and a read in another keeps `path_traversal` flows (prp12).
 - **JS/TS: `cache.get()` from redis `createClient()` is a db_input source (#818, partial).** Registers `class: cache` for Node redis clients bound to `cache`; local `new Map()` `.get()` stays filtered.
