@@ -48,4 +48,40 @@ func handle(w http.ResponseWriter, r *http.Request) {
 `;
     expect(await cmdInjectionFlows(code, 'semaphore_git_arg_safe.go')).toHaveLength(0);
   });
+
+  it('flags cve-daily CVE-2026-24061 git ls-remote shape', async () => {
+    const code = `
+package main
+
+import (
+  "net/http"
+  "os/exec"
+)
+
+func run(w http.ResponseWriter, r *http.Request) {
+  gitURL := r.FormValue("git_url")
+  exec.Command("git", "ls-remote", gitURL, "master").Run()
+}
+`;
+    const flows = await cmdInjectionFlows(code, 'cve_2026_24061_tp.go');
+    expect(flows.length).toBeGreaterThan(0);
+  });
+
+  it('flags cve-daily CVE-2026-86060 git ls-remote shape', async () => {
+    const code = `
+package main
+
+import (
+  "net/http"
+  "os/exec"
+)
+
+func run(w http.ResponseWriter, r *http.Request) {
+  gitURL := r.FormValue("git_url")
+  exec.Command("git", "ls-remote", gitURL, "master").Run()
+}
+`;
+    const flows = await cmdInjectionFlows(code, 'cve_2026_86060_tp.go');
+    expect(flows.length).toBeGreaterThan(0);
+  });
 });
