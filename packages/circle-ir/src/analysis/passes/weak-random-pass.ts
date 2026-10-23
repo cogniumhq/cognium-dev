@@ -22,6 +22,8 @@
  *       `random.seed(...)`
  *   JavaScript / TypeScript:
  *     - `Math.random()`
+ *     - `crypto.randomUUID()` (or a bare `randomUUID` import) at module scope —
+ *       a single value captured at load and reused is not fresh entropy (CWE-330).
  *   Go:
  *     - `math/rand` package calls — `rand.Int()`, `Intn()`, `Float64()`, etc.
  *       (Note: we check the bare receiver `rand`; the `crypto/rand` package
@@ -180,6 +182,9 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
       if (method === 'random' && (receiver === 'Math' || receiver.endsWith('.Math'))) {
         return 'Math.random';
       }
+      if (this.jsIsModuleScopedCryptoRandomUuid(call, ctx)) {
+        return 'crypto.randomUUID (module scope)';
+      }
       return null;
     }
 
@@ -225,6 +230,27 @@ export class WeakRandomPass implements AnalysisPass<WeakRandomResult> {
    * file (i.e. `math/rand` imported unaliased; `crypto/rand` is either not
    * imported or imported under an alias).
    */
+  /**
+   * Module-scoped `crypto.randomUUID()` / `randomUUID()` — entropy fixed at load.
+   */
+  private jsIsModuleScopedCryptoRandomUuid(call: CallInfo, ctx: PassContext): boolean {
+    if (call.method_name !== 'randomUUID') return false;
+    if (call.in_method != null && call.in_method !== '') return false;
+    const receiver = call.receiver ?? '';
+    if (receiver === 'crypto' || receiver.endsWith('.crypto')) return true;
+    if (!receiver) {
+      const imports = ctx.graph.ir.imports ?? [];
+      return imports.some((imp) => {
+        const pkg = imp.from_package ?? '';
+        if (pkg !== 'crypto' && pkg !== 'node:crypto') return false;
+        const name = imp.imported_name ?? imp.alias ?? '';
+        const alias = imp.alias ?? imp.imported_name ?? '';
+        return name === 'randomUUID' || alias === 'randomUUID';
+      });
+    }
+    return false;
+  }
+
   private goMathRandIsActive(ctx: PassContext): boolean {
     const imports = ctx.graph.ir.imports ?? [];
     let mathRandUnaliased = false;
