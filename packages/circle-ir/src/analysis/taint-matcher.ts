@@ -2653,6 +2653,26 @@ function matchesSourcePattern(
       }
     }
 
+    // cognium-dev #920 — JS plugin Express request accessors (query/body/params/
+    // headers/cookies) ship as classless return_tainted method sources. Without a
+    // receiver guard, `db.query(...)`, `logger.info(body)`, etc. register as HTTP
+    // sources and pair with SQL sinks on the same line. User input still flows via
+    // `req.query` / `request.body` property patterns in DEFAULT_SOURCES.
+    if (
+      !pattern.class &&
+      pattern.return_tainted &&
+      pattern.method &&
+      (language === 'javascript' || language === 'typescript')
+    ) {
+      const expressRequestAccessors = new Set(['query', 'body', 'params', 'headers', 'cookies']);
+      if (expressRequestAccessors.has(pattern.method)) {
+        const recv = call.receiver?.toLowerCase() ?? '';
+        if (recv !== 'req' && recv !== 'request' && recv !== 'ctx') {
+          return false;
+        }
+      }
+    }
+
     return pattern.return_tainted === true;
   }
 
