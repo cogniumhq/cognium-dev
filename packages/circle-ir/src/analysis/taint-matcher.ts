@@ -1024,6 +1024,34 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
     }
   }
 
+  // cognium-dev #903 — `git ls-remote` treats a leading `-` ref as an option.
+  // Without an explicit `--` separator, a tainted URL/ref must reach the sink.
+  if (program === 'git') {
+    const subcommandArgPos = pattern.method === 'CommandContext' ? 2 : 1;
+    const subcommandArg = call.arguments.find((a) => a.position === subcommandArgPos);
+    let subcommand: string | undefined;
+    if (subcommandArg?.literal !== null && subcommandArg?.literal !== undefined) {
+      subcommand = String(subcommandArg.literal);
+    } else {
+      const expr = (subcommandArg?.expression ?? '').trim();
+      if (expr.startsWith('"') || expr.startsWith('`') || expr.startsWith("'")) {
+        subcommand = expr.slice(1, -1);
+      }
+    }
+    if (subcommand === 'ls-remote') {
+      const hasEndOfOptions = call.arguments.some((a) => {
+        if (a.literal !== null && a.literal !== undefined) {
+          return String(a.literal) === '--';
+        }
+        const expr = (a.expression ?? '').trim();
+        return expr === '"--"' || expr === "'--'" || expr === '`--`';
+      });
+      if (!hasEndOfOptions) {
+        return false;
+      }
+    }
+  }
+
   // Non-shell program literal: subsequent args are argv elements, not
   // shell metacharacters. Sink is safe.
   return true;
