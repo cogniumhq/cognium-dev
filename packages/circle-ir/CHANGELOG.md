@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: module-scoped `crypto.randomUUID()` flagged as `weak-random` (#898).** A UUID captured once at load and reused across callers is reported; per-call `crypto.randomUUID()` inside functions stays clean.
 - **JS/TS: classless Express request accessor sources no longer match `db.query()` (#920).** `query`/`body`/`params`/`headers`/`cookies` return_tainted sources require a `req`/`request`/`ctx` receiver so constant SQL locals are not paired with SQL sinks via a bogus http_param on the same line.
 - **JS/TS: ldapjs `client.search(base, <tainted-filter>, …)` positional filter (#899).** `findJsLdapInjectionFindings` now flags the 2nd positional LDAP filter argument (not only `{ filter: … }`), so concatenated mail filters reach `ldap_injection`.
 - **JS/TS: `dns.promises.resolve` is an SSRF sink (#895).** Caller-controlled hostnames passed to Node's promise DNS API now report `ssrf` (CWE-918); fixed-host resolves after a NUL guard stay clean.
