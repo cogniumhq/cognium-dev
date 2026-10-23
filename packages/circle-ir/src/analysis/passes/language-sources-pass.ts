@@ -11912,6 +11912,48 @@ export function findJsLdapInjectionFindings(
       snippet: line.trim(),
     });
   }
+
+  // cognium-dev #899: ldapjs also accepts the filter as the 2nd positional
+  // argument (`client.search(base, '(mail=' + email + ')', cb)`), not only
+  // as `opts.filter`. Flag when that argument is built from tainted data.
+  // Base DN is often comma-separated; only match a quoted first argument.
+  const positionalSearchRe =
+    /\.\s*search\s*\(\s*(?:'[^']*'|"[^"]*")\s*,\s*([^,{]+)/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const pm = line.match(positionalSearchRe);
+    if (!pm) continue;
+    const expr = pm[1].trim();
+    if (expr.startsWith('{')) continue;
+    let tainted = false;
+    for (const v of taintedVars) {
+      if (new RegExp(`\\b${v}\\b`).test(expr)) {
+        tainted = true;
+        break;
+      }
+    }
+    if (!tainted) continue;
+    const lineNo = i + 1;
+    if (seen.has(lineNo)) continue;
+    seen.add(lineNo);
+    findings.push({
+      id: `ldap_injection-${file}-${lineNo}-js-ldap-positional-filter`,
+      pass: 'language-sources',
+      category: 'security',
+      rule_id: 'ldap_injection',
+      cwe: 'CWE-90',
+      severity: 'critical',
+      level: 'error',
+      message:
+        'LDAP injection: ldapjs/ldapts `client.search(base, <tainted-filter>, ...)` ' +
+        'lets the attacker break out of the filter expression. Escape user input ' +
+        'or use a structured filter builder.',
+      file,
+      line: lineNo,
+      snippet: line.trim(),
+    });
+  }
+
   return findings;
 }
 
