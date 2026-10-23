@@ -1327,6 +1327,22 @@ const SERVER_SIGNAL_RE =
 const FIXED_HOST_TEMPLATE_RE = /`https?:\/\/[^/${}\s`]+[/`]/;
 /** A bash URL word whose scheme and host are literal and closed by `/` (#495). */
 const BASH_FIXED_HOST_URL_RE = /^(?:https?|ftp):\/\/[A-Za-z0-9.-]+(?::\d+)?\//;
+/** Rust `format!("https://host/{}", path)` — literal origin, path-only interpolation (#922). */
+const RUST_FIXED_HOST_FORMAT_RE = /format!\(\s*"https?:\/\/[^"{}]+\/\{\}"/;
+
+function rustSsrfRequestUsesFixedHostFormat(code: string, sinkLine: number): boolean {
+  const lines = code.split('\n');
+  const sinkText = lines[sinkLine - 1] ?? '';
+  const argMatch = sinkText.match(/(?:reqwest::)?get\s*\(\s*&?(\w+)/);
+  if (!argMatch) return false;
+  const varName = argMatch[1];
+  const assignRe = new RegExp(`\\blet\\s+${escapeRegex(varName)}\\s*=\\s*format!`);
+  for (let i = sinkLine - 2; i >= Math.max(0, sinkLine - 20); i--) {
+    const line = lines[i] ?? '';
+    if (assignRe.test(line) && RUST_FIXED_HOST_FORMAT_RE.test(line)) return true;
+  }
+  return false;
+}
 /**
  * True when the string literal that ended at `end` is the WHOLE initializer:
  * the next code token is `;`, `,`, end of input, or (ASI) a token on a later
@@ -3364,6 +3380,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'xss' || sink.method !== 'body') return true;
         const bodyCalls = callsByLine.get(sink.line)?.filter(c => c.method_name === 'body') ?? [];
         return bodyCalls.length === 0 || !bodyCalls.every(rustBodyDeclaresNonHtmlType);
+      });
+    }
+
+    // Stage 15n — rust ssrf: format! with a literal origin and a single `{}` path
+    // slot (cognium-dev#922). Same intent as Stage 15i/15m: the host is fixed at
+    // compile time, so taint in the path cannot redirect the request.
+    if (language === 'rust') {
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'ssrf') return true;
+        return !rustSsrfRequestUsesFixedHostFormat(ctx.code, sink.line);
       });
     }
 
