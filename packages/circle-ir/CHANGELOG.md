@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Rust: `format!("https://fixed-host/{}", path)` before `reqwest::get` is not SSRF (#922).** Literal-origin URLs with only a trailing path interpolation cannot be redirected to another host; variable-host `format!` shapes are unchanged.
+- **JS/TS: ZIP local-header validation fail-open (#897).** When an invalid PK local-file signature check still returns `buf.subarray`/`Buffer.from` bytes instead of throwing, emit `input_validation` (CWE-20); safe mirrors that throw on bad headers stay clean.
 - **JS/TS: module-scoped `crypto.randomUUID()` flagged as `weak-random` (#898).** A UUID captured once at load and reused across callers is reported; per-call `crypto.randomUUID()` inside functions stays clean.
 - **JS/TS: classless Express request accessor sources no longer match `db.query()` (#920).** `query`/`body`/`params`/`headers`/`cookies` return_tainted sources require a `req`/`request`/`ctx` receiver so constant SQL locals are not paired with SQL sinks via a bogus http_param on the same line.
 - **JS/TS: ldapjs `client.search(base, <tainted-filter>, …)` positional filter (#899).** `findJsLdapInjectionFindings` now flags the 2nd positional LDAP filter argument (not only `{ filter: … }`), so concatenated mail filters reach `ldap_injection`.
