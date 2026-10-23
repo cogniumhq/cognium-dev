@@ -2308,6 +2308,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'get', class: 'http', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'request', class: 'https', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'get', class: 'https', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
+  // Node.js dns.promises (CWE-918 / NUL-in-name SSRF class — #895)
+  { method: 'resolve', class: 'dns.promises', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // needle library (used in NodeGoat)
   { method: 'get', class: 'needle', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
   { method: 'post', class: 'needle', type: 'ssrf', cwe: 'CWE-918', severity: 'high', arg_positions: [0] },
