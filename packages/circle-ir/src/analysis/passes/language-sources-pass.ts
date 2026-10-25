@@ -2940,6 +2940,48 @@ function computeDeadPythonBranchLines(lines: string[]): Set<number> {
   return dead;
 }
 
+/**
+ * Line indices (0-based) in unreachable `if`/`else` arms when the condition is
+ * decidable from tracked integer locals (`int num = 86; if ((7*42)-num > 200) …`).
+ *
+ * Targets OWASP Benchmark shapes where the else arm assigns a parameter but
+ * can never run (cognium-dev#913). Braced bodies defer to constant propagation;
+ * this pass handles the common single-statement `if` / `else` lines.
+ */
+export function computeDeadJavaBranchLines(lines: string[]): Set<number> {
+  const dead = new Set<number>();
+  const consts = new Map<string, number>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const intAssign = line.match(/^\s*(?:int|long|short|byte)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/);
+    if (intAssign) {
+      const v = evaluatePythonConstExpression(intAssign[2].trim(), consts);
+      if (typeof v === 'number') consts.set(intAssign[1], v);
+      else consts.delete(intAssign[1]);
+      continue;
+    }
+
+    const ifMatch = line.match(/^(\s*)if\s*\((.+)\)\s+(.+)$/);
+    if (!ifMatch) continue;
+    const decided = evaluatePythonConstExpression(ifMatch[2].trim(), consts);
+    if (decided !== true && decided !== false) continue;
+
+    const rest = ifMatch[3].trim();
+    if (/\belse\b/.test(rest)) continue;
+
+    if (i + 1 < lines.length && /^\s*else\b/.test(lines[i + 1])) {
+      if (decided === true) dead.add(i + 1);
+      else dead.add(i);
+    } else if (decided === false) {
+      dead.add(i);
+    }
+  }
+
+  return dead;
+}
+
 export function buildPythonTaintedVars(sourceCode: string): Map<string, number> {
   const tainted = new Map<string, number>();
   const containerTainted = new Map<string, number>();
@@ -4027,10 +4069,14 @@ function joinWrappedJavaStatement(lines: readonly string[], i: number): string |
 export function buildJavaTaintedVars(
   sourceCode: string,
   seedVars: Set<string>,
+  deadBranchLines?: Set<number>,
 ): Map<string, number> {
   const derived = new Map<string, number>();
   const knownTainted = new Set(seedVars);
   const lines = sourceCode.split('\n');
+  const dead =
+    deadBranchLines ??
+    computeDeadJavaBranchLines(lines);
 
   // Declaration:  [modifiers] Type[<...>] [ ] lhs = rhs;
   // Simple assignment: lhs = rhs;
@@ -4075,6 +4121,7 @@ export function buildJavaTaintedVars(
     changed = false;
     guard++;
     for (let i = 0; i < lines.length; i++) {
+      if (dead.has(i)) continue;
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;

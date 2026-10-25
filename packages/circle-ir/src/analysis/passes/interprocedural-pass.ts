@@ -25,6 +25,7 @@ import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
+import { buildJavaTaintedVars, computeDeadJavaBranchLines } from './language-sources-pass.js';
 
 export interface InterproceduralPassResult {
   /** Additional sinks surfaced by inter-procedural analysis. */
@@ -204,7 +205,14 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         }
       }
 
-      appendCalleeSourceCallerSinkFlows(graph, sources, sinks, interProc, additionalFlows);
+      appendCalleeSourceCallerSinkFlows(
+        graph,
+        sources,
+        sinks,
+        interProc,
+        additionalFlows,
+        language === 'java' ? ctx.code : undefined,
+      );
 
       const taintBridges = findTaintBridges(interProc);
       interprocedural = {
@@ -421,6 +429,7 @@ function appendCalleeSourceCallerSinkFlows(
   sinks: TaintSink[],
   interProc: InterproceduralResult,
   additionalFlows: TaintFlowInfo[],
+  fileCode?: string,
 ): void {
   const types = graph.ir.types ?? [];
   for (const edge of interProc.callEdges) {
@@ -454,6 +463,20 @@ function appendCalleeSourceCallerSinkFlows(
       }
 
       const source = calleeSources[0];
+      if (
+        fileCode &&
+        source.type === 'interprocedural_param' &&
+        source.variable &&
+        !javaParamTaintsLocalInMethod(
+          fileCode,
+          callee.startLine,
+          callee.endLine,
+          source.variable,
+          assignee.variable,
+        )
+      ) {
+        continue;
+      }
       additionalFlows.push({
         source_line: source.line,
         sink_line: sink.line,
@@ -469,6 +492,22 @@ function appendCalleeSourceCallerSinkFlows(
       });
     }
   }
+}
+
+/** True when `param` can assign taint to `local` on a live path inside the method. */
+function javaParamTaintsLocalInMethod(
+  code: string,
+  startLine: number,
+  endLine: number,
+  paramName: string,
+  localName: string,
+): boolean {
+  if (paramName === localName) return true;
+  const lines = code.split('\n');
+  const slice = lines.slice(startLine - 1, endLine);
+  const dead = computeDeadJavaBranchLines(slice);
+  const derived = buildJavaTaintedVars(slice.join('\n'), new Set([paramName]), dead);
+  return derived.has(localName);
 }
 
 /** DFG-forward names reachable from a helper-return assignment LHS (same file). */
