@@ -4074,9 +4074,7 @@ export function buildJavaTaintedVars(
   const derived = new Map<string, number>();
   const knownTainted = new Set(seedVars);
   const lines = sourceCode.split('\n');
-  const dead =
-    deadBranchLines ??
-    computeDeadJavaBranchLines(lines);
+  const dead = deadBranchLines ?? new Set<number>();
 
   // Declaration:  [modifiers] Type[<...>] [ ] lhs = rhs;
   // Simple assignment: lhs = rhs;
@@ -4121,7 +4119,7 @@ export function buildJavaTaintedVars(
     changed = false;
     guard++;
     for (let i = 0; i < lines.length; i++) {
-      if (dead.has(i)) continue;
+      if (deadBranchLines !== undefined && dead.has(i)) continue;
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
