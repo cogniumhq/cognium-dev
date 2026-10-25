@@ -220,10 +220,32 @@ export class InsecureCookiePass implements AnalysisPass<InsecureCookieResult> {
    * unassigned `new Cookie(...)` only looks at that statement, so another
    * cookie's setter cannot cover it.
    */
+  /** Cookie variable assigned to this `new Cookie(...)` call site (per-cookie, #595). */
+  private javaCookieVarName(code: string, call: CallInfo): string | undefined {
+    const lines = code.split('\n');
+    const idx = (call.location.line ?? 1) - 1;
+    const line = lines[idx] ?? '';
+    const sameLine =
+      /\b([A-Za-z_]\w*)\s*=\s*new\s+(?:[\w.]+\.)?Cookie\b/.exec(line);
+    if (sameLine?.[1]) return sameLine[1];
+    // `Type name =` on one line, `new ...Cookie(...)` on the next (OWASP Benchmark FQ shape).
+    if (/\bnew\s+(?:[\w.]+\.)?Cookie\s*\(/.test(line)) {
+      for (let i = idx - 1; i >= Math.max(0, idx - 4); i--) {
+        const prev = (lines[i] ?? '').trimEnd();
+        const splitAssign = /\b([A-Za-z_]\w*)\s*=\s*$/.exec(prev);
+        if (splitAssign?.[1]) return splitAssign[1];
+        const prevSame =
+          /\b([A-Za-z_]\w*)\s*=\s*new\s+(?:[\w.]+\.)?Cookie\b/.exec(prev);
+        if (prevSame?.[1]) return prevSame[1];
+      }
+    }
+    return undefined;
+  }
+
   private javaCookieSetterTrue(code: string, call: CallInfo, setter: 'setSecure' | 'setHttpOnly'): boolean {
-    const line = code.split('\n')[(call.location.line ?? 1) - 1] ?? '';
-    const assign = /\b([A-Za-z_]\w*)\s*=\s*new\s+(?:[\w.]+\.)?Cookie\b/.exec(line);
-    const varName = assign?.[1];
+    const lines = code.split('\n');
+    const line = lines[(call.location.line ?? 1) - 1] ?? '';
+    const varName = this.javaCookieVarName(code, call);
     const re = varName
       ? new RegExp(`\\b${varName}\\.${setter}\\s*\\(\\s*true\\s*\\)`)
       : new RegExp(`\\.${setter}\\s*\\(\\s*true\\s*\\)`);

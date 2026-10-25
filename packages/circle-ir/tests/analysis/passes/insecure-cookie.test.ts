@@ -234,6 +234,23 @@ public class A {
     expect(insecureCookieFindings(r)).toHaveLength(0);
   });
 
+  it('Java: split FQ Cookie assignment with setSecure/setHttpOnly is NOT flagged (#918)', async () => {
+    const code = `
+import javax.servlet.http.HttpServletResponse;
+public class A {
+  public void f(HttpServletResponse response) {
+    javax.servlet.http.Cookie userCookie =
+        new javax.servlet.http.Cookie("SomeCookie", "value");
+    userCookie.setSecure(true);
+    userCookie.setHttpOnly(true);
+    response.addCookie(userCookie);
+  }
+}
+`;
+    const r = await analyze(code, 'BenchmarkShape.java', 'java');
+    expect(insecureCookieFindings(r)).toHaveLength(0);
+  });
+
   it('Java: new Cookie(...) with only setSecure(true) (missing setHttpOnly) is flagged', async () => {
     const code = `
 import javax.servlet.http.Cookie;
