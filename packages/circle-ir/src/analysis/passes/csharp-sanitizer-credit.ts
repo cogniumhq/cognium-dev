@@ -226,7 +226,7 @@ function leadingIf(text: string): { cond: string; rest: string } | null {
 
 const EXITS_RE = /^(?:\{\s*)?(?:return\b|throw\b|continue\b|break\b)/;
 
-type GuardKind = 'allowlist' | 'numeric' | 'host';
+type GuardKind = 'allowlist' | 'numeric' | 'host' | 'localUrl';
 
 export class CSharpCredit {
   private readonly lines: string[];
@@ -287,6 +287,10 @@ export class CSharpCredit {
       // only when it is under the prefix.
       if (/\b([A-Za-z_]\w*)\s*\.\s*StartsWith\s*\([^)]*\)\s*\?\s*\1\s*:\s*null\b/.test(text)) return true;
     }
+    if (type === 'open_redirect') {
+      if (/\b(?:Url\s*\.\s*)?IsLocalUrl\s*\(/.test(text)) return true;
+      if (/\bLocalRedirect\s*\(/.test(text)) return true;
+    }
     return false;
   }
 
@@ -301,6 +305,10 @@ export class CSharpCredit {
     const set = new Set<string>();
     this.helperCache.set(type, set);
     for (const m of this.methods) {
+      if (type === 'open_redirect' && this.openRedirectHelperMethod(m)) {
+        set.add(m.name);
+        continue;
+      }
       const returns = this.returnExprs(m);
       if (returns.length === 0) continue;
       const ok = returns.every(r => {
@@ -311,6 +319,24 @@ export class CSharpCredit {
       if (ok) set.add(m.name);
     }
     return set;
+  }
+
+  /**
+   * Same-file helper whose returns are safe for open_redirect: literal fallbacks
+   * and parameters returned only under `Url.IsLocalUrl` (cognium-dev#946).
+   */
+  private openRedirectHelperMethod(m: CsMethodRange): boolean {
+    const returns = this.returnExprs(m);
+    if (returns.length === 0) return false;
+    for (const r of returns) {
+      const e = r.expr.trim();
+      if (/^"[^"]*"$/.test(e) || /^'[^']*'$/.test(e)) continue;
+      if (this.builtinSanitizes('open_redirect', e)) continue;
+      const id = /^([A-Za-z_]\w*)$/.exec(e);
+      if (!id) return false;
+      if (!this.guardedVarsAt('open_redirect', r.line).has(id[1])) return false;
+    }
+    return true;
   }
 
   /** Every returned expression of a method: `return e;` and expression bodies. */
@@ -577,6 +603,15 @@ export class CSharpCredit {
     return out;
   }
 
+  /** Variables proven local by `Url.IsLocalUrl(x)` (cognium-dev#275/#946). */
+  private localUrlVars(cond: string): string[] {
+    const out: string[] = [];
+    for (const m of cond.matchAll(/\b(?:Url\s*\.\s*)?IsLocalUrl\s*\(\s*([A-Za-z_]\w*)\s*\)/g)) {
+      out.push(m[1]);
+    }
+    return out;
+  }
+
   /** Variables whose host a condition compares against a constant or an allowlist. */
   private hostVars(cond: string, hostOf: Map<string, string>): string[] {
     const out: string[] = [];
@@ -635,6 +670,7 @@ export class CSharpCredit {
     const out =
       kind === 'allowlist' ? this.allowlistVars(cond)
       : kind === 'numeric' ? this.numericVars(cond, parsedFrom)
+      : kind === 'localUrl' ? this.localUrlVars(cond)
       : this.hostVars(cond, hostOf);
     if (withHelpers) {
       for (const [name, pos] of this.guardHelpers(kind)) {
@@ -666,6 +702,7 @@ export class CSharpCredit {
     const kinds: GuardKind[] = [];
     if (INERT_WHEN_ALPHANUMERIC.has(type)) kinds.push('allowlist', 'numeric');
     if (type === 'ssrf') kinds.push('host');
+    if (type === 'open_redirect') kinds.push('localUrl');
     const proven = new Set<string>();
     if (kinds.length === 0) return proven;
 
