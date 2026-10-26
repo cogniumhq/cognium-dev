@@ -467,14 +467,23 @@ function appendCalleeSourceCallerSinkFlows(
         fileCode &&
         source.type === 'interprocedural_param' &&
         source.variable &&
-        (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
-        interproceduralParamReachIsDeadBranchOnly(
+        (sink.type === 'sql_injection' ||
+          sink.type === 'trust_boundary' ||
+          sink.type === 'command_injection') &&
+        (interproceduralParamReachIsDeadBranchOnly(
           fileCode,
           callee.startLine,
           callee.endLine,
           source.variable,
           assignee.variable,
-        )
+        ) ||
+          (sink.type === 'command_injection' &&
+            calleeReturnNotTaintedFromParam(
+              fileCode,
+              callee.startLine,
+              callee.endLine,
+              source.variable,
+            )))
       ) {
         continue;
       }
@@ -515,6 +524,24 @@ function interproceduralParamReachIsDeadBranchOnly(
   const onLivePaths = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
   const ifDeadLinesCount = buildJavaTaintedVars(sliceText, new Set([paramName]), new Set());
   return ifDeadLinesCount.has(localName) && !onLivePaths.has(localName);
+}
+
+/** cognium-dev#914 — param does not reach a `return <id>` on live paths (constant helper return). */
+function calleeReturnNotTaintedFromParam(
+  code: string,
+  startLine: number,
+  endLine: number,
+  paramName: string,
+): boolean {
+  const slice = code.split('\n').slice(startLine - 1, endLine);
+  const sliceText = slice.join('\n');
+  const dead = computeDeadJavaBranchLines(slice);
+  const live = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
+  for (const line of slice) {
+    const m = line.match(/^\s*return\s+([A-Za-z_]\w*)\s*;\s*$/);
+    if (m && live.has(m[1])) return false;
+  }
+  return true;
 }
 
 /** DFG-forward names reachable from a helper-return assignment LHS (same file). */
