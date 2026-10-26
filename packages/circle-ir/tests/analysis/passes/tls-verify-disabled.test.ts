@@ -96,6 +96,20 @@ const agent = new https.Agent({ rejectUnauthorized: false });
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('JS: checkServerIdentity that returns undefined is flagged (issue-894 S1)', async () => {
+    const code = `
+const https = require('https');
+function client() {
+  return https.request({
+    host: 'example.com',
+    checkServerIdentity: (host, cert) => undefined,
+  });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-host.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('JS: NODE_TLS_REJECT_UNAUTHORIZED = "0" assignment is flagged', async () => {
     const code = `
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
