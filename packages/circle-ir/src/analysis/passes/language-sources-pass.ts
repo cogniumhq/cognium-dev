@@ -2967,6 +2967,13 @@ function parseJavaSwitchCaseLabel(label: string): number | 'default' | undefined
   return undefined;
 }
 
+function parseJavaSwitchLabelLine(line: string): number | 'default' | undefined {
+  const caseLine = line.match(/^\s*case\s+(.+?)\s*:\s*$/);
+  if (caseLine) return parseJavaSwitchCaseLabel(caseLine[1]);
+  if (/^\s*default\s*:\s*$/.test(line)) return 'default';
+  return undefined;
+}
+
 function markDeadJavaSwitchBodies(
   lines: string[],
   switchLineIdx: number,
@@ -2975,24 +2982,28 @@ function markDeadJavaSwitchBodies(
 ): void {
   let depth = 0;
   let started = false;
-  let caseValue: number | 'default' | undefined;
+  let groupLabels: Array<number | 'default'> = [];
   let bodyStart = -1;
   let explicitCaseMatched = false;
 
-  const flushCase = (bodyEnd: number) => {
-    if (bodyStart < 0 || caseValue === undefined) return;
-    let taken: boolean;
-    if (caseValue === 'default') {
-      taken = !explicitCaseMatched;
-    } else {
-      taken = caseValue === switchValue;
-      if (taken) explicitCaseMatched = true;
+  const groupIsTaken = (): boolean => {
+    if (groupLabels.length === 0) return false;
+    const explicit = groupLabels.some(v => v !== 'default' && v === switchValue);
+    if (explicit) return true;
+    return groupLabels.includes('default') && !explicitCaseMatched;
+  };
+
+  const flushGroup = (bodyEnd: number) => {
+    if (bodyStart < 0 || groupLabels.length === 0) return;
+    const taken = groupIsTaken();
+    if (groupLabels.some(v => v !== 'default' && v === switchValue)) {
+      explicitCaseMatched = true;
     }
     if (!taken) {
       for (let k = bodyStart; k < bodyEnd; k++) dead.add(k);
     }
+    groupLabels = [];
     bodyStart = -1;
-    caseValue = undefined;
   };
 
   for (let j = switchLineIdx; j < lines.length; j++) {
@@ -3005,16 +3016,20 @@ function markDeadJavaSwitchBodies(
     }
     if (!started) continue;
 
-    const caseLine = line.match(/^\s*case\s+(.+?)\s*:/);
-    const defaultLine = /^\s*default\s*:/.test(line);
-    if (caseLine || defaultLine) {
-      flushCase(j);
-      caseValue = defaultLine ? 'default' : parseJavaSwitchCaseLabel(caseLine![1]);
-      bodyStart = j + 1;
+    const label = parseJavaSwitchLabelLine(line);
+    if (label !== undefined) {
+      if (bodyStart >= 0 && j === bodyStart) {
+        groupLabels.push(label);
+        bodyStart = j + 1;
+      } else {
+        flushGroup(j);
+        groupLabels = [label];
+        bodyStart = j + 1;
+      }
     }
 
     if (started && depth === 0) {
-      flushCase(j);
+      flushGroup(j);
       break;
     }
   }
