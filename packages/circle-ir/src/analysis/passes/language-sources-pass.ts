@@ -4266,7 +4266,12 @@ export function buildJavaTaintedVars(
         const elems = listElems.get(recv);
         if (elems) {
           const idx = Number(idxStr);
-          if (!listElemTaintedAt(elems, idx)) continue;
+          if (listElemTaintedAt(elems, idx)) {
+            derived.set(lhs, i + 1);
+            knownTainted.add(lhs);
+            changed = true;
+          }
+          continue;
         }
       }
       // Reduce the RHS to code positions before matching a tainted var name:
