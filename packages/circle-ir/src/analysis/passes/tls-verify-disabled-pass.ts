@@ -21,6 +21,9 @@
  *     - `{ rejectUnauthorized: false }` in https.request / fetch options /
  *       node-fetch / axios — text scan on arg expressions
  *     - `https.Agent({ rejectUnauthorized: false })`
+ *     - Custom `checkServerIdentity` that always succeeds (`=> undefined` /
+ *       `=> null` / empty body) — disables hostname verification without
+ *       setting `rejectUnauthorized: false`
  *     - `process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'` (assignment;
  *       detected via call to property assignment — best-effort)
  *   Java:
@@ -61,6 +64,11 @@ const ALLOW_ALL_HOSTNAME_VERIFIERS = new Set([
   'new AllowAllHostnameVerifier()',
   'new NoopHostnameVerifier()',
 ]);
+// Node TLS: returning undefined/null from checkServerIdentity means success.
+const JS_CHECK_SERVER_IDENTITY_NOP_RE =
+  /\bcheckServerIdentity\s*:\s*(?:async\s*)?\([^)]*\)\s*=>\s*(?:undefined|null)\b/;
+const JS_CHECK_SERVER_IDENTITY_NOP_FN_RE =
+  /\bcheckServerIdentity\s*:\s*function\s*\([^)]*\)\s*\{\s*return\s+(?:undefined|null)\s*;?\s*\}/;
 
 export interface TlsVerifyDisabledResult {
   findings: Array<{
@@ -255,6 +263,29 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
             api: 'process.env',
           });
         }
+        if (
+          JS_CHECK_SERVER_IDENTITY_NOP_RE.test(l) ||
+          JS_CHECK_SERVER_IDENTITY_NOP_FN_RE.test(l)
+        ) {
+          out.push({
+            line: i + 1,
+            pattern: 'checkServerIdentity => undefined',
+            api: 'tls.connect / https.request options',
+          });
+        }
+      }
+      // Multi-line arrow bodies (options object spans lines).
+      const m = JS_CHECK_SERVER_IDENTITY_NOP_RE.exec(code) ?? JS_CHECK_SERVER_IDENTITY_NOP_FN_RE.exec(code);
+      if (m && m.index !== undefined) {
+        const line = code.slice(0, m.index).split('\n').length;
+        const dupKey = `${line}-checkServerIdentity => undefined`;
+        if (!out.some((o) => `${o.line}-${o.pattern}` === dupKey)) {
+          out.push({
+            line,
+            pattern: 'checkServerIdentity => undefined',
+            api: 'tls.connect / https.request options',
+          });
+        }
       }
     }
 
@@ -295,6 +326,11 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     if (pattern.includes('rejectUnauthorized')) {
       return 'Remove `rejectUnauthorized: false`. To trust a private CA, set the ' +
         '`ca` option to the CA cert(s). Never disable TLS verification globally.';
+    }
+    if (pattern.includes('checkServerIdentity')) {
+      return 'Implement `checkServerIdentity` to compare the certificate to the ' +
+        'intended hostname (or remove the override). Returning `undefined` accepts ' +
+        'any identity and enables MITM.';
     }
     if (pattern.includes('NODE_TLS_REJECT_UNAUTHORIZED')) {
       return 'Remove the `NODE_TLS_REJECT_UNAUTHORIZED=0` assignment — it globally ' +
