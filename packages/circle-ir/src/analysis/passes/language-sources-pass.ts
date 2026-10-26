@@ -746,6 +746,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJavaInlineCrlfStripLogSanitizers(code));
       // cognium-dev#293: the same strip, but living in a user-defined helper.
       additionalSanitizers.push(...findCrlfWrapperFunctionSanitizers(code, 'java'));
+      // cognium-dev#947: flow-sanitize ssti custom_wrapper — brace-stripping
+      // helper at Velocity.evaluate call site.
+      additionalSanitizers.push(...findJavaTemplateDelimiterWrapperSanitizers(code));
       // Sprint 77a (#216 Pattern X): argv-form exec sanitizer.
       additionalSanitizers.push(...findJavaArgvFormExecSanitizers(code));
       // Sprint 78 (#190): Java misconfig pattern findings —
@@ -8472,6 +8475,87 @@ function javaBodyStripsCrAndLf(body: string): boolean {
     if (cov.lf) lf = true;
   }
   return cr && lf;
+}
+
+/** True when the helper removes both `{` and `}` via replace/replaceAll (flow-sanitize ssti). */
+function javaBodyStripsTemplateDelimiters(body: string): boolean {
+  let open = false;
+  let close = false;
+  for (const m of body.matchAll(/\.\s*(replace|replaceAll)\s*\(\s*(?:"((?:\\.|[^"\\])*)"|'(\\.|[^'\\])')/g)) {
+    const lit = m[2] ?? m[3] ?? '';
+    if (lit === '{') open = true;
+    if (lit === '}') close = true;
+  }
+  return open && close;
+}
+
+/**
+ * Java user-defined wrapper that strips Velocity/Jinja-style `{` `}` delimiters.
+ * Mirrors flow-sanitize `ssti` / `custom_wrapper` safe mirrors (cognium-dev#947).
+ */
+function findJavaTemplateDelimiterWrapperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const declRe =
+    /^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:String|CharSequence)\s+([A-Za-z_]\w*)\s*\(/;
+  const bodyWindow = 10;
+  const wrappers = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = declRe.exec(lines[i]);
+    if (!m) continue;
+    let end = Math.min(lines.length, i + bodyWindow);
+    for (let j = i + 1; j < end; j++) {
+      if (declRe.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    const body = lines.slice(i, end).join('\n');
+    if (javaBodyStripsTemplateDelimiters(body)) wrappers.add(m[1]);
+  }
+  if (wrappers.size === 0) return sanitizers;
+
+  const kinds = ['code_injection', 'external_taint_escape'] as const;
+  for (const name of wrappers) {
+    const assignedCallRe = new RegExp(
+      `\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*${name}\\s*\\(`,
+    );
+    const bareCallRe = new RegExp(`\\b${name}\\s*\\(`);
+
+    for (let i = 0; i < lines.length; i++) {
+      if (!bareCallRe.test(lines[i])) continue;
+      if (declRe.test(lines[i]) && bareCallRe.test(lines[i])) continue;
+
+      sanitizers.push({
+        type: 'java_wrapper_template_delim_strip',
+        method: name,
+        line: i + 1,
+        sanitizes: [...kinds],
+      });
+
+      const am = assignedCallRe.exec(lines[i]);
+      if (!am) continue;
+      const callIndent = lines[i].length - lines[i].trimStart().length;
+      const validated = am[1];
+      const validatedRe = new RegExp(`\\b${validated}\\b`);
+      for (let j = i + 1; j < lines.length; j++) {
+        const jline = lines[j];
+        if (jline.trim() === '') continue;
+        const jindent = jline.length - jline.trimStart().length;
+        if (jindent < callIndent) break;
+        if (validatedRe.test(jline)) {
+          sanitizers.push({
+            type: 'java_wrapper_template_delim_strip',
+            method: name,
+            line: j + 1,
+            sanitizes: [...kinds],
+          });
+        }
+      }
+    }
+  }
+  return sanitizers;
 }
 
 function findCrlfWrapperFunctionSanitizers(
