@@ -3051,7 +3051,7 @@ export function computeDeadJavaBranchLines(lines: string[]): Set<number> {
     }
 
     const charAtAssign = line.match(
-      /^\s*char\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.charAt\s*\(\s*(\d+)\s*\)\s*;\s*$/,
+      /^\s*char\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.charAt\s*\(\s*(\d+)\s*\)\s*;\s*(?:\/\/.*)?$/,
     );
     if (charAtAssign) {
       const str = stringConsts.get(charAtAssign[2]);
