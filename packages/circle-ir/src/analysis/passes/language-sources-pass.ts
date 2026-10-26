@@ -2948,18 +2948,141 @@ function computeDeadPythonBranchLines(lines: string[]): Set<number> {
  * can never run (cognium-dev#913). Braced bodies defer to constant propagation;
  * this pass handles the common single-statement `if` / `else` lines.
  */
+function parseJavaSwitchCaseLabel(label: string): number | 'default' | undefined {
+  const t = label.trim();
+  if (t === 'default') return 'default';
+  const ch = t.match(/^'(\\.|[^'])'\s*$/);
+  if (ch) {
+    const inner = ch[1];
+    if (inner.startsWith('\\')) {
+      if (inner === "\\'") return 39;
+      if (inner === '\\\\') return 92;
+      if (inner === '\\n') return 10;
+      return undefined;
+    }
+    return inner.charCodeAt(0);
+  }
+  const num = t.match(/^(-?\d+)\s*$/);
+  if (num) return Number(num[1]);
+  return undefined;
+}
+
+function parseJavaSwitchLabelLine(line: string): number | 'default' | undefined {
+  const caseLine = line.match(/^\s*case\s+(.+?)\s*:\s*$/);
+  if (caseLine) return parseJavaSwitchCaseLabel(caseLine[1]);
+  if (/^\s*default\s*:\s*$/.test(line)) return 'default';
+  return undefined;
+}
+
+function markDeadJavaSwitchBodies(
+  lines: string[],
+  switchLineIdx: number,
+  switchValue: number,
+  dead: Set<number>,
+): void {
+  let depth = 0;
+  let started = false;
+  let groupLabels: Array<number | 'default'> = [];
+  let bodyStart = -1;
+  let explicitCaseMatched = false;
+
+  const groupIsTaken = (): boolean => {
+    if (groupLabels.length === 0) return false;
+    const explicit = groupLabels.some(v => v !== 'default' && v === switchValue);
+    if (explicit) return true;
+    return groupLabels.includes('default') && !explicitCaseMatched;
+  };
+
+  const flushGroup = (bodyEnd: number) => {
+    if (bodyStart < 0 || groupLabels.length === 0) return;
+    const taken = groupIsTaken();
+    if (groupLabels.some(v => v !== 'default' && v === switchValue)) {
+      explicitCaseMatched = true;
+    }
+    if (!taken) {
+      for (let k = bodyStart; k < bodyEnd; k++) dead.add(k);
+    }
+    groupLabels = [];
+    bodyStart = -1;
+  };
+
+  for (let j = switchLineIdx; j < lines.length; j++) {
+    const line = lines[j];
+    for (const ch of line) {
+      if (ch === '{') {
+        depth++;
+        started = true;
+      } else if (ch === '}') depth--;
+    }
+    if (!started) continue;
+
+    const label = parseJavaSwitchLabelLine(line);
+    if (label !== undefined) {
+      if (bodyStart >= 0 && j === bodyStart) {
+        groupLabels.push(label);
+        bodyStart = j + 1;
+      } else {
+        flushGroup(j);
+        groupLabels = [label];
+        bodyStart = j + 1;
+      }
+    }
+
+    if (started && depth === 0) {
+      flushGroup(j);
+      break;
+    }
+  }
+}
+
 export function computeDeadJavaBranchLines(lines: string[]): Set<number> {
   const dead = new Set<number>();
   const consts = new Map<string, number>();
+  const stringConsts = new Map<string, string>();
+  const charConsts = new Map<string, number>();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
+    const stringAssign = line.match(/^\s*String\s+([A-Za-z_]\w*)\s*=\s*"([^"]*)"\s*;\s*$/);
+    if (stringAssign) {
+      stringConsts.set(stringAssign[1], stringAssign[2]);
+      continue;
+    }
+
+    const charAtAssign = line.match(
+      /^\s*char\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.charAt\s*\(\s*(\d+)\s*\)\s*;\s*$/,
+    );
+    if (charAtAssign) {
+      const str = stringConsts.get(charAtAssign[2]);
+      const idx = Number(charAtAssign[3]);
+      if (str !== undefined && idx >= 0 && idx < str.length) {
+        charConsts.set(charAtAssign[1], str.charCodeAt(idx));
+      } else {
+        charConsts.delete(charAtAssign[1]);
+      }
+      continue;
+    }
 
     const intAssign = line.match(/^\s*(?:int|long|short|byte)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/);
     if (intAssign) {
       const v = evaluatePythonConstExpression(intAssign[2].trim(), consts);
       if (typeof v === 'number') consts.set(intAssign[1], v);
       else consts.delete(intAssign[1]);
+      continue;
+    }
+
+    const switchMatch = line.match(/^\s*switch\s*\(([^)]+)\)\s*\{?\s*$/);
+    if (switchMatch) {
+      const sel = switchMatch[1].trim();
+      let switchVal: number | undefined = charConsts.get(sel);
+      if (switchVal === undefined) {
+        const n = evaluatePythonConstExpression(sel, consts);
+        if (typeof n === 'number') switchVal = n;
+      }
+      if (switchVal !== undefined) {
+        markDeadJavaSwitchBodies(lines, i, switchVal, dead);
+      }
       continue;
     }
 

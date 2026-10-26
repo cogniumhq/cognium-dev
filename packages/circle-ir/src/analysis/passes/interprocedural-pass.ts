@@ -467,7 +467,7 @@ function appendCalleeSourceCallerSinkFlows(
         fileCode &&
         source.type === 'interprocedural_param' &&
         source.variable &&
-        sink.type === 'sql_injection' &&
+        (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
         interproceduralParamReachIsDeadBranchOnly(
           fileCode,
           callee.startLine,
