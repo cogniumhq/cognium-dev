@@ -11,6 +11,46 @@ describe('tls-verify-disabled pass', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
   // ---------------- Go ----------------
+  it('Go: x509.Verify without intermediate denylist guard is flagged (issue-894 S3)', async () => {
+    const code = `
+package main
+
+import "crypto/x509"
+
+func verifyLeaf(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
+  opts := x509.VerifyOptions{
+    Roots:         roots,
+    Intermediates: inter,
+  }
+  _, err := leaf.Verify(opts)
+  return err
+}
+`;
+    const r = await analyze(code, 'issue-894-x509-intermediate-denylist_tp.go', 'go');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Go: x509.Verify with intermediate denylist guard is NOT flagged (issue-894 S3 safe)', async () => {
+    const code = `
+package main
+
+import "crypto/x509"
+
+func intermediateDenylist() map[string]bool { return map[string]bool{} }
+
+func verifyLeafSafe(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
+  deny := intermediateDenylist()
+  if deny[leaf.Subject.CommonName] {
+    return x509.CertificateInvalidError{}
+  }
+  _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter})
+  return err
+}
+`;
+    const r = await analyze(code, 'issue-894-x509-intermediate-safe.go', 'go');
+    expect(tlsOff(r)).toHaveLength(0);
+  });
+
   it('Go: tls.Config{InsecureSkipVerify: true} is flagged', async () => {
     const code = `
 package main

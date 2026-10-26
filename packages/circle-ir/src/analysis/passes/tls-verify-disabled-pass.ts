@@ -12,6 +12,9 @@
  *       call/composite contains literal `InsecureSkipVerify: true`, OR via
  *       a syntactic text scan (composite literals are not always emitted
  *       as calls in IR).
+ *     - `(*x509.Certificate).Verify` with `x509.VerifyOptions` and no
+ *       intermediate-CA denylist / blocklist guard in the same file — PKIX
+ *       chain acceptance without checking blocked intermediates (CWE-295).
  *   Python:
  *     - `requests.get|post|put|delete|patch|head|options|request(..., verify=False)`
  *     - `ssl._create_unverified_context()` / `ssl._create_default_https_context = ssl._create_unverified_context`
@@ -53,6 +56,9 @@ const PY_HTTP_RECEIVERS = new Set([
 const VERIFY_FALSE_RE = /\bverify\s*=\s*False\b/;
 const REJECT_UNAUTHORIZED_FALSE_RE = /\brejectUnauthorized\s*:\s*false\b/;
 const INSECURE_SKIP_VERIFY_TRUE_RE = /\bInsecureSkipVerify\s*:\s*true\b/;
+const GO_X509_VERIFY_CALL_RE = /\.Verify\s*\(/;
+const GO_INTERMEDIATE_DENYLIST_GUARD_RE =
+  /\b(denylist|denyList|deny_list|blocklist|blockList|blockedIntermediate|blocked_intermediate|deniedIntermediate|denied_intermediate|isDeniedIntermediate|intermediateDenylist|intermediate_denylist)\b/i;
 const HOSTNAME_LAMBDA_TRUE_RE = /\(\s*\w+\s*,\s*\w+\s*\)\s*->\s*true\b/;
 // C#: a cert-validation callback given an always-true lambda — assigned
 // (`= `/`+= `) or wrapped in a delegate constructor (`new …Callback( … )`).
@@ -245,6 +251,23 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
           });
         }
       }
+      if (
+        /\bx509\./.test(code) &&
+        /\bVerifyOptions\b/.test(code) &&
+        GO_X509_VERIFY_CALL_RE.test(code) &&
+        !GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(code)
+      ) {
+        for (let i = 0; i < lines.length; i++) {
+          if (GO_X509_VERIFY_CALL_RE.test(lines[i])) {
+            out.push({
+              line: i + 1,
+              pattern: 'x509.Verify without intermediate denylist',
+              api: 'x509.Certificate.Verify',
+            });
+            break;
+          }
+        }
+      }
     }
 
     if (language === 'python') {
@@ -380,6 +403,11 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
       return 'Remove `InsecureSkipVerify: true` — let Go verify the cert. If ' +
         'you need to trust a private CA, set `RootCAs` to a `*x509.CertPool` ' +
         'containing that CA.';
+    }
+    if (pattern.includes('x509.Verify without intermediate denylist')) {
+      return 'Before calling `x509.Certificate.Verify`, check the chain (including ' +
+        'intermediates) against your blocked-CA / denylist policy. Relying on PKIX ' +
+        'verification alone accepts chains that include revoked or blocked intermediates.';
     }
     if (pattern.includes('verify=False')) {
       return 'Remove `verify=False`. To trust a private CA, pass `verify=\'/path/to/ca.pem\'`.';
