@@ -84,4 +84,35 @@ public class Bench extends HttpServlet {
     const sqli = (r.taint?.flows ?? []).filter(f => f.sink_type === 'sql_injection');
     expect(sqli.length).toBeGreaterThan(0);
   });
+
+  it('still flags sqli when remove(0) has a trailing line comment (BenchmarkTest01554 shape)', async () => {
+    const code = `import javax.servlet.http.*;
+import java.util.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getParameter("x");
+    String bar = new Test().doSomething(request, param);
+    java.sql.Connection c = org.owasp.benchmark.helpers.DatabaseHelper.getSqlConnection();
+    String sql = "SELECT * FROM u WHERE p='" + bar + "'";
+    c.prepareStatement(sql).executeQuery();
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      String bar = "";
+      if (param != null) {
+        java.util.List<String> valuesList = new java.util.ArrayList<String>();
+        valuesList.add("safe");
+        valuesList.add(param);
+        valuesList.add("moresafe");
+        valuesList.remove(0); // remove the 1st safe value
+        bar = valuesList.get(0);
+      }
+      return bar;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const sqli = (r.taint?.flows ?? []).filter(f => f.sink_type === 'sql_injection');
+    expect(sqli.length).toBeGreaterThan(0);
+  });
 });

@@ -4152,10 +4152,16 @@ export function buildJavaTaintedVars(
         }
         continue;
       }
-      const listAddLitRe =
-        /^\s*([A-Za-z_]\w*)\.add\s*\(\s*"(?:[^"\\]|\\.)*"\s*\)\s*;?\s*$/;
-      const listAddVarRe = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
-      const listRemoveRe = /^\s*([A-Za-z_]\w*)\.remove\s*\(\s*(\d+)\s*\)\s*;?\s*$/;
+      const listLineSuffix = '(?:\\s*//[^\\n]*)?\\s*$';
+      const listAddLitRe = new RegExp(
+        `^\\s*([A-Za-z_]\\w*)\\.add\\s*\\(\\s*"(?:[^"\\\\]|\\\\.)*"\\s*\\)\\s*;?${listLineSuffix}`,
+      );
+      const listAddVarRe = new RegExp(
+        `^\\s*([A-Za-z_]\\w*)\\.add\\s*\\(\\s*([A-Za-z_]\\w*)\\s*\\)\\s*;?${listLineSuffix}`,
+      );
+      const listRemoveRe = new RegExp(
+        `^\\s*([A-Za-z_]\\w*)\\.remove\\s*\\(\\s*(\\d+)\\s*\\)\\s*;?${listLineSuffix}`,
+      );
       const trimmedLine = line.trimEnd();
       const addLitMatch = listAddLitRe.exec(trimmedLine);
       if (addLitMatch) {
