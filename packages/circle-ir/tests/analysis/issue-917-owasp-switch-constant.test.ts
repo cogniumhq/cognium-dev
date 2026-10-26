@@ -47,6 +47,43 @@ public class Bench extends HttpServlet {
     expect(tb).toHaveLength(0);
   });
 
+  it('matches OWASP BenchmarkTest00992 charAt selector with a trailing comment', async () => {
+    const code = `import javax.servlet.http.*;
+public class BenchmarkTest00992 extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = "x";
+    String bar = new Test().doSomething(request, param);
+    request.getSession().putValue(bar, "10340");
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) throws Exception {
+      String bar;
+      String guess = "ABC";
+      char switchTarget = guess.charAt(1); // condition 'B', which is safe
+      switch (switchTarget) {
+        case 'A':
+          bar = param;
+          break;
+        case 'B':
+          bar = "bob";
+          break;
+        case 'C':
+        case 'D':
+          bar = param;
+          break;
+        default:
+          bar = "bob's your uncle";
+          break;
+      }
+      return bar;
+    }
+  }
+}`;
+    const r = await analyze(code, 'BenchmarkTest00992.java', 'java');
+    const tb = (r.taint?.flows ?? []).filter(f => f.sink_type === 'trust_boundary');
+    expect(tb).toHaveLength(0);
+  });
+
   it('still flags trust_boundary when charAt(2) takes a shared C/D case (BenchmarkTest01548)', async () => {
     const code = `import javax.servlet.http.*;
 public class Bench extends HttpServlet {

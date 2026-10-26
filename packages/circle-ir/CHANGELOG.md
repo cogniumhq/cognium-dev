@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **Java: constant `switch` targets mark dead case bodies (#917, partial).** `String` literal `charAt` selectors and decidably false `case` arms no longer taint helper returns; `#913`-style interprocedural gating also applies to `trust_boundary` sinks.
+- **Java: constant `switch` targets mark dead case bodies (#917, partial).** `String` literal `charAt` selectors and decidably false `case` arms no longer taint helper returns; `#913`-style interprocedural gating also applies to `trust_boundary` sinks. Trailing `//` comments on the `charAt` selector line no longer disable dead-case folding (OWASP `BenchmarkTest00992` shape).
 - **Java: dead `else` arms no longer taint helper returns (#913, partial).** Decidable `if ((7 * 42) - num > 200)` shapes block `#590`-style `interprocedural_param`→`sql_injection` helper flows only when `param` reaches the callee return on dead branches alone (live list/Base64 propagation unchanged).
 - **Go: `git ls-remote` without `--` keeps `exec.Command` as a command-injection sink (#903).** Tainted refs can be interpreted as git options; an explicit `--` separator restores the non-shell argv safe gate.
 - **Rust: `format!("https://fixed-host/{}", path)` before `reqwest::get` is not SSRF (#922).** Literal-origin URLs with only a trailing path interpolation cannot be redirected to another host; variable-host `format!` shapes are unchanged.
