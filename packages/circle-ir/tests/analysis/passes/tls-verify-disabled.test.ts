@@ -161,6 +161,71 @@ module.exports = { connect };
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('JS: checkServerIdentity with NFKC normalize is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  const cn = (cert.subject && cert.subject.CN) || '';
+  const h = String(host).normalize('NFKC');
+  const c = String(cn).normalize('NFKC');
+  if (h === c) return undefined;
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-fullwidth.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: checkServerIdentity with DNS SAN match is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  const altnames = cert.subjectaltname;
+  if (!altnames) return new Error('no san');
+  const parts = String(altnames).split(/,\\s*/);
+  for (const p of parts) {
+    const name = p.replace(/^DNS:/i, '').trim();
+    if (name === host) return undefined;
+  }
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-dns-san.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: issuer chain walk without denylist is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  for (let c = cert; c; c = c.issuerCertificate) {
+    if (!c.valid_to) return new Error('bad cert');
+  }
+  return undefined;
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-untrusted-intermediate.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('JS: checkServerIdentity that returns undefined is flagged (issue-894 S1)', async () => {
     const code = `
 const https = require('https');

@@ -29,6 +29,12 @@
  *       setting `rejectUnauthorized: false`
  *     - Custom `checkServerIdentity` that accepts after loose host parsing
  *       (digit-only IP folding, helper such as `looseIp`) — CWE-295 weak identity
+ *     - Custom `checkServerIdentity` that compares hosts after Unicode NFKC
+ *       normalization (fullwidth / homograph confusion)
+ *     - Custom `checkServerIdentity` that accepts when the requested host
+ *       appears in subjectAltName / DNS SAN text (DNS↔IP confusion)
+ *     - Custom `checkServerIdentity` that walks `issuerCertificate` without
+ *       an intermediate denylist / blocklist guard
  *     - `process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'` (assignment;
  *       detected via call to property assignment — best-effort)
  *   Java:
@@ -82,6 +88,10 @@ const JS_CHECK_SERVER_IDENTITY_DECL_RE =
 const JS_LOOSE_IP_HOST_STRIP_RE = /\.replace\s*\(\s*\/\[\^\\d\.\]\\]\//;
 const JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE =
   /(?:looseIp\s*\(|\.replace\s*\(\s*\/\[\^\\d\.\]\\]\/)[\s\S]*?return\s+undefined\b/;
+const JS_NFKC_NORMALIZE_RE = /\.normalize\s*\(\s*['"]NFKC['"]\s*\)/i;
+const JS_SUBJECT_ALT_NAME_RE =
+  /\bsubjectaltname\b|\bsubjectAltName\b|\baltNames\b|\bDNS:\b|\bIP Address:/i;
+const JS_ISSUER_CHAIN_WALK_RE = /\bissuerCertificate\b/;
 
 export interface TlsVerifyDisabledResult {
   findings: Array<{
@@ -317,7 +327,7 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
           });
         }
       }
-      for (const weak of this.detectWeakCheckServerIdentityFunctions(code)) {
+      for (const weak of this.detectWeakCheckServerIdentityCallbacks(code)) {
         const dupKey = `${weak.line}-${weak.pattern}`;
         if (!out.some((o) => `${o.line}-${o.pattern}` === dupKey)) {
           out.push({
@@ -354,12 +364,14 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     return out;
   }
 
-  /** Standalone `function checkServerIdentity` with loose host folding + success return. */
-  private detectWeakCheckServerIdentityFunctions(code: string): Array<{
+  /** Standalone and inline `checkServerIdentity` with weak identity checks. */
+  private detectWeakCheckServerIdentityCallbacks(code: string): Array<{
     line: number;
     pattern: string;
   }> {
     const hits: Array<{ line: number; pattern: string }> = [];
+    const fileHasDenylist = GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(code);
+
     const declRe = new RegExp(JS_CHECK_SERVER_IDENTITY_DECL_RE.source, 'g');
     let match: RegExpExecArray | null;
     while ((match = declRe.exec(code)) !== null) {
@@ -367,21 +379,66 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
       if (openBrace < 0) continue;
       const body = this.sliceBalancedBraces(code, openBrace);
       if (!body) continue;
-      if (!/\breturn\s+undefined\b/.test(body)) continue;
       const prelude = code.slice(Math.max(0, match.index - 800), match.index);
-      const loose =
-        JS_LOOSE_IP_HOST_STRIP_RE.test(body) ||
-        JS_LOOSE_IP_HOST_STRIP_RE.test(prelude) ||
-        /\blooseIp\s*\(/.test(body);
-      if (!loose) continue;
       const line = code.slice(0, match.index).split('\n').length;
-      if (!JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE.test(body)) continue;
-      hits.push({
-        line,
-        pattern: 'checkServerIdentity loose host parse => undefined',
-      });
+      const weak = this.classifyWeakCheckServerIdentityBody(
+        body, prelude, fileHasDenylist,
+      );
+      if (weak) hits.push({ line, pattern: weak });
     }
+
+    const inlineRe =
+      /\bcheckServerIdentity\s*:\s*(?:async\s*)?function\s*\([^)]*\)\s*\{/g;
+    while ((match = inlineRe.exec(code)) !== null) {
+      const openBrace = code.indexOf('{', match.index);
+      if (openBrace < 0) continue;
+      const body = this.sliceBalancedBraces(code, openBrace);
+      if (!body) continue;
+      const prelude = code.slice(Math.max(0, match.index - 800), match.index);
+      const line = code.slice(0, match.index).split('\n').length;
+      const weak = this.classifyWeakCheckServerIdentityBody(
+        body, prelude, fileHasDenylist,
+      );
+      if (weak) hits.push({ line, pattern: weak });
+    }
+
     return hits;
+  }
+
+  private classifyWeakCheckServerIdentityBody(
+    body: string,
+    prelude: string,
+    fileHasDenylist: boolean,
+  ): string | null {
+    if (!/\breturn\s+undefined\b/.test(body)) return null;
+
+    const loose =
+      JS_LOOSE_IP_HOST_STRIP_RE.test(body) ||
+      JS_LOOSE_IP_HOST_STRIP_RE.test(prelude) ||
+      /\blooseIp\s*\(/.test(body);
+    if (loose && JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE.test(body)) {
+      return 'checkServerIdentity loose host parse => undefined';
+    }
+
+    const nfkc =
+      JS_NFKC_NORMALIZE_RE.test(body) || JS_NFKC_NORMALIZE_RE.test(prelude);
+    if (nfkc && /\breturn\s+undefined\b/.test(body)) {
+      return 'checkServerIdentity NFKC host normalize => undefined';
+    }
+
+    if (JS_SUBJECT_ALT_NAME_RE.test(body) && /\breturn\s+undefined\b/.test(body)) {
+      return 'checkServerIdentity DNS SAN / IP match => undefined';
+    }
+
+    if (
+      JS_ISSUER_CHAIN_WALK_RE.test(body) &&
+      !fileHasDenylist &&
+      /\breturn\s+undefined\b/.test(body)
+    ) {
+      return 'checkServerIdentity issuer chain without denylist => undefined';
+    }
+
+    return null;
   }
 
   private sliceBalancedBraces(code: string, openIndex: number): string | null {
