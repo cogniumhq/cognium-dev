@@ -96,6 +96,31 @@ const agent = new https.Agent({ rejectUnauthorized: false });
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('JS: checkServerIdentity with loose IP folding is flagged (issue-894 S2)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function looseIp(value) {
+  return String(value).replace(/[^\\d.]/g, '');
+}
+
+function checkServerIdentity(host, cert) {
+  const cn = (cert.subject && cert.subject.CN) || '';
+  if (looseIp(host) !== '' && looseIp(host) === looseIp(cn)) return undefined;
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+
+module.exports = { connect };
+`;
+    const r = await analyze(code, 'issue-894-tls-loose-ip.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('JS: checkServerIdentity that returns undefined is flagged (issue-894 S1)', async () => {
     const code = `
 const https = require('https');

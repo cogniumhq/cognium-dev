@@ -24,6 +24,8 @@
  *     - Custom `checkServerIdentity` that always succeeds (`=> undefined` /
  *       `=> null` / empty body) — disables hostname verification without
  *       setting `rejectUnauthorized: false`
+ *     - Custom `checkServerIdentity` that accepts after loose host parsing
+ *       (digit-only IP folding, helper such as `looseIp`) — CWE-295 weak identity
  *     - `process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'` (assignment;
  *       detected via call to property assignment — best-effort)
  *   Java:
@@ -69,6 +71,11 @@ const JS_CHECK_SERVER_IDENTITY_NOP_RE =
   /\bcheckServerIdentity\s*:\s*(?:async\s*)?\([^)]*\)\s*=>\s*(?:undefined|null)\b/;
 const JS_CHECK_SERVER_IDENTITY_NOP_FN_RE =
   /\bcheckServerIdentity\s*:\s*function\s*\([^)]*\)\s*\{\s*return\s+(?:undefined|null)\s*;?\s*\}/;
+const JS_CHECK_SERVER_IDENTITY_DECL_RE =
+  /\bfunction\s+checkServerIdentity\s*\([^)]*\)\s*\{/g;
+const JS_LOOSE_IP_HOST_STRIP_RE = /\.replace\s*\(\s*\/\[\^\\d\.\]\\]\//;
+const JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE =
+  /(?:looseIp\s*\(|\.replace\s*\(\s*\/\[\^\\d\.\]\\]\/)[\s\S]*?return\s+undefined\b/;
 
 export interface TlsVerifyDisabledResult {
   findings: Array<{
@@ -287,6 +294,16 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
           });
         }
       }
+      for (const weak of this.detectWeakCheckServerIdentityFunctions(code)) {
+        const dupKey = `${weak.line}-${weak.pattern}`;
+        if (!out.some((o) => `${o.line}-${o.pattern}` === dupKey)) {
+          out.push({
+            line: weak.line,
+            pattern: weak.pattern,
+            api: 'checkServerIdentity (custom)',
+          });
+        }
+      }
     }
 
     if (language === 'csharp') {
@@ -314,6 +331,50 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     return out;
   }
 
+  /** Standalone `function checkServerIdentity` with loose host folding + success return. */
+  private detectWeakCheckServerIdentityFunctions(code: string): Array<{
+    line: number;
+    pattern: string;
+  }> {
+    const hits: Array<{ line: number; pattern: string }> = [];
+    const declRe = new RegExp(JS_CHECK_SERVER_IDENTITY_DECL_RE.source, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = declRe.exec(code)) !== null) {
+      const openBrace = code.indexOf('{', match.index);
+      if (openBrace < 0) continue;
+      const body = this.sliceBalancedBraces(code, openBrace);
+      if (!body) continue;
+      if (!/\breturn\s+undefined\b/.test(body)) continue;
+      const prelude = code.slice(Math.max(0, match.index - 800), match.index);
+      const loose =
+        JS_LOOSE_IP_HOST_STRIP_RE.test(body) ||
+        JS_LOOSE_IP_HOST_STRIP_RE.test(prelude) ||
+        /\blooseIp\s*\(/.test(body);
+      if (!loose) continue;
+      const line = code.slice(0, match.index).split('\n').length;
+      if (!JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE.test(body)) continue;
+      hits.push({
+        line,
+        pattern: 'checkServerIdentity loose host parse => undefined',
+      });
+    }
+    return hits;
+  }
+
+  private sliceBalancedBraces(code: string, openIndex: number): string | null {
+    if (code[openIndex] !== '{') return null;
+    let depth = 0;
+    for (let i = openIndex; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return code.slice(openIndex, i + 1);
+      }
+    }
+    return null;
+  }
+
   private fixFor(language: string, pattern: string): string {
     if (pattern.includes('InsecureSkipVerify')) {
       return 'Remove `InsecureSkipVerify: true` — let Go verify the cert. If ' +
@@ -330,7 +391,7 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     if (pattern.includes('checkServerIdentity')) {
       return 'Implement `checkServerIdentity` to compare the certificate to the ' +
         'intended hostname (or remove the override). Returning `undefined` accepts ' +
-        'any identity and enables MITM.';
+        'the connection; loose host/IP folding before that check enables MITM.';
     }
     if (pattern.includes('NODE_TLS_REJECT_UNAUTHORIZED')) {
       return 'Remove the `NODE_TLS_REJECT_UNAUTHORIZED=0` assignment — it globally ' +
