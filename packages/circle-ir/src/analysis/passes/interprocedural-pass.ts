@@ -470,7 +470,9 @@ function appendCalleeSourceCallerSinkFlows(
       if (
         fileCode &&
         paramName &&
-        (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
+        (sink.type === 'sql_injection' ||
+          sink.type === 'trust_boundary' ||
+          sink.type === 'path_traversal') &&
         (source.type === 'interprocedural_param' ||
           source.type === 'plugin_param') &&
         (interproceduralParamReachIsDeadBranchOnly(
