@@ -4198,6 +4198,9 @@ export function buildJavaTaintedVars(
   const knownTainted = new Set(seedVars);
   const lines = sourceCode.split('\n');
   const dead = deadBranchLines ?? new Set<number>();
+  const intConsts = new Map<string, number>();
+  /** map var → literal key → whether that key's stored value is tainted */
+  const mapKeyTaint = new Map<string, Map<string, boolean>>();
 
   // Declaration:  [modifiers] Type[<...>] [ ] lhs = rhs;
   // Simple assignment: lhs = rhs;
@@ -4246,6 +4249,64 @@ export function buildJavaTaintedVars(
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+
+      const intAssign = line.match(
+        /^\s*(?:int|long|short|byte)\s+([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/,
+      );
+      if (intAssign) {
+        const v = evaluatePythonConstExpression(intAssign[2].trim(), intConsts);
+        if (typeof v === 'number') intConsts.set(intAssign[1], v);
+        else intConsts.delete(intAssign[1]);
+      }
+
+      const mapPutRe =
+        /^\s*([A-Za-z_]\w*)\.put\s*\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;?\s*$/;
+      const mapPut = mapPutRe.exec(line.trimEnd());
+      if (mapPut) {
+        const mapVar = mapPut[1];
+        const key = mapPut[2];
+        const rhs = mapPut[3];
+        const rhsCode = rhs
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+          .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+        const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+        const taintedRhs =
+          (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+          (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
+        let keys = mapKeyTaint.get(mapVar);
+        if (!keys) {
+          keys = new Map<string, boolean>();
+          mapKeyTaint.set(mapVar, keys);
+        }
+        keys.set(key, taintedRhs);
+        continue;
+      }
+
+      const mapGetAssignRe =
+        /^\s*([A-Za-z_]\w*)\s*=\s*\(String\)\s*([A-Za-z_]\w*)\.get\s*\(\s*"([^"]+)"\s*\)\s*;?\s*$/;
+      const mapGetAssign = mapGetAssignRe.exec(line.trimEnd());
+      if (mapGetAssign) {
+        const lhs = mapGetAssign[1];
+        const mapVar = mapGetAssign[2];
+        const key = mapGetAssign[3];
+        const keys = mapKeyTaint.get(mapVar);
+        const slotTainted = keys?.get(key);
+        if (slotTainted === false) {
+          if (knownTainted.has(lhs)) {
+            knownTainted.delete(lhs);
+            derived.delete(lhs);
+            changed = true;
+          }
+          continue;
+        }
+        if (slotTainted === true && !knownTainted.has(lhs)) {
+          derived.set(lhs, i + 1);
+          knownTainted.add(lhs);
+          changed = true;
+        }
+        continue;
+      }
+
       // cognium-dev#476: non-assignment statements (must run before the #753
       // wrap-join early-continue, which would skip them).
       const arrayCopyRe =
@@ -4350,9 +4411,15 @@ export function buildJavaTaintedVars(
       const m = declMatch ?? assignMatch;
       if (!m) continue;
       const lhs = m[1];
-      const rhs = m[2];
+      let rhs = m[2];
       if (JAVA_KEYWORDS.has(lhs)) continue;
       if (knownTainted.has(lhs)) continue;
+      const tern = rhs.match(/^(.+?)\s*\?\s*(.+?)\s*:\s*(.+)$/);
+      if (tern) {
+        const decided = evaluatePythonConstExpression(tern[1].trim(), intConsts);
+        if (decided === true) rhs = tern[2].trim();
+        else if (decided === false) rhs = tern[3].trim();
+      }
       // Reduce the RHS to code positions before matching a tainted var name:
       // keep `$"…{expr}"` interpolation contents, drop plain / verbatim string
       // literal bodies and char literals. Otherwise a tainted var NAME that

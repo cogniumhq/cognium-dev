@@ -463,18 +463,29 @@ function appendCalleeSourceCallerSinkFlows(
       }
 
       const source = calleeSources[0];
+      const paramSource = calleeSources.find(
+        s => s.type === 'interprocedural_param' && s.variable,
+      );
+      const paramName = paramSource?.variable;
       if (
         fileCode &&
-        source.type === 'interprocedural_param' &&
-        source.variable &&
+        paramName &&
         (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
-        interproceduralParamReachIsDeadBranchOnly(
+        (source.type === 'interprocedural_param' ||
+          source.type === 'plugin_param') &&
+        (interproceduralParamReachIsDeadBranchOnly(
           fileCode,
           callee.startLine,
           callee.endLine,
-          source.variable,
+          paramName,
           assignee.variable,
-        )
+        ) ||
+          calleeReturnNotTaintedFromParam(
+            fileCode,
+            callee.startLine,
+            callee.endLine,
+            paramName,
+          ))
       ) {
         continue;
       }
@@ -515,6 +526,24 @@ function interproceduralParamReachIsDeadBranchOnly(
   const onLivePaths = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
   const ifDeadLinesCount = buildJavaTaintedVars(sliceText, new Set([paramName]), new Set());
   return ifDeadLinesCount.has(localName) && !onLivePaths.has(localName);
+}
+
+/** cognium-dev#917 — param does not reach a `return <id>` on live paths (ternary / map shuffle). */
+function calleeReturnNotTaintedFromParam(
+  code: string,
+  startLine: number,
+  endLine: number,
+  paramName: string,
+): boolean {
+  const slice = code.split('\n').slice(startLine - 1, endLine);
+  const sliceText = slice.join('\n');
+  const dead = computeDeadJavaBranchLines(slice);
+  const live = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
+  for (const line of slice) {
+    const m = line.match(/^\s*return\s+([A-Za-z_]\w*)\s*;\s*$/);
+    if (m && live.has(m[1])) return false;
+  }
+  return true;
 }
 
 /** DFG-forward names reachable from a helper-return assignment LHS (same file). */
