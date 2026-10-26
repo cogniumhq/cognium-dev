@@ -4113,6 +4113,20 @@ export function buildJavaTaintedVars(
     }
   }
 
+  /** Per-list element slots: `null` = a string literal was added; otherwise the added var name. */
+  const listElems = new Map<string, (string | null)[]>();
+  const listElemTaintedAt = (elems: (string | null)[], index: number): boolean => {
+    if (index < 0 || index >= elems.length) return false;
+    const slot = elems[index];
+    if (slot === null) return false;
+    return knownTainted.has(slot);
+  };
+  const pushListElem = (listVar: string, slot: string | null): void => {
+    const elems = listElems.get(listVar) ?? [];
+    elems.push(slot);
+    listElems.set(listVar, elems);
+  };
+
   let changed = true;
   let guard = 0;
   while (changed && guard < lines.length + 2) {
@@ -4138,15 +4152,30 @@ export function buildJavaTaintedVars(
         }
         continue;
       }
-      const listAddRe = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
-      const addMatch = listAddRe.exec(line.trimEnd());
-      if (addMatch) {
-        const listVar = addMatch[1];
-        const elem = addMatch[2];
-        if (knownTainted.has(elem) && !knownTainted.has(listVar)) {
-          derived.set(listVar, i + 1);
-          knownTainted.add(listVar);
-          changed = true;
+      const listAddLitRe =
+        /^\s*([A-Za-z_]\w*)\.add\s*\(\s*"(?:[^"\\]|\\.)*"\s*\)\s*;?\s*$/;
+      const listAddVarRe = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
+      const listRemoveRe = /^\s*([A-Za-z_]\w*)\.remove\s*\(\s*(\d+)\s*\)\s*;?\s*$/;
+      const trimmedLine = line.trimEnd();
+      const addLitMatch = listAddLitRe.exec(trimmedLine);
+      if (addLitMatch) {
+        pushListElem(addLitMatch[1], null);
+        continue;
+      }
+      const addVarMatch = listAddVarRe.exec(trimmedLine);
+      if (addVarMatch) {
+        const [, listVar, elem] = addVarMatch;
+        if (JAVA_KEYWORDS.has(elem)) continue;
+        pushListElem(listVar, elem);
+        continue;
+      }
+      const removeMatch = listRemoveRe.exec(trimmedLine);
+      if (removeMatch) {
+        const [, listVar, idxStr] = removeMatch;
+        const elems = listElems.get(listVar);
+        if (elems) {
+          const idx = Number(idxStr);
+          if (idx >= 0 && idx < elems.length) elems.splice(idx, 1);
         }
         continue;
       }
@@ -4230,6 +4259,16 @@ export function buildJavaTaintedVars(
       const rhs = m[2];
       if (JAVA_KEYWORDS.has(lhs)) continue;
       if (knownTainted.has(lhs)) continue;
+      const listGetRhsRe = /^([A-Za-z_]\w*)\.get\s*\(\s*(\d+)\s*\)\s*$/;
+      const listGetRhs = listGetRhsRe.exec(rhs.trim());
+      if (listGetRhs) {
+        const [, recv, idxStr] = listGetRhs;
+        const elems = listElems.get(recv);
+        if (elems) {
+          const idx = Number(idxStr);
+          if (!listElemTaintedAt(elems, idx)) continue;
+        }
+      }
       // Reduce the RHS to code positions before matching a tainted var name:
       // keep `$"…{expr}"` interpolation contents, drop plain / verbatim string
       // literal bodies and char literals. Otherwise a tainted var NAME that
