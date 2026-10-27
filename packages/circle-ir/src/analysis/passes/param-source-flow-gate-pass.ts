@@ -201,6 +201,13 @@ function isReactHtmlComponent(m: MethodInfo, f: TaintFlowInfo, lines: string[]):
   return /\bfunction\s+[A-Z][A-Za-z0-9]*\s*\(\s*\{/.test(sig);
 }
 
+/** cognium-dev#934 — bare `String` params into diesel `sql_query` / `raw_sql` are real SQLi. */
+function isRustDieselSqlParamFlow(f: TaintFlowInfo, lines: string[]): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'sql_injection') return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  return /\b(?:sql_query|raw_sql)\s*\(/.test(sinkLine);
+}
+
 /** cognium-dev#804 — SCA reachability: direct `yaml.load(param)` on a parameter. */
 function isPythonYamlLoadParamDeser(f: TaintFlowInfo, lines: string[]): boolean {
   if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'deserialization') return false;
@@ -412,7 +419,8 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           isHandler(m) ||
           fedByRealSource(f, m) ||
           isReactHtmlComponent(m, f, lines) ||
-          (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines))
+          (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines)) ||
+          (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines))
         );
       }
       if (keep) flows[w++] = f;
