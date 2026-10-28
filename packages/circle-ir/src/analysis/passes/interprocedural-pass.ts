@@ -476,6 +476,7 @@ function appendCalleeSourceCallerSinkFlows(
           continue;
         }
         if (
+          (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
           !interproceduralCalleeParamReachesReturn(
             fileCode,
             callee.startLine,
