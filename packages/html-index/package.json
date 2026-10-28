@@ -55,7 +55,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "postcss": "^8.5.29"
+    "postcss": "^8.5.31"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

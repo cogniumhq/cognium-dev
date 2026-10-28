@@ -4302,6 +4302,7 @@ function javaChainTextAt(sourceLines: string[], line: number, column: number): s
  * finding while `replaceAll("[\r\n]", "")` got no credit at all.
  *   - `log_injection`: the chain strips both CR and LF (double-quoted String or single-quoted char literals).
  *   - `xss`: the chain maps both `<` and `>` to an entity.
+ *   - `code_injection`: the chain strips both `{` and `}` (flow-sanitize ssti custom_wrapper).
  * Returns the credited sink types (possibly empty).
  */
 function javaReplaceChainCredit(chainText: string): SinkType[] {
@@ -4309,6 +4310,8 @@ function javaReplaceChainCredit(chainText: string): SinkType[] {
   let lf = false;
   let lt = false;
   let gt = false;
+  let openBrace = false;
+  let closeBrace = false;
   for (const m of chainText.matchAll(JAVA_REPLACE_ARGS_RE)) {
     const kind = m[1] as 'replace' | 'replaceAll';
     const rawFrom = m[2] ?? m[3] ?? '';
@@ -4319,10 +4322,13 @@ function javaReplaceChainCredit(chainText: string): SinkType[] {
     if (cov.lf) lf = true;
     if (from === '<' && to.startsWith('&')) lt = true;
     if (from === '>' && to.startsWith('&')) gt = true;
+    if (from === '{') openBrace = true;
+    if (from === '}') closeBrace = true;
   }
   const out: SinkType[] = [];
   if (cr && lf) out.push('log_injection');
   if (lt && gt) out.push('xss');
+  if (openBrace && closeBrace) out.push('code_injection');
   return out;
 }
 

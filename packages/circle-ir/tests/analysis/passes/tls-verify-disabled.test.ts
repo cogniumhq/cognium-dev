@@ -11,6 +11,46 @@ describe('tls-verify-disabled pass', () => {
   beforeAll(async () => { await initAnalyzer(); });
 
   // ---------------- Go ----------------
+  it('Go: x509.Verify without intermediate denylist guard is flagged (issue-894 S3)', async () => {
+    const code = `
+package main
+
+import "crypto/x509"
+
+func verifyLeaf(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
+  opts := x509.VerifyOptions{
+    Roots:         roots,
+    Intermediates: inter,
+  }
+  _, err := leaf.Verify(opts)
+  return err
+}
+`;
+    const r = await analyze(code, 'issue-894-x509-intermediate-denylist_tp.go', 'go');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Go: x509.Verify with intermediate denylist guard is NOT flagged (issue-894 S3 safe)', async () => {
+    const code = `
+package main
+
+import "crypto/x509"
+
+func intermediateDenylist() map[string]bool { return map[string]bool{} }
+
+func verifyLeafSafe(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
+  deny := intermediateDenylist()
+  if deny[leaf.Subject.CommonName] {
+    return x509.CertificateInvalidError{}
+  }
+  _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter})
+  return err
+}
+`;
+    const r = await analyze(code, 'issue-894-x509-intermediate-safe.go', 'go');
+    expect(tlsOff(r)).toHaveLength(0);
+  });
+
   it('Go: tls.Config{InsecureSkipVerify: true} is flagged', async () => {
     const code = `
 package main
@@ -93,6 +133,110 @@ const https = require('https');
 const agent = new https.Agent({ rejectUnauthorized: false });
 `;
     const r = await analyze(code, 'b.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: checkServerIdentity with loose IP folding is flagged (issue-894 S2)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function looseIp(value) {
+  return String(value).replace(/[^\\d.]/g, '');
+}
+
+function checkServerIdentity(host, cert) {
+  const cn = (cert.subject && cert.subject.CN) || '';
+  if (looseIp(host) !== '' && looseIp(host) === looseIp(cn)) return undefined;
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+
+module.exports = { connect };
+`;
+    const r = await analyze(code, 'issue-894-tls-loose-ip.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: checkServerIdentity with NFKC normalize is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  const cn = (cert.subject && cert.subject.CN) || '';
+  const h = String(host).normalize('NFKC');
+  const c = String(cn).normalize('NFKC');
+  if (h === c) return undefined;
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-fullwidth.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: checkServerIdentity with DNS SAN match is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  const altnames = cert.subjectaltname;
+  if (!altnames) return new Error('no san');
+  const parts = String(altnames).split(/,\\s*/);
+  for (const p of parts) {
+    const name = p.replace(/^DNS:/i, '').trim();
+    if (name === host) return undefined;
+  }
+  return new Error('mismatch');
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-dns-san.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: issuer chain walk without denylist is flagged (issue-894 S4)', async () => {
+    const code = `
+'use strict';
+const tls = require('tls');
+
+function checkServerIdentity(host, cert) {
+  for (let c = cert; c; c = c.issuerCertificate) {
+    if (!c.valid_to) return new Error('bad cert');
+  }
+  return undefined;
+}
+
+function connect(userHost) {
+  return tls.connect({ host: userHost, port: 443, servername: userHost, checkServerIdentity });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-untrusted-intermediate.js', 'javascript');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('JS: checkServerIdentity that returns undefined is flagged (issue-894 S1)', async () => {
+    const code = `
+const https = require('https');
+function client() {
+  return https.request({
+    host: 'example.com',
+    checkServerIdentity: (host, cert) => undefined,
+  });
+}
+`;
+    const r = await analyze(code, 'issue-894-tls-host.js', 'javascript');
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
 

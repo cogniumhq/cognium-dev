@@ -12,6 +12,9 @@
  *       call/composite contains literal `InsecureSkipVerify: true`, OR via
  *       a syntactic text scan (composite literals are not always emitted
  *       as calls in IR).
+ *     - `(*x509.Certificate).Verify` with `x509.VerifyOptions` and no
+ *       intermediate-CA denylist / blocklist guard in the same file — PKIX
+ *       chain acceptance without checking blocked intermediates (CWE-295).
  *   Python:
  *     - `requests.get|post|put|delete|patch|head|options|request(..., verify=False)`
  *     - `ssl._create_unverified_context()` / `ssl._create_default_https_context = ssl._create_unverified_context`
@@ -21,6 +24,17 @@
  *     - `{ rejectUnauthorized: false }` in https.request / fetch options /
  *       node-fetch / axios — text scan on arg expressions
  *     - `https.Agent({ rejectUnauthorized: false })`
+ *     - Custom `checkServerIdentity` that always succeeds (`=> undefined` /
+ *       `=> null` / empty body) — disables hostname verification without
+ *       setting `rejectUnauthorized: false`
+ *     - Custom `checkServerIdentity` that accepts after loose host parsing
+ *       (digit-only IP folding, helper such as `looseIp`) — CWE-295 weak identity
+ *     - Custom `checkServerIdentity` that compares hosts after Unicode NFKC
+ *       normalization (fullwidth / homograph confusion)
+ *     - Custom `checkServerIdentity` that accepts when the requested host
+ *       appears in subjectAltName / DNS SAN text (DNS↔IP confusion)
+ *     - Custom `checkServerIdentity` that walks `issuerCertificate` without
+ *       an intermediate denylist / blocklist guard
  *     - `process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'` (assignment;
  *       detected via call to property assignment — best-effort)
  *   Java:
@@ -48,6 +62,9 @@ const PY_HTTP_RECEIVERS = new Set([
 const VERIFY_FALSE_RE = /\bverify\s*=\s*False\b/;
 const REJECT_UNAUTHORIZED_FALSE_RE = /\brejectUnauthorized\s*:\s*false\b/;
 const INSECURE_SKIP_VERIFY_TRUE_RE = /\bInsecureSkipVerify\s*:\s*true\b/;
+const GO_X509_VERIFY_CALL_RE = /\.Verify\s*\(/;
+const GO_INTERMEDIATE_DENYLIST_GUARD_RE =
+  /\b(denylist|denyList|deny_list|blocklist|blockList|blockedIntermediate|blocked_intermediate|deniedIntermediate|denied_intermediate|isDeniedIntermediate|intermediateDenylist|intermediate_denylist)\b/i;
 const HOSTNAME_LAMBDA_TRUE_RE = /\(\s*\w+\s*,\s*\w+\s*\)\s*->\s*true\b/;
 // C#: a cert-validation callback given an always-true lambda — assigned
 // (`= `/`+= `) or wrapped in a delegate constructor (`new …Callback( … )`).
@@ -61,6 +78,20 @@ const ALLOW_ALL_HOSTNAME_VERIFIERS = new Set([
   'new AllowAllHostnameVerifier()',
   'new NoopHostnameVerifier()',
 ]);
+// Node TLS: returning undefined/null from checkServerIdentity means success.
+const JS_CHECK_SERVER_IDENTITY_NOP_RE =
+  /\bcheckServerIdentity\s*:\s*(?:async\s*)?\([^)]*\)\s*=>\s*(?:undefined|null)\b/;
+const JS_CHECK_SERVER_IDENTITY_NOP_FN_RE =
+  /\bcheckServerIdentity\s*:\s*function\s*\([^)]*\)\s*\{\s*return\s+(?:undefined|null)\s*;?\s*\}/;
+const JS_CHECK_SERVER_IDENTITY_DECL_RE =
+  /\bfunction\s+checkServerIdentity\s*\([^)]*\)\s*\{/g;
+const JS_LOOSE_IP_HOST_STRIP_RE = /\.replace\s*\(\s*\/\[\^\\d\.\]\\]\//;
+const JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE =
+  /(?:looseIp\s*\(|\.replace\s*\(\s*\/\[\^\\d\.\]\\]\/)[\s\S]*?return\s+undefined\b/;
+const JS_NFKC_NORMALIZE_RE = /\.normalize\s*\(\s*['"]NFKC['"]\s*\)/i;
+const JS_SUBJECT_ALT_NAME_RE =
+  /\bsubjectaltname\b|\bsubjectAltName\b|\baltNames\b|\bDNS:\b|\bIP Address:/i;
+const JS_ISSUER_CHAIN_WALK_RE = /\bissuerCertificate\b/;
 
 export interface TlsVerifyDisabledResult {
   findings: Array<{
@@ -230,6 +261,23 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
           });
         }
       }
+      if (
+        /\bx509\./.test(code) &&
+        /\bVerifyOptions\b/.test(code) &&
+        GO_X509_VERIFY_CALL_RE.test(code) &&
+        !GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(code)
+      ) {
+        for (let i = 0; i < lines.length; i++) {
+          if (GO_X509_VERIFY_CALL_RE.test(lines[i])) {
+            out.push({
+              line: i + 1,
+              pattern: 'x509.Verify without intermediate denylist',
+              api: 'x509.Certificate.Verify',
+            });
+            break;
+          }
+        }
+      }
     }
 
     if (language === 'python') {
@@ -253,6 +301,39 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
             line: i + 1,
             pattern: 'NODE_TLS_REJECT_UNAUTHORIZED=0',
             api: 'process.env',
+          });
+        }
+        if (
+          JS_CHECK_SERVER_IDENTITY_NOP_RE.test(l) ||
+          JS_CHECK_SERVER_IDENTITY_NOP_FN_RE.test(l)
+        ) {
+          out.push({
+            line: i + 1,
+            pattern: 'checkServerIdentity => undefined',
+            api: 'tls.connect / https.request options',
+          });
+        }
+      }
+      // Multi-line arrow bodies (options object spans lines).
+      const m = JS_CHECK_SERVER_IDENTITY_NOP_RE.exec(code) ?? JS_CHECK_SERVER_IDENTITY_NOP_FN_RE.exec(code);
+      if (m && m.index !== undefined) {
+        const line = code.slice(0, m.index).split('\n').length;
+        const dupKey = `${line}-checkServerIdentity => undefined`;
+        if (!out.some((o) => `${o.line}-${o.pattern}` === dupKey)) {
+          out.push({
+            line,
+            pattern: 'checkServerIdentity => undefined',
+            api: 'tls.connect / https.request options',
+          });
+        }
+      }
+      for (const weak of this.detectWeakCheckServerIdentityCallbacks(code)) {
+        const dupKey = `${weak.line}-${weak.pattern}`;
+        if (!out.some((o) => `${o.line}-${o.pattern}` === dupKey)) {
+          out.push({
+            line: weak.line,
+            pattern: weak.pattern,
+            api: 'checkServerIdentity (custom)',
           });
         }
       }
@@ -283,11 +364,107 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     return out;
   }
 
+  /** Standalone and inline `checkServerIdentity` with weak identity checks. */
+  private detectWeakCheckServerIdentityCallbacks(code: string): Array<{
+    line: number;
+    pattern: string;
+  }> {
+    const hits: Array<{ line: number; pattern: string }> = [];
+    const fileHasDenylist = GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(code);
+
+    const declRe = new RegExp(JS_CHECK_SERVER_IDENTITY_DECL_RE.source, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = declRe.exec(code)) !== null) {
+      const openBrace = code.indexOf('{', match.index);
+      if (openBrace < 0) continue;
+      const body = this.sliceBalancedBraces(code, openBrace);
+      if (!body) continue;
+      const prelude = code.slice(Math.max(0, match.index - 800), match.index);
+      const line = code.slice(0, match.index).split('\n').length;
+      const weak = this.classifyWeakCheckServerIdentityBody(
+        body, prelude, fileHasDenylist,
+      );
+      if (weak) hits.push({ line, pattern: weak });
+    }
+
+    const inlineRe =
+      /\bcheckServerIdentity\s*:\s*(?:async\s*)?function\s*\([^)]*\)\s*\{/g;
+    while ((match = inlineRe.exec(code)) !== null) {
+      const openBrace = code.indexOf('{', match.index);
+      if (openBrace < 0) continue;
+      const body = this.sliceBalancedBraces(code, openBrace);
+      if (!body) continue;
+      const prelude = code.slice(Math.max(0, match.index - 800), match.index);
+      const line = code.slice(0, match.index).split('\n').length;
+      const weak = this.classifyWeakCheckServerIdentityBody(
+        body, prelude, fileHasDenylist,
+      );
+      if (weak) hits.push({ line, pattern: weak });
+    }
+
+    return hits;
+  }
+
+  private classifyWeakCheckServerIdentityBody(
+    body: string,
+    prelude: string,
+    fileHasDenylist: boolean,
+  ): string | null {
+    if (!/\breturn\s+undefined\b/.test(body)) return null;
+
+    const loose =
+      JS_LOOSE_IP_HOST_STRIP_RE.test(body) ||
+      JS_LOOSE_IP_HOST_STRIP_RE.test(prelude) ||
+      /\blooseIp\s*\(/.test(body);
+    if (loose && JS_CHECK_SERVER_IDENTITY_LOOSE_BODY_RE.test(body)) {
+      return 'checkServerIdentity loose host parse => undefined';
+    }
+
+    const nfkc =
+      JS_NFKC_NORMALIZE_RE.test(body) || JS_NFKC_NORMALIZE_RE.test(prelude);
+    if (nfkc && /\breturn\s+undefined\b/.test(body)) {
+      return 'checkServerIdentity NFKC host normalize => undefined';
+    }
+
+    if (JS_SUBJECT_ALT_NAME_RE.test(body) && /\breturn\s+undefined\b/.test(body)) {
+      return 'checkServerIdentity DNS SAN / IP match => undefined';
+    }
+
+    if (
+      JS_ISSUER_CHAIN_WALK_RE.test(body) &&
+      !fileHasDenylist &&
+      /\breturn\s+undefined\b/.test(body)
+    ) {
+      return 'checkServerIdentity issuer chain without denylist => undefined';
+    }
+
+    return null;
+  }
+
+  private sliceBalancedBraces(code: string, openIndex: number): string | null {
+    if (code[openIndex] !== '{') return null;
+    let depth = 0;
+    for (let i = openIndex; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return code.slice(openIndex, i + 1);
+      }
+    }
+    return null;
+  }
+
   private fixFor(language: string, pattern: string): string {
     if (pattern.includes('InsecureSkipVerify')) {
       return 'Remove `InsecureSkipVerify: true` — let Go verify the cert. If ' +
         'you need to trust a private CA, set `RootCAs` to a `*x509.CertPool` ' +
         'containing that CA.';
+    }
+    if (pattern.includes('x509.Verify without intermediate denylist')) {
+      return 'Before calling `x509.Certificate.Verify`, check the chain (including ' +
+        'intermediates) against your blocked-CA / denylist policy. Relying on PKIX ' +
+        'verification alone accepts chains that include revoked or blocked intermediates.';
     }
     if (pattern.includes('verify=False')) {
       return 'Remove `verify=False`. To trust a private CA, pass `verify=\'/path/to/ca.pem\'`.';
@@ -295,6 +472,11 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
     if (pattern.includes('rejectUnauthorized')) {
       return 'Remove `rejectUnauthorized: false`. To trust a private CA, set the ' +
         '`ca` option to the CA cert(s). Never disable TLS verification globally.';
+    }
+    if (pattern.includes('checkServerIdentity')) {
+      return 'Implement `checkServerIdentity` to compare the certificate to the ' +
+        'intended hostname (or remove the override). Returning `undefined` accepts ' +
+        'the connection; loose host/IP folding before that check enables MITM.';
     }
     if (pattern.includes('NODE_TLS_REJECT_UNAUTHORIZED')) {
       return 'Remove the `NODE_TLS_REJECT_UNAUTHORIZED=0` assignment — it globally ' +
