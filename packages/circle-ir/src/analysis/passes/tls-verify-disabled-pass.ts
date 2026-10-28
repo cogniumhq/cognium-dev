@@ -64,7 +64,14 @@ const REJECT_UNAUTHORIZED_FALSE_RE = /\brejectUnauthorized\s*:\s*false\b/;
 const INSECURE_SKIP_VERIFY_TRUE_RE = /\bInsecureSkipVerify\s*:\s*true\b/;
 const GO_X509_VERIFY_CALL_RE = /\.Verify\s*\(/;
 const GO_INTERMEDIATE_DENYLIST_GUARD_RE =
-  /\b(denylist|denyList|deny_list|blocklist|blockList|blockedIntermediate|blocked_intermediate|deniedIntermediate|denied_intermediate|isDeniedIntermediate|intermediateDenylist|intermediate_denylist)\b/i;
+  /\b(denylist|denyList|deny_list|blocklist|blockList|blockedIntermediate|blocked_intermediate|deniedIntermediate|deniedIntermediates|denied_intermediate|isDeniedIntermediate|intermediateDenylist|intermediate_denylist)\b/i;
+
+/** Strip Go comments so denylist words in headers do not suppress x509.Verify findings. */
+function goSourceWithoutComments(code: string): string {
+  let s = code.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  s = s.replace(/\/\/[^\n]*/g, ' ');
+  return s;
+}
 const HOSTNAME_LAMBDA_TRUE_RE = /\(\s*\w+\s*,\s*\w+\s*\)\s*->\s*true\b/;
 // C#: a cert-validation callback given an always-true lambda — assigned
 // (`= `/`+= `) or wrapped in a delegate constructor (`new …Callback( … )`).
@@ -265,7 +272,7 @@ export class TlsVerifyDisabledPass implements AnalysisPass<TlsVerifyDisabledResu
         /\bx509\./.test(code) &&
         /\bVerifyOptions\b/.test(code) &&
         GO_X509_VERIFY_CALL_RE.test(code) &&
-        !GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(code)
+        !GO_INTERMEDIATE_DENYLIST_GUARD_RE.test(goSourceWithoutComments(code))
       ) {
         for (let i = 0; i < lines.length; i++) {
           if (GO_X509_VERIFY_CALL_RE.test(lines[i])) {

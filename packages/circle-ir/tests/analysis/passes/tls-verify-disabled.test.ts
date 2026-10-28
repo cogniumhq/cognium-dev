@@ -30,6 +30,52 @@ func verifyLeaf(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
     expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('Go: x509.Verify flags TP when denylist appears only in a comment (#960)', async () => {
+    const code = `
+package main
+
+import "crypto/x509"
+
+// Intake fixture: no intermediate denylist in code — comment must not suppress.
+func verifyLeaf(leaf *x509.Certificate, roots, inter *x509.CertPool) error {
+  _, err := leaf.Verify(x509.VerifyOptions{
+    Roots:         roots,
+    Intermediates: inter,
+  })
+  return err
+}
+`;
+    const r = await analyze(code, 'x509_intermediate_denylist_tp.go', 'go');
+    expect(tlsOff(r).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Go: x509.Verify with deniedIntermediates guard is NOT flagged (#960 safe)', async () => {
+    const code = `
+package main
+
+import (
+  "crypto/x509"
+  "errors"
+)
+
+func verifyLeafSafe(leaf *x509.Certificate, roots, inter *x509.CertPool, deniedIntermediates map[string]bool) error {
+  if deniedIntermediates[leaf.Subject.CommonName] {
+    return errors.New("denylisted intermediate")
+  }
+  _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter})
+  if err != nil {
+    return err
+  }
+  if deniedIntermediates[leaf.Subject.CommonName] {
+    return errors.New("denylisted intermediate")
+  }
+  return nil
+}
+`;
+    const r = await analyze(code, 'x509_intermediate_denylist_safe.go', 'go');
+    expect(tlsOff(r)).toHaveLength(0);
+  });
+
   it('Go: x509.Verify with intermediate denylist guard is NOT flagged (issue-894 S3 safe)', async () => {
     const code = `
 package main
