@@ -125,8 +125,19 @@ export function canonicalType(node: Node): string {
       const inner = namedChildren(node);
       return inner.length === 1 ? canonicalType(inner[0]) : joinTokens(bodyTokens([node]));
     }
+    case 'formal_parameters': {
+      // Parameters of a function or constructor type: types only, never names.
+      const params = namedChildren(node).map(p => {
+        const type = p.childForFieldName('type');
+        const pattern = p.childForFieldName('pattern');
+        const rest = pattern?.type === 'rest_pattern' || p.type === 'rest_pattern' ? '...' : '';
+        const optional = p.type === 'optional_parameter' ? '?' : '';
+        return rest + (type ? canonicalType(type) : '_') + optional;
+      });
+      return '(' + params.join(',') + ')';
+    }
     case 'object_type': {
-      const members = namedChildren(node).map(m => joinTokens(bodyTokens([m]).filter(t => t !== ',')));
+      const members = namedChildren(node).map(canonicalType);
       members.sort();
       return '{' + members.join(';') + '}';
     }

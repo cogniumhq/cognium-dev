@@ -223,14 +223,22 @@ class Extractor {
   constructor(private readonly b: Builder) {}
 
   /** Functions and classes inside `node`'s subtree, keyed under `enclosing`. */
-  nested(node: Node, enclosing: StableDecl, exclude: ReadonlySet<number>, path = ''): void {
+  nested(
+    node: Node,
+    enclosing: StableDecl,
+    exclude: ReadonlySet<number>,
+    path = '',
+    self: Node | null = null,
+  ): void {
     const kids = namedChildren(node);
     for (let i = 0; i < kids.length; i++) {
       const c = kids[i];
       if (exclude.has(c.id)) continue;
       const p = path === '' ? `${i}` : `${path}.${i}`;
-      if (NESTED.has(c.type)) this.declareNested(c, enclosing, p);
-      else this.nested(c, enclosing, exclude, p);
+      // `self` is the declaration's own function value (`const f = () => …`):
+      // walked through, never declared a second time as a nested function.
+      if (NESTED.has(c.type) && c.id !== self?.id) this.declareNested(c, enclosing, p);
+      else this.nested(c, enclosing, exclude, p, self);
     }
   }
 
@@ -256,11 +264,12 @@ class Extractor {
     nodes: Node[],
     nameNode: Node | null,
     parent: StableDecl,
+    self: Node | null = null,
   ): StableDecl {
     const decl = this.b.add(kind, name, prefix + name, signature, at, parent.id);
     const skip = new Set<number>(nameNode ? [nameNode.id] : []);
     this.b.setBody(decl, bodyTokens(nodes, { skip }));
-    for (const n of nodes) this.nested(n, decl, skip);
+    for (const n of nodes) this.nested(n, decl, skip, '', self);
     return decl;
   }
 
@@ -363,7 +372,7 @@ class Extractor {
     }
     if (value && (FUNCTION_DECLS.has(v.type) || FUNCTION_VALUES.has(v.type))) {
       const signature = functionSignature(v);
-      this.leaf('function', name, prefix, signature, holder, [holder], nameNode, parent);
+      this.leaf('function', name, prefix, signature, holder, [holder], nameNode, parent, v);
       replace.set(holder.id, placeholder('function', name, signature));
       return;
     }
