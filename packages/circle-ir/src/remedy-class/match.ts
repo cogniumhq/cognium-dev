@@ -294,7 +294,10 @@ function shapeMatch(want: TableCall, c: CallInfo, ir: CircleIR): TypeMatch | nul
     const simple = c.receiver_type ?? c.method_name;
     return typeMatch(want.type, { ...c, receiver_type: simple, receiver: simple }, ir);
   }
-  if (isCtor(c)) return null;
+  if (isCtor(c)) {
+    // `methods: ["*"]` on `java.lang.Object` is any call at the sink, constructors included
+    return want.type === 'java.lang.Object' && want.methods.includes('*') ? 'any' : null;
+  }
   if (!methodMatches(want.methods, c.method_name)) return null;
   return typeMatch(want.type, c, ir);
 }
@@ -306,12 +309,37 @@ function argsAt(c: CallInfo, arg: TableCall['arg']): string[] | null {
   return a ? [a.expression] : [];
 }
 
+const VECTOR_LITERAL = /^\s*(?:new\s+[\w.]+\s*\[\s*\]\s*\{|[\w.]+\.(?:of|asList)\s*\()/;
+
+/** Element 0 of an array or list literal (`new String[]{a, b}`, `List.of(a, b)`), as text; else null. */
+function leadingElement(expr: string): string | null {
+  const m = VECTOR_LITERAL.exec(expr);
+  if (!m) return null;
+  const rest = expr.slice(m[0].length);
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if ((ch === ')' || ch === ']' || ch === '}') && depth > 0) depth--;
+    else if ((ch === ',' || ch === ')' || ch === '}') && depth === 0) return rest.slice(0, i).trim();
+  }
+  return rest.trim() || null;
+}
+
 /** The literal at an argument, or element 0 of an array or list literal there. */
 function leadingLiteral(c: CallInfo, arg: TableCall['arg']): string | null {
   const a = c.arguments.find(x => x.position === (arg === 'all' || arg === undefined ? 0 : arg));
   if (!a) return null;
   if (a.literal !== null && a.literal !== undefined) return a.literal.trim();
-  const m = /^\s*(?:new\s+[\w.]+\s*\[\s*\]\s*\{|[\w.]+\.(?:of|asList)\s*\()\s*"((?:[^"\\]|\\.)*)"/.exec(a.expression);
+  const first = leadingElement(a.expression);
+  const m = first === null ? null : /^"((?:[^"\\]|\\.)*)"$/.exec(first);
   return m ? m[1].trim() : null;
 }
 
@@ -348,7 +376,14 @@ function resultDef(ctx: DeclCtx, c: CallInfo): DFGDef | undefined {
     (o.receiver ?? '').includes(`${c.method_name}(`) || o.arguments.some(a => a.expression.includes(`${c.method_name}(`)),
   );
   if (inner) return undefined;
-  return ctx.defs.find(d => d.line === line && d.kind !== 'param');
+  // several defs on one line (`try (Connection c = ..; PreparedStatement ps = ..)`): the def written
+  // nearest before the call, by column; without columns, the only def on the line
+  const onLine = ctx.defs.filter(d => d.line === line && d.kind !== 'param');
+  if (onLine.length <= 1) return onLine[0];
+  const before = onLine
+    .filter(d => d.column !== undefined && d.column <= c.location.column)
+    .sort((a, b) => (b.column as number) - (a.column as number));
+  return before[0];
 }
 
 /** Does `a`'s result (or receiver object) reach `b`'s receiver or an argument? */
@@ -356,9 +391,31 @@ function reaches(ctx: DeclCtx, a: CallInfo, b: CallInfo): boolean {
   const texts = [b.receiver ?? '', ...b.arguments.map(x => x.expression)];
   if (texts.some(t => t.includes(`${a.method_name}(`)) && a.location.line === b.location.line) return true;
   const def = resultDef(ctx, a);
-  if (!def) return false;
-  const reach = ctx.reach(def.id);
-  return texts.some(t => defsUsedIn(ctx, b.location.line, t).some(d => reach.has(d)));
+  if (def) {
+    const reach = ctx.reach(def.id);
+    return texts.some(t => defsUsedIn(ctx, b.location.line, t).some(d => reach.has(d)));
+  }
+  return reachesByName(ctx, a, b, texts);
+}
+
+/**
+ * Fallback when the DFG holds no def for a call's result — the Java DFG records none for
+ * try-with-resources resources or the locals declared in that block. A name that appears on
+ * `a`'s line with no reaching def, and is not one of `a`'s own operands or a method name there,
+ * is taken as declared from `a`; it reaches `b` when `b` uses it, also without a reaching def.
+ */
+function reachesByName(ctx: DeclCtx, a: CallInfo, b: CallInfo, texts: string[]): boolean {
+  const line = a.location.line;
+  const own = identifiers([a.receiver ?? '', ...a.arguments.map(x => x.expression)].join(' '));
+  const methods = new Set(ctx.calls.filter(c => c.location.line === line).map(c => c.method_name));
+  const declared = new Set(
+    ctx.ir.dfg.uses
+      .filter(u => u.line === line && u.def_id === null && !own.has(u.variable) && !methods.has(u.variable))
+      .map(u => u.variable),
+  );
+  if (declared.size === 0) return false;
+  const usedUndefined = new Set(ctx.ir.dfg.uses.filter(u => u.line === b.location.line && u.def_id === null).map(u => u.variable));
+  return texts.some(t => [...identifiers(t)].some(n => declared.has(n) && usedUndefined.has(n)));
 }
 
 function unobservableReason(step: MatchStep): string | undefined {
@@ -441,8 +498,10 @@ function callHits(step: MatchStep, env: EvalEnv): Hit[] {
     // a sink-replacement is a call at the sink: it must have the shape of one of the row's sinks
     if (step.role === 'sink-replacement' && !env.sinkCalls.includes(c)) continue;
     if (step.argIs) {
-      const exprs = argsAt(c, want.arg ?? 0) ?? [];
+      let exprs = argsAt(c, want.arg ?? 0) ?? [];
       if (exprs.length === 0) continue;
+      // `untainted` on an argument vector (array or list literal) reads its program element, element 0
+      if (step.argIs === 'untainted') exprs = exprs.map(e => leadingElement(e) ?? e);
       const flags = exprs.map(e => argTainted(ctx, c, e));
       if (step.argIs === 'tainted' && !flags.some(Boolean)) continue;
       if (step.argIs === 'untainted' && flags.some(Boolean)) continue;
