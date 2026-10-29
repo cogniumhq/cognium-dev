@@ -236,6 +236,30 @@ export type {
   Timing as NavigationTiming,
 } from './navigation/index.js';
 
+// Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
+// qualified name + signature, body ids from a normalized body hash, node ids
+// scoped to one body. TypeScript/JavaScript only; analyze() does not call it.
+export {
+  STABLE_ID_SCHEME,
+  deriveStableIds,
+  deriveTypeScriptIds,
+  stableIdsSupport,
+  moduleNameFor,
+  assignNodeIds,
+  diffStableIds,
+} from './stable-ids/index.js';
+export type {
+  StableIdScheme,
+  StableDecl,
+  StableDeclKind,
+  StableIdFlag,
+  StableIdFile,
+  StableIdOptions,
+  StableNodeIds,
+  NodeIdSource,
+  StableIdDiff,
+} from './stable-ids/index.js';
+
 // Language plugins
 export {
   getLanguageRegistry,
