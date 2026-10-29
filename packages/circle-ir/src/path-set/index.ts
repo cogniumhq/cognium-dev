@@ -1,0 +1,32 @@
+/**
+ * Path sets: every source-to-sink path of one CWE in an analysed tree, keyed
+ * so a path is found again in another version of the tree, and the
+ * difference between two versions with unresolved edges counted.
+ */
+export {
+  pathSetOf,
+  pathSetDiff,
+  diffPathSets,
+  pinFacts,
+  pathKey,
+  declAt,
+  changeOf,
+  normalizeCwe,
+} from './path-set.js';
+export type { PathSetInput, PathSetOptions } from './path-set.js';
+export { PATH_KEY_SCHEME } from './types.js';
+export type {
+  DeclKeyScheme,
+  DeclRef,
+  PathHop,
+  PathEnd,
+  PathSource,
+  PathSink,
+  PathState,
+  PathEntry,
+  PathSet,
+  PathChange,
+  PathDiffEntry,
+  PinFacts,
+  PathSetDiff,
+} from './types.js';
