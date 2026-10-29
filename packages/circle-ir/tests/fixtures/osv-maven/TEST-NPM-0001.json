@@ -1,0 +1,1 @@
+{"id":"TEST-NPM-0001","modified":"2024-05-01T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"left-pad"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"}]}]}]}

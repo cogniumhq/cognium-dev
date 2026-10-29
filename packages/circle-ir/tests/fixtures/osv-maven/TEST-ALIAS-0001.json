@@ -1,0 +1,3 @@
+{"id":"TEST-ALIAS-0001","modified":"2024-01-01T00:00:00Z","aliases":["CVE-2021-44228"],"summary":"Second record of the same vulnerability",
+ "affected":[{"package":{"ecosystem":"Maven","name":"org.apache.logging.log4j:log4j-core"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"2.13.0"},{"fixed":"2.15.0"}]}]}],
+ "references":[{"type":"WEB","url":"https://example.org/alias"}]}

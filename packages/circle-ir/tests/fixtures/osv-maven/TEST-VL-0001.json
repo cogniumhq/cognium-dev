@@ -1,0 +1,2 @@
+{"id":"TEST-VL-0001","modified":"2024-04-01T00:00:00Z","summary":"Affected versions listed explicitly",
+ "affected":[{"package":{"ecosystem":"Maven","name":"org.example:listed"},"versions":["1.0.0","1.0.1"]}]}

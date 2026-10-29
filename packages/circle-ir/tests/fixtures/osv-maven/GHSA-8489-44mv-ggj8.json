@@ -1,0 +1,5 @@
+{"id":"GHSA-8489-44mv-ggj8","modified":"2025-02-03T00:00:00Z","aliases":["CVE-2021-44832"],"summary":"Remote code execution in Log4j via JDBC appender configuration","database_specific":{"severity":"MODERATE"},
+ "affected":[{"package":{"ecosystem":"Maven","name":"org.apache.logging.log4j:log4j-core"},"ranges":[
+  {"type":"ECOSYSTEM","events":[{"introduced":"2.0-beta7"},{"fixed":"2.3.2"}]},
+  {"type":"ECOSYSTEM","events":[{"introduced":"2.4"},{"fixed":"2.12.4"}]},
+  {"type":"ECOSYSTEM","events":[{"introduced":"2.13.0"},{"fixed":"2.17.1"}]}]}]}
