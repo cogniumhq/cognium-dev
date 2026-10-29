@@ -463,20 +463,30 @@ function appendCalleeSourceCallerSinkFlows(
       }
 
       const source = calleeSources[0];
-      if (
-        fileCode &&
-        source.type === 'interprocedural_param' &&
-        source.variable &&
-        (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
-        interproceduralParamReachIsDeadBranchOnly(
-          fileCode,
-          callee.startLine,
-          callee.endLine,
-          source.variable,
-          assignee.variable,
-        )
-      ) {
-        continue;
+      if (fileCode && source.type === 'interprocedural_param' && source.variable) {
+        if (
+          interproceduralParamReachIsDeadBranchOnly(
+            fileCode,
+            callee.startLine,
+            callee.endLine,
+            source.variable,
+            assignee.variable,
+          )
+        ) {
+          continue;
+        }
+        if (
+          (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
+          !interproceduralCalleeParamReachesReturn(
+            fileCode,
+            callee.startLine,
+            callee.endLine,
+            source.variable,
+            assignee.variable,
+          )
+        ) {
+          continue;
+        }
       }
       additionalFlows.push({
         source_line: source.line,
@@ -495,11 +505,31 @@ function appendCalleeSourceCallerSinkFlows(
   }
 }
 
-/**
- * True when `param` would taint `local` only if dead-branch lines are counted
- * (e.g. OWASP #913 `else bar = param`), not when live propagation also reaches
- * `local` (list/Base64 helpers — cognium-dev#913 round 2).
- */
+/** False when the callee cannot return taint derived from `paramName` on live paths. */
+function interproceduralCalleeParamReachesReturn(
+  code: string,
+  startLine: number,
+  endLine: number,
+  paramName: string,
+  callerAssignee: string,
+): boolean {
+  const lines = code.split('\n');
+  const sliceLines = lines.slice(startLine - 1, endLine);
+  const sliceText = sliceLines.join('\n');
+  const dead = computeDeadJavaBranchLines(sliceLines);
+  const reach = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
+  if (reach.has(callerAssignee)) return true;
+  const retRe = /return\s+([^;]+);/g;
+  let m: RegExpExecArray | null;
+  while ((m = retRe.exec(sliceText)) !== null) {
+    const expr = m[1].trim();
+    if (expr === paramName) return true;
+    const id = /^([A-Za-z_]\w*)$/.exec(expr);
+    if (id && reach.has(id[1])) return true;
+  }
+  return false;
+}
+
 function interproceduralParamReachIsDeadBranchOnly(
   code: string,
   startLine: number,
