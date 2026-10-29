@@ -65,9 +65,15 @@ export function normalizeCwe(cwe: string | number): string {
 // Declarations
 // ---------------------------------------------------------------------------
 
-function typePath(t: TypeInfo): string {
+/** `package.Type$Inner` — the qualified@0.1 name of a type. */
+export function typePath(t: TypeInfo): string {
   const name = t.enclosing_type ? `${t.enclosing_type}$${t.name}` : t.name;
   return t.package ? `${t.package}.${name}` : name;
+}
+
+/** `package.Type$Inner.method(T1,T2)` — the qualified@0.1 name of a method. */
+export function qualifiedMethodName(type: TypeInfo, method: TypeInfo['methods'][number]): string {
+  return `${typePath(type)}.${method.name}(${method.parameters.map(p => p.type ?? '?').join(',')})`;
 }
 
 function span(start: number, end: number): number {
@@ -102,9 +108,7 @@ export function declAt(
     const method = type.methods
       .filter(m => line >= m.start_line && line <= m.end_line)
       .sort((a, b) => span(a.start_line, a.end_line) - span(b.start_line, b.end_line))[0];
-    qualified = method
-      ? `${typePath(type)}.${method.name}(${method.parameters.map(p => p.type ?? '?').join(',')})`
-      : `${typePath(type)}.<init>`;
+    qualified = method ? qualifiedMethodName(type, method) : `${typePath(type)}.<init>`;
   } else {
     // No type holds the line (top-level function in a language whose IR keeps
     // functions outside types): fall back to the enclosing method name the
