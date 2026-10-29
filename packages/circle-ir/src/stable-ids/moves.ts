@@ -7,7 +7,11 @@
  * 1. **Equal body hash** — settles. The pair must be unique on both sides
  *    (one removed and one added declaration of the same kind with that
  *    hash) and the body must have at least `minTokens` normalized tokens;
- *    a smaller or shared body is reported as a candidate, never a fact.
+ *    a smaller or shared body is reported as a candidate, never a fact —
+ *    unless a settled pair vouches for it: a container settles when one of
+ *    its members settled into the counterpart (`members`), and a member
+ *    follows its settled container when the counterpart has the same local
+ *    name, kind, signature and body (`enclosing`).
  * 2. **Same kind and qualified name, new signature** — settles as
  *    `signature-changed` when exactly one removed and one added
  *    declaration share them (declarations flagged `unstable:duplicate` are
@@ -26,7 +30,15 @@ import { STABLE_ID_SCHEME, type StableDecl, type StableIdFile, type StableIdSche
 export type MoveRelation = 'moved' | 'renamed' | 'moved-renamed' | 'signature-changed';
 
 /** Why a pair settled. */
-export type MoveEvidence = 'body-hash' | 'qualified-name';
+export type MoveEvidence =
+  /** Equal body hash, unique on both sides, body of at least `minTokens` tokens. */
+  | 'body-hash'
+  /** A small equal-hash pair one of whose members settled into the other. */
+  | 'members'
+  /** Its enclosing declaration settled; same local name, kind, signature and body under the new one. */
+  | 'enclosing'
+  /** Same kind and qualified name, new signature. */
+  | 'qualified-name';
 
 /** Why a pair is only a candidate. */
 export type CandidateEvidence = 'body-hash-small' | 'body-hash-ambiguous' | 'similar-body';
@@ -162,6 +174,7 @@ export function detectMoves(
   const removedByHash = groupBy([...removed], hashKey);
   const addedByHash = groupBy([...added], hashKey);
   const hashPaired = new Set<StableDecl>();
+  const small: MoveCandidate[] = [];
   const ambiguous: MoveCandidate[] = [];
   for (const [k, olds] of removedByHash) {
     const news = addedByHash.get(k);
@@ -170,16 +183,52 @@ export function detectMoves(
       const [from] = olds;
       const [to] = news;
       if (from.token_count >= minTokens) settle(from, to, 'body-hash');
-      else candidates.push({ relation: relationOf(from, to), evidence: 'body-hash-small', from, to, similarity: 1, callers: 'unknown' });
+      else small.push({ relation: relationOf(from, to), evidence: 'body-hash-small', from, to, similarity: 1, callers: 'unknown' });
       hashPaired.add(from).add(to);
       continue;
     }
     // Shared bodies (often trivial ones): every pairing is a candidate, up
-    // to a bound; step 2 may still settle one of them by name.
+    // to a bound; later steps may still settle one of them.
     if (olds.length * news.length > MAX_AMBIGUOUS) continue;
     for (const from of olds) {
       for (const to of news) {
         ambiguous.push({ relation: relationOf(from, to), evidence: 'body-hash-ambiguous', from, to, similarity: 1, callers: 'unknown' });
+      }
+    }
+  }
+
+  // 1b. Settled pairs carry their surroundings, to a fixpoint: a small
+  // equal-hash pair settles when a member of one settled into the other
+  // (a container's body is mostly member placeholders), and a declaration
+  // whose enclosing declaration settled follows it when the counterpart
+  // under the new parent has the same local name, kind, signature and body.
+  const declById = new Map<string, StableDecl>();
+  for (const f of [...before, ...after]) for (const d of f.decls) declById.set(d.id, d);
+  const local = (d: StableDecl): string => {
+    const p = d.parent === null ? undefined : declById.get(d.parent);
+    return p && d.qualified_name.startsWith(p.qualified_name) ? d.qualified_name.slice(p.qualified_name.length) : d.qualified_name;
+  };
+  const addedByParent = groupBy([...added], d => d.parent ?? '');
+  for (let changed = true; changed;) {
+    changed = false;
+    const settledTo = new Map<string, string>(moves.map(m => [m.from.id, m.to.id]));
+    for (const c of small) {
+      if (!removed.has(c.from) || !added.has(c.to)) continue;
+      if (moves.some(m => m.from.parent === c.from.id && m.to.parent === c.to.id)) {
+        settle(c.from, c.to, 'members');
+        changed = true;
+      }
+    }
+    for (const from of [...removed]) {
+      const newParent = from.parent === null ? undefined : settledTo.get(from.parent);
+      if (newParent === undefined) continue;
+      const match = (addedByParent.get(newParent) ?? []).filter(
+        to => added.has(to) && to.kind === from.kind && to.signature === from.signature
+          && to.body_hash === from.body_hash && local(to) === local(from),
+      );
+      if (match.length === 1) {
+        settle(from, match[0], 'enclosing');
+        changed = true;
       }
     }
   }
@@ -196,7 +245,7 @@ export function detectMoves(
     }
   }
 
-  for (const c of ambiguous) {
+  for (const c of [...small, ...ambiguous]) {
     if (!removed.has(c.from) || !added.has(c.to)) continue;
     candidates.push(c);
     hashPaired.add(c.from).add(c.to);
