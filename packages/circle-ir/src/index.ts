@@ -249,6 +249,8 @@ export {
   moduleNameFor,
   assignNodeIds,
   diffStableIds,
+  detectMoves,
+  bodySimilarity,
 } from './stable-ids/index.js';
 export type {
   StableIdScheme,
@@ -260,6 +262,13 @@ export type {
   StableNodeIds,
   NodeIdSource,
   StableIdDiff,
+  MoveRelation,
+  MoveEvidence,
+  CandidateEvidence,
+  StableIdMove,
+  MoveCandidate,
+  MoveOptions,
+  MoveDetection,
 } from './stable-ids/index.js';
 
 // Remedy-class tables: reader and digest for caller-supplied
