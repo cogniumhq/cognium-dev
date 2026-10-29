@@ -437,6 +437,105 @@ export function parseMavenDependencies(pomXml: string): Dependency[] {
 }
 
 /**
+ * Parse a Gradle dependency lockfile — the resolved, exact versions of every
+ * direct and transitive dependency, per configuration. Two layouts:
+ *
+ *   - **`gradle.lockfile`** (Gradle 6.4+, one file per project):
+ *     `group:artifact:version=conf1,conf2,…`; the `empty=…` line lists
+ *     configurations that resolved nothing and is skipped.
+ *   - **`gradle/dependency-locks/<configuration>.lockfile`** (older, one file
+ *     per configuration): bare `group:artifact:version` lines. The
+ *     configuration is the file name, which the caller may pass as
+ *     `configuration`; without it the entries count as `required`.
+ *
+ * A dependency is `dev` only when every configuration that resolved it is a
+ * test configuration (`test…`, or `…Test…` such as `integrationTestRuntimeClasspath`);
+ * any other configuration makes it `required`. Comment lines (`#`) are skipped.
+ */
+export function parseGradleLockfile(lockfile: string, configuration?: string): Dependency[] {
+  if (!lockfile) return [];
+  const out: Dependency[] = [];
+  const seen = new Set<string>();
+  for (const raw of lockfile.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    const coordPart = eq >= 0 ? line.slice(0, eq).trim() : line;
+    if (coordPart === 'empty') continue;
+    const coord = coordPart.split(':');
+    if (coord.length !== 3 || coord.some((c) => !c)) continue;
+    const configs =
+      eq >= 0
+        ? line.slice(eq + 1).split(',').map((c) => c.trim()).filter(Boolean)
+        : configuration
+          ? [configuration]
+          : [];
+    const scope: DependencyScope =
+      configs.length > 0 && configs.every(isGradleTestConfiguration) ? 'dev' : 'required';
+    const name = `${coord[0]}:${coord[1]}`;
+    const key = `${name}|${coord[2]}|${scope}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dep('maven', name, coord[2], scope));
+  }
+  return out;
+}
+
+function isGradleTestConfiguration(config: string): boolean {
+  return /^test[A-Z]?/.test(config) || /Test[A-Z]/.test(config);
+}
+
+/** Maven scopes as printed by `dependency:list` / `dependency:tree`. */
+const MAVEN_SCOPES = 'compile|provided|runtime|test|system|import';
+
+/**
+ * Coordinate as Maven prints it in resolved output:
+ * `groupId:artifactId:type[:classifier]:version:scope`.
+ */
+const MAVEN_RESOLVED_COORD = new RegExp(
+  `^([\\w.-]+):([\\w.-]+):([\\w.-]+)(?::([\\w.-]+))?:([^:\\s()]+):(${MAVEN_SCOPES})\\b(.*)$`,
+);
+
+/**
+ * Parse the text output of `mvn dependency:list` or `mvn dependency:tree`
+ * (console or `-DoutputFile`): the dependency set Maven actually resolved,
+ * direct and transitive, after mediation. A `pom.xml` alone cannot give this —
+ * versions come from parents, BOMs and nearest-wins mediation — so the caller
+ * runs Maven (in a build sandbox) and hands the text here; the engine never
+ * runs a build.
+ *
+ * Accepts `[INFO]` prefixes, tree drawing (`+-`, `|`, `\-`), the module
+ * suffix newer plugins print (`-- module x`), and the root project line of a
+ * tree (skipped: it has no scope). Verbose-tree entries that Maven did **not**
+ * resolve (`omitted for conflict with …`) are skipped; `omitted for duplicate`
+ * entries collapse into the one kept. `test` / `provided` → `dev`, a trailing
+ * `(optional)` → `optional`, everything else → `required`.
+ */
+export function parseMavenResolvedDependencies(output: string): Dependency[] {
+  if (!output) return [];
+  const out: Dependency[] = [];
+  const seen = new Set<string>();
+  for (const raw of output.split(/\r?\n/)) {
+    let line = raw.replace(/^\s*\[(?:INFO|WARNING|DEBUG)\]\s?/, '');
+    if (/omitted for conflict/.test(line)) continue;
+    // Strip tree drawing and the verbose-tree parenthesis around an entry.
+    line = line.replace(/^[\s|+\\`-]*/, '').replace(/^\(/, '').trim();
+    const m = MAVEN_RESOLVED_COORD.exec(line);
+    if (!m) continue;
+    const [, gid, aid, , , version, mvnScope, rest] = m;
+    const optional = /\(optional\)/.test(rest);
+    const scope: DependencyScope =
+      mvnScope === 'test' || mvnScope === 'provided' ? 'dev' : optional ? 'optional' : 'required';
+    const name = `${gid}:${aid}`;
+    const key = `${name}|${version}|${scope}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dep('maven', name, version, scope));
+  }
+  return out;
+}
+
+/**
  * Parse a Cargo `Cargo.toml`. `[dependencies]` → required,
  * `[dev-dependencies]` → dev, `[build-dependencies]` → optional. Handles both
  * `name = "1.2"` and `name = { version = "1.2", ... }` forms.
@@ -524,8 +623,12 @@ export function collectDependencies(ctx: DependencyContext | undefined): Depende
   if (ctx.js?.packageJson) all.push(...parseNpmDependencies(ctx.js.packageJson));
   if (ctx.python?.requirementsTxt) all.push(...parsePypiDependencies(ctx.python.requirementsTxt));
   if (ctx.python?.pyprojectToml) all.push(...parsePyprojectDependencies(ctx.python.pyprojectToml));
-  if (ctx.java?.pomXml) all.push(...parseMavenDependencies(ctx.java.pomXml));
-  if (ctx.java?.buildGradle) all.push(...parseGradleDependencies(ctx.java.buildGradle));
+  // Resolved Java dependency sets (exact + transitive) supersede the declared
+  // manifest they came from, as a lockfile does for npm, Cargo and Poetry.
+  if (ctx.java?.mavenResolved) all.push(...parseMavenResolvedDependencies(ctx.java.mavenResolved));
+  else if (ctx.java?.pomXml) all.push(...parseMavenDependencies(ctx.java.pomXml));
+  if (ctx.java?.gradleLockfile) all.push(...parseGradleLockfile(ctx.java.gradleLockfile));
+  else if (ctx.java?.buildGradle) all.push(...parseGradleDependencies(ctx.java.buildGradle));
   if (ctx.rust?.cargoToml) all.push(...parseCargoDependencies(ctx.rust.cargoToml));
 
   const seen = new Set<string>();
