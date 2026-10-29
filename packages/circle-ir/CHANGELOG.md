@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`loadSafeConstructTable()` and `sha256Digest()`: reader for caller-supplied `safe-construct-table@0.1` inputs.** A table lists, for one CWE in one language, the sink APIs of the class and the constructs a fix may use there (`safe` or `weak` rows, each with a `match` in a small step vocabulary). The library ships no table and decides nothing: it parses one, refuses it whole with every problem listed when any key is unknown, the `format` differs, an enum the matcher depends on is wrong or a reference dangles, and returns `sha256:<hex>` over exactly the given bytes (equal to `sha256sum` of the file). Labels it does not interpret (`remedy-class`, `context`) pass through. Pure and synchronous; no new dependency. This is the first step of a matcher that will report which row a fix's sink matched.
+
 ### Fixed
 - **Java: constant `switch` targets mark dead case bodies (#917, partial).** `String` literal `charAt` selectors and decidably false `case` arms no longer taint helper returns; `#913`-style interprocedural gating also applies to `trust_boundary` sinks. Trailing `//` comments on the `charAt` selector line no longer disable dead-case folding (OWASP `BenchmarkTest00992` shape).
 - **Java: regression tests for OWASP trust-boundary map shuffle safe files (#917 S2).** Locks `BenchmarkTest00322`, `00586`, and `00992` corpus shapes so safe-key `HashMap` reads into `HttpSession.putValue` stay free of `trust_boundary` flows.

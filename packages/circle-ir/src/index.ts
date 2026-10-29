@@ -260,6 +260,31 @@ export type {
   StableIdDiff,
 } from './stable-ids/index.js';
 
+// Remedy-class tables: reader and digest for caller-supplied
+// `safe-construct-table@0.1` inputs (the library ships no table).
+export {
+  SAFE_CONSTRUCT_TABLE_FORMAT,
+  loadSafeConstructTable,
+  sha256Bytes,
+  sha256Digest,
+} from './remedy-class/index.js';
+export type {
+  ArgPosition,
+  ArgIs,
+  StepRole,
+  MatchStep,
+  TableCall,
+  TableTemplate,
+  TableSink,
+  TableSource,
+  ConstructClass,
+  ConstructRow,
+  SafeConstructTable,
+  TableProblem,
+  TableProblemCode,
+  LoadTableResult,
+} from './remedy-class/index.js';
+
 // Language plugins
 export {
   getLanguageRegistry,
