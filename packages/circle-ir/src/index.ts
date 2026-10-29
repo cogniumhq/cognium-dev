@@ -23,6 +23,8 @@ export {
   parsePyprojectDependencies,
   parseMavenDependencies,
   parseGradleDependencies,
+  parseGradleLockfile,
+  parseMavenResolvedDependencies,
   parseCargoDependencies,
   parseCargoLockDependencies,
   parsePoetryLockDependencies,

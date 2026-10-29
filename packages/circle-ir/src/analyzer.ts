@@ -528,6 +528,18 @@ export interface DependencyContext {
      * (Gradle catalog slice).
      */
     libsVersionsToml?: string;
+    /**
+     * Raw Gradle dependency lockfile (`gradle.lockfile`): exact resolved
+     * versions, direct and transitive. Read by SBOM collection only, where it
+     * supersedes `buildGradle`.
+     */
+    gradleLockfile?: string;
+    /**
+     * Raw text output of `mvn dependency:list` or `mvn dependency:tree`: the
+     * set Maven resolved, direct and transitive. Read by SBOM collection only,
+     * where it supersedes `pomXml`.
+     */
+    mavenResolved?: string;
   };
   /**
    * Python project manifests (added cognium-dev #261 Python slice). Both
