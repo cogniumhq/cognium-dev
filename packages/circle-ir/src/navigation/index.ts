@@ -18,3 +18,14 @@ export type {
   UnresolvedEntry,
   UnresolvedReason,
 } from './types.js';
+
+export {
+  buildTsCallGraph,
+  TS_CALL_EDGES_SCHEME,
+  type TsSourceFile,
+  type TsCallGraphOptions,
+  type TsCallGraph,
+  type CallEdge,
+  type CallEdgeSite,
+  type UnresolvedCall,
+} from './ts-call-edges.js';
