@@ -156,6 +156,11 @@ type Target =
   | { kind: 'external' }
   | { kind: 'none' };
 
+const BUILTIN_TYPE_SHAPES = new Set([
+  'array_type', 'tuple_type', 'literal_type', 'template_literal_type', 'function_type', 'object_type',
+  'string', 'number', 'template_string', 'array', 'object', 'regex',
+]);
+
 const FUNCTION_NODES = new Set([
   'function_declaration', 'generator_function_declaration', 'function_expression', 'function',
   'generator_function', 'arrow_function', 'method_definition',
@@ -508,10 +513,12 @@ class Graph {
 
   /** A module-level name: a declaration here, or an import followed to its file. */
   resolveLocal(ctx: FileCtx, name: string, depth = 0): Target {
-    const decls = ctx.top.get(name);
-    if (decls) return { kind: 'decls', decls, ctx };
+    // An import wins: `const a = require('./a')` is also a module-level field.
     const imp = ctx.imports.get(name);
-    if (!imp) return { kind: 'none' };
+    if (!imp) {
+      const decls = ctx.top.get(name);
+      return decls ? { kind: 'decls', decls, ctx } : { kind: 'none' };
+    }
     const target = imp.module === null ? undefined : this.files.get(imp.module);
     if (!target) return { kind: 'external' };
     if (imp.kind === 'namespace') return { kind: 'namespace', ctx: target };
@@ -523,6 +530,9 @@ class Graph {
     if (n.type === 'type_annotation') n = named(n)[0] ?? null;
     if (n?.type === 'generic_type') n = n.childForFieldName('name') ?? named(n)[0] ?? null;
     if (!n) return null;
+    // Built-in shapes have no declaration in the tree; `any` and `unknown` say nothing.
+    if (n.type === 'predefined_type') return n.text === 'any' || n.text === 'unknown' ? null : 'external';
+    if (BUILTIN_TYPE_SHAPES.has(n.type)) return 'external';
     if (n.type === 'nested_type_identifier' || n.type === 'member_expression') {
       const parts = n.text.split('.');
       if (parts.length !== 2) return 'external';
@@ -600,6 +610,8 @@ class Graph {
       const c = value.childForFieldName('constructor');
       return c ? this.resolveTypeRef(ctx, c) : null;
     }
+    // A literal's methods are the language's own.
+    if (value && BUILTIN_TYPE_SHAPES.has(value.type)) return 'external';
     return null;
   }
 
@@ -637,6 +649,7 @@ class Graph {
 
   private typeOf(ctx: FileCtx, expr: Node): StableDecl | 'external' | null {
     if (expr.type === 'this') return this.enclosingClass(ctx, expr);
+    if (BUILTIN_TYPE_SHAPES.has(expr.type)) return 'external';
     if (expr.type === 'parenthesized_expression' || expr.type === 'non_null_expression') {
       const inner = named(expr)[0];
       return inner ? this.typeOf(ctx, inner) : null;
@@ -649,7 +662,10 @@ class Graph {
       const b = this.localBinding(expr, expr.text);
       if (b?.kind === 'param') {
         const type = b.node.childForFieldName('type');
-        return type ? this.resolveTypeRef(ctx, type) : null;
+        if (type) return this.resolveTypeRef(ctx, type);
+        const value = b.node.childForFieldName('value') ?? b.node.childForFieldName('right');
+        const c = value?.type === 'new_expression' ? value.childForFieldName('constructor') : null;
+        return c ? this.resolveTypeRef(ctx, c) : null;
       }
       if (b?.kind === 'var') return this.typeOfVar(ctx, b.node);
       if (b) return null;
@@ -870,7 +886,9 @@ class Graph {
     if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
       const target = this.resolveLocal(ctx, object.text);
       if (target.kind === 'namespace') {
-        this.bindTarget(this.resolveExport(target.ctx, name, 0), name, edge, unresolved, 'module namespace');
+        const member = this.resolveExport(target.ctx, name, 0);
+        if (member.kind === 'none') unresolved(name, 'unknown', 'not exported by a module in the tree');
+        else this.bindTarget(member, name, edge, unresolved, 'module namespace');
         return;
       }
       if (target.kind === 'external' || (target.kind === 'none' && !ctx.topVars.has(object.text))) {
