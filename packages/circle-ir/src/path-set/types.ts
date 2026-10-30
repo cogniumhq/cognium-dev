@@ -51,10 +51,35 @@ export interface PathSink extends PathEnd {
   cwe: string;
   /** The sink call as the IR records it (receiver class simple name, method, tainted arguments). */
   call: { class?: string; method?: string; argPositions?: number[] };
+  /**
+   * Set when the engine flagged an earlier sink of the class whose result feeds
+   * this one (`Path.resolve` → `Files.readAllBytes`): the path is keyed by this
+   * endpoint, and the flagged sink is kept here.
+   */
+  intermediate?: { line: number; call: { class?: string; method?: string; argPositions?: number[] }; code?: string };
 }
 
-/** A path's state at one pin. `sanitized` = every variant passes a sanitizer. */
-export type PathState = 'absent' | 'sanitized' | 'present';
+/** A check of the path's own data that the endpoint runs on one side of. */
+export interface PathGuard {
+  file: string;
+  /** Line of the condition. */
+  line: number;
+  /** The condition call that reads the path's data. */
+  method: string;
+  /** The call sits under an odd number of negations in the condition. */
+  negated: boolean;
+  /** The side of the condition the endpoint runs on. */
+  sinkSide: boolean;
+  /** What the call returned when the endpoint runs (`sinkSide` adjusted for negation). */
+  callValue: boolean;
+}
+
+/**
+ * A path's state at one pin. `sanitized` = every variant passes a sanitizer;
+ * `guarded` = every open variant's endpoint runs only on one side of a check
+ * of the path's own data (whether that check is adequate is not judged here).
+ */
+export type PathState = 'absent' | 'sanitized' | 'guarded' | 'present';
 
 export interface PathEntry {
   /** `digest128` of scheme, CWE and both anchors. */
@@ -68,6 +93,8 @@ export interface PathEntry {
   /** Hops of the first variant (by source then sink position). */
   hops: PathHop[];
   confidence: number;
+  /** Present when `state` is `guarded`. */
+  guard?: PathGuard;
 }
 
 export interface PathSet {
@@ -82,7 +109,7 @@ export interface PathSet {
 }
 
 /** The set change of one key between two pins: a set operation, not a judgement. */
-export type PathChange = 'removed' | 'sanitized' | 'unchanged' | 'added' | 'other';
+export type PathChange = 'removed' | 'sanitized' | 'guarded' | 'unchanged' | 'added' | 'other';
 
 export interface PathDiffEntry {
   key: string;

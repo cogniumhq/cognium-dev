@@ -257,8 +257,8 @@ describe('remedyClassOf — CWE-89', () => {
       ['/match/all/2', true],
     ]);
     expect(s.rows[0].steps[0].at?.file).toBe(FILE);
-    // the allowlist row needs a step this version does not observe: listed, not unmatched
-    expect(s.abstainedRows).toEqual([{ id: 'S89-2', reason: 'step-not-observed:from-allowlist' }]);
+    // the allowlist row is observed and does not hold (the SQL text is a constant, not a choice)
+    expect(s.abstainedRows).toEqual([]);
     expect(s.reason).toBeUndefined();
     expect(s.anchor).toBe(`${s.pathKey}:sink`);
   });
@@ -292,11 +292,21 @@ describe('remedyClassOf — CWE-89', () => {
   it('reports declaration-not-found when the method is gone and no row can hold', async () => {
     const r = await observe(89, SQL_TABLE, SQL_BASE, SQL_GONE);
     expect(r.sinks).toHaveLength(1);
-    // the retired sink-removed row is skipped
-    expect(r.sinks[0]).toMatchObject({ match: 'abstained' });
-    const noAllowlist = SQL_TABLE.replace(/  - id: S89-2[\s\S]*?sources: \[doc\]\n/, '');
-    const r2 = await observe(89, noAllowlist, SQL_BASE, SQL_GONE);
-    expect(r2.sinks[0]).toMatchObject({ match: 'unrecognized', reason: 'declaration-not-found' });
+    // the retired sink-removed row is skipped, so nothing can hold
+    expect(r.sinks[0]).toMatchObject({ match: 'unrecognized', reason: 'declaration-not-found' });
+    // a template-only row on the sink would make it abstain instead
+    const withTemplate = SQL_TABLE.replace('constructs:\n', `constructs:
+  - id: S89-8
+    class: safe
+    remedy-class: bind-parameters
+    applies-to: [stmt]
+    match: { template: { engine: jsp, construct: "sql:query" } }
+    level: SHOULD
+    basis: cited
+    sources: [doc]
+`);
+    const r2 = await observe(89, withTemplate, SQL_BASE, SQL_GONE);
+    expect(r2.sinks[0]).toMatchObject({ match: 'abstained', abstainedRows: [{ id: 'S89-8', reason: 'template-not-read' }] });
   });
 
   it('labels a sink the table does not list as sink-not-in-table', async () => {
