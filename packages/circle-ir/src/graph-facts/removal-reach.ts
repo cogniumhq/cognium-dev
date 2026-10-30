@@ -18,7 +18,7 @@ import { digest128 } from '../stable-ids/hash.js';
 import { detectMoves, type MoveCandidate, type MoveOptions } from '../stable-ids/moves.js';
 import type { StableIdFile } from '../stable-ids/types.js';
 import type { EntryKind } from '../navigation/ts-entry-tables.js';
-import { ALL_ENTRY_KINDS, reach, type CouldReachSite, type ReachInput, type ReachPath } from './reach.js';
+import { ALL_ENTRY_KINDS, partialFileDetails, reach, type CouldReachSite, type PartialFile, type ReachInput, type ReachPath } from './reach.js';
 
 export const REMOVAL_REACH_SCHEME = 'removal-reach@0.1' as const;
 
@@ -59,6 +59,8 @@ export interface RemovalReachResult {
   entryIndexDigest: string;
   /** Files that do not parse at the base or the head. */
   partial: string[];
+  /** One row per `partial` file: where its first blocking parse error (at the head, else the base) is. */
+  partialFiles: PartialFile[];
   /** Declarations that moved or were renamed (not removals), as `from → to` ids. */
   moved: { from: string; to: string; relation: string; evidence: string }[];
   removed: RemovedDeclaration[];
@@ -98,6 +100,7 @@ export function removalReach(
     rootKinds,
     entryIndexDigest: entryIndexDigest(base.entries),
     partial,
+    partialFiles: partialFileDetails(partial, [...base.files, ...head.filter(f => f.partial)]),
     moved: moves.moves.map(m => ({ from: m.from.id, to: m.to.id, relation: m.relation, evidence: m.evidence })),
     removed: facts.facts.map(f => ({
       id: f.id,

@@ -21,6 +21,8 @@ export {
   type PathStep,
   type EdgeRelation,
   type CouldReachSite,
+  type PartialFile,
+  partialFileDetails,
 } from './reach.js';
 export {
   DEAD_CODE_SCHEME,
