@@ -62,6 +62,25 @@ export interface ScriptTable {
   shebang: boolean;
 }
 
+/**
+ * A file a tool loads by its name or place (`metro.config.js`, `__mocks__/`),
+ * recognised only when the package depends on one of `dependencies`.
+ */
+export interface ToolFileRow {
+  dependencies: readonly string[];
+  /** Matched against the path relative to the package root. */
+  pattern: RegExp;
+  kind: EntryKind;
+  /** The tool, named in the entry's evidence and `framework`. */
+  tool: string;
+}
+
+/** Expo: expo-router file routes under `app/` and config plugins named in `app.json` / `app.config.*`. */
+export interface ExpoTable {
+  /** Any of these dependencies turns the conventions on. */
+  dependencies: readonly string[];
+}
+
 export interface EntryTables {
   routes: RouteRegistrarTable;
   decorators: readonly DecoratorEntryRow[];
@@ -72,6 +91,10 @@ export interface EntryTables {
   nextFileRoutes?: FileRoutesTable;
   /** Programs: files named in `package.json` scripts, script directories, shebang files; absent turns them off. */
   scripts?: ScriptTable;
+  /** Tool-loaded files (React Native, Expo, Jest); absent turns them off. */
+  toolFiles?: readonly ToolFileRow[];
+  /** Expo routes and config plugins; absent turns them off. */
+  expo?: ExpoTable;
 }
 
 export const DEFAULT_ENTRY_TABLES: EntryTables = {
@@ -102,4 +125,14 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     dirs: ['scripts', 'bin'],
     shebang: true,
   },
+  toolFiles: [
+    { dependencies: ['react-native', 'expo'], pattern: /^metro\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'metro' },
+    { dependencies: ['react-native', 'expo', 'jest'], pattern: /^babel\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'babel' },
+    { dependencies: ['expo'], pattern: /^app\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'expo' },
+    { dependencies: ['jest'], pattern: /^jest\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'jest' },
+    { dependencies: ['jest'], pattern: /(?:^|\/)jest[.-]?setup[\w.-]*\.[cm]?[jt]sx?$/i, kind: 'test', tool: 'jest' },
+    { dependencies: ['jest'], pattern: /(?:^|\/)__mocks__\/.+\.[cm]?[jt]sx?$/, kind: 'test', tool: 'jest' },
+    { dependencies: ['jest'], pattern: /(?:(?:^|\/)__tests__\/.+|\.(?:test|spec))\.[cm]?[jt]sx?$/, kind: 'test', tool: 'jest' },
+  ],
+  expo: { dependencies: ['expo', 'expo-router'] },
 };

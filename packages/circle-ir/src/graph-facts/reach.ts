@@ -8,7 +8,8 @@
  *   that hold whenever their source runs (`contains`: a body creates its
  *   nested functions, a module its top-level values, a class its fields and
  *   constructor; `loads`: running a declaration loads its module; `import`:
- *   loading a module loads what it imports).
+ *   loading a module loads what it imports; `field`: a body that runs uses
+ *   the fields it reads or writes through `this`).
  * - **weak** path: any other path — through an `inferred` call, a
  *   `reference` (a function or class passed, stored, returned or rendered:
  *   it may run, nothing proves it does) or an `inferred` entry.
@@ -38,6 +39,8 @@ export interface ReachInput {
   files: readonly StableIdFile[];
   edges: readonly { from: string; to: string; tier: Tier; site: ReachSite; methodName: string }[];
   references?: readonly { from: string; to: string; site: ReachSite }[];
+  /** Strong: a body that runs uses the field (`this.x`). */
+  fieldUses?: readonly { from: string; to: string; site: ReachSite }[];
   imports?: readonly { from: string; to: string }[];
   /** Extra strong `loads` edges: running `from` initializes `to` (Java: a member initializes its class). */
   loads?: readonly { from: string; to: string }[];
@@ -47,7 +50,7 @@ export interface ReachInput {
   partial: readonly string[];
 }
 
-export type EdgeRelation = 'call' | 'reference' | 'contains' | 'loads' | 'import';
+export type EdgeRelation = 'call' | 'reference' | 'field' | 'contains' | 'loads' | 'import';
 
 export interface PathStep {
   /** The declaration this step arrives at. */
@@ -129,6 +132,7 @@ export class ReachGraph {
     };
     for (const e of input.edges) add(e.from, { to: e.to, relation: 'call', strong: e.tier !== 'inferred', tier: e.tier, site: e.site });
     for (const r of input.references ?? []) add(r.from, { to: r.to, relation: 'reference', strong: false, site: r.site });
+    for (const u of input.fieldUses ?? []) add(u.from, { to: u.to, relation: 'field', strong: true, site: u.site });
     for (const i of input.imports ?? []) add(i.from, { to: i.to, relation: 'import', strong: true });
     for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true });
     for (const f of input.files) {

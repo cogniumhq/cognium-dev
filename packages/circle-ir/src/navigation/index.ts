@@ -33,6 +33,7 @@ export {
   type TsEntry,
   type UnresolvedRegistration,
   type ReferenceEdge,
+  type FieldUseEdge,
   type ImportEdge,
 } from './ts-call-edges.js';
 export {
@@ -44,6 +45,8 @@ export {
   type RouteRegistrarTable,
   type DecoratorEntryRow,
   type TestRunnerTable,
+  type ToolFileRow,
+  type ExpoTable,
 } from './ts-entry-tables.js';
 export {
   buildJavaGraph,

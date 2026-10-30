@@ -23,7 +23,8 @@ import {
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
-  type Dependency, type SbomMetadata,
+  licenseFromPackageJson, applyLicenses,
+  type Dependency, type SbomMetadata, type LicenseMap,
 } from 'circle-ir';
 import {
   detectProjectProfiles,
@@ -1899,6 +1900,58 @@ interface SbomOptions {
   name?: string;
   prodOnly?: boolean;
   deterministic?: boolean;
+  /** JSON file `{ "name@version" | "name": "<SPDX>" }`, applied after node_modules. */
+  licenseMap?: string;
+}
+
+/**
+ * npm licences from installed packages, read offline: pnpm's store layout
+ * (`node_modules/.pnpm/<name>@<version>/node_modules/<name>`) first, then a
+ * hoisted `node_modules/<name>` whose version matches exactly. Returns the
+ * number of dependencies that gained a licence.
+ */
+export function npmLicensesFromNodeModules(deps: Dependency[], roots: string[]): number {
+  let filled = 0;
+  for (const d of deps) {
+    if (d.ecosystem !== 'npm' || d.license) continue;
+    for (const root of roots) {
+      const pnpmDir = `${d.name.replace(/\//g, '+')}@${d.version}`;
+      const candidates = [
+        join(root, 'node_modules', '.pnpm', pnpmDir, 'node_modules', d.name, 'package.json'),
+        join(root, 'node_modules', d.name, 'package.json'),
+      ];
+      let lic: string | undefined;
+      for (const [i, c] of candidates.entries()) {
+        if (!existsSync(c)) continue;
+        const text = readFileSync(c, 'utf-8');
+        if (i === 1) {
+          try {
+            if ((JSON.parse(text) as { version?: unknown }).version !== d.version) continue;
+          } catch { continue; }
+        }
+        lic = licenseFromPackageJson(text);
+        if (lic) break;
+      }
+      if (lic) { d.license = lic; filled++; break; }
+    }
+  }
+  return filled;
+}
+
+function readLicenseMap(file: string): LicenseMap {
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(file, 'utf-8')); } catch (e) {
+    throw new UsageError(`--license-map: cannot read ${file} as JSON (${(e as Error).message})`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new UsageError('--license-map: expected a JSON object of "name@version" or "name" to licence');
+  }
+  const map: LicenseMap = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v !== 'string' || !v.trim()) throw new UsageError(`--license-map: value for '${k}' must be a non-empty string`);
+    map[k] = v.trim();
+  }
+  return map;
 }
 
 async function runSbom(targetPath: string, options: SbomOptions): Promise<void> {
@@ -1985,6 +2038,12 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   });
   if (options.prodOnly) deps = deps.filter((d) => d.scope !== 'dev');
 
+  // Licences, offline: installed node_modules first, then the caller's map.
+  const roots = [...new Set([absPath, ...effective.map((m) => dirname(m))])];
+  npmLicensesFromNodeModules(deps, roots);
+  if (options.licenseMap) deps = applyLicenses(deps, readLicenseMap(options.licenseMap));
+  const licensed = deps.filter((d) => d.license).length;
+
   if (!projectName) projectName = basename(absPath) || 'project';
 
   const meta: SbomMetadata = { name: projectName, tool: 'cognium-dev' };
@@ -2002,10 +2061,10 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   if (options.output) {
     writeFileSync(options.output, out);
     // stdout is reserved for payload; status goes to stderr (3.89.2).
-    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s)`));
+    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   } else {
     console.log(out);
-    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s)`));
+    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   }
   await exitAfterFlush(0);
 }
@@ -2080,14 +2139,24 @@ async function main(): Promise<void> {
       console.error(colors.red(`Error: unknown SBOM format '${rawFormat}' (expected 'cyclonedx' or 'spdx')`));
       process.exit(1);
     }
+    if (options['license-map'] === true) {
+      console.error(colors.red('Error: --license-map needs a file path'));
+      process.exit(1);
+    }
     const sbomOptions: SbomOptions = {
       format: rawFormat as 'cyclonedx' | 'spdx',
       output: (options.output || options.o) as string | undefined,
       name: options.name as string | undefined,
       prodOnly: options['prod-only'] === true || options.prod === true,
       deterministic: options.deterministic === true,
+      licenseMap: options['license-map'] as string | undefined,
     };
-    await runSbom(args[0], sbomOptions);
+    try {
+      await runSbom(args[0], sbomOptions);
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      throw e;
+    }
     return;
   }
 
