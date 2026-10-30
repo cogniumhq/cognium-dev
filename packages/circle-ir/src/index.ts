@@ -262,6 +262,8 @@ export {
   DEFAULT_JAVA_ENTRY_TABLES,
   buildPythonGraph,
   PYTHON_GRAPH_SCHEME,
+  buildGoGraph,
+  GO_GRAPH_SCHEME,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -298,6 +300,9 @@ export type {
   PythonSourceFile,
   PythonGraphOptions,
   PythonGraph,
+  GoSourceFile,
+  GoGraphOptions,
+  GoGraph,
   IndexedCallSite,
   IndexedTarget,
 } from './navigation/index.js';
@@ -337,6 +342,8 @@ export {
   eraseJavaType,
   derivePythonIds,
   pythonModuleName,
+  deriveGoIds,
+  goPackageDir,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';

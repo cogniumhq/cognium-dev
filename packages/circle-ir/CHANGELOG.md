@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Go stable ids and graph facts: `deriveGoIds()` and `buildGoGraph()` (`go-graph@0.1`).** `ids@0.1` now covers Go (`stableIdsSupport('go')`), and `reach`, `deadCode` and `removalReach` run on Go unchanged.
+  - **Ids:** a package is its directory. Qualified names are `<dir>:<Func>` and `<dir>:<Type>.<Method>`; the receiver's pointer is not part of the name, and `init` is keyed by file. The signature holds parameter and result types only, so renaming a parameter does not re-key a function.
+  - **Call edges** from the syntax tree, with local typing (receivers, parameters, `x := T{}`, `x := NewT()`, struct fields, function results):
+    - `exact`: package scope, project imports (by `modulePath` or by directory suffix), methods on known types, through embedded fields;
+    - `polymorphic`: calls on a project interface reach the methods of the project types that implement it;
+    - `inferred`: `x.M` on a value of unknown type, up to `maxInferred`.
+  - **Unresolved sites:** the standard library and modules are `external`; computed callees are `dynamic`.
+  - **References and loads:** a function or method used as a value is a reference; a composite literal or conversion loads its type.
+  - **Entries:**
+    - `main` in package `main`, and `init`;
+    - net/http `HandleFunc`/`Handle`, including Go 1.22 method patterns, and `http.HandlerFunc(f)`;
+    - gin and echo verbs with `Group` prefixes, chi verbs with `Route` prefixes, gorilla `PathPrefix().Subrouter()`;
+    - `_test.go` tests, benchmarks, examples, fuzz targets and `TestMain`;
+    - the exported API of packages named in `libraryPackages`.
+  - **typeOnly:** interface types.
+  - **Additive:** `analyze()` output is unchanged.
 - **Python graph facts: `buildPythonGraph()` (`python-graph@0.1`).** The reach core's input for Python, keyed by `ids@0.1` stable ids, so `reach`, `deadCode` and `removalReach` run on Python unchanged.
   - **Call edges** from the syntax tree. `exact`: module names, imports from project modules (absolute and relative), `module.f`, `Class.m`, `self.m` / `cls.m` (own or inherited), `super().m`, and `Class(...)`, which reaches the class and its `__init__`. `polymorphic`: overrides in project subclasses. `inferred`: `obj.m` on a receiver of unknown type, up to `maxInferred` (default 16).
   - **Unresolved sites:** imports from outside the project and objects built from them (`app = Flask(...)`) are `external`; `getattr` and other computed callees are `dynamic`.
