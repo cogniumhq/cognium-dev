@@ -45,6 +45,17 @@ export interface Dependency {
    * Most manifests do not list dependency licenses, so this is usually absent.
    */
   license?: string;
+  /**
+   * Whether the project declares this dependency itself. Set only by inputs
+   * that carry the graph (`mvn dependency:tree`); absent when unknown.
+   */
+  direct?: boolean;
+  /**
+   * The path from a direct dependency down to this one's parent, as
+   * `groupId:artifactId` names: `[]` for a direct dependency. Set only by
+   * inputs that carry the graph (`mvn dependency:tree`); absent when unknown.
+   */
+  via?: string[];
 }
 
 /**
@@ -509,28 +520,49 @@ const MAVEN_RESOLVED_COORD = new RegExp(
  * tree (skipped: it has no scope). Verbose-tree entries that Maven did **not**
  * resolve (`omitted for conflict with …`) are skipped; `omitted for duplicate`
  * entries collapse into the one kept. `test` / `provided` → `dev`, a trailing
- * `(optional)` → `optional`, everything else → `required`.
+ * `(optional)` → `optional`, everything else → `required`. From a tree, each
+ * entry also carries `direct` and `via` (its path from a direct dependency).
  */
 export function parseMavenResolvedDependencies(output: string): Dependency[] {
   if (!output) return [];
   const out: Dependency[] = [];
   const seen = new Set<string>();
-  for (const raw of output.split(/\r?\n/)) {
-    let line = raw.replace(/^\s*\[(?:INFO|WARNING|DEBUG)\]\s?/, '');
-    if (/omitted for conflict/.test(line)) continue;
+  const lines = output.split(/\r?\n/).map((raw) => raw.replace(/^\s*\[(?:INFO|WARNING|DEBUG)\]\s?/, ''));
+  // A tree carries the graph: depth from indentation (3 columns per level),
+  // the path from the stack of ancestors. A list does not.
+  const isTree = lines.some((l) => /^[\s|]*[+\\]- /.test(l));
+  const ancestors: string[] = [];
+  for (const raw of lines) {
+    const depth = isTree ? Math.round(raw.search(/[A-Za-z0-9(]/) / 3) : -1;
+    if (/omitted for conflict/.test(raw)) continue;
     // Strip tree drawing and the verbose-tree parenthesis around an entry.
-    line = line.replace(/^[\s|+\\`-]*/, '').replace(/^\(/, '').trim();
+    const line = raw.replace(/^[\s|+\\`-]*/, '').replace(/^\(/, '').trim();
     const m = MAVEN_RESOLVED_COORD.exec(line);
-    if (!m) continue;
+    if (!m) {
+      // A root (project) line of a tree starts a new graph.
+      if (isTree && depth === 0 && /^[\w.-]+:[\w.-]+:/.test(line)) ancestors.length = 0;
+      continue;
+    }
     const [, gid, aid, , , version, mvnScope, rest] = m;
+    const name = `${gid}:${aid}`;
+    let via: string[] | undefined;
+    if (isTree && depth >= 1) {
+      ancestors.length = depth - 1;
+      via = ancestors.slice();
+      ancestors.push(name);
+    }
     const optional = /\(optional\)/.test(rest);
     const scope: DependencyScope =
       mvnScope === 'test' || mvnScope === 'provided' ? 'dev' : optional ? 'optional' : 'required';
-    const name = `${gid}:${aid}`;
     const key = `${name}|${version}|${scope}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(dep('maven', name, version, scope));
+    const d = dep('maven', name, version, scope);
+    if (via) {
+      d.direct = via.length === 0;
+      d.via = via;
+    }
+    out.push(d);
   }
   return out;
 }

@@ -40,6 +40,34 @@ export type {
   SbomMetadata,
 } from './analysis/sbom.js';
 
+// Known-vulnerability matching against caller-supplied OSV records (deterministic)
+export { compareMavenVersions, canonicalMavenVersion } from './analysis/maven-version.js';
+export { MavenDeclaredIndex } from './analysis/maven-declared.js';
+export type { DeclaredVersion, DeclaredOrigin, PomFile } from './analysis/maven-declared.js';
+export {
+  parseOsvRecord,
+  buildAdvisoryIndex,
+  matchAdvisories,
+  rangeIntervals,
+  isConcreteVersion,
+  diffAdvisoryMatches,
+  diffDependencySets,
+} from './analysis/advisories.js';
+export type {
+  OsvRecord,
+  OsvAffected,
+  OsvRange,
+  OsvEvent,
+  AdvisoryGroup,
+  AdvisoryIndex,
+  AdvisoryRef,
+  AdvisoryMatch,
+  AffectedInterval,
+  DeltaMatch,
+  AdvisoryDelta,
+  DependencyDelta,
+} from './analysis/advisories.js';
+
 // Per-pass option types (exported so consumers can type passOptions without importing from deep paths)
 export type { NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 export type { DependencyFanOutOptions } from './analysis/passes/dependency-fan-out-pass.js';
@@ -278,6 +306,8 @@ export {
   loadSafeConstructTable,
   sha256Bytes,
   sha256Digest,
+  remedyClassOf,
+  TableRefused,
 } from './remedy-class/index.js';
 export type {
   ArgPosition,
@@ -294,7 +324,54 @@ export type {
   TableProblem,
   TableProblemCode,
   LoadTableResult,
+  TypeMatch,
+  StepObservation,
+  MatchedRow,
+  RemedyMatch,
+  RemedyReason,
+  RemedySinkObservation,
+  RemedyClassResult,
+  RemedyClassOptions,
 } from './remedy-class/index.js';
+
+// Path sets: every source-to-sink path of one CWE, keyed across versions of a
+// tree, and the difference between two versions.
+export {
+  PATH_KEY_SCHEME,
+  pathSetOf,
+  pathSetDiff,
+  diffPathSets,
+  pinFacts,
+  pathKey,
+  declAt,
+  changeOf,
+  normalizeCwe,
+  lineDominates,
+  deriveBranchFacts,
+  sideOf,
+} from './path-set/index.js';
+export type {
+  PathSetInput,
+  PathSetOptions,
+  DeclKeyScheme,
+  DeclRef,
+  PathHop,
+  PathEnd,
+  PathSource,
+  PathSink,
+  PathGuard,
+  PathState,
+  PathEntry,
+  BranchFact,
+  BranchCall,
+  BranchRange,
+  BranchSide,
+  PathSet,
+  PathChange,
+  PathDiffEntry,
+  PinFacts,
+  PathSetDiff,
+} from './path-set/index.js';
 
 // Language plugins
 export {

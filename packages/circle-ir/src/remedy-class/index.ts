@@ -23,3 +23,14 @@ export type {
   LoadTableResult,
 } from './table.js';
 export { sha256Bytes, sha256Digest } from './sha256.js';
+export { remedyClassOf, TableRefused } from './match.js';
+export type {
+  TypeMatch,
+  StepObservation,
+  MatchedRow,
+  RemedyMatch,
+  RemedyReason,
+  RemedySinkObservation,
+  RemedyClassResult,
+  RemedyClassOptions,
+} from './match.js';

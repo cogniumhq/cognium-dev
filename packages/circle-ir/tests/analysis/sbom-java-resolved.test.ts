@@ -99,6 +99,31 @@ describe('parseMavenResolvedDependencies', () => {
     ]);
   });
 
+  it('carries direct and the path from a direct dependency on every tree entry', () => {
+    const by = Object.fromEntries(parseMavenResolvedDependencies(MAVEN_TREE).map((d) => [d.name, d]));
+    expect(by['org.springframework:spring-core'].direct).toBe(true);
+    expect(by['org.springframework:spring-core'].via).toEqual([]);
+    expect(by['org.springframework:spring-jcl'].direct).toBe(false);
+    expect(by['org.springframework:spring-jcl'].via).toEqual(['org.springframework:spring-core']);
+    expect(by['junit:junit'].via).toEqual([]);
+  });
+
+  it('starts a new graph at each module root of a multi-module tree', () => {
+    const deps = parseMavenResolvedDependencies(`com.example:a:jar:1.0
++- org.x:one:jar:1.0:compile
+|  \\- org.x:two:jar:1.0:compile
+com.example:b:jar:1.0
+\\- org.x:three:jar:1.0:compile
+   \\- org.x:four:jar:1.0:compile
+`);
+    expect(deps.map((d) => [d.name, d.via])).toEqual([
+      ['org.x:one', []],
+      ['org.x:two', ['org.x:one']],
+      ['org.x:three', []],
+      ['org.x:four', ['org.x:three']],
+    ]);
+  });
+
   it('never reports the version Maven mediated away', () => {
     const deps = parseMavenResolvedDependencies(MAVEN_TREE);
     expect(deps.some((d) => d.name === 'org.apache.logging.log4j:log4j-api' && d.version === '2.13.0')).toBe(false);
@@ -112,6 +137,8 @@ describe('parseMavenResolvedDependencies', () => {
       'org.hamcrest:hamcrest-core@1.3:dev',
     ]);
     expect(deps[0].purl).toBe('pkg:maven/org.apache.commons/commons-text@1.9');
+    expect(deps[0].via).toBeUndefined(); // a list carries no graph
+    expect(deps[0].direct).toBeUndefined();
   });
 
   it('returns nothing for empty or unrelated text', () => {
