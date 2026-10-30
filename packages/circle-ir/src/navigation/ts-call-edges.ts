@@ -129,6 +129,21 @@ export interface ImportEdge {
   to: string;
 }
 
+/**
+ * A body loads a module when it runs: `import('./m')` or `require('./m')`
+ * with a literal specifier inside a function. `from` is the enclosing
+ * declaration, `to` the loaded module's declaration. Top-level loads are
+ * `imports` instead.
+ */
+export interface LoadEdge {
+  from: string;
+  to: string;
+  site: CallEdgeSite;
+}
+
+/** `methodName` of an unresolved site that loads a module by a computed specifier (`import(name)`). */
+export const COMPUTED_MODULE_LOAD = '<module>' as const;
+
 export interface CallEdgeSite {
   file: string;
   /** 1-based. */
@@ -175,6 +190,8 @@ export interface TsCallGraph {
   /** `this.x` reads and writes of the enclosing class's fields and accessors. */
   fieldUses: FieldUseEdge[];
   imports: ImportEdge[];
+  /** Module loads inside bodies (`import()` / `require()` with a literal specifier). */
+  loads: LoadEdge[];
   /** Declarations that exist only for the type checker: interfaces, type aliases, signatures, ambient declarations. */
   typeOnly: string[];
   entryScheme: 'entry-index@0.1';
@@ -277,6 +294,31 @@ function posKey(node: Node, kind: string): string {
   return `${node.startPosition.row + 1}:${node.startPosition.column}:${kind}`;
 }
 
+/** A specifier written as a string or a template without substitutions. */
+function literalSpecifier(node: Node | null): string | null {
+  if (!node) return null;
+  if (node.type === 'string') return stringValue(node);
+  if (node.type === 'template_string' && !named(node).some(c => c.type === 'template_substitution')) {
+    return node.text.slice(1, -1);
+  }
+  return null;
+}
+
+/**
+ * A module load expression: `import(spec)` or `require(spec)`, under any
+ * `await` or parentheses. `spec` is null when the specifier is computed.
+ */
+function moduleLoad(node: Node | null): { call: Node; spec: string | null } | null {
+  let n = node;
+  while (n && (n.type === 'await_expression' || n.type === 'parenthesized_expression')) n = named(n)[0] ?? null;
+  if (n?.type !== 'call_expression') return null;
+  const fn = n.childForFieldName('function');
+  if (fn?.type !== 'import' && !(fn?.type === 'identifier' && fn.text === 'require')) return null;
+  const args = n.childForFieldName('arguments');
+  const arg = args ? named(args)[0] ?? null : null;
+  return { call: n, spec: literalSpecifier(arg) };
+}
+
 function isRequire(node: Node | null): Node | null {
   if (node?.type !== 'call_expression') return null;
   const fn = node.childForFieldName('function');
@@ -363,6 +405,7 @@ class Graph {
   private readonly maxInferred: number;
   readonly references: ReferenceEdge[] = [];
   readonly fieldUses: FieldUseEdge[] = [];
+  readonly loadEdges: LoadEdge[] = [];
   /** Fields and accessors by name (class members only). */
   private readonly fieldsByName = new Map<string, StableDecl[]>();
   readonly entries: TsEntry[] = [];
@@ -696,10 +739,38 @@ class Graph {
       const decls = ctx.top.get(name);
       return decls ? { kind: 'decls', decls, ctx } : { kind: 'none' };
     }
+    return this.resolveBinding(imp, depth);
+  }
+
+  /** What an import binding denotes: a namespace, or the export it names. */
+  private resolveBinding(imp: ImportBinding, depth = 0): Target {
     const target = imp.module === null ? undefined : this.files.get(imp.module);
     if (!target) return { kind: 'external' };
     if (imp.kind === 'namespace') return { kind: 'namespace', ctx: target };
     return this.resolveExport(target, imp.kind === 'default' ? 'default' : imp.name, depth + 1);
+  }
+
+  /**
+   * A local variable bound to a module load with a literal specifier:
+   * `const m = await import('./m')` is the namespace, `const { f } = await
+   * import('./m')` and `const { f } = require('./m')` name the export.
+   */
+  private loadBinding(ctx: FileCtx, declarator: Node, name: string): ImportBinding | null {
+    const load = moduleLoad(declarator.childForFieldName('value'));
+    if (!load || load.spec === null) return null;
+    const specifier = load.spec;
+    const module = this.resolveModule(ctx.path, specifier);
+    const pattern = declarator.childForFieldName('name');
+    if (pattern?.type === 'identifier') return pattern.text === name ? { kind: 'namespace', module, specifier } : null;
+    if (pattern?.type !== 'object_pattern') return null;
+    for (const p of named(pattern)) {
+      let key: string | undefined;
+      if (p.type === 'shorthand_property_identifier_pattern' && p.text === name) key = name;
+      else if (p.type === 'pair_pattern' && p.childForFieldName('value')?.text === name) key = p.childForFieldName('key')?.text;
+      if (key === 'default') return { kind: 'default', module, specifier };
+      if (key) return { kind: 'named', module, name: key, specifier };
+    }
+    return null;
   }
 
   private resolveTypeRef(ctx: FileCtx, node: Node): StableDecl | 'external' | null {
@@ -988,6 +1059,11 @@ class Graph {
       const name = node.text;
       const local = this.localBinding(node, name);
       if (local) {
+        const loaded = local.kind === 'var' ? this.loadBinding(ctx, local.node, name) : null;
+        if (loaded) {
+          const t = this.resolveBinding(loaded);
+          return t.kind === 'decls' ? this.callables(t.decls) : [];
+        }
         const holder = local.kind === 'var' ? local.node.childForFieldName('value') : local.kind === 'fn' ? local.node : null;
         const d = holder && FUNCTION_NODES.has(holder.type) ? this.nestedDeclAt(ctx, holder) : null;
         return d ? [d] : [];
@@ -1607,6 +1683,7 @@ class Graph {
       const deps = { ...(m.dependencies as Record<string, unknown> | undefined), ...(m.devDependencies as Record<string, unknown> | undefined) };
       const next = this.tables.nextFileRoutes;
       if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
+      this.scriptEntries(pkg.root, m.scripts);
       const has = (names: readonly string[]): boolean => names.some(n => Object.prototype.hasOwnProperty.call(deps, n));
       this.toolFileEntries(pkg.root, has);
       if (this.tables.expo && has(this.tables.expo.dependencies)) {
@@ -1633,6 +1710,38 @@ class Graph {
     for (const ctx of this.sortedFiles()) {
       if (this.tables.tests.filePattern.test(ctx.path)) this.entry(ctx.module, 'test', 'conventional', ctx.path, 1, 'test file loaded by the runner');
     }
+    this.programFiles();
+  }
+
+  /** Files a `package.json` script runs (`node scripts/build.mjs`, `tsx bench/x.ts`): `main` entries. */
+  private scriptEntries(root: string, scripts: unknown): void {
+    const table = this.tables.scripts;
+    if (!table || !scripts || typeof scripts !== 'object') return;
+    for (const name of Object.keys(scripts as Record<string, unknown>).sort()) {
+      const cmd = (scripts as Record<string, unknown>)[name];
+      if (typeof cmd !== 'string') continue;
+      for (const raw of cmd.split(/\s+|&&|\|\||[;|()]/)) {
+        const token = raw.replace(/^['"]|['"]$/g, '').replace(/^\.\//, '');
+        if (!/\.[cm]?[jt]sx?$/.test(token) || token.startsWith('-') || token.includes('*')) continue;
+        const file = this.findFile(normalizePath(`${root}/${token}`));
+        const ctx = file ? this.files.get(file) : undefined;
+        if (ctx) this.entry(ctx.module, 'main', 'declared', ctx.path, 1, `package.json script ${name}`);
+      }
+    }
+  }
+
+  /** Files in script directories, and files starting with `#!`: run as programs (`main`, conventional). */
+  private programFiles(): void {
+    const table = this.tables.scripts;
+    if (!table) return;
+    const roots = [...new Set((this.options.packages ?? []).map(p => normalizePath(p.root)))];
+    if (roots.length === 0) roots.push('');
+    for (const ctx of this.sortedFiles()) {
+      const inDir = roots.some(r => table.dirs.some(d => ctx.path.startsWith(normalizePath(`${r}/${d}`) + '/')));
+      const shebang = table.shebang && ctx.root.firstChild?.type === 'hash_bang_line';
+      if (inDir) this.entry(ctx.module, 'main', 'conventional', ctx.path, 1, 'file in a script directory');
+      else if (shebang) this.entry(ctx.module, 'main', 'conventional', ctx.path, 1, 'file starts with #!');
+    }
   }
 
   importEdges(): ImportEdge[] {
@@ -1649,10 +1758,24 @@ class Graph {
   private site(ctx: FileCtx, node: Node): void {
     const fn = node.type === 'new_expression' ? node.childForFieldName('constructor') : node.childForFieldName('function');
     if (!fn) return;
-    // Module loading is not a call.
-    if (node.type === 'call_expression' && (fn.type === 'import' || (fn.type === 'identifier' && fn.text === 'require' && isRequire(node)))) return;
-    this.sites++;
     const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
+    // Module loading is not a call: a literal specifier is a load edge, a computed one an unresolved site.
+    const load = node.type === 'call_expression' && (fn.type === 'import' || !this.localBinding(fn, 'require')) ? moduleLoad(node) : null;
+    if (load) {
+      const owner = ctx.locate(site.line, site.col) ?? ctx.module;
+      if (load.spec !== null) {
+        const module = this.resolveModule(ctx.path, load.spec);
+        const to = module ? this.files.get(module) : undefined;
+        if (!module || !to) return;
+        if (owner === ctx.module) ctx.loads.push(module);
+        else this.loadEdges.push({ from: owner.id, to: to.module.id, site });
+        return;
+      }
+      this.sites++;
+      this.unresolved.push({ from: owner.id, methodName: COMPUTED_MODULE_LOAD, site, reason: 'dynamic', evidence: 'module loaded by a computed specifier' });
+      return;
+    }
+    this.sites++;
     const from = (ctx.locate(site.line, site.col) ?? ctx.module).id;
     const edge = (to: StableDecl, tier: Tier, methodName: string, evidence: string, via?: StableDecl): void => {
       const e: CallEdge = { from, to: to.id, tier, methodName, site, evidence };
@@ -1727,6 +1850,11 @@ class Graph {
     const name = fn.text;
     const local = this.localBinding(fn, name);
     if (local) {
+      const loaded = local.kind === 'var' ? this.loadBinding(ctx, local.node, name) : null;
+      if (loaded) {
+        this.bindTarget(this.resolveBinding(loaded), name, edge, unresolved, 'bound from a module load');
+        return;
+      }
       const holder = local.kind === 'var' ? local.node.childForFieldName('value') : local.kind === 'fn' ? local.node : null;
       const d = holder && FUNCTION_NODES.has(holder.type) ? this.nestedDeclAt(ctx, holder) : null;
       if (d) edge(d, 'exact', name, 'nested function in lexical scope');
@@ -1768,6 +1896,21 @@ class Graph {
     else unresolved(name, 'overload-ambiguous', `${bodied.length} bodies with this name`);
   }
 
+  /** The namespace a module load gives: a local bound to one, or the load expression itself. */
+  private loadedNamespace(ctx: FileCtx, object: Node): Target | null {
+    let binding: ImportBinding | null = null;
+    if (object.type === 'identifier') {
+      const local = this.localBinding(object, object.text);
+      binding = local?.kind === 'var' ? this.loadBinding(ctx, local.node, object.text) : null;
+    } else {
+      const load = moduleLoad(object);
+      if (load?.spec != null) binding = { kind: 'namespace', module: this.resolveModule(ctx.path, load.spec), specifier: load.spec };
+    }
+    if (binding?.kind !== 'namespace') return null;
+    const t = this.resolveBinding(binding);
+    return t.kind === 'namespace' || t.kind === 'external' ? t : null;
+  }
+
   private callMember(
     ctx: FileCtx,
     fn: Node,
@@ -1796,6 +1939,16 @@ class Graph {
       const found = this.findMember(sup, name);
       if (found === 'external' || !found) unresolved(name, found === 'external' ? 'external' : 'unknown', 'superclass method not in the tree');
       else this.bindMembers(found.decls, name, 'exact', edge, unresolved, 'super call');
+      return;
+    }
+    // `m.f()` on `const m = await import('./m')`, `(await import('./m')).f()`
+    const loadedNs = this.loadedNamespace(ctx, object);
+    if (loadedNs) {
+      if (loadedNs.kind === 'namespace') {
+        const member = this.resolveExport(loadedNs.ctx, name, 0);
+        if (member.kind === 'none') unresolved(name, 'unknown', 'not exported by a module in the tree');
+        else this.bindTarget(member, name, edge, unresolved, 'module namespace from a module load');
+      } else unresolved(name, 'external', 'module loaded from outside the tree');
       return;
     }
     // `ns.f()` on a module namespace, `C.m()` on a class name
@@ -1944,6 +2097,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     fieldUses: dedupe([...graph.fieldUses].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     imports: graph.importEdges(),
+    loads: dedupe([...graph.loadEdges].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), l => `${l.from}>${l.to}`),
     typeOnly: [...graph.typeOnly].sort(),
     entryScheme: 'entry-index@0.1',
     entries: dedupe(

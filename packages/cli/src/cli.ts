@@ -40,9 +40,23 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
-import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush } from './utils/options.js';
+import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
+import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
 import { colors } from './utils/colors.js';
+import {
+  computeDeadCode,
+  computeEntries,
+  computeReach,
+  deadCodeJson,
+  deadCodeSarif,
+  deadCodeText,
+  entriesText,
+  parseDeadCodeOptions,
+  parseEntriesOptions,
+  parseReachOptions,
+  reachText,
+} from './graph-facts.js';
 
 // =============================================================================
 // Configuration Types
@@ -561,9 +575,50 @@ interface CollectFilesOptions {
   includePatterns?: string[];
   excludePatterns?: string[];
   basePath?: string;
+  /**
+   * #1025: the walk is inside a skipped directory the user asked for (the scan
+   * path itself, or one an `include` pattern names), so the default skip list
+   * no longer applies.
+   */
+  optedIn?: boolean;
 }
 
-async function collectFiles(targetPath: string, options: CollectFilesOptions = {}): Promise<string[]> {
+/**
+ * #1025: how a config `include` reaches a default-skipped directory at `relDir`
+ * (relative to the scan root).
+ *
+ * - `'names'`: a pattern names this directory — one of its literal segments is
+ *   the directory's name and the pattern up to that segment matches `relDir`
+ *   (`coverage/**`, `**\/vendor/**`, `packages/*\/coverage/*.js`). The walk
+ *   enters it and the default skip list no longer applies below it.
+ * - `'above'`: a pattern names a skipped directory that may lie below this one
+ *   (`**\/lcov-report/**` reaching `coverage/`). The walk enters it, but
+ *   other skipped directories below it stay skipped.
+ * - `'none'`: the directory stays skipped.
+ */
+export function includeReach(
+  relDir: string,
+  includePatterns: readonly string[] | undefined,
+): 'names' | 'above' | 'none' {
+  if (!includePatterns || includePatterns.length === 0) return 'none';
+  const dir = relDir.replace(/\\/g, '/');
+  const name = dir.slice(dir.lastIndexOf('/') + 1);
+  let reach: 'above' | 'none' = 'none';
+  for (const pattern of includePatterns) {
+    const segments = pattern.replace(/\\/g, '/').replace(/^\.\//, '').split('/');
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (/[*?]/.test(seg) || !isScanSkippedDirectory(seg)) continue;
+      if (seg === name && matchesGlob(dir, segments.slice(0, i + 1).join('/'))) return 'names';
+      for (let j = 0; j < i && reach === 'none'; j++) {
+        if (matchesGlob(dir, segments.slice(0, j + 1).join('/'))) reach = 'above';
+      }
+    }
+  }
+  return reach;
+}
+
+export async function collectFiles(targetPath: string, options: CollectFilesOptions = {}): Promise<string[]> {
   const { language, excludeTests = false, includePatterns, excludePatterns, basePath } = options;
   const files: string[] = [];
   const pathStat = await stat(targetPath);
@@ -587,15 +642,30 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
       files.push(targetPath);
     }
   } else if (pathStat.isDirectory()) {
+    // #1025: a scan path that is itself a skipped directory (`scan ./coverage`)
+    // is read in full.
+    const optedIn = options.optedIn
+      || ((!basePath || basePath === targetPath) && SCAN_SKIPPED_DIRECTORIES.includes(basename(targetPath)));
     const entries = await readdir(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       // Skip test directories if excludeTests is enabled
       if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
 
-      // Check if directory matches exclude patterns (e.g., dist/**)
       const fullPath = join(targetPath, entry.name);
       const relativePath = basePath ? relative(basePath, fullPath) : fullPath;
+      // #1025: dot-files are skipped. Dependencies, generated reports and
+      // dot-directories are skipped unless the user asked for them (see
+      // `includeReach`). A symlink is checked by name like a directory.
+      let childOptedIn = optedIn;
+      if (entry.isFile()) {
+        if (entry.name.startsWith('.')) continue;
+      } else if (!optedIn && isScanSkippedDirectory(entry.name)) {
+        const reach = includeReach(relativePath, includePatterns);
+        if (reach === 'none') continue;
+        childOptedIn = reach === 'names';
+      }
+
+      // Check if directory matches exclude patterns (e.g., dist/**)
       if (excludePatterns && entry.isDirectory()) {
         // Check if the directory itself should be excluded
         const dirPattern = relativePath + '/';
@@ -604,7 +674,7 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
         }
       }
 
-      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath }));
+      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn }));
     }
   }
 
@@ -614,7 +684,8 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
 /**
  * #591: project resource files that analysis passes may read (`*.properties`).
  * Collected from a directory scan with the same skip rules as `collectFiles`
- * (dot-directories, `node_modules`, `--exclude-tests`, config `exclude`). Keys
+ * (dot-directories, `SCAN_SKIPPED_DIRECTORIES`, `--exclude-tests`, config
+ * `exclude`). Keys
  * are the file paths as found; a file over 1 MB is ignored.
  */
 export async function collectResourceFiles(
@@ -634,7 +705,7 @@ export async function collectResourceFiles(
   }
   if (!pathStat.isDirectory()) return out;
   for (const entry of await readdir(targetPath, { withFileTypes: true })) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    if (entry.name.startsWith('.') || (!entry.isFile() && isScanSkippedDirectory(entry.name))) continue;
     if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
     const fullPath = join(targetPath, entry.name);
     const relativePath = basePath ? relative(basePath, fullPath) : fullPath;
@@ -1869,10 +1940,8 @@ function gradleLockDirProject(file: string): string | null {
 const isSbomInput = (file: string): boolean =>
   Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null;
 
-const SBOM_SKIP_DIRS = /^(node_modules|vendor|target|dist|build|out|coverage)$/;
-
 /** Recursively find recognised manifest files under a path (or the path itself if it is one). */
-async function collectManifestFiles(targetPath: string): Promise<string[]> {
+export async function collectManifestFiles(targetPath: string): Promise<string[]> {
   const found: string[] = [];
   const pathStat = await stat(targetPath);
   if (pathStat.isFile()) {
@@ -1883,7 +1952,7 @@ async function collectManifestFiles(targetPath: string): Promise<string[]> {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
       if (e.isDirectory()) {
-        if (SBOM_SKIP_DIRS.test(e.name)) continue;
+        if (isStructureSkippedDirectory(e.name)) continue;
         await walk(join(dir, e.name));
       } else if (isSbomInput(join(dir, e.name))) {
         found.push(join(dir, e.name));
@@ -2157,6 +2226,47 @@ async function main(): Promise<void> {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
       throw e;
     }
+    return;
+  }
+
+  // Graph facts: dead code, removal reach, entry points. Options are refused
+  // before any file is read (#1006); stdout drains before exit (#1001).
+  if (command === 'deadcode' || command === 'reach' || command === 'entries') {
+    const target = args[0] ?? '.';
+    try {
+      let payload: string;
+      let outputFile: string | undefined;
+      if (command === 'deadcode') {
+        const opts = parseDeadCodeOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeDeadCode(target, opts);
+        payload = opts.format === 'json' ? deadCodeJson(report)
+          : opts.format === 'sarif' ? deadCodeSarif(report) : deadCodeText(report);
+      } else if (command === 'reach') {
+        const opts = parseReachOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeReach(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : reachText(report);
+      } else {
+        const opts = parseEntriesOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeEntries(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : entriesText(report);
+      }
+      if (outputFile) {
+        writeFileSync(outputFile, payload + '\n');
+        console.error(`Wrote ${outputFile}`);
+      } else {
+        writeStdout(payload + '\n');
+      }
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      throw e;
+    }
+    await exitAfterFlush(0);
     return;
   }
 

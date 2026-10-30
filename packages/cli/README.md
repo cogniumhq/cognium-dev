@@ -332,6 +332,25 @@ Create `cognium.config.json` in your project root:
 }
 ```
 
+### Skipped directories
+
+Directory scans skip dependencies and generated output by default. Every command also skips names that start with `.`.
+
+| Group | Directories | Skipped by |
+|---|---|---|
+| Dependencies and caches | `node_modules`, `vendor`, `Pods`, `venv`, `.venv`, `__pycache__` | all commands |
+| Coverage reports | `coverage`, `.nyc_output`, `lcov-report`, `htmlcov` | all commands |
+| Build output | `dist`, `build`, `out`, `target`, `bin`, `obj` | `sbom`, `deadcode`, `reach`, `entries` |
+
+`scan` and `metrics` read the build-output names, because `bin/` often holds shell scripts and `build/` can be a source package. Add them to `exclude` when they only hold output.
+
+To read a skipped directory anyway:
+
+- pass it as the path: `cognium-dev scan ./coverage` reads everything under it;
+- or, for `scan` and `metrics`, name it in `include`: `"include": ["coverage/**"]` or `"include": ["**/vendor/**"]`. A pattern that names a directory lets the scan enter it; other files still have to match `include`.
+
+The list lives in `src/utils/skip-dirs.ts`.
+
 ## Severity Filtering
 
 Cognium supports flexible severity filtering to focus on what matters:
