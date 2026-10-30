@@ -2232,8 +2232,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // RxDB (Mango queries, any storage incl. SQLite): a selector or query
   // object, a field name passed to the query builder, or a `$regex` pattern
   // under caller control is NoSQL operator injection (CWE-943). Gated on the
-  // `rxdb` import for the same reason as DuckDB above.
-  { method: 'find', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  // `rxdb` import for the same reason as DuckDB above. `find` is already a
+  // classless JS NoSQL sink in the JavaScript plugin.
   { method: 'findOne', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
   { method: 'count', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
   { method: 'where', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
