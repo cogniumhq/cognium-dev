@@ -31,6 +31,7 @@ import { declLocator } from '../stable-ids/nodes.js';
 import { deriveTypeScriptIds } from '../stable-ids/typescript.js';
 import type { StableDecl, StableIdFile, StableIdOptions } from '../stable-ids/types.js';
 import type { Tier, UnresolvedReason } from './types.js';
+import { DEFAULT_ENTRY_TABLES, type EntryCertainty, type EntryKind, type EntryTables } from './ts-entry-tables.js';
 
 export const TS_CALL_EDGES_SCHEME = 'ts-call-edges@0.1' as const;
 
@@ -42,11 +43,62 @@ export interface TsSourceFile {
   ids?: StableIdOptions;
 }
 
+export interface TsPackageManifest {
+  /** The package's directory, repository-relative (`''` for the root). */
+  root: string;
+  /** The text of its `package.json`. */
+  packageJson: string;
+}
+
 export interface TsCallGraphOptions {
   /** Non-relative import prefixes mapped to repository paths, e.g. `{ '@app/': 'src/' }`. */
   moduleAliases?: Readonly<Record<string, string>>;
   /** Most `inferred` edges one site may carry; beyond it the site is unresolved. Default 16. */
   maxInferred?: number;
+  /** Package manifests: `main`/`module`/`exports` files give `export` entries, `bin` files `main` entries. */
+  packages?: readonly TsPackageManifest[];
+  /** Files whose exports are entries, in addition to the manifests'. */
+  exportRoots?: readonly string[];
+  /** Files run as programs (`main` entries), in addition to `bin`. */
+  mainFiles?: readonly string[];
+  /** Framework recognition data; defaults to `DEFAULT_ENTRY_TABLES`. */
+  entryTables?: EntryTables;
+}
+
+/** An entry point: a declaration the program's environment runs (`entry-index@0.1`). */
+export interface TsEntry {
+  /** The handler's declaration id (the module's for `main` and test files). */
+  id: string;
+  kind: EntryKind;
+  certainty: EntryCertainty;
+  framework?: string;
+  /** Routes: the HTTP method, upper case. */
+  method?: string;
+  /** Routes: the path as registered (mount prefixes are not composed in this version). */
+  path?: string;
+  file: string;
+  line: number;
+  evidence: string;
+}
+
+/** A registration the recognizers saw but could not tie to a declaration. */
+export interface UnresolvedRegistration {
+  site: CallEdgeSite;
+  reason: 'handler-unresolved' | 'manifest-unresolved';
+  evidence: string;
+}
+
+/** A function or class used as a value (passed, stored, returned, rendered): it may run. */
+export interface ReferenceEdge {
+  from: string;
+  to: string;
+  site: CallEdgeSite;
+}
+
+/** A module loads another (static import, re-export or `require`). Module declaration ids. */
+export interface ImportEdge {
+  from: string;
+  to: string;
 }
 
 export interface CallEdgeSite {
@@ -91,6 +143,11 @@ export interface TsCallGraph {
   partial: string[];
   /** Call and `new` sites walked; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
+  references: ReferenceEdge[];
+  imports: ImportEdge[];
+  entryScheme: 'entry-index@0.1';
+  entries: TsEntry[];
+  unresolvedRegistrations: UnresolvedRegistration[];
 }
 
 // ---------------------------------------------------------------------------
@@ -126,9 +183,9 @@ function languageOf(path: string): { grammar: 'typescript' | 'javascript' | 'tsx
 // Per-file tables
 
 type ImportBinding =
-  | { kind: 'named'; module: string | null; name: string }
-  | { kind: 'default'; module: string | null }
-  | { kind: 'namespace'; module: string | null };
+  | { kind: 'named'; module: string | null; name: string; specifier: string }
+  | { kind: 'default'; module: string | null; specifier: string }
+  | { kind: 'namespace'; module: string | null; specifier: string };
 
 interface FileCtx {
   path: string;
@@ -145,6 +202,10 @@ interface FileCtx {
   defaultLocal: string | null;
   reexports: Map<string, { module: string | null; name: string }>;
   stars: (string | null)[];
+  /** Modules this file loads (imports, re-exports, `require`), resolved paths. */
+  loads: string[];
+  /** The file has ES module export statements. */
+  esm: boolean;
   locate: (line: number, column?: number) => StableDecl | null;
   /** Declarations by `line:col:kind` of their node. */
   byStart: Map<string, StableDecl>;
@@ -224,9 +285,14 @@ class Graph {
   /** Method declarations by name, across the tree, for `inferred`. */
   private readonly methodsByName = new Map<string, StableDecl[]>();
   private readonly maxInferred: number;
+  readonly references: ReferenceEdge[] = [];
+  readonly entries: TsEntry[] = [];
+  readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
+  private readonly tables: EntryTables;
 
   constructor(private readonly options: TsCallGraphOptions) {
     this.maxInferred = options.maxInferred ?? 16;
+    this.tables = options.entryTables ?? DEFAULT_ENTRY_TABLES;
   }
 
   get siteCount(): number {
@@ -240,7 +306,7 @@ class Graph {
     const ctx: FileCtx = {
       path, ids, root, module: ids.decls[0],
       top: new Map(), topVars: new Map(), imports: new Map(), exports: new Map(),
-      defaultLocal: null, reexports: new Map(), stars: [],
+      defaultLocal: null, reexports: new Map(), stars: [], loads: [], esm: false,
       locate: declLocator(ids), byStart: new Map(),
     };
     for (const d of ids.decls) {
@@ -336,31 +402,34 @@ class Graph {
       const spec = stringValue(stmt.childForFieldName('source'));
       if (spec === null) return;
       const module = this.resolveModule(ctx.path, spec);
+      if (module) ctx.loads.push(module);
       const clause = named(stmt).find(c => c.type === 'import_clause');
       if (!clause) return;
       for (const c of named(clause)) {
-        if (c.type === 'identifier') ctx.imports.set(c.text, { kind: 'default', module });
+        if (c.type === 'identifier') ctx.imports.set(c.text, { kind: 'default', module, specifier: spec });
         else if (c.type === 'namespace_import') {
           const id = named(c).find(x => x.type === 'identifier');
-          if (id) ctx.imports.set(id.text, { kind: 'namespace', module });
+          if (id) ctx.imports.set(id.text, { kind: 'namespace', module, specifier: spec });
         } else if (c.type === 'named_imports') {
           for (const s of named(c)) {
             if (s.type !== 'import_specifier') continue;
             const name = s.childForFieldName('name')?.text;
             const alias = s.childForFieldName('alias')?.text ?? name;
-            if (name && alias) ctx.imports.set(alias, name === 'default' ? { kind: 'default', module } : { kind: 'named', module, name });
+            if (name && alias) ctx.imports.set(alias, name === 'default' ? { kind: 'default', module, specifier: spec } : { kind: 'named', module, name, specifier: spec });
           }
         }
       }
       return;
     }
     if (t === 'export_statement') {
+      ctx.esm = true;
       const source = stringValue(stmt.childForFieldName('source'));
       const declaration = stmt.childForFieldName('declaration');
       const value = stmt.childForFieldName('value');
       const clause = named(stmt).find(c => c.type === 'export_clause');
       if (source !== null) {
         const module = this.resolveModule(ctx.path, source);
+        if (module) ctx.loads.push(module);
         if (!clause) {
           ctx.stars.push(module);
           return;
@@ -391,6 +460,12 @@ class Graph {
         }
         const nameNode = declaration.childForFieldName('name');
         if (isDefault && nameNode) ctx.defaultLocal = nameNode.text;
+        else if (nameNode) ctx.exports.set(nameNode.text, nameNode.text);
+        else if (declaration.type === 'lexical_declaration' || declaration.type === 'variable_declaration') {
+          for (const d of named(declaration)) {
+            for (const n of d.type === 'variable_declarator' ? patternNames(d.childForFieldName('name')) : []) ctx.exports.set(n, n);
+          }
+        }
         this.scanStatement(ctx, declaration);
         return;
       }
@@ -409,17 +484,19 @@ class Graph {
         const nameNode = d.childForFieldName('name');
         const value = d.childForFieldName('value');
         const req = isRequire(value);
+        const specifier = stringValue(req) ?? '';
+        const reqModule = req ? this.resolveModule(ctx.path, specifier) : null;
+        if (reqModule) ctx.loads.push(reqModule);
         if (nameNode?.type === 'identifier') {
           ctx.topVars.set(nameNode.text, d);
-          if (req) ctx.imports.set(nameNode.text, { kind: 'namespace', module: this.resolveModule(ctx.path, stringValue(req) ?? '') });
+          if (req) ctx.imports.set(nameNode.text, { kind: 'namespace', module: reqModule, specifier });
         } else if (nameNode?.type === 'object_pattern' && req) {
-          const module = this.resolveModule(ctx.path, stringValue(req) ?? '');
           for (const p of named(nameNode)) {
-            if (p.type === 'shorthand_property_identifier_pattern') ctx.imports.set(p.text, { kind: 'named', module, name: p.text });
+            if (p.type === 'shorthand_property_identifier_pattern') ctx.imports.set(p.text, { kind: 'named', module: reqModule, name: p.text, specifier });
             else if (p.type === 'pair_pattern') {
               const key = p.childForFieldName('key')?.text;
               const local = p.childForFieldName('value');
-              if (key && local?.type === 'identifier') ctx.imports.set(local.text, { kind: 'named', module, name: key });
+              if (key && local?.type === 'identifier') ctx.imports.set(local.text, { kind: 'named', module: reqModule, name: key, specifier });
             }
           }
         }
@@ -459,6 +536,7 @@ class Graph {
           if (r && r !== 'external') impls.push(r);
         }
         this.supers.set(decl.id, { extends: ext, implements: impls });
+        if (t !== 'interface_declaration') this.decoratorEntries(ctx, node, decl);
       }
     }
     for (const c of named(node)) this.scanTypes(ctx, c);
@@ -726,8 +804,321 @@ class Graph {
   // -- sites -----------------------------------------------------------------
 
   walk(ctx: FileCtx, node: Node): void {
-    if (node.type === 'call_expression' || node.type === 'new_expression') this.site(ctx, node);
+    const t = node.type;
+    if (t === 'call_expression' || t === 'new_expression') {
+      this.site(ctx, node);
+      if (t === 'call_expression') this.registration(ctx, node);
+      const args = node.childForFieldName('arguments');
+      if (args?.type === 'arguments') for (const a of named(args)) this.reference(ctx, a);
+    } else if (t === 'pair') this.reference(ctx, node.childForFieldName('value'));
+    else if (t === 'shorthand_property_identifier') this.reference(ctx, node);
+    else if (t === 'array') for (const c of named(node)) this.reference(ctx, c);
+    else if (t === 'return_statement') this.reference(ctx, named(node)[0] ?? null);
+    else if (t === 'arrow_function') {
+      const body = node.childForFieldName('body');
+      if (body && body.type !== 'statement_block') this.reference(ctx, body);
+    } else if (t === 'assignment_expression') this.reference(ctx, node.childForFieldName('right'));
+    else if (t === 'variable_declarator') this.reference(ctx, node.childForFieldName('value'));
+    else if (t === 'export_statement') this.reference(ctx, node.childForFieldName('value'));
+    else if (t === 'jsx_opening_element' || t === 'jsx_self_closing_element') this.reference(ctx, node.childForFieldName('name'));
+    else if (t === 'jsx_expression') this.reference(ctx, named(node)[0] ?? null);
     for (const c of named(node)) this.walk(ctx, c);
+  }
+
+  // -- references (functions and classes used as values) ---------------------
+
+  private reference(ctx: FileCtx, node: Node | null): void {
+    if (!node) return;
+    if (node.type === 'parenthesized_expression' || node.type === 'as_expression' || node.type === 'non_null_expression' || node.type === 'satisfies_expression') {
+      this.reference(ctx, named(node)[0] ?? null);
+      return;
+    }
+    const targets = this.valueTargets(ctx, node);
+    if (targets.length === 0) return;
+    const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
+    const from = (ctx.locate(site.line, site.col) ?? ctx.module).id;
+    for (const d of targets) if (d.id !== from) this.references.push({ from, to: d.id, site });
+  }
+
+  private callables(decls: readonly StableDecl[]): StableDecl[] {
+    return decls.filter(d => (d.kind === 'function' || d.kind === 'type' || d.kind === 'method') && !this.bodiless.has(d.id));
+  }
+
+  private memberBodies(type: StableDecl, name: string): StableDecl[] {
+    const found = this.findMember(type, name);
+    if (!found || found === 'external') return [];
+    return [...this.callables(found.decls), ...this.overrides(found.owner, name)];
+  }
+
+  /** The declarations a value expression denotes: a function, a class or a method. */
+  private valueTargets(ctx: FileCtx, node: Node): StableDecl[] {
+    if (node.type === 'identifier' || node.type === 'shorthand_property_identifier') {
+      const name = node.text;
+      const local = this.localBinding(node, name);
+      if (local) {
+        const holder = local.kind === 'var' ? local.node.childForFieldName('value') : local.kind === 'fn' ? local.node : null;
+        const d = holder && FUNCTION_NODES.has(holder.type) ? this.nestedDeclAt(ctx, holder) : null;
+        return d ? [d] : [];
+      }
+      const t = this.resolveLocal(ctx, name);
+      return t.kind === 'decls' ? this.callables(t.decls) : [];
+    }
+    if (node.type !== 'member_expression') return [];
+    const object = node.childForFieldName('object');
+    const name = node.childForFieldName('property')?.text;
+    if (!object || !name) return [];
+    if (object.type === 'this') {
+      const cls = this.enclosingClass(ctx, node);
+      return cls ? this.memberBodies(cls, name) : [];
+    }
+    if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
+      const t = this.resolveLocal(ctx, object.text);
+      if (t.kind === 'namespace') {
+        const m = this.resolveExport(t.ctx, name, 0);
+        return m.kind === 'decls' ? this.callables(m.decls) : [];
+      }
+      const type = t.kind === 'decls' ? t.decls.find(d => d.kind === 'type') : undefined;
+      if (type) return this.memberBodies(type, name);
+    }
+    const type = this.typeOf(ctx, object);
+    return type && type !== 'external' ? this.memberBodies(type, name) : [];
+  }
+
+  // -- entry points ----------------------------------------------------------
+
+  private entry(d: StableDecl, kind: EntryKind, certainty: EntryCertainty, file: string, line: number, evidence: string, extra: Partial<TsEntry> = {}): void {
+    this.entries.push({ id: d.id, kind, certainty, file, line, evidence, ...extra });
+  }
+
+  /** Route registrations (`app.get('/x', h)`) and test-runner callbacks at a call site. */
+  private registration(ctx: FileCtx, node: Node): void {
+    const fn = node.childForFieldName('function');
+    const argsNode = node.childForFieldName('arguments');
+    const args = argsNode ? named(argsNode) : [];
+    if (!fn) return;
+    const line = node.startPosition.row + 1;
+    if (this.tables.tests.filePattern.test(ctx.path)) {
+      const runnerNode = fn.type === 'identifier' ? fn : fn.type === 'member_expression' ? fn.childForFieldName('object') : null;
+      const runner = runnerNode?.type === 'identifier' ? runnerNode.text : null;
+      if (runner && runnerNode && this.tables.tests.functions.includes(runner) && !this.localBinding(runnerNode, runner)
+        && this.resolveLocal(ctx, runner).kind !== 'decls') {
+        for (const a of args) {
+          const d = FUNCTION_NODES.has(a.type) ? this.nestedDeclAt(ctx, a) : null;
+          if (d) this.entry(d, 'test', 'conventional', ctx.path, a.startPosition.row + 1, `${runner} callback in a test file`);
+        }
+      }
+    }
+    if (fn.type !== 'member_expression') return;
+    const verb = fn.childForFieldName('property')?.text;
+    if (!verb || !this.tables.routes.verbs.includes(verb)) return;
+    const path = stringValue(args[0] ?? null);
+    if (path === null || !(path.startsWith('/') || path === '*')) return;
+    const origin = this.routerOrigin(ctx, fn.childForFieldName('object'), 0);
+    for (const h of args.slice(1)) {
+      const targets = FUNCTION_NODES.has(h.type)
+        ? [this.nestedDeclAt(ctx, h)].filter((d): d is StableDecl => d !== null)
+        : this.valueTargets(ctx, h);
+      if (targets.length === 0) {
+        this.unresolvedRegistrations.push({
+          site: { file: ctx.path, line: h.startPosition.row + 1, col: h.startPosition.column },
+          reason: 'handler-unresolved',
+          evidence: `${verb.toUpperCase()} ${path}: handler ${h.text.slice(0, 40)} not tied to a declaration`,
+        });
+        continue;
+      }
+      for (const d of targets) {
+        const extra: Partial<TsEntry> = { method: verb.toUpperCase(), path };
+        if (origin.framework) extra.framework = origin.framework;
+        this.entry(d, 'route', origin.certainty, ctx.path, line,
+          origin.framework ? `${origin.framework} route registration` : 'route-shaped registration on a receiver of unknown origin', extra);
+      }
+    }
+  }
+
+  /** Where a router receiver comes from: a framework package (declared) or unknown (inferred). */
+  private routerOrigin(ctx: FileCtx, receiver: Node | null, depth: number): { certainty: EntryCertainty; framework?: string } {
+    if (receiver?.type !== 'identifier' || depth > 3) return { certainty: 'inferred' };
+    const local = this.localBinding(receiver, receiver.text);
+    const declarator = local?.kind === 'var' ? local.node : local ? null : ctx.topVars.get(receiver.text) ?? null;
+    if (!declarator) {
+      const imp = ctx.imports.get(receiver.text);
+      if (imp?.kind === 'named' && imp.module) {
+        const target = this.files.get(imp.module);
+        if (target) {
+          const v = target.topVars.get(imp.name);
+          if (v) return this.routerOrigin(target, v.childForFieldName('name'), depth + 1);
+        }
+      }
+      return { certainty: 'inferred' };
+    }
+    const value = declarator.childForFieldName('value');
+    if (value?.type !== 'call_expression' && value?.type !== 'new_expression') return { certainty: 'inferred' };
+    let callee = value.type === 'call_expression' ? value.childForFieldName('function') : value.childForFieldName('constructor');
+    while (callee?.type === 'member_expression') callee = callee.childForFieldName('object');
+    if (callee?.type !== 'identifier') return { certainty: 'inferred' };
+    const imp = ctx.imports.get(callee.text);
+    if (imp && imp.module === null && this.tables.routes.packages.includes(imp.specifier)) {
+      return { certainty: 'declared', framework: imp.specifier };
+    }
+    return { certainty: 'inferred' };
+  }
+
+  private decoratorsOf(node: Node): Node[] {
+    const own = named(node).filter(c => c.type === 'decorator');
+    const parent = node.parent?.type === 'export_statement' ? named(node.parent).filter(c => c.type === 'decorator') : [];
+    return [...parent, ...own];
+  }
+
+  private decoratorCall(ctx: FileCtx, dec: Node): { name: string; pkg: string; args: Node[] } | null {
+    const inner = named(dec)[0];
+    let callee: Node | null = inner ?? null;
+    let args: Node[] = [];
+    if (inner?.type === 'call_expression') {
+      callee = inner.childForFieldName('function');
+      const a = inner.childForFieldName('arguments');
+      args = a ? named(a) : [];
+    }
+    if (callee?.type !== 'identifier') return null;
+    const imp = ctx.imports.get(callee.text);
+    if (!imp) return null;
+    return { name: imp.kind === 'named' ? imp.name : callee.text, pkg: imp.specifier, args };
+  }
+
+  private decoratorEntries(ctx: FileCtx, classNode: Node, cls: StableDecl): void {
+    const classDecs = this.decoratorsOf(classNode).map(d => this.decoratorCall(ctx, d)).filter(x => x !== null);
+    const rows = this.tables.decorators;
+    for (const row of rows) {
+      if (row.on !== 'class') continue;
+      const hit = classDecs.find(d => d.pkg === row.package && row.names.includes(d.name));
+      if (!hit) continue;
+      const ctor = this.membersOf(cls, 'constructor').find(d => !this.bodiless.has(d.id));
+      this.entry(ctor ?? cls, row.kind, 'declared', ctx.path, cls.start_line, `@${hit.name} from ${row.package}`, { framework: row.package });
+    }
+    const body = classNode.childForFieldName('body');
+    if (!body) return;
+    let pending: Node[] = [];
+    for (const m of named(body)) {
+      if (m.type === 'decorator') {
+        pending.push(m);
+        continue;
+      }
+      if (m.type === 'method_definition' && pending.length > 0) {
+        const decl = ctx.byStart.get(posKey(m, 'method'));
+        for (const dec of pending) {
+          const info = this.decoratorCall(ctx, dec);
+          const row = info ? rows.find(r => r.on === 'method' && r.package === info.pkg && r.names.includes(info.name)) : undefined;
+          if (!info || !row || !decl) continue;
+          const extra: Partial<TsEntry> = { framework: row.package };
+          if (row.kind === 'route') {
+            const prefixDec = row.prefixFrom ? classDecs.find(d => d.pkg === row.package && d.name === row.prefixFrom) : undefined;
+            const prefix = stringValue(prefixDec?.args[0] ?? null) ?? '';
+            const own = stringValue(info.args[0] ?? null) ?? '';
+            extra.method = info.name.toUpperCase();
+            extra.path = '/' + [prefix, own].map(x => x.replace(/^\/+|\/+$/g, '')).filter(x => x !== '').join('/');
+          }
+          this.entry(decl, row.kind, 'declared', ctx.path, decl.start_line, `@${info.name} from ${row.package}`, extra);
+        }
+      }
+      pending = [];
+    }
+  }
+
+  private findFile(stem: string): string | null {
+    if (this.files.has(stem)) return stem;
+    const bare = stem.replace(/\.(?:d\.ts|[mc]?[jt]sx?)$/, '');
+    for (const ext of EXTENSIONS) if (this.files.has(bare + ext)) return bare + ext;
+    for (const ext of EXTENSIONS) if (this.files.has(`${bare}/index${ext}`)) return `${bare}/index${ext}`;
+    return null;
+  }
+
+  /** A manifest path to a source file: as written, else the build output mapped back to `src/`. */
+  private sourceFor(root: string, p: string): string | null {
+    const base = normalizePath(`${root}/${p}`);
+    const direct = this.findFile(base);
+    if (direct) return direct;
+    const prefix = normalizePath(root);
+    const inner = prefix === '' ? base : base.slice(prefix.length + 1);
+    const mapped = inner.replace(/^(?:dist|lib|build|out)(?:\/(?:esm|cjs|src))?\//, 'src/');
+    return mapped === inner ? null : this.findFile(normalizePath(`${prefix}/${mapped}`));
+  }
+
+  /** Names a file exports, re-exports included; every module-level name for a file without ES exports. */
+  private exportedDecls(ctx: FileCtx, seen = new Set<string>()): StableDecl[] {
+    if (seen.has(ctx.path)) return [];
+    seen.add(ctx.path);
+    const names = new Set<string>([...ctx.exports.keys(), ...ctx.reexports.keys()]);
+    if (ctx.defaultLocal !== null || ctx.top.has('default')) names.add('default');
+    if (!ctx.esm) for (const n of ctx.top.keys()) names.add(n);
+    const out: StableDecl[] = [];
+    for (const n of [...names].sort()) {
+      const t = this.resolveExport(ctx, n, 0);
+      if (t.kind === 'decls') out.push(...t.decls.filter(d => !this.bodiless.has(d.id)));
+    }
+    for (const m of ctx.stars) {
+      const target = m === null ? undefined : this.files.get(m);
+      if (target) out.push(...this.exportedDecls(target, seen));
+    }
+    return out;
+  }
+
+  private exportEntries(ctx: FileCtx, evidence: string): void {
+    for (const d of this.exportedDecls(ctx)) this.entry(d, 'export', 'declared', ctx.path, d.start_line, evidence);
+  }
+
+  /** Entries from package manifests and the caller's lists. */
+  manifestEntries(): void {
+    for (const pkg of this.options.packages ?? []) {
+      const where: CallEdgeSite = { file: normalizePath(`${pkg.root}/package.json`), line: 1, col: 0 };
+      let json: unknown;
+      try {
+        json = JSON.parse(pkg.packageJson);
+      } catch {
+        this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: 'package.json does not parse' });
+        continue;
+      }
+      const m = (json ?? {}) as Record<string, unknown>;
+      const strings = (v: unknown, out: string[] = []): string[] => {
+        if (typeof v === 'string') out.push(v);
+        else if (Array.isArray(v)) for (const x of v) strings(x, out);
+        else if (v && typeof v === 'object') for (const k of Object.keys(v).sort()) strings((v as Record<string, unknown>)[k], out);
+        return out;
+      };
+      const exportPaths = [...strings(m.main), ...strings(m.module), ...strings(m.exports)].filter(p => !p.endsWith('.json') && !p.endsWith('.d.ts') && !p.includes('*'));
+      for (const p of [...new Set(exportPaths)]) {
+        const file = this.sourceFor(pkg.root, p);
+        const ctx = file ? this.files.get(file) : undefined;
+        if (ctx) this.exportEntries(ctx, `exported by package.json (${p})`);
+        else this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: `export path ${p} not found in the tree` });
+      }
+      for (const p of [...new Set(strings(m.bin))]) {
+        const file = this.sourceFor(pkg.root, p);
+        const ctx = file ? this.files.get(file) : undefined;
+        if (ctx) this.entry(ctx.module, 'main', 'declared', ctx.path, 1, `package.json bin (${p})`);
+        else this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: `bin ${p} not found in the tree` });
+      }
+    }
+    for (const f of this.options.exportRoots ?? []) {
+      const ctx = this.files.get(normalizePath(f));
+      if (ctx) this.exportEntries(ctx, 'export root given by the caller');
+    }
+    for (const f of this.options.mainFiles ?? []) {
+      const ctx = this.files.get(normalizePath(f));
+      if (ctx) this.entry(ctx.module, 'main', 'declared', ctx.path, 1, 'program file given by the caller');
+    }
+    for (const ctx of this.sortedFiles()) {
+      if (this.tables.tests.filePattern.test(ctx.path)) this.entry(ctx.module, 'test', 'conventional', ctx.path, 1, 'test file loaded by the runner');
+    }
+  }
+
+  importEdges(): ImportEdge[] {
+    const out = new Map<string, ImportEdge>();
+    for (const ctx of this.sortedFiles()) {
+      for (const m of ctx.loads) {
+        const to = this.files.get(m);
+        if (to && to !== ctx) out.set(`${ctx.module.id}>${to.module.id}`, { from: ctx.module.id, to: to.module.id });
+      }
+    }
+    return [...out.values()];
   }
 
   private site(ctx: FileCtx, node: Node): void {
@@ -1011,6 +1402,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     }
     graph.link();
     graph.run();
+    graph.manifestEntries();
   } finally {
     for (const t of trees) disposeTree(t);
   }
@@ -1024,5 +1416,27 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     unresolved: [...graph.unresolved].sort(bySite),
     partial,
     sites: graph.siteCount,
+    references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
+    imports: graph.importEdges(),
+    entryScheme: 'entry-index@0.1',
+    entries: dedupe(
+      [...graph.entries].sort((a, b) => cmp(a.file, b.file) || a.line - b.line || cmp(a.id, b.id) || cmp(a.kind, b.kind) || cmp(a.path ?? '', b.path ?? '') || cmp(a.method ?? '', b.method ?? '')),
+      e => `${e.id}|${e.kind}|${e.method ?? ''}|${e.path ?? ''}`,
+    ),
+    unresolvedRegistrations: [...graph.unresolvedRegistrations].sort(bySite),
   };
+}
+
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function dedupe<T>(items: T[], key: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter(t => {
+    const k = key(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
