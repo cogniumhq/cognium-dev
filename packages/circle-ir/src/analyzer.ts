@@ -207,6 +207,7 @@ import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-deriva
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
+import { makeCommentOnlyLineTest } from './analysis/comment-lines.js';
 
 export interface AnalyzerOptions {
   /**
@@ -1376,6 +1377,17 @@ export async function analyze(
     }
   }
 
+  // cognium-dev#999 — drop taint sinks, sources and flows that sit on a line
+  // holding only a comment (doc comments quoting `JSON.parse(req.body)` and
+  // the like). Line-scanning passes match raw text; the syntax tree knows the
+  // line is a comment.
+  const isCommentOnlyLine = makeCommentOnlyLineTest(tree.rootNode, code);
+  taint.sinks = taint.sinks.filter(s => !isCommentOnlyLine(s.line));
+  taint.sources = taint.sources.filter(s => !isCommentOnlyLine(s.line));
+  if (taint.flows) {
+    taint.flows = taint.flows.filter(f => !isCommentOnlyLine(f.sink_line) && !isCommentOnlyLine(f.source_line));
+  }
+
   // 3.105.0 — propagate tags from `TaintSink.tags` onto every emitted
   // `TaintFlowInfo.tags` so downstream consumers (CLI, SARIF) can apply
   // policy-aware rendering. Matched by (sink_line, sink_type). Sinks
@@ -1423,7 +1435,14 @@ export async function analyze(
   // `options.includeSpeculative === true`, preserve the full stream for
   // downstream adjudication. Existing passes (which do not set `confidence`)
   // are treated as `'high'` and pass through unchanged.
-  const verifiedFindings = applyConfidenceFilter(findings, options.includeSpeculative === true);
+  // cognium-dev#999 — a security finding whose line is only a comment is a
+  // text match inside documentation, not code. Line 1 is exempt: file-level
+  // findings (`missing-x-frame-options`, header checks) anchor there, and a
+  // file often opens with a doc comment.
+  const codeFindings = findings.filter(
+    f => f.category !== 'security' || f.line <= 1 || !isCommentOnlyLine(f.line),
+  );
+  const verifiedFindings = applyConfidenceFilter(codeFindings, options.includeSpeculative === true);
 
   // #161/#165/#168 (3.105.0) — central library-API-surface downgrade. Findings
   // carrying the `library-api-surface:caller-responsibility` tag (emitted by

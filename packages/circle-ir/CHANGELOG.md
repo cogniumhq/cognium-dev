@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **No security results on comment-only lines** (cognium-dev#999). Line-scanning passes (LanguageSourcesPass, mass-assignment, tls-verify-disabled) matched text inside doc comments, e.g. ` * JSON.parse(req.body)` became a high `insecure_deserialization` finding. `analyze()` now drops taint sinks, sources and flows, and `security` findings, whose line holds nothing but a comment, decided from the syntax tree (`analysis/comment-lines.ts`): the line's first non-blank column sits in a comment node that runs to the end of the line's content. Lines with code and a trailing comment, and string literals, are untouched; file-level findings anchored on line 1 are exempt. On our own code (Cognium-on-Cognium baseline) this removes 6 findings, all on doc-comment lines; OWASP BenchmarkJava 1.2 is identical (75.4, same FP and FN lists).
 - **JS/TS `parser.parse(...)` is no longer an XXE or code-injection sink** (cognium-dev#998). The JAXP `DocumentBuilder`/`SAXParser`/`XMLReader.parse` (CWE-611) and cron-utils `CronParser.parse` (CWE-94) entries had no language scope, so the receiver-name heuristic (`parser` → `SAXParser`, `…parser` → `CronParser`) matched a tree-sitter or lockfile `parser.parse(text)` in TypeScript. The four entries are now `languages: ['java']`. Java detection is unchanged; JS/TS XML parsers keep their own entries. On our own code (Cognium-on-Cognium baseline) this removes 3 `code_injection` and 3 `xxe` criticals.
 
 ### Added
