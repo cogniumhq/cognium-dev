@@ -79,6 +79,7 @@ export function exitAfterFlush(code: number): Promise<never> {
 }
 
 let pendingDrain: Promise<void> = Promise.resolve();
+let epipeHandled = false;
 
 /**
  * Write to stdout and remember when the pipe has taken it all.
@@ -89,6 +90,16 @@ let pendingDrain: Promise<void> = Promise.resolve();
  * returns `false` is followed by `'drain'`, which `exitAfterFlush` waits for.
  */
 export function writeStdout(text: string): void {
+  if (!epipeHandled) {
+    epipeHandled = true;
+    // A reader that stops early (`| head`) closes the pipe: exit quietly with
+    // the SIGPIPE status instead of a stack trace, and never wait for a
+    // 'drain' that cannot come.
+    process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EPIPE') process.exit(141);
+      throw err;
+    });
+  }
   if (!process.stdout.write(text)) {
     const before = pendingDrain;
     pendingDrain = Promise.all([before, new Promise<void>((done) => process.stdout.once('drain', () => done()))])

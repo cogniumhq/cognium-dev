@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- **One stdout path for large output.** `scan`, `metrics` and `sbom` now write their payload (and `scan`'s summary) through `writeStdout()`, like `deadcode`, `reach` and `entries`, and exit only after a slow pipe has drained. A reader that stops early (`| head`) now ends every one of these commands quietly with status 141 instead of a Bun `EPIPE` stack trace.
 - **New `deadcode`, `reach` and `entries` commands.** The engine's graph facts, until now reachable only through the MCP server, are on the CLI for CI and scripts. Each builds the call graph with its entry-point index for one language (`--language ts|java|python|go`; auto-detected when the tree holds one, refused when it mixes several):
   - `deadcode [path]` prints the `dead-code@0.1` facts. `-f json` is the engine payload plus `root`, `engine` and `language`; `-f sarif` gives SARIF 2.1.0 with `dead` as a warning and `may-be-live` as a note, located at the declaration; `--verdicts` picks the facts listed (default `dead,may-be-live`) while `summary` counts all of them; `--root-kinds` picks the entry kinds that count as roots (default: all but `test`).
   - `reach --base <ref-or-dir> [path]` prints `removal-reach@0.1`: what the head tree removes from the base and what still reached it. A directory is read as it is; anything else is a git commit, exported with `git archive` into a temporary directory, so the working tree is never touched.
