@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- **Piped output is no longer cut off** (#1001). `scan`, `metrics` and `sbom` exited with `process.exit()` right after writing, which truncated stdout when it was a pipe: `scan -f json | …` stopped at exactly 65,536 bytes. They now exit only after stdout and stderr have drained.
+- **Options are checked before any file is read** (#1006). An unknown `-f/--format` (for example `xml`) is refused instead of silently printing text; a bad `--severity` (flag or config) fails at once instead of after the whole scan; `--threads` must be a whole number ≥ 1 (`0` was accepted). A bad option exits 1 with a usage message.
+- **New `--file-timeout-ms <n>`** (#1007, default 0 = off). A file whose analysis passes `n` ms is skipped and reported as an error (`analysis timed out after …; file skipped`), so one pathological file can't hold a scan indefinitely or pass as clean. Uses circle-ir's `fileTimeoutMs`.
 - `cognium-dev sbom` reads resolved Java dependency sets when a build has written them, with the precedence resolved > lockfile > declared, and never runs Maven or Gradle itself:
   - `gradle.lockfile` and `gradle/dependency-locks/*.lockfile` replace `build.gradle` / `build.gradle.kts` in their project, giving exact and transitive versions; test-only configurations are `dev`, so `--prod-only` drops them;
   - Maven `dependency-tree.txt` (`mvn dependency:tree -DoutputFile=…`) or `dependency-list.txt` replace the `pom.xml` beside them; a tree wins over a list; a file of that name with no `pom.xml` beside it is ignored.
