@@ -70,8 +70,28 @@ export function parseWholeNumber(name: string, raw: unknown, fallback: number, m
 export function exitAfterFlush(code: number): Promise<never> {
   process.exitCode = code;
   return new Promise<never>(() => {
-    process.stdout.write('', () => {
-      process.stderr.write('', () => process.exit(code));
+    void pendingDrain.then(() => {
+      process.stdout.write('', () => {
+        process.stderr.write('', () => process.exit(code));
+      });
     });
   });
+}
+
+let pendingDrain: Promise<void> = Promise.resolve();
+
+/**
+ * Write to stdout and remember when the pipe has taken it all.
+ *
+ * Under Bun (and the standalone binary built with it) the callback of a write
+ * to a slow pipe fires before the data is handed over, so the empty-write
+ * check in `exitAfterFlush` alone still cut output at 64 KiB. A write that
+ * returns `false` is followed by `'drain'`, which `exitAfterFlush` waits for.
+ */
+export function writeStdout(text: string): void {
+  if (!process.stdout.write(text)) {
+    const before = pendingDrain;
+    pendingDrain = Promise.all([before, new Promise<void>((done) => process.stdout.once('drain', () => done()))])
+      .then(() => undefined);
+  }
 }

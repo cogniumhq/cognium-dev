@@ -34,6 +34,8 @@ export {
   parsePoetryLockDependencies,
   parseGoDependencies,
   collectDependencies,
+  licenseFromPackageJson,
+  applyLicenses,
   toCycloneDx,
   toSpdx,
 } from './analysis/sbom.js';
@@ -42,6 +44,7 @@ export type {
   Ecosystem,
   DependencyScope,
   SbomMetadata,
+  LicenseMap,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
@@ -260,6 +263,7 @@ export {
   NavigationIndex,
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
+  COMPUTED_MODULE_LOAD,
   DEFAULT_ENTRY_TABLES,
   buildJavaGraph,
   JAVA_GRAPH_SCHEME,
@@ -293,10 +297,15 @@ export type {
   TsEntry,
   UnresolvedRegistration,
   ReferenceEdge,
+  FieldUseEdge,
   ImportEdge,
+  LoadEdge,
   EntryKind,
   EntryCertainty,
   EntryTables,
+  ScriptTable,
+  ToolFileRow,
+  ExpoTable,
   JavaSourceFile,
   JavaGraphOptions,
   JavaGraph,
