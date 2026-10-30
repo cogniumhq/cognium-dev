@@ -330,6 +330,8 @@ export {
   diffStableIds,
   deriveJavaIds,
   eraseJavaType,
+  derivePythonIds,
+  pythonModuleName,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';
