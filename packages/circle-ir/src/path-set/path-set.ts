@@ -23,6 +23,7 @@ import { DEFAULT_SINKS } from '../analysis/config-loader.js';
 import { DominatorGraph } from '../graph/dominator-graph.js';
 import { digest128 } from '../stable-ids/hash.js';
 import { sideOf, type BranchFact } from './branches.js';
+import type { TemplateFact } from './templates.js';
 import type { StableIdFile } from '../stable-ids/types.js';
 import type {
   CallInfo,
@@ -46,6 +47,7 @@ import {
   type PathSink,
   type PathSource,
   type PathState,
+  type TemplateUse,
   type PinFacts,
 } from './types.js';
 
@@ -63,6 +65,12 @@ export interface PathSetOptions {
    * `guarded`; without them no path is.
    */
   branches?: Record<string, BranchFact[]>;
+  /**
+   * Template facts per template file (`deriveTemplateFacts`). With them a sink
+   * call that hands a value to a view under a literal name (`addAttribute("q", q)`)
+   * carries the template constructs that render that name (`sink.templates`).
+   */
+  templates?: Record<string, TemplateFact[]>;
 }
 
 /** `CWE-089`, `cwe-89` and `89` all normalise to `CWE-89`. */
@@ -354,6 +362,27 @@ function endpointOf(ctx: FileCtx, sink: PathSink): PathSink {
   return endpoint;
 }
 
+/** Names a sink call hands on as string literals (`addAttribute("q", q)` → `q`). */
+export function handedNames(c: CallInfo | undefined): string[] {
+  if (!c) return [];
+  return c.arguments.map(a => a.literal).filter((x): x is string => typeof x === 'string' && /^[A-Za-z_][\w]*$/.test(x));
+}
+
+function templateUsesOf(ctx: FileCtx, sink: PathSink, facts: TemplateFact[]): TemplateUse[] {
+  if (facts.length === 0) return [];
+  const names = handedNames(sinkCallOf(ctx, sink));
+  if (names.length === 0) return [];
+  return facts
+    .filter(f => f.names.some(n => names.includes(n)))
+    .map(f => {
+      const u: TemplateUse = { file: f.file, line: f.line, engine: f.engine, construct: f.construct, attributes: f.attributes, names: f.names.filter(n => names.includes(n)) };
+      if (f.element !== undefined) u.element = f.element;
+      if (f.inAttribute !== undefined) u.inAttribute = f.inAttribute;
+      return u;
+    })
+    .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || a.construct.localeCompare(b.construct)));
+}
+
 // ---------------------------------------------------------------------------
 // Guards: the endpoint runs on one side of a check of the path's own data
 // ---------------------------------------------------------------------------
@@ -474,10 +503,13 @@ export function pathSetOf(project: PathSetInput, options: PathSetOptions): PathS
     });
   }
 
-  // Endpoints and guards (see endpointOf / guardOf).
+  // Endpoints and guards (see endpointOf / guardOf), and template hand-offs.
+  const templateFacts = Object.values(options.templates ?? {}).flat();
   for (const v of variants) {
     const kctx = ctxByFile.get(v.sink.file) as FileCtx;
     v.sink = endpointOf(kctx, v.sink);
+    const uses = templateUsesOf(kctx, v.sink, templateFacts);
+    if (uses.length > 0) v.sink = { ...v.sink, templates: uses };
     if (v.sanitized) continue;
     const pathVars = new Set(v.hops.map(h => h.variable).filter((x): x is string => !!x));
     const g = guardOf(kctx, v.sink, pathVars);
@@ -605,6 +637,11 @@ export function diffPathSets(before: PathSet, after: PathSet): Pick<PathSetDiff,
     const entry: PathDiffEntry = { key, state, change };
     if (pb) entry.before = pb;
     if (pa) entry.after = pa;
+    // the view this path hands to rendered it differently at the two versions
+    if (pb?.sink.templates || pa?.sink.templates) {
+      const shape = (p?: PathEntry) => JSON.stringify((p?.sink.templates ?? []).map(t => [t.file, t.engine, t.construct, t.attributes, t.inAttribute ?? null]));
+      if (shape(pb) !== shape(pa)) entry.templateChanged = true;
+    }
     return entry;
   });
   return { entries, counts };
@@ -622,6 +659,7 @@ export function pathSetDiff(
     cwe: string | number;
     stableIds?: { before?: Record<string, StableIdFile>; after?: Record<string, StableIdFile> };
     branches?: { before?: Record<string, BranchFact[]>; after?: Record<string, BranchFact[]> };
+    templates?: { before?: Record<string, TemplateFact[]>; after?: Record<string, TemplateFact[]> };
   },
 ): PathSetDiff {
   const at = (pin: 'before' | 'after'): PathSetOptions => {
@@ -630,6 +668,8 @@ export function pathSetDiff(
     if (ids) o.stableIds = ids;
     const br = options.branches?.[pin];
     if (br) o.branches = br;
+    const tp = options.templates?.[pin];
+    if (tp) o.templates = tp;
     return o;
   };
   const setB = pathSetOf(before, at('before'));

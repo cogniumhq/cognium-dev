@@ -387,6 +387,10 @@ export {
   lineDominates,
   deriveBranchFacts,
   sideOf,
+  deriveTemplateFacts,
+  templateEngineOf,
+  expressionNames,
+  handedNames,
 } from './path-set/index.js';
 export type {
   PathSetInput,
@@ -404,6 +408,9 @@ export type {
   BranchCall,
   BranchRange,
   BranchSide,
+  TemplateFact,
+  TemplateEngine,
+  TemplateUse,
   PathSet,
   PathChange,
   PathDiffEntry,

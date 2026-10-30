@@ -21,6 +21,11 @@ export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   '.git', 'node_modules', 'target', 'build', 'dist', 'out', '.gradle', '.idea', '__pycache__', '.venv', 'venv',
 ];
 
+/** Server-side template files read beside a language's sources (Thymeleaf HTML, JSP). */
+export const TEMPLATE_EXTENSIONS: Partial<Record<CodeLanguage, readonly string[]>> = {
+  java: ['.html', '.htm', '.jsp', '.jspx', '.tag', '.tagx'],
+};
+
 export interface TreeFile {
   /** Repository-relative, `/`-separated. */
   path: string;
@@ -35,8 +40,12 @@ export const sha = (s: string | Buffer): string => `sha256:${createHash('sha256'
  * Every file of `language` under `root`, sorted by path. Symbolic links are not
  * followed (a link out of the tree would read files that are not the subject's).
  */
-export function readTree(root: string, language: CodeLanguage, excludedDirs: readonly string[] = DEFAULT_EXCLUDED_DIRS): TreeFile[] {
-  const exts = EXTENSIONS[language];
+export function readTree(
+  root: string,
+  language: CodeLanguage,
+  excludedDirs: readonly string[] = DEFAULT_EXCLUDED_DIRS,
+  exts: readonly string[] = EXTENSIONS[language],
+): TreeFile[] {
   const out: TreeFile[] = [];
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir).sort()) {
