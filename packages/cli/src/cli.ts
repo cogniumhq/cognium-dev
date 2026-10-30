@@ -1445,12 +1445,12 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
         console.error(colors.green(`Results written to ${options.output}`));
       } else if (output.trim()) {
-        console.log(output);
+        writeStdout(output + '\n');
       }
 
       // Summary
       if (!options.quiet && options.format === 'text') {
-        console.log();
+        writeStdout('\n');
         // #424: when the size ceiling truncated the scan, `files` is what was
         // DISCOVERED, not what was analysed. Reporting the discovered count
         // here would state a clean scan of files that were never opened —
@@ -1462,17 +1462,17 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           ? `${scanned} of ${crossFileData.filesTotal ?? files.length} file(s) analysed`
           : `${scanned} file(s)`;
         if (securityCount > 0) {
-          console.log(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`));
+          writeStdout(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`) + '\n');
         }
         if (qualityCount > 0) {
           const label = securityCount > 0 ? 'Also found' : 'Found';
-          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`));
+          writeStdout(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`) + '\n');
         }
         if (securityCount === 0 && qualityCount === 0 && options.verbose) {
-          console.log(colors.green(`No findings in ${scannedLabel}`));
+          writeStdout(colors.green(`No findings in ${scannedLabel}`) + '\n');
         }
         if (errors > 0) {
-          console.log(colors.yellow(`${errors} file(s) had errors during analysis`));
+          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis`) + '\n');
         }
       }
     }
@@ -1652,7 +1652,7 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       // 3.89.2: status to stderr (stdout reserved for payload).
       console.error(colors.green(`Results written to ${options.output}`));
     } else {
-      console.log(output);
+      writeStdout(output + '\n');
     }
 
     await exitAfterFlush(0);
@@ -2134,7 +2134,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     // stdout is reserved for payload; status goes to stderr (3.89.2).
     console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   } else {
-    console.log(out);
+    writeStdout(out + '\n');
     console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   }
   await exitAfterFlush(0);
