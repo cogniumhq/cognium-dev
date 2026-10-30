@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changes
+
+- `cognium-dev sbom` reads resolved Java dependency sets when a build has written them, with the precedence resolved > lockfile > declared, and never runs Maven or Gradle itself:
+  - `gradle.lockfile` and `gradle/dependency-locks/*.lockfile` replace `build.gradle` / `build.gradle.kts` in their project, giving exact and transitive versions; test-only configurations are `dev`, so `--prod-only` drops them;
+  - Maven `dependency-tree.txt` (`mvn dependency:tree -DoutputFile=…`) or `dependency-list.txt` replace the `pom.xml` beside them; a tree wins over a list; a file of that name with no `pom.xml` beside it is ignored.
+  - Projects with none of these files give the same SBOM as before.
+
 ## [4.17.0] - 2026-10-18
 
 ### Changes
