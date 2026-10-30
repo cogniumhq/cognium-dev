@@ -417,6 +417,8 @@ export type {
   PathSource,
   PathSink,
   PathGuard,
+  PathUnresolved,
+  UnresolvedSite,
   PathState,
   PathEntry,
   BranchFact,

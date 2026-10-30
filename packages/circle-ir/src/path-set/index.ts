@@ -29,6 +29,8 @@ export type {
   PathSource,
   PathSink,
   PathGuard,
+  PathUnresolved,
+  UnresolvedSite,
   TemplateUse,
   PathState,
   PathEntry,
