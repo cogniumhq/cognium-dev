@@ -70,6 +70,8 @@ export interface RemedyClassParams extends CodeFactsParams {
   scope?: 'closed' | 'all';
   /** A `path-set-diff` result for the same pair and parameters, to avoid analysing twice. */
   pathSet?: RunResult;
+  /** Observe the output context at writer sinks and hold context rows only there (off by default). */
+  outputContext?: boolean;
 }
 
 export interface AnchorObservation {
@@ -210,6 +212,7 @@ export async function runRemedyClass(root: PinPair, views: { table: Uint8Array |
     branches: { after: after.branches },
     templates: { before: before.templates, after: after.templates },
     ...(params.scope ? { scope: params.scope } : {}),
+    ...(params.outputContext ? { outputContext: true } : {}),
   });
   const anchors: AnchorObservation[] = result.sinks.map((s: RemedySinkObservation) => ({
     anchor: s.anchor,
@@ -223,7 +226,7 @@ export async function runRemedyClass(root: PinPair, views: { table: Uint8Array |
   }
   anchors.push({
     anchor: 'site',
-    observation: { table: result.table, sinks: result.sinks.length, byMatch, scope: params.scope ?? 'closed' },
+    observation: { table: result.table, sinks: result.sinks.length, byMatch, scope: params.scope ?? 'closed', ...(params.outputContext ? { outputContext: true } : {}) },
     inputDigest: sha(`${result.table.digest}\n${pathDigests.get('site')}`),
   });
   return { driver: DRIVER, schemaVersion: SCHEMA_VERSION, capability: 'remedy-class', anchors, environmentDigest: environmentDigest() };

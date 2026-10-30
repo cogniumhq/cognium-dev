@@ -346,6 +346,9 @@ export {
   sha256Digest,
   remedyClassOf,
   TableRefused,
+  htmlContextAt,
+  markupBefore,
+  javaStringLiterals,
 } from './remedy-class/index.js';
 export type {
   ArgPosition,
@@ -370,6 +373,7 @@ export type {
   RemedySinkObservation,
   RemedyClassResult,
   RemedyClassOptions,
+  OutputContext,
 } from './remedy-class/index.js';
 
 // Path sets: every source-to-sink path of one CWE, keyed across versions of a
