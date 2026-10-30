@@ -110,7 +110,8 @@ export function analyzeTaint(
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
   const sources = findSources(calls, types, config.sources, sourceLines, language, imports);
-  let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
+  let sinkPatterns = config.sinks.filter((p) => sinkPatternImportApplies(p, imports));
+  sinkPatterns = expandPromisifyAliases(sinkPatterns, sourceLines, language);
   sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
   const gatedSinks =
@@ -118,6 +119,43 @@ export function analyzeTaint(
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines, language);
 
   return { sources, sinks: gatedSinks, sanitizers };
+}
+
+/**
+ * Bound-parameter call on an import-gated SQL sink (see `findSinks`).
+ */
+function isBoundParameterCall(
+  call: CallInfo,
+  pattern: SinkPattern,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (!pattern.requires_import || pattern.type !== 'sql_injection') return false;
+  const first = call.arguments[0]?.expression?.trim() ?? '';
+  if (first.startsWith('[') || first.startsWith('{')) return true;
+  const receiver = call.receiver;
+  if (!receiver || !sourceLines || !/^[A-Za-z_$][\w$]*$/.test(receiver)) return false;
+  const assignedFromPrepare = new RegExp(
+    `\\b${receiver.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*(?:await\\s+)?[\\w$.]+\\.prepare\\s*\\(`,
+  );
+  return sourceLines.some((line) => assignedFromPrepare.test(line));
+}
+
+/**
+ * `SinkPattern.requires_import`: the file imports one of the listed modules
+ * (exact name, or a subpath of it). Patterns without the field always apply.
+ */
+export function sinkPatternImportApplies(
+  pattern: SinkPattern,
+  imports: ReadonlyArray<ImportInfo> | undefined,
+): boolean {
+  const required = pattern.requires_import;
+  if (!required || required.length === 0) return true;
+  if (!imports || imports.length === 0) return false;
+  return imports.some((imp) => {
+    const from = imp.from_package;
+    if (!from) return false;
+    return required.some((m) => from === m || from.startsWith(m + '/'));
+  });
 }
 
 /**
@@ -1799,6 +1837,19 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
 }
 
 /**
+ * cognium-dev#1000 — is this receiver named like a navigation object
+ * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
+ * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
+ * when the receiver's type is unresolved.
+ */
+function isNavigationReceiverName(receiver: string | null | undefined): boolean {
+  const r = (receiver ?? '').trim();
+  if (!r) return false;
+  const last = r.slice(r.lastIndexOf('.') + 1).replace(/\(\)$/, '');
+  return /router|history|navigat|^nav$/i.test(last);
+}
+
+/**
  * cognium-dev#985 — JS/TS `Connection.get` carries `allow_unresolved_receiver`,
  * so in-memory `Map` / property-bag `.get()` calls (e.g. `properties.get(prop)`,
  * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
@@ -1808,15 +1859,32 @@ function isInMemoryMapGetReceiver(
   receiver: string | null | undefined,
   sourceLines?: string[],
 ): boolean {
-  const r = (receiver ?? '').trim();
-  if (!r || !sourceLines) return false;
-  if (/\.properties$/i.test(r)) return true;
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  if (/\.properties$/i.test(raw)) return true;
+  // cognium-dev#997 — a member read (`this.memoryCache`, `ctx.imports`,
+  // `fileImport.resolved`, `state().perFileCounters`) is resolved against the
+  // declaration of its LAST property name in this file — a class field, an
+  // interface/type member or a local — exactly like a bare local. Only a
+  // declaration that positively says Map/WeakMap suppresses the sink, so a
+  // real `req.db.get(sql)` (no Map-typed `db`) keeps firing.
+  const lastDot = raw.lastIndexOf('.');
+  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
   if (/^(properties|memoryCache)$/i.test(r)) return true;
   if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const n = escapeRe(r);
+  // `x = new Map(...)` / `new WeakMap(...)`, with or without (nested) type
+  // arguments, as a local (`const x = …`), a class field (`private x = …`) or
+  // a constructor assignment (`this.x = new Map()`).
   const mapCtor = new RegExp(
-    `\\b${escapeRe(r)}\\s*=\\s*new\\s+Map\\s*(?:<[^>]*>)?\\s*\\(`,
+    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
   );
-  return sourceLines.some(l => mapCtor.test(l));
+  // `x: Map<K, V>` / `x: ReadonlyMap<…>` / `x?: WeakMap<…>` — a typed field,
+  // parameter or local whose declared type is a Map.
+  const mapType = new RegExp(
+    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+  );
+  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
 }
 
 /**
@@ -2368,6 +2436,28 @@ function findSinks(
           continue;
         }
 
+        // JS/TS: a query sink called with no arguments has no query text to
+        // carry (`collection.find().exec()`, an RxDB / Mongoose query being
+        // run). Its query was built earlier, where the builder call is the
+        // sink.
+        if (
+          (language === 'javascript' || language === 'typescript') &&
+          (pattern.type === 'sql_injection' || pattern.type === 'nosql_injection') &&
+          call.arguments.length === 0 &&
+          pattern.arg_positions.every((p) => p >= 0)
+        ) {
+          continue;
+        }
+
+        // Skip a bound-parameter call on an import-gated SQL API: arg 0 is
+        // an array/object literal (`stmt.execute([v])`, `executeNamed({…})`
+        // on a prepared statement) or the receiver was assigned from
+        // `.prepare(...)` in this file. Values bound to a prepared statement
+        // are parameters, not SQL text.
+        if (isBoundParameterCall(call, pattern, sourceLines)) {
+          continue;
+        }
+
         // Skip Python subprocess.* calls in safe shape: list arg[0] without
         // shell=True. Python invokes execve() directly with no shell
         // interpolation, so tainted list elements can never escape into
@@ -2527,6 +2617,25 @@ function findSinks(
 
         // cognium-dev#629 — no-argument response writers are not XSS sinks.
         if (isArgumentlessJsResponseWriter(call, pattern, language)) {
+          continue;
+        }
+
+        // cognium-dev#1000 — the Next.js `router.push` / `router.replace`
+        // CWE-601 entries (class `router`) were reached through the
+        // receiver-name heuristic, which accepts any short receiver that is a
+        // substring of `router` (`out`, `rout…`). `out.push(x)` on an array is
+        // the common case. With no resolved receiver type, require the
+        // receiver's last name to actually be a router / history / navigation
+        // object; a resolved type (`useRouter()`) is matched before this point.
+        if (
+          pattern.type === 'open_redirect' &&
+          (language === 'javascript' || language === 'typescript') &&
+          (call.method_name === 'push' || call.method_name === 'replace') &&
+          (pattern.class ?? '').toLowerCase() === 'router' &&
+          !call.receiver_type &&
+          !call.receiver_type_fqn &&
+          !isNavigationReceiverName(call.receiver)
+        ) {
           continue;
         }
 
@@ -2866,7 +2975,7 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
   exec: new Set([
     'regex', 'regexp', 'pattern', 're', 'rx', 'match', 'matcher',
     // Database APIs — db.exec() is SQL, not command injection
-    'db', 'database', 'sqlite', 'conn', 'connection', 'client',
+    'db', 'database', 'sqlite', 'conn', 'con', 'connection', 'client',
     'pool', 'knex', 'prisma', 'sequelize', 'transaction', 'tx',
     'stmt', 'statement', 'cursor',
   ]),
@@ -3260,7 +3369,10 @@ function matchesSinkPattern(
   // is not a known non-dangerous API.  Without this guard, classless patterns
   // such as the generic "exec()" command-injection entry (intended for
   // Runtime.getRuntime().exec()) match unrelated methods like RegExp.exec().
-  if (!pattern.class && call.receiver) {
+  // Import-gated patterns (`requires_import`) carry their own evidence: the
+  // safe lists below exist for classless command sinks (`db.exec()` is SQL),
+  // not for the library's own `con.exec(sql)`.
+  if (!pattern.class && call.receiver && !pattern.requires_import) {
     if (isKnownSafeReceiverForMethod(call.receiver, call.method_name, pattern.type)) {
       return false;
     }

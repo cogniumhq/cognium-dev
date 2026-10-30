@@ -1,0 +1,57 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  lodash:
+    specifier: ^4.17.15
+    version: 4.17.15
+  react-dom:
+    specifier: ^18.2.0
+    version: 18.2.0(react@18.2.0)
+
+devDependencies:
+  vitest:
+    specifier: ^1.0.0
+    version: 1.0.0
+
+packages:
+
+  /lodash@4.17.15:
+    resolution: {integrity: sha512-c}
+    dev: false
+
+  /loose-envify@1.4.0:
+    resolution: {integrity: sha512-d}
+    dev: false
+
+  /react-dom@18.2.0(react@18.2.0):
+    resolution: {integrity: sha512-e}
+    peerDependencies:
+      react: ^18.2.0
+    dependencies:
+      loose-envify: 1.4.0
+      react: 18.2.0
+    dev: false
+
+  /react@18.2.0:
+    resolution: {integrity: sha512-f}
+    dependencies:
+      loose-envify: 1.4.0
+    dev: false
+
+  /tinyspy@2.2.0:
+    resolution: {integrity: sha512-i}
+    dev: true
+
+  /vitest@1.0.0:
+    resolution: {integrity: sha512-j}
+    dependencies:
+      tinyspy: 2.2.0
+    dev: true
+
+  /orphan@0.1.0:
+    resolution: {integrity: sha512-k}
+    dev: true

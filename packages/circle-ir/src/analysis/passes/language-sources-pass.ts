@@ -4152,6 +4152,112 @@ export function buildRustTaintedVars(
  * on the way (a lambda, anonymous class, switch expression or block is not a
  * plain wrapped value).
  */
+/** `code(); // note` → `code();` — a `//` inside a string or char literal is kept. */
+function stripJavaTrailingLineComment(line: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '/' && line[i + 1] === '/') {
+      return line.slice(0, i).trimEnd();
+    }
+  }
+  return line;
+}
+
+/** Identifiers at code positions in a Java expression (string and char literal bodies dropped). */
+function javaExpressionIdents(expr: string): string[] {
+  const code = expr.replace(/"(?:[^"\\]|\\.)*"/g, ' ').replace(/'(?:[^'\\]|\\.)'/g, ' ');
+  return code.match(/[\p{L}\p{N}_]+/gu) ?? [];
+}
+
+/**
+ * `buildJavaTaintedVars` slot tracking (cognium-dev#913/#914/#916/#917). Records
+ * `list.add(x)` / `list.remove(<int>)` / `map.put("<key>", x)` into the slot
+ * tables and returns true for those statements. An `int` constant declaration
+ * is recorded for ternary folding but returns false, so the line is still read
+ * as an assignment.
+ */
+function recordJavaSlotStatement(
+  line: string,
+  listElems: Map<string, (string | null)[]>,
+  mapSlots: Map<string, Map<string, string[]>>,
+  intConsts: Map<string, number>,
+): boolean {
+  const t = line.trimEnd().replace(/;\s*\/\/[^"]*$/, ';');
+  const intDecl = /^\s*(?:final\s+)?(?:int|long|short|byte)\s+([A-Za-z_]\w*)\s*=\s*([^;]+);\s*$/.exec(t);
+  if (intDecl) {
+    const v = evaluatePythonConstExpression(intDecl[2].trim(), intConsts);
+    if (typeof v === 'number') intConsts.set(intDecl[1], v);
+    else intConsts.delete(intDecl[1]);
+    return false;
+  }
+  const add = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*|"(?:[^"\\]|\\.)*")\s*\)\s*;\s*$/.exec(t);
+  if (add) {
+    const elems = listElems.get(add[1]) ?? [];
+    elems.push(add[2].startsWith('"') ? null : add[2]);
+    listElems.set(add[1], elems);
+    return true;
+  }
+  const remove = /^\s*([A-Za-z_]\w*)\.remove\s*\(\s*(\d+)\s*\)\s*;\s*$/.exec(t);
+  if (remove && listElems.has(remove[1])) {
+    const elems = listElems.get(remove[1])!;
+    const idx = Number(remove[2]);
+    if (idx < elems.length) elems.splice(idx, 1);
+    else listElems.delete(remove[1]); // an index we did not see added: stop trusting the slots
+    return true;
+  }
+  const put = /^\s*([A-Za-z_]\w*)\.put\s*\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*(.+?)\s*\)\s*;\s*$/.exec(t);
+  if (put) {
+    const keys = mapSlots.get(put[1]) ?? new Map<string, string[]>();
+    keys.set(put[2], javaExpressionIdents(put[3]));
+    mapSlots.set(put[1], keys);
+    return true;
+  }
+  // Any other use of a tracked collection that is not a plain read (passed to a
+  // call, `addAll`, `set`, `clear`, a non-literal `put`, re-declared …) may change
+  // its contents in a way the tables do not model: stop trusting its slots.
+  for (const table of [listElems, mapSlots] as Map<string, unknown>[]) {
+    for (const name of [...table.keys()]) {
+      const mention = new RegExp(`(?<![\\w.])${name}(?!\\w)`);
+      if (!mention.test(t)) continue;
+      const reads = new RegExp(`(?<![\\w.])${name}\\.(?:get|size|isEmpty|contains\\w*)\\s*\\(`, 'g');
+      if (mention.test(t.replace(reads, ' '))) table.delete(name);
+    }
+  }
+  return false;
+}
+
+/**
+ * The identifiers a `list.get(<int>)` / `map.get("<key>")` read (optionally
+ * cast) can carry, from the slot tables; `undefined` when the RHS is not such a
+ * read or the slots are unknown, so the caller falls back to whole-RHS matching.
+ */
+function javaSlotRead(
+  rhs: string,
+  listElems: Map<string, (string | null)[]>,
+  mapSlots: Map<string, Map<string, string[]>>,
+): string[] | undefined {
+  const m = /^(?:\(\s*[A-Za-z_][\w.<>]*\s*\)\s*)?([A-Za-z_]\w*)\.get\s*\(\s*(\d+|"(?:[^"\\]|\\.)*")\s*\)$/.exec(rhs.trim());
+  if (!m) return undefined;
+  const [, recv, arg] = m;
+  if (arg.startsWith('"')) {
+    const keys = mapSlots.get(recv);
+    if (!keys) return undefined;
+    return keys.get(arg.slice(1, -1)) ?? [];
+  }
+  const elems = listElems.get(recv);
+  if (!elems) return undefined;
+  const idx = Number(arg);
+  if (idx >= elems.length) return undefined;
+  const slot = elems[idx];
+  return slot === null ? [] : [slot];
+}
+
 function joinWrappedJavaStatement(lines: readonly string[], i: number): string | null {
   const strip = (l: string): string => l.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)'/g, '""').replace(/\/\/.*$/, '');
   const first = strip(lines[i]);
@@ -4196,11 +4302,30 @@ export function buildJavaTaintedVars(
   sourceCode: string,
   seedVars: Set<string>,
   deadBranchLines?: Set<number>,
+  /**
+   * `trackSlots` (cognium-dev#913/#914/#916/#917): follow which element of a list
+   * and which literal key of a map holds taint, and pick the branch of a ternary
+   * whose condition folds to a constant int comparison. Only the helper-return
+   * gate in InterproceduralPass asks for it; every other caller keeps the
+   * whole-collection behaviour.
+   */
+  options?: { trackSlots?: boolean },
 ): Map<string, number> {
   const derived = new Map<string, number>();
   const knownTainted = new Set(seedVars);
-  const lines = sourceCode.split('\n');
+  const trackSlots = options?.trackSlots === true;
+  // Slot mode also reads `x = list.get(0); // note` as the statement it is: the
+  // assignment patterns below are anchored at `;`.
+  const lines = trackSlots
+    ? sourceCode.split('\n').map(stripJavaTrailingLineComment)
+    : sourceCode.split('\n');
   const dead = deadBranchLines ?? new Set<number>();
+  /** list var → element slots: the added identifier, or `null` for a literal. */
+  const listElems = new Map<string, (string | null)[]>();
+  /** map var → literal key → the identifiers its stored value mentions. */
+  const mapSlots = new Map<string, Map<string, string[]>>();
+  /** int locals with a constant value, for folding a ternary condition. */
+  const intConsts = new Map<string, number>();
 
   // Declaration:  [modifiers] Type[<...>] [ ] lhs = rhs;
   // Simple assignment: lhs = rhs;
@@ -4244,11 +4369,26 @@ export function buildJavaTaintedVars(
   while (changed && guard < lines.length + 2) {
     changed = false;
     guard++;
+    // Slot state is rebuilt on every pass: it describes the code top to bottom,
+    // while `knownTainted` only grows.
+    listElems.clear();
+    mapSlots.clear();
+    intConsts.clear();
     for (let i = 0; i < lines.length; i++) {
       if (deadBranchLines !== undefined && dead.has(i)) continue;
       const line = lines[i];
       const trimmed = line.trimStart();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      if (trackSlots && recordJavaSlotStatement(line, listElems, mapSlots, intConsts)) {
+        // `list.add(x)` still taints the list as a whole, as below.
+        const add = /^\s*([A-Za-z_]\w*)\.add\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;/.exec(line);
+        if (add && knownTainted.has(add[2]) && !knownTainted.has(add[1])) {
+          derived.set(add[1], i + 1);
+          knownTainted.add(add[1]);
+          changed = true;
+        }
+        continue;
+      }
       // cognium-dev#476: non-assignment statements (must run before the #753
       // wrap-join early-continue, which would skip them).
       const arrayCopyRe =
@@ -4353,9 +4493,26 @@ export function buildJavaTaintedVars(
       const m = declMatch ?? assignMatch;
       if (!m) continue;
       const lhs = m[1];
-      const rhs = m[2];
+      let rhs = m[2];
       if (JAVA_KEYWORDS.has(lhs)) continue;
       if (knownTainted.has(lhs)) continue;
+      if (trackSlots) {
+        const slot = javaSlotRead(rhs, listElems, mapSlots);
+        if (slot !== undefined) {
+          if (slot.some(t => knownTainted.has(t))) {
+            derived.set(lhs, i + 1);
+            knownTainted.add(lhs);
+            changed = true;
+          }
+          continue;
+        }
+        const tern = /^([^?]+?)\s*\?\s*([^:]+?)\s*:\s*(.+)$/.exec(rhs.trim());
+        if (tern) {
+          const decided = evaluatePythonConstExpression(tern[1].trim().replace(/^\((.*)\)$/, '$1'), intConsts);
+          if (decided === true) rhs = tern[2];
+          else if (decided === false) rhs = tern[3];
+        }
+      }
       // Reduce the RHS to code positions before matching a tainted var name:
       // keep `$"…{expr}"` interpolation contents, drop plain / verbatim string
       // literal bodies and char literals. Otherwise a tainted var NAME that
@@ -4462,8 +4619,15 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
     //    Suppressed inside function bodies (#73 part 1).
     if (!insideFunction) {
       const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
+      // A one-line definition `name() { …; }` keeps its body on the header
+      // line: only text before the opening brace is at the top level.
+      const header = /^\s*(?:function\s+)?[A-Za-z_][\w-]*\s*(?:\(\s*\))?\s*\{/.exec(line);
+      const isFnHeader = header !== null && (/\(\s*\)/.test(header[0]) || /^\s*function\s/.test(header[0]));
+      // `$1` inside single quotes is literal text (an awk or sed program), not
+      // a positional parameter.
+      const topLevelText = (isFnHeader ? line.slice(0, header[0].length) : line).replace(/'[^']*'/g, "''");
       let m: RegExpExecArray | null;
-      while ((m = positionalRe.exec(line)) !== null) {
+      while ((m = positionalRe.exec(topLevelText)) !== null) {
         const param = m[1] ?? m[2];
         const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
         if (!alreadyExists) {
@@ -12895,6 +13059,46 @@ export function findGoGobDeserializationFindings(
 }
 
 /**
+ * Blank the contents of JS/TS string and template literals and comments,
+ * keeping newlines and every offset, so a line scanner does not match code
+ * that only appears as text (a message describing `JSON.parse(req.body)`).
+ */
+function maskJsLiteralsAndComments(code: string): string {
+  const out = code.split('');
+  let i = 0;
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  while (i < code.length) {
+    const c = code[i];
+    const n = code[i + 1];
+    if (c === '/' && n === '/') {
+      let j = i;
+      while (j < code.length && code[j] !== '\n') j++;
+      blank(i, j);
+      i = j;
+    } else if (c === '/' && n === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const j = end < 0 ? code.length : end + 2;
+      blank(i, j);
+      i = j;
+    } else if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < code.length && code[j] !== c) {
+        if (code[j] === '\\') j++;
+        else if (c !== '`' && code[j] === '\n') break;
+        j++;
+      }
+      blank(i + 1, Math.min(j, code.length));
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return out.join('');
+}
+
+/**
  * Sprint 89 detector B (#189) — JS insecure deserialization via
  * `JSON.parse(req.body)`.
  *
@@ -12947,12 +13151,14 @@ export function findJsJsonParseBodyFindings(
 
   const callRe = /\bJSON\s*\.\s*parse\s*\(\s*([^)]+?)\s*\)/g;
   const seen = new Set<number>();
+  // Calls only: `JSON.parse(req.body)` inside a string or comment is text.
+  const codeLines = maskJsLiteralsAndComments(code).split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.trim().startsWith('//')) continue;
+    const codeLine = codeLines[i] ?? '';
     callRe.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = callRe.exec(line)) !== null) {
+    while ((m = callRe.exec(codeLine)) !== null) {
       const arg = m[1];
       let tainted = reqBodyRe.test(arg);
       if (!tainted) {

@@ -589,6 +589,17 @@ export function analyzeInterprocedural(
     }
   }
 
+  // Bash: functions defined in this script (their positional defs carry
+  // `bash-fn:<name>`).
+  const bashScriptFunctions = new Set<string>();
+  if (graph.ir.meta.language === 'bash') {
+    for (const d of graph.ir.dfg.defs) {
+      if (d.kind === 'param' && d.expression?.startsWith('bash-fn:')) {
+        bashScriptFunctions.add(d.expression.slice('bash-fn:'.length));
+      }
+    }
+  }
+
   for (const call of calls) {
     // Check if any arguments are tainted
     const taintedArgPositions: number[] = [];
@@ -672,6 +683,12 @@ export function analyzeInterprocedural(
           'declare', 'local', 'export', 'readonly', 'typeset',
         ]);
         if (isBash && bashSafeBuiltins.has(call.method_name)) {
+          continue;
+        }
+        // Bash: a function defined in this script is not an external utility.
+        // Its arguments reach its own positional parameters through the DFG
+        // (call-argument chains), so a real sink inside its body still fires.
+        if (isBash && bashScriptFunctions.has(call.method_name)) {
           continue;
         }
 

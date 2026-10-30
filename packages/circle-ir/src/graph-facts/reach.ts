@@ -8,20 +8,24 @@
  *   that hold whenever their source runs (`contains`: a body creates its
  *   nested functions, a module its top-level values, a class its fields and
  *   constructor; `loads`: running a declaration loads its module; `import`:
- *   loading a module loads what it imports).
+ *   loading a module loads what it imports; `field`: a body that runs uses
+ *   the fields it reads or writes through `this`; `loads` also covers a
+ *   body that loads a module with `import()` or `require()`).
  * - **weak** path: any other path — through an `inferred` call, a
  *   `reference` (a function or class passed, stored, returned or rendered:
  *   it may run, nothing proves it does) or an `inferred` entry.
  * - **unresolved**: call sites in reached bodies that the call graph could
  *   not bind and that could bind to the declaration — same method name, or a
  *   computed callee — plus registrations whose handler was not resolved.
+ *   A module is reached this way only by a module load with a computed
+ *   specifier (`import(name)`, methodName `<module>`).
  *
  * Each path is the shortest of its class (breadth-first, deterministic:
  * adjacency in id order). `partial[]` lists files that did not parse; their
  * call sites are missing, so any answer that relies on absence is not final.
  */
 
-import type { StableDecl, StableIdFile } from '../stable-ids/types.js';
+import type { ParseErrorSite, StableDecl, StableIdFile } from '../stable-ids/types.js';
 import type { Tier, UnresolvedReason } from '../navigation/types.js';
 import type { EntryCertainty, EntryKind } from '../navigation/ts-entry-tables.js';
 
@@ -38,16 +42,22 @@ export interface ReachInput {
   files: readonly StableIdFile[];
   edges: readonly { from: string; to: string; tier: Tier; site: ReachSite; methodName: string }[];
   references?: readonly { from: string; to: string; site: ReachSite }[];
+  /** Strong: a body that runs uses the field (`this.x`). */
+  fieldUses?: readonly { from: string; to: string; site: ReachSite }[];
   imports?: readonly { from: string; to: string }[];
-  /** Extra strong `loads` edges: running `from` initializes `to` (Java: a member initializes its class). */
-  loads?: readonly { from: string; to: string }[];
+  /**
+   * Extra strong `loads` edges: running `from` initializes `to` (Java: a
+   * member initializes its class; TypeScript: a body loads a module with
+   * `import()` / `require()`).
+   */
+  loads?: readonly { from: string; to: string; site?: ReachSite }[];
   unresolved: readonly { from: string; methodName: string; site: ReachSite; reason: UnresolvedReason }[];
   entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number }[];
   unresolvedRegistrations?: readonly { site: ReachSite; reason: string; evidence: string }[];
   partial: readonly string[];
 }
 
-export type EdgeRelation = 'call' | 'reference' | 'contains' | 'loads' | 'import';
+export type EdgeRelation = 'call' | 'reference' | 'field' | 'contains' | 'loads' | 'import';
 
 export interface PathStep {
   /** The declaration this step arrives at. */
@@ -99,7 +109,27 @@ export interface ReachResult {
   ids: 'ids@0.1';
   rootKinds: EntryKind[];
   partial: string[];
+  /** One row per `partial` file: where its first blocking parse error is. */
+  partialFiles: PartialFile[];
   facts: ReachFact[];
+}
+
+/** A file in `partial[]` and the first error that made it partial. */
+export interface PartialFile extends Partial<ParseErrorSite> {
+  file: string;
+}
+
+/**
+ * `partial` paths with their first blocking parse error, read from the
+ * files' `parseError`, sorted by path. A path with no error recorded (an
+ * older `StableIdFile`) keeps only `file`.
+ */
+export function partialFileDetails(partial: readonly string[], files: readonly StableIdFile[]): PartialFile[] {
+  const byFile = new Map(files.map(f => [f.file, f]));
+  return [...new Set(partial)].sort().map(file => {
+    const e = byFile.get(file)?.parseError;
+    return e ? { file, line: e.line, column: e.column, nodeKind: e.nodeKind, parent: e.parent } : { file };
+  });
 }
 
 export const ALL_ENTRY_KINDS: readonly EntryKind[] = [
@@ -129,8 +159,9 @@ export class ReachGraph {
     };
     for (const e of input.edges) add(e.from, { to: e.to, relation: 'call', strong: e.tier !== 'inferred', tier: e.tier, site: e.site });
     for (const r of input.references ?? []) add(r.from, { to: r.to, relation: 'reference', strong: false, site: r.site });
+    for (const u of input.fieldUses ?? []) add(u.from, { to: u.to, relation: 'field', strong: true, site: u.site });
     for (const i of input.imports ?? []) add(i.from, { to: i.to, relation: 'import', strong: true });
-    for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true });
+    for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true, site: l.site });
     for (const f of input.files) {
       const module = f.decls[0];
       for (const d of f.decls) {
@@ -228,18 +259,26 @@ export function reachedIds(visits: Map<string, Visit>): Set<string> {
   return new Set([...visits.keys()].map(k => k.slice(1)));
 }
 
+/** `methodName` of an unresolved site that loads a module by a computed specifier. */
+export const COMPUTED_LOAD = '<module>';
+
 /**
  * Unresolved sites in reached bodies that could bind to `d`: a non-external
  * site with `d`'s name, a computed callee, or an unresolved registration.
+ * For a module: a module load with a computed specifier.
  */
 export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl): CouldReachSite[] {
-  if (d.kind === 'module' || d.kind === 'field') return [];
+  if (d.kind === 'field') return [];
+  const isModule = d.kind === 'module';
   const out: CouldReachSite[] = [];
   for (const u of input.unresolved) {
     if (u.reason === 'external' || !reached.has(u.from)) continue;
+    const load = u.methodName === COMPUTED_LOAD;
+    if (isModule !== load) continue;
     const computed = u.methodName.startsWith('<') || u.methodName.startsWith('(');
     if (computed || u.methodName === d.name) out.push({ kind: 'call', from: u.from, methodName: u.methodName, reason: u.reason, site: u.site });
   }
+  if (isModule) return out.sort(bySite);
   for (const r of input.unresolvedRegistrations ?? []) {
     if (r.reason === 'handler-unresolved') out.push({ kind: 'registration', reason: r.reason, site: r.site });
   }
@@ -273,5 +312,5 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
       });
     }
   }
-  return { scheme: REACH_SCHEME, ids: 'ids@0.1', rootKinds, partial: [...input.partial], facts };
+  return { scheme: REACH_SCHEME, ids: 'ids@0.1', rootKinds, partial: [...input.partial], partialFiles: partialFileDetails(input.partial, input.files), facts };
 }

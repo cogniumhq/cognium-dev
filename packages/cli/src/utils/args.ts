@@ -66,9 +66,25 @@ COMMANDS:
   scan <path>          Scan files or directories for security vulnerabilities
   metrics <path>       Report software quality metrics for files or directories
   sbom <path>          Generate a Software Bill of Materials from project manifests
+  deadcode [path]      Dead-code facts from the call graph and entry index (dead-code@0.1)
+  reach --base <ref|dir> [path]
+                       Removal reach: what a change removes and what still reached it
+                         (removal-reach@0.1); --base is a git ref or a directory
+  entries [path]       The entry-point index (routes, listeners, mains, exports, …)
   list-passes [cat]    List all analysis passes (optionally filter by category)
   init                 Initialize a configuration file in your project
   version              Display version information
+
+GRAPH FACT OPTIONS (deadcode, reach, entries):
+  -l, --language <lang>      ts|java|python|go (js shares the ts graph); required when
+                               the tree mixes languages
+  -f, --format <format>      text|json; deadcode and reach also take sarif [default: text]
+  --root-kinds <kinds>       Entry kinds that count as roots (comma-separated): route,
+                               listener, scheduled, main, export, bean, reflection,
+                               lifecycle, test [default: all but test]
+  --verdicts <list>          deadcode: facts to list (live,may-be-live,dead)
+                               [default: dead,may-be-live]; the summary counts all
+  -o, --output <file>        Write to a file instead of stdout
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
@@ -133,6 +149,7 @@ SBOM OPTIONS:
                                - spdx:      SPDX 2.3 JSON (Linux Foundation)
   --name <name>              Project name in the document [default: package.json name or dir]
   --prod-only                Exclude dev/test dependencies
+  --license-map <file>       JSON {"name@version"|"name": "<SPDX>"} for licences not found in node_modules
   --deterministic            Omit timestamp / serialNumber / namespace for reproducible output
   -o, --output <file>        Write the document to a file (default: stdout)
                                Discovers package.json / requirements.txt / pyproject.toml /
@@ -161,6 +178,11 @@ EXAMPLES:
   cognium-dev sbom .                                 # CycloneDX 1.5 to stdout
   cognium-dev sbom . -f spdx -o sbom.spdx.json       # SPDX 2.3 to a file
   cognium-dev sbom . --prod-only --deterministic     # reproducible, no dev deps
+  cognium-dev sbom . --license-map licences.json     # licences offline; node_modules read first
+  cognium-dev deadcode . -f sarif -o dead-code.sarif
+  cognium-dev deadcode src --language ts --verdicts dead
+  cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
+  cognium-dev entries . -f json
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init
