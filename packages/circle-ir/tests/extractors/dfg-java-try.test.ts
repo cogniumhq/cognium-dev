@@ -65,9 +65,9 @@ describe('Java DFG: try statements', () => {
     expect(ret?.def_id).not.toBeNull();
   });
 
-  it('leaves JavaScript try statements as they were', async () => {
+  it('JavaScript try statements get defs too (see dfg-javascript-try.test.ts)', async () => {
     const dfg = buildDFG(await parse(`function f(x) { try { const y = x; } catch (e) { } }`, 'javascript'), undefined, 'javascript');
-    expect(dfg.defs.find(d => d.variable === 'y')).toBeUndefined();
+    expect(dfg.defs.find(d => d.variable === 'y')).toBeDefined();
   });
 
   it('a tainted value used inside a try-with-resources body now reaches its sink through locals', async () => {
