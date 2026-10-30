@@ -72,6 +72,7 @@ import {
   collectAllNodes,
   type SupportedLanguage,
 } from './core/index.js';
+import { enrichTsDeclarations, extractTsExports } from './core/extractors/ts-declaration-detail.js';
 import {
   analyzeTaint,
   getDefaultConfig,
@@ -245,6 +246,15 @@ export interface AnalyzerOptions {
    * SAST corpora gates, not in a navigation change.
    */
   navigationTypes?: boolean;
+
+  /**
+   * TypeScript/JavaScript declaration detail in `ir.types` and `ir.exports`:
+   * `export` and access modifiers, return types, class decorators and
+   * decorator arguments (`DecoratorInfo`), and `ir.exports` limited to what a
+   * file with ES exports marks `export`. Off by default: the default output
+   * is unchanged, since the SAST passes read `ir.types`.
+   */
+  declarationDetail?: boolean;
 
   /**
    * Project resource files, `Map<path, text>` (for example `*.properties`).
@@ -1050,7 +1060,9 @@ export async function analyze(
   const imports = extractImports(tree, language, nodeCache);
   phaseEnd('extractImports', tImports);
   const tExports = phaseStart();
-  const exports = extractExports(types);
+  if (options.declarationDetail && (language === 'typescript' || language === 'javascript')) enrichTsDeclarations(tree, types);
+  const exports = (options.declarationDetail && (language === 'typescript' || language === 'javascript') ? extractTsExports(types) : null)
+    ?? extractExports(types);
   phaseEnd('extractExports', tExports);
   const tCFG = phaseStart();
   const cfg     = buildCFG(tree, language, nodeCache);

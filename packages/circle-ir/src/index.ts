@@ -83,6 +83,7 @@ export type {
   MethodInfo,
   ParameterInfo,
   FieldInfo,
+  DecoratorInfo,
   CallInfo,
   ArgumentInfo,
   CallResolution,
