@@ -595,6 +595,21 @@ export interface DependencyContext {
   js?: {
     /** Raw `package.json` content (npm / pnpm / yarn). */
     packageJson?: string;
+    /**
+     * Raw `package-lock.json` / `npm-shrinkwrap.json`. Read by SBOM
+     * collection only, where it supersedes `packageJson` (DT4).
+     */
+    packageLock?: string;
+    /**
+     * Raw `pnpm-lock.yaml` (formats 5.x, 6.0, 9.0). Read by SBOM collection
+     * only, where it supersedes `packageLock`, `yarnLock` and `packageJson`.
+     */
+    pnpmLock?: string;
+    /**
+     * Raw Yarn classic (v1) `yarn.lock`. Read by SBOM collection only, where
+     * it supersedes `packageJson` (which still supplies the roots).
+     */
+    yarnLock?: string;
   };
   /**
    * Rust project manifest (added cognium-dev #261 Rust slice).
