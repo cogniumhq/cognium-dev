@@ -72,7 +72,8 @@ export interface RemedySinkObservation {
   /** `<path key>:sink` */
   anchor: string;
   pathKey: string;
-  change: Extract<PathChange, 'removed' | 'sanitized' | 'guarded'>;
+  /** `unchanged` only under `scope: 'all'`: the path is still open at the fix version. */
+  change: Extract<PathChange, 'removed' | 'sanitized' | 'guarded' | 'unchanged'>;
   /** The baseline sink. */
   sink: {
     /** Table sink id, or `unlisted` when no table sink has its call shape. */
@@ -637,6 +638,14 @@ export interface RemedyClassOptions {
   stableIds?: { before?: Record<string, StableIdFile>; after?: Record<string, StableIdFile> };
   /** Branch facts per file at the fix version (`deriveBranchFacts`); guard steps need them. */
   branches?: { after?: Record<string, BranchFact[]> };
+  /**
+   * `closed` (default): sinks of paths the fix closed (`removed`, `sanitized`,
+   * `guarded`). `all`: also sinks of paths still open at the fix version
+   * (`unchanged`), so a fix that left the path open can be described by the row
+   * it used (a weak construct). An open path's observation is a description,
+   * not a closed sink.
+   */
+  scope?: 'closed' | 'all';
 }
 
 /**
@@ -662,13 +671,15 @@ export function remedyClassOf(
 
   const sinks: RemedySinkObservation[] = [];
   for (const e of diff.entries) {
-    if ((e.change !== 'removed' && e.change !== 'sanitized' && e.change !== 'guarded') || !e.before) continue;
+    const observed = e.change === 'removed' || e.change === 'sanitized' || e.change === 'guarded'
+      || (options.scope === 'all' && e.change === 'unchanged');
+    if (!observed || !e.before) continue;
     const base = e.before;
     const seedParameters = base.source.decl.id !== base.sink.decl.id;
     const obs: RemedySinkObservation = {
       anchor: `${e.key}:sink`,
       pathKey: e.key,
-      change: e.change,
+      change: e.change as RemedySinkObservation['change'],
       sink: { tableSink: 'unlisted', file: base.sink.file, line: base.sink.line, decl: base.sink.decl },
       match: 'unrecognized',
       rows: [],
