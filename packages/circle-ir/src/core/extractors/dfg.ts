@@ -1628,6 +1628,49 @@ function buildBashDFG(tree: Tree): DFG {
     currentScope(scopeStack).set(p, def.id);
   }
 
+  // Positional parameters inside a function body are that function's own
+  // arguments, not the script's (cognium-dev dogfood: a script-level `$2`
+  // source reached every `"$2"` inside every helper function). Each
+  // function gets its own synthetic positional defs at its header line;
+  // a call `fname a b` chains the caller's defs used in argument k into the
+  // function's def for `$k` (`"$@"` / `"$*"` into all of them).
+  const bashFnDefs = new Map<string, Map<string, number>>();
+  const bashFnByNodeId = new Map<number, string>();
+  for (const fn of findNodes(tree.rootNode, 'function_definition')) {
+    const nameNode = fn.childForFieldName('name');
+    if (!nameNode) continue;
+    const fnName = getNodeText(nameNode);
+    if (!fnName || bashFnDefs.has(fnName)) continue;
+    const m = new Map<string, number>();
+    for (const p of positionalParams) {
+      const def: DFGDef = {
+        id: defIdCounter++,
+        variable: p,
+        line: fn.startPosition.row + 1,
+        kind: 'param',
+        expression: `bash-fn:${fnName}`,
+      };
+      defs.push(def);
+      m.set(p, def.id);
+    }
+    bashFnDefs.set(fnName, m);
+    bashFnByNodeId.set(fn.id, fnName);
+  }
+  const enclosingBashFn = (node: Node): string | null => {
+    let cur: Node | null = node.parent;
+    while (cur) {
+      if (cur.type === 'function_definition') return bashFnByNodeId.get(cur.id) ?? null;
+      cur = cur.parent;
+    }
+    return null;
+  };
+  const positionalDef = (varName: string, node: Node, fallback: number | null): number | null => {
+    if (!positionalParams.includes(varName)) return fallback;
+    const fnName = enclosingBashFn(node);
+    if (!fnName) return fallback;
+    return bashFnDefs.get(fnName)?.get(varName) ?? fallback;
+  };
+
   walkTree(tree.rootNode, (node) => {
     if (node.type === 'variable_assignment') {
       // VAR=value  — Tree-sitter Bash: variable_assignment has `name` and `value` fields
@@ -1688,7 +1731,7 @@ function buildBashDFG(tree: Tree): DFG {
       if (varNameNode) {
         const varName = getNodeText(varNameNode);
         if (varName && !varName.startsWith('?') && !varName.startsWith('#')) {
-          let reachingDef = findReachingDef(varName, scopeStack);
+          let reachingDef = positionalDef(varName, node, findReachingDef(varName, scopeStack));
           // If the variable has no reaching def (i.e. it's an env var or an
           // unbound identifier), synthesize a `param`-kind def at line 0 so that
           // env-sourced taint can be seeded and propagated through the DFG.
@@ -1718,7 +1761,7 @@ function buildBashDFG(tree: Tree): DFG {
       const varNameNode = node.namedChildCount > 0 ? node.namedChild(0) : null;
       if (varNameNode && varNameNode.type === 'variable_name') {
         const varName = getNodeText(varNameNode);
-        let reachingDef = findReachingDef(varName, scopeStack);
+        let reachingDef = positionalDef(varName, node, findReachingDef(varName, scopeStack));
         if (reachingDef === null && !positionalParams.includes(varName)) {
           const def: DFGDef = {
             id: defIdCounter++,
@@ -1741,7 +1784,69 @@ function buildBashDFG(tree: Tree): DFG {
   });
 
   const chains = computeChains(defs, uses);
+  chains.push(...bashCallArgChains(tree, bashFnDefs, uses, positionalParams));
   return { defs, uses, chains };
+}
+
+/**
+ * Bash: chain the caller's defs used in each argument of a call to a function
+ * defined in the same file into that function's positional defs. A body that
+ * uses `shift` or `set --` renumbers its parameters, so there every argument
+ * reaches every positional def of the function.
+ */
+function bashCallArgChains(
+  tree: Tree,
+  bashFnDefs: Map<string, Map<string, number>>,
+  uses: DFGUse[],
+  positionalParams: string[],
+): DFGChain[] {
+  const chains: DFGChain[] = [];
+  if (bashFnDefs.size === 0) return chains;
+  const renumbers = new Set<string>();
+  for (const fn of findNodes(tree.rootNode, 'function_definition')) {
+    const nameNode = fn.childForFieldName('name');
+    if (!nameNode) continue;
+    if (/\bshift\b|\bset\s+--/.test(getNodeText(fn))) renumbers.add(getNodeText(nameNode));
+  }
+  const usesByLine = new Map<number, DFGUse[]>();
+  for (const u of uses) {
+    const l = usesByLine.get(u.line) ?? [];
+    l.push(u);
+    usesByLine.set(u.line, l);
+  }
+  for (const cmd of findNodes(tree.rootNode, 'command')) {
+    const nameNode = cmd.childForFieldName('name');
+    if (!nameNode) continue;
+    const fnDefs = bashFnDefs.get(getNodeText(nameNode));
+    if (!fnDefs) continue;
+    const fnName = getNodeText(nameNode);
+    let position = 0;
+    for (let i = 0; i < cmd.childCount; i++) {
+      const arg = cmd.child(i);
+      if (!arg || arg.id === nameNode.id) continue;
+      if (arg.type.includes('redirect') || arg.type === 'heredoc_body' || arg.type === 'file_descriptor') continue;
+      const text = getNodeText(arg);
+      if (!text.trim()) continue;
+      position++;
+      const names = new Set<string>();
+      const re = /\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9@*])/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) names.add(m[1]);
+      if (names.size === 0) continue;
+      const spreads = /\$\{?[@*]/.test(text);
+      const targets = spreads || renumbers.has(fnName)
+        ? positionalParams.map(p => fnDefs.get(p)).filter((d): d is number => d !== undefined)
+        : [fnDefs.get(String(position))].filter((d): d is number => d !== undefined);
+      const lineUses = usesByLine.get(arg.startPosition.row + 1) ?? [];
+      for (const name of names) {
+        for (const u of lineUses) {
+          if (u.variable !== name || u.def_id === null) continue;
+          for (const t of targets) chains.push({ from_def: u.def_id, to_def: t, via: name });
+        }
+      }
+    }
+  }
+  return chains;
 }
 
 /**

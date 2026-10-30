@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Bash: a script argument no longer becomes command injection in every helper function.** Three causes, one false-positive class (a local CI script with an `--option "$2"` parser and many helpers reading their own `"$2"`):
+  - Positional parameters (`$1`…`$9`, `$@`, `$*`) inside a function are now that function's own definitions. The DFG links a call's arguments to the callee's positions (`f "$x"` → `$1` of `f`; every position when the call spreads `$@` or the body uses `shift` / `set --`), so a script argument reaches a helper only through a call that passes it.
+  - A call to a function defined in the same file is no longer an external shell-utility sink; a real sink inside its body still fires through the argument chain.
+  - `findBashTaintSources` no longer reads positionals in the body of a one-line function (`f() { …; }`) or inside single-quoted text (`awk '{print $1}'`).
+  - `eval "$1"` reached through a function, unquoted arguments inside a function, `shift` then `bash -c "$1"`, and the #216 rule that quoting without `--` still fires are unchanged (`tests/analysis/bash-function-positional-scope.test.ts`). On the two scripts that showed the class, command-injection findings go from 29 to 3; the 3 left are a real `--option` value passed to a device tool.
 - **JS/TS `Array.push` / `Array.find` are no longer open-redirect / NoSQL sinks** (cognium-dev#1000).
   - `out.push(x)` matched the Next.js `router.push` / `router.replace` CWE-601 entries (class `router`) through the receiver-name heuristic (`out` is a substring of `router`). With no resolved receiver type, the receiver's last name must now be a navigation object (`router`, `history`, `navigat…`, `nav`); `this.router.push(url)` and `router.replace(url)` still fire.
   - `ancestors.find(meaningful)` matched the classless JS `find` NoSQL entry, because only arrow / `function` predicates were dropped (cognium-ai#279). SinkFilterPass Stage 15g now also drops `find`/`filter`/`some`/`every`/`findIndex`/`findLast` when the single argument names a function declared in the file, or the receiver is declared as an array (`= [`, `: T[]`, `Array<…>`, `new Array`, `Array.from`). `collection.find({...})` and `collection.find(filter)` still fire.
