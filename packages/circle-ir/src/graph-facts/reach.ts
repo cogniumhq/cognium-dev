@@ -25,7 +25,7 @@
  * call sites are missing, so any answer that relies on absence is not final.
  */
 
-import type { StableDecl, StableIdFile } from '../stable-ids/types.js';
+import type { ParseErrorSite, StableDecl, StableIdFile } from '../stable-ids/types.js';
 import type { Tier, UnresolvedReason } from '../navigation/types.js';
 import type { EntryCertainty, EntryKind } from '../navigation/ts-entry-tables.js';
 
@@ -109,7 +109,27 @@ export interface ReachResult {
   ids: 'ids@0.1';
   rootKinds: EntryKind[];
   partial: string[];
+  /** One row per `partial` file: where its first blocking parse error is. */
+  partialFiles: PartialFile[];
   facts: ReachFact[];
+}
+
+/** A file in `partial[]` and the first error that made it partial. */
+export interface PartialFile extends Partial<ParseErrorSite> {
+  file: string;
+}
+
+/**
+ * `partial` paths with their first blocking parse error, read from the
+ * files' `parseError`, sorted by path. A path with no error recorded (an
+ * older `StableIdFile`) keeps only `file`.
+ */
+export function partialFileDetails(partial: readonly string[], files: readonly StableIdFile[]): PartialFile[] {
+  const byFile = new Map(files.map(f => [f.file, f]));
+  return [...new Set(partial)].sort().map(file => {
+    const e = byFile.get(file)?.parseError;
+    return e ? { file, line: e.line, column: e.column, nodeKind: e.nodeKind, parent: e.parent } : { file };
+  });
 }
 
 export const ALL_ENTRY_KINDS: readonly EntryKind[] = [
@@ -292,5 +312,5 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
       });
     }
   }
-  return { scheme: REACH_SCHEME, ids: 'ids@0.1', rootKinds, partial: [...input.partial], facts };
+  return { scheme: REACH_SCHEME, ids: 'ids@0.1', rootKinds, partial: [...input.partial], partialFiles: partialFileDetails(input.partial, input.files), facts };
 }

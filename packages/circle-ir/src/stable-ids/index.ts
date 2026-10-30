@@ -23,7 +23,9 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  ParseErrorSite,
 } from './types.js';
+export { firstParseError } from './parse-errors.js';
 export { deriveTypeScriptIds, moduleNameFor } from './typescript.js';
 export { deriveJavaIds, eraseJavaType } from './java.js';
 export { derivePythonIds, pythonModuleName, pythonSignature } from './python.js';

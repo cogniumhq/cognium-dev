@@ -55,6 +55,8 @@ import {
   parseDeadCodeOptions,
   parseEntriesOptions,
   parseReachOptions,
+  reachJson,
+  reachSarif,
   reachText,
 } from './graph-facts.js';
 
@@ -2248,7 +2250,8 @@ async function main(): Promise<void> {
         outputFile = opts.output;
         await initWasm(null);
         const report = await computeReach(target, opts);
-        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : reachText(report);
+        payload = opts.format === 'json' ? reachJson(report)
+          : opts.format === 'sarif' ? reachSarif(report) : reachText(report);
       } else {
         const opts = parseEntriesOptions(options);
         outputFile = opts.output;
