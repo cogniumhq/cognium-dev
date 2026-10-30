@@ -1,0 +1,1 @@
+{"id":"TEST-MVN-0001","modified":"2024-04-04T00:00:00Z","affected":[{"package":{"ecosystem":"Maven","name":"lodash"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}]}
