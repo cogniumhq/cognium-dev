@@ -91,6 +91,7 @@ internals. Both are picked up by `bun test`; name either `*.test.ts`.
 | `tests/registry.test.ts` | rule registry |
 | `tests/e2e.test.ts` | CLI end-to-end, real scans |
 | `tests/graph-facts.test.ts` | `deadcode` / `reach` / `entries` on fixtures |
+| `tests/skip-dirs.test.ts` | default-skipped directories in every walker, `include` opt-in |
 | `src/sbom.test.ts` | SBOM generation |
 | `src/exclude-tests.test.ts` | test-file classification |
 

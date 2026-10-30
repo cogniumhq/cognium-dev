@@ -38,6 +38,7 @@ import {
   type TsSourceFile,
 } from 'circle-ir';
 import { UsageError, parseFormat } from './utils/options.js';
+import { STRUCTURE_SKIPPED_DIRECTORIES } from './utils/skip-dirs.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -157,11 +158,11 @@ export function parseEntriesOptions(o: Raw): EntriesCliOptions {
 
 // ─── Reading a tree ──────────────────────────────────────────────────────────
 
-/** Directories never read: dependencies, build output, VCS and tool caches. */
-export const SKIPPED_DIRECTORIES = [
-  'node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'coverage', '__pycache__',
-  'venv', '.venv', 'bin', 'obj', 'Pods',
-];
+/**
+ * Directories never read: dependencies, generated reports, build output
+ * (`utils/skip-dirs.ts`, #1025). Dot-directories are skipped as well.
+ */
+export const SKIPPED_DIRECTORIES: readonly string[] = STRUCTURE_SKIPPED_DIRECTORIES;
 
 const EXTENSIONS: Record<GraphLanguage, RegExp> = {
   typescript: /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/,
@@ -173,7 +174,7 @@ const EXTENSIONS: Record<GraphLanguage, RegExp> = {
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 /** Repository-relative paths (forward slashes) of the tree's files, in path order. */
-function walk(root: string, accept: (rel: string) => boolean, limit = Infinity): string[] {
+export function walk(root: string, accept: (rel: string) => boolean, limit = Infinity): string[] {
   const skipped = new Set(SKIPPED_DIRECTORIES);
   const out: string[] = [];
   const visit = (dir: string): void => {
