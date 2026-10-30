@@ -22,7 +22,8 @@
  */
 
 import { sideOf, type BranchFact } from '../path-set/branches.js';
-import { lineDominates, qualifiedMethodName, typePath } from '../path-set/path-set.js';
+import { handedNames, lineDominates, qualifiedMethodName, typePath } from '../path-set/path-set.js';
+import type { TemplateFact } from '../path-set/templates.js';
 import type { DeclRef, PathChange, PathSetDiff, PathSink } from '../path-set/types.js';
 import type { StableIdFile } from '../stable-ids/types.js';
 import type { CallInfo, CircleIR, DFGDef, ProjectAnalysis } from '../types/index.js';
@@ -41,7 +42,8 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** How a call's type was matched to a table type, strongest first. */
-export type TypeMatch = 'fqn' | 'import' | 'simple-name' | 'unresolved' | 'any';
+/** `template`: the sink hands its value to a view, and the label comes from the template construct that renders it. */
+export type TypeMatch = 'fqn' | 'import' | 'simple-name' | 'unresolved' | 'any' | 'template';
 
 export interface StepObservation {
   /** Location of the step in the row, e.g. `/match/all/1`. */
@@ -72,7 +74,10 @@ export interface RemedySinkObservation {
   /** `<path key>:sink` */
   anchor: string;
   pathKey: string;
-  /** `unchanged` only under `scope: 'all'`: the path is still open at the fix version. */
+  /**
+   * `unchanged`: the path is still open in code at the fix version — observed
+   * under `scope: 'all'`, or when `templateChanged` (the fix is in the view).
+   */
   change: Extract<PathChange, 'removed' | 'sanitized' | 'guarded' | 'unchanged'>;
   /** The baseline sink. */
   sink: {
@@ -80,11 +85,13 @@ export interface RemedySinkObservation {
     tableSink: string;
     tableSinkMatch?: TypeMatch;
     /** `call`: the sink call itself; `receiver-def`: the call that made its receiver (a constructor). */
-    via?: 'call' | 'receiver-def';
+    via?: 'call' | 'receiver-def' | 'template';
     file: string;
     line: number;
     decl: DeclRef;
   };
+  /** The view this path hands to renders it differently at the fix version. */
+  templateChanged?: true;
   match: RemedyMatch;
   /** Copied from the table, and only when exactly one row matched. */
   class?: ConstructClass;
@@ -255,7 +262,7 @@ function argTainted(ctx: DeclCtx, call: CallInfo, expr: string): boolean {
 
 const tail = (fqn: string): string => fqn.slice(fqn.lastIndexOf('.') + 1);
 const pkg = (fqn: string): string => fqn.slice(0, Math.max(0, fqn.lastIndexOf('.')));
-const RANK: Record<TypeMatch, number> = { fqn: 0, import: 1, any: 2, 'simple-name': 3, unresolved: 4 };
+const RANK: Record<TypeMatch, number> = { fqn: 0, import: 1, any: 2, 'simple-name': 3, unresolved: 4, template: 5 };
 
 function isCtor(c: CallInfo): boolean {
   return c.is_constructor === true || (c.receiver === null && !!c.receiver_type && c.receiver_type === c.method_name);
@@ -372,6 +379,8 @@ interface EvalEnv {
   pathRemoved: boolean;
   names: Map<string, Hit[]>;
   observed: StepObservation[];
+  /** Template facts at the fix version that render the names this sink hands on; `null` = templates not read. */
+  templateFacts: TemplateFact[] | null;
 }
 
 /** Def produced by a call: a def on its line when the call is the outermost call there. */
@@ -436,7 +445,7 @@ function reachesByName(ctx: DeclCtx, a: CallInfo, b: CallInfo, texts: string[]):
 }
 
 function unobservableReason(step: MatchStep, env: EvalEnv): string | undefined {
-  if (step.template) return 'template-not-read';
+  if (step.template && env.templateFacts === null) return 'template-not-read';
   if (step.call?.receiverFrom) return 'step-not-observed:receiver-from';
   if (step.argLiteralIn && !step.call) return 'step-not-observed:arg-literal-in-without-call';
   if ((step.role === 'guard' || step.on !== undefined) && env.ctx && !env.ctx.branches) return 'step-not-observed:guard-without-branch-facts';
@@ -484,6 +493,16 @@ function evalStep(step: MatchStep, path: string, env: EvalEnv): StepResult {
     const holds = env.pathRemoved && env.sinkCalls.length === 0;
     result = { holds, hits: [] };
     env.observed.push({ path, holds });
+  } else if (step.template) {
+    const want = step.template;
+    const hit = (env.templateFacts ?? []).find(f => templateMatches(want, f));
+    result = { holds: hit !== undefined, hits: [] };
+    const obs: StepObservation = { path, holds: result.holds };
+    if (hit) {
+      obs.at = { file: hit.file, line: hit.line };
+      obs.typeMatch = 'template';
+    }
+    env.observed.push(obs);
   } else if (step.call) {
     const hits = callHits(step, env);
     result = { holds: hits.length > 0, hits };
@@ -629,6 +648,34 @@ function tableSinkOf(
   return best;
 }
 
+/** Does a template fact have the construct (and attribute value) a table entry names? */
+function templateMatches(want: { engine: string; construct: string; attribute?: string; value?: string[] }, f: TemplateFact): boolean {
+  if (want.engine !== f.engine || want.construct !== f.construct) return false;
+  if (want.attribute === undefined) return true;
+  const actual = f.attributes[want.attribute];
+  if (want.value === undefined) return actual !== undefined;
+  return want.value.includes(actual === undefined ? 'absent' : actual);
+}
+
+/** The template facts that render a name the sink call hands on. */
+function linkedFacts(facts: Record<string, TemplateFact[]> | undefined, names: string[]): TemplateFact[] | null {
+  if (!facts) return null;
+  return Object.values(facts).flat().filter(f => f.names.some(n => names.includes(n)));
+}
+
+/**
+ * A sink that hands its value to a view takes its label from the table's
+ * template sinks: the construct that renders it at the baseline, else at the fix.
+ */
+function templateSinkOf(table: SafeConstructTable, before: TemplateFact[] | null, after: TemplateFact[] | null): string | undefined {
+  for (const facts of [before, after]) {
+    for (const ts of table.sinks) {
+      if (ts.template && (facts ?? []).some(f => templateMatches(ts.template as { engine: string; construct: string; attribute?: string; value?: string[] }, f))) return ts.id;
+    }
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -639,8 +686,16 @@ export interface RemedyClassOptions {
   /** Branch facts per file at the fix version (`deriveBranchFacts`); guard steps need them. */
   branches?: { after?: Record<string, BranchFact[]> };
   /**
+   * Template facts per template file at each version (`deriveTemplateFacts`).
+   * With them, a sink that hands its value to a view is labelled by the table's
+   * template sinks and `template` steps are evaluated; without them those rows
+   * abstain (`template-not-read`).
+   */
+  templates?: { before?: Record<string, TemplateFact[]>; after?: Record<string, TemplateFact[]> };
+  /**
    * `closed` (default): sinks of paths the fix closed (`removed`, `sanitized`,
-   * `guarded`). `all`: also sinks of paths still open at the fix version
+   * `guarded`), and of paths whose view now renders them differently
+   * (`templateChanged`). `all`: also sinks of paths still open at the fix version
    * (`unchanged`), so a fix that left the path open can be described by the row
    * it used (a weak construct). An open path's observation is a description,
    * not a closed sink.
@@ -671,8 +726,10 @@ export function remedyClassOf(
 
   const sinks: RemedySinkObservation[] = [];
   for (const e of diff.entries) {
+    // a path still open in code whose view now renders it differently was fixed in the view:
+    // observed in both scopes, with `templateChanged`
     const observed = e.change === 'removed' || e.change === 'sanitized' || e.change === 'guarded'
-      || (options.scope === 'all' && e.change === 'unchanged');
+      || (e.change === 'unchanged' && (options.scope === 'all' || e.templateChanged === true));
     if (!observed || !e.before) continue;
     const base = e.before;
     const seedParameters = base.source.decl.id !== base.sink.decl.id;
@@ -680,6 +737,7 @@ export function remedyClassOf(
       anchor: `${e.key}:sink`,
       pathKey: e.key,
       change: e.change as RemedySinkObservation['change'],
+      ...(e.templateChanged ? { templateChanged: true as const } : {}),
       sink: { tableSink: 'unlisted', file: base.sink.file, line: base.sink.line, decl: base.sink.decl },
       match: 'unrecognized',
       rows: [],
@@ -690,7 +748,15 @@ export function remedyClassOf(
     sinks.push(obs);
 
     const beforeIr = irBefore.get(base.sink.file);
-    const label = beforeIr ? tableSinkOf(table, base.sink, beforeIr) : undefined;
+    const sinkCall = beforeIr?.calls.find(c => c.location.line === base.sink.line && (!base.sink.call.method || c.method_name === base.sink.call.method));
+    const handed = handedNames(sinkCall);
+    const factsBefore = handed.length > 0 ? linkedFacts(options.templates?.before, handed) : null;
+    const factsAfter = handed.length > 0 ? linkedFacts(options.templates?.after, handed) : null;
+    let label: { id: string; typeMatch: TypeMatch; via: 'call' | 'receiver-def' | 'template' } | undefined = beforeIr ? tableSinkOf(table, base.sink, beforeIr) : undefined;
+    if (!label) {
+      const id = templateSinkOf(table, factsBefore, factsAfter);
+      if (id) label = { id, typeMatch: 'template', via: 'template' };
+    }
     if (!label) {
       obs.reason = 'sink-not-in-table';
       continue;
@@ -710,7 +776,7 @@ export function remedyClassOf(
       const rowSinks = table.sinks.filter(s => row.appliesTo.includes(s.id) && s.call);
       const sinkCalls = ctx ? ctx.calls.filter(c => rowSinks.some(s => shapeMatch(s.call as TableCall, c, ctx.ir))) : [];
       const endpointCalls = ctx ? sinkCalls.filter(c => !sinkCalls.some(o => o !== c && reaches(ctx, c, o))) : [];
-      const env: EvalEnv = { ctx, sinkCalls, endpointCalls, pathRemoved: e.change === 'removed', names: new Map(), observed: [] };
+      const env: EvalEnv = { ctx, sinkCalls, endpointCalls, pathRemoved: e.change === 'removed', names: new Map(), observed: [], templateFacts: options.templates ? (factsAfter ?? []) : null };
       const r = evalStep(row.match, '/match', env);
       if (r.holds) obs.rows.push(matchedRow(row, env.observed));
       else if (r.unobservable) obs.abstainedRows.push({ id: row.id, reason: r.unobservable });

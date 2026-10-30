@@ -23,6 +23,7 @@ import {
   initAnalyzer,
   deriveBranchFacts,
   deriveStableIds,
+  deriveTemplateFacts,
   loadSafeConstructTable,
   pathSetDiff,
   remedyClassOf,
@@ -33,10 +34,11 @@ import {
   type ProjectAnalysis,
   type RemedySinkObservation,
   type StableIdFile,
+  type TemplateFact,
 } from 'circle-ir';
-import { readTree, sha, type CodeLanguage, type TreeFile } from './tree.js';
+import { readTree, sha, TEMPLATE_EXTENSIONS, type CodeLanguage, type TreeFile } from './tree.js';
 
-export { readTree, EXTENSIONS, DEFAULT_EXCLUDED_DIRS } from './tree.js';
+export { readTree, EXTENSIONS, TEMPLATE_EXTENSIONS, DEFAULT_EXCLUDED_DIRS } from './tree.js';
 export type { CodeLanguage, TreeFile } from './tree.js';
 
 /** The version of the observation shape. A consumer pins it and refuses any other. */
@@ -93,6 +95,7 @@ interface Pin {
   project: ProjectAnalysis;
   stableIds: Record<string, StableIdFile>;
   branches: Record<string, BranchFact[]>;
+  templates: Record<string, TemplateFact[]>;
 }
 
 const require = createRequire(import.meta.url);
@@ -115,7 +118,7 @@ function init(): Promise<void> {
     const g = (name: string): string => join(wasm, `tree-sitter-${name}.wasm`);
     await initAnalyzer({
       wasmPath: join(wasm, 'web-tree-sitter.wasm'),
-      languagePaths: { java: g('java'), javascript: g('javascript'), typescript: g('typescript'), tsx: g('tsx'), python: g('python') },
+      languagePaths: { java: g('java'), javascript: g('javascript'), typescript: g('typescript'), tsx: g('tsx'), python: g('python'), html: g('html') },
     });
   })();
   return ready;
@@ -131,7 +134,16 @@ async function analysePin(root: string, params: CodeFactsParams): Promise<Pin> {
     branches[f.path] = await deriveBranchFacts(f.code, params.language);
     if (stableIdsSupport(params.language)) stableIds[f.path] = await deriveStableIds(f.code, f.path, params.language);
   }
-  return { files, digests: new Map(files.map(f => [f.path, f.digest])), project, stableIds, branches };
+  const templates: Record<string, TemplateFact[]> = {};
+  const templateFiles = TEMPLATE_EXTENSIONS[params.language]
+    ? readTree(root, params.language, params.excludedDirs, TEMPLATE_EXTENSIONS[params.language])
+    : [];
+  for (const t of templateFiles) {
+    const facts = await deriveTemplateFacts(t.code, t.path);
+    if (facts.length > 0) templates[t.path] = facts;
+  }
+  const digests = new Map([...files, ...templateFiles].map(f => [f.path, f.digest]));
+  return { files, digests, project, stableIds, branches, templates };
 }
 
 function filesOf(e: PathDiffEntry): string[] {
@@ -141,6 +153,7 @@ function filesOf(e: PathDiffEntry): string[] {
     out.add(p.source.file);
     out.add(p.sink.file);
     for (const h of p.hops) out.add(h.file);
+    for (const t of p.sink.templates ?? []) out.add(t.file);
   }
   return [...out].sort();
 }
@@ -155,6 +168,7 @@ function diffOf(before: Pin, after: Pin, params: CodeFactsParams): PathSetDiff {
     cwe: params.cwe,
     stableIds: { before: before.stableIds, after: after.stableIds },
     branches: { before: before.branches, after: after.branches },
+    templates: { before: before.templates, after: after.templates },
   });
 }
 
@@ -194,6 +208,7 @@ export async function runRemedyClass(root: PinPair, views: { table: Uint8Array |
   const result = remedyClassOf(diff, before.project, after.project, loaded, {
     stableIds: { before: before.stableIds, after: after.stableIds },
     branches: { after: after.branches },
+    templates: { before: before.templates, after: after.templates },
     ...(params.scope ? { scope: params.scope } : {}),
   });
   const anchors: AnchorObservation[] = result.sinks.map((s: RemedySinkObservation) => ({

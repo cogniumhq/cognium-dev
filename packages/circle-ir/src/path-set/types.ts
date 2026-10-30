@@ -57,6 +57,24 @@ export interface PathSink extends PathEnd {
    * endpoint, and the flagged sink is kept here.
    */
   intermediate?: { line: number; call: { class?: string; method?: string; argPositions?: number[] }; code?: string };
+  /**
+   * Set when the sink call hands the value to a view under a literal name and
+   * template facts were supplied: the template constructs that render that name.
+   */
+  templates?: TemplateUse[];
+}
+
+/** A template construct that renders a value a sink handed to a view. */
+export interface TemplateUse {
+  file: string;
+  line: number;
+  engine: 'thymeleaf' | 'jsp';
+  construct: string;
+  element?: string;
+  inAttribute?: string;
+  attributes: Record<string, string>;
+  /** The handed names the construct reads. */
+  names: string[];
 }
 
 /** A check of the path's own data that the endpoint runs on one side of. */
@@ -115,6 +133,11 @@ export interface PathDiffEntry {
   key: string;
   state: { before: PathState; after: PathState };
   change: PathChange;
+  /**
+   * The templates this path's sink hands to render it with different constructs
+   * or attributes at the two versions (a fix made in a view, not in code).
+   */
+  templateChanged?: true;
   before?: PathEntry;
   after?: PathEntry;
 }
