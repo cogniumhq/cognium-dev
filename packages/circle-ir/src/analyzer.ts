@@ -324,6 +324,19 @@ export interface AnalyzerOptions {
   perFileBudgetMs?: number;
 
   /**
+   * Wall-clock limit (ms) for analysing ONE file (cognium-dev#1007). `0` or
+   * omitted disables it, so existing callers see no change.
+   *
+   * Checked after parsing and between pipeline passes; a single phase that is
+   * already running is not interrupted (the work is synchronous). When the
+   * limit is passed, `analyze()` throws an {@link AnalysisTimeoutError}.
+   * `analyzeProject` catches it, skips that file and lists it in
+   * `ProjectAnalysis.timed_out_files`, so a slow file is reported, never
+   * mistaken for a clean one.
+   */
+  fileTimeoutMs?: number;
+
+  /**
    * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
    * characters summed across the files given (cognium-dev#424). `0` or
    * omitted disables it — no behaviour change for existing callers.
@@ -913,6 +926,23 @@ function neutralizeOverlongLines(code: string): { code: string; dropped: number 
   return { code: out, dropped };
 }
 
+/**
+ * Thrown by `analyze()` when `AnalyzerOptions.fileTimeoutMs` is set and the
+ * file's analysis passes it (cognium-dev#1007).
+ */
+export class AnalysisTimeoutError extends Error {
+  readonly file: string;
+  readonly elapsedMs: number;
+  readonly phase: string;
+  constructor(file: string, elapsedMs: number, phase: string) {
+    super(`analysis of ${file} timed out after ${elapsedMs}ms (at ${phase})`);
+    this.name = 'AnalysisTimeoutError';
+    this.file = file;
+    this.elapsedMs = elapsedMs;
+    this.phase = phase;
+  }
+}
+
 export async function analyze(
   code: string,
   filePath: string,
@@ -922,6 +952,9 @@ export async function analyze(
   if (!initialized) {
     await initAnalyzer(options);
   }
+
+  const fileTimeoutMs = options.fileTimeoutMs ?? 0;
+  const fileDeadline = fileTimeoutMs > 0 ? Date.now() + fileTimeoutMs : 0;
 
   // Markup preprocessor path (HTML + Vue SFC) — extract scripts and
   // delegate to the JS/TS analyzer. Vue SFCs are HTML-syntax-wrapped, so
@@ -995,6 +1028,9 @@ export async function analyze(
   const tree = await parse(code, parseGrammar);
   phaseEnd('parse', tParse);
   try {
+  if (fileDeadline > 0 && Date.now() > fileDeadline) {
+    throw new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), 'parse');
+  }
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 
   // Issue #27: surface parse health to the caller. Tree-sitter happily
@@ -1292,7 +1328,8 @@ export async function analyze(
   if (!disabledPasses.has('insecure-deserialization-config')) pipeline.add(new InsecureDeserializationConfigPass());
 
   // Run the pipeline
-  const { results, findings } = pipeline.run(graph, code, language, config, options.resources);
+  const { results, findings } = pipeline.run(graph, code, language, config, options.resources,
+    fileDeadline > 0 ? { deadline: fileDeadline, onExpired: (phase) => new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), phase) } : undefined);
 
   const sinkFilter = results.get('sink-filter')    as SinkFilterResult;
   const interProc  = results.get('interprocedural') as InterproceduralPassResult;
@@ -1823,6 +1860,7 @@ export async function analyzeProject(
   options: AnalyzerOptions = {},
 ): Promise<ProjectAnalysis> {
   const fileAnalyses: Array<{ file: string; analysis: CircleIR }> = [];
+  const timedOutFiles: Array<{ file: string; elapsed_ms: number; phase: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
 
@@ -1871,7 +1909,19 @@ export async function analyzeProject(
       });
       break;
     }
-    const ir = await analyze(code, filePath, language, options);
+    let ir: CircleIR;
+    try {
+      ir = await analyze(code, filePath, language, options);
+    } catch (err) {
+      if (err instanceof AnalysisTimeoutError) {
+        timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });
+        logger.warn('analyzeProject: file analysis timed out, skipping it', {
+          file: filePath, elapsedMs: err.elapsedMs, phase: err.phase,
+        });
+        continue;
+      }
+      throw err;
+    }
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
     sourceLinesByFile.set(filePath, code.split('\n'));
@@ -1985,6 +2035,9 @@ export async function analyzeProject(
   }
   if (perFileBudgetExceeded) {
     projectAnalysis.per_file_budget_exceeded = true;
+  }
+  if (timedOutFiles.length > 0) {
+    projectAnalysis.timed_out_files = timedOutFiles;
   }
   if (projectSizeBudgetExceeded) {
     projectAnalysis.project_size_budget_exceeded = true;

@@ -38,6 +38,7 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
+import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { colors } from './utils/colors.js';
 
@@ -360,6 +361,8 @@ interface ScanOptions {
   language?: string;
   format: 'text' | 'json' | 'sarif';
   threads: number;
+  /** `--file-timeout-ms`: skip (and report) a file whose analysis passes this (#1007). */
+  fileTimeoutMs?: number;
   severity?: string;
   category?: string;
   output?: string;
@@ -648,6 +651,8 @@ export async function collectResourceFiles(
 interface AnalyzeOptions {
   passOptions?: PassOptions;
   disabledPasses?: string[];
+  /** Per-file analysis time limit (ms), circle-ir `fileTimeoutMs` (#1007). 0/absent = off. */
+  fileTimeoutMs?: number;
   /**
    * Per-file project profile resolved by the CLI's
    * `detectProjectProfiles()` (or a forced single profile from
@@ -669,6 +674,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       passOptions: analyzeOpts?.passOptions,
       disabledPasses: analyzeOpts?.disabledPasses,
       ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
+      ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     });
 
     // Security findings from taint flows
@@ -793,6 +799,7 @@ async function scanProject(
     ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
     // #591: `*.properties` from the scan set, for passes that resolve config-held values.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
+    ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -819,6 +826,14 @@ async function scanProject(
     }
     return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
   });
+  // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
+  for (const t of projectResult.timed_out_files ?? []) {
+    results.push({
+      file: t.file,
+      vulnerabilities: [],
+      error: `analysis timed out after ${t.elapsed_ms}ms (at ${t.phase}); file skipped`,
+    });
+  }
 
   return {
     results,
@@ -1050,7 +1065,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
   // Apply config-level severity/category defaults (CLI flags override)
   if (!options.severity && config?.severity) {
-    options.severity = config.severity;
+    // #1006: validate the config's value too, before any file is read.
+    options.severity = parseSeverity(config.severity);
   }
   if (!options.category && config?.categories?.length) {
     options.category = config.categories.join(',');
@@ -1122,6 +1138,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     const analyzeOpts: AnalyzeOptions = {
       passOptions,
       disabledPasses,
+      ...(options.fileTimeoutMs ? { fileTimeoutMs: options.fileTimeoutMs } : {}),
       ...(resolvedProfiles
         ? { projectProfile: resolvedProfiles }
         : forcedProfile && !options.noProjectProfile
@@ -1386,12 +1403,12 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     }
 
     // Exit code: 1 for security findings, 0 for quality-only or clean
-    process.exit(securityCount > 0 ? 1 : 0);
+    await exitAfterFlush(securityCount > 0 ? 1 : 0);
 
   } catch (error) {
     if (spin) spin.fail('Analysis failed');
     console.error(colors.red(error instanceof Error ? error.message : 'Unknown error'));
-    process.exit(2);
+    await exitAfterFlush(error instanceof UsageError ? 1 : 2);
   }
 }
 
@@ -1563,7 +1580,7 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       console.log(output);
     }
 
-    process.exit(0);
+    await exitAfterFlush(0);
 
   } catch (error) {
     if (spin) spin.fail('Metrics analysis failed');
@@ -1970,7 +1987,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     console.log(out);
     console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s)`));
   }
-  process.exit(0);
+  await exitAfterFlush(0);
 }
 
 async function main(): Promise<void> {
@@ -2018,7 +2035,7 @@ async function main(): Promise<void> {
 
     const targetPath = args[0];
     const metricsOptions: MetricsOptions = {
-      format: (options.format || options.f || 'text') as 'text' | 'json',
+      format: parseFormat(options.format ?? options.f, ['text', 'json'] as const, 'text'),
       category: (options.category) as string | undefined,
       output: (options.output || options.o) as string | undefined,
       quiet: options.quiet === true || options.q === true,
@@ -2065,9 +2082,10 @@ async function main(): Promise<void> {
     const targetPath = args[0];
     const scanOptions: ScanOptions = {
       language: languageFromCliOptions(options),
-      format: (options.format || options.f || 'text') as 'text' | 'json' | 'sarif',
-      threads: parseInt((options.threads as string) || '4', 10),
-      severity: (options.severity) as string | undefined,
+      format: parseFormat(options.format ?? options.f, ['text', 'json', 'sarif'] as const, 'text'),
+      threads: parseWholeNumber('threads', options.threads, 4, 1),
+      fileTimeoutMs: parseWholeNumber('file-timeout-ms', options['file-timeout-ms'], 0, 0),
+      severity: parseSeverity(options.severity),
       category: (options.category) as string | undefined,
       output: (options.output || options.o) as string | undefined,
       quiet: options.quiet === true || options.q === true,
@@ -2099,6 +2117,12 @@ async function main(): Promise<void> {
 
 // Run the CLI
 main().catch((error) => {
+  // #1006: a bad option is a usage error (exit 1), reported before any scan work.
+  if (error instanceof UsageError) {
+    console.error(colors.red(`Error: ${error.message}`));
+    console.error('\nRun \'cognium-dev --help\' for usage information');
+    process.exit(1);
+  }
   console.error(colors.red('Fatal error:'), error.message);
   process.exit(2);
 });

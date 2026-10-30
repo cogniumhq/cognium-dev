@@ -11,6 +11,7 @@ export {
   analyzeForAPI,
   analyzeProject,
   isAnalyzerInitialized,
+  AnalysisTimeoutError,
   resetAnalyzer,
   type AnalyzerOptions,
 } from './analyzer.js';
