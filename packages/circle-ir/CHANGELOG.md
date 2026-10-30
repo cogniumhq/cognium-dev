@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [4.18.0] - 2026-10-30
 
 ### Added
+- **Go stable ids and graph facts: `deriveGoIds()` and `buildGoGraph()` (`go-graph@0.1`).** `ids@0.1` now covers Go (`stableIdsSupport('go')`), and `reach`, `deadCode` and `removalReach` run on Go unchanged.
+  - **Ids:** a package is its directory. Qualified names are `<dir>:<Func>` and `<dir>:<Type>.<Method>`; the receiver's pointer is not part of the name, and `init` is keyed by file. The signature holds parameter and result types only, so renaming a parameter does not re-key a function.
+  - **Call edges** from the syntax tree, with local typing (receivers, parameters, `x := T{}`, `x := NewT()`, struct fields, function results):
+    - `exact`: package scope, project imports (by `modulePath` or by directory suffix), methods on known types, through embedded fields;
+    - `polymorphic`: calls on a project interface reach the methods of the project types that implement it;
+    - `inferred`: `x.M` on a value of unknown type, up to `maxInferred`.
+  - **Unresolved sites:** the standard library and modules are `external`; computed callees are `dynamic`.
+  - **References and loads:** a function or method used as a value is a reference; a composite literal or conversion loads its type.
+  - **Entries:**
+    - `main` in package `main`, and `init`;
+    - net/http `HandleFunc`/`Handle`, including Go 1.22 method patterns, and `http.HandlerFunc(f)`;
+    - gin and echo verbs with `Group` prefixes, chi verbs with `Route` prefixes, gorilla `PathPrefix().Subrouter()`;
+    - `_test.go` tests, benchmarks, examples, fuzz targets and `TestMain`;
+    - the exported API of packages named in `libraryPackages`.
+  - **typeOnly:** interface types.
+  - **Additive:** `analyze()` output is unchanged.
+- **Python graph facts: `buildPythonGraph()` (`python-graph@0.1`).** The reach core's input for Python, keyed by `ids@0.1` stable ids, so `reach`, `deadCode` and `removalReach` run on Python unchanged.
+  - **Call edges** from the syntax tree. `exact`: module names, imports from project modules (absolute and relative), `module.f`, `Class.m`, `self.m` / `cls.m` (own or inherited), `super().m`, and `Class(...)`, which reaches the class and its `__init__`. `polymorphic`: overrides in project subclasses. `inferred`: `obj.m` on a receiver of unknown type, up to `maxInferred` (default 16).
+  - **Unresolved sites:** imports from outside the project and objects built from them (`app = Flask(...)`) are `external`; `getattr` and other computed callees are `dynamic`.
+  - **Other facts:** references (functions and classes used as values, `self.m` passed as a callback), module imports, class bases, and dunder methods as `loads` of their class.
+  - **Entries:** Flask and FastAPI routes with blueprint and router prefixes, lifecycle hooks, Django `urls.py` routes (class-based views reach their handler methods) and the modules Django loads by convention, click commands, `__main__` blocks and files, console scripts, Celery tasks, Django management commands, pytest functions and fixtures, unittest test methods.
+  - **typeOnly:** `Protocol` classes, `@overload` stubs, `.pyi` files.
+  - **Additive:** `analyze()` output is unchanged.
 - **Unresolved edges per path in `pathSetOf()` / `pathSetDiff()` (`PathEntry.unresolved`).** Each path now carries the unresolved items, and unresolved cross-file calls, on the lines it occupies. Those are its source, sink and hop lines, plus the lines in its source and sink declarations that use the path's variables. Each site gives its file, line, type, reason and code. `atSink` says whether it is the sink call itself; `inProject` says whether any candidate target is a type defined in the analysed tree. A consumer can therefore tell an interface dispatch on a library sink (`em.createQuery` on `EntityManager`) from a gap that could hide a path. **Additive:** a new key on each path; existing fields and values are unchanged.
 - **npm advisory matching: `buildAdvisoryIndex(records, 'npm')`, `compareSemver()`, `parseSemver()`, `ADVISORY_ECOSYSTEMS`.** `matchAdvisories` now orders npm versions by SemVer 2.0 precedence (pre-releases before their release, build metadata ignored) and evaluates OSV `SEMVER` ranges. An npm index matches only `npm` dependencies, and only concrete SemVer versions (a range, dist-tag or `unknown` is never matched). `rangeIntervals()` takes an optional comparator. `diffAdvisoryMatches` and `diffDependencySets` order versions in each dependency's own ecosystem and keep same-named packages of different ecosystems apart. **A Maven index, and an index for any other ecosystem name, behaves exactly as before.**
 - **Stable ids for Python (`ids@0.1`, experimental).** `deriveStableIds(code, file, 'python')` (and `derivePythonIds`) key the module (dotted path; `src/` dropped, `__init__` names its package), functions, classes, methods and module- and class-level assignments by enclosing names and a signature of arity plus annotations (`(int,*,_?)->dict`; parameter names never). Nested functions, classes and lambdas are keyed under their enclosing declaration and flagged `unstable:anonymous`. Bodies mark each `block` (`⟨` … `⟩`) so indentation stays part of the body; comments and docstrings are not body. `bodyTokens` gains a `wrap` option for such grammars.

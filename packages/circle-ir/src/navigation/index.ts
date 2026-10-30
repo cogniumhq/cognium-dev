@@ -52,6 +52,20 @@ export {
   type JavaGraph,
 } from './java-graph.js';
 export {
+  buildGoGraph,
+  GO_GRAPH_SCHEME,
+  type GoSourceFile,
+  type GoGraphOptions,
+  type GoGraph,
+} from './go-graph.js';
+export {
+  buildPythonGraph,
+  PYTHON_GRAPH_SCHEME,
+  type PythonSourceFile,
+  type PythonGraphOptions,
+  type PythonGraph,
+} from './python-graph.js';
+export {
   DEFAULT_JAVA_ENTRY_TABLES,
   type JavaEntryTables,
   type JavaAnnotationRow,
