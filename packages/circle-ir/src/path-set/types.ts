@@ -111,8 +111,34 @@ export interface PathEntry {
   /** Hops of the first variant (by source then sink position). */
   hops: PathHop[];
   confidence: number;
+  /**
+   * Unresolved edges on this path at this pin: unresolved items (and unresolved
+   * cross-file calls) on the lines the path occupies — its source, sink and hop
+   * lines, and the lines in its source and sink declarations that use the
+   * path's variables. Each site says whether it is the sink call itself and
+   * whether any candidate target is a type defined in the analysed tree.
+   */
+  unresolved: PathUnresolved;
   /** Present when `state` is `guarded`. */
   guard?: PathGuard;
+}
+
+export interface UnresolvedSite {
+  file: string;
+  line: number;
+  type: 'virtual_dispatch' | 'taint_propagation' | 'reflection' | 'dynamic_call' | 'cross_file_call';
+  reason: string;
+  code: string;
+  /** The unresolved call is the path's sink call itself. */
+  atSink: boolean;
+  /** Some candidate target names a type defined in the analysed tree (it could continue the path there). */
+  inProject: boolean;
+}
+
+export interface PathUnresolved {
+  count: number;
+  /** Sorted by file, line, type. */
+  sites: UnresolvedSite[];
 }
 
 export interface PathSet {
