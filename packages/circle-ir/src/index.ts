@@ -269,6 +269,8 @@ export {
   loadSafeConstructTable,
   sha256Bytes,
   sha256Digest,
+  remedyClassOf,
+  TableRefused,
 } from './remedy-class/index.js';
 export type {
   ArgPosition,
@@ -285,6 +287,14 @@ export type {
   TableProblem,
   TableProblemCode,
   LoadTableResult,
+  TypeMatch,
+  StepObservation,
+  MatchedRow,
+  RemedyMatch,
+  RemedyReason,
+  RemedySinkObservation,
+  RemedyClassResult,
+  RemedyClassOptions,
 } from './remedy-class/index.js';
 
 // Path sets: every source-to-sink path of one CWE, keyed across versions of a

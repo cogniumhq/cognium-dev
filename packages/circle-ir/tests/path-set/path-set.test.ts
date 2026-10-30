@@ -221,6 +221,36 @@ describe('pathSetDiff — two trees', () => {
   });
 });
 
+describe('pathSetDiff — moves and sanitizer-only fixes', () => {
+  it('a method moved to another type is removed + added, never matched', async () => {
+    const moved = BASE.replace('public class Dao {', 'public class Dao {\n  static class Repo {').replace(/\}\s*$/, '}\n}');
+    const d = pathSetDiff(await project({ [DAO]: BASE }), await project({ [DAO]: moved }), { cwe: 89 });
+    expect(d.counts).toMatchObject({ removed: 2, added: 2, unchanged: 0 });
+    const added = d.entries.filter(e => e.change === 'added');
+    expect(added.every(e => e.after?.sink.decl.name.includes('Repo.find('))).toBe(true);
+  });
+
+  it('a fix that only adds a sanitizer closes the path (removed or sanitized), never unchanged', async () => {
+    const XSS = (expr: string): string => `package app;
+import java.io.*;
+import javax.servlet.http.*;
+public class View {
+  public void show(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    String q = req.getParameter("q");
+    resp.getWriter().print("<p>" + ${expr} + "</p>");
+  }
+}`;
+    const d = pathSetDiff(
+      await project({ 'src/app/View.java': XSS('q') }),
+      await project({ 'src/app/View.java': XSS('org.owasp.encoder.Encode.forHtml(q)') }),
+      { cwe: 79 },
+    );
+    expect(d.entries.length).toBeGreaterThan(0);
+    expect(d.counts.unchanged).toBe(0);
+    expect(d.counts.removed + d.counts.sanitized).toBeGreaterThan(0);
+  });
+});
+
 describe('ids@0.1 declarations (JavaScript)', () => {
   const JS = `const express = require('express');
 const { exec } = require('child_process');
