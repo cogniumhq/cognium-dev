@@ -169,8 +169,62 @@ public class Bench extends HttpServlet {
     expect(tb).toEqual([]);
   });
 
+  it('does not flag trust_boundary when a constant ternary always takes the safe branch (BenchmarkTest01205)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getParameter("p");
+    String bar = new Test().doSomething(request, param);
+    request.getSession().putValue("userid", bar);
+  }
+  class Test {
+    String doSomething(HttpServletRequest request, String param) throws Exception {
+      String bar;
+      int num = 106;
+      bar = (7 * 18) + num > 200 ? "This_should_always_happen" : param;
+      return bar;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const tb = (r.taint?.flows ?? []).filter(f => f.sink_type === 'trust_boundary');
+    expect(tb).toEqual([]);
+  });
+
+  it('does not flag trust_boundary after safe-key map shuffle in a helper (BenchmarkTest01207)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getParameter("p");
+    String bar = new Test().doSomething(request, param);
+    request.getSession().putValue("userid", bar);
+  }
+  class Test {
+    String doSomething(HttpServletRequest request, String param) throws Exception {
+      String bar = "safe!";
+      java.util.HashMap<String, Object> map95902 = new java.util.HashMap<String, Object>();
+      map95902.put("keyA-95902", "a_Value");
+      map95902.put("keyB-95902", param);
+      map95902.put("keyC", "another_Value");
+      bar = (String) map95902.get("keyB-95902");
+      bar = (String) map95902.get("keyA-95902");
+      return bar;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const tb = (r.taint?.flows ?? []).filter(f => f.sink_type === 'trust_boundary');
+    expect(tb).toEqual([]);
+  });
+
   it('OWASP corpus files stay clean when CORPUS_ROOT is set', async () => {
-    for (const name of ['BenchmarkTest00322', 'BenchmarkTest00586', 'BenchmarkTest00992']) {
+    for (const name of [
+      'BenchmarkTest00322',
+      'BenchmarkTest00586',
+      'BenchmarkTest00992',
+      'BenchmarkTest01205',
+      'BenchmarkTest01207',
+    ]) {
       const code = owaspFile(name);
       if (!code) return;
       const r = await analyze(code, `${name}.java`, 'java');

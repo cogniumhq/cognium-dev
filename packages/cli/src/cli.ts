@@ -17,6 +17,7 @@ import {
   type PassOptions,
   type ProjectProfile,
   parseNpmDependencies, parseNpmLockDependencies,
+  parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
   parseMavenDependencies, parseGradleDependencies,
   parseMavenResolvedDependencies, parseGradleLockfile,
@@ -1810,6 +1811,9 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'package.json': parseNpmDependencies,
   'package-lock.json': parseNpmLockDependencies,
   'npm-shrinkwrap.json': parseNpmLockDependencies,
+  'pnpm-lock.yaml': parsePnpmLockDependencies,
+  // yarn.lock reads its sibling package.json for the roots (see the loop below).
+  'yarn.lock': (c) => parseYarnLockDependencies(c),
   'requirements.txt': parsePypiDependencies,
   'pyproject.toml': parsePyprojectDependencies,
   'poetry.lock': parsePoetryLockDependencies,
@@ -1830,6 +1834,10 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
 const SBOM_SUPERSEDES: Record<string, string[]> = {
   'package-lock.json': ['package.json'],
   'npm-shrinkwrap.json': ['package.json'],
+  // DT4: resolved npm sets supersede the declared manifest; pnpm wins over
+  // the others when more than one lockfile sits in a directory.
+  'pnpm-lock.yaml': ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock'],
+  'yarn.lock': ['package.json'],
   'poetry.lock': ['pyproject.toml'],
   'Cargo.lock': ['Cargo.toml'],
   'dependency-tree.txt': ['pom.xml', 'dependency-list.txt'],
@@ -1922,6 +1930,13 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     for (const superseded of SBOM_SUPERSEDES[basename(m)] ?? []) {
       supersededInDir.add(`${dirname(m)}\0${superseded}`);
     }
+    // A pnpm workspace lockfile resolves every importer's package.json.
+    if (basename(m) === 'pnpm-lock.yaml') {
+      for (const importer of pnpmLockImporters(readFileSync(m, 'utf-8'))) {
+        const dir = join(dirname(m), importer);
+        for (const superseded of SBOM_SUPERSEDES['pnpm-lock.yaml']) supersededInDir.add(`${dir}\0${superseded}`);
+      }
+    }
     const project = gradleLockDirProject(m);
     if (project) {
       supersededInDir.add(`${project}\0build.gradle`);
@@ -1951,6 +1966,11 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   let deps: Dependency[] = [];
   for (const m of effective) {
     const text = readFileSync(m, 'utf-8');
+    if (basename(m) === 'yarn.lock') {
+      const pkg = join(dirname(m), 'package.json');
+      deps.push(...parseYarnLockDependencies(text, existsSync(pkg) ? readFileSync(pkg, 'utf-8') : undefined));
+      continue;
+    }
     const parse = SBOM_MANIFESTS[basename(m)];
     deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
   }

@@ -21,6 +21,7 @@
  * and a manifest dependency list needs nothing heavier.
  */
 
+import { parse as parseYaml } from 'yaml';
 import type { DependencyContext } from '../analyzer.js';
 
 /** Package ecosystem, aligned with Package-URL (purl) `pkg:<type>` names. */
@@ -240,6 +241,329 @@ export function parseNpmLockDependencies(packageLock: string): Dependency[] {
     seen.add(key);
     return true;
   });
+}
+
+// ---------------------------------------------------------------------------
+// pnpm / yarn lockfiles (cognium-dev: E02 npm resolved sets, DT4)
+// ---------------------------------------------------------------------------
+
+/** A lockfile-resolved package node: identity, the edges it pins, and its flags. */
+interface LockNode {
+  name: string;
+  version: string;
+  deps: string[];
+  flagDev?: boolean;
+  flagOptional?: boolean;
+}
+
+/** One project root's declared dependencies, as lock-node keys. */
+interface LockRoots {
+  required: string[];
+  optional: string[];
+  dev: string[];
+}
+
+/**
+ * Scope every node by reachability from the project roots: reached from a
+ * production root → `required`; else from an optional root → `optional`;
+ * else from a dev root → `dev`. A node no root reaches keeps the lockfile's
+ * own flag (pnpm v5/v6 `dev` / `optional`), else `required`.
+ * `direct` is set when any root names the node; `undefined` when `hasRoots`
+ * is false (the input did not carry the project's declarations).
+ */
+function scopeLockNodes(nodes: Map<string, LockNode>, roots: LockRoots, hasRoots: boolean): Dependency[] {
+  const reach = (starts: string[]): Set<string> => {
+    const seen = new Set<string>();
+    const stack = starts.filter((k) => nodes.has(k));
+    while (stack.length > 0) {
+      const k = stack.pop() as string;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      for (const next of nodes.get(k)?.deps ?? []) if (nodes.has(next) && !seen.has(next)) stack.push(next);
+    }
+    return seen;
+  };
+  const prod = reach(roots.required);
+  const opt = reach(roots.optional);
+  const dev = reach(roots.dev);
+  const direct = new Set([...roots.required, ...roots.optional, ...roots.dev]);
+
+  const out: Dependency[] = [];
+  const seen = new Set<string>();
+  for (const [key, n] of [...nodes.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    let scope: DependencyScope;
+    if (prod.has(key)) scope = 'required';
+    else if (opt.has(key)) scope = 'optional';
+    else if (dev.has(key)) scope = 'dev';
+    else scope = n.flagDev ? 'dev' : n.flagOptional ? 'optional' : 'required';
+    const id = `${n.name}|${n.version}|${scope}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const d = dep('npm', n.name, n.version, scope);
+    if (hasRoots) d.direct = direct.has(key);
+    out.push(d);
+  }
+  return out;
+}
+
+/** Split `name@version` (name may be `@scope/name`). */
+function splitAt(spec: string): { name: string; rest: string } | null {
+  const at = spec.lastIndexOf('@');
+  if (at <= 0) return null;
+  return { name: spec.slice(0, at), rest: spec.slice(at + 1) };
+}
+
+/** Drop pnpm's peer suffix: `1.2.3(react@18.2.0)` → `1.2.3`; v5 `1.2.3_react@18` → `1.2.3`. */
+function stripPnpmPeers(v: string): string {
+  const paren = v.indexOf('(');
+  let out = paren >= 0 ? v.slice(0, paren) : v;
+  const us = out.indexOf('_');
+  if (us > 0) out = out.slice(0, us);
+  return out;
+}
+
+/** Local or workspace references are the project's own code, not npm packages. */
+const PNPM_LOCAL = /^(link:|file:|workspace:|portal:)/;
+
+/**
+ * Turn a pnpm package key into `{ name, version }`:
+ *   - v9: `name@1.2.3` / `name@1.2.3(peer@x)`
+ *   - v6: `/name@1.2.3(peer@x)`
+ *   - v5: `/name/1.2.3_peer@x` / `/@scope/name/1.2.3`
+ */
+function parsePnpmKey(rawKey: string): { name: string; version: string } | null {
+  let key = rawKey.startsWith('/') ? rawKey.slice(1) : rawKey;
+  // v5 slash form first: its peer suffix (`_react@18`) contains an `@`.
+  const v5 = key.match(/^(@[^/@]+\/[^/@]+|[^/@]+)\/(\d[^/]*)$/);
+  if (v5) return { name: v5[1], version: stripPnpmPeers(v5[2]) };
+  const paren = key.indexOf('(');
+  if (paren >= 0) key = key.slice(0, paren);
+  const at = splitAt(key);
+  if (at && /^\d/.test(at.rest)) return { name: at.name, version: stripPnpmPeers(at.rest) };
+  return null;
+}
+
+/**
+ * Resolve a dependency reference inside a pnpm lockfile to a node key
+ * (`name@version`). A reference is a version (`1.2.3`, `1.2.3(peer)`), a
+ * path key (`/other@1.0.0`, v5 `/other/1.0.0`) or an alias (`other@1.0.0`).
+ * Returns `null` for local/workspace links.
+ */
+function pnpmRef(depName: string, ref: unknown): string | null {
+  if (typeof ref !== 'string') return null;
+  if (PNPM_LOCAL.test(ref)) return null;
+  if (/^\d/.test(ref)) return `${depName}@${stripPnpmPeers(ref)}`;
+  const parsed = parsePnpmKey(ref);
+  return parsed ? `${parsed.name}@${parsed.version}` : null;
+}
+
+/** The version of an importer entry: v6/v9 `{ specifier, version }`, v5 a plain string. */
+function importerVersion(entry: unknown): unknown {
+  if (entry && typeof entry === 'object' && 'version' in (entry as Record<string, unknown>)) {
+    return (entry as Record<string, unknown>).version;
+  }
+  return entry;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Parse a `pnpm-lock.yaml` (lockfile formats 5.x, 6.0 and 9.0) into exact
+ * resolved npm dependencies, direct and transitive.
+ *
+ * - **Roots:** every importer (`importers['.']`, `importers['packages/x']`, …),
+ *   or, in single-project v5/v6 files, the top-level `dependencies` /
+ *   `devDependencies` / `optionalDependencies`. Workspace and local links
+ *   (`link:`, `file:`, `workspace:`) are the project's own packages and are
+ *   not listed.
+ * - **Scope:** by reachability from the roots (prod → `required`, optional
+ *   roots → `optional`, dev-only → `dev`); a package no root reaches keeps
+ *   pnpm v5/v6's own `dev` / `optional` flag.
+ * - **direct:** `true` for a package an importer declares, else `false`.
+ *
+ * Peer-dependency variants of one version (`a@1.0.0(react@17)`,
+ * `a@1.0.0(react@18)`) collapse into one entry. Malformed YAML yields `[]`.
+ */
+export function parsePnpmLockDependencies(pnpmLock: string): Dependency[] {
+  if (!pnpmLock) return [];
+  let root: Record<string, unknown> | undefined;
+  try {
+    root = asRecord(parseYaml(pnpmLock, { uniqueKeys: false }));
+  } catch {
+    return [];
+  }
+  if (!root) return [];
+
+  const nodes = new Map<string, LockNode>();
+  const addNode = (rawKey: string, info: Record<string, unknown> | undefined): void => {
+    const id = parsePnpmKey(rawKey);
+    if (!id) return;
+    const key = `${id.name}@${id.version}`;
+    const node = nodes.get(key) ?? { name: id.name, version: id.version, deps: [] };
+    if (info) {
+      for (const section of ['dependencies', 'optionalDependencies']) {
+        for (const [n, ref] of Object.entries(asRecord(info[section]) ?? {})) {
+          const k = pnpmRef(n, ref);
+          if (k && !node.deps.includes(k)) node.deps.push(k);
+        }
+      }
+      if (info.dev === true) node.flagDev = true;
+      if (info.optional === true) node.flagOptional = true;
+    }
+    nodes.set(key, node);
+  };
+  for (const [k, v] of Object.entries(asRecord(root.packages) ?? {})) addNode(k, asRecord(v));
+  // v9 keeps the graph in `snapshots`, identities in `packages`.
+  for (const [k, v] of Object.entries(asRecord(root.snapshots) ?? {})) addNode(k, asRecord(v));
+
+  const roots: LockRoots = { required: [], optional: [], dev: [] };
+  const importers = asRecord(root.importers);
+  const projects: Record<string, unknown>[] = importers
+    ? Object.values(importers).map(asRecord).filter((x): x is Record<string, unknown> => Boolean(x))
+    : [root];
+  for (const project of projects) {
+    for (const [section, bucket] of [
+      ['dependencies', roots.required],
+      ['optionalDependencies', roots.optional],
+      ['devDependencies', roots.dev],
+    ] as const) {
+      for (const [n, entry] of Object.entries(asRecord(project[section]) ?? {})) {
+        const k = pnpmRef(n, importerVersion(entry));
+        if (k) bucket.push(k);
+      }
+    }
+  }
+  return scopeLockNodes(nodes, roots, true);
+}
+
+/**
+ * The project directories a `pnpm-lock.yaml` covers, relative to the
+ * lockfile (`.` for the root). A workspace lockfile resolves every listed
+ * package, so it supersedes each of their `package.json` files (DT4).
+ * Single-project lockfiles return `['.']`; malformed YAML returns `[]`.
+ */
+export function pnpmLockImporters(pnpmLock: string): string[] {
+  if (!pnpmLock) return [];
+  let root: Record<string, unknown> | undefined;
+  try {
+    root = asRecord(parseYaml(pnpmLock, { uniqueKeys: false }));
+  } catch {
+    return [];
+  }
+  if (!root) return [];
+  const importers = asRecord(root.importers);
+  return importers ? Object.keys(importers).sort() : ['.'];
+}
+
+/** Unquote a yarn v1 token: `"@babel/core@^7.0.0"` → `@babel/core@^7.0.0`. */
+function yarnUnquote(s: string): string {
+  const t = s.trim();
+  return t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t;
+}
+
+/**
+ * Parse a Yarn classic (v1) `yarn.lock` into exact resolved npm
+ * dependencies. Yarn v1 records no dev or direct marker, so:
+ *
+ * - with only the lockfile, every package is `required` and `direct` is
+ *   absent (unknown);
+ * - with the project's `package.json` as the second argument, scope and
+ *   `direct` come from reachability, as for pnpm.
+ *
+ * Yarn Berry (v2+, a YAML file with `__metadata`) is not handled and yields
+ * `[]`. Malformed entries are skipped.
+ */
+export function parseYarnLockDependencies(yarnLock: string, packageJson?: string): Dependency[] {
+  if (!yarnLock) return [];
+  if (/^__metadata:/m.test(yarnLock)) return [];
+
+  const nodes = new Map<string, LockNode>();
+  const specToKey = new Map<string, string>();
+  const pendingDeps: Array<[string, string[]]> = [];
+
+  let specs: string[] = [];
+  let version: string | undefined;
+  let deps: string[] = [];
+  let inDeps = false;
+  const flush = (): void => {
+    if (specs.length > 0 && version) {
+      const first = splitAt(specs[0]);
+      if (first) {
+        const key = `${first.name}@${version}`;
+        if (!nodes.has(key)) nodes.set(key, { name: first.name, version, deps: [] });
+        for (const s of specs) specToKey.set(s, key);
+        pendingDeps.push([key, deps]);
+      }
+    }
+    specs = [];
+    version = undefined;
+    deps = [];
+    inDeps = false;
+  };
+
+  for (const rawLine of yarnLock.split(/\r?\n/)) {
+    if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
+    const indent = rawLine.length - rawLine.trimStart().length;
+    const line = rawLine.trim();
+    if (indent === 0) {
+      flush();
+      if (!line.endsWith(':')) continue;
+      specs = line.slice(0, -1).split(',').map(yarnUnquote).filter(Boolean);
+      continue;
+    }
+    if (indent <= 2) {
+      inDeps = false;
+      const m = line.match(/^(\S+)\s+(.+)$/);
+      if (line === 'dependencies:' || line === 'optionalDependencies:') {
+        inDeps = true;
+      } else if (m && yarnUnquote(m[1]) === 'version') {
+        version = yarnUnquote(m[2]);
+      }
+      continue;
+    }
+    if (inDeps) {
+      const m = line.match(/^(\S+)\s+(.+)$/);
+      if (m) deps.push(`${yarnUnquote(m[1])}@${yarnUnquote(m[2])}`);
+    }
+  }
+  flush();
+
+  for (const [key, ds] of pendingDeps) {
+    const node = nodes.get(key);
+    if (!node) continue;
+    for (const s of ds) {
+      const k = specToKey.get(s);
+      if (k && !node.deps.includes(k)) node.deps.push(k);
+    }
+  }
+
+  const roots: LockRoots = { required: [], optional: [], dev: [] };
+  let hasRoots = false;
+  if (packageJson) {
+    try {
+      const pkg = asRecord(JSON.parse(packageJson));
+      if (pkg) {
+        hasRoots = true;
+        for (const [section, bucket] of [
+          ['dependencies', roots.required],
+          ['peerDependencies', roots.required],
+          ['optionalDependencies', roots.optional],
+          ['devDependencies', roots.dev],
+        ] as const) {
+          for (const [n, range] of Object.entries(asRecord(pkg[section]) ?? {})) {
+            if (typeof range !== 'string') continue;
+            const k = specToKey.get(`${n}@${range}`);
+            if (k) bucket.push(k);
+          }
+        }
+      }
+    } catch {
+      hasRoots = false;
+    }
+  }
+  return scopeLockNodes(nodes, roots, hasRoots);
 }
 
 /**
@@ -652,7 +976,12 @@ export function parseGoDependencies(goMod: string): Dependency[] {
 export function collectDependencies(ctx: DependencyContext | undefined): Dependency[] {
   if (!ctx) return [];
   const all: Dependency[] = [];
-  if (ctx.js?.packageJson) all.push(...parseNpmDependencies(ctx.js.packageJson));
+  // npm resolved sets (exact + transitive) supersede `package.json` (DT4):
+  // pnpm > package-lock > yarn when more than one is supplied.
+  if (ctx.js?.pnpmLock) all.push(...parsePnpmLockDependencies(ctx.js.pnpmLock));
+  else if (ctx.js?.packageLock) all.push(...parseNpmLockDependencies(ctx.js.packageLock));
+  else if (ctx.js?.yarnLock) all.push(...parseYarnLockDependencies(ctx.js.yarnLock, ctx.js.packageJson));
+  else if (ctx.js?.packageJson) all.push(...parseNpmDependencies(ctx.js.packageJson));
   if (ctx.python?.requirementsTxt) all.push(...parsePypiDependencies(ctx.python.requirementsTxt));
   if (ctx.python?.pyprojectToml) all.push(...parsePyprojectDependencies(ctx.python.pyprojectToml));
   // Resolved Java dependency sets (exact + transitive) supersede the declared

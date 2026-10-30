@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- **`sbom` reads `pnpm-lock.yaml` and `yarn.lock`.** Both supersede `package.json` (DT4: resolved > lockfile > declared); `pnpm-lock.yaml` wins over `package-lock.json` and `yarn.lock` in the same directory, and a pnpm workspace lockfile supersedes the `package.json` of every importer it lists. `yarn.lock` reads its sibling `package.json` for the roots, so `--prod-only` drops dev-only packages.
 - **Piped output is no longer cut off** (#1001). `scan`, `metrics` and `sbom` exited with `process.exit()` right after writing, which truncated stdout when it was a pipe: `scan -f json | …` stopped at exactly 65,536 bytes. They now exit only after stdout and stderr have drained.
 - **Options are checked before any file is read** (#1006). An unknown `-f/--format` (for example `xml`) is refused instead of silently printing text; a bad `--severity` (flag or config) fails at once instead of after the whole scan; `--threads` must be a whole number ≥ 1 (`0` was accepted). A bad option exits 1 with a usage message.
 - **New `--file-timeout-ms <n>`** (#1007, default 0 = off). A file whose analysis passes `n` ms is skipped and reported as an error (`analysis timed out after …; file skipped`), so one pathological file can't hold a scan indefinitely or pass as clean. Uses circle-ir's `fileTimeoutMs`.

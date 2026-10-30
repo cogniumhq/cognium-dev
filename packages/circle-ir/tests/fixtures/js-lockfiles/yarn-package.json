@@ -1,0 +1,5 @@
+{
+  "name": "fixture",
+  "dependencies": { "react": "^18.2.0", "@scope/pre": "1.0.0" },
+  "devDependencies": { "vitest": "^1.0.0", "lodash": "^4.17.15" }
+}
