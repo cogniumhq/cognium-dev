@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:standalone": "mkdir -p wasm && cp ../circle-ir/wasm/*.wasm wasm/ && node scripts/build.mjs --standalone",
+    "build:standalone": "node scripts/build.mjs --standalone",
     "dev": "bun run src/cli.ts",
     "test": "bun test",
     "clean": "rm -rf dist cognium-dev cognium-dev-* *.bun-build wasm",

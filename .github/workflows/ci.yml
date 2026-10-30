@@ -259,3 +259,48 @@ jobs:
             node scripts/verify-entrypoints.mjs "packages/$pkg"
             echo "::endgroup::"
           done
+
+  standalone-smoke:
+    name: standalone binary smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.11'
+
+      - run: npm ci
+
+      - run: npm run build:all
+
+      # The compiled binary loads tree-sitter from a `wasm/` directory next to
+      # it and refused to start when `web-tree-sitter.wasm` was not shipped
+      # there. Build it, move binary + wasm/ out of the repo so nothing
+      # in the checkout can stand in for them, then run it.
+      - run: npm run build:standalone -w packages/cli
+
+      - name: Run the binary on its own
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/standalone"
+          mkdir -p "$out/fixture"
+          cp packages/cli/cognium-dev "$out/"
+          cp -r packages/cli/wasm "$out/"
+          cd "$out/fixture"
+          ../cognium-dev --version
+          printf 'import { exec } from "child_process";\nexport function run(req: any) { exec(req.query.cmd); }\n' > app.ts
+          # A finding exits 1; anything else (crash, missing wasm) is a failure.
+          set +e
+          ../cognium-dev scan app.ts -f json -q > scan.json
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then echo "expected exit 1 (one finding), got $code"; cat scan.json; exit 1; fi
+          node -e 'const j=JSON.parse(require("fs").readFileSync("scan.json","utf8")); if (!j.results[0].vulnerabilities.some(v=>v.type==="command_injection")) { console.error(JSON.stringify(j)); process.exit(1); } console.log("standalone scan ok:", j.summary.totalVulnerabilities, "finding(s)")'
