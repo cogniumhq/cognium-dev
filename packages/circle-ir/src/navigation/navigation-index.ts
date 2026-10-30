@@ -57,6 +57,7 @@ import type {
   QueryKind,
   QueryOptions,
   Scope,
+  Tier,
   UnresolvedEntry,
   UnresolvedReason,
 } from './types.js';
@@ -176,6 +177,22 @@ interface FileRecord {
   calls: CallInfo[];
   lines?: string[];
 }
+
+/** A call target located by file and declaration line (`callSites`). */
+export interface IndexedTarget {
+  file: string;
+  /** The declaration's first line (annotations included), as the IR reports it. */
+  line: number;
+  name: string;
+  fqn: string;
+  /** The target is the type itself (a constructor it does not declare). */
+  type?: true;
+}
+
+/** One call site, bound or not (`callSites`). */
+export type IndexedCallSite =
+  | { site: { file: string; line: number; col: number }; methodName: string; kind: 'bound'; tier: Tier; declaring: IndexedTarget; bodies: IndexedTarget[] }
+  | { site: { file: string; line: number; col: number }; methodName: string; kind: 'unresolved'; reason: UnresolvedReason };
 
 /** One overload, with the type that declares it. */
 interface Candidate {
@@ -612,6 +629,56 @@ export class NavigationIndex {
       }
     }
     return this.finish('callees', query, answers, unresolved, t0, opts);
+  }
+
+  /**
+   * Every call site in the index, bound — the whole-program view of what
+   * `resolveCallees` answers one method at a time, with each target located
+   * by file and declaration line so a caller can key it to its own
+   * declaration ids. Additive: no query path changes.
+   *
+   * A `bound` site names the member its receiver's static type declares
+   * (`declaring`) and, on `polymorphic`, every body that could run
+   * (`bodies`, the overload with the declaring member's signature where it
+   * has one). Anything else is `unresolved` with the same reason a query
+   * would give.
+   */
+  callSites(): IndexedCallSite[] {
+    const out: IndexedCallSite[] = [];
+    const files = [...this.files.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    for (const rec of files) {
+      for (const call of rec.calls) {
+        const site = { file: rec.path, line: call.location.line, col: call.location.column };
+        const b = this.bindCall(call, rec);
+        if (b?.kind === 'bound') {
+          const bodies: IndexedTarget[] = [];
+          if (b.result.tier === 'polymorphic') {
+            const sig = b.overload ? signatureOf(b.overload) : null;
+            for (const c of b.result.candidates ?? []) {
+              const dot = c.lastIndexOf('.');
+              const t = this.typesByFqn.get(c.slice(0, dot));
+              const name = c.slice(dot + 1);
+              if (!t) continue;
+              const all = this.declaredOverloads(t, name);
+              const pick = sig ? all.filter(o => signatureOf(o) === sig) : all;
+              for (const o of pick.length > 0 ? pick : all) bodies.push({ file: t.file, line: o.startLine, name, fqn: c });
+            }
+          }
+          out.push({ site, methodName: call.method_name, kind: 'bound', tier: b.result.tier, declaring: this.targetOf(b.owner, b.name, b.overload), bodies });
+        } else {
+          out.push({ site, methodName: call.method_name, kind: 'unresolved', reason: b?.kind === 'ambiguous' ? 'overload-ambiguous' : this.reasonFor(call, rec) });
+        }
+      }
+    }
+    return out;
+  }
+
+  private targetOf(owner: TypeRecord, name: string, overload: Overload | undefined): IndexedTarget {
+    if (overload) return { file: owner.file, line: overload.startLine, name: overload.isConstructor ? '<init>' : name, fqn: memberName(owner, overload) };
+    const m = name === '<init>' ? undefined : owner.methods.get(name);
+    if (m) return { file: owner.file, line: m.startLine, name, fqn: `${owner.fqn}.${name}` };
+    // A constructor the type does not declare: the type itself.
+    return { file: owner.file, line: owner.startLine, name: owner.simpleName, fqn: owner.fqn, type: true };
   }
 
   /**

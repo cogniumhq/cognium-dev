@@ -253,6 +253,9 @@ export {
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
   DEFAULT_ENTRY_TABLES,
+  buildJavaGraph,
+  JAVA_GRAPH_SCHEME,
+  DEFAULT_JAVA_ENTRY_TABLES,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -282,6 +285,12 @@ export type {
   EntryKind,
   EntryCertainty,
   EntryTables,
+  JavaSourceFile,
+  JavaGraphOptions,
+  JavaGraph,
+  JavaEntryTables,
+  IndexedCallSite,
+  IndexedTarget,
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
@@ -315,6 +324,8 @@ export {
   moduleNameFor,
   assignNodeIds,
   diffStableIds,
+  deriveJavaIds,
+  eraseJavaType,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';

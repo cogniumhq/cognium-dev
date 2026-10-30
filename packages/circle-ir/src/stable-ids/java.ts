@@ -208,7 +208,12 @@ export function deriveJavaIds(tree: Tree, filePath: string, options: StableIdOpt
   const moduleDecl = builder.add('module', module, module, '', root, null);
   const ex = new JavaExtractor(builder);
   const replace = new Map<number, string>();
-  for (const c of namedChildren(root)) if (TYPE_DECLS.has(c.type)) ex.type(c, `${pkg}:`, moduleDecl, replace);
-  builder.setBody(moduleDecl, bodyTokens([root], { replace }));
+  // The package names the module, as a declaration's own name does: it is not body.
+  const skip = new Set<number>();
+  for (const c of namedChildren(root)) {
+    if (TYPE_DECLS.has(c.type)) ex.type(c, `${pkg}:`, moduleDecl, replace);
+    else if (c.type === 'package_declaration') skip.add(c.id);
+  }
+  builder.setBody(moduleDecl, bodyTokens([root], { replace, skip }));
   return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'java', module, decls: builder.decls, partial: root.hasError };
 }
