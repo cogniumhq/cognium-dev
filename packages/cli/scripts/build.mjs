@@ -13,7 +13,8 @@
  * would dirty the tree on every build).
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -94,7 +95,40 @@ const defines = [
   '--define', `__BUILD_TIME__=${JSON.stringify(builtAt)}`,
 ];
 
+/**
+ * The standalone binary loads its grammars from a `wasm/` directory next to it
+ * (cli.ts `initAnalyzer`), and refuses to start without `web-tree-sitter.wasm`.
+ * That runtime ships in the `web-tree-sitter` package, not in
+ * `packages/circle-ir/wasm/`, so copying only the grammars gave a binary that
+ * failed with "WASM files not found". Copy both, and fail the build if any
+ * file the runtime looks for is missing.
+ */
+const REQUIRED_WASM = [
+  'web-tree-sitter.wasm',
+  ...['bash', 'csharp', 'go', 'html', 'java', 'javascript', 'python', 'rust', 'tsx', 'typescript']
+    .map((g) => `tree-sitter-${g}.wasm`),
+];
+
+function stageWasm(cliRoot) {
+  const out = join(cliRoot, 'wasm');
+  mkdirSync(out, { recursive: true });
+  const grammars = resolve(cliRoot, '..', 'circle-ir', 'wasm');
+  for (const name of readdirSync(grammars).filter((n) => n.endsWith('.wasm'))) {
+    copyFileSync(join(grammars, name), join(out, name));
+  }
+  const require = createRequire(join(cliRoot, '..', 'circle-ir', 'package.json'));
+  const runtime = join(dirname(require.resolve('web-tree-sitter')), 'web-tree-sitter.wasm');
+  copyFileSync(runtime, join(out, 'web-tree-sitter.wasm'));
+  const missing = REQUIRED_WASM.filter((n) => !existsSync(join(out, n)));
+  if (missing.length > 0) {
+    console.error(`ERROR: wasm/ is missing ${missing.join(', ')}; the binary would not start.`);
+    process.exit(1);
+  }
+  console.log(`✓ staged ${REQUIRED_WASM.length} wasm files in wasm/`);
+}
+
 const standalone = process.argv.includes('--standalone');
+if (standalone) stageWasm(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 const base = ['build', 'src/cli.ts', '--external', 'pino-pretty', ...defines];
 const buildArgs = standalone
   ? [...base, '--compile', '--outfile', 'cognium-dev']
