@@ -74,6 +74,8 @@ SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
+  --file-timeout-ms <n>      Skip a file whose analysis takes longer than n ms and report it
+                               as an error [default: 0 = no limit]
   --severity <level>         Filter by severity:
                                - Single level: minimum severity (e.g., "high" shows high+critical)
                                - Multiple levels: exact match (e.g., "critical,high" shows only those)

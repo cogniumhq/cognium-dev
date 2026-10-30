@@ -99,6 +99,7 @@ export class AnalysisPipeline {
     language: string,
     config: TaintConfig,
     resources?: ReadonlyMap<string, string>,
+    limit?: { deadline: number; onExpired: (phase: string) => Error },
   ): PipelineRunResult {
     const results = new Map<string, unknown>();
     const findings: SastFinding[] = [];
@@ -135,6 +136,8 @@ export class AnalysisPipeline {
       (globalThis as { __circleIrPassTiming?: boolean }).__circleIrPassTiming === true;
 
     for (const pass of this.passes) {
+      // cognium-dev#1007: opt-in per-file time limit, checked between passes.
+      if (limit && Date.now() > limit.deadline) throw limit.onExpired(pass.name);
       if (timingEnabled) {
         // eslint-disable-next-line no-console
         console.error(`[pass-start] ${pass.name} file=${graph.ir.meta.file}`);
