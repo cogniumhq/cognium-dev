@@ -4,7 +4,9 @@
  *
  * - `live` — a strong path exists.
  * - `may-be-live` — no strong path, but a weak path, an unresolved site that
- *   could reach it, or a file that did not parse (its calls are missing).
+ *   could reach it, or a file that did not parse and could reach it (its
+ *   calls are missing: anything in it, in a module it imports, or reachable
+ *   from those over any edge).
  *   `reasons` says which; the paths and sites are on the fact.
  * - `dead` — none of these. Only this verdict claims anything.
  *
@@ -65,6 +67,7 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
   const typeOnly = new Set([...(options.typeOnly ?? []), ...(input.typeOnly ?? [])]);
   const testFiles = new Set(input.entries.filter(e => e.kind === 'test').map(e => e.file));
   const isTestFile = (file: string): boolean => testFiles.has(file) || (options.testFile?.test(file) ?? false);
+  const partialReach = partialScope(g, input);
   const facts: DeadCodeFact[] = [];
   const summary = { live: 0, 'may-be-live': 0, dead: 0, reachedByTestOnly: 0 };
   for (const f of product.facts) {
@@ -73,7 +76,7 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
     if (!f.strong) {
       if (f.weak) reasons.push('weak-path');
       if (f.unresolvedCount > 0) reasons.push('unresolved-sites');
-      if (product.partial.length > 0) reasons.push('partial-files');
+      if (partialReach.has(f.id)) reasons.push('partial-files');
     }
     const verdict: DeadCodeVerdict = f.strong ? 'live' : reasons.length > 0 ? 'may-be-live' : 'dead';
     const reachedByTest = byTest.has(f.id);
@@ -85,4 +88,26 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
     if (verdict === 'dead' && reachedByTest) summary.reachedByTestOnly++;
   }
   return { scheme: DEAD_CODE_SCHEME, ids: 'ids@0.1', rootKinds: product.rootKinds, partial: product.partial, facts, summary };
+}
+
+/**
+ * What files that did not parse could reach: their own declarations, the
+ * modules they import, and everything reachable from those over any edge.
+ * A missing call site can only run what its file can name, so the rest of
+ * the tree keeps its verdict.
+ */
+export function partialScope(g: ReachGraph, input: ReachInput): Set<string> {
+  if (input.partial.length === 0) return new Set();
+  const partial = new Set(input.partial);
+  const moduleFile = new Map<string, string>();
+  for (const f of input.files) if (f.decls[0]) moduleFile.set(f.decls[0].id, f.file);
+  const seedFiles = new Set(partial);
+  for (const i of input.imports ?? []) {
+    const from = moduleFile.get(i.from);
+    const to = moduleFile.get(i.to);
+    if (from && to && partial.has(from)) seedFiles.add(to);
+  }
+  const seeds: { id: string; weak: boolean }[] = [];
+  for (const f of input.files) if (seedFiles.has(f.file)) for (const d of f.decls) seeds.push({ id: d.id, weak: true });
+  return reachedIds(walkFrom(g, seeds));
 }
