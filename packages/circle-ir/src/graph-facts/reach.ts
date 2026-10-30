@@ -143,7 +143,9 @@ export class ReachGraph {
         // A class creates its fields and runs its static initializer; in
         // TypeScript a class used as a value may also be constructed, while
         // a Java constructor runs only when called (the call graph has it).
-        const ctor = d.kind === 'method' && (d.name === '<clinit>' || (d.name === 'constructor' && f.language !== 'java'));
+        // Python runs dunder methods implicitly (`__init__`, `__str__`, `__enter__`, …).
+        const ctor = d.kind === 'method' && (d.name === '<clinit>' || (d.name === 'constructor' && f.language !== 'java')
+          || (f.language === 'python' && /^__\w+__$/.test(d.name)));
         const classPart = parent.kind === 'type' && (d.kind === 'field' || ctor);
         if (nested || topValue || classPart) add(parent.id, { to: d.id, relation: 'contains', strong: true });
       }

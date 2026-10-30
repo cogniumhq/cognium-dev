@@ -58,3 +58,16 @@ export {
   type JavaRouteRow,
   type JavaServletRow,
 } from './java-entry-tables.js';
+export {
+  buildPythonGraph,
+  PYTHON_GRAPH_SCHEME,
+  type PythonSourceFile,
+  type PythonGraphOptions,
+  type PythonGraph,
+} from './python-graph.js';
+export {
+  DEFAULT_PYTHON_ENTRY_TABLES,
+  type PythonEntryTables,
+  type PythonRouterRow,
+  type PythonDecoratorRow,
+} from './python-entry-tables.js';

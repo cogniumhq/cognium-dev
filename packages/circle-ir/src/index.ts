@@ -256,6 +256,9 @@ export {
   buildJavaGraph,
   JAVA_GRAPH_SCHEME,
   DEFAULT_JAVA_ENTRY_TABLES,
+  buildPythonGraph,
+  PYTHON_GRAPH_SCHEME,
+  DEFAULT_PYTHON_ENTRY_TABLES,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -289,6 +292,10 @@ export type {
   JavaGraphOptions,
   JavaGraph,
   JavaEntryTables,
+  PythonSourceFile,
+  PythonGraphOptions,
+  PythonGraph,
+  PythonEntryTables,
   IndexedCallSite,
   IndexedTarget,
 } from './navigation/index.js';
