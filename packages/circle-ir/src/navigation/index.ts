@@ -28,6 +28,7 @@ export {
   type CallEdge,
   type CallEdgeSite,
   type UnresolvedCall,
+  joinRoutePath,
   type TsPackageManifest,
   type TsEntry,
   type UnresolvedRegistration,

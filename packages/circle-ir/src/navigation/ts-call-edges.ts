@@ -63,6 +63,12 @@ export interface TsCallGraphOptions {
   mainFiles?: readonly string[];
   /** Framework recognition data; defaults to `DEFAULT_ENTRY_TABLES`. */
   entryTables?: EntryTables;
+  /**
+   * Turn on file-route conventions for these repository directories even
+   * without a manifest naming the framework (`{ next: [''] }` for a Next.js
+   * app at the root).
+   */
+  fileRouteRoots?: { next?: readonly string[] };
 }
 
 /** An entry point: a declaration the program's environment runs (`entry-index@0.1`). */
@@ -74,8 +80,18 @@ export interface TsEntry {
   framework?: string;
   /** Routes: the HTTP method, upper case. */
   method?: string;
-  /** Routes: the path as registered (mount prefixes are not composed in this version). */
+  /**
+   * Routes: the full path — mount prefixes composed (`app.use('/api', r)`,
+   * nested React Router routes), file routes from the file's path. One entry
+   * per distinct mount chain.
+   */
   path?: string;
+  /** Routes: the path as registered, when mounts changed it. */
+  registeredPath?: string;
+  /** Routes: the mount prefixes applied, outermost first, when there are any. */
+  mounts?: string[];
+  /** Routes: what the route serves — an API handler, a page, a layout around pages, or middleware. */
+  surface?: 'api' | 'page' | 'layout' | 'middleware';
   file: string;
   line: number;
   evidence: string;
@@ -84,7 +100,7 @@ export interface TsEntry {
 /** A registration the recognizers saw but could not tie to a declaration. */
 export interface UnresolvedRegistration {
   site: CallEdgeSite;
-  reason: 'handler-unresolved' | 'manifest-unresolved';
+  reason: 'handler-unresolved' | 'manifest-unresolved' | 'mount-unresolved';
   evidence: string;
 }
 
@@ -271,6 +287,48 @@ function patternNames(node: Node | null, out: string[] = []): string[] {
   return out;
 }
 
+interface PendingRoute {
+  decl: StableDecl;
+  certainty: EntryCertainty;
+  framework?: string;
+  method: string;
+  path: string;
+  file: string;
+  line: number;
+  router?: string;
+  surface?: TsEntry['surface'];
+  evidence: string;
+}
+
+const MAX_MOUNT_CHAINS = 16;
+
+/** Join route segments: one `/` between parts, none trailing (except the root). */
+export function joinRoutePath(parts: readonly string[]): string {
+  const segs = parts.flatMap(p => p.split('/')).filter(s => s !== '');
+  return '/' + segs.join('/');
+}
+
+/** Nested router paths: a segment starting with `/` restarts from the root. */
+function composeRelative(segments: readonly string[]): string {
+  let out: string[] = [];
+  for (const s of segments) {
+    if (s.startsWith('/')) out = [s];
+    else out.push(s);
+  }
+  return joinRoutePath(out);
+}
+
+/** A Next.js file path to a route: groups and parallel slots dropped, `[x]` / `[...x]` / `[[...x]]` to `{x}`. */
+function filePath(segments: readonly string[]): string {
+  const out: string[] = [];
+  for (const s of segments) {
+    if (s === '' || /^\(.*\)$/.test(s) || s.startsWith('@')) continue;
+    const dyn = s.match(/^\[\[?(?:\.\.\.)?([^\]]+)\]\]?$/);
+    out.push(dyn ? `{${dyn[1]}}` : s);
+  }
+  return joinRoutePath(out);
+}
+
 class Graph {
   private readonly files = new Map<string, FileCtx>();
   readonly edges: CallEdge[] = [];
@@ -293,6 +351,8 @@ class Graph {
   readonly entries: TsEntry[] = [];
   readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
   private readonly tables: EntryTables;
+  private readonly pendingRoutes: PendingRoute[] = [];
+  private readonly mounts: { parent: string; child: string; prefix: string }[] = [];
 
   constructor(private readonly options: TsCallGraphOptions) {
     this.maxInferred = options.maxInferred ?? 16;
@@ -824,7 +884,10 @@ class Graph {
     const t = node.type;
     if (t === 'call_expression' || t === 'new_expression') {
       this.site(ctx, node);
-      if (t === 'call_expression') this.registration(ctx, node);
+      if (t === 'call_expression') {
+        this.registration(ctx, node);
+        this.reactRouterFactory(ctx, node);
+      }
       const args = node.childForFieldName('arguments');
       if (args?.type === 'arguments') for (const a of named(args)) this.reference(ctx, a);
     } else if (t === 'pair') this.reference(ctx, node.childForFieldName('value'));
@@ -838,6 +901,7 @@ class Graph {
     else if (t === 'variable_declarator') this.reference(ctx, node.childForFieldName('value'));
     else if (t === 'export_statement') this.reference(ctx, node.childForFieldName('value'));
     else if (t === 'jsx_opening_element' || t === 'jsx_self_closing_element') this.reference(ctx, node.childForFieldName('name'));
+    if (t === 'jsx_element' || t === 'jsx_self_closing_element') this.reactRouteElement(ctx, node);
     else if (t === 'jsx_expression') this.reference(ctx, named(node)[0] ?? null);
     for (const c of named(node)) this.walk(ctx, c);
   }
@@ -927,11 +991,36 @@ class Graph {
     }
     if (fn.type !== 'member_expression') return;
     const verb = fn.childForFieldName('property')?.text;
-    if (!verb || !this.tables.routes.verbs.includes(verb)) return;
-    const path = stringValue(args[0] ?? null);
+    if (!verb) return;
+    let receiver = fn.childForFieldName('object');
+    const routes = this.tables.routes;
+    if ((routes.mountVerbs ?? []).includes(verb)) {
+      this.mount(ctx, receiver, args, line);
+      return;
+    }
+    if (!routes.verbs.includes(verb)) return;
+    let path = stringValue(args[0] ?? null);
+    let handlers = args.slice(1);
+    // `router.route('/x').get(a).post(b)`: step back over earlier verbs to the scoping call.
+    while (receiver?.type === 'call_expression') {
+      const prev = receiver.childForFieldName('function');
+      if (prev?.type !== 'member_expression' || !routes.verbs.includes(prev.childForFieldName('property')?.text ?? '')) break;
+      const inner = prev.childForFieldName('object');
+      if (inner?.type !== 'call_expression') break;
+      receiver = inner;
+    }
+    if (receiver?.type === 'call_expression' && routes.routeChain) {
+      const scope = receiver.childForFieldName('function');
+      const scopeArgs = receiver.childForFieldName('arguments');
+      if (scope?.type === 'member_expression' && scope.childForFieldName('property')?.text === routes.routeChain && scopeArgs) {
+        path = stringValue(named(scopeArgs)[0] ?? null);
+        handlers = args;
+        receiver = scope.childForFieldName('object');
+      }
+    }
     if (path === null || !(path.startsWith('/') || path === '*')) return;
-    const origin = this.routerOrigin(ctx, fn.childForFieldName('object'), 0);
-    for (const h of args.slice(1)) {
+    const origin = this.routerOrigin(ctx, receiver, 0);
+    for (const h of handlers) {
       const targets = FUNCTION_NODES.has(h.type)
         ? [this.nestedDeclAt(ctx, h)].filter((d): d is StableDecl => d !== null)
         : this.valueTargets(ctx, h);
@@ -944,27 +1033,279 @@ class Graph {
         continue;
       }
       for (const d of targets) {
-        const extra: Partial<TsEntry> = { method: verb.toUpperCase(), path };
-        if (origin.framework) extra.framework = origin.framework;
-        this.entry(d, 'route', origin.certainty, ctx.path, line,
-          origin.framework ? `${origin.framework} route registration` : 'route-shaped registration on a receiver of unknown origin', extra);
+        this.pendingRoutes.push({
+          decl: d, certainty: origin.certainty, framework: origin.framework, method: verb.toUpperCase(), path,
+          file: ctx.path, line, router: origin.key, surface: undefined,
+          evidence: origin.framework ? `${origin.framework} route registration` : 'route-shaped registration on a receiver of unknown origin',
+        });
       }
     }
   }
 
-  /** Where a router receiver comes from: a framework package (declared) or unknown (inferred). */
-  private routerOrigin(ctx: FileCtx, receiver: Node | null, depth: number): { certainty: EntryCertainty; framework?: string } {
+  /**
+   * `X.use([prefix,] ...items)`: a router item is mounted under the prefix;
+   * a function item is middleware for every route under it.
+   */
+  private mount(ctx: FileCtx, receiver: Node | null, args: Node[], line: number): void {
+    const prefix = stringValue(args[0] ?? null);
+    if (prefix !== null && !prefix.startsWith('/')) return;
+    const items = prefix === null ? args : args.slice(1);
+    if (items.length === 0) return;
+    const parent = this.routerOrigin(ctx, receiver, 0);
+    // Only a receiver that is itself a router of a known framework mounts anything.
+    if (parent.certainty !== 'declared' || !parent.key) return;
+    for (const item of items) {
+      const child = item.type === 'identifier' || item.type === 'member_expression' ? this.routerOrigin(ctx, item, 0) : null;
+      if (child?.certainty === 'declared' && child.key) {
+        this.mounts.push({ parent: parent.key, child: child.key, prefix: prefix ?? '' });
+        continue;
+      }
+      // `app.use(cors())`: a factory's call is an ordinary call site, and the
+      // function it returns is contained in the factory's body.
+      if (item.type === 'call_expression' || item.type === 'new_expression') continue;
+      const targets = FUNCTION_NODES.has(item.type)
+        ? [this.nestedDeclAt(ctx, item)].filter((d): d is StableDecl => d !== null)
+        : this.valueTargets(ctx, item);
+      if (targets.length === 0) {
+        this.unresolvedRegistrations.push({
+          site: { file: ctx.path, line: item.startPosition.row + 1, col: item.startPosition.column },
+          reason: 'mount-unresolved',
+          evidence: `use ${prefix ?? ''}: ${item.text.slice(0, 40)} is neither a known router nor a declared function`,
+        });
+        continue;
+      }
+      for (const d of targets) {
+        this.pendingRoutes.push({
+          decl: d, certainty: 'declared', framework: parent.framework, method: 'USE', path: prefix ?? '/',
+          file: ctx.path, line, router: parent.key, surface: 'middleware', evidence: `${parent.framework} middleware`,
+        });
+      }
+    }
+  }
+
+  /** Every chain of mount prefixes from a root router down to `key`, outermost first. */
+  private mountChains(key: string | undefined, seen: ReadonlySet<string> = new Set()): string[][] {
+    if (key === undefined || seen.has(key)) return [[]];
+    const parents = this.mounts.filter(m => m.child === key);
+    if (parents.length === 0) return [[]];
+    const next = new Set(seen).add(key);
+    const out: string[][] = [];
+    for (const m of parents) {
+      for (const chain of this.mountChains(m.parent, next)) {
+        out.push(m.prefix === '' ? chain : [...chain, m.prefix]);
+        if (out.length >= MAX_MOUNT_CHAINS) return out;
+      }
+    }
+    return out;
+  }
+
+  /** Routes with their mount chains composed into full paths. */
+  composeRoutes(): void {
+    for (const r of this.pendingRoutes) {
+      for (const chain of this.mountChains(r.router)) {
+        const extra: Partial<TsEntry> = { method: r.method, path: joinRoutePath([...chain, r.path]) };
+        if (chain.length > 0) {
+          extra.registeredPath = r.path;
+          extra.mounts = chain;
+        }
+        if (r.framework) extra.framework = r.framework;
+        if (r.surface) extra.surface = r.surface;
+        this.entry(r.decl, 'route', r.certainty, r.file, r.line, r.evidence, extra);
+      }
+    }
+  }
+
+  // -- React Router ------------------------------------------------------------
+
+  private reactRouterPackage(ctx: FileCtx, name: string): string | null {
+    const table = this.tables.reactRouter;
+    const imp = ctx.imports.get(name);
+    if (!table || !imp || imp.module !== null || !table.packages.includes(imp.specifier)) return null;
+    return imp.specifier;
+  }
+
+  private jsxName(el: Node): Node | null {
+    const opening = el.type === 'jsx_element' ? named(el).find(c => c.type === 'jsx_opening_element') ?? null : el;
+    return opening?.childForFieldName('name') ?? null;
+  }
+
+  private jsxAttributes(el: Node): Map<string, Node | null> {
+    const opening = el.type === 'jsx_element' ? named(el).find(c => c.type === 'jsx_opening_element') : el;
+    const out = new Map<string, Node | null>();
+    for (const a of opening ? named(opening) : []) {
+      if (a.type !== 'jsx_attribute') continue;
+      const parts = named(a);
+      const key = parts[0]?.text;
+      if (key) out.set(key, parts[1] ?? null);
+    }
+    return out;
+  }
+
+  /** The `path` of a `<Route>` element, `''` for an index route, `null` when not a Route. */
+  private routeElementPath(ctx: FileCtx, el: Node): { path: string; pkg: string } | null {
+    const name = this.jsxName(el);
+    const table = this.tables.reactRouter;
+    if (name?.type !== 'identifier' || !table || !table.routeElements.includes(name.text)) return null;
+    const pkg = this.reactRouterPackage(ctx, name.text);
+    if (!pkg) return null;
+    const attrs = this.jsxAttributes(el);
+    const p = attrs.get('path');
+    const path = p ? stringValue(p) ?? (p.type === 'jsx_expression' ? stringValue(named(p)[0] ?? null) : null) : null;
+    if (path === null && !attrs.has('index')) return null;
+    return { path: path ?? '', pkg };
+  }
+
+  /** Components a route renders: `element={<Page/>}`, `Component={Page}`, `component={Page}`. */
+  private routeComponents(ctx: FileCtx, valueOf: (key: string) => Node | null): StableDecl[] {
+    const out: StableDecl[] = [];
+    const element = valueOf('element');
+    const inner = element?.type === 'jsx_expression' ? named(element)[0] ?? null : element;
+    if (inner && (inner.type === 'jsx_self_closing_element' || inner.type === 'jsx_element')) {
+      const n = this.jsxName(inner);
+      if (n) out.push(...this.valueTargets(ctx, n));
+    }
+    for (const key of ['Component', 'component']) {
+      const v = valueOf(key);
+      const expr = v?.type === 'jsx_expression' ? named(v)[0] ?? null : v;
+      if (expr) out.push(...this.valueTargets(ctx, expr));
+    }
+    return out;
+  }
+
+  /** `<Route>` elements, composed with every enclosing `<Route>`. */
+  private reactRouteElement(ctx: FileCtx, el: Node): void {
+    const own = this.routeElementPath(ctx, el);
+    if (!own) return;
+    const segments = [own.path];
+    for (let n: Node | null = el.parent; n; n = n.parent) {
+      if (n.type !== 'jsx_element') continue;
+      const outer = this.routeElementPath(ctx, n);
+      if (outer) segments.unshift(outer.path);
+    }
+    const attrs = this.jsxAttributes(el);
+    const targets = this.routeComponents(ctx, k => attrs.get(k) ?? null);
+    this.reactRoutes(ctx, el, segments, targets, own.pkg);
+  }
+
+  private reactRoutes(ctx: FileCtx, at: Node, segments: string[], targets: StableDecl[], pkg: string): void {
+    const path = composeRelative(segments);
+    if (targets.length === 0) {
+      this.unresolvedRegistrations.push({
+        site: { file: ctx.path, line: at.startPosition.row + 1, col: at.startPosition.column },
+        reason: 'handler-unresolved',
+        evidence: `route ${path}: no component tied to a declaration`,
+      });
+      return;
+    }
+    for (const d of targets) {
+      this.entry(d, 'route', 'declared', ctx.path, at.startPosition.row + 1, `${pkg} route`, { method: 'GET', path, framework: pkg, surface: 'page' });
+    }
+  }
+
+  /** `createBrowserRouter([{ path, element, children }])` and the other factories. */
+  private reactRouterFactory(ctx: FileCtx, node: Node): void {
+    const table = this.tables.reactRouter;
+    const fn = node.childForFieldName('function');
+    if (!table || fn?.type !== 'identifier' || !table.routerFactories.includes(fn.text)) return;
+    const pkg = this.reactRouterPackage(ctx, fn.text);
+    const argsNode = node.childForFieldName('arguments');
+    const list = argsNode ? named(argsNode)[0] : undefined;
+    if (!pkg || list?.type !== 'array') return;
+    const walk = (arr: Node, parents: string[]): void => {
+      for (const obj of named(arr)) {
+        if (obj.type !== 'object') continue;
+        const fields = new Map<string, Node | null>();
+        for (const pair of named(obj)) {
+          if (pair.type === 'pair') {
+            const key = pair.childForFieldName('key');
+            const k = key?.type === 'string' ? stringValue(key) : key?.text;
+            if (k) fields.set(k, pair.childForFieldName('value'));
+          } else if (pair.type === 'shorthand_property_identifier') fields.set(pair.text, pair);
+        }
+        const p = fields.get('path');
+        const own = p ? stringValue(p) : fields.has('index') ? '' : null;
+        const segments = own === null ? parents : [...parents, own];
+        const targets = this.routeComponents(ctx, k => fields.get(k) ?? null);
+        if (own !== null) this.reactRoutes(ctx, obj, segments, targets, pkg);
+        const children = fields.get('children');
+        if (children?.type === 'array') walk(children, segments);
+      }
+    };
+    walk(list, []);
+  }
+
+  // -- Next.js file routes -----------------------------------------------------
+
+  /** Next.js `pages/`, `app/` and `middleware` conventions under `root`. */
+  private nextFileRoutes(root: string): void {
+    const prefix = normalizePath(root);
+    for (const ctx of this.sortedFiles()) {
+      if (prefix !== '' && !ctx.path.startsWith(prefix + '/')) continue;
+      const rel = prefix === '' ? ctx.path : ctx.path.slice(prefix.length + 1);
+      const m = rel.match(/^(?:src\/)?(pages|app)\/(.*)\.[cm]?[jt]sx?$/);
+      const mw = /^(?:src\/)?middleware\.[cm]?[jt]s$/.test(rel);
+      const exported = (name: string): StableDecl[] => {
+        const t = this.resolveExport(ctx, name, 0);
+        return t.kind === 'decls' ? t.decls.filter(d => !this.bodiless.has(d.id)) : [];
+      };
+      const add = (d: StableDecl, kind: EntryKind, extra: Partial<TsEntry>, evidence: string): void =>
+        this.entry(d, kind, 'conventional', ctx.path, d.start_line, evidence, { framework: 'next', ...extra });
+      if (mw) {
+        for (const d of [...exported('middleware'), ...exported('default')]) add(d, 'route', { method: 'USE', path: '/', surface: 'middleware' }, 'Next.js middleware');
+        continue;
+      }
+      if (!m) continue;
+      const [, dir, rest] = m;
+      const segments = rest.split('/');
+      if (dir === 'pages') {
+        const last = segments[segments.length - 1];
+        if (/^_(app|document|error)$/.test(last)) {
+          for (const d of exported('default')) add(d, 'lifecycle', {}, `Next.js ${last}`);
+          continue;
+        }
+        if (last === 'index') segments.pop();
+        const path = filePath(segments);
+        const api = segments[0] === 'api';
+        for (const d of exported('default')) add(d, 'route', { method: api ? 'ANY' : 'GET', path, surface: api ? 'api' : 'page' }, `Next.js pages/${rest}`);
+        if (!api) {
+          for (const n of ['getServerSideProps', 'getStaticProps', 'getStaticPaths', 'getInitialProps']) {
+            for (const d of exported(n)) add(d, 'lifecycle', { path }, `Next.js ${n}`);
+          }
+        }
+        continue;
+      }
+      const file = segments.pop() ?? '';
+      const path = filePath(segments);
+      if (file === 'page') {
+        for (const d of exported('default')) add(d, 'route', { method: 'GET', path, surface: 'page' }, 'Next.js app page');
+      } else if (file === 'layout' || file === 'template') {
+        for (const d of exported('default')) add(d, 'route', { method: 'GET', path, surface: 'layout' }, `Next.js app ${file}`);
+      } else if (file === 'route') {
+        for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+          for (const d of exported(method)) add(d, 'route', { method, path, surface: 'api' }, 'Next.js route handler');
+        }
+      } else continue;
+      if (file === 'page' || file === 'layout') {
+        for (const n of ['generateMetadata', 'generateStaticParams']) for (const d of exported(n)) add(d, 'lifecycle', { path }, `Next.js ${n}`);
+      }
+    }
+  }
+
+  /**
+   * Where a router receiver comes from: a framework package (declared) or
+   * unknown (inferred). `key` names the router object across files.
+   */
+  private routerOrigin(ctx: FileCtx, receiver: Node | null, depth: number): { certainty: EntryCertainty; framework?: string; key?: string } {
     if (receiver?.type !== 'identifier' || depth > 3) return { certainty: 'inferred' };
     const local = this.localBinding(receiver, receiver.text);
     const declarator = local?.kind === 'var' ? local.node : local ? null : ctx.topVars.get(receiver.text) ?? null;
     if (!declarator) {
       const imp = ctx.imports.get(receiver.text);
-      if (imp?.kind === 'named' && imp.module) {
+      if ((imp?.kind === 'named' || imp?.kind === 'default') && imp.module) {
         const target = this.files.get(imp.module);
-        if (target) {
-          const v = target.topVars.get(imp.name);
-          if (v) return this.routerOrigin(target, v.childForFieldName('name'), depth + 1);
-        }
+        const name = imp.kind === 'named' ? imp.name : target?.defaultLocal;
+        const v = target && name ? target.topVars.get(name) : undefined;
+        if (target && v) return this.routerOrigin(target, v.childForFieldName('name'), depth + 1);
       }
       return { certainty: 'inferred' };
     }
@@ -975,7 +1316,8 @@ class Graph {
     if (callee?.type !== 'identifier') return { certainty: 'inferred' };
     const imp = ctx.imports.get(callee.text);
     if (imp && imp.module === null && this.tables.routes.packages.includes(imp.specifier)) {
-      return { certainty: 'declared', framework: imp.specifier };
+      const key = `${ctx.path}#${declarator.startPosition.row + 1}:${declarator.startPosition.column}`;
+      return { certainty: 'declared', framework: imp.specifier, key };
     }
     return { certainty: 'inferred' };
   }
@@ -1107,6 +1449,9 @@ class Graph {
         if (ctx) this.exportEntries(ctx, `exported by package.json (${p})`);
         else this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: `export path ${p} not found in the tree` });
       }
+      const deps = { ...(m.dependencies as Record<string, unknown> | undefined), ...(m.devDependencies as Record<string, unknown> | undefined) };
+      const next = this.tables.nextFileRoutes;
+      if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
       for (const p of [...new Set(strings(m.bin))]) {
         const file = this.sourceFor(pkg.root, p);
         const ctx = file ? this.files.get(file) : undefined;
@@ -1114,6 +1459,8 @@ class Graph {
         else this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: `bin ${p} not found in the tree` });
       }
     }
+    if (this.tables.nextFileRoutes) for (const root of this.options.fileRouteRoots?.next ?? []) this.nextFileRoutes(root);
+    this.composeRoutes();
     for (const f of this.options.exportRoots ?? []) {
       const ctx = this.files.get(normalizePath(f));
       if (ctx) this.exportEntries(ctx, 'export root given by the caller');
