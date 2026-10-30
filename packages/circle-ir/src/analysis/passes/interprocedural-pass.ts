@@ -213,6 +213,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         additionalFlows,
         language === 'java' ? ctx.code : undefined,
         language === 'java' ? constProp : undefined,
+        language === 'java' || language === 'javascript' || language === 'typescript' ? ctx.code : undefined,
       );
 
       const taintBridges = findTaintBridges(interProc);
@@ -486,7 +487,7 @@ const DEAD_BRANCH_CHECKED_SINKS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Java: do the defs a callee source creates reach a `return` of the callee?
+ * Do the defs a callee source creates reach a `return` of the callee? (Java, JS, TS)
  * Follows def-use chains forward (a use of a reached def reaches the locals
  * defined on its line), so an overwrite before the return ends the chain.
  * A source on the return line itself reaches it.
@@ -545,20 +546,21 @@ function appendCalleeSourceCallerSinkFlows(
   additionalFlows: TaintFlowInfo[],
   fileCode?: string,
   constProp?: ConstantPropagatorResult,
+  returnReachCode?: string,
 ): void {
   const types = graph.ir.types ?? [];
   for (const edge of interProc.callEdges) {
     const callee = interProc.methodNodes.get(edge.calleeMethod);
     if (!callee) continue;
 
-    // Java: a source the callee overwrites before it returns
+    // Java and JS/TS (with #992's try defs): a source the callee overwrites before it returns
     // (`bar = map.get("keyB"); bar = map.get("keyA"); return bar;`) does not
     // reach the caller. Parameters are kept here; their live reach is the
     // dead-branch check below.
     const calleeSources = sources.filter(
       s => s.line >= callee.startLine && s.line <= callee.endLine &&
-        (!fileCode || s.type === 'interprocedural_param' ||
-          calleeSourceReachesReturn(graph, fileCode, callee.startLine, callee.endLine, s.line)),
+        (!returnReachCode || s.type === 'interprocedural_param' ||
+          calleeSourceReachesReturn(graph, returnReachCode, callee.startLine, callee.endLine, s.line)),
     );
     if (calleeSources.length === 0) continue;
 
