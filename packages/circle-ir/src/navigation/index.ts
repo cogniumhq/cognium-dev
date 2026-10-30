@@ -35,6 +35,8 @@ export {
   type ReferenceEdge,
   type FieldUseEdge,
   type ImportEdge,
+  type LoadEdge,
+  COMPUTED_MODULE_LOAD,
 } from './ts-call-edges.js';
 export {
   DEFAULT_ENTRY_TABLES,

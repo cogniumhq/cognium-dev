@@ -92,19 +92,19 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
 
 /**
  * What files that did not parse could reach: their own declarations, the
- * modules they import, and everything reachable from those over any edge.
- * A missing call site can only run what its file can name, so the rest of
- * the tree keeps its verdict.
+ * modules they import or load, and everything reachable from those over any
+ * edge. A missing call site can only run what its file can name, so the rest
+ * of the tree keeps its verdict.
  */
 export function partialScope(g: ReachGraph, input: ReachInput): Set<string> {
   if (input.partial.length === 0) return new Set();
   const partial = new Set(input.partial);
-  const moduleFile = new Map<string, string>();
-  for (const f of input.files) if (f.decls[0]) moduleFile.set(f.decls[0].id, f.file);
+  const declFile = new Map<string, string>();
+  for (const f of input.files) for (const d of f.decls) declFile.set(d.id, f.file);
   const seedFiles = new Set(partial);
-  for (const i of input.imports ?? []) {
-    const from = moduleFile.get(i.from);
-    const to = moduleFile.get(i.to);
+  for (const i of [...(input.imports ?? []), ...(input.loads ?? [])]) {
+    const from = declFile.get(i.from);
+    const to = declFile.get(i.to);
     if (from && to && partial.has(from)) seedFiles.add(to);
   }
   const seeds: { id: string; weak: boolean }[] = [];
