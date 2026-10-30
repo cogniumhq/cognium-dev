@@ -10,14 +10,16 @@
  * Severity is copied from the record; nothing is ranked or scored here.
  *
  * Ecosystems with an ordering (see {@link ADVISORY_ECOSYSTEMS}): `Maven`
- * (Maven's `ComparableVersion` order, `ECOSYSTEM` ranges) and `npm` (SemVer
- * 2.0 precedence, `SEMVER` ranges). Any other ecosystem name keeps the
+ * (Maven's `ComparableVersion` order, `ECOSYSTEM` ranges), `npm` (SemVer
+ * 2.0 precedence, `SEMVER` ranges) and `PyPI` (PEP 440 order, `ECOSYSTEM`
+ * ranges, PEP 503 names). Any other ecosystem name keeps the
  * original behaviour: Maven order over `ECOSYSTEM` ranges, names as given.
  */
 
 import type { Dependency, Ecosystem } from './sbom.js';
 import { compareMavenVersions } from './maven-version.js';
 import { compareSemver, parseSemver } from './semver-version.js';
+import { comparePep440, parsePep440, normalizePypiName } from './pep440-version.js';
 
 // ---------------------------------------------------------------------------
 // Ecosystem rules
@@ -58,6 +60,14 @@ export const ADVISORY_ECOSYSTEMS: Readonly<Record<string, AdvisoryEcosystem>> = 
     rangeTypes: ['SEMVER', 'ECOSYSTEM'],
     isVersion: (v) => parseSemver(v) !== null,
     normalizeName: asIs,
+  },
+  PyPI: {
+    osv: 'PyPI',
+    dependency: 'pypi',
+    compare: comparePep440,
+    rangeTypes: ['ECOSYSTEM'],
+    isVersion: (v) => parsePep440(v) !== null,
+    normalizeName: normalizePypiName,
   },
 };
 

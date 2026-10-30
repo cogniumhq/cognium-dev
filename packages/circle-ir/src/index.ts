@@ -44,6 +44,8 @@ export type {
 export { compareMavenVersions, canonicalMavenVersion } from './analysis/maven-version.js';
 export { compareSemver, parseSemver } from './analysis/semver-version.js';
 export type { ParsedSemver } from './analysis/semver-version.js';
+export { comparePep440, parsePep440, normalizePypiName } from './analysis/pep440-version.js';
+export type { ParsedPep440 } from './analysis/pep440-version.js';
 export { MavenDeclaredIndex } from './analysis/maven-declared.js';
 export type { DeclaredVersion, DeclaredOrigin, PomFile } from './analysis/maven-declared.js';
 export {
