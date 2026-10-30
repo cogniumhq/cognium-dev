@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Dead code: a file that did not parse holds back only what it could reach** (cognium-dev#1004). One partial parse used to turn every dead verdict in the project into `may-be-live` (`partial-files`). `deadCode` now scopes that reason (`partialScope` in `graph-facts/dead-code.ts`): the partial file's own declarations, the declarations of the files it imports, and everything reached from them. A declaration outside that set keeps its `dead` verdict; `partial[]` is still listed in the result.
 - **JS/TS `Array.push` / `Array.find` are no longer open-redirect / NoSQL sinks** (cognium-dev#1000).
   - `out.push(x)` matched the Next.js `router.push` / `router.replace` CWE-601 entries (class `router`) through the receiver-name heuristic (`out` is a substring of `router`). With no resolved receiver type, the receiver's last name must now be a navigation object (`router`, `history`, `navigat…`, `nav`); `this.router.push(url)` and `router.replace(url)` still fire.
   - `ancestors.find(meaningful)` matched the classless JS `find` NoSQL entry, because only arrow / `function` predicates were dropped (cognium-ai#279). SinkFilterPass Stage 15g now also drops `find`/`filter`/`some`/`every`/`findIndex`/`findLast` when the single argument names a function declared in the file, or the receiver is declared as an array (`= [`, `: T[]`, `Array<…>`, `new Array`, `Array.from`). `collection.find({...})` and `collection.find(filter)` still fire.
