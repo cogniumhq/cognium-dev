@@ -1,0 +1,1 @@
+{"id":"TEST-LA-0002","modified":"2024-04-02T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"la-pkg"},"ranges":[{"type":"SEMVER","events":[{"introduced":"1.0.0"},{"last_affected":"1.4.0"}]}]}]}

@@ -42,6 +42,8 @@ export type {
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
 export { compareMavenVersions, canonicalMavenVersion } from './analysis/maven-version.js';
+export { compareSemver, parseSemver } from './analysis/semver-version.js';
+export type { ParsedSemver } from './analysis/semver-version.js';
 export { MavenDeclaredIndex } from './analysis/maven-declared.js';
 export type { DeclaredVersion, DeclaredOrigin, PomFile } from './analysis/maven-declared.js';
 export {
@@ -52,6 +54,7 @@ export {
   isConcreteVersion,
   diffAdvisoryMatches,
   diffDependencySets,
+  ADVISORY_ECOSYSTEMS,
 } from './analysis/advisories.js';
 export type {
   OsvRecord,
@@ -66,6 +69,7 @@ export type {
   DeltaMatch,
   AdvisoryDelta,
   DependencyDelta,
+  AdvisoryEcosystem,
 } from './analysis/advisories.js';
 
 // Per-pass option types (exported so consumers can type passOptions without importing from deep paths)
