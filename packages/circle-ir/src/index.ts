@@ -287,6 +287,37 @@ export type {
   LoadTableResult,
 } from './remedy-class/index.js';
 
+// Path sets: every source-to-sink path of one CWE, keyed across versions of a
+// tree, and the difference between two versions.
+export {
+  PATH_KEY_SCHEME,
+  pathSetOf,
+  pathSetDiff,
+  diffPathSets,
+  pinFacts,
+  pathKey,
+  declAt,
+  changeOf,
+  normalizeCwe,
+} from './path-set/index.js';
+export type {
+  PathSetInput,
+  PathSetOptions,
+  DeclKeyScheme,
+  DeclRef,
+  PathHop,
+  PathEnd,
+  PathSource,
+  PathSink,
+  PathState,
+  PathEntry,
+  PathSet,
+  PathChange,
+  PathDiffEntry,
+  PinFacts,
+  PathSetDiff,
+} from './path-set/index.js';
+
 // Language plugins
 export {
   getLanguageRegistry,
