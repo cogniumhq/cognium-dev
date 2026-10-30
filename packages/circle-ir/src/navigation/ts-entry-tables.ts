@@ -54,6 +54,14 @@ export interface TestRunnerTable {
   filePattern: RegExp;
 }
 
+/** Programs. A `package.json` script argument that names a code file in the tree is one. */
+export interface ScriptTable {
+  /** Directories, relative to a package root, whose files are run as programs. */
+  dirs: readonly string[];
+  /** A file starting with `#!` is a program. */
+  shebang: boolean;
+}
+
 export interface EntryTables {
   routes: RouteRegistrarTable;
   decorators: readonly DecoratorEntryRow[];
@@ -62,6 +70,8 @@ export interface EntryTables {
   reactRouter?: ReactRouterTable;
   /** Next.js file routes (`pages/`, `app/`, `middleware`); absent turns them off. */
   nextFileRoutes?: FileRoutesTable;
+  /** Programs: files named in `package.json` scripts, script directories, shebang files; absent turns them off. */
+  scripts?: ScriptTable;
 }
 
 export const DEFAULT_ENTRY_TABLES: EntryTables = {
@@ -88,4 +98,8 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     routerFactories: ['createBrowserRouter', 'createHashRouter', 'createMemoryRouter', 'createStaticRouter', 'useRoutes'],
   },
   nextFileRoutes: { dependency: 'next' },
+  scripts: {
+    dirs: ['scripts', 'bin'],
+    shebang: true,
+  },
 };
