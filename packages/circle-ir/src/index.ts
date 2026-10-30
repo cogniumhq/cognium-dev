@@ -251,6 +251,7 @@ export {
   NavigationIndex,
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
+  DEFAULT_ENTRY_TABLES,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -272,7 +273,31 @@ export type {
   CallEdge,
   CallEdgeSite,
   UnresolvedCall,
+  TsPackageManifest,
+  TsEntry,
+  UnresolvedRegistration,
+  ReferenceEdge,
+  ImportEdge,
+  EntryKind,
+  EntryCertainty,
+  EntryTables,
 } from './navigation/index.js';
+
+// Graph facts over stable ids (experimental): the reach core and dead code.
+export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode } from './graph-facts/index.js';
+export type {
+  ReachInput,
+  ReachOptions,
+  ReachResult,
+  ReachFact,
+  ReachPath,
+  PathStep,
+  CouldReachSite,
+  DeadCodeVerdict,
+  DeadCodeFact,
+  DeadCodeOptions,
+  DeadCodeResult,
+} from './graph-facts/index.js';
 
 // Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
 // qualified name + signature, body ids from a normalized body hash, node ids
