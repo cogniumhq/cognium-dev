@@ -19,6 +19,7 @@ import {
   parseNpmDependencies, parseNpmLockDependencies,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
   parseMavenDependencies, parseGradleDependencies,
+  parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
   type Dependency, type SbomMetadata,
@@ -1798,18 +1799,49 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'pom.xml': parseMavenDependencies,
   'build.gradle': parseGradleDependencies,
   'build.gradle.kts': parseGradleDependencies,
+  // Resolved Java sets (DT4: resolved > lockfile > declared). A build run
+  // writes these; the CLI never runs Maven or Gradle itself.
+  'dependency-tree.txt': parseMavenResolvedDependencies,
+  'dependency-list.txt': parseMavenResolvedDependencies,
+  'gradle.lockfile': (c) => parseGradleLockfile(c),
   'Cargo.toml': parseCargoDependencies,
   'Cargo.lock': parseCargoLockDependencies,
   'go.mod': parseGoDependencies,
 };
 
-/** Lockfile basename → the manifest it supersedes (exact + transitive wins). */
-const SBOM_SUPERSEDES: Record<string, string> = {
-  'package-lock.json': 'package.json',
-  'npm-shrinkwrap.json': 'package.json',
-  'poetry.lock': 'pyproject.toml',
-  'Cargo.lock': 'Cargo.toml',
+/** Lockfile / resolved-set basename → the manifests it supersedes (exact + transitive wins). */
+const SBOM_SUPERSEDES: Record<string, string[]> = {
+  'package-lock.json': ['package.json'],
+  'npm-shrinkwrap.json': ['package.json'],
+  'poetry.lock': ['pyproject.toml'],
+  'Cargo.lock': ['Cargo.toml'],
+  'dependency-tree.txt': ['pom.xml', 'dependency-list.txt'],
+  'dependency-list.txt': ['pom.xml'],
+  'gradle.lockfile': ['build.gradle', 'build.gradle.kts'],
 };
+
+/** Maven resolved output only counts beside the `pom.xml` it was produced for. */
+const SBOM_NEEDS_SIBLING: Record<string, string> = {
+  'dependency-tree.txt': 'pom.xml',
+  'dependency-list.txt': 'pom.xml',
+};
+
+/**
+ * Gradle's older per-configuration lock layout:
+ * `<project>/gradle/dependency-locks/<configuration>.lockfile`.
+ * Returns the project directory, or null.
+ */
+function gradleLockDirProject(file: string): string | null {
+  if (!file.endsWith('.lockfile')) return null;
+  const locks = dirname(file);
+  if (basename(locks) !== 'dependency-locks') return null;
+  const gradleDir = dirname(locks);
+  if (basename(gradleDir) !== 'gradle') return null;
+  return dirname(gradleDir);
+}
+
+const isSbomInput = (file: string): boolean =>
+  Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null;
 
 const SBOM_SKIP_DIRS = /^(node_modules|vendor|target|dist|build|out|coverage)$/;
 
@@ -1818,7 +1850,7 @@ async function collectManifestFiles(targetPath: string): Promise<string[]> {
   const found: string[] = [];
   const pathStat = await stat(targetPath);
   if (pathStat.isFile()) {
-    if (SBOM_MANIFESTS[basename(targetPath)]) found.push(targetPath);
+    if (isSbomInput(targetPath)) found.push(targetPath);
     return found;
   }
   const walk = async (dir: string): Promise<void> => {
@@ -1827,7 +1859,7 @@ async function collectManifestFiles(targetPath: string): Promise<string[]> {
       if (e.isDirectory()) {
         if (SBOM_SKIP_DIRS.test(e.name)) continue;
         await walk(join(dir, e.name));
-      } else if (SBOM_MANIFESTS[e.name]) {
+      } else if (isSbomInput(join(dir, e.name))) {
         found.push(join(dir, e.name));
       }
     }
@@ -1853,7 +1885,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
-    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml, build.gradle, Cargo.toml/.lock, go.mod)'));
+    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod)'));
     process.exit(1);
   }
 
@@ -1861,12 +1893,29 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   // versions, so parsing both would double-list every package (a range and an
   // exact). Per directory: for each lockfile found, drop the manifest it
   // supersedes from the same directory.
+  // Maven resolved output without its pom.xml beside it is ignored (it could
+  // be any text file of that name).
+  const present = new Set(manifests.map((m) => `${dirname(m)}\0${basename(m)}`));
+  const usable = manifests.filter((m) => {
+    const sibling = SBOM_NEEDS_SIBLING[basename(m)];
+    return !sibling || present.has(`${dirname(m)}\0${sibling}`);
+  });
   const supersededInDir = new Set<string>(); // `${dir}\0${manifestBasename}`
-  for (const m of manifests) {
-    const superseded = SBOM_SUPERSEDES[basename(m)];
-    if (superseded) supersededInDir.add(`${dirname(m)}\0${superseded}`);
+  for (const m of usable) {
+    for (const superseded of SBOM_SUPERSEDES[basename(m)] ?? []) {
+      supersededInDir.add(`${dirname(m)}\0${superseded}`);
+    }
+    const project = gradleLockDirProject(m);
+    if (project) {
+      supersededInDir.add(`${project}\0build.gradle`);
+      supersededInDir.add(`${project}\0build.gradle.kts`);
+    }
   }
-  const effective = manifests.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
+  const effective = usable.filter((m) => !supersededInDir.has(`${dirname(m)}\0${basename(m)}`));
+  if (effective.length === 0) {
+    console.error(colors.red('Error: no supported manifests found (Maven resolved output needs its pom.xml beside it)'));
+    process.exit(1);
+  }
 
   let projectName = options.name;
   let projectLicense: string | undefined;
@@ -1884,7 +1933,9 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   let deps: Dependency[] = [];
   for (const m of effective) {
-    deps.push(...SBOM_MANIFESTS[basename(m)](readFileSync(m, 'utf-8')));
+    const text = readFileSync(m, 'utf-8');
+    const parse = SBOM_MANIFESTS[basename(m)];
+    deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
   }
 
   // De-dup across manifests (same key the library uses within one).
