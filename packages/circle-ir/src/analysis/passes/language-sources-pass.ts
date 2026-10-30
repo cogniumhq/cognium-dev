@@ -4619,8 +4619,15 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
     //    Suppressed inside function bodies (#73 part 1).
     if (!insideFunction) {
       const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
+      // A one-line definition `name() { …; }` keeps its body on the header
+      // line: only text before the opening brace is at the top level.
+      const header = /^\s*(?:function\s+)?[A-Za-z_][\w-]*\s*(?:\(\s*\))?\s*\{/.exec(line);
+      const isFnHeader = header !== null && (/\(\s*\)/.test(header[0]) || /^\s*function\s/.test(header[0]));
+      // `$1` inside single quotes is literal text (an awk or sed program), not
+      // a positional parameter.
+      const topLevelText = (isFnHeader ? line.slice(0, header[0].length) : line).replace(/'[^']*'/g, "''");
       let m: RegExpExecArray | null;
-      while ((m = positionalRe.exec(line)) !== null) {
+      while ((m = positionalRe.exec(topLevelText)) !== null) {
         const param = m[1] ?? m[2];
         const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
         if (!alreadyExists) {
