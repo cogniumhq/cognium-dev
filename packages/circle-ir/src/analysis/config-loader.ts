@@ -1822,7 +1822,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'addParametersToContext', class: 'StaticParametersInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'build', class: 'HttpParameters', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   // Cron expression parsing (DoS/ReDoS)
-  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — Java cron-utils `CronParser`; scoped to Java so a JS/TS
+  // `parser.parse(...)` (tree-sitter, a lockfile parser) never matches it by name.
+  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'isValid', class: 'CronValidator', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   // ff4j feature flags
   { method: 'check', class: 'FF4j', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
@@ -1922,9 +1924,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'selectSingleNode', class: 'Node', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
 
   // XXE - XML External Entity (CWE-611)
-  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — JAXP parsers are JVM classes. Scoped to Java so the
+  // receiver-name heuristic (`parser` → SAXParser) cannot turn a JS/TS
+  // `parser.parse(text)` into an XXE sink. JS/TS XML parsers (sax, xml2js,
+  // libxmljs, DOMParser) have their own entries.
+  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'unmarshal', class: 'Unmarshaller', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'newTransformer', class: 'TransformerFactory', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'transform', class: 'Transformer', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
