@@ -1,0 +1,68 @@
+{
+  "name": "@cognium/code-facts",
+  "version": "0.1.0",
+  "description": "Static facts about a code change between two versions of a tree: every source-to-sink path of one CWE at each version with its change (removed, sanitized, guarded, unchanged, added), unresolved edges counted, and which row of a caller-supplied safe-construct table each closed sink matches. Observations only; tables are inputs.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage *.tsbuildinfo *.tgz",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "keywords": [
+    "sast",
+    "taint",
+    "fix-verification",
+    "static-analysis",
+    "circle-ir",
+    "cognium"
+  ],
+  "author": {
+    "name": "Cognium Labs",
+    "url": "https://cognium.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniumhq/cognium-dev.git",
+    "directory": "packages/code-facts"
+  },
+  "homepage": "https://github.com/cogniumhq/cognium-dev/tree/main/packages/code-facts#readme",
+  "bugs": {
+    "url": "https://github.com/cogniumhq/cognium-dev/issues"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "peerDependencies": {
+    "circle-ir": ">=4.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "circle-ir": "^4.17.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}
