@@ -1799,6 +1799,27 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
 }
 
 /**
+ * cognium-dev#985 — JS/TS `Connection.get` carries `allow_unresolved_receiver`,
+ * so in-memory `Map` / property-bag `.get()` calls (e.g. `properties.get(prop)`,
+ * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
+ * bug as #358's `/re/.exec` → sql_injection pairing.
+ */
+function isInMemoryMapGetReceiver(
+  receiver: string | null | undefined,
+  sourceLines?: string[],
+): boolean {
+  const r = (receiver ?? '').trim();
+  if (!r || !sourceLines) return false;
+  if (/\.properties$/i.test(r)) return true;
+  if (/^(properties|memoryCache)$/i.test(r)) return true;
+  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const mapCtor = new RegExp(
+    `\\b${escapeRe(r)}\\s*=\\s*new\\s+Map\\s*(?:<[^>]*>)?\\s*\\(`,
+  );
+  return sourceLines.some(l => mapCtor.test(l));
+}
+
+/**
  * cognium-dev#358 — is this argument a NAMED reference to a function declared
  * in this file? `setTimeout(connect, delay)` is the same benign shape as
  * `setTimeout(() => connect(), delay)`, but `isFunctionCallbackArgument` only
@@ -2521,6 +2542,16 @@ function findSinks(
           call.method_name === 'exec' &&
           (language === 'javascript' || language === 'typescript') &&
           isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
+
+        if (
+          pattern.type === 'sql_injection' &&
+          call.method_name === 'get' &&
+          pattern.class === 'Connection' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isInMemoryMapGetReceiver(call.receiver, sourceLines)
         ) {
           continue;
         }
