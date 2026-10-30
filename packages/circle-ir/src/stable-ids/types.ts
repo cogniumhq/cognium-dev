@@ -63,8 +63,8 @@ export interface StableDecl {
 export interface StableIdFile {
   scheme: StableIdScheme;
   file: string;
-  /** `typescript` for `.ts`/`.tsx`, `javascript` for `.js`/`.jsx`. */
-  language: 'javascript' | 'typescript';
+  /** `typescript` for `.ts`/`.tsx`, `javascript` for `.js`/`.jsx`, `java` for `.java`, `python` for `.py`. */
+  language: 'javascript' | 'typescript' | 'java' | 'python';
   /** The module path every qualified name in this file starts with. */
   module: string;
   /** Source order, a parent before its members. The first entry is the module. */

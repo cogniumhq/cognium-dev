@@ -192,3 +192,105 @@ test('sbom: missing path exits 2', async () => {
   const { code } = await runCli(['sbom', join(fixture, 'does-not-exist')]);
   expect(code).toBe(2);
 });
+
+// ─── Resolved Java sets (DT4: resolved > lockfile > declared) ────────────────
+
+const purlsOf = (out: string): string[] =>
+  JSON.parse(out).components.map((c: { purl: string }) => c.purl);
+
+test('sbom: gradle.lockfile supersedes build.gradle (exact + transitive)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-gradle-lock-'));
+  try {
+    writeFileSync(join(dir, 'build.gradle'), "dependencies {\n  implementation 'com.google.guava:guava:32.+'\n}\n");
+    writeFileSync(
+      join(dir, 'gradle.lockfile'),
+      [
+        '# This is a Gradle generated file for dependency locking.',
+        'com.google.guava:failureaccess:1.0.1=compileClasspath,runtimeClasspath',
+        'com.google.guava:guava:32.1.3-jre=compileClasspath,runtimeClasspath',
+        'junit:junit:4.13.2=testCompileClasspath,testRuntimeClasspath',
+        'empty=annotationProcessor',
+      ].join('\n'),
+    );
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:maven/com.google.guava/guava@32.1.3-jre');
+    expect(purls).toContain('pkg:maven/com.google.guava/failureaccess@1.0.1'); // transitive
+    expect(purls.filter((p) => p.startsWith('pkg:maven/com.google.guava/guava@')).length).toBe(1); // declared range dropped
+    const prod = purlsOf((await runCli(['sbom', dir, '--prod-only', '--deterministic'])).out);
+    expect(prod.some((p) => p.includes('junit'))).toBe(false); // test-only configuration is dev
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: gradle/dependency-locks/*.lockfile supersedes the project build.gradle.kts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-gradle-locks-'));
+  try {
+    writeFileSync(join(dir, 'build.gradle.kts'), 'dependencies {\n  implementation("org.slf4j:slf4j-api:2.+")\n}\n');
+    mkdirSync(join(dir, 'gradle', 'dependency-locks'), { recursive: true });
+    writeFileSync(join(dir, 'gradle', 'dependency-locks', 'runtimeClasspath.lockfile'), 'org.slf4j:slf4j-api:2.0.9\n');
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:maven/org.slf4j/slf4j-api@2.0.9');
+    expect(purls.filter((p) => p.startsWith('pkg:maven/org.slf4j/slf4j-api@')).length).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: Maven dependency-tree.txt supersedes pom.xml (resolved, transitive)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-mvn-tree-'));
+  try {
+    writeFileSync(
+      join(dir, 'pom.xml'),
+      '<project><dependencies><dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>${log4j.version}</version></dependency></dependencies></project>',
+    );
+    writeFileSync(
+      join(dir, 'dependency-tree.txt'),
+      [
+        'com.example:app:jar:1.0.0',
+        '+- org.apache.logging.log4j:log4j-core:jar:2.17.1:compile',
+        '|  \\- org.apache.logging.log4j:log4j-api:jar:2.17.1:compile',
+        '\\- junit:junit:jar:4.13.2:test',
+      ].join('\n'),
+    );
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:maven/org.apache.logging.log4j/log4j-core@2.17.1');
+    expect(purls).toContain('pkg:maven/org.apache.logging.log4j/log4j-api@2.17.1'); // transitive
+    expect(purls.some((p) => p.includes('$'))).toBe(false); // unresolved declared version dropped
+    expect(purls.filter((p) => p.includes('log4j-core')).length).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: Maven resolved output without a sibling pom.xml is ignored', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-mvn-orphan-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'orphan', dependencies: { ms: '2.1.3' } }));
+    writeFileSync(join(dir, 'dependency-list.txt'), '   org.example:stray:jar:1.0:compile\n');
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:npm/ms@2.1.3');
+    expect(purls.some((p) => p.includes('stray'))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: only an orphan resolved file → no supported manifests (exit 1)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-mvn-only-orphan-'));
+  try {
+    writeFileSync(join(dir, 'dependency-tree.txt'), '+- org.example:stray:jar:1.0:compile\n');
+    const { code } = await runCli(['sbom', dir]);
+    expect(code).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

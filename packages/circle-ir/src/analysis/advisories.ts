@@ -9,13 +9,70 @@
  * which coordinate, by which range, and which later versions are fixed.
  * Severity is copied from the record; nothing is ranked or scored here.
  *
- * Maven only in this version (ranges evaluated in Maven's version order, see
- * `compareMavenVersions`); the shape is ecosystem-neutral so other
- * orderings can be added.
+ * Ecosystems with an ordering (see {@link ADVISORY_ECOSYSTEMS}): `Maven`
+ * (Maven's `ComparableVersion` order, `ECOSYSTEM` ranges) and `npm` (SemVer
+ * 2.0 precedence, `SEMVER` ranges). Any other ecosystem name keeps the
+ * original behaviour: Maven order over `ECOSYSTEM` ranges, names as given.
  */
 
-import type { Dependency } from './sbom.js';
+import type { Dependency, Ecosystem } from './sbom.js';
 import { compareMavenVersions } from './maven-version.js';
+import { compareSemver, parseSemver } from './semver-version.js';
+
+// ---------------------------------------------------------------------------
+// Ecosystem rules
+// ---------------------------------------------------------------------------
+
+/** How one OSV ecosystem orders versions and names packages. */
+export interface AdvisoryEcosystem {
+  /** OSV's ecosystem name (`affected[].package.ecosystem`). */
+  osv: string;
+  /** The `Dependency.ecosystem` it matches. */
+  dependency: Ecosystem;
+  /** Version order for ranges, fixed lists and deltas. */
+  compare: (a: string, b: string) => number;
+  /** OSV range types evaluated (others are ignored). */
+  rangeTypes: readonly string[];
+  /** A version the matcher may place in that order. */
+  isVersion: (version: string) => boolean;
+  /** Canonical package name, applied to OSV names and dependency names alike. */
+  normalizeName: (name: string) => string;
+}
+
+const asIs = (n: string): string => n;
+
+/** The ecosystems this library can order, keyed by OSV name. */
+export const ADVISORY_ECOSYSTEMS: Readonly<Record<string, AdvisoryEcosystem>> = {
+  Maven: {
+    osv: 'Maven',
+    dependency: 'maven',
+    compare: compareMavenVersions,
+    rangeTypes: ['ECOSYSTEM'],
+    isVersion: () => true,
+    normalizeName: asIs,
+  },
+  npm: {
+    osv: 'npm',
+    dependency: 'npm',
+    compare: compareSemver,
+    rangeTypes: ['SEMVER', 'ECOSYSTEM'],
+    isVersion: (v) => parseSemver(v) !== null,
+    normalizeName: asIs,
+  },
+};
+
+/** Rules for an index; unknown ecosystems keep the original Maven behaviour. */
+function rulesFor(ecosystem: string): AdvisoryEcosystem & { filterDependencies: boolean } {
+  const known = ADVISORY_ECOSYSTEMS[ecosystem];
+  if (known) return { ...known, filterDependencies: known.osv !== 'Maven' };
+  return { ...ADVISORY_ECOSYSTEMS.Maven, osv: ecosystem, filterDependencies: false };
+}
+
+/** Version order for a dependency's ecosystem (Maven order when unknown). */
+function compareForDependency(eco: Ecosystem): (a: string, b: string) => number {
+  for (const r of Object.values(ADVISORY_ECOSYSTEMS)) if (r.dependency === eco) return r.compare;
+  return compareMavenVersions;
+}
 
 // ---------------------------------------------------------------------------
 // OSV record (the subset matching needs)
@@ -109,6 +166,7 @@ function aliasOrder(a: string, b: string): number {
  * ids is reported once. Withdrawn records are listed and never matched.
  */
 export function buildAdvisoryIndex(records: OsvRecord[], ecosystem = 'Maven'): AdvisoryIndex {
+  const rules = rulesFor(ecosystem);
   let snapshotDate: string | null = null;
   const withdrawn: AdvisoryIndex['withdrawn'] = [];
   const live: OsvRecord[] = [];
@@ -171,7 +229,7 @@ export function buildAdvisoryIndex(records: OsvRecord[], ecosystem = 'Maven'): A
     const id = sorted.find((x) => x.startsWith('GHSA-') && recordIds.has(x)) ?? [...recordIds].sort()[0];
     const group: AdvisoryGroup = { id, aliases: sorted.filter((x) => x !== id).sort(aliasOrder), records: recs };
     const names = new Set<string>();
-    for (const r of recs) for (const a of r.affected ?? []) if (a.package.ecosystem === ecosystem) names.add(a.package.name);
+    for (const r of recs) for (const a of r.affected ?? []) if (a.package.ecosystem === ecosystem) names.add(rules.normalizeName(a.package.name));
     for (const n of names) {
       const list = byPackage.get(n) ?? [];
       list.push(group);
@@ -198,8 +256,11 @@ export interface AffectedInterval {
 
 const cmp = compareMavenVersions;
 
-/** Turn one ECOSYSTEM range's events into intervals, in version order. */
-export function rangeIntervals(range: OsvRange): AffectedInterval[] {
+/**
+ * Turn one range's events into intervals, in version order (Maven order unless
+ * another `compare` is given).
+ */
+export function rangeIntervals(range: OsvRange, compare: (a: string, b: string) => number = cmp): AffectedInterval[] {
   const events = range.events
     .filter((e) => e.introduced !== undefined || e.fixed !== undefined || e.last_affected !== undefined)
     .map((e) => {
@@ -208,7 +269,7 @@ export function rangeIntervals(range: OsvRange): AffectedInterval[] {
     })
     .sort((a, b) => {
       if (a.v === '0' || b.v === '0') return a.v === b.v ? 0 : a.v === '0' ? -1 : 1;
-      return cmp(a.v, b.v);
+      return compare(a.v, b.v);
     });
   const out: AffectedInterval[] = [];
   let open: AffectedInterval | null = null;
@@ -226,10 +287,10 @@ export function rangeIntervals(range: OsvRange): AffectedInterval[] {
   return out;
 }
 
-function inInterval(version: string, iv: AffectedInterval): boolean {
-  if (iv.introduced !== '0' && cmp(version, iv.introduced) < 0) return false;
-  if (iv.fixed !== undefined) return cmp(version, iv.fixed) < 0;
-  if (iv.lastAffected !== undefined) return cmp(version, iv.lastAffected) <= 0;
+function inInterval(version: string, iv: AffectedInterval, compare: (a: string, b: string) => number): boolean {
+  if (iv.introduced !== '0' && compare(version, iv.introduced) < 0) return false;
+  if (iv.fixed !== undefined) return compare(version, iv.fixed) < 0;
+  if (iv.lastAffected !== undefined) return compare(version, iv.lastAffected) <= 0;
   return true;
 }
 
@@ -299,10 +360,14 @@ function advisoryRef(g: AdvisoryGroup): AdvisoryRef {
  * caller reports it as unresolved. One match per (dependency, vulnerability).
  */
 export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): AdvisoryMatch[] {
+  const rules = rulesFor(index.ecosystem);
+  const c = rules.compare;
   const out: AdvisoryMatch[] = [];
   for (const d of deps) {
-    if (!isConcreteVersion(d.version)) continue;
-    const groups = index.byPackage.get(d.name);
+    if (rules.filterDependencies && d.ecosystem !== rules.dependency) continue;
+    if (!isConcreteVersion(d.version) || !rules.isVersion(d.version)) continue;
+    const name = rules.normalizeName(d.name);
+    const groups = index.byPackage.get(name);
     if (!groups) continue;
     for (const g of groups) {
       const ranges: AffectedInterval[] = [];
@@ -311,12 +376,12 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
       let hitList = false;
       for (const r of g.records) {
         for (const a of r.affected ?? []) {
-          if (a.package.ecosystem !== index.ecosystem || a.package.name !== d.name) continue;
+          if (a.package.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
           if (a.versions?.includes(d.version)) hitList = true;
           for (const range of a.ranges ?? []) {
-            if (range.type !== 'ECOSYSTEM') continue;
-            for (const iv of rangeIntervals(range)) {
-              if (!inInterval(d.version, iv)) continue;
+            if (!rules.rangeTypes.includes(range.type)) continue;
+            for (const iv of rangeIntervals(range, c)) {
+              if (!inInterval(d.version, iv, c)) continue;
               hitRange = true;
               if (!ranges.some((x) => x.introduced === iv.introduced && x.fixed === iv.fixed && x.lastAffected === iv.lastAffected)) ranges.push(iv);
               if (iv.fixed !== undefined) fixed.add(iv.fixed);
@@ -328,10 +393,10 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
       // Later fixed bounds of the same package (other branches) are fix candidates too.
       for (const r of g.records) {
         for (const a of r.affected ?? []) {
-          if (a.package.ecosystem !== index.ecosystem || a.package.name !== d.name) continue;
+          if (a.package.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
           for (const range of a.ranges ?? []) {
-            if (range.type !== 'ECOSYSTEM') continue;
-            for (const iv of rangeIntervals(range)) if (iv.fixed !== undefined && cmp(iv.fixed, d.version) > 0) fixed.add(iv.fixed);
+            if (!rules.rangeTypes.includes(range.type)) continue;
+            for (const iv of rangeIntervals(range, c)) if (iv.fixed !== undefined && c(iv.fixed, d.version) > 0) fixed.add(iv.fixed);
           }
         }
       }
@@ -339,7 +404,7 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
         dependency: d,
         advisory: advisoryRef(g),
         affected: { ranges, viaVersionsList: hitList && !hitRange },
-        fixedIn: [...fixed].filter((f) => cmp(f, d.version) > 0).sort(cmp),
+        fixedIn: [...fixed].filter((f) => c(f, d.version) > 0).sort(c),
       });
     }
   }
@@ -375,7 +440,7 @@ export interface DependencyDelta {
   changed: Array<{ name: string; from: string[]; to: string[]; head: Dependency[] }>;
 }
 
-const byKey = (m: AdvisoryMatch): string => `${m.dependency.name}\u0000${m.advisory.id}`;
+const byKey = (m: AdvisoryMatch): string => `${m.dependency.ecosystem}\u0000${m.dependency.name}\u0000${m.advisory.id}`;
 
 function group(matches: AdvisoryMatch[]): Map<string, AdvisoryMatch[]> {
   const out = new Map<string, AdvisoryMatch[]>();
@@ -389,7 +454,7 @@ function group(matches: AdvisoryMatch[]): Map<string, AdvisoryMatch[]> {
 }
 
 const versionsOf = (ms: AdvisoryMatch[] | undefined): string[] =>
-  ms ? [...new Set(ms.map((m) => m.dependency.version))].sort(cmp) : [];
+  ms ? [...new Set(ms.map((m) => m.dependency.version))].sort(compareForDependency(ms[0].dependency.ecosystem)) : [];
 
 /**
  * Advisory delta between two pins matched under the same records. Each entry
@@ -417,21 +482,25 @@ export function diffAdvisoryMatches(baseline: AdvisoryMatch[], head: AdvisoryMat
 export function diffDependencySets(baseline: Dependency[], head: Dependency[]): DependencyDelta {
   const index = (deps: Dependency[]): Map<string, Dependency[]> => {
     const m = new Map<string, Dependency[]>();
-    for (const d of deps) m.set(d.name, [...(m.get(d.name) ?? []), d]);
+    for (const d of deps) {
+      const k = `${d.ecosystem}\u0000${d.name}`;
+      m.set(k, [...(m.get(k) ?? []), d]);
+    }
     return m;
   };
   const b = index(baseline);
   const h = index(head);
   const out: DependencyDelta = { added: [], removed: [], changed: [] };
-  for (const name of [...new Set([...b.keys(), ...h.keys()])].sort()) {
-    const bs = b.get(name);
-    const hs = h.get(name);
+  for (const key of [...new Set([...b.keys(), ...h.keys()])].sort()) {
+    const bs = b.get(key);
+    const hs = h.get(key);
     if (!bs) out.added.push(...(hs as Dependency[]));
     else if (!hs) out.removed.push(...bs);
     else {
-      const from = [...new Set(bs.map((d) => d.version))].sort(cmp);
-      const to = [...new Set(hs.map((d) => d.version))].sort(cmp);
-      if (from.join('\u0000') !== to.join('\u0000')) out.changed.push({ name, from, to, head: hs });
+      const order = compareForDependency(hs[0].ecosystem);
+      const from = [...new Set(bs.map((d) => d.version))].sort(order);
+      const to = [...new Set(hs.map((d) => d.version))].sort(order);
+      if (from.join('\u0000') !== to.join('\u0000')) out.changed.push({ name: hs[0].name, from, to, head: hs });
     }
   }
   return out;
