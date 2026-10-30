@@ -425,8 +425,16 @@ export {
   templateEngineOf,
   expressionNames,
   handedNames,
+  findingDiff,
+  diffLines,
+  splitLines,
 } from './path-set/index.js';
 export type {
+  FindingDiff,
+  FindingDiffSide,
+  NewFinding,
+  MatchedBy,
+  LineDiff,
   PathSetInput,
   PathSetOptions,
   DeclKeyScheme,
