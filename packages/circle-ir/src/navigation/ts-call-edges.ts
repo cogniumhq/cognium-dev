@@ -111,6 +111,16 @@ export interface ReferenceEdge {
   site: CallEdgeSite;
 }
 
+/**
+ * A body reads or writes a field of its own class (`this.x`, also through an
+ * accessor): whenever the body runs, the field is in use.
+ */
+export interface FieldUseEdge {
+  from: string;
+  to: string;
+  site: CallEdgeSite;
+}
+
 /** A module loads another (static import, re-export or `require`). Module declaration ids. */
 export interface ImportEdge {
   from: string;
@@ -160,6 +170,8 @@ export interface TsCallGraph {
   /** Call and `new` sites walked; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
   references: ReferenceEdge[];
+  /** `this.x` reads and writes of the enclosing class's fields and accessors. */
+  fieldUses: FieldUseEdge[];
   imports: ImportEdge[];
   /** Declarations that exist only for the type checker: interfaces, type aliases, signatures, ambient declarations. */
   typeOnly: string[];
@@ -348,6 +360,9 @@ class Graph {
   private readonly methodsByName = new Map<string, StableDecl[]>();
   private readonly maxInferred: number;
   readonly references: ReferenceEdge[] = [];
+  readonly fieldUses: FieldUseEdge[] = [];
+  /** Fields and accessors by name (class members only). */
+  private readonly fieldsByName = new Map<string, StableDecl[]>();
   readonly entries: TsEntry[] = [];
   readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
   private readonly tables: EntryTables;
@@ -379,11 +394,16 @@ class Graph {
         if (list) list.push(d);
         else ctx.top.set(d.name, [d]);
       }
-      if (d.kind === 'method' && !d.signature.startsWith('get ') && !d.signature.startsWith('set ')
-        && !d.signature.startsWith('static get ') && !d.signature.startsWith('static set ')) {
+      const accessor = d.kind === 'method' && /^(static )?[gs]et /.test(d.signature);
+      if (d.kind === 'method' && !accessor) {
         const list = this.methodsByName.get(d.name);
         if (list) list.push(d);
         else this.methodsByName.set(d.name, [d]);
+      }
+      if ((d.kind === 'field' || accessor) && d.parent !== null && d.parent !== ctx.module.id) {
+        const list = this.fieldsByName.get(d.name);
+        if (list) list.push(d);
+        else this.fieldsByName.set(d.name, [d]);
       }
     }
     this.files.set(path, ctx);
@@ -882,6 +902,7 @@ class Graph {
 
   walk(ctx: FileCtx, node: Node): void {
     const t = node.type;
+    if (t === 'member_expression' && node.childForFieldName('object')?.type === 'this') this.fieldUse(ctx, node);
     if (t === 'call_expression' || t === 'new_expression') {
       this.site(ctx, node);
       if (t === 'call_expression') {
@@ -904,6 +925,34 @@ class Graph {
     if (t === 'jsx_element' || t === 'jsx_self_closing_element') this.reactRouteElement(ctx, node);
     else if (t === 'jsx_expression') this.reference(ctx, named(node)[0] ?? null);
     for (const c of named(node)) this.walk(ctx, c);
+  }
+
+  // -- field uses (`this.x`) -------------------------------------------------
+
+  /** `this.x` in a class body: the class's own or inherited field (or accessor) `x` is in use. */
+  private fieldUse(ctx: FileCtx, node: Node): void {
+    const name = node.childForFieldName('property')?.text;
+    if (!name) return;
+    const candidates = this.fieldsByName.get(name);
+    if (!candidates) return;
+    const cls = this.enclosingClass(ctx, node);
+    if (!cls) return;
+    const targets: StableDecl[] = [];
+    const seen = new Set<string>();
+    for (let t: StableDecl | null = cls; t && !seen.has(t.id);) {
+      seen.add(t.id);
+      const own = candidates.filter(d => d.parent === t!.id);
+      if (own.length > 0) {
+        targets.push(...own);
+        break;
+      }
+      const s: StableDecl | 'external' | null | undefined = this.supers.get(t.id)?.extends;
+      t = s && s !== 'external' ? s : null;
+    }
+    if (targets.length === 0) return;
+    const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
+    const from = (ctx.locate(site.line, site.col) ?? ctx.module).id;
+    for (const d of targets) if (d.id !== from) this.fieldUses.push({ from, to: d.id, site });
   }
 
   // -- references (functions and classes used as values) ---------------------
@@ -1781,6 +1830,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     partial,
     sites: graph.siteCount,
     references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
+    fieldUses: dedupe([...graph.fieldUses].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     imports: graph.importEdges(),
     typeOnly: [...graph.typeOnly].sort(),
     entryScheme: 'entry-index@0.1',
