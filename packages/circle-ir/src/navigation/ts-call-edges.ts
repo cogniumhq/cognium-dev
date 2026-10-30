@@ -1001,7 +1001,14 @@ class Graph {
     if (!routes.verbs.includes(verb)) return;
     let path = stringValue(args[0] ?? null);
     let handlers = args.slice(1);
-    // `router.route('/x').get(h)`: the path is on the scoping call.
+    // `router.route('/x').get(a).post(b)`: step back over earlier verbs to the scoping call.
+    while (receiver?.type === 'call_expression') {
+      const prev = receiver.childForFieldName('function');
+      if (prev?.type !== 'member_expression' || !routes.verbs.includes(prev.childForFieldName('property')?.text ?? '')) break;
+      const inner = prev.childForFieldName('object');
+      if (inner?.type !== 'call_expression') break;
+      receiver = inner;
+    }
     if (receiver?.type === 'call_expression' && routes.routeChain) {
       const scope = receiver.childForFieldName('function');
       const scopeArgs = receiver.childForFieldName('arguments');
