@@ -67,7 +67,40 @@ describe('osv-snapshot', () => {
     }
   });
 
-  it('build --from-zip unpacks, drops MAL- by default, and writes provenance', () => {
+  it('build --from-dir copies records, drops MAL- by default, and writes provenance', () => {
+    const work = mkdtempSync(join(tmpdir(), 'osv-build-dir-'));
+    try {
+      const src = join(work, 'src');
+      execFileSync('mkdir', [src]);
+      for (const n of snap.recordFiles(FIXTURE)) copyFileSync(join(FIXTURE, n), join(src, n));
+      writeFileSync(join(src, 'MAL-2024-1.json'), '{"id":"MAL-2024-1","modified":"2031-01-01T00:00:00Z"}');
+      const out = join(work, 'out');
+      execFileSync('node', [SCRIPT, 'build', '--ecosystem', 'npm', '--out', out, '--from-dir', src]);
+      expect(readdirSync(out).some((n) => n.startsWith('MAL-'))).toBe(false);
+      const v = snap.verifySnapshot(out);
+      expect(v.ok).toBe(true);
+      expect(v.digest).toBe(snap.snapshotDigest(FIXTURE));
+      const prov = JSON.parse(readFileSync(join(out, 'PROVENANCE'), 'utf-8'));
+      expect(prov.excludedPrefixes).toEqual(['MAL-']);
+      expect(prov.records).toBe(7);
+      execFileSync('node', [SCRIPT, 'build', '--ecosystem', 'npm', '--out', join(work, 'all'), '--from-dir', src, '--include-malicious']);
+      expect(snap.snapshotFacts(join(work, 'all')).records).toBe(8);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  const hasZip = (() => {
+    try {
+      execFileSync('zip', ['-v'], { stdio: 'ignore' });
+      execFileSync('unzip', ['-v'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  it.skipIf(!hasZip)('build --from-zip unpacks, drops MAL- by default, and writes provenance', () => {
     const work = mkdtempSync(join(tmpdir(), 'osv-build-'));
     try {
       const src = join(work, 'src');

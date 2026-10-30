@@ -5,7 +5,7 @@
  * (the Mac queue, CI) — never by the library, which reads no files and
  * fetches nothing.
  *
- *   node scripts/osv-snapshot.mjs build  --ecosystem npm --out <dir> [--from-zip <all.zip>] [--include-malicious]
+ *   node scripts/osv-snapshot.mjs build  --ecosystem npm --out <dir> [--from-zip <all.zip> | --from-dir <records>] [--include-malicious]
  *   node scripts/osv-snapshot.mjs verify <dir>
  *   node scripts/osv-snapshot.mjs digest <dir>
  *
@@ -26,7 +26,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -121,9 +121,15 @@ async function build(argv) {
   mkdirSync(out, { recursive: true });
   if (recordFiles(out).length > 0) throw new Error(`${out} already holds records; use an empty directory`);
 
+  const fromDir = arg(argv, '--from-dir');
   let zipPath = arg(argv, '--from-zip');
-  let source = zipPath ? `file:${zipPath}` : `${OSV_BUCKET}/${encodeURIComponent(ecosystem)}/all.zip`;
+  let source = fromDir ? `dir:${fromDir}` : zipPath ? `file:${zipPath}` : `${OSV_BUCKET}/${encodeURIComponent(ecosystem)}/all.zip`;
   let tmp;
+  let zipSha256 = null;
+  if (fromDir) {
+    // An already-unpacked export (e.g. a CI cache): copy its records as they are.
+    for (const n of recordFiles(fromDir)) copyFileSync(join(fromDir, n), join(out, n));
+  } else {
   if (!zipPath) {
     tmp = mkdtempSync(join(tmpdir(), 'osv-'));
     zipPath = join(tmp, 'all.zip');
@@ -131,9 +137,10 @@ async function build(argv) {
     if (!res.ok) throw new Error(`GET ${source}: HTTP ${res.status}`);
     writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
   }
-  const zipSha256 = sha256(readFileSync(zipPath));
+  zipSha256 = sha256(readFileSync(zipPath));
   execFileSync('unzip', ['-q', '-o', zipPath, '-d', out], { stdio: 'inherit' });
   if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
 
   const excludedPrefixes = argv.includes('--include-malicious') ? [] : ['MAL-'];
   const dropped = dropPrefixes(out, excludedPrefixes);
@@ -160,7 +167,7 @@ async function main(argv) {
     if (!r.ok) process.exitCode = 1;
     return;
   }
-  process.stderr.write('usage: osv-snapshot.mjs build --ecosystem <eco> --out <dir> [--from-zip <zip>] [--include-malicious] | verify <dir> | digest <dir>\n');
+  process.stderr.write('usage: osv-snapshot.mjs build --ecosystem <eco> --out <dir> [--from-zip <zip> | --from-dir <dir>] [--include-malicious] | verify <dir> | digest <dir>\n');
   process.exitCode = 2;
 }
 
