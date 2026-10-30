@@ -91,7 +91,7 @@ export interface EntryTables {
   nextFileRoutes?: FileRoutesTable;
   /** Programs: files named in `package.json` scripts, script directories, shebang files; absent turns them off. */
   scripts?: ScriptTable;
-  /** Tool-loaded files (React Native, Expo, Jest); absent turns them off. */
+  /** Tool-loaded files (React Native, Expo, Jest, Vitest, Vite); absent turns them off. */
   toolFiles?: readonly ToolFileRow[];
   /** Expo routes and config plugins; absent turns them off. */
   expo?: ExpoTable;
@@ -133,6 +133,9 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     { dependencies: ['jest'], pattern: /(?:^|\/)jest[.-]?setup[\w.-]*\.[cm]?[jt]sx?$/i, kind: 'test', tool: 'jest' },
     { dependencies: ['jest'], pattern: /(?:^|\/)__mocks__\/.+\.[cm]?[jt]sx?$/, kind: 'test', tool: 'jest' },
     { dependencies: ['jest'], pattern: /(?:(?:^|\/)__tests__\/.+|\.(?:test|spec))\.[cm]?[jt]sx?$/, kind: 'test', tool: 'jest' },
+    { dependencies: ['vitest'], pattern: /^vitest\.(?:config|workspace)\.[cm]?[jt]s$/, kind: 'main', tool: 'vitest' },
+    { dependencies: ['vitest'], pattern: /(?:^|\/)vitest[.-]?setup[\w.-]*\.[cm]?[jt]sx?$/i, kind: 'test', tool: 'vitest' },
+    { dependencies: ['vite', 'vitest'], pattern: /^vite\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'vite' },
   ],
   expo: { dependencies: ['expo', 'expo-router'] },
 };
