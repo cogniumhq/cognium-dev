@@ -40,6 +40,34 @@ export type {
   SbomMetadata,
 } from './analysis/sbom.js';
 
+// Known-vulnerability matching against caller-supplied OSV records (deterministic)
+export { compareMavenVersions, canonicalMavenVersion } from './analysis/maven-version.js';
+export { MavenDeclaredIndex } from './analysis/maven-declared.js';
+export type { DeclaredVersion, DeclaredOrigin, PomFile } from './analysis/maven-declared.js';
+export {
+  parseOsvRecord,
+  buildAdvisoryIndex,
+  matchAdvisories,
+  rangeIntervals,
+  isConcreteVersion,
+  diffAdvisoryMatches,
+  diffDependencySets,
+} from './analysis/advisories.js';
+export type {
+  OsvRecord,
+  OsvAffected,
+  OsvRange,
+  OsvEvent,
+  AdvisoryGroup,
+  AdvisoryIndex,
+  AdvisoryRef,
+  AdvisoryMatch,
+  AffectedInterval,
+  DeltaMatch,
+  AdvisoryDelta,
+  DependencyDelta,
+} from './analysis/advisories.js';
+
 // Per-pass option types (exported so consumers can type passOptions without importing from deep paths)
 export type { NamingConventionOptions } from './analysis/passes/naming-convention-pass.js';
 export type { DependencyFanOutOptions } from './analysis/passes/dependency-fan-out-pass.js';

@@ -1,0 +1,2 @@
+{"id":"TEST-WD-0001","modified":"2025-03-01T00:00:00Z","withdrawn":"2025-03-01T00:00:00Z","aliases":["CVE-2099-0001"],"summary":"Withdrawn record",
+ "affected":[{"package":{"ecosystem":"Maven","name":"org.apache.logging.log4j:log4j-core"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}]}

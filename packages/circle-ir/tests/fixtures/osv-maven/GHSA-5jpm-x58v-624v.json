@@ -1,0 +1,2 @@
+{"id":"GHSA-5jpm-x58v-624v","modified":"2025-01-20T00:00:00Z","aliases":["CVE-2024-29025"],"summary":"Netty HttpPostRequestDecoder allocation","database_specific":{"severity":"MODERATE"},
+ "affected":[{"package":{"ecosystem":"Maven","name":"io.netty:netty-codec-http"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"4.1.108.Final"}]}]}]}
