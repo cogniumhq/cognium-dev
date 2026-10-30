@@ -1808,15 +1808,32 @@ function isInMemoryMapGetReceiver(
   receiver: string | null | undefined,
   sourceLines?: string[],
 ): boolean {
-  const r = (receiver ?? '').trim();
-  if (!r || !sourceLines) return false;
-  if (/\.properties$/i.test(r)) return true;
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  if (/\.properties$/i.test(raw)) return true;
+  // cognium-dev#997 — a member read (`this.memoryCache`, `ctx.imports`,
+  // `fileImport.resolved`, `state().perFileCounters`) is resolved against the
+  // declaration of its LAST property name in this file — a class field, an
+  // interface/type member or a local — exactly like a bare local. Only a
+  // declaration that positively says Map/WeakMap suppresses the sink, so a
+  // real `req.db.get(sql)` (no Map-typed `db`) keeps firing.
+  const lastDot = raw.lastIndexOf('.');
+  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
   if (/^(properties|memoryCache)$/i.test(r)) return true;
   if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const n = escapeRe(r);
+  // `x = new Map(...)` / `new WeakMap(...)`, with or without (nested) type
+  // arguments, as a local (`const x = …`), a class field (`private x = …`) or
+  // a constructor assignment (`this.x = new Map()`).
   const mapCtor = new RegExp(
-    `\\b${escapeRe(r)}\\s*=\\s*new\\s+Map\\s*(?:<[^>]*>)?\\s*\\(`,
+    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
   );
-  return sourceLines.some(l => mapCtor.test(l));
+  // `x: Map<K, V>` / `x: ReadonlyMap<…>` / `x?: WeakMap<…>` — a typed field,
+  // parameter or local whose declared type is a Map.
+  const mapType = new RegExp(
+    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+  );
+  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
 }
 
 /**

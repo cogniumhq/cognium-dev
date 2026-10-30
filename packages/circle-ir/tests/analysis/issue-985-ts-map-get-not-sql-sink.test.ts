@@ -44,6 +44,53 @@ function load(digest: string) {
     expect(await findingTypes(code)).not.toContain('sql_injection');
   });
 
+  // cognium-dev#997 — Cognium-on-Cognium baseline: class-field Maps read through
+  // `this.` (63 critical sql_injection false positives on our own code).
+  it('#997: this.<field>.get on a class-field Map has no sql_injection', async () => {
+    const code = `
+export class Cache {
+  private memoryCache = new Map<string, string>();
+  private readonly nested = new Map<string, Set<string>>();
+  private readonly weak = new WeakMap<object, Map<string, string>>();
+  private tryCatchMap: Map<string, number> = new Map();
+  private readonly helperCache: ReadonlyMap<string, string>;
+  private entries: Map<string, Buffer>;
+  constructor() { this.helperCache = new Map(); this.entries = new Map(); }
+  lookup(req: any) {
+    const k = req.query.key;
+    return [this.memoryCache.get(k), this.tryCatchMap.get(k), this.helperCache.get(k), this.entries.get(k), this.nested.get(k), this.weak.get(req)];
+  }
+}
+`;
+    expect(await flowTypes(code)).not.toContain('sql_injection');
+    expect(await findingTypes(code)).not.toContain('sql_injection');
+  });
+
+  it('#997: a member chain whose last property is a Map-typed interface field has no sql_injection', async () => {
+    const code = `
+interface FileImport { resolved: Map<string, string>; }
+interface Ctx { imports: Map<string, string>; }
+export function look(req: any, fileImport: FileImport, ctx: Ctx) {
+  const name = req.query.name;
+  return [fileImport.resolved.get(name), ctx.imports.get(name)];
+}
+`;
+    expect(await findingTypes(code)).not.toContain('sql_injection');
+  });
+
+  it('#997: STILL fires for this.db.get with tainted SQL text', async () => {
+    const code = `
+export class Repo {
+  constructor(private db: any) {}
+  byName(req: any) {
+    const name = req.query.name;
+    return this.db.get("SELECT * FROM t WHERE n='" + name + "'");
+  }
+}
+`;
+    expect(await findingTypes(code)).toContain('sql_injection');
+  });
+
   it('STILL fires for a real db.get with tainted SQL text', async () => {
     expect(
       await findingTypes(`function q(db: { get: (sql: string) => unknown }, name: string) {
