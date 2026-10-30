@@ -68,6 +68,15 @@ class Locator {
   }
 }
 
+/**
+ * The innermost declaration (with a body) enclosing a 1-based line and a
+ * 0-based column, or `null`.
+ */
+export function declLocator(file: StableIdFile): (line: number, column?: number) => StableDecl | null {
+  const loc = new Locator(file);
+  return (line, column) => loc.at(line, column);
+}
+
 function keyAll<T>(items: readonly T[], tag: string, find: (item: T) => StableDecl | null): (string | null)[] {
   const counters = new Map<string, number>();
   return items.map(item => {

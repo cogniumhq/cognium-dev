@@ -249,6 +249,8 @@ export {
 export {
   buildNavigationIndex,
   NavigationIndex,
+  buildTsCallGraph,
+  TS_CALL_EDGES_SCHEME,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -264,6 +266,12 @@ export type {
   QueryOptions as NavigationQueryOptions,
   Scope as NavigationScope,
   Timing as NavigationTiming,
+  TsSourceFile,
+  TsCallGraphOptions,
+  TsCallGraph,
+  CallEdge,
+  CallEdgeSite,
+  UnresolvedCall,
 } from './navigation/index.js';
 
 // Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
