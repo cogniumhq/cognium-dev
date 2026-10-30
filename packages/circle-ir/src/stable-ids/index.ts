@@ -24,6 +24,17 @@ export type {
 export { deriveTypeScriptIds, moduleNameFor } from './typescript.js';
 export { assignNodeIds, type NodeIdSource } from './nodes.js';
 export { diffStableIds, type StableIdDiff } from './diff.js';
+export {
+  detectMoves,
+  bodySimilarity,
+  type MoveRelation,
+  type MoveEvidence,
+  type CandidateEvidence,
+  type StableIdMove,
+  type MoveCandidate,
+  type MoveOptions,
+  type MoveDetection,
+} from './moves.js';
 export { blake3, base32, digest128 } from './hash.js';
 
 /** True when `ids@0.1` covers the language. */

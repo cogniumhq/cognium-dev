@@ -1,0 +1,2 @@
+{"id":"TEST-LA-0001","modified":"2024-03-01T00:00:00Z","summary":"Range closed by last_affected","database_specific":{"severity":"LOW"},
+ "affected":[{"package":{"ecosystem":"Maven","name":"com.fasterxml.jackson.core:jackson-databind"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"2.13.0"},{"last_affected":"2.13.2"}]}]}]}
