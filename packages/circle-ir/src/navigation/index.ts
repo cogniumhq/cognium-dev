@@ -41,6 +41,7 @@ export {
   type EntryKind,
   type EntryCertainty,
   type EntryTables,
+  type ScriptTable,
   type RouteRegistrarTable,
   type DecoratorEntryRow,
   type TestRunnerTable,

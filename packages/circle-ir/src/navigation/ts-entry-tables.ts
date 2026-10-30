@@ -54,6 +54,14 @@ export interface TestRunnerTable {
   filePattern: RegExp;
 }
 
+/** Programs. A `package.json` script argument that names a code file in the tree is one. */
+export interface ScriptTable {
+  /** Directories, relative to a package root, whose files are run as programs. */
+  dirs: readonly string[];
+  /** A file starting with `#!` is a program. */
+  shebang: boolean;
+}
+
 /**
  * A file a tool loads by its name or place (`metro.config.js`, `__mocks__/`),
  * recognised only when the package depends on one of `dependencies`.
@@ -81,6 +89,8 @@ export interface EntryTables {
   reactRouter?: ReactRouterTable;
   /** Next.js file routes (`pages/`, `app/`, `middleware`); absent turns them off. */
   nextFileRoutes?: FileRoutesTable;
+  /** Programs: files named in `package.json` scripts, script directories, shebang files; absent turns them off. */
+  scripts?: ScriptTable;
   /** Tool-loaded files (React Native, Expo, Jest); absent turns them off. */
   toolFiles?: readonly ToolFileRow[];
   /** Expo routes and config plugins; absent turns them off. */
@@ -111,6 +121,10 @@ export const DEFAULT_ENTRY_TABLES: EntryTables = {
     routerFactories: ['createBrowserRouter', 'createHashRouter', 'createMemoryRouter', 'createStaticRouter', 'useRoutes'],
   },
   nextFileRoutes: { dependency: 'next' },
+  scripts: {
+    dirs: ['scripts', 'bin'],
+    shebang: true,
+  },
   toolFiles: [
     { dependencies: ['react-native', 'expo'], pattern: /^metro\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'metro' },
     { dependencies: ['react-native', 'expo', 'jest'], pattern: /^babel\.config\.[cm]?[jt]s$/, kind: 'main', tool: 'babel' },

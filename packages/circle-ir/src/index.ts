@@ -301,6 +301,7 @@ export type {
   EntryKind,
   EntryCertainty,
   EntryTables,
+  ScriptTable,
   ToolFileRow,
   ExpoTable,
   JavaSourceFile,

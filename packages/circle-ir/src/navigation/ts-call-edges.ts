@@ -1607,6 +1607,7 @@ class Graph {
       const deps = { ...(m.dependencies as Record<string, unknown> | undefined), ...(m.devDependencies as Record<string, unknown> | undefined) };
       const next = this.tables.nextFileRoutes;
       if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
+      this.scriptEntries(pkg.root, m.scripts);
       const has = (names: readonly string[]): boolean => names.some(n => Object.prototype.hasOwnProperty.call(deps, n));
       this.toolFileEntries(pkg.root, has);
       if (this.tables.expo && has(this.tables.expo.dependencies)) {
@@ -1632,6 +1633,38 @@ class Graph {
     }
     for (const ctx of this.sortedFiles()) {
       if (this.tables.tests.filePattern.test(ctx.path)) this.entry(ctx.module, 'test', 'conventional', ctx.path, 1, 'test file loaded by the runner');
+    }
+    this.programFiles();
+  }
+
+  /** Files a `package.json` script runs (`node scripts/build.mjs`, `tsx bench/x.ts`): `main` entries. */
+  private scriptEntries(root: string, scripts: unknown): void {
+    const table = this.tables.scripts;
+    if (!table || !scripts || typeof scripts !== 'object') return;
+    for (const name of Object.keys(scripts as Record<string, unknown>).sort()) {
+      const cmd = (scripts as Record<string, unknown>)[name];
+      if (typeof cmd !== 'string') continue;
+      for (const raw of cmd.split(/\s+|&&|\|\||[;|()]/)) {
+        const token = raw.replace(/^['"]|['"]$/g, '').replace(/^\.\//, '');
+        if (!/\.[cm]?[jt]sx?$/.test(token) || token.startsWith('-') || token.includes('*')) continue;
+        const file = this.findFile(normalizePath(`${root}/${token}`));
+        const ctx = file ? this.files.get(file) : undefined;
+        if (ctx) this.entry(ctx.module, 'main', 'declared', ctx.path, 1, `package.json script ${name}`);
+      }
+    }
+  }
+
+  /** Files in script directories, and files starting with `#!`: run as programs (`main`, conventional). */
+  private programFiles(): void {
+    const table = this.tables.scripts;
+    if (!table) return;
+    const roots = [...new Set((this.options.packages ?? []).map(p => normalizePath(p.root)))];
+    if (roots.length === 0) roots.push('');
+    for (const ctx of this.sortedFiles()) {
+      const inDir = roots.some(r => table.dirs.some(d => ctx.path.startsWith(normalizePath(`${r}/${d}`) + '/')));
+      const shebang = table.shebang && ctx.root.firstChild?.type === 'hash_bang_line';
+      if (inDir) this.entry(ctx.module, 'main', 'conventional', ctx.path, 1, 'file in a script directory');
+      else if (shebang) this.entry(ctx.module, 'main', 'conventional', ctx.path, 1, 'file starts with #!');
     }
   }
 
