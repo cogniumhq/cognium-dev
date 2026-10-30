@@ -412,28 +412,9 @@ function reaches(ctx: DeclCtx, a: CallInfo, b: CallInfo, depth = 0): boolean {
     const reach = ctx.reach(def.id);
     return texts.some(t => defsUsedIn(ctx, b.location.line, t).some(d => reach.has(d)));
   }
-  return reachesByName(ctx, a, b, texts);
+  return false;
 }
 
-/**
- * Fallback when the DFG holds no def for a call's result — the Java DFG records none for
- * try-with-resources resources or the locals declared in that block. A name that appears on
- * `a`'s line with no reaching def, and is not one of `a`'s own operands or a method name there,
- * is taken as declared from `a`; it reaches `b` when `b` uses it, also without a reaching def.
- */
-function reachesByName(ctx: DeclCtx, a: CallInfo, b: CallInfo, texts: string[]): boolean {
-  const line = a.location.line;
-  const own = identifiers([a.receiver ?? '', ...a.arguments.map(x => x.expression)].join(' '));
-  const methods = new Set(ctx.calls.filter(c => c.location.line === line).map(c => c.method_name));
-  const declared = new Set(
-    ctx.ir.dfg.uses
-      .filter(u => u.line === line && u.def_id === null && !own.has(u.variable) && !methods.has(u.variable))
-      .map(u => u.variable),
-  );
-  if (declared.size === 0) return false;
-  const usedUndefined = new Set(ctx.ir.dfg.uses.filter(u => u.line === b.location.line && u.def_id === null).map(u => u.variable));
-  return texts.some(t => [...identifiers(t)].some(n => declared.has(n) && usedUndefined.has(n)));
-}
 
 function unobservableReason(step: MatchStep, env: EvalEnv): string | undefined {
   if (step.template) return 'template-not-read';

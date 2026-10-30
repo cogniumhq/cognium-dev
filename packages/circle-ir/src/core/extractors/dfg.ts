@@ -730,6 +730,79 @@ function processStatement(
       break;
     }
 
+    case 'try_statement':
+    case 'try_with_resources_statement': {
+      // Java only (JavaScript's `try` keeps the default below: uses only).
+      // Before this case a Java `try` recorded uses only, so no local declared
+      // in a try body, catch or finally — nor a try-with-resources resource —
+      // had a def, and nothing used inside or after it had a reaching def.
+      if (isJavaScript) {
+        const stmtUses = extractUses(stmt, useId, scopeStack, isJavaScript);
+        uses.push(...stmtUses.uses);
+        useId = stmtUses.nextId;
+        break;
+      }
+      // Resources are scoped to the statement: visible in the body, gone after it.
+      scopeStack.push(new Map());
+      const resources = stmt.childForFieldName('resources');
+      for (const res of resources?.namedChildren ?? []) {
+        if (!res || res.type !== 'resource') continue;
+        const nameNode = res.childForFieldName('name');
+        const value = res.childForFieldName('value');
+        if (value) {
+          const valueUses = extractUses(value, useId, scopeStack, isJavaScript);
+          uses.push(...valueUses.uses);
+          useId = valueUses.nextId;
+        }
+        if (nameNode && nameNode.type === 'identifier') {
+          const def: DFGDef = { id: defId++, variable: getNodeText(nameNode), line: nameNode.startPosition.row + 1, column: nameNode.startPosition.column, kind: 'local' };
+          defs.push(def);
+          currentScope(scopeStack).set(def.variable, def.id);
+          markDeclared(currentScope(scopeStack), def.variable);
+        } else if (!value) {
+          // `try (existing)`: an effectively final variable or field, a use
+          const resUses = extractUses(res, useId, scopeStack, isJavaScript);
+          uses.push(...resUses.uses);
+          useId = resUses.nextId;
+        }
+      }
+      for (const part of stmt.namedChildren) {
+        if (!part) continue;
+        if (part.type === 'block') {
+          // the try body: a block whose parent is the try, so its defs are carried
+          // out as alternates (it may stop part way)
+          const r = processStatement(part, defId, useId, scopeStack, isJavaScript);
+          defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+        } else if (part.type === 'catch_clause') {
+          scopeStack.push(new Map());
+          for (const param of part.namedChildren) {
+            if (!param || param.type !== 'catch_formal_parameter') continue;
+            const pname = param.childForFieldName('name');
+            if (pname) {
+              const def: DFGDef = { id: defId++, variable: getNodeText(pname), line: pname.startPosition.row + 1, column: pname.startPosition.column, kind: 'local' };
+              defs.push(def);
+              currentScope(scopeStack).set(def.variable, def.id);
+              markDeclared(currentScope(scopeStack), def.variable);
+            }
+          }
+          const body = part.childForFieldName('body');
+          if (body) {
+            const r = processStatement(body, defId, useId, scopeStack, isJavaScript);
+            defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+          }
+          carryBranchDefsOut(scopeStack.pop()!, scopeStack, false);
+        } else if (part.type === 'finally_clause') {
+          for (const b of part.namedChildren) {
+            if (!b || b.type !== 'block') continue;
+            const r = processStatement(b, defId, useId, scopeStack, isJavaScript);
+            defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+          }
+        }
+      }
+      carryBranchDefsOut(scopeStack.pop()!, scopeStack, false);
+      break;
+    }
+
     case 'else_clause': {
       // JavaScript: `else { … }` / `else if (…) { … }` hold their arm one level
       // down; without this the arm fell to `default` and recorded no defs, so an
