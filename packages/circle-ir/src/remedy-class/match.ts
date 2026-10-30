@@ -24,6 +24,7 @@
 import { sideOf, type BranchFact } from '../path-set/branches.js';
 import { handedNames, lineDominates, qualifiedMethodName, typePath } from '../path-set/path-set.js';
 import type { TemplateFact } from '../path-set/templates.js';
+import { htmlContextAt, javaStringLiterals, markupBefore, type OutputContext } from './output-context.js';
 import type { DeclRef, PathChange, PathSetDiff, PathSink } from '../path-set/types.js';
 import type { StableIdFile } from '../stable-ids/types.js';
 import type { CallInfo, CircleIR, DFGDef, ProjectAnalysis } from '../types/index.js';
@@ -86,6 +87,12 @@ export interface RemedySinkObservation {
     tableSinkMatch?: TypeMatch;
     /** `call`: the sink call itself; `receiver-def`: the call that made its receiver (a constructor). */
     via?: 'call' | 'receiver-def' | 'template';
+    /**
+     * Only with `outputContext: true`: where in the HTML document the value lands
+     * at the fix version, read from the markup written before it; `unknown` when
+     * not read or not one context.
+     */
+    outputContext?: OutputContext;
     file: string;
     line: number;
     decl: DeclRef;
@@ -97,6 +104,11 @@ export interface RemedySinkObservation {
   class?: ConstructClass;
   /** Every matched row, in table order. */
   rows: MatchedRow[];
+  /**
+   * Only with `outputContext: true`: rows whose match held but whose `context`
+   * is not the observed output context. They are not in `rows`.
+   */
+  contextExcludedRows?: { id: string; context: string }[];
   /** Applicable rows the matcher could not observe, with why. */
   abstainedRows: { id: string; reason: string }[];
   reason?: RemedyReason;
@@ -701,6 +713,13 @@ export interface RemedyClassOptions {
    * not a closed sink.
    */
   scope?: 'closed' | 'all';
+  /**
+   * Observe the output context at writer sinks (`sink.outputContext`) and hold
+   * a row with a `context` only where it is that context; rows that held in
+   * another context go to `contextExcludedRows`. Off by default: without it the
+   * result is exactly what it was.
+   */
+  outputContext?: boolean;
 }
 
 /**
@@ -782,6 +801,21 @@ export function remedyClassOf(
       else if (r.unobservable) obs.abstainedRows.push({ id: row.id, reason: r.unobservable });
     }
 
+    if (options.outputContext && ctx) {
+      const labelled = table.sinks.find(x => x.id === label?.id);
+      const oc = labelled?.call ? outputContextOf(ctx, labelled.call) : 'unknown';
+      obs.sink.outputContext = oc;
+      obs.contextExcludedRows = [];
+      if (oc !== 'unknown') {
+        const keep: MatchedRow[] = [];
+        for (const r of obs.rows) {
+          if (r.context !== undefined && r.context !== oc) obs.contextExcludedRows.push({ id: r.id, context: r.context });
+          else keep.push(r);
+        }
+        obs.rows = keep;
+      }
+    }
+
     if (obs.rows.length === 1) {
       obs.match = obs.rows[0].id;
       obs.class = obs.rows[0].class;
@@ -795,6 +829,34 @@ export function remedyClassOf(
   }
   sinks.sort((a, b) => (a.anchor < b.anchor ? -1 : a.anchor > b.anchor ? 1 : 0));
   return { table: tableInfo, sinks };
+}
+
+/**
+ * The output context at the fix version's writer sinks of this shape: the
+ * markup written before the first tainted value in each call's argument,
+ * after any literal-only writes to the same writer earlier in the declaration.
+ * One context across the calls, else `unknown`.
+ */
+function outputContextOf(ctx: DeclCtx, sinkShape: TableCall): OutputContext {
+  const names = new Set(ctx.defs.filter(d => ctx.tainted.has(d.id)).map(d => d.variable));
+  const calls = ctx.calls
+    .filter(c => shapeMatch(sinkShape, c, ctx.ir) !== null)
+    .sort((a, b) => a.location.line - b.location.line || a.location.column - b.location.column);
+  const seen = new Set<OutputContext>();
+  for (const c of calls) {
+    const expr = c.arguments[0]?.expression;
+    if (!expr) continue;
+    const local = markupBefore(expr, names);
+    if (local === null) continue;
+    const earlier = calls
+      .filter(o => o !== c && o.receiver === c.receiver &&
+        (o.location.line < c.location.line || (o.location.line === c.location.line && o.location.column < c.location.column)))
+      .map(o => o.arguments[0]?.expression ?? '')
+      .filter(x => x.trim().startsWith('"') && markupBefore(x, names) === null && !/[A-Za-z_$]\s*\(/.test(x.replace(/"(?:[^"\\]|\\.)*"/g, '')))
+      .map(x => javaStringLiterals(x).join(''));
+    seen.add(htmlContextAt(earlier.join('') + local));
+  }
+  return seen.size === 1 ? [...seen][0] : 'unknown';
 }
 
 function matchedRow(row: ConstructRow, observed: StepObservation[]): MatchedRow {

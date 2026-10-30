@@ -231,3 +231,14 @@ constructs:
   });
 });
 
+describe('outputContext', () => {
+  it('is passed through when asked for and absent otherwise', async () => {
+    const plain = await runRemedyClass(sqlPair, { table: TABLE }, { cwe: 89, language: 'java' });
+    expect((site(plain)?.observation as Record<string, unknown>).outputContext).toBeUndefined();
+    expect((paths(plain)[0].observation as { sink: Record<string, unknown> }).sink.outputContext).toBeUndefined();
+    const asked = await runRemedyClass(sqlPair, { table: TABLE }, { cwe: 89, language: 'java', outputContext: true });
+    expect(site(asked)?.observation).toMatchObject({ outputContext: true });
+    expect((paths(asked)[0].observation as { sink: Record<string, unknown> }).sink.outputContext).toBe('unknown');
+  });
+});
+

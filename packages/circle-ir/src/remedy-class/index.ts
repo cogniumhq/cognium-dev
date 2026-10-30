@@ -34,3 +34,5 @@ export type {
   RemedyClassResult,
   RemedyClassOptions,
 } from './match.js';
+export { htmlContextAt, markupBefore, javaStringLiterals } from './output-context.js';
+export type { OutputContext } from './output-context.js';
