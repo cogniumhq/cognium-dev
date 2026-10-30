@@ -1614,7 +1614,9 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
 
   // (a) locally constructed map
   const ctorRe = new RegExp(
-    `\\b${recv}\\s*=\\s*new\\s+(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
+    // `new HashMap<>()` or the qualified `new java.util.HashMap<>()` (OWASP
+    // BenchmarkJava writes the qualified form throughout).
+    `\\b${recv}\\s*=\\s*new\\s+(?:java\\.util\\.(?:concurrent\\.)?)?(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
   );
   if (!lines.some(l => ctorRe.test(l))) return false;
 
