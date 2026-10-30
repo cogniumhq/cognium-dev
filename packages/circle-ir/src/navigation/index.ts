@@ -43,6 +43,8 @@ export {
   type RouteRegistrarTable,
   type DecoratorEntryRow,
   type TestRunnerTable,
+  type ToolFileRow,
+  type ExpoTable,
 } from './ts-entry-tables.js';
 export {
   buildJavaGraph,

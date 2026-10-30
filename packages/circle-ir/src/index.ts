@@ -297,6 +297,8 @@ export type {
   EntryKind,
   EntryCertainty,
   EntryTables,
+  ToolFileRow,
+  ExpoTable,
   JavaSourceFile,
   JavaGraphOptions,
   JavaGraph,
