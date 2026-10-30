@@ -10,17 +10,19 @@
  * receiver type, arguments, imports), DFG defs, uses and def-to-def chains,
  * and the fix version's taint sources.
  *
- * Observed in this version: `call` (type, methods, arg, ctor, static),
- * `arg-is: tainted | untainted`, `arg-literal-in`, `role: sink-replacement |
- * binder | sanitizer`, `name` / `order`, `any`, `all`, `missing`,
- * `sink-removed`. Not observed yet: `role: guard | normalizer`, `on`,
- * `arg-is: from-allowlist`, `template`, `receiver-from` on a step. A row that
- * needs one of these **abstains**; it is never reported as unmatched.
+ * Observed: `call` (type, methods, arg, ctor, static), `arg-is: tainted |
+ * untainted | from-allowlist`, `arg-literal-in`, `role: sink-replacement |
+ * binder | sanitizer | guard | normalizer`, `on`, `name` / `order`, `any`,
+ * `all`, `missing`, `sink-removed`. A guard needs branch facts
+ * (`deriveBranchFacts`) for the fix version's files. Not observed:
+ * `template` and `receiver-from` on a step. A row that needs a step it
+ * cannot observe **abstains**; it is never reported as unmatched.
  *
  * Pure: IR in, values out. Browser and Node compatible.
  */
 
-import { qualifiedMethodName, typePath } from '../path-set/path-set.js';
+import { sideOf, type BranchFact } from '../path-set/branches.js';
+import { lineDominates, qualifiedMethodName, typePath } from '../path-set/path-set.js';
 import type { DeclRef, PathChange, PathSetDiff, PathSink } from '../path-set/types.js';
 import type { StableIdFile } from '../stable-ids/types.js';
 import type { CallInfo, CircleIR, DFGDef, ProjectAnalysis } from '../types/index.js';
@@ -70,7 +72,7 @@ export interface RemedySinkObservation {
   /** `<path key>:sink` */
   anchor: string;
   pathKey: string;
-  change: Extract<PathChange, 'removed' | 'sanitized'>;
+  change: Extract<PathChange, 'removed' | 'sanitized' | 'guarded'>;
   /** The baseline sink. */
   sink: {
     /** Table sink id, or `unlisted` when no table sink has its call shape. */
@@ -120,6 +122,7 @@ export class TableRefused extends Error {
 interface DeclCtx {
   file: string;
   ir: CircleIR;
+  branches?: BranchFact[];
   calls: CallInfo[];
   defs: DFGDef[];
   /** Def ids whose value derives from a taint seed. */
@@ -363,6 +366,8 @@ interface EvalEnv {
   ctx: DeclCtx | undefined;
   /** Calls at the fix version that match one of the row's applies-to sinks. */
   sinkCalls: CallInfo[];
+  /** Of those, the ones whose result feeds no other (the file access, not the path building). */
+  endpointCalls: CallInfo[];
   pathRemoved: boolean;
   names: Map<string, Hit[]>;
   observed: StepObservation[];
@@ -386,10 +391,21 @@ function resultDef(ctx: DeclCtx, c: CallInfo): DFGDef | undefined {
   return before[0];
 }
 
+/** The call on the same line whose receiver or an argument holds `c` (`c` is nested in it). */
+function enclosingCall(ctx: DeclCtx, c: CallInfo): CallInfo | undefined {
+  return ctx.calls.find(o =>
+    o !== c && o.location.line === c.location.line &&
+    ((o.receiver ?? '').includes(`${c.method_name}(`) || o.arguments.some(a => a.expression.includes(`${c.method_name}(`))),
+  );
+}
+
 /** Does `a`'s result (or receiver object) reach `b`'s receiver or an argument? */
-function reaches(ctx: DeclCtx, a: CallInfo, b: CallInfo): boolean {
+function reaches(ctx: DeclCtx, a: CallInfo, b: CallInfo, depth = 0): boolean {
   const texts = [b.receiver ?? '', ...b.arguments.map(x => x.expression)];
   if (texts.some(t => t.includes(`${a.method_name}(`)) && a.location.line === b.location.line) return true;
+  // a nested call reaches whatever the call holding it reaches (`base.resolve(n).normalize()`)
+  const outer = enclosingCall(ctx, a);
+  if (outer && depth < 8) return outer === b || reaches(ctx, outer, b, depth + 1);
   const def = resultDef(ctx, a);
   if (def) {
     const reach = ctx.reach(def.id);
@@ -418,18 +434,16 @@ function reachesByName(ctx: DeclCtx, a: CallInfo, b: CallInfo, texts: string[]):
   return texts.some(t => [...identifiers(t)].some(n => declared.has(n) && usedUndefined.has(n)));
 }
 
-function unobservableReason(step: MatchStep): string | undefined {
+function unobservableReason(step: MatchStep, env: EvalEnv): string | undefined {
   if (step.template) return 'template-not-read';
-  if (step.role === 'guard' || step.role === 'normalizer') return `step-not-observed:${step.role}`;
-  if (step.on !== undefined) return 'step-not-observed:on';
-  if (step.argIs === 'from-allowlist') return 'step-not-observed:from-allowlist';
   if (step.call?.receiverFrom) return 'step-not-observed:receiver-from';
   if (step.argLiteralIn && !step.call) return 'step-not-observed:arg-literal-in-without-call';
+  if ((step.role === 'guard' || step.on !== undefined) && env.ctx && !env.ctx.branches) return 'step-not-observed:guard-without-branch-facts';
   return undefined;
 }
 
 function evalStep(step: MatchStep, path: string, env: EvalEnv): StepResult {
-  const why = unobservableReason(step);
+  const why = unobservableReason(step, env);
   if (why) {
     env.observed.push({ path, holds: false });
     return { holds: false, unobservable: why, hits: [] };
@@ -500,12 +514,17 @@ function callHits(step: MatchStep, env: EvalEnv): Hit[] {
     if (step.argIs) {
       let exprs = argsAt(c, want.arg ?? 0) ?? [];
       if (exprs.length === 0) continue;
-      // `untainted` on an argument vector (array or list literal) reads its program element, element 0
-      if (step.argIs === 'untainted') exprs = exprs.map(e => leadingElement(e) ?? e);
-      const flags = exprs.map(e => argTainted(ctx, c, e));
-      if (step.argIs === 'tainted' && !flags.some(Boolean)) continue;
-      if (step.argIs === 'untainted' && flags.some(Boolean)) continue;
+      if (step.argIs === 'from-allowlist') {
+        if (!allowlisted(ctx, c, exprs)) continue;
+      } else {
+        // `untainted` on an argument vector (array or list literal) reads its program element, element 0
+        if (step.argIs === 'untainted') exprs = exprs.map(e => leadingElement(e) ?? e);
+        const flags = exprs.map(e => argTainted(ctx, c, e));
+        if (step.argIs === 'tainted' && !flags.some(Boolean)) continue;
+        if (step.argIs === 'untainted' && flags.some(Boolean)) continue;
+      }
     }
+    if ((step.role === 'guard' || step.on !== undefined) && !guards(ctx, c, step.on ?? true, env)) continue;
     if (step.argLiteralIn) {
       const lit = leadingLiteral(c, want.arg);
       if (lit === null || !step.argLiteralIn.includes(lit)) continue;
@@ -515,6 +534,57 @@ function callHits(step: MatchStep, env: EvalEnv): Hit[] {
   }
   out.sort((a, b) => a.call.location.line - b.call.location.line || a.call.location.column - b.call.location.column);
   return out;
+}
+
+/** Identifiers of an expression that name values, not called methods. */
+function valueNames(expr: string): Set<string> {
+  return identifiers(expr.replace(/[A-Za-z_$][\w$]*\s*\(/g, '('));
+}
+
+/**
+ * A local variable chosen from a finite set of literals: at least two defs in
+ * the declaration, and every def written with no call and no other variable on
+ * its line (a `switch` or `if` chain of `v = "literal";`, or a bare declaration).
+ */
+function literalChoice(ctx: DeclCtx, name: string): boolean {
+  const defs = ctx.defs.filter(d => d.variable === name);
+  if (defs.length < 2 || defs.some(d => d.kind !== 'local')) return false;
+  return defs.every(d =>
+    !ctx.calls.some(c => c.location.line === d.line) &&
+    !ctx.ir.dfg.uses.some(u => u.line === d.line && u.variable !== name),
+  );
+}
+
+/**
+ * `arg-is: from-allowlist`: no argument is tainted, and at least one names a
+ * variable chosen from literals (`literalChoice`); the rest are literals or
+ * untainted values. A `contains` guard over a literal set is not read in this
+ * version (the switch and if-chain forms are).
+ */
+function allowlisted(ctx: DeclCtx, c: CallInfo, exprs: string[]): boolean {
+  if (exprs.some(e => argTainted(ctx, c, e))) return false;
+  return exprs.some(e => [...valueNames(e)].some(n => literalChoice(ctx, n)));
+}
+
+/**
+ * `role: guard` with `on`: a branch whose condition makes this call decides
+ * which side the endpoint sinks run on, and on that side the call returned
+ * `on`; the condition's block dominates each of them in the CFG. The targets
+ * are the endpoint sinks with a tainted argument, else all endpoint sinks.
+ */
+function guards(ctx: DeclCtx, c: CallInfo, on: boolean, env: EvalEnv): boolean {
+  const fact = ctx.branches?.find(f => f.calls.some(bc => bc.line === c.location.line && bc.method === c.method_name));
+  if (!fact) return false;
+  const bc = fact.calls.find(x => x.line === c.location.line && x.method === c.method_name) as BranchFact['calls'][number];
+  const tainted = env.endpointCalls.filter(t => t.arguments.some(a => argTainted(ctx, t, a.expression)));
+  const targets = tainted.length > 0 ? tainted : env.endpointCalls;
+  if (targets.length === 0) return false;
+  return targets.every(t => {
+    if (t.location.line <= fact.line) return false;
+    const side = sideOf(fact, t.location.line);
+    if (side === 'both') return false;
+    return (side !== bc.negated) === on && lineDominates(ctx.ir, fact.line, t.location.line);
+  });
 }
 
 function orderHolds(order: [string, string], env: EvalEnv): boolean {
@@ -565,6 +635,8 @@ function tableSinkOf(
 export interface RemedyClassOptions {
   /** `ids@0.1` per file at each version, as given to `pathSetDiff`. */
   stableIds?: { before?: Record<string, StableIdFile>; after?: Record<string, StableIdFile> };
+  /** Branch facts per file at the fix version (`deriveBranchFacts`); guard steps need them. */
+  branches?: { after?: Record<string, BranchFact[]> };
 }
 
 /**
@@ -590,7 +662,7 @@ export function remedyClassOf(
 
   const sinks: RemedySinkObservation[] = [];
   for (const e of diff.entries) {
-    if ((e.change !== 'removed' && e.change !== 'sanitized') || !e.before) continue;
+    if ((e.change !== 'removed' && e.change !== 'sanitized' && e.change !== 'guarded') || !e.before) continue;
     const base = e.before;
     const seedParameters = base.source.decl.id !== base.sink.decl.id;
     const obs: RemedySinkObservation = {
@@ -619,12 +691,15 @@ export function remedyClassOf(
     const afterIr = irAfter.get(base.sink.file);
     const ids = options.stableIds?.after?.[base.sink.file];
     const ctx = afterIr ? buildCtx(base.sink.file, afterIr, base.sink.decl, ids, seedParameters) : undefined;
+    const br = options.branches?.after?.[base.sink.file];
+    if (ctx && br) ctx.branches = br;
 
     for (const row of rows) {
       if (!row.appliesTo.includes(label.id)) continue;
       const rowSinks = table.sinks.filter(s => row.appliesTo.includes(s.id) && s.call);
       const sinkCalls = ctx ? ctx.calls.filter(c => rowSinks.some(s => shapeMatch(s.call as TableCall, c, ctx.ir))) : [];
-      const env: EvalEnv = { ctx, sinkCalls, pathRemoved: e.change === 'removed', names: new Map(), observed: [] };
+      const endpointCalls = ctx ? sinkCalls.filter(c => !sinkCalls.some(o => o !== c && reaches(ctx, c, o))) : [];
+      const env: EvalEnv = { ctx, sinkCalls, endpointCalls, pathRemoved: e.change === 'removed', names: new Map(), observed: [] };
       const r = evalStep(row.match, '/match', env);
       if (r.holds) obs.rows.push(matchedRow(row, env.observed));
       else if (r.unobservable) obs.abstainedRows.push({ id: row.id, reason: r.unobservable });

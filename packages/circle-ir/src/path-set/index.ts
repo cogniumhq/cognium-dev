@@ -12,7 +12,10 @@ export {
   declAt,
   changeOf,
   normalizeCwe,
+  lineDominates,
 } from './path-set.js';
+export { deriveBranchFacts, sideOf } from './branches.js';
+export type { BranchFact, BranchCall, BranchRange, BranchSide } from './branches.js';
 export type { PathSetInput, PathSetOptions } from './path-set.js';
 export { PATH_KEY_SCHEME } from './types.js';
 export type {
@@ -22,6 +25,7 @@ export type {
   PathEnd,
   PathSource,
   PathSink,
+  PathGuard,
   PathState,
   PathEntry,
   PathSet,

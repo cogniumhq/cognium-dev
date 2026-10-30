@@ -309,6 +309,9 @@ export {
   declAt,
   changeOf,
   normalizeCwe,
+  lineDominates,
+  deriveBranchFacts,
+  sideOf,
 } from './path-set/index.js';
 export type {
   PathSetInput,
@@ -319,8 +322,13 @@ export type {
   PathEnd,
   PathSource,
   PathSink,
+  PathGuard,
   PathState,
   PathEntry,
+  BranchFact,
+  BranchCall,
+  BranchRange,
+  BranchSide,
   PathSet,
   PathChange,
   PathDiffEntry,
