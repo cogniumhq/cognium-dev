@@ -90,6 +90,7 @@ internals. Both are picked up by `bun test`; name either `*.test.ts`.
 | `tests/dedupe-vulnerabilities.test.ts` | finding deduplication |
 | `tests/registry.test.ts` | rule registry |
 | `tests/e2e.test.ts` | CLI end-to-end, real scans |
+| `tests/graph-facts.test.ts` | `deadcode` / `reach` / `entries` on fixtures |
 | `src/sbom.test.ts` | SBOM generation |
 | `src/exclude-tests.test.ts` | test-file classification |
 

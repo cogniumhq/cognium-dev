@@ -43,6 +43,19 @@ import { parseArgs, showHelp, showVersion } from './utils/args.js';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { colors } from './utils/colors.js';
+import {
+  computeDeadCode,
+  computeEntries,
+  computeReach,
+  deadCodeJson,
+  deadCodeSarif,
+  deadCodeText,
+  entriesText,
+  parseDeadCodeOptions,
+  parseEntriesOptions,
+  parseReachOptions,
+  reachText,
+} from './graph-facts.js';
 
 // =============================================================================
 // Configuration Types
@@ -2157,6 +2170,47 @@ async function main(): Promise<void> {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
       throw e;
     }
+    return;
+  }
+
+  // Graph facts: dead code, removal reach, entry points. Options are refused
+  // before any file is read (#1006); stdout drains before exit (#1001).
+  if (command === 'deadcode' || command === 'reach' || command === 'entries') {
+    const target = args[0] ?? '.';
+    try {
+      let payload: string;
+      let outputFile: string | undefined;
+      if (command === 'deadcode') {
+        const opts = parseDeadCodeOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeDeadCode(target, opts);
+        payload = opts.format === 'json' ? deadCodeJson(report)
+          : opts.format === 'sarif' ? deadCodeSarif(report) : deadCodeText(report);
+      } else if (command === 'reach') {
+        const opts = parseReachOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeReach(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : reachText(report);
+      } else {
+        const opts = parseEntriesOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeEntries(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : entriesText(report);
+      }
+      if (outputFile) {
+        writeFileSync(outputFile, payload + '\n');
+        console.error(`Wrote ${outputFile}`);
+      } else {
+        process.stdout.write(payload + '\n');
+      }
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      throw e;
+    }
+    await exitAfterFlush(0);
     return;
   }
 
