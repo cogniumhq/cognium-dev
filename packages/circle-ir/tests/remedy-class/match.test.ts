@@ -283,7 +283,7 @@ describe('remedyClassOf — CWE-89', () => {
       expect(s.rows).toEqual([]);
       expect(s.class).toBeUndefined();
     }
-    const noAllowlist = SQL_TABLE.replace(/  - id: S89-2[\s\S]*?sources: \[doc\]\n/, '');
+    const noAllowlist = SQL_TABLE.replace(/ {2}- id: S89-2[\s\S]*?sources: \[doc\]\n/, '');
     const r2 = await observe(89, noAllowlist, SQL_BASE, SQL_PARSE);
     expect(r2.sinks.length).toBeGreaterThan(0);
     for (const s of r2.sinks) expect(s).toMatchObject({ match: 'unrecognized', reason: 'no-row-holds' });
