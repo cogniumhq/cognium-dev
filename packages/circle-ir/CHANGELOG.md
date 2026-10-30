@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`findingDiff(before, after)` — S-C7 `finding-diff@0.1` (version pair; FX-3 in conformis).** Returns `changedLines` per file (a Myers line diff of the two versions; `diffLines`/`splitLines` exported), `newFindings[]` — findings at the new version (taint flows, cross-file paths and pass findings) whose source or sink, or line, sits on a changed line and that have no match at the old version, each `{rule, cwe, file, line, kind, onChangedLine, source?, matchedBy}` — and `partial[]` (`diff-too-large`, `not-analysed`, `parse-error`, budget flags). A finding is matched by stable declaration ids (`matchedBy: 'stable-id'`) where `ids@0.1` covers both versions of its files, otherwise by rule × file × line mapped through the diff (`rule-file-line`). Facts only; no verdict. **Additive.**
 - **Go stable ids and graph facts: `deriveGoIds()` and `buildGoGraph()` (`go-graph@0.1`).** `ids@0.1` now covers Go (`stableIdsSupport('go')`), and `reach`, `deadCode` and `removalReach` run on Go unchanged.
   - **Ids:** a package is its directory. Qualified names are `<dir>:<Func>` and `<dir>:<Type>.<Method>`; the receiver's pointer is not part of the name, and `init` is keyed by file. The signature holds parameter and result types only, so renaming a parameter does not re-key a function.
   - **Call edges** from the syntax tree, with local typing (receivers, parameters, `x := T{}`, `x := NewT()`, struct fields, function results):
