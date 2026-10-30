@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **JS/TS `Array.push` / `Array.find` are no longer open-redirect / NoSQL sinks** (cognium-dev#1000).
+  - `out.push(x)` matched the Next.js `router.push` / `router.replace` CWE-601 entries (class `router`) through the receiver-name heuristic (`out` is a substring of `router`). With no resolved receiver type, the receiver's last name must now be a navigation object (`router`, `history`, `navigat…`, `nav`); `this.router.push(url)` and `router.replace(url)` still fire.
+  - `ancestors.find(meaningful)` matched the classless JS `find` NoSQL entry, because only arrow / `function` predicates were dropped (cognium-ai#279). SinkFilterPass Stage 15g now also drops `find`/`filter`/`some`/`every`/`findIndex`/`findLast` when the single argument names a function declared in the file, or the receiver is declared as an array (`= [`, `: T[]`, `Array<…>`, `new Array`, `Array.from`). `collection.find({...})` and `collection.find(filter)` still fire.
+  - On our own code (Cognium-on-Cognium baseline) `open_redirect` goes from 26 to 0 and `nosql_injection` from 2 to 1.
+
 ### Added
 - **Opt-in per-file analysis time limit: `AnalyzerOptions.fileTimeoutMs`** (cognium-dev#1007). `0` or omitted keeps today's behaviour, byte for byte. When set, `analyze()` checks the limit after parsing and between pipeline passes and throws the new exported `AnalysisTimeoutError` (`file`, `elapsedMs`, `phase`) once it is passed; a phase already running is not interrupted, because the work is synchronous. `analyzeProject` catches it, skips that file and lists it in the new `ProjectAnalysis.timed_out_files`, so a slow file is reported, never mistaken for a clean one.
 - **`findingDiff(before, after)` — S-C7 `finding-diff@0.1` (version pair; FX-3 in conformis).** Returns `changedLines` per file (a Myers line diff of the two versions; `diffLines`/`splitLines` exported), `newFindings[]` — findings at the new version (taint flows, cross-file paths and pass findings) whose source or sink, or line, sits on a changed line and that have no match at the old version, each `{rule, cwe, file, line, kind, onChangedLine, source?, matchedBy}` — and `partial[]` (`diff-too-large`, `not-analysed`, `parse-error`, budget flags). A finding is matched by stable declaration ids (`matchedBy: 'stable-id'`) where `ids@0.1` covers both versions of its files, otherwise by rule × file × line mapped through the diff (`rule-file-line`). Facts only; no verdict. **Additive.**

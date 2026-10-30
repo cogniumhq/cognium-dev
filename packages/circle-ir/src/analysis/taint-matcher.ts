@@ -1799,6 +1799,19 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
 }
 
 /**
+ * cognium-dev#1000 — is this receiver named like a navigation object
+ * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
+ * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
+ * when the receiver's type is unresolved.
+ */
+function isNavigationReceiverName(receiver: string | null | undefined): boolean {
+  const r = (receiver ?? '').trim();
+  if (!r) return false;
+  const last = r.slice(r.lastIndexOf('.') + 1).replace(/\(\)$/, '');
+  return /router|history|navigat|^nav$/i.test(last);
+}
+
+/**
  * cognium-dev#985 — JS/TS `Connection.get` carries `allow_unresolved_receiver`,
  * so in-memory `Map` / property-bag `.get()` calls (e.g. `properties.get(prop)`,
  * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
@@ -2527,6 +2540,25 @@ function findSinks(
 
         // cognium-dev#629 — no-argument response writers are not XSS sinks.
         if (isArgumentlessJsResponseWriter(call, pattern, language)) {
+          continue;
+        }
+
+        // cognium-dev#1000 — the Next.js `router.push` / `router.replace`
+        // CWE-601 entries (class `router`) were reached through the
+        // receiver-name heuristic, which accepts any short receiver that is a
+        // substring of `router` (`out`, `rout…`). `out.push(x)` on an array is
+        // the common case. With no resolved receiver type, require the
+        // receiver's last name to actually be a router / history / navigation
+        // object; a resolved type (`useRouter()`) is matched before this point.
+        if (
+          pattern.type === 'open_redirect' &&
+          (language === 'javascript' || language === 'typescript') &&
+          (call.method_name === 'push' || call.method_name === 'replace') &&
+          (pattern.class ?? '').toLowerCase() === 'router' &&
+          !call.receiver_type &&
+          !call.receiver_type_fqn &&
+          !isNavigationReceiverName(call.receiver)
+        ) {
           continue;
         }
 
