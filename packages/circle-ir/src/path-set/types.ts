@@ -57,6 +57,24 @@ export interface PathSink extends PathEnd {
    * endpoint, and the flagged sink is kept here.
    */
   intermediate?: { line: number; call: { class?: string; method?: string; argPositions?: number[] }; code?: string };
+  /**
+   * Set when the sink call hands the value to a view under a literal name and
+   * template facts were supplied: the template constructs that render that name.
+   */
+  templates?: TemplateUse[];
+}
+
+/** A template construct that renders a value a sink handed to a view. */
+export interface TemplateUse {
+  file: string;
+  line: number;
+  engine: 'thymeleaf' | 'jsp';
+  construct: string;
+  element?: string;
+  inAttribute?: string;
+  attributes: Record<string, string>;
+  /** The handed names the construct reads. */
+  names: string[];
 }
 
 /** A check of the path's own data that the endpoint runs on one side of. */
@@ -93,8 +111,34 @@ export interface PathEntry {
   /** Hops of the first variant (by source then sink position). */
   hops: PathHop[];
   confidence: number;
+  /**
+   * Unresolved edges on this path at this pin: unresolved items (and unresolved
+   * cross-file calls) on the lines the path occupies — its source, sink and hop
+   * lines, and the lines in its source and sink declarations that use the
+   * path's variables. Each site says whether it is the sink call itself and
+   * whether any candidate target is a type defined in the analysed tree.
+   */
+  unresolved: PathUnresolved;
   /** Present when `state` is `guarded`. */
   guard?: PathGuard;
+}
+
+export interface UnresolvedSite {
+  file: string;
+  line: number;
+  type: 'virtual_dispatch' | 'taint_propagation' | 'reflection' | 'dynamic_call' | 'cross_file_call';
+  reason: string;
+  code: string;
+  /** The unresolved call is the path's sink call itself. */
+  atSink: boolean;
+  /** Some candidate target names a type defined in the analysed tree (it could continue the path there). */
+  inProject: boolean;
+}
+
+export interface PathUnresolved {
+  count: number;
+  /** Sorted by file, line, type. */
+  sites: UnresolvedSite[];
 }
 
 export interface PathSet {
@@ -115,6 +159,11 @@ export interface PathDiffEntry {
   key: string;
   state: { before: PathState; after: PathState };
   change: PathChange;
+  /**
+   * The templates this path's sink hands to render it with different constructs
+   * or attributes at the two versions (a fix made in a view, not in code).
+   */
+  templateChanged?: true;
   before?: PathEntry;
   after?: PathEntry;
 }

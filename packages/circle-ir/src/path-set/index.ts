@@ -13,8 +13,11 @@ export {
   changeOf,
   normalizeCwe,
   lineDominates,
+  handedNames,
 } from './path-set.js';
 export { deriveBranchFacts, sideOf } from './branches.js';
+export { deriveTemplateFacts, templateEngineOf, expressionNames } from './templates.js';
+export type { TemplateFact, TemplateEngine } from './templates.js';
 export type { BranchFact, BranchCall, BranchRange, BranchSide } from './branches.js';
 export type { PathSetInput, PathSetOptions } from './path-set.js';
 export { PATH_KEY_SCHEME } from './types.js';
@@ -26,6 +29,9 @@ export type {
   PathSource,
   PathSink,
   PathGuard,
+  PathUnresolved,
+  UnresolvedSite,
+  TemplateUse,
   PathState,
   PathEntry,
   PathSet,

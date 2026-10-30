@@ -39,6 +39,8 @@ export interface ReachInput {
   edges: readonly { from: string; to: string; tier: Tier; site: ReachSite; methodName: string }[];
   references?: readonly { from: string; to: string; site: ReachSite }[];
   imports?: readonly { from: string; to: string }[];
+  /** Extra strong `loads` edges: running `from` initializes `to` (Java: a member initializes its class). */
+  loads?: readonly { from: string; to: string }[];
   unresolved: readonly { from: string; methodName: string; site: ReachSite; reason: UnresolvedReason }[];
   entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number }[];
   unresolvedRegistrations?: readonly { site: ReachSite; reason: string; evidence: string }[];
@@ -128,6 +130,7 @@ export class ReachGraph {
     for (const e of input.edges) add(e.from, { to: e.to, relation: 'call', strong: e.tier !== 'inferred', tier: e.tier, site: e.site });
     for (const r of input.references ?? []) add(r.from, { to: r.to, relation: 'reference', strong: false, site: r.site });
     for (const i of input.imports ?? []) add(i.from, { to: i.to, relation: 'import', strong: true });
+    for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true });
     for (const f of input.files) {
       const module = f.decls[0];
       for (const d of f.decls) {
@@ -137,7 +140,11 @@ export class ReachGraph {
         if (!parent) continue;
         const nested = d.flags.includes('unstable:anonymous');
         const topValue = parent === module && d.kind === 'field';
-        const classPart = parent.kind === 'type' && (d.kind === 'field' || (d.kind === 'method' && d.name === 'constructor'));
+        // A class creates its fields and runs its static initializer; in
+        // TypeScript a class used as a value may also be constructed, while
+        // a Java constructor runs only when called (the call graph has it).
+        const ctor = d.kind === 'method' && (d.name === '<clinit>' || (d.name === 'constructor' && f.language !== 'java'));
+        const classPart = parent.kind === 'type' && (d.kind === 'field' || ctor);
         if (nested || topValue || classPart) add(parent.id, { to: d.id, relation: 'contains', strong: true });
       }
     }

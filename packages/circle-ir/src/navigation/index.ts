@@ -4,7 +4,7 @@
  */
 
 export { buildNavigationIndex, NavigationIndex } from './navigation-index.js';
-export type { NavigationFile, BuildOptions } from './navigation-index.js';
+export type { NavigationFile, BuildOptions, IndexedCallSite, IndexedTarget } from './navigation-index.js';
 export type {
   AnswerEntry,
   CallSite,
@@ -44,3 +44,17 @@ export {
   type DecoratorEntryRow,
   type TestRunnerTable,
 } from './ts-entry-tables.js';
+export {
+  buildJavaGraph,
+  JAVA_GRAPH_SCHEME,
+  type JavaSourceFile,
+  type JavaGraphOptions,
+  type JavaGraph,
+} from './java-graph.js';
+export {
+  DEFAULT_JAVA_ENTRY_TABLES,
+  type JavaEntryTables,
+  type JavaAnnotationRow,
+  type JavaRouteRow,
+  type JavaServletRow,
+} from './java-entry-tables.js';

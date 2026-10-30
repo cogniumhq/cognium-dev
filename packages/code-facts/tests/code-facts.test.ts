@@ -186,3 +186,59 @@ describe('runRemedyClass', () => {
     expect(site(all)?.observation).toMatchObject({ scope: 'all', byMatch: { unrecognized: 1 } });
   });
 });
+
+describe('templates (Java trees)', () => {
+  const CTRL = 'src/main/java/demo/SearchController.java';
+  const CONTROLLER = `package demo;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
+@org.springframework.stereotype.Controller
+public class SearchController {
+  @GetMapping("/search")
+  public String search(@RequestParam String q, Model model) {
+    model.addAttribute("q", q);
+    return "search";
+  }
+}`;
+  const VIEW = 'src/main/webapp/WEB-INF/views/search.jsp';
+  const XSS_TABLE = TABLE.replace('cwe: 89', 'cwe: 79').replace(/sinks:[\s\S]*$/, `sinks:
+  - id: cout
+    template: { engine: jsp, construct: "c:out" }
+constructs:
+  - id: S79-2
+    class: safe
+    remedy-class: auto-escaping-template
+    applies-to: [cout]
+    match: { template: { engine: jsp, construct: "c:out", attribute: escapeXml, value: [absent, "true"] }, role: sink-replacement }
+    level: SHOULD
+    basis: cited
+    sources: [doc]
+`);
+
+  it('reads views beside the code: a fix in the view is observed with its row and changes the path digest', async () => {
+    const pair = {
+      before: tree('view-before', { [CTRL]: CONTROLLER, [VIEW]: '<p>Results for ${q}</p>' }),
+      after: tree('view-after', { [CTRL]: CONTROLLER, [VIEW]: '<p>Results for <c:out value="${q}"/></p>' }),
+    };
+    const ps = await runPathSetDiff(pair, {}, { cwe: 79, language: 'java' });
+    const e = paths(ps)[0].observation as { change: string; templateChanged?: boolean };
+    expect(e).toMatchObject({ change: 'unchanged', templateChanged: true });
+    const r = await runRemedyClass(pair, { table: XSS_TABLE }, { cwe: 79, language: 'java', pathSet: ps });
+    expect(paths(r)[0].observation).toMatchObject({ match: 'S79-2', templateChanged: true });
+    const same = { before: pair.before, after: tree('view-after-2', { [CTRL]: CONTROLLER, [VIEW]: '<p>Results for <c:out value="${q}" escapeXml="true"/></p>' }) };
+    const ps2 = await runPathSetDiff(same, {}, { cwe: 79, language: 'java' });
+    expect(paths(ps2)[0].inputDigest).not.toBe(paths(ps)[0].inputDigest);
+  });
+});
+
+describe('outputContext', () => {
+  it('is passed through when asked for and absent otherwise', async () => {
+    const plain = await runRemedyClass(sqlPair, { table: TABLE }, { cwe: 89, language: 'java' });
+    expect((site(plain)?.observation as Record<string, unknown>).outputContext).toBeUndefined();
+    expect((paths(plain)[0].observation as { sink: Record<string, unknown> }).sink.outputContext).toBeUndefined();
+    const asked = await runRemedyClass(sqlPair, { table: TABLE }, { cwe: 89, language: 'java', outputContext: true });
+    expect(site(asked)?.observation).toMatchObject({ outputContext: true });
+    expect((paths(asked)[0].observation as { sink: Record<string, unknown> }).sink.outputContext).toBe('unknown');
+  });
+});
+

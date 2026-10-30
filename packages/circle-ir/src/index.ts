@@ -42,6 +42,8 @@ export type {
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
 export { compareMavenVersions, canonicalMavenVersion } from './analysis/maven-version.js';
+export { compareSemver, parseSemver } from './analysis/semver-version.js';
+export type { ParsedSemver } from './analysis/semver-version.js';
 export { MavenDeclaredIndex } from './analysis/maven-declared.js';
 export type { DeclaredVersion, DeclaredOrigin, PomFile } from './analysis/maven-declared.js';
 export {
@@ -52,6 +54,7 @@ export {
   isConcreteVersion,
   diffAdvisoryMatches,
   diffDependencySets,
+  ADVISORY_ECOSYSTEMS,
 } from './analysis/advisories.js';
 export type {
   OsvRecord,
@@ -66,6 +69,7 @@ export type {
   DeltaMatch,
   AdvisoryDelta,
   DependencyDelta,
+  AdvisoryEcosystem,
 } from './analysis/advisories.js';
 
 // Per-pass option types (exported so consumers can type passOptions without importing from deep paths)
@@ -253,6 +257,9 @@ export {
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
   DEFAULT_ENTRY_TABLES,
+  buildJavaGraph,
+  JAVA_GRAPH_SCHEME,
+  DEFAULT_JAVA_ENTRY_TABLES,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -282,6 +289,12 @@ export type {
   EntryKind,
   EntryCertainty,
   EntryTables,
+  JavaSourceFile,
+  JavaGraphOptions,
+  JavaGraph,
+  JavaEntryTables,
+  IndexedCallSite,
+  IndexedTarget,
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
@@ -315,6 +328,10 @@ export {
   moduleNameFor,
   assignNodeIds,
   diffStableIds,
+  deriveJavaIds,
+  eraseJavaType,
+  derivePythonIds,
+  pythonModuleName,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';
@@ -346,6 +363,9 @@ export {
   sha256Digest,
   remedyClassOf,
   TableRefused,
+  htmlContextAt,
+  markupBefore,
+  javaStringLiterals,
 } from './remedy-class/index.js';
 export type {
   ArgPosition,
@@ -370,6 +390,7 @@ export type {
   RemedySinkObservation,
   RemedyClassResult,
   RemedyClassOptions,
+  OutputContext,
 } from './remedy-class/index.js';
 
 // Path sets: every source-to-sink path of one CWE, keyed across versions of a
@@ -387,6 +408,10 @@ export {
   lineDominates,
   deriveBranchFacts,
   sideOf,
+  deriveTemplateFacts,
+  templateEngineOf,
+  expressionNames,
+  handedNames,
 } from './path-set/index.js';
 export type {
   PathSetInput,
@@ -398,12 +423,17 @@ export type {
   PathSource,
   PathSink,
   PathGuard,
+  PathUnresolved,
+  UnresolvedSite,
   PathState,
   PathEntry,
   BranchFact,
   BranchCall,
   BranchRange,
   BranchSide,
+  TemplateFact,
+  TemplateEngine,
+  TemplateUse,
   PathSet,
   PathChange,
   PathDiffEntry,

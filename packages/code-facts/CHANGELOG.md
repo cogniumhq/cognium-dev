@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `runRemedyClass(…, { outputContext: true })` passes circle-ir's opt-in output context through, and the `site` anchor records that it was asked for. Off by default.
+- Java trees: server-side views (`.html`, `.htm`, `.jsp`, `.jspx`, `.tag`, `.tagx`) are read beside the code. Their template facts go to `path-set-diff` and `remedy-class`, so a fix made in a view is observed and matched against template rows. View files linked to a path count in its input digest. The HTML grammar is registered at init.
+
 ## [0.1.0] — unreleased
 
 ### Added
