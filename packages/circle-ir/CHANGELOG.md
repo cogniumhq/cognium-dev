@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SBOM licences, offline.** `licenseFromPackageJson(text)` reads a package's own `license` (string or legacy `{ type }`), else the legacy `licenses` array joined with ` OR `. `applyLicenses(deps, map)` fills missing licences from a caller's `LicenseMap` (`name@version` wins over `name`) and never overwrites one. Both are pure; the library still reads no files and no network.
+
 ### Fixed
 - **JS/TS `Array.push` / `Array.find` are no longer open-redirect / NoSQL sinks** (cognium-dev#1000).
   - `out.push(x)` matched the Next.js `router.push` / `router.replace` CWE-601 entries (class `router`) through the receiver-name heuristic (`out` is a substring of `router`). With no resolved receiver type, the receiver's last name must now be a navigation object (`router`, `history`, `navigat…`, `nav`); `this.router.push(url)` and `router.replace(url)` still fire.
