@@ -40,7 +40,7 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
-import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush } from './utils/options.js';
+import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { colors } from './utils/colors.js';
 import {
@@ -2204,7 +2204,7 @@ async function main(): Promise<void> {
         writeFileSync(outputFile, payload + '\n');
         console.error(`Wrote ${outputFile}`);
       } else {
-        process.stdout.write(payload + '\n');
+        writeStdout(payload + '\n');
       }
     } catch (e) {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
