@@ -39,6 +39,13 @@ export interface Meta {
 // 2. Types (Classes, Interfaces, Enums)
 // =============================================================================
 
+/** A decorator with its arguments (TypeScript; under `AnalyzerOptions.declarationDetail`). */
+export interface DecoratorInfo {
+  name: string;
+  /** Each argument's source text, and its value when it is a string literal. */
+  arguments: { text: string; value?: string }[];
+}
+
 export interface TypeInfo {
   name: string;
   kind: "class" | "interface" | "enum";
@@ -85,6 +92,13 @@ export interface TypeInfo {
    * parameter is bounded.
    */
   type_parameter_bounds?: Record<string, string>;
+  /**
+   * TypeScript/JavaScript: `export`, `default`, `abstract`, `declare`.
+   * Present only under `AnalyzerOptions.declarationDetail`.
+   */
+  modifiers?: string[];
+  /** Class decorators with arguments. Present only under `AnalyzerOptions.declarationDetail`. */
+  decorators?: DecoratorInfo[];
 }
 
 export interface MethodInfo {
@@ -105,6 +119,8 @@ export interface MethodInfo {
   type_parameters?: string[];
   /** Each bounded method type parameter's leftmost bound, as written. See `TypeInfo.type_parameter_bounds`. */
   type_parameter_bounds?: Record<string, string>;
+  /** Method decorators with arguments. Present only under `AnalyzerOptions.declarationDetail`. */
+  decorators?: DecoratorInfo[];
 }
 
 export interface ParameterInfo {
@@ -112,6 +128,8 @@ export interface ParameterInfo {
   type: string | null;
   annotations: string[];  // ["RequestParam", "PathVariable", etc.]
   line?: number;  // Line number where parameter is defined (for taint tracking)
+  /** Parameter decorators with arguments. Present only under `AnalyzerOptions.declarationDetail`. */
+  decorators?: DecoratorInfo[];
 }
 
 export interface FieldInfo {
@@ -119,6 +137,8 @@ export interface FieldInfo {
   type: string | null;
   modifiers: string[];
   annotations: string[];
+  /** Field decorators with arguments. Present only under `AnalyzerOptions.declarationDetail`. */
+  decorators?: DecoratorInfo[];
 }
 
 // =============================================================================
