@@ -133,6 +133,7 @@ SBOM OPTIONS:
                                - spdx:      SPDX 2.3 JSON (Linux Foundation)
   --name <name>              Project name in the document [default: package.json name or dir]
   --prod-only                Exclude dev/test dependencies
+  --license-map <file>       JSON {"name@version"|"name": "<SPDX>"} for licences not found in node_modules
   --deterministic            Omit timestamp / serialNumber / namespace for reproducible output
   -o, --output <file>        Write the document to a file (default: stdout)
                                Discovers package.json / requirements.txt / pyproject.toml /
@@ -161,6 +162,7 @@ EXAMPLES:
   cognium-dev sbom .                                 # CycloneDX 1.5 to stdout
   cognium-dev sbom . -f spdx -o sbom.spdx.json       # SPDX 2.3 to a file
   cognium-dev sbom . --prod-only --deterministic     # reproducible, no dev deps
+  cognium-dev sbom . --license-map licences.json     # licences offline; node_modules read first
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init

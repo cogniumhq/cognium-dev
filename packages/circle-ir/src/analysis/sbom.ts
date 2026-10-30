@@ -1004,6 +1004,57 @@ export function collectDependencies(ctx: DependencyContext | undefined): Depende
 }
 
 // ---------------------------------------------------------------------------
+// licences (offline; the library never reads files or the network)
+// ---------------------------------------------------------------------------
+
+/**
+ * Offline licence map: keys are `name@version` (exact) or `name` (any
+ * version); values are SPDX expressions or names. `name@version` wins.
+ */
+export type LicenseMap = Record<string, string>;
+
+/**
+ * The licence a package's own `package.json` declares, as one expression:
+ * `license` (string, or the legacy `{ type }` object), else the legacy
+ * `licenses: [{ type }]` array joined with ` OR `. `undefined` when the text
+ * does not parse or declares none.
+ */
+export function licenseFromPackageJson(packageJson: string): string | undefined {
+  let pkg: unknown;
+  try { pkg = JSON.parse(packageJson); } catch { return undefined; }
+  if (!pkg || typeof pkg !== 'object') return undefined;
+  const rec = pkg as Record<string, unknown>;
+  const one = (v: unknown): string | undefined => {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (v && typeof v === 'object') {
+      const t = (v as Record<string, unknown>).type;
+      if (typeof t === 'string' && t.trim()) return t.trim();
+    }
+    return undefined;
+  };
+  const direct = one(rec.license);
+  if (direct) return direct;
+  if (Array.isArray(rec.licenses)) {
+    const all = rec.licenses.map(one).filter((x): x is string => !!x);
+    if (all.length === 1) return all[0];
+    if (all.length > 1) return `(${all.join(' OR ')})`;
+  }
+  return undefined;
+}
+
+/**
+ * Fill in `license` from an offline map for dependencies that have none.
+ * Returns new objects; an existing `license` is never overwritten.
+ */
+export function applyLicenses(deps: Dependency[], map: LicenseMap): Dependency[] {
+  return deps.map((d) => {
+    if (d.license) return d;
+    const lic = map[`${d.name}@${d.version}`] ?? map[d.name];
+    return lic ? { ...d, license: lic } : d;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // emitters
 // ---------------------------------------------------------------------------
 
