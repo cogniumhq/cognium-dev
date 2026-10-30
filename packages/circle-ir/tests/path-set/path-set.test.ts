@@ -178,7 +178,7 @@ describe('pathSetOf — one tree', () => {
 describe('pathSetDiff — two trees', () => {
   it('keeps every key across an edit that only shifts lines', async () => {
     const d = pathSetDiff(await project({ [DAO]: BASE }), await project({ [DAO]: SHIFTED }), { cwe: 89 });
-    expect(d.counts).toEqual({ removed: 0, sanitized: 0, unchanged: 2, added: 0, other: 0 });
+    expect(d.counts).toEqual({ removed: 0, sanitized: 0, guarded: 0, unchanged: 2, added: 0, other: 0 });
     for (const e of d.entries) {
       expect(e.before?.sink.line).not.toBe(e.after?.sink.line);
     }
@@ -312,6 +312,9 @@ describe('pure helpers', () => {
     expect(changeOf('sanitized', 'absent')).toBe('other');
     expect(changeOf('absent', 'sanitized')).toBe('other');
     expect(changeOf('sanitized', 'sanitized')).toBe('other');
+    expect(changeOf('present', 'guarded')).toBe('guarded');
+    expect(changeOf('guarded', 'present')).toBe('added');
+    expect(changeOf('guarded', 'absent')).toBe('other');
   });
 
   it('normalizeCwe accepts the usual spellings and refuses others', () => {
