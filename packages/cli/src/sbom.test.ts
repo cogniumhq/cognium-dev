@@ -294,3 +294,63 @@ test('sbom: only an orphan resolved file → no supported manifests (exit 1)', a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('sbom: a pnpm workspace lockfile supersedes every importer\'s package.json (DT4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-pnpm-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'mono', dependencies: { lodash: '^4.17.0' } }));
+    mkdirSync(join(dir, 'packages', 'app'), { recursive: true });
+    writeFileSync(join(dir, 'packages', 'app', 'package.json'), JSON.stringify({ name: 'app', dependencies: { semver: '^7.5.0' } }));
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      '      lodash: {specifier: ^4.17.0, version: 4.17.15}',
+      '  packages/app:',
+      '    dependencies:',
+      '      semver: {specifier: ^7.5.0, version: 7.5.1}',
+      'packages:',
+      '  lodash@4.17.15: {}',
+      '  semver@7.5.1: {}',
+      'snapshots:',
+      '  lodash@4.17.15: {}',
+      '  semver@7.5.1: {}',
+      '',
+    ].join('\n'));
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:npm/lodash@4.17.15');
+    expect(purls).toContain('pkg:npm/semver@7.5.1');
+    expect(purls.some((p) => p.includes('%5E') || p.includes('^'))).toBe(false); // no declared ranges left
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: yarn.lock supersedes package.json and reads it for dev scope', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-yarn-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'y', dependencies: { ms: '^2.1.0' }, devDependencies: { tap: '^1.0.0' } }));
+    writeFileSync(join(dir, 'yarn.lock'), [
+      '# yarn lockfile v1',
+      '',
+      'ms@^2.1.0:',
+      '  version "2.1.3"',
+      '',
+      'tap@^1.0.0:',
+      '  version "1.0.2"',
+      '',
+    ].join('\n'));
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    expect(purlsOf(out)).toEqual(expect.arrayContaining(['pkg:npm/ms@2.1.3', 'pkg:npm/tap@1.0.2']));
+    expect(out).not.toContain('^2.1.0');
+    const prod = await runCli(['sbom', dir, '--prod-only', '--deterministic']);
+    expect(purlsOf(prod.out)).toContain('pkg:npm/ms@2.1.3');
+    expect(purlsOf(prod.out).some((p) => p.includes('tap'))).toBe(false); // dev by reachability from package.json
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

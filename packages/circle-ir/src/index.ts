@@ -20,6 +20,9 @@ export {
 export {
   parseNpmDependencies,
   parseNpmLockDependencies,
+  parsePnpmLockDependencies,
+  parseYarnLockDependencies,
+  pnpmLockImporters,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
