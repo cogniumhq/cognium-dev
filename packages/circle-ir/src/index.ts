@@ -296,6 +296,7 @@ export type {
   TsEntry,
   UnresolvedRegistration,
   ReferenceEdge,
+  FieldUseEdge,
   ImportEdge,
   EntryKind,
   EntryCertainty,

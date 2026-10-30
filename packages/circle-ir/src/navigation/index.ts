@@ -33,6 +33,7 @@ export {
   type TsEntry,
   type UnresolvedRegistration,
   type ReferenceEdge,
+  type FieldUseEdge,
   type ImportEdge,
 } from './ts-call-edges.js';
 export {
