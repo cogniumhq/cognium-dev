@@ -41,6 +41,7 @@ export function diffLines(oldLines: readonly string[], newLines: readonly string
   const M = b.length;
   const changed: number[] = [];
   if (N === 0 || M === 0) {
+    if (N + M > maxD) return null; // the edit distance here is every line on one side
     for (let j = 0; j < M; j++) changed.push(pre + j + 1);
     return { changed, toOld };
   }
