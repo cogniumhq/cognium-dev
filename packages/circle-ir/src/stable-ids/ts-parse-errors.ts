@@ -15,6 +15,8 @@
  * "partial" for stable ids or dead code. Any other error still is.
  */
 import type { Node } from '../core/parser.js';
+import type { ParseErrorSite } from './types.js';
+import { firstParseError } from './parse-errors.js';
 
 const TYPE_CONTEXTS = new Set(['type_annotation', 'type_arguments']);
 const DECLARATIONS = new Set(['lexical_declaration', 'variable_declaration', 'type_alias_declaration']);
@@ -77,18 +79,10 @@ function isBenign(n: Node): boolean {
  * import-type-array recoveries described above.
  */
 export function hasDeclarationHidingError(root: Node): boolean {
-  if (!root.hasError) return false;
-  const stack: Node[] = [root];
-  while (stack.length > 0) {
-    const n = stack.pop()!;
-    if (n.type === 'ERROR' || n.isMissing) {
-      if (!isBenign(n)) return true;
-      continue;
-    }
-    for (let i = 0; i < n.childCount; i++) {
-      const c = n.child(i);
-      if (c && (c.hasError || c.isMissing)) stack.push(c);
-    }
-  }
-  return false;
+  return firstDeclarationHidingError(root) !== undefined;
+}
+
+/** The first error, in source order, that could hide a declaration. */
+export function firstDeclarationHidingError(root: Node): ParseErrorSite | undefined {
+  return firstParseError(root, isBenign);
 }

@@ -78,7 +78,7 @@ COMMANDS:
 GRAPH FACT OPTIONS (deadcode, reach, entries):
   -l, --language <lang>      ts|java|python|go (js shares the ts graph); required when
                                the tree mixes languages
-  -f, --format <format>      text|json; deadcode also takes sarif [default: text]
+  -f, --format <format>      text|json; deadcode and reach also take sarif [default: text]
   --root-kinds <kinds>       Entry kinds that count as roots (comma-separated): route,
                                listener, scheduled, main, export, bean, reflection,
                                lifecycle, test [default: all but test]

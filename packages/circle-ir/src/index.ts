@@ -321,7 +321,7 @@ export type {
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails } from './graph-facts/index.js';
 export type {
   ReachInput,
   ReachOptions,
@@ -338,6 +338,7 @@ export type {
   MoveCandidateRef,
   RemovalReachOptions,
   RemovalReachResult,
+  PartialFile,
 } from './graph-facts/index.js';
 
 // Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
@@ -368,6 +369,7 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  ParseErrorSite,
   NodeIdSource,
   StableIdDiff,
   MoveRelation,

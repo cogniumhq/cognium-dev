@@ -60,6 +60,74 @@ beforeAll(() => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+describe('files that did not parse (cognium-dev#1004)', () => {
+  let broken: string;
+  beforeAll(() => {
+    broken = join(dir, 'broken');
+    write(broken, 'package.json', JSON.stringify({ name: 'fx', version: '1.0.0', main: 'src/index.js' }));
+    write(broken, 'src/index.ts', "import { used } from './lib';\nexport function api(): number { return used(); }\n");
+    write(broken, 'src/lib.ts', 'export function used(): number { return 1; }\n');
+    write(broken, 'src/bad.ts', 'export function ok() {}\n\nfunction broken( {\n');
+  });
+
+  test('deadcode JSON names each partial file and its first error', async () => {
+    const out = JSON.parse((await runCli(['deadcode', broken, '-f', 'json'])).stdout);
+    expect(out.partial).toEqual(['src/bad.ts']);
+    expect(out.partialFiles).toHaveLength(1);
+    const p = out.partialFiles[0];
+    expect(p.file).toBe('src/bad.ts');
+    expect(p.line).toBe(3);
+    expect(typeof p.column).toBe('number');
+    expect(p.nodeKind === 'ERROR' || p.nodeKind.startsWith('MISSING ')).toBe(true);
+    expect(typeof p.parent).toBe('string');
+  });
+
+  test('deadcode text lists the file with line and node kind', async () => {
+    const r = await runCli(['deadcode', broken]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('1 file(s) did not parse fully');
+    expect(r.stdout).toMatch(/src\/bad\.ts:3:\d+ {2}(ERROR|MISSING \S+) in \w+/);
+  });
+
+  test('deadcode SARIF has a note-level partial-parse result at the error', async () => {
+    const sarif = JSON.parse((await runCli(['deadcode', broken, '-f', 'sarif'])).stdout);
+    const run = sarif.runs[0];
+    expect(run.tool.driver.rules.map((r: { id: string }) => r.id)).toContain('graph-facts/partial-parse');
+    const notes = run.results.filter((r: { ruleId: string }) => r.ruleId === 'graph-facts/partial-parse');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].level).toBe('note');
+    expect(notes[0].locations[0].physicalLocation.artifactLocation.uri).toBe('src/bad.ts');
+    expect(notes[0].locations[0].physicalLocation.region.startLine).toBe(3);
+    expect(run.properties.partialFiles).toHaveLength(1);
+  });
+
+  test('reach JSON and SARIF carry the partial files', async () => {
+    const head = join(dir, 'broken-head');
+    write(head, 'package.json', JSON.stringify({ name: 'fx', version: '1.0.0', main: 'src/index.js' }));
+    write(head, 'src/index.ts', 'export function api(): number { return 1; }\n');
+    write(head, 'src/bad.ts', 'export function ok() {}\n\nfunction broken( {\n');
+    const json = JSON.parse((await runCli(['reach', '--base', broken, head, '-f', 'json'])).stdout);
+    expect(json.locations).toBeUndefined();
+    expect(json.partialFiles.map((p: { file: string }) => p.file)).toEqual(['src/bad.ts']);
+    expect(json.partialFiles[0].line).toBe(3);
+    const r = await runCli(['reach', '--base', broken, head, '-f', 'sarif']);
+    expect(r.code).toBe(0);
+    const run = JSON.parse(r.stdout).runs[0];
+    const byRule = (id: string) => run.results.filter((x: { ruleId: string }) => x.ruleId === id);
+    expect(byRule('graph-facts/partial-parse')).toHaveLength(1);
+    expect(byRule('graph-facts/partial-parse')[0].level).toBe('note');
+    // `used` was reached from the base export and is gone at the head.
+    const reached = byRule('removal-reach/reached');
+    expect(reached.map((x: { message: { text: string } }) => x.message.text).join(' ')).toContain('src/lib:used');
+    expect(reached.every((x: { level: string }) => x.level === 'warning')).toBe(true);
+  });
+
+  test('clean trees report no partial files', async () => {
+    const out = JSON.parse((await runCli(['deadcode', ts, '-f', 'json'])).stdout);
+    expect(out.partialFiles).toEqual([]);
+  });
+});
+
 describe('option parsing', () => {
   test('languages and aliases', () => {
     expect(parseGraphLanguage('ts')).toBe('typescript');
