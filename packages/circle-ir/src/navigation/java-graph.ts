@@ -430,7 +430,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       const site: CallEdgeSite = s.site;
       const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
       if (s.kind === 'unresolved') {
-        b.unresolved.push({ from, methodName: s.methodName, site, reason: s.reason, evidence: 'navigation index' });
+        b.unresolved.push({ from, methodName: s.methodName, site, reason: s.reason, evidence: 'navigation index', ...(s.receiver ? { receiver: s.receiver } : {}) });
         continue;
       }
       const declaring = keyOf(s.declaring);

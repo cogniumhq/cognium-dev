@@ -42,3 +42,11 @@ export {
   type RemovalReachOptions,
   type RemovalReachResult,
 } from './removal-reach.js';
+export {
+  DEPENDENCY_CALLS_SCHEME,
+  dependencyCalls,
+  type DependencyCallsOptions,
+  type DependencyCall,
+  type DependencyCallTest,
+  type DependencyCallsResult,
+} from './dependency-calls.js';
