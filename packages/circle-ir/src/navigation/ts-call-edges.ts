@@ -145,6 +145,8 @@ export interface TsCallGraph {
   sites: number;
   references: ReferenceEdge[];
   imports: ImportEdge[];
+  /** Declarations that exist only for the type checker: interfaces, type aliases, signatures, ambient declarations. */
+  typeOnly: string[];
   entryScheme: 'entry-index@0.1';
   entries: TsEntry[];
   unresolvedRegistrations: UnresolvedRegistration[];
@@ -282,6 +284,8 @@ class Graph {
   private readonly subs = new Map<string, StableDecl[]>();
   /** Declarations without a body: overload, interface and abstract signatures. */
   private readonly bodiless = new Set<string>();
+  /** Declarations that exist only for the type checker (interfaces, aliases, signatures, ambient). */
+  readonly typeOnly = new Set<string>();
   /** Method declarations by name, across the tree, for `inferred`. */
   private readonly methodsByName = new Map<string, StableDecl[]>();
   private readonly maxInferred: number;
@@ -386,14 +390,27 @@ class Graph {
     this.markBodiless(ctx.root, ctx);
   }
 
-  private markBodiless(node: Node, ctx: FileCtx): void {
+  private markBodiless(node: Node, ctx: FileCtx, ambient = false): void {
     const t = node.type;
     if (t === 'function_signature' || t === 'method_signature' || t === 'abstract_method_signature') {
       const kind = t === 'function_signature' ? 'function' : 'method';
       const d = ctx.byStart.get(posKey(node, kind));
-      if (d) this.bodiless.add(d.id);
+      if (d) {
+        this.bodiless.add(d.id);
+        this.typeOnly.add(d.id);
+      }
     }
-    for (const c of named(node)) this.markBodiless(c, ctx);
+    // Declarations that exist only for the type checker: nothing runs them.
+    const inAmbient = ambient || t === 'ambient_declaration';
+    const typeKinds: Record<string, string> = { interface_declaration: 'type', type_alias_declaration: 'type', property_signature: 'field' };
+    const tk = typeKinds[t];
+    if (tk || (inAmbient && t !== 'ambient_declaration')) {
+      for (const kind of tk ? [tk] : ['function', 'type', 'field', 'module', 'method']) {
+        const d = ctx.byStart.get(posKey(node, kind));
+        if (d) this.typeOnly.add(d.id);
+      }
+    }
+    for (const c of named(node)) this.markBodiless(c, ctx, inAmbient);
   }
 
   private scanStatement(ctx: FileCtx, stmt: Node): void {
@@ -1418,6 +1435,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     sites: graph.siteCount,
     references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     imports: graph.importEdges(),
+    typeOnly: [...graph.typeOnly].sort(),
     entryScheme: 'entry-index@0.1',
     entries: dedupe(
       [...graph.entries].sort((a, b) => cmp(a.file, b.file) || a.line - b.line || cmp(a.id, b.id) || cmp(a.kind, b.kind) || cmp(a.path ?? '', b.path ?? '') || cmp(a.method ?? '', b.method ?? '')),

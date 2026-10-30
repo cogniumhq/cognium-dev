@@ -28,4 +28,18 @@ export {
   type CallEdge,
   type CallEdgeSite,
   type UnresolvedCall,
+  type TsPackageManifest,
+  type TsEntry,
+  type UnresolvedRegistration,
+  type ReferenceEdge,
+  type ImportEdge,
 } from './ts-call-edges.js';
+export {
+  DEFAULT_ENTRY_TABLES,
+  type EntryKind,
+  type EntryCertainty,
+  type EntryTables,
+  type RouteRegistrarTable,
+  type DecoratorEntryRow,
+  type TestRunnerTable,
+} from './ts-entry-tables.js';
