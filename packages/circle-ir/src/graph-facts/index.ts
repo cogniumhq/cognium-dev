@@ -30,3 +30,12 @@ export {
   type DeadCodeOptions,
   type DeadCodeResult,
 } from './dead-code.js';
+export {
+  REMOVAL_REACH_SCHEME,
+  removalReach,
+  entryIndexDigest,
+  type RemovedDeclaration,
+  type MoveCandidateRef,
+  type RemovalReachOptions,
+  type RemovalReachResult,
+} from './removal-reach.js';
