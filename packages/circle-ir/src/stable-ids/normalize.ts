@@ -19,6 +19,9 @@ export interface EmitOptions {
 
 const CLOSERS = new Set([')', ']', '}', '>']);
 
+/** Comment node types across the grammars (`comment`; Java's `line_comment` and `block_comment`). */
+const COMMENTS = new Set(['comment', 'line_comment', 'block_comment']);
+
 /** True for a parenthesised parameter list that holds one bare, untyped identifier. */
 function isLoneArrowParam(node: Node): Node | null {
   if (node.type !== 'formal_parameters' || node.parent?.type !== 'arrow_function') return null;
@@ -38,7 +41,7 @@ export function namedChildren(node: Node): Node[] {
   const out: Node[] = [];
   for (let i = 0; i < node.namedChildCount; i++) {
     const c = node.namedChild(i);
-    if (c && c.type !== 'comment') out.push(c);
+    if (c && !COMMENTS.has(c.type)) out.push(c);
   }
   return out;
 }
@@ -51,7 +54,7 @@ function emit(node: Node, opts: EmitOptions, out: string[]): void {
   }
   if (opts.skip?.has(node.id)) return;
   const type = node.type;
-  if (type === 'comment' || type === 'hash_bang_line') return;
+  if (COMMENTS.has(type) || type === 'hash_bang_line') return;
 
   const lone = isLoneArrowParam(node);
   if (lone) {
@@ -153,7 +156,7 @@ export function canonicalType(node: Node): string {
       const parts: string[] = [];
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (!c || c.type === 'comment') continue;
+        if (!c || COMMENTS.has(c.type)) continue;
         parts.push(c.isNamed ? canonicalType(c) : c.text);
       }
       // A trailing comma before a closer is formatting.
