@@ -48,6 +48,8 @@ export interface TsPackageManifest {
   root: string;
   /** The text of its `package.json`. */
   packageJson: string;
+  /** The text of its Expo `app.json`, when there is one (config plugins). */
+  appJson?: string;
 }
 
 export interface TsCallGraphOptions {
@@ -1340,6 +1342,110 @@ class Graph {
     }
   }
 
+  // -- React Native, Expo and Jest ---------------------------------------------
+
+  /** Files a tool loads by name or place, for the tools the package depends on. */
+  private toolFileEntries(root: string, has: (names: readonly string[]) => boolean): void {
+    const rows = (this.tables.toolFiles ?? []).filter(r => has(r.dependencies));
+    if (rows.length === 0) return;
+    const prefix = normalizePath(root);
+    for (const ctx of this.sortedFiles()) {
+      if (prefix !== '' && !ctx.path.startsWith(prefix + '/')) continue;
+      const rel = prefix === '' ? ctx.path : ctx.path.slice(prefix.length + 1);
+      if (rel.split('/').includes('node_modules')) continue;
+      const row = rows.find(r => r.pattern.test(rel));
+      if (row) this.toolFile(ctx, row.kind, row.tool, `loaded by ${row.tool} (${rel})`);
+    }
+  }
+
+  /** The module and what it exports: the tool runs the file and uses its exports. */
+  private toolFile(ctx: FileCtx, kind: EntryKind, tool: string, evidence: string): void {
+    this.entry(ctx.module, kind, 'conventional', ctx.path, 1, evidence, { framework: tool });
+    for (const d of this.exportedDecls(ctx)) this.entry(d, kind, 'conventional', ctx.path, d.start_line, evidence, { framework: tool });
+  }
+
+  /** expo-router: every file under `app/` is a screen, `_layout` wraps them, `+` files are special. */
+  private expoFileRoutes(root: string): void {
+    const prefix = normalizePath(root);
+    for (const ctx of this.sortedFiles()) {
+      if (prefix !== '' && !ctx.path.startsWith(prefix + '/')) continue;
+      const rel = prefix === '' ? ctx.path : ctx.path.slice(prefix.length + 1);
+      const m = rel.match(/^(?:src\/)?app\/(.*)\.[cm]?[jt]sx?$/);
+      if (!m || /\.d\.ts$/.test(rel)) continue;
+      const exported = (name: string): StableDecl[] => {
+        const t = this.resolveExport(ctx, name, 0);
+        return t.kind === 'decls' ? t.decls.filter(d => !this.bodiless.has(d.id)) : [];
+      };
+      const add = (d: StableDecl, kind: EntryKind, extra: Partial<TsEntry>, evidence: string): void =>
+        this.entry(d, kind, 'conventional', ctx.path, d.start_line, evidence, { framework: 'expo-router', ...extra });
+      const segments = m[1].split('/');
+      const file = segments.pop() ?? '';
+      const path = filePath(segments);
+      const api = file.match(/^(.*)\+api$/);
+      if (api) {
+        const full = filePath([...segments, ...(api[1] === 'index' ? [] : [api[1]])]);
+        for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+          for (const d of exported(method)) add(d, 'route', { method, path: full, surface: 'api' }, 'expo-router API route');
+        }
+      } else if (file === '_layout') {
+        for (const d of exported('default')) add(d, 'route', { method: 'GET', path, surface: 'layout' }, 'expo-router layout');
+        for (const d of exported('ErrorBoundary')) add(d, 'lifecycle', { path }, 'expo-router ErrorBoundary');
+      } else if (file === '+html' || file === '+native-intent') {
+        for (const d of exported('default')) add(d, 'lifecycle', { path }, `expo-router ${file}`);
+        for (const d of exported('redirectSystemPath')) add(d, 'lifecycle', { path }, `expo-router ${file}`);
+      } else if (file.startsWith('+')) {
+        for (const d of exported('default')) add(d, 'route', { method: 'GET', path, surface: 'page' }, `expo-router ${file}`);
+      } else if (!file.startsWith('_')) {
+        const full = filePath(file === 'index' ? segments : [...segments, file]);
+        for (const d of exported('default')) add(d, 'route', { method: 'GET', path: full, surface: 'page' }, 'expo-router screen');
+        for (const n of ['ErrorBoundary', 'generateStaticParams']) for (const d of exported(n)) add(d, 'lifecycle', { path: full }, `expo-router ${n}`);
+      }
+    }
+  }
+
+  /** Config plugins named by a relative path in `app.json` or `app.config.*`. */
+  private expoPlugins(pkg: TsPackageManifest, where: CallEdgeSite): void {
+    const specs: string[] = [];
+    if (pkg.appJson !== undefined) {
+      try {
+        const j = (JSON.parse(pkg.appJson) ?? {}) as Record<string, unknown>;
+        const expo = (j.expo ?? j) as Record<string, unknown>;
+        for (const p of Array.isArray(expo.plugins) ? expo.plugins : []) {
+          const s = Array.isArray(p) ? p[0] : p;
+          if (typeof s === 'string') specs.push(s);
+        }
+      } catch {
+        this.unresolvedRegistrations.push({ site: { ...where, file: normalizePath(`${pkg.root}/app.json`) }, reason: 'manifest-unresolved', evidence: 'app.json does not parse' });
+      }
+    }
+    const config = this.findFile(normalizePath(`${pkg.root}/app.config.ts`));
+    const ctx = config ? this.files.get(config) : undefined;
+    if (ctx) {
+      const visit = (n: Node): void => {
+        if (n.type === 'pair') {
+          const key = n.childForFieldName('key');
+          const value = n.childForFieldName('value');
+          const k = key?.type === 'string' ? stringValue(key) : key?.text;
+          if (k === 'plugins' && value?.type === 'array') {
+            for (const el of named(value)) {
+              const first = el.type === 'array' ? named(el)[0] : el;
+              const s = first && first.type === 'string' ? stringValue(first) : null;
+              if (s) specs.push(s);
+            }
+          }
+        }
+        for (const c of named(n)) visit(c);
+      };
+      visit(ctx.root);
+    }
+    for (const spec of [...new Set(specs)].filter(s => s.startsWith('.'))) {
+      const file = this.sourceFor(pkg.root, spec);
+      const plugin = file ? this.files.get(file) : undefined;
+      if (plugin) this.toolFile(plugin, 'main', 'expo', `Expo config plugin (${spec})`);
+      else this.unresolvedRegistrations.push({ site: where, reason: 'manifest-unresolved', evidence: `config plugin ${spec} not found in the tree` });
+    }
+  }
+
   /**
    * Where a router receiver comes from: a framework package (declared) or
    * unknown (inferred). `key` names the router object across files.
@@ -1501,6 +1607,12 @@ class Graph {
       const deps = { ...(m.dependencies as Record<string, unknown> | undefined), ...(m.devDependencies as Record<string, unknown> | undefined) };
       const next = this.tables.nextFileRoutes;
       if (next && Object.prototype.hasOwnProperty.call(deps, next.dependency)) this.nextFileRoutes(pkg.root);
+      const has = (names: readonly string[]): boolean => names.some(n => Object.prototype.hasOwnProperty.call(deps, n));
+      this.toolFileEntries(pkg.root, has);
+      if (this.tables.expo && has(this.tables.expo.dependencies)) {
+        this.expoFileRoutes(pkg.root);
+        this.expoPlugins(pkg, where);
+      }
       for (const p of [...new Set(strings(m.bin))]) {
         const file = this.sourceFor(pkg.root, p);
         const ctx = file ? this.files.get(file) : undefined;
