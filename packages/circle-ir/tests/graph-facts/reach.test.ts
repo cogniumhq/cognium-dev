@@ -156,6 +156,9 @@ describe('deadCode (R-EN2)', () => {
     expect(qv['svc/repo:Repo.legacy'].verdict).toBe('dead');
     expect(q.summary.dead).toBeGreaterThan(0);
     expect(q.partial).toEqual(['src/broken.ts']);
+    // Each partial file comes with its first blocking error.
+    expect(q.partialFiles).toEqual([{ file: 'src/broken.ts', line: 1, column: expect.any(Number), nodeKind: expect.any(String), parent: expect.any(String) }]);
+    expect(d.partialFiles).toEqual([]);
   });
 
   it('is deterministic and on the entry point', async () => {

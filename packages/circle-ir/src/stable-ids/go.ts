@@ -16,6 +16,7 @@
  * not part of its name.
  */
 
+import { partialOf } from './parse-errors.js';
 import type { Node, Tree } from '../core/parser.js';
 import { Builder, placeholder } from './builder.js';
 import { bodyTokens, namedChildren } from './normalize.js';
@@ -147,5 +148,5 @@ export function deriveGoIds(tree: Tree, filePath: string, options: StableIdOptio
   const builder = new Builder('go', options.keepBodyTokens === true);
   const moduleDecl = builder.add('module', file, `${pkg}/${file}`, '', tree.rootNode, null);
   new GoExtractor(builder, pkg, file).module(tree.rootNode, moduleDecl);
-  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'go', module: pkg, decls: builder.decls, partial: tree.rootNode.hasError };
+  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'go', module: pkg, decls: builder.decls, ...partialOf(tree.rootNode) };
 }

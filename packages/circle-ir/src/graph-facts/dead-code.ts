@@ -17,7 +17,7 @@
  */
 
 import type { EntryKind } from '../navigation/ts-entry-tables.js';
-import { ALL_ENTRY_KINDS, ReachGraph, reach, reachedIds, walkFrom, type ReachFact, type ReachInput } from './reach.js';
+import { ALL_ENTRY_KINDS, ReachGraph, reach, reachedIds, walkFrom, type PartialFile, type ReachFact, type ReachInput } from './reach.js';
 
 export const DEAD_CODE_SCHEME = 'dead-code@0.1' as const;
 
@@ -49,6 +49,8 @@ export interface DeadCodeResult {
   ids: 'ids@0.1';
   rootKinds: EntryKind[];
   partial: string[];
+  /** One row per `partial` file: where its first blocking parse error is. */
+  partialFiles: PartialFile[];
   facts: DeadCodeFact[];
   summary: Record<DeadCodeVerdict, number> & { reachedByTestOnly: number };
 }
@@ -87,7 +89,7 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
     summary[verdict]++;
     if (verdict === 'dead' && reachedByTest) summary.reachedByTestOnly++;
   }
-  return { scheme: DEAD_CODE_SCHEME, ids: 'ids@0.1', rootKinds: product.rootKinds, partial: product.partial, facts, summary };
+  return { scheme: DEAD_CODE_SCHEME, ids: 'ids@0.1', rootKinds: product.rootKinds, partial: product.partial, partialFiles: product.partialFiles, facts, summary };
 }
 
 /**

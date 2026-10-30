@@ -17,6 +17,7 @@
  * and docstrings are not body.
  */
 
+import { partialOf } from './parse-errors.js';
 import type { Node, Tree } from '../core/parser.js';
 import { Builder, placeholder } from './builder.js';
 import { bodyTokens, namedChildren } from './normalize.js';
@@ -189,5 +190,5 @@ export function derivePythonIds(tree: Tree, filePath: string, options: StableIdO
   const builder = new Builder('python', options.keepBodyTokens === true);
   const moduleDecl = builder.add('module', module, module, '', tree.rootNode, null);
   new PythonExtractor(builder).module(tree.rootNode, moduleDecl);
-  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'python', module, decls: builder.decls, partial: tree.rootNode.hasError };
+  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'python', module, decls: builder.decls, ...partialOf(tree.rootNode) };
 }

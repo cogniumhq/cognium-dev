@@ -27,10 +27,12 @@ import {
   deadCode,
   deriveStableIds,
   entryIndexDigest,
+  partialFileDetails,
   removalReach,
   type DeadCodeFact,
   type DeadCodeResult,
   type EntryKind,
+  type PartialFile,
   type ReachInput,
   type RemovalReachResult,
   type StableIdFile,
@@ -104,7 +106,7 @@ export interface DeadCodeCliOptions {
 
 export interface ReachCliOptions {
   language?: GraphLanguage;
-  format: 'text' | 'json';
+  format: 'text' | 'json' | 'sarif';
   rootKinds?: EntryKind[];
   base: string;
   output?: string;
@@ -141,7 +143,7 @@ export function parseReachOptions(o: Raw): ReachCliOptions {
   }
   return {
     language: parseGraphLanguage(o.language ?? o.l),
-    format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
+    format: parseFormat(o.format ?? o.f, ['text', 'json', 'sarif'] as const, 'text'),
     rootKinds: parseRootKinds(o['root-kinds']),
     base,
     output: optionalString('output', o.output ?? o.o),
@@ -360,6 +362,8 @@ export interface DeadCodeReport {
   rootKinds: DeadCodeResult['rootKinds'];
   entryIndexDigest: string;
   partial: string[];
+  /** Each `partial` file and its first blocking parse error (file, line, node kind). */
+  partialFiles: PartialFile[];
   summary: DeadCodeResult['summary'];
   verdicts: DeadCodeFact['verdict'][];
   totalFacts: number;
@@ -390,6 +394,7 @@ export async function computeDeadCode(path: string, opts: DeadCodeCliOptions): P
     rootKinds: result.rootKinds,
     entryIndexDigest: entryIndexDigest(graph.entries),
     partial: result.partial,
+    partialFiles: result.partialFiles,
     summary: result.summary,
     verdicts: opts.verdicts,
     totalFacts: facts.length,
@@ -404,6 +409,8 @@ export interface ReachReport extends Omit<RemovalReachResult, never> {
   baseRef?: string;
   language: GraphLanguage;
   engine: { package: 'circle-ir'; version: string };
+  /** Base declaration id → [line, column] (1-based line), for SARIF locations. Not in JSON. */
+  locations: Record<string, [number, number]>;
 }
 
 export async function computeReach(path: string, opts: ReachCliOptions): Promise<ReachReport> {
@@ -420,6 +427,7 @@ export async function computeReach(path: string, opts: ReachCliOptions): Promise
       language,
       engine: engineIdentity(),
       ...result,
+      locations: declLocations(baseGraph.files),
     };
   } finally {
     base.cleanup();
@@ -434,6 +442,8 @@ export interface EntriesReport {
   entries: ReachInput['entries'];
   unresolvedRegistrations: NonNullable<ReachInput['unresolvedRegistrations']>;
   partial: string[];
+  /** Each `partial` file and its first blocking parse error. */
+  partialFiles: PartialFile[];
   summary: Record<string, number>;
 }
 
@@ -451,11 +461,42 @@ export async function computeEntries(path: string, opts: EntriesCliOptions): Pro
     entries: graph.entries,
     unresolvedRegistrations: graph.unresolvedRegistrations ?? [],
     partial: [...graph.partial],
+    partialFiles: partialFileDetails(graph.partial, graph.files),
     summary,
   };
 }
 
 // ─── Output ──────────────────────────────────────────────────────────────────
+
+/** `file:line:column  ERROR in <parent>`: where a file stopped parsing. */
+function partialFileLine(p: PartialFile): string {
+  if (p.line === undefined) return p.file;
+  return `${p.file}:${p.line}:${p.column}  ${p.nodeKind} in ${p.parent}`;
+}
+
+/** Text block naming each file that did not parse, and where. */
+function partialFilesText(partial: readonly PartialFile[], heading: string): string[] {
+  if (partial.length === 0) return [];
+  return [`  ${partial.length} ${heading}; verdicts these files could reach are held back:`, ...partial.map(p => `    ${partialFileLine(p)}`)];
+}
+
+const PARTIAL_PARSE_RULE = {
+  id: 'graph-facts/partial-parse',
+  shortDescription: { text: 'This file did not parse fully; reachability answers that depend on it are held back' },
+};
+
+/** SARIF note results, one per file that did not parse, at its first blocking error. */
+function partialParseResults(partial: readonly PartialFile[], scheme: string): object[] {
+  return partial.map(p => ({
+    ruleId: PARTIAL_PARSE_RULE.id,
+    level: 'note',
+    message: { text: p.line === undefined
+      ? `${p.file} did not parse fully.`
+      : `${p.file} did not parse fully: ${p.nodeKind} in ${p.parent} at line ${p.line}, column ${p.column}.` },
+    locations: [{ physicalLocation: { artifactLocation: { uri: p.file, uriBaseId: 'SRCROOT' }, region: { startLine: p.line ?? 1, startColumn: p.column ?? 1 } } }],
+    properties: { nodeKind: p.nodeKind, parent: p.parent, scheme },
+  }));
+}
 
 /** JSON: the engine's scheme fields unchanged, plus the envelope; `locations` is internal. */
 export function deadCodeJson(r: DeadCodeReport): string {
@@ -469,7 +510,7 @@ export function deadCodeText(r: DeadCodeReport): string {
   lines.push(`Dead code (${r.scheme}) — ${r.root} [${r.language}], engine circle-ir ${r.engine.version}`);
   lines.push(`  live ${s.live} · may-be-live ${s['may-be-live']} · dead ${s.dead} · reached by tests only ${s.reachedByTestOnly}`);
   lines.push(`  roots: ${r.rootKinds.join(', ')}`);
-  if (r.partial.length > 0) lines.push(`  ${r.partial.length} file(s) did not parse fully: ${r.partial.slice(0, 5).join(', ')}${r.partial.length > 5 ? ', …' : ''}`);
+  lines.push(...partialFilesText(r.partialFiles, 'file(s) did not parse fully'));
   lines.push('');
   const order: Record<string, number> = { dead: 0, 'may-be-live': 1, live: 2 };
   const facts = [...r.facts].sort((a, b) =>
@@ -494,6 +535,7 @@ export function deadCodeSarif(r: DeadCodeReport): string {
     { id: 'dead-code/dead', shortDescription: { text: 'No path from a product entry point reaches this declaration' } },
     { id: 'dead-code/may-be-live', shortDescription: { text: 'Only a weak path, an unresolved site or an unparsed file keeps this declaration alive' } },
     { id: 'dead-code/live', shortDescription: { text: 'A product entry point reaches this declaration' } },
+    PARTIAL_PARSE_RULE,
   ];
   const results = r.facts.map((f) => {
     const [line, column] = r.locations[f.id] ?? [1, 1];
@@ -507,6 +549,7 @@ export function deadCodeSarif(r: DeadCodeReport): string {
       properties: { verdict: f.verdict, reasons: f.reasons, reachedByTest: f.reachedByTest, scheme: r.scheme },
     };
   });
+  results.push(...(partialParseResults(r.partialFiles, r.scheme) as typeof results));
   return JSON.stringify({
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
@@ -514,7 +557,7 @@ export function deadCodeSarif(r: DeadCodeReport): string {
       tool: { driver: { name: 'cognium-dev deadcode', informationUri: 'https://cognium.dev', version: r.engine.version, rules } },
       originalUriBaseIds: { SRCROOT: { uri: `file://${r.root.split(sep).join('/')}/` } },
       results,
-      properties: { scheme: r.scheme, summary: r.summary, partial: r.partial, rootKinds: r.rootKinds },
+      properties: { scheme: r.scheme, summary: r.summary, partial: r.partial, partialFiles: r.partialFiles, rootKinds: r.rootKinds },
     }],
   }, null, 2);
 }
@@ -523,7 +566,7 @@ export function reachText(r: ReachReport): string {
   const lines: string[] = [];
   lines.push(`Removal reach (${r.scheme}) — base ${r.base} → head ${r.root} [${r.language}], engine circle-ir ${r.engine.version}`);
   lines.push(`  removed ${r.removed.length} · moved or renamed ${r.moved.length}`);
-  if (r.partial.length > 0) lines.push(`  ${r.partial.length} file(s) did not parse fully at either pin`);
+  lines.push(...partialFilesText(r.partialFiles, 'file(s) did not parse fully at either pin'));
   lines.push('');
   for (const d of r.removed) {
     const reach = d.strong ? `strong from ${d.strong.entry.kind}${d.strong.entry.path ? ` ${d.strong.entry.path}` : ''}`
@@ -537,11 +580,57 @@ export function reachText(r: ReachReport): string {
   return lines.join('\n');
 }
 
+/** JSON: the engine's scheme fields unchanged, plus the envelope; `locations` is internal. */
+export function reachJson(r: ReachReport): string {
+  const { locations: _locations, ...rest } = r;
+  return JSON.stringify(rest, null, 2);
+}
+
+/**
+ * SARIF 2.1.0: one result per removed declaration, located at the base.
+ * A removal that a product entry still reaches strongly is a warning; the
+ * rest are notes. Files that did not parse are notes as well.
+ */
+export function reachSarif(r: ReachReport): string {
+  const rules = [
+    { id: 'removal-reach/reached', shortDescription: { text: 'A removed declaration that a product entry point reached at the base' } },
+    { id: 'removal-reach/removed', shortDescription: { text: 'A removed declaration with no strong path from a product entry point at the base' } },
+    PARTIAL_PARSE_RULE,
+  ];
+  const results: object[] = r.removed.map((d) => {
+    const [line, column] = r.locations[d.id] ?? [1, 1];
+    const reached = d.strong !== undefined && d.strong !== null;
+    const via = reached ? ` Reached from ${d.strong!.entry.kind} at the base.` : d.weak ? ` Only a weak path from ${d.weak.entry.kind}.` : '';
+    const unresolved = d.unresolvedCount > 0 ? ` ${d.unresolvedCount} unresolved site(s) could reach it.` : '';
+    return {
+      ruleId: reached ? 'removal-reach/reached' : 'removal-reach/removed',
+      level: reached ? 'warning' : 'note',
+      message: { text: `${d.qualified_name ?? d.id} (${d.kind}) was removed.${via}${unresolved}` },
+      locations: [{ physicalLocation: { artifactLocation: { uri: d.file, uriBaseId: 'BASEROOT' }, region: { startLine: line, startColumn: column } } }],
+      partialFingerprints: { stableId: d.id },
+      properties: { unresolvedCount: d.unresolvedCount, moveCandidates: d.moveCandidates.length, scheme: r.scheme },
+    };
+  });
+  results.push(...partialParseResults(r.partialFiles, r.scheme));
+  const uri = (p: string) => `file://${p.split(sep).join('/')}/`;
+  return JSON.stringify({
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'cognium-dev reach', informationUri: 'https://cognium.dev', version: r.engine.version, rules } },
+      originalUriBaseIds: { SRCROOT: { uri: uri(r.root) }, ...(r.baseRef ? {} : { BASEROOT: { uri: uri(r.base) } }) },
+      results,
+      properties: { scheme: r.scheme, entryIndexDigest: r.entryIndexDigest, partial: r.partial, partialFiles: r.partialFiles, rootKinds: r.rootKinds, base: r.base },
+    }],
+  }, null, 2);
+}
+
 export function entriesText(r: EntriesReport): string {
   const lines: string[] = [];
   lines.push(`Entry points — ${r.root} [${r.language}], engine circle-ir ${r.engine.version}`);
   lines.push(`  ${r.entries.length} entries: ${Object.entries(r.summary).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none'}`);
   if (r.unresolvedRegistrations.length > 0) lines.push(`  ${r.unresolvedRegistrations.length} registration(s) could not be tied to a declaration`);
+  lines.push(...partialFilesText(r.partialFiles, 'file(s) did not parse fully'));
   lines.push('');
   const sorted = [...r.entries].sort((a, b) =>
     (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line);
