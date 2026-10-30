@@ -4619,8 +4619,15 @@ function findBashTaintSources(sourceCode: string, dfg: DFG): TaintSource[] {
     //    Suppressed inside function bodies (#73 part 1).
     if (!insideFunction) {
       const positionalRe = /\$([1-9@*])|\$\{([1-9@*])\}/g;
+      // A one-line definition `name() { …; }` keeps its body on the header
+      // line: only text before the opening brace is at the top level.
+      const header = /^\s*(?:function\s+)?[A-Za-z_][\w-]*\s*(?:\(\s*\))?\s*\{/.exec(line);
+      const isFnHeader = header !== null && (/\(\s*\)/.test(header[0]) || /^\s*function\s/.test(header[0]));
+      // `$1` inside single quotes is literal text (an awk or sed program), not
+      // a positional parameter.
+      const topLevelText = (isFnHeader ? line.slice(0, header[0].length) : line).replace(/'[^']*'/g, "''");
       let m: RegExpExecArray | null;
-      while ((m = positionalRe.exec(line)) !== null) {
+      while ((m = positionalRe.exec(topLevelText)) !== null) {
         const param = m[1] ?? m[2];
         const alreadyExists = sources.some(s => s.line === lineNumber && s.variable === param);
         if (!alreadyExists) {
@@ -13052,6 +13059,46 @@ export function findGoGobDeserializationFindings(
 }
 
 /**
+ * Blank the contents of JS/TS string and template literals and comments,
+ * keeping newlines and every offset, so a line scanner does not match code
+ * that only appears as text (a message describing `JSON.parse(req.body)`).
+ */
+function maskJsLiteralsAndComments(code: string): string {
+  const out = code.split('');
+  let i = 0;
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  while (i < code.length) {
+    const c = code[i];
+    const n = code[i + 1];
+    if (c === '/' && n === '/') {
+      let j = i;
+      while (j < code.length && code[j] !== '\n') j++;
+      blank(i, j);
+      i = j;
+    } else if (c === '/' && n === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const j = end < 0 ? code.length : end + 2;
+      blank(i, j);
+      i = j;
+    } else if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < code.length && code[j] !== c) {
+        if (code[j] === '\\') j++;
+        else if (c !== '`' && code[j] === '\n') break;
+        j++;
+      }
+      blank(i + 1, Math.min(j, code.length));
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return out.join('');
+}
+
+/**
  * Sprint 89 detector B (#189) — JS insecure deserialization via
  * `JSON.parse(req.body)`.
  *
@@ -13104,12 +13151,14 @@ export function findJsJsonParseBodyFindings(
 
   const callRe = /\bJSON\s*\.\s*parse\s*\(\s*([^)]+?)\s*\)/g;
   const seen = new Set<number>();
+  // Calls only: `JSON.parse(req.body)` inside a string or comment is text.
+  const codeLines = maskJsLiteralsAndComments(code).split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.trim().startsWith('//')) continue;
+    const codeLine = codeLines[i] ?? '';
     callRe.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = callRe.exec(line)) !== null) {
+    while ((m = callRe.exec(codeLine)) !== null) {
       const arg = m[1];
       let tainted = reqBodyRe.test(arg);
       if (!tainted) {

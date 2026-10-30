@@ -9,13 +9,16 @@
  *   nested functions, a module its top-level values, a class its fields and
  *   constructor; `loads`: running a declaration loads its module; `import`:
  *   loading a module loads what it imports; `field`: a body that runs uses
- *   the fields it reads or writes through `this`).
+ *   the fields it reads or writes through `this`; `loads` also covers a
+ *   body that loads a module with `import()` or `require()`).
  * - **weak** path: any other path — through an `inferred` call, a
  *   `reference` (a function or class passed, stored, returned or rendered:
  *   it may run, nothing proves it does) or an `inferred` entry.
  * - **unresolved**: call sites in reached bodies that the call graph could
  *   not bind and that could bind to the declaration — same method name, or a
  *   computed callee — plus registrations whose handler was not resolved.
+ *   A module is reached this way only by a module load with a computed
+ *   specifier (`import(name)`, methodName `<module>`).
  *
  * Each path is the shortest of its class (breadth-first, deterministic:
  * adjacency in id order). `partial[]` lists files that did not parse; their
@@ -42,8 +45,12 @@ export interface ReachInput {
   /** Strong: a body that runs uses the field (`this.x`). */
   fieldUses?: readonly { from: string; to: string; site: ReachSite }[];
   imports?: readonly { from: string; to: string }[];
-  /** Extra strong `loads` edges: running `from` initializes `to` (Java: a member initializes its class). */
-  loads?: readonly { from: string; to: string }[];
+  /**
+   * Extra strong `loads` edges: running `from` initializes `to` (Java: a
+   * member initializes its class; TypeScript: a body loads a module with
+   * `import()` / `require()`).
+   */
+  loads?: readonly { from: string; to: string; site?: ReachSite }[];
   unresolved: readonly { from: string; methodName: string; site: ReachSite; reason: UnresolvedReason }[];
   entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number }[];
   unresolvedRegistrations?: readonly { site: ReachSite; reason: string; evidence: string }[];
@@ -134,7 +141,7 @@ export class ReachGraph {
     for (const r of input.references ?? []) add(r.from, { to: r.to, relation: 'reference', strong: false, site: r.site });
     for (const u of input.fieldUses ?? []) add(u.from, { to: u.to, relation: 'field', strong: true, site: u.site });
     for (const i of input.imports ?? []) add(i.from, { to: i.to, relation: 'import', strong: true });
-    for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true });
+    for (const l of input.loads ?? []) add(l.from, { to: l.to, relation: 'loads', strong: true, site: l.site });
     for (const f of input.files) {
       const module = f.decls[0];
       for (const d of f.decls) {
@@ -232,18 +239,26 @@ export function reachedIds(visits: Map<string, Visit>): Set<string> {
   return new Set([...visits.keys()].map(k => k.slice(1)));
 }
 
+/** `methodName` of an unresolved site that loads a module by a computed specifier. */
+export const COMPUTED_LOAD = '<module>';
+
 /**
  * Unresolved sites in reached bodies that could bind to `d`: a non-external
  * site with `d`'s name, a computed callee, or an unresolved registration.
+ * For a module: a module load with a computed specifier.
  */
 export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl): CouldReachSite[] {
-  if (d.kind === 'module' || d.kind === 'field') return [];
+  if (d.kind === 'field') return [];
+  const isModule = d.kind === 'module';
   const out: CouldReachSite[] = [];
   for (const u of input.unresolved) {
     if (u.reason === 'external' || !reached.has(u.from)) continue;
+    const load = u.methodName === COMPUTED_LOAD;
+    if (isModule !== load) continue;
     const computed = u.methodName.startsWith('<') || u.methodName.startsWith('(');
     if (computed || u.methodName === d.name) out.push({ kind: 'call', from: u.from, methodName: u.methodName, reason: u.reason, site: u.site });
   }
+  if (isModule) return out.sort(bySite);
   for (const r of input.unresolvedRegistrations ?? []) {
     if (r.reason === 'handler-unresolved') out.push({ kind: 'registration', reason: r.reason, site: r.site });
   }

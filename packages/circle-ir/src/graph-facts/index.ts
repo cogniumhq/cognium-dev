@@ -11,6 +11,7 @@ export {
   walkFrom,
   reachedIds,
   couldReach,
+  COMPUTED_LOAD,
   type ReachInput,
   type ReachSite,
   type ReachOptions,

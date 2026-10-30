@@ -157,6 +157,33 @@ describe('#189 Sprint 89 — deserialization + xpath cluster', () => {
     expect(countRule(r, 'insecure_deserialization')).toBe(0);
   });
 
+  it('B-TN-text: JSON.parse(req.body) inside a string, template or comment does NOT fire', async () => {
+    // A rule message that names the pattern is text, not a call.
+    const code = [
+      'export function check(req: { body: string }) {',
+      "  const msg = '`JSON.parse(req.body)` deserializes attacker-controlled bytes ' +",
+      "    'directly.';",
+      '  const doc = `see JSON.parse(req.body) in the guide`;',
+      '  /* JSON.parse(req.body) is unsafe',
+      '     with express.text() */',
+      '  return [msg, doc, req.body.length];',
+      '}',
+    ].join('\n');
+    const r = await analyze(code, '/x/text.ts', 'typescript');
+    expect(countRule(r, 'insecure_deserialization')).toBe(0);
+  });
+
+  it('B-TP-after-string: a real call after a string on the same line still fires', async () => {
+    const code = [
+      "app.post('/p', (req, res) => {",
+      "  log('parsing'); const obj = JSON.parse(req.body);",
+      '  res.json(obj);',
+      '});',
+    ].join('\n');
+    const r = await analyze(code, '/x/s.js', 'javascript');
+    expect(countRule(r, 'insecure_deserialization')).toBe(1);
+  });
+
   // -- C. JS DOM document.evaluate -------------------------------------
 
   it('C-TP: document.evaluate(taint, ...) fires xpath_injection', async () => {

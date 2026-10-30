@@ -35,12 +35,15 @@ export {
   type ReferenceEdge,
   type FieldUseEdge,
   type ImportEdge,
+  type LoadEdge,
+  COMPUTED_MODULE_LOAD,
 } from './ts-call-edges.js';
 export {
   DEFAULT_ENTRY_TABLES,
   type EntryKind,
   type EntryCertainty,
   type EntryTables,
+  type ScriptTable,
   type RouteRegistrarTable,
   type DecoratorEntryRow,
   type TestRunnerTable,
