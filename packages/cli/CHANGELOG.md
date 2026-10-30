@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.18.0] - 2026-10-30
+
 ### Changes
+
+- Built on circle-ir 4.18.0.
 
 - `cognium-dev sbom` reads resolved Java dependency sets when a build has written them, with the precedence resolved > lockfile > declared, and never runs Maven or Gradle itself:
   - `gradle.lockfile` and `gradle/dependency-locks/*.lockfile` replace `build.gradle` / `build.gradle.kts` in their project, giving exact and transitive versions; test-only configurations are `dev`, so `--prod-only` drops them;
