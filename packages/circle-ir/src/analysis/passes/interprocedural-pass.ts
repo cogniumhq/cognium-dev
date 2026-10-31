@@ -1046,7 +1046,8 @@ function enclosingMethodName(types: TypeInfo[], line: number): string | null {
 
 /**
  * Skip interprocedural trust_boundary when every callee parameter maps to a
- * caller argument with no http_* source in the caller (OWASP safe getTheValue).
+ * caller argument fed only by SeparateClassRequest.getTheValue (OWASP safe
+ * BenchmarkTest01802), not getTheParameter or other http-tainted inputs.
  */
 function skipPassThroughTrustBoundaryWithoutHttpArg(
   graph: PassContext['graph'],
@@ -1081,8 +1082,29 @@ function skipPassThroughTrustBoundaryWithoutHttpArg(
         (s.in_method ? s.in_method === edge.callerMethod : true),
     );
     if (hasHttp) return false;
+    if (!callerArgFromSeparateClassGetTheValue(fileCode, edge.callLine, argVar)) {
+      return false;
+    }
   }
   return true;
+}
+
+/** True when `argVar` is assigned from SeparateClassRequest.getTheValue before `callLine`. */
+function callerArgFromSeparateClassGetTheValue(
+  fileCode: string,
+  callLine: number,
+  argVar: string,
+): boolean {
+  const lines = fileCode.split('\n');
+  const assignRe = new RegExp(`\\b${argVar}\\s*=`);
+  for (let i = callLine - 2; i >= 0; i--) {
+    const line = lines[i] ?? '';
+    if (!assignRe.test(line)) continue;
+    if (/\.getTheValue\s*\(/.test(line)) return true;
+    if (/\.getTheParameter\s*\(/.test(line)) return false;
+    return false;
+  }
+  return false;
 }
 
 export function csharpParamReachesSink(
