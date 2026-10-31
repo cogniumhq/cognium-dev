@@ -2647,6 +2647,25 @@ export class ConstantPropagator {
     return false;
   }
 
+  /** Is an argument of `call` an inline sanitizer call over tainted input (itself possibly nested)? */
+  private argIsSanitizedTaint(call: Node): boolean {
+    const argsNode = call.childForFieldName('arguments');
+    if (!argsNode) return false;
+    for (const arg of argsNode.children) {
+      if (arg.type !== 'method_invocation') continue;
+      const name = arg.childForFieldName('name');
+      if (!name || !SANITIZER_METHODS.has(getNodeText(name, this.source))) continue;
+      const inner = arg.childForFieldName('arguments');
+      if (!inner) continue;
+      for (const a of inner.children) {
+        if (a.type === '(' || a.type === ')' || a.type === ',') continue;
+        if (this.isTaintedExpression(a)) return true;
+      }
+      if (this.argIsSanitizedTaint(arg)) return true;
+    }
+    return false;
+  }
+
   private isTaintedExpressionStep(node: Node): boolean | undefined {
     const text = getNodeText(node, this.source);
 
@@ -2656,6 +2675,13 @@ export class ConstantPropagator {
 
       if (nameNode) {
         const methodName = getNodeText(nameNode, this.source);
+
+        // An anti-sanitizer undoing an inline sanitizer is a round trip
+        // (`Base64.getDecoder().decode(Base64.getEncoder().encode(param.getBytes()))`):
+        // the result carries the sanitizer's tainted input (#976).
+        if (ANTI_SANITIZER_METHODS.has(methodName) && this.argIsSanitizedTaint(node)) {
+          return true;
+        }
 
         if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
           return false;

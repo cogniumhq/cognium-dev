@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.18.1] - 2026-10-31
+
+### Fixed
+- **Java: locals declared in `try`, `try`-with-resources, `catch` and `finally` now have DFG defs.** A Java `try` statement used to record uses only, so a resource (`try (PreparedStatement ps = …)`), a local in the body, catch or finally block, or a catch parameter had no def, and nothing used inside or after the block had a reaching def. Resources are now defs scoped to the statement; body, catch and finally blocks are processed like other blocks (their defs carried out as alternates, since they may stop part way); a catch parameter is a def in its clause. **Answers change:** flows through locals inside `try` blocks can now be found where they were not. JavaScript `try` statements are unchanged. `remedyClassOf` drops the name-based fallback it used for this gap.
+- **Java: a source inside a helper reaches the caller only through what the helper returns (#590 link).** With `try` locals defined, sinks inside `try` blocks were reached by the callee-source → caller-sink link, which fired for any source anywhere in the callee. It now fires only when (a) the source's defs reach a `return` of the callee by def-use chains (an overwrite before `return` ends the chain; multi-line statements are followed), parameters excepted, and (b) constant propagation does not hold the assignee untainted while it saw tainted data go into the call (constant branches, `switch`, safe map keys and list indexes in the helper). The constant-dead-branch check for parameter sources now also covers `path_traversal`, `ldap_injection` and `xpath_injection`. A locally constructed map is also recognised in its qualified form (`new java.util.HashMap<>()`), so a read of a literal-only key is not a source. **Answers change:** fewer flows through OWASP-style helpers, with or without `try`.
+- **Java: fewer false positives on OWASP Benchmark 1.2 (85.4 → 91.9; FP 163 → 87, TP 1383 → 1393; #976).** No new false positive in any category, and CWE-Bench-Java, Juliet `_01` and SecuriBench Micro are unchanged or better. Each fix has its own regression test:
+  - a def on a line constant propagation proves unreachable no longer propagates (a dead `else bar = param;` reached through the cross-file walk); lines holding a ternary are excluded;
+  - a JDK receiver (`System.getProperty`, `Properties.getProperty`) never resolves by name to a project method of the same name, which had created a `config_param` source;
+  - the constant-caller gate (#636/#614) now fires: parameter names are read from location-text paths, sibling inner classes sharing one FQN are told apart, interface calls that cannot reach the method no longer disable it, and a helper returning a literal counts as a constant caller;
+  - the cross-file walk stops at a same-file helper that the helper-return gate shows returns no parameter;
+  - the helper-return gate also covers `ldap_injection` and `xpath_injection`, and the constant-caller gate covers `plugin_param` reads from a map the helper builds itself;
+  - constant propagation treats a Base64 encode/decode round trip as tainted.
+
 ## [4.18.0] - 2026-10-30
 
 ### Added
