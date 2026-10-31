@@ -477,6 +477,27 @@ function callArgumentIsConstPropTainted(
 }
 
 /**
+ * Does the callee `return` a variable const-prop holds tainted elements or keys
+ * for (`vars[i] = "X=" + param; return vars;`)? Const-prop does not carry that
+ * into the call's result, so its "clean" assignee is not proof here.
+ */
+function calleeReturnsTaintedContainer(
+  constProp: ConstantPropagatorResult,
+  code: string,
+  startLine: number,
+  endLine: number,
+): boolean {
+  const lines = code.split('\n');
+  for (let l = startLine; l <= endLine; l++) {
+    const m = /^\s*return\s+([A-Za-z_]\w*)\s*;/.exec(lines[l - 1] ?? '');
+    if (!m) continue;
+    if ((constProp.taintedArrayElements.get(m[1])?.size ?? 0) > 0) return true;
+    if ((constProp.taintedCollections.get(m[1])?.size ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Sink types whose parameter-sourced helper flows are dropped when the
  * parameter reaches the helper's return only through a constant-dead branch
  * (`if ((7 * 42) - num > 200) bar = "safe"; else bar = param;`).
@@ -602,7 +623,8 @@ function appendCalleeSourceCallerSinkFlows(
     if (
       constProp &&
       callArgumentIsConstPropTainted(graph, constProp, edge.callerMethod, edge.callLine) &&
-      assigneeIsConstPropClean(constProp, edge.callerMethod, assignee.variable)
+      assigneeIsConstPropClean(constProp, edge.callerMethod, assignee.variable) &&
+      !(fileCode && calleeReturnsTaintedContainer(constProp, fileCode, callee.startLine, callee.endLine))
     ) {
       continue;
     }

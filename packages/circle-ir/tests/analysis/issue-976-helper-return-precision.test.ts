@@ -145,3 +145,31 @@ describe('#976 const-prop: an anti-sanitizer over an inline sanitizer is a round
     expect(flows).toHaveLength(0);
   });
 });
+
+describe('#976 veto: a helper returning an array it stored the input into', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps the flow (const-prop holds the element tainted, not the call result)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Arr extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getParameter("p");
+    String[] bar = new Test().doSomething(request, param);
+    try {
+      Runtime.getRuntime().exec(bar);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+  class Test {
+    String[] doSomething(HttpServletRequest request, String param) {
+      String[] vars = new String[1];
+      vars[0] = "X=" + param;
+      return vars;
+    }
+  }
+}`;
+    const flows = (await analyze(code, 'Arr.java', 'java')).taint.flows.filter(f => f.sink_type === 'command_injection');
+    expect(flows.length).toBeGreaterThan(0);
+  });
+});
