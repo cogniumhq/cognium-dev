@@ -53,6 +53,9 @@ import {
   deadCodeText,
   entriesText,
   parseDeadCodeOptions,
+  parseDepCallsOptions,
+  computeDepCalls,
+  depCallsText,
   parseEntriesOptions,
   parseReachOptions,
   reachJson,
@@ -2233,7 +2236,7 @@ async function main(): Promise<void> {
 
   // Graph facts: dead code, removal reach, entry points. Options are refused
   // before any file is read (#1006); stdout drains before exit (#1001).
-  if (command === 'deadcode' || command === 'reach' || command === 'entries') {
+  if (command === 'deadcode' || command === 'reach' || command === 'entries' || command === 'depcalls') {
     const target = args[0] ?? '.';
     try {
       let payload: string;
@@ -2252,6 +2255,12 @@ async function main(): Promise<void> {
         const report = await computeReach(target, opts);
         payload = opts.format === 'json' ? reachJson(report)
           : opts.format === 'sarif' ? reachSarif(report) : reachText(report);
+      } else if (command === 'depcalls') {
+        const opts = parseDepCallsOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeDepCalls(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : depCallsText(report);
       } else {
         const opts = parseEntriesOptions(options);
         outputFile = opts.output;

@@ -11,6 +11,9 @@
  *    `scope: 'all'`, of a path it left open), the row of a caller-supplied
  *    `safe-construct-table@0.1` the fixed code matches, or `multiple`,
  *    `unrecognized`, `abstained`, with the table's digest.
+ *  - `dependency-calls`: for a dependency bump, every call site that lands
+ *    on the Maven artifact, covered (a strong test path) or uncovered, and
+ *    the external sites that cannot be ruled in or out (Java).
  *
  * Observations only: nothing here says a fix is adequate. Tables are inputs;
  * none ships in this package. Deterministic: no network, no model, the same
@@ -38,7 +41,11 @@ import {
 } from 'circle-ir';
 import { readTree, sha, TEMPLATE_EXTENSIONS, type CodeLanguage, type TreeFile } from './tree.js';
 
+import { dependencyCallsFacts, type DependencyCallsParams } from './dependency-calls.js';
+
 export { readTree, EXTENSIONS, TEMPLATE_EXTENSIONS, DEFAULT_EXCLUDED_DIRS } from './tree.js';
+export { findJar, mavenJarPath } from './dependency-calls.js';
+export type { DependencyCallsParams, DependencyCallRow, DependencyCallsSite } from './dependency-calls.js';
 export type { CodeLanguage, TreeFile } from './tree.js';
 
 /** The version of the observation shape. A consumer pins it and refuses any other. */
@@ -48,7 +55,7 @@ export const SCHEMA_VERSION = '0.1' as const;
 export const DRIVER = { id: 'code-facts', family: 'static', version: '0.1.0' } as const;
 
 export function capabilities(): string[] {
-  return ['path-set-diff', 'remedy-class'];
+  return ['path-set-diff', 'remedy-class', 'dependency-calls'];
 }
 
 /** Two versions of one tree, checked out by the caller: the baseline and the change. */
@@ -241,4 +248,15 @@ function diffFromResult(r: RunResult): PathSetDiff {
   if (!site) throw new Error('code-facts: pathSet has no site anchor');
   const s = site.observation as Pick<PathSetDiff, 'scheme' | 'cwe' | 'counts' | 'pins'>;
   return { ...s, entries: r.anchors.filter(a => a.anchor !== 'site').map(a => a.observation as PathDiffEntry) };
+}
+
+/**
+ * Capability `dependency-calls` over one checked-out tree (Java). `views.jar`
+ * is the resolved jar's bytes when the caller has them; otherwise
+ * `params.jarPath`, the local Maven repository (for `group:artifact:version`)
+ * or circle-ir's fallback table supplies the packages.
+ */
+export async function runDependencyCalls(root: string, views: { jar?: Uint8Array } = {}, params: DependencyCallsParams): Promise<RunResult> {
+  const { anchors } = await dependencyCallsFacts(root, views, params, init);
+  return { driver: DRIVER, schemaVersion: SCHEMA_VERSION, capability: 'dependency-calls', anchors, environmentDigest: environmentDigest() };
 }
