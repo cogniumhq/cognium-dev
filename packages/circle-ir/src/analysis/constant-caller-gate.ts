@@ -212,6 +212,7 @@ function isConstantArgRecursive(
   visiting: Set<string>,
 ): boolean {
   if (isDirectConstantArg(ir, lines, call, position)) return true;
+  if (isConstantReturnLocal(ctx, ir, lines, call, position)) return true;
   if (depth >= TRANSITIVE_MAX_DEPTH) return false;
 
   const arg = call.arguments.find(a => a.position === position);
@@ -224,20 +225,23 @@ function isConstantArgRecursive(
   if (paramIdx < 0) return false;
 
   const fqn = `${typeFqn(encl.type, ir)}.${encl.method.name}`;
+  const relayFile = ctx.fileAnalyses.find(f => f.analysis === ir)?.file;
   const visitKey = `${fqn}:${paramIdx}`;
   if (visiting.has(visitKey)) return false;
   visiting.add(visitKey);
 
   let resolvedToMethod = 0;
   for (const site of ctx.callsByName.get(encl.method.name) ?? []) {
+    if (relayFile !== undefined && site.file !== relayFile && declaresType(ctx.fileAnalyses, site.file, encl.type.name)) continue;
     const r = ctx.resolver.resolveCall(site.call, site.file);
     // Rule 3, as at the sink: one call of this name that does not resolve exactly might be
     // this relay receiving tainted data, so the relay's argument is not known to be constant.
+    if (resolvesElsewhere(r, fqn)) continue;
     if (!r || r.resolution !== 'exact') {
       visiting.delete(visitKey);
       return false;
     }
-    if (r.targetMethod !== fqn) continue;
+    if (r.targetMethod !== fqn || (relayFile !== undefined && site.file !== relayFile && r.targetFile !== relayFile)) continue;
     const callerIr = ctx.fileAnalyses.find(f => f.file === site.file)?.analysis;
     const callerLines = ctx.sourceLinesByFile.get(site.file);
     if (!callerIr || !callerLines) {
@@ -293,7 +297,10 @@ export function applyConstantCallerGate(
     const flows = ir.taint.flows ?? [];
     const kept = flows.filter(flow => {
       if (flow.source_type !== 'interprocedural_param') return true;
-      const variable = flow.path[0]?.variable;
+      // The first step names the parameter, or (#976) carries the source's
+      // location text `"String param in doSomething"`: take the name from it.
+      const raw = flow.path[0]?.variable;
+      const variable = raw ? (/^\S+\s+([A-Za-z_]\w*)\s+in\s+\S+$/.exec(raw)?.[1] ?? raw) : raw;
       if (!variable) return true;
       if (flows.some(o => o !== flow && o.sink_line === flow.sink_line && o.source_type !== 'interprocedural_param')) return true;
 
@@ -311,9 +318,14 @@ export function applyConstantCallerGate(
       const fqn = `${typeFqn(type, ir)}.${method.name}`;
       let resolvedToMethod = 0;
       for (const site of callsByName.get(method.name) ?? []) {
+        if (site.file !== fa.file && declaresType(fileAnalyses, site.file, type.name)) continue;
         const r = resolver.resolveCall(site.call, site.file);
+        if (resolvesElsewhere(r, fqn)) continue;
         if (!r || r.resolution !== 'exact') return true;
-        if (r.targetMethod !== fqn) continue;
+        // Same FQN in another file is another method: nested classes of the
+        // same simple name in sibling files share it (every OWASP test has its
+        // own inner `Test.doSomething`, cognium-dev#976).
+        if (r.targetMethod !== fqn || (site.file !== fa.file && r.targetFile !== fa.file)) continue;
         const callerIr = fileAnalyses.find(f => f.file === site.file)?.analysis;
         const lines = sourceLinesByFile.get(site.file);
         if (!callerIr || !lines || !isConstantArgRecursive(gateCtx, callerIr, lines, site.call, position, 0, new Set())) return true;
@@ -323,4 +335,96 @@ export function applyConstantCallerGate(
     });
     if (kept.length !== flows.length) ir.taint.flows = kept;
   }
+}
+
+/**
+ * A dispatch that provably cannot land on `fqn`: a polymorphic resolution
+ * (interface call) whose candidate implementations exclude it. OWASP's
+ * `thing.doSomething(x)` on `ThingInterface` is not the test's own inner
+ * `Test.doSomething`, so it no longer disables the gate for every helper of
+ * that name (#976).
+ */
+function resolvesElsewhere(
+  r: { resolution: string; targetMethod: string; candidates?: string[] } | undefined,
+  fqn: string,
+): boolean {
+  if (!r || r.resolution !== 'polymorphic' || r.targetMethod === fqn) return false;
+  return Array.isArray(r.candidates) && r.candidates.length > 0 && !r.candidates.includes(fqn);
+}
+
+/**
+ * The argument is a local whose every assignment in the caller is a string
+ * literal or a call that resolves exactly to a project method returning only
+ * string literals (OWASP `String param = scr.getTheValue("…")`, whose body is
+ * `return "bar";`, cognium-dev#976).
+ */
+function isConstantReturnLocal(
+  ctx: ConstantCallerCtx,
+  ir: CircleIR,
+  lines: string[],
+  call: CallInfo,
+  position: number,
+): boolean {
+  if (ir.meta.language !== 'java') return false;
+  const arg = call.arguments.find(a => a.position === position);
+  const name = arg?.variable;
+  if (!name || (arg.expression ?? '').trim() !== name || !/^[A-Za-z_]\w*$/.test(name)) return false;
+  const encl = enclosingMethod(ir, call.location.line);
+  if (!encl || encl.method.parameters.some(p => p.name === name)) return false;
+  const file = ctx.fileAnalyses.find(f => f.analysis === ir)?.file;
+  if (!file) return false;
+  const assign = new RegExp(`(?:^|[;{]|\\b(?:if|else)\\b[^;]*?)\\s*(?:[\\w<>\\[\\].]+\\s+)?${name}\\s*=(?!=)\\s*(.+?);`);
+  const literal = /^"(?:[^"\\]|\\.)*"$/;
+  let viaCall = 0;
+  for (let l = encl.method.start_line; l < call.location.line; l++) {
+    const text = (lines[l - 1] ?? '').replace(/\/\/.*$/, '');
+    if (new RegExp(`(?:\\+\\+|--)\\s*${name}\\b|\\b${name}\\s*(?:\\+\\+|--|[-+*/%&|^]=)`).test(text)) return false;
+    const m = assign.exec(text);
+    if (!m) continue;
+    const rhs = m[1].trim();
+    if (literal.test(rhs)) continue;
+    const callee = ir.calls.find(c => c.location.line === l && rhs.includes(`${c.method_name}(`));
+    if (!callee) return false;
+    const r = ctx.resolver.resolveCall(callee, file);
+    if (!r || r.resolution !== 'exact' || !methodReturnsOnlyLiterals(ctx, r.targetFile, r.targetMethod)) return false;
+    viaCall++;
+  }
+  return viaCall > 0;
+}
+
+function methodReturnsOnlyLiterals(ctx: ConstantCallerCtx, file: string, fqn: string): boolean {
+  const ir = ctx.fileAnalyses.find(f => f.file === file)?.analysis;
+  const lines = ctx.sourceLinesByFile.get(file);
+  if (!ir || !lines) return false;
+  const name = fqn.split('.').pop();
+  for (const type of ir.types) {
+    if (fqn !== `${typeFqn(type, ir)}.${name}`) continue;
+    const methods = type.methods.filter(m => m.name === name);
+    if (methods.length !== 1) return false; // overloaded: which one is unknown
+    const m = methods[0];
+    let returns = 0;
+    for (let l = m.start_line; l <= m.end_line; l++) {
+      const text = (lines[l - 1] ?? '').replace(/\/\/.*$/, '');
+      if (!/\breturn\b/.test(text)) continue;
+      for (const m of text.matchAll(/\breturn\b([^;]*);?/g)) {
+        if (!/^\s*"(?:[^"\\]|\\.)*"\s*$/.test(m[1])) return false;
+        returns++;
+      }
+    }
+    return returns > 0;
+  }
+  return false;
+}
+
+/**
+ * Does `file` declare its own type named `name`? Its unqualified uses of that
+ * name are its own type (Java shadowing), whatever the shared FQN says.
+ */
+function declaresType(
+  fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
+  file: string,
+  name: string,
+): boolean {
+  const ir = fileAnalyses.find(f => f.file === file)?.analysis;
+  return !!ir && ir.meta.language === 'java' && ir.types.some(t => t.name === name);
 }

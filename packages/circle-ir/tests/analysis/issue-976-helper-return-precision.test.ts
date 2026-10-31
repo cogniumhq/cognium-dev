@@ -255,3 +255,50 @@ public class Bench extends HttpServlet {
     expect(await paths('System.getProperty("os.name")')).toHaveLength(0);
   });
 });
+
+describe('#976 constant-caller gate: constant-returning source, sibling inner classes of one name', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+  public String getTheValue(String p) { return "bar"; }
+}`;
+  const servlet = (cls: string, getter: string) => `package t;
+import javax.servlet.http.*;
+public class ${cls} extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.${getter}("p");
+    String bar = new Test().doSomething(request, param);
+    new java.io.File(bar, "/Test.txt");
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      String bar = param;
+      return bar;
+    }
+  }
+}`;
+  const flowsIn = async (file: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet('A', 'getTheValue'), filePath: 't/A.java', language: 'java' },
+      { code: servlet('B', 'getTheParameter'), filePath: 't/B.java', language: 'java' },
+    ]);
+    const fa = r.files.find(f => f.file === file)!;
+    const out = fa.analysis.taint.flows.filter(f => f.sink_type === 'path_traversal');
+    return out;
+  };
+
+  it("drops the helper-parameter flow when the file's only caller passes getTheValue's constant", async () => {
+    expect(await flowsIn('t/A.java')).toHaveLength(0);
+  });
+
+  it('keeps it in the sibling file whose caller passes getTheParameter', async () => {
+    expect((await flowsIn('t/B.java')).length).toBeGreaterThan(0);
+  });
+});
