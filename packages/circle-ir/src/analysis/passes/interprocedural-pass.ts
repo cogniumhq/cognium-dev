@@ -682,6 +682,26 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
+      // cognium-dev#917 S4 — pass-through helpers must not reach trust_boundary when
+      // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
+      if (
+        fileCode &&
+        sink.type === 'trust_boundary' &&
+        calleeSources.every(
+          s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
+        ) &&
+        skipPassThroughTrustBoundaryWithoutHttpArg(
+          graph,
+          fileCode,
+          edge,
+          callee.startLine,
+          callee.endLine,
+          sources,
+          calleeSources.map(s => s.variable!),
+        )
+      ) {
+        continue;
+      }
       additionalFlows.push({
         source_line: source.line,
         sink_line: sink.line,
@@ -1022,6 +1042,47 @@ function enclosingMethodName(types: TypeInfo[], line: number): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Skip interprocedural trust_boundary when every callee parameter maps to a
+ * caller argument with no http_* source in the caller (OWASP safe getTheValue).
+ */
+function skipPassThroughTrustBoundaryWithoutHttpArg(
+  graph: PassContext['graph'],
+  fileCode: string,
+  edge: import('../interprocedural.js').CallEdge,
+  calleeStart: number,
+  calleeEnd: number,
+  fileSources: import('../../types/index.js').TaintSource[],
+  paramVars: string[],
+): boolean {
+  const lines = fileCode.split('\n');
+  const paramNames = javaMethodParamNames(lines.slice(calleeStart - 1, calleeEnd));
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  for (const paramVar of paramVars) {
+    const idx = paramNames.indexOf(paramVar);
+    if (idx < 0) continue;
+    const fromCall = callSite?.arguments?.find(a => a.position === idx);
+    const argVar =
+      fromCall?.variable ??
+      (fromCall?.expression && /^[A-Za-z_]\w*$/.test(fromCall.expression.trim())
+        ? fromCall.expression.trim()
+        : undefined);
+    if (!argVar) return false;
+    const hasHttp = fileSources.some(
+      s =>
+        s.variable === argVar &&
+        s.line <= edge.callLine &&
+        s.line < calleeStart &&
+        s.type.startsWith('http_') &&
+        (s.in_method ? s.in_method === edge.callerMethod : true),
+    );
+    if (hasHttp) return false;
+  }
+  return true;
 }
 
 export function csharpParamReachesSink(
