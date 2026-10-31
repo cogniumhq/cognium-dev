@@ -127,3 +127,21 @@ describe('#976 callee source returned through an element store (plexus-utils CWE
     expect(flows).toHaveLength(0);
   });
 });
+
+describe('#976 const-prop: an anti-sanitizer over an inline sanitizer is a round trip', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps Base64 decode(encode(param)) in a branch as the returned taint', async () => {
+    const flows = await sqlFlows(servlet(`      String bar = "";
+      if (param != null) bar = new String(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encode(param.getBytes())));
+      return bar;`));
+    expect(flows.length).toBeGreaterThan(0);
+  });
+
+  it('the constant-dead branch veto still drops the flow', async () => {
+    const flows = await sqlFlows(servlet(`      String bar = "";
+      if ((7 * 42) - 86 > 200) bar = "safe"; else bar = param;
+      return bar;`));
+    expect(flows).toHaveLength(0);
+  });
+});
