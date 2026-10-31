@@ -8,7 +8,7 @@
  *    assignee untainted, the helper dropped it (constant branch, safe key).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initAnalyzer, analyze } from '../../src/analyzer.js';
+import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
 
 const servlet = (helperBody: string) => `import javax.servlet.http.*;
 import java.sql.*;
@@ -171,5 +171,52 @@ public class Arr extends HttpServlet {
 }`;
     const flows = (await analyze(code, 'Arr.java', 'java')).taint.flows.filter(f => f.sink_type === 'command_injection');
     expect(flows.length).toBeGreaterThan(0);
+  });
+});
+
+describe('#976 dead-branch def with a source from another file (OWASP 00625)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const helperFile = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+}`;
+  const servletFile = (cond: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.getTheParameter("p");
+    if (param == null) param = "";
+    String bar;
+    int num = 86;
+    if (${cond}) bar = "This_should_always_happen";
+    else bar = param;
+    String fileName = null;
+    try {
+      fileName = "/tmp/" + bar;
+      new java.io.FileOutputStream(new java.io.File(fileName), false);
+    } catch (Exception e) {
+      System.out.println("x");
+    }
+  }
+}`;
+  const pathFlows = async (cond: string) => {
+    const r = await analyzeProject([
+      { code: helperFile, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servletFile(cond), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.sink.type === 'path_traversal');
+  };
+
+  it('drops the flow through the dead else', async () => {
+    expect(await pathFlows('(7 * 42) - num > 200')).toHaveLength(0);
+  });
+
+  it('keeps it when the else is live', async () => {
+    expect((await pathFlows('(7 * 42) - num > 400')).length).toBeGreaterThan(0);
   });
 });
