@@ -224,6 +224,7 @@ public class Bench extends HttpServlet {
       'BenchmarkTest00992',
       'BenchmarkTest01205',
       'BenchmarkTest01207',
+      'BenchmarkTest01802',
     ]) {
       const code = owaspFile(name);
       if (!code) return;
