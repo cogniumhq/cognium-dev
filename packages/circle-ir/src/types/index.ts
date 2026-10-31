@@ -1143,6 +1143,13 @@ export interface ProjectAnalysis {
    */
   per_file_budget_exceeded?: boolean;
   /**
+   * Files skipped because their own analysis passed
+   * `AnalyzerOptions.fileTimeoutMs` (cognium-dev#1007). Present only when the
+   * option is set and at least one file timed out. These files are absent from
+   * `files`; a consumer must report them, not treat them as clean.
+   */
+  timed_out_files?: Array<{ file: string; elapsed_ms: number; phase: string }>;
+  /**
    * `true` when the PER-FILE phase of `analyzeProject` stopped at a size
    * ceiling (see `AnalyzerOptions.maxProjectSourceChars` /
    * `maxProjectFiles`). As with `per_file_budget_exceeded`, files were

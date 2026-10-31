@@ -1822,7 +1822,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'addParametersToContext', class: 'StaticParametersInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'build', class: 'HttpParameters', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   // Cron expression parsing (DoS/ReDoS)
-  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — Java cron-utils `CronParser`; scoped to Java so a JS/TS
+  // `parser.parse(...)` (tree-sitter, a lockfile parser) never matches it by name.
+  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'isValid', class: 'CronValidator', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   // ff4j feature flags
   { method: 'check', class: 'FF4j', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
@@ -1922,9 +1924,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'selectSingleNode', class: 'Node', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
 
   // XXE - XML External Entity (CWE-611)
-  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — JAXP parsers are JVM classes. Scoped to Java so the
+  // receiver-name heuristic (`parser` → SAXParser) cannot turn a JS/TS
+  // `parser.parse(text)` into an XXE sink. JS/TS XML parsers (sax, xml2js,
+  // libxmljs, DOMParser) have their own entries.
+  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'unmarshal', class: 'Unmarshaller', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'newTransformer', class: 'TransformerFactory', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'transform', class: 'Transformer', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
@@ -2191,6 +2197,47 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'each', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   { method: 'get',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   { method: 'exec', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+
+  // DuckDB from JS/TS: `@duckdb/node-api` (DuckDBConnection), the classic
+  // `duckdb` / `duckdb-async` bindings (Database / Connection) and
+  // `react-native-duckdb` (Database / Transaction). The method names are
+  // generic and the receivers come from factories (`await instance.connect()`,
+  // `open({...})`), so the receiver cannot be typed: the import is the gate
+  // (`requires_import`). Only the SQL text (arg 0) is a sink — values passed
+  // as bound parameters (`run(sql, [v])`, `execute(sql, params)`,
+  // `executeNamed(sql, {k: v})`, `stmt.bind(...)`) are parameterised and do
+  // not reach it.
+  { method: 'run', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async'] },
+  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
+  { method: 'stream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
+  { method: 'runAndRead', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'runAndReadAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'runAndReadUntil', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndRead', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndReadAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndReadUntil', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'start', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'startStream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'extractStatements', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'all', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'each', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'exec', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'arrowIPCAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'arrowIPCStream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeSync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeSyncNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'streamNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  // RxDB (Mango queries, any storage incl. SQLite): a selector or query
+  // object, a field name passed to the query builder, or a `$regex` pattern
+  // under caller control is NoSQL operator injection (CWE-943). Gated on the
+  // `rxdb` import for the same reason as DuckDB above. `find` is already a
+  // classless JS NoSQL sink in the JavaScript plugin.
+  { method: 'findOne', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'count', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'where', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'regex', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
 
   // TypeORM QueryBuilder raw fragments (CWE-89). TypeORM's raw `.query(sql)`
   // escape hatch is already covered by the classless `query` sink in the JS

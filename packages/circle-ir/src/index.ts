@@ -11,6 +11,7 @@ export {
   analyzeForAPI,
   analyzeProject,
   isAnalyzerInitialized,
+  AnalysisTimeoutError,
   resetAnalyzer,
   type AnalyzerOptions,
 } from './analyzer.js';
@@ -19,6 +20,9 @@ export {
 export {
   parseNpmDependencies,
   parseNpmLockDependencies,
+  parsePnpmLockDependencies,
+  parseYarnLockDependencies,
+  pnpmLockImporters,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
@@ -30,6 +34,8 @@ export {
   parsePoetryLockDependencies,
   parseGoDependencies,
   collectDependencies,
+  licenseFromPackageJson,
+  applyLicenses,
   toCycloneDx,
   toSpdx,
 } from './analysis/sbom.js';
@@ -38,6 +44,7 @@ export type {
   Ecosystem,
   DependencyScope,
   SbomMetadata,
+  LicenseMap,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
@@ -256,10 +263,15 @@ export {
   NavigationIndex,
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
+  COMPUTED_MODULE_LOAD,
   DEFAULT_ENTRY_TABLES,
   buildJavaGraph,
   JAVA_GRAPH_SCHEME,
   DEFAULT_JAVA_ENTRY_TABLES,
+  buildPythonGraph,
+  PYTHON_GRAPH_SCHEME,
+  buildGoGraph,
+  GO_GRAPH_SCHEME,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -285,21 +297,36 @@ export type {
   TsEntry,
   UnresolvedRegistration,
   ReferenceEdge,
+  FieldUseEdge,
   ImportEdge,
+  LoadEdge,
   EntryKind,
   EntryCertainty,
   EntryTables,
+  ScriptTable,
+  ToolFileRow,
+  ExpoTable,
   JavaSourceFile,
   JavaGraphOptions,
   JavaGraph,
   JavaEntryTables,
+  PythonSourceFile,
+  PythonGraphOptions,
+  PythonGraph,
+  GoSourceFile,
+  GoGraphOptions,
+  GoGraph,
   IndexedCallSite,
   IndexedTarget,
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls } from './graph-facts/index.js';
 export type {
+  DependencyCallsOptions,
+  DependencyCall,
+  DependencyCallTest,
+  DependencyCallsResult,
   ReachInput,
   ReachOptions,
   ReachResult,
@@ -315,6 +342,7 @@ export type {
   MoveCandidateRef,
   RemovalReachOptions,
   RemovalReachResult,
+  PartialFile,
 } from './graph-facts/index.js';
 
 // Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
@@ -332,6 +360,8 @@ export {
   eraseJavaType,
   derivePythonIds,
   pythonModuleName,
+  deriveGoIds,
+  goPackageDir,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';
@@ -343,6 +373,7 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  ParseErrorSite,
   NodeIdSource,
   StableIdDiff,
   MoveRelation,
@@ -412,8 +443,16 @@ export {
   templateEngineOf,
   expressionNames,
   handedNames,
+  findingDiff,
+  diffLines,
+  splitLines,
 } from './path-set/index.js';
 export type {
+  FindingDiff,
+  FindingDiffSide,
+  NewFinding,
+  MatchedBy,
+  LineDiff,
   PathSetInput,
   PathSetOptions,
   DeclKeyScheme,

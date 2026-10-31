@@ -294,3 +294,149 @@ test('sbom: only an orphan resolved file → no supported manifests (exit 1)', a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('sbom: a pnpm workspace lockfile supersedes every importer\'s package.json (DT4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-pnpm-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'mono', dependencies: { lodash: '^4.17.0' } }));
+    mkdirSync(join(dir, 'packages', 'app'), { recursive: true });
+    writeFileSync(join(dir, 'packages', 'app', 'package.json'), JSON.stringify({ name: 'app', dependencies: { semver: '^7.5.0' } }));
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'importers:',
+      '  .:',
+      '    dependencies:',
+      '      lodash: {specifier: ^4.17.0, version: 4.17.15}',
+      '  packages/app:',
+      '    dependencies:',
+      '      semver: {specifier: ^7.5.0, version: 7.5.1}',
+      'packages:',
+      '  lodash@4.17.15: {}',
+      '  semver@7.5.1: {}',
+      'snapshots:',
+      '  lodash@4.17.15: {}',
+      '  semver@7.5.1: {}',
+      '',
+    ].join('\n'));
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const purls = purlsOf(out);
+    expect(purls).toContain('pkg:npm/lodash@4.17.15');
+    expect(purls).toContain('pkg:npm/semver@7.5.1');
+    expect(purls.some((p) => p.includes('%5E') || p.includes('^'))).toBe(false); // no declared ranges left
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: yarn.lock supersedes package.json and reads it for dev scope', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-yarn-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'y', dependencies: { ms: '^2.1.0' }, devDependencies: { tap: '^1.0.0' } }));
+    writeFileSync(join(dir, 'yarn.lock'), [
+      '# yarn lockfile v1',
+      '',
+      'ms@^2.1.0:',
+      '  version "2.1.3"',
+      '',
+      'tap@^1.0.0:',
+      '  version "1.0.2"',
+      '',
+    ].join('\n'));
+    const { out, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    expect(purlsOf(out)).toEqual(expect.arrayContaining(['pkg:npm/ms@2.1.3', 'pkg:npm/tap@1.0.2']));
+    expect(out).not.toContain('^2.1.0');
+    const prod = await runCli(['sbom', dir, '--prod-only', '--deterministic']);
+    expect(purlsOf(prod.out)).toContain('pkg:npm/ms@2.1.3');
+    expect(purlsOf(prod.out).some((p) => p.includes('tap'))).toBe(false); // dev by reachability from package.json
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function pnpmLicenceFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sbom-lic-'));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'mono', dependencies: { lodash: '^4.17.0', '@scope/y': '^1.0.0', zod: '^3.0.0' } }));
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), [
+    "lockfileVersion: '9.0'",
+    'importers:',
+    '  .:',
+    '    dependencies:',
+    '      lodash: {specifier: ^4.17.0, version: 4.17.21}',
+    "      '@scope/y': {specifier: ^1.0.0, version: 1.2.0}",
+    '      zod: {specifier: ^3.0.0, version: 3.22.0}',
+    'packages:',
+    '  lodash@4.17.21: {}',
+    "  '@scope/y@1.2.0': {}",
+    '  zod@3.22.0: {}',
+    'snapshots:',
+    '  lodash@4.17.21: {}',
+    "  '@scope/y@1.2.0': {}",
+    '  zod@3.22.0: {}',
+    '',
+  ].join('\n'));
+  // pnpm store layout for lodash and the scoped package (name `/` → `+`)
+  const store = (n: string, v: string) => join(dir, 'node_modules', '.pnpm', `${n.replace(/\//g, '+')}@${v}`, 'node_modules', n);
+  mkdirSync(store('lodash', '4.17.21'), { recursive: true });
+  writeFileSync(join(store('lodash', '4.17.21'), 'package.json'), JSON.stringify({ name: 'lodash', version: '4.17.21', license: 'MIT' }));
+  mkdirSync(store('@scope/y', '1.2.0'), { recursive: true });
+  writeFileSync(join(store('@scope/y', '1.2.0'), 'package.json'), JSON.stringify({ name: '@scope/y', version: '1.2.0', licenses: [{ type: 'Apache-2.0' }] }));
+  // a hoisted zod of another version must not lend its licence
+  mkdirSync(join(dir, 'node_modules', 'zod'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0', license: 'WRONG' }));
+  return dir;
+}
+
+function licencesOf(out: string): Record<string, string | undefined> {
+  const bom = JSON.parse(out) as { components: { name: string; licenses?: { license: { name: string } }[] }[] };
+  return Object.fromEntries(bom.components.map((c) => [c.name, c.licenses?.[0]?.license.name]));
+}
+
+test('sbom: licences come from installed node_modules (pnpm store), offline; a hoisted copy of another version is ignored', async () => {
+  const dir = pnpmLicenceFixture();
+  try {
+    const { out, err, code } = await runCli(['sbom', dir, '--deterministic']);
+    expect(code).toBe(0);
+    const lic = licencesOf(out);
+    expect(lic.lodash).toBe('MIT');
+    expect(lic['@scope/y']).toBe('Apache-2.0');
+    expect(lic.zod).toBeUndefined();
+    expect(err).toContain('licences: 2 known, 1 unknown');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: --license-map fills the rest; node_modules wins; SPDX keeps NOASSERTION for unknown', async () => {
+  const dir = pnpmLicenceFixture();
+  try {
+    const map = join(dir, 'licences.json');
+    writeFileSync(map, JSON.stringify({ 'zod@3.22.0': 'MIT', lodash: 'GPL-3.0' }));
+    const { out, code } = await runCli(['sbom', dir, '--deterministic', '--license-map', map]);
+    expect(code).toBe(0);
+    const lic = licencesOf(out);
+    expect(lic.zod).toBe('MIT');
+    expect(lic.lodash).toBe('MIT'); // from node_modules, not overwritten by the map
+    const spdx = await runCli(['sbom', dir, '--deterministic', '-f', 'spdx']);
+    const doc = JSON.parse(spdx.out) as { packages: { name: string; licenseDeclared: string }[] };
+    expect(doc.packages.find((p) => p.name === 'zod')?.licenseDeclared).toBe('NOASSERTION');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sbom: a --license-map that is not a JSON object of strings is refused (exit 1)', async () => {
+  const dir = pnpmLicenceFixture();
+  try {
+    const map = join(dir, 'bad.json');
+    writeFileSync(map, JSON.stringify(['MIT']));
+    const r = await runCli(['sbom', dir, '--license-map', map]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('--license-map');
+    const r2 = await runCli(['sbom', dir, '--license-map']);
+    expect(r2.code).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

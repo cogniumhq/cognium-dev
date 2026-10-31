@@ -1294,6 +1294,29 @@ const NOSQL_ARRAY_METHODS = new Set(['find', 'filter', 'some', 'every', 'findInd
 const FUNCTION_FIRST_ARG_RE =
   /\.\s*(?:find|filter|some|every|findIndex|findLast)\s*\(\s*(?:async\s+)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
 
+// cognium-dev#1000 — `recv.find(name)` with a single bare identifier argument.
+const NAMED_ARRAY_PREDICATE_RE =
+  /([A-Za-z_$][\w$]*)\s*\.\s*(find|filter|some|every|findIndex|findLast)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/;
+
+/** A function declared in this file under `name` (function / const arrow / function expression). */
+function isDeclaredFunctionName(name: string, lines: string[]): boolean {
+  const n = name.replace(/[$]/g, '\\$');
+  const decls = [
+    new RegExp(`\\bfunction\\s+${n}\\s*[(<]`),
+    new RegExp(`\\b(?:const|let|var)\\s+${n}\\s*(?::[^=]*)?=\\s*(?:async\\s+)?(?:function\\b|\\(|[A-Za-z_$][\\w$]*\\s*=>)`),
+  ];
+  return lines.some(l => decls.some(re => re.test(l)));
+}
+
+/** `name` declared as an array in this file: `= [`, `: T[]`, `Array<…>`, `new Array`, `Array.from`. */
+function isDeclaredArrayName(name: string, lines: string[]): boolean {
+  const n = name.replace(/[$]/g, '\\$');
+  const re = new RegExp(
+    `\\b${n}\\s*(?:\\??\\s*:\\s*(?:readonly\\s+)?(?:[\\w$.<>,\\s]+\\[\\]|(?:Readonly)?Array\\s*<)|(?::[^=;]*)?=\\s*(?:\\[|new\\s+Array\\b|Array\\.(?:from|of)\\b))`,
+  );
+  return lines.some(l => re.test(l));
+}
+
 // cognium-ai#279 R-1 — an argument that is an object literal with an ORM
 // query-builder key (`where`/`select`/`populate`/…) is a *builder*, not a raw
 // query string: a value in a `{ field, value }` position binds as a parameter
@@ -3198,7 +3221,20 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (sink.type !== 'nosql_injection') return true;
         if (!NOSQL_ARRAY_METHODS.has(sink.method ?? '')) return true;
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
-        return !FUNCTION_FIRST_ARG_RE.test(sinkLineText);
+        if (FUNCTION_FIRST_ARG_RE.test(sinkLineText)) return false;
+        // cognium-dev#1000 — `ancestors.find(meaningful)`: a named predicate
+        // declared as a function in this file, or a receiver declared as an
+        // array, is Array.prototype iteration too. A Mongo
+        // `collection.find(query)` with a query variable keeps firing.
+        const named = NAMED_ARRAY_PREDICATE_RE.exec(sinkLineText);
+        if (named) {
+          const [, receiver, method, arg] = named;
+          if (NOSQL_ARRAY_METHODS.has(method) &&
+              (isDeclaredFunctionName(arg, sourceLines) || isDeclaredArrayName(receiver, sourceLines))) {
+            return false;
+          }
+        }
+        return true;
       });
     }
 
