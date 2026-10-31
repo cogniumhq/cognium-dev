@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.18.0] - 2026-10-30
 
+### Added
+- **`depcalls`** (E02): `cognium-dev depcalls --artifact <groupId:artifactId[:version]> [path]` lists every call in a Java tree into one Maven artifact, covered or not by a test (circle-ir `dependency-calls@0.1`), and the external sites that can't be attributed. Packages come from `--jar`, the local Maven repository (`--maven-repo`, `$MAVEN_REPO_LOCAL`, else `~/.m2/repository`) for a versioned coordinate, else circle-ir's table for the demo dependencies; an artifact nothing resolves exits 1. `-f text|json`, `-o`.
+
 ### Changes
 
 - Built on circle-ir 4.18.0.

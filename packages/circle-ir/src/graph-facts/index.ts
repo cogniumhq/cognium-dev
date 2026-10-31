@@ -42,3 +42,22 @@ export {
   type RemovalReachOptions,
   type RemovalReachResult,
 } from './removal-reach.js';
+export {
+  DEPENDENCY_CALLS_SCHEME,
+  dependencyCalls,
+  type DependencyCallsOptions,
+  type DependencyCall,
+  type DependencyCallTest,
+  type DependencyCallsResult,
+  type DependencyUnattributedSite,
+} from './dependency-calls.js';
+export {
+  MAVEN_PACKAGE_FALLBACK,
+  UnknownArtifact,
+  jarPackages,
+  mavenArtifact,
+  mavenPackages,
+  zipEntryNames,
+  type MavenPackages,
+  type MavenPackageSource,
+} from './maven-packages.js';

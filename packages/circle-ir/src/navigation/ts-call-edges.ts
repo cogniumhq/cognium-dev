@@ -173,6 +173,8 @@ export interface UnresolvedCall {
   site: CallEdgeSite;
   reason: UnresolvedReason;
   evidence: string;
+  /** Java `external` sites: the library type the call lands on (`java-graph@0.1`). */
+  receiver?: string;
 }
 
 export interface TsCallGraph {
