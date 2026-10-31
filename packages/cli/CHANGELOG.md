@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.18.0] - 2026-10-30
+
 ### Added
 - **`depcalls`** (E02): `cognium-dev depcalls --artifact <groupId:artifactId[:version]> [path]` lists every call in a Java tree into one Maven artifact, covered or not by a test (circle-ir `dependency-calls@0.1`), and the external sites that can't be attributed. Packages come from `--jar`, the local Maven repository (`--maven-repo`, `$MAVEN_REPO_LOCAL`, else `~/.m2/repository`) for a versioned coordinate, else circle-ir's table for the demo dependencies; an artifact nothing resolves exits 1. `-f text|json`, `-o`.
 
 ### Changes
 
+- Built on circle-ir 4.18.0.
 - **`deadcode`, `reach` and `entries` say which files did not parse, and where** (cognium-dev#1004). Text lists each partial file as `file:line:column  ERROR in <parent>` (or `MISSING <token>`) instead of the first five paths. JSON gains `partialFiles` beside `partial`. `deadcode -f sarif` adds a note-level `graph-facts/partial-parse` result per file, located at its first blocking error, and `partialFiles` in the run properties.
 - **`reach -f sarif`.** One result per removed declaration, located at the base (`BASEROOT` for a directory base): `removal-reach/reached` (a warning) when a product entry point reached it strongly at the base, `removal-reach/removed` (a note) otherwise; plus the `graph-facts/partial-parse` notes.
 - **One stdout path for large output.** `scan`, `metrics` and `sbom` now write their payload (and `scan`'s summary) through `writeStdout()`, like `deadcode`, `reach` and `entries`, and exit only after a slow pipe has drained. A reader that stops early (`| head`) now ends every one of these commands quietly with status 141 instead of a Bun `EPIPE` stack trace.
