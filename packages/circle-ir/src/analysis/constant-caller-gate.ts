@@ -265,7 +265,8 @@ export function applyConstantCallerGate(
 ): void {
   const candidates = fileAnalyses.filter(fa =>
     GATE_LANGUAGES.has(fa.analysis.meta.language)
-    && (fa.analysis.taint?.flows ?? []).some(f => f.source_type === 'interprocedural_param'));
+    && (fa.analysis.taint?.flows ?? []).some(f => f.source_type === 'interprocedural_param'
+      || (f.source_type === 'plugin_param' && fa.analysis.meta.language === 'java')));
   if (candidates.length === 0) return;
 
   const resolver = projectGraph.resolver;
@@ -295,7 +296,37 @@ export function applyConstantCallerGate(
   for (const fa of candidates) {
     const ir = fa.analysis;
     const flows = ir.taint.flows ?? [];
+    const lines0 = sourceLinesByFile.get(fa.file) ?? [];
+    /** Every in-project caller of `method` passes a constant at `position`; false keeps the flow. */
+    const callersConstant = (type: TypeInfo, method: MethodInfo, position: number): boolean => {
+      const fqn = `${typeFqn(type, ir)}.${method.name}`;
+      let resolvedToMethod = 0;
+      for (const site of callsByName.get(method.name) ?? []) {
+        if (site.file !== fa.file && declaresType(fileAnalyses, site.file, type.name)) continue;
+        const r = resolver.resolveCall(site.call, site.file);
+        if (resolvesElsewhere(r, fqn)) continue;
+        if (!r || r.resolution !== 'exact') return false;
+        // Same FQN in another file is another method: nested classes of the
+        // same simple name in sibling files share it (every OWASP test has its
+        // own inner `Test.doSomething`, cognium-dev#976).
+        if (r.targetMethod !== fqn || (site.file !== fa.file && r.targetFile !== fa.file)) continue;
+        const callerIr = fileAnalyses.find(f => f.file === site.file)?.analysis;
+        const lines = sourceLinesByFile.get(site.file);
+        if (!callerIr || !lines || !isConstantArgRecursive(gateCtx, callerIr, lines, site.call, position, 0, new Set())) return false;
+        resolvedToMethod++;
+      }
+      return resolvedToMethod > 0;
+    };
     const kept = flows.filter(flow => {
+      if (flow.source_type === 'plugin_param' && ir.meta.language === 'java') {
+        if (flows.some(o => o !== flow && o.sink_line === flow.sink_line &&
+            o.source_type !== 'interprocedural_param' && o.source_type !== 'plugin_param')) return true;
+        const encl = enclosingMethod(ir, flow.source_line);
+        if (!encl || !hasEnumerableCallers(encl.type, encl.method, derivedFrom, ir.meta.language)) return true;
+        const positions = localMapParamPositions(lines0, encl.method, flow.source_line);
+        if (!positions) return true;
+        return !positions.every(pos => callersConstant(encl.type, encl.method, pos));
+      }
       if (flow.source_type !== 'interprocedural_param') return true;
       // The first step names the parameter, or (#976) carries the source's
       // location text `"String param in doSomething"`: take the name from it.
@@ -315,23 +346,7 @@ export function applyConstantCallerGate(
       const position = method.parameters.findIndex(p => p.name === variable);
       if (position < 0) return true;
 
-      const fqn = `${typeFqn(type, ir)}.${method.name}`;
-      let resolvedToMethod = 0;
-      for (const site of callsByName.get(method.name) ?? []) {
-        if (site.file !== fa.file && declaresType(fileAnalyses, site.file, type.name)) continue;
-        const r = resolver.resolveCall(site.call, site.file);
-        if (resolvesElsewhere(r, fqn)) continue;
-        if (!r || r.resolution !== 'exact') return true;
-        // Same FQN in another file is another method: nested classes of the
-        // same simple name in sibling files share it (every OWASP test has its
-        // own inner `Test.doSomething`, cognium-dev#976).
-        if (r.targetMethod !== fqn || (site.file !== fa.file && r.targetFile !== fa.file)) continue;
-        const callerIr = fileAnalyses.find(f => f.file === site.file)?.analysis;
-        const lines = sourceLinesByFile.get(site.file);
-        if (!callerIr || !lines || !isConstantArgRecursive(gateCtx, callerIr, lines, site.call, position, 0, new Set())) return true;
-        resolvedToMethod++;
-      }
-      return resolvedToMethod === 0;
+      return !callersConstant(type, method, position);
     });
     if (kept.length !== flows.length) ir.taint.flows = kept;
   }
@@ -427,4 +442,41 @@ function declaresType(
 ): boolean {
   const ir = fileAnalyses.find(f => f.file === file)?.analysis;
   return !!ir && ir.meta.language === 'java' && ir.types.some(t => t.name === name);
+}
+
+/**
+ * A `plugin_param` read `x = (T) m.get("k")` from a map `m` the method builds
+ * itself (`m = new …Map…()`, never reassigned or passed out), whose every
+ * `m.put(_, v)` value is a string literal or one of the method's parameters:
+ * the positions of those parameters (an empty list when only literals go in).
+ * Anything else answers null and the flow is kept (#976, OWASP map helpers fed
+ * by `scr.getTheValue`).
+ */
+function localMapParamPositions(lines: string[], method: MethodInfo, sourceLine: number): number[] | null {
+  const read = /([A-Za-z_]\w*)\s*\.\s*get\s*\(/.exec(lines[sourceLine - 1] ?? '');
+  if (!read) return null;
+  const map = read[1];
+  const body: string[] = [];
+  for (let l = method.start_line; l <= method.end_line; l++) body.push((lines[l - 1] ?? '').replace(/\/\/.*$/, ''));
+  const text = body.join('\n');
+  const created = new RegExp(`\\b${map}\\s*=\\s*new\\s+[\\w.]*Map\\b`).test(text);
+  const assigned = text.match(new RegExp(`(?<![\\w.])${map}\\s*=(?!=)`, 'g'))?.length ?? 0;
+  if (!created || assigned !== 1) return null;
+  // Passed to a call or returned: its contents are no longer the method's own.
+  if (new RegExp(`[(,]\\s*${map}\\s*[,)]|\\breturn\\s+${map}\\b`).test(text)) return null;
+  const params = method.parameters.map(p => p.name);
+  const positions = new Set<number>();
+  let puts = 0;
+  for (const m of text.matchAll(new RegExp(`\\b${map}\\s*\\.\\s*(put|putAll|putIfAbsent|compute\\w*|merge|replace\\w*)\\s*\\(([^;]*)\\)\\s*;`, 'g'))) {
+    if (m[1] !== 'put') return null;
+    const comma = m[2].indexOf(',');
+    if (comma < 0) return null;
+    const value = m[2].slice(comma + 1).trim();
+    puts++;
+    if (/^"(?:[^"\\]|\\.)*"$/.test(value)) continue;
+    const idx = params.indexOf(value);
+    if (idx < 0) return null;
+    positions.add(idx);
+  }
+  return puts > 0 ? [...positions] : null;
 }

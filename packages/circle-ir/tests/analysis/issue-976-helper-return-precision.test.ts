@@ -356,3 +356,50 @@ public class Bench extends HttpServlet {
     expect((await paths('0')).length).toBeGreaterThan(0);
   });
 });
+
+describe('#976 constant-caller gate: a helper-built map read fed by a constant caller (OWASP 02668)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+  public String getTheValue(String p) { return "bar"; }
+}`;
+  const servlet = (getter: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.${getter}("p");
+    String bar = doSomething(request, param);
+    new java.io.File(bar, "/Test.txt");
+  }
+  private static String doSomething(HttpServletRequest request, String param) {
+    String bar = "safe!";
+    java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+    map.put("keyA", "a-Value");
+    map.put("keyB", param);
+    bar = (String) map.get("keyB");
+    return bar;
+  }
+}`;
+  const fileFlows = async (getter: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet(getter), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.files.find(f => f.file === 't/Bench.java')!.analysis.taint.flows
+      .filter(f => f.sink_type === 'path_traversal' && f.source_type === 'plugin_param');
+  };
+
+  it('drops it when the only caller passes getTheValue', async () => {
+    expect(await fileFlows('getTheValue')).toHaveLength(0);
+  });
+
+  it('keeps it when the caller passes getTheParameter', async () => {
+    expect((await fileFlows('getTheParameter')).length).toBeGreaterThan(0);
+  });
+});

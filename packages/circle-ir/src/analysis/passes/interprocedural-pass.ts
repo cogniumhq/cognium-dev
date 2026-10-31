@@ -727,6 +727,9 @@ const HELPER_RETURN_GATED_SINKS = new Set([
   'trust_boundary',
   'command_injection',
   'path_traversal',
+  // #976: the same helper shapes feed LDAP and XPath sinks (OWASP ldapi/xpathi).
+  'ldap_injection',
+  'xpath_injection',
 ]);
 
 /**
