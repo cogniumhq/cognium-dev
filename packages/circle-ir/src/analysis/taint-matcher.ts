@@ -1837,6 +1837,35 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
 }
 
 /**
+ * cognium-dev#985 follow-up (dogfood 2026-10-31) — the receiver's last property
+ * is declared in this file with an explicit type that names no database
+ * (`private backend: CacheBackend` → `this.backend.get(key)`). That is positive
+ * evidence the `.get` is not sqlite's `db.get(sql)`; an untyped or DB-looking
+ * declaration (`db: Database`, `pool: Pool`, `conn: Connection`) keeps the sink.
+ */
+const DB_TYPE_NAME = /(?:connection|database|\bdb\b|db$|^db|pool|client|knex|sql|statement|prisma|sequelize|repository|transaction|query|store)/i;
+function isTypedNonDbReceiver(receiver: string | null | undefined, sourceLines?: string[]): boolean {
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  const lastDot = raw.lastIndexOf('.');
+  const name = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(name) || DB_TYPE_NAME.test(name)) return false;
+  // A `this.x` receiver is the class field: read only field declarations
+  // (`private backend: CacheBackend;`), not same-named parameters or literals.
+  const decl = raw.startsWith('this.')
+    ? new RegExp(`^\\s*(?:(?:private|protected|public|readonly|static|declare)\\s+)+${escapeRe(name)}\\s*[?!]?\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[;=]`)
+    : new RegExp(`\\b${escapeRe(name)}\\s*\\??\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[;,)=]`);
+  let typed: string | undefined;
+  for (const l of sourceLines) {
+    const m = decl.exec(l);
+    if (!m) continue;
+    if (typed !== undefined && typed !== m[1]) return false; // two declarations disagree
+    typed = m[1];
+  }
+  return typed !== undefined && !DB_TYPE_NAME.test(typed) && !/^(?:any|unknown|object)$/.test(typed);
+}
+
+/**
  * cognium-dev#1000 — is this receiver named like a navigation object
  * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
  * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
@@ -2660,7 +2689,8 @@ function findSinks(
           call.method_name === 'get' &&
           pattern.class === 'Connection' &&
           (language === 'javascript' || language === 'typescript') &&
-          isInMemoryMapGetReceiver(call.receiver, sourceLines)
+          (isInMemoryMapGetReceiver(call.receiver, sourceLines) ||
+            isTypedNonDbReceiver(call.receiver, sourceLines))
         ) {
           continue;
         }
