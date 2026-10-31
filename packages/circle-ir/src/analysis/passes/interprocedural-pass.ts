@@ -17,6 +17,7 @@ import type { TaintSink, TaintFlowInfo, InterproceduralInfo, TypeInfo, MethodInf
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import { CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
+import { isKnown } from '../constant-propagation/ast-utils.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
@@ -435,7 +436,11 @@ function assigneeIsConstPropClean(
 ): boolean {
   if (!method) return false;
   const scoped = `${method}:${variable}`;
-  if (!constProp.symbols.has(scoped)) return false;
+  // Only a known value counts: an unknown one (a call const-prop does not model,
+  // e.g. a Base64 encode/decode round trip, merged with `""`) is not proof the
+  // helper dropped its input (helper-return-gate-keeps, multi-line Base64).
+  const value = constProp.symbols.get(scoped);
+  if (!value || !isKnown(value)) return false;
   if (constProp.tainted.has(scoped)) return false;
   for (const t of constProp.tainted) {
     if (t.startsWith(`${method}:`) && t.endsWith(`:${variable}`)) return false;
