@@ -3220,7 +3220,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'nosql_injection') return true;
         if (!NOSQL_ARRAY_METHODS.has(sink.method ?? '')) return true;
-        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // The predicate may start on the next line (`args.find(\n  (a) => …,\n)`,
+        // cognium-dev#988): read the call up to its first argument.
+        let sinkLineText = sourceLines[sink.line - 1] ?? '';
+        for (let k = 0; k < 3 && /\(\s*$/.test(sinkLineText); k++) {
+          sinkLineText += ' ' + (sourceLines[sink.line + k] ?? '').trim();
+        }
         if (FUNCTION_FIRST_ARG_RE.test(sinkLineText)) return false;
         // cognium-dev#1000 — `ancestors.find(meaningful)`: a named predicate
         // declared as a function in this file, or a receiver declared as an
