@@ -125,7 +125,11 @@ export class ResourceLeakPass implements AnalysisPass<ResourceLeakResult> {
       const name = call.method_name;
 
       const isConstructor = call.is_constructor === true && RESOURCE_CTORS.has(name);
-      const isFactory = !call.is_constructor && RESOURCE_FACTORY_METHODS.has(name);
+      // A bare `open(...)` is Python's built-in; elsewhere it is just a name (a TS
+      // helper `const open = (t, c) => …` was a resource leak, dogfood
+      // 2026-10-31). `Selector.open()` / `FileChannel.open()` keep their receiver.
+      const isFactory = !call.is_constructor && RESOURCE_FACTORY_METHODS.has(name) &&
+        (name !== 'open' || !!call.receiver || graph.ir.meta.language === 'python');
       if (!isConstructor && !isFactory) continue;
 
       const openLine = call.location.line;
