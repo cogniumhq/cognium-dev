@@ -86,10 +86,50 @@ const JAVA_XML_PARSE_INPUT_RE =
 
 // #173 — empty-DocumentBuilder shape:
 //   - file calls builder.newDocument() (creates empty in-memory tree)
-//   - file calls NO builder.parse(...) (never reads bytes)
+//   - file calls NO `.parse(` (never reads bytes; includes getter chains)
 const JAVA_DOC_BUILDER_NEW_DOCUMENT_RE = /\.\s*newDocument\s*\(\s*\)/;
-const JAVA_DOC_BUILDER_PARSE_RE =
-  /(?:DocumentBuilder|builder)\s*\.\s*parse\s*\(/;
+const JAVA_DOC_BUILDER_PARSE_RE = /\.\s*parse\s*\(/;
+
+/** Strip Java comments before #173 regexes (#1035 / jettison golden TP). */
+function stripJavaComments(source: string): string {
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      out += ch;
+      i++;
+      while (i < source.length) {
+        if (source[i] === '\\') {
+          out += source[i++];
+          if (i < source.length) out += source[i++];
+          continue;
+        }
+        out += source[i];
+        if (source[i] === q) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (source.startsWith('//', i)) {
+      while (i < source.length && source[i] !== '\n') i++;
+      continue;
+    }
+    if (source.startsWith('/*', i)) {
+      i += 2;
+      while (i < source.length && !source.startsWith('*/', i)) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
 
 // Any call that CAN carry XML hardening, on any receiver — factory, parser,
 // reader, validator or transformer. Matched by name, not argument, because the
@@ -149,9 +189,10 @@ export class XmlEntityExpansionPass
       const isXmlOutputOnly =
         JAVA_XML_OUTPUT_ONLY_RE.test(code) &&
         !JAVA_XML_PARSE_INPUT_RE.test(code);
+      const codeNoComments = stripJavaComments(code);
       const isDocumentBuilderEmptyOnly =
-        JAVA_DOC_BUILDER_NEW_DOCUMENT_RE.test(code) &&
-        !JAVA_DOC_BUILDER_PARSE_RE.test(code);
+        JAVA_DOC_BUILDER_NEW_DOCUMENT_RE.test(codeNoComments) &&
+        !JAVA_DOC_BUILDER_PARSE_RE.test(codeNoComments);
 
       for (const call of graph.ir.calls) {
         const det = this.detectJavaCall(call);
