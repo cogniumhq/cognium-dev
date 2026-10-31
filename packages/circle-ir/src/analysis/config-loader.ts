@@ -1582,7 +1582,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'renderHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'parseHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // HTML sanitizer/validator sinks (AntiSamy, OWASP HTML Sanitizer, etc.)
-  { method: 'scan', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scan', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'isValid', class: 'SafeHtmlValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'sanitize', class: 'PolicyFactory', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'validate', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
@@ -1598,8 +1598,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'writeAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
   // AntiSamy specific (SAX filters)
   { method: 'startElement', class: 'MagicSAXFilter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1, 2] },
-  { method: 'scan', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'scan', class: 'AntiSamySAXScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scan', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'scan', class: 'AntiSamySAXScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   // Hibernate Validator
   { method: 'getFragmentAsDocument', class: 'SafeHtmlValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // JSPWiki specific
@@ -1649,15 +1649,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'getValidListItem', class: 'DefaultValidator', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0, 1] },
   { method: 'isValidURI', class: 'DefaultValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
   // AntiSamy test/processing methods
-  { method: 'scriptAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'imgAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'hrefAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'cssAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'IllegalXML', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'testIssue2', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'issue41', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'testGithubIssue151', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'processStyleTag', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scriptAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'imgAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'hrefAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'cssAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'IllegalXML', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'testIssue2', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'issue41', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'testGithubIssue151', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'processStyleTag', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   // JSON Sanitizer
   { method: 'sanitizeString', class: 'JsonSanitizer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'testIssue13', class: 'JsonSanitizerTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
@@ -2645,7 +2645,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'setVariable', class: 'Context', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [1] },
 
   // HTML sanitizer bypass markers (known CVE patterns)
-  { method: 'clean', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
+  { method: 'clean', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0], languages: ['java'] },
   { method: 'getValidSafeHTML', class: 'ESAPI', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
 
   // NOTE (cognium-dev#270): `HttpServletRequest`/`HttpSession.getAttribute()`
