@@ -327,6 +327,7 @@ export type {
   DependencyCall,
   DependencyCallTest,
   DependencyCallsResult,
+  DependencyUnattributedSite,
   MavenPackages,
   MavenPackageSource,
   ReachInput,

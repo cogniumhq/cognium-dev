@@ -61,6 +61,14 @@ export interface DependencyCall {
   tests: DependencyCallTest[];
 }
 
+export interface DependencyUnattributedSite {
+  from: string;
+  site: ReachSite;
+  methodName: string;
+  /** The unqualified receiver type, when the graph has one. */
+  receiver?: string;
+}
+
 export interface DependencyCallsResult {
   scheme: typeof DEPENDENCY_CALLS_SCHEME;
   ids: 'ids@0.1';
@@ -76,6 +84,8 @@ export interface DependencyCallsResult {
   covered: boolean;
   /** `external` sites the library cannot be ruled in or out for: no receiver type, or an unqualified one. */
   unattributed: number;
+  /** Those sites, by file, line and column (`unattributed` is their count). */
+  unattributedSites: DependencyUnattributedSite[];
   partial: string[];
   partialFiles: PartialFile[];
 }
@@ -99,7 +109,15 @@ export function dependencyCalls(
   const packages = [...new Set(resolved ? resolved.packages : given)].sort();
   const external = input.unresolved.filter(u => u.reason === 'external');
   const hits = external.filter(u => u.receiver !== undefined && inPackages(u.receiver, packages));
-  const unattributed = external.filter(u => u.receiver === undefined || (!u.receiver.includes('.') && !JAVA_LANG.has(u.receiver))).length;
+  const unattributedSites: DependencyUnattributedSite[] = external
+    .filter(u => u.receiver === undefined || (!u.receiver.includes('.') && !JAVA_LANG.has(u.receiver)))
+    .map(u => ({
+      from: u.from,
+      site: { file: u.site.file, line: u.site.line, col: u.site.col },
+      methodName: u.methodName,
+      ...(u.receiver !== undefined ? { receiver: u.receiver } : {}),
+    }))
+    .sort((a, b) => (a.site.file < b.site.file ? -1 : a.site.file > b.site.file ? 1 : a.site.line - b.site.line || a.site.col - b.site.col));
 
   const g = new ReachGraph(input);
   const tests = input.entries
@@ -137,7 +155,8 @@ export function dependencyCalls(
     calls,
     uncovered,
     covered: uncovered === 0 && input.partial.length === 0,
-    unattributed,
+    unattributed: unattributedSites.length,
+    unattributedSites,
     partial: [...input.partial],
     partialFiles: partialFileDetails(input.partial, input.files),
   };

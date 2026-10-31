@@ -155,6 +155,23 @@ public class CodecTest {
     expect(r.calls.every(c => c.receiver.startsWith('com.fasterxml.jackson.databind.'))).toBe(true);
   });
 
+  it('lists the unattributed sites it counts', async () => {
+    const wild = await buildJavaGraph([
+      {
+        path: 'src/main/java/app/Wild.java',
+        code: `package app;
+import org.yaml.snakeyaml.*;
+public class Wild {
+  public Object load(String s) { return new Yaml().load(s); }
+}`,
+      },
+    ]);
+    const r = dependencyCalls(wild, { artifact: 'org.yaml:snakeyaml' });
+    expect(r.unattributed).toBeGreaterThan(0);
+    expect(r.unattributedSites).toHaveLength(r.unattributed);
+    expect(r.unattributedSites.map(u => `${u.site.file}:${u.site.line}`)).toContain('src/main/java/app/Wild.java:4');
+  });
+
   it('still takes packages directly', () => {
     expect(dependencyCalls(g, { packages: ['org.yaml.snakeyaml'] }).packageSource).toBe('given');
   });

@@ -49,6 +49,7 @@ export {
   type DependencyCall,
   type DependencyCallTest,
   type DependencyCallsResult,
+  type DependencyUnattributedSite,
 } from './dependency-calls.js';
 export {
   MAVEN_PACKAGE_FALLBACK,
