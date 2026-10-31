@@ -936,6 +936,11 @@ export class CrossFileResolver {
         // Find calls at or after the source line
         for (const call of ir.calls) {
           if (call.location.line < source.line) continue;
+          // A source with no variable (`parse(fs.readFileSync(p))`) can reach
+          // only the call it is nested in, on its own line — not every later
+          // cross-file call in the file (dogfood 2026-10-31: one principles.md
+          // read in security-scan/scanner.ts reached readFileSync in 12 files).
+          if (!reachable && call.location.line !== source.line) continue;
 
           const resolved = this.resolveCall(call, filePath);
           if (!resolved || resolved.targetFile === filePath) continue;
