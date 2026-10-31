@@ -1937,6 +1937,9 @@ function isDeclaredFunctionReference(
     new RegExp(
       `\\b(?:const|let|var)\\s+${n}\\s*=\\s*(?:async\\s+)?(?:function\\b|\\(|[A-Za-z_$][\\w$]*\\s*=>)`,
     ),
+    // A Promise executor's resolve / reject: `new Promise((r) => setTimeout(r, ms))`,
+    // the sleep idiom (dogfood 2026-10-31, controldeck harness).
+    new RegExp(`\\bnew\\s+Promise\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:async\\s+)?(?:\\(\\s*(?:[A-Za-z_$][\\w$]*\\s*,\\s*)?${n}\\s*[,)]|${n}\\s*=>|function\\s*\\(\\s*(?:[A-Za-z_$][\\w$]*\\s*,\\s*)?${n}\\s*[,)])`),
   ];
   return sourceLines.some(l => decls.some(re => re.test(l)));
 }
