@@ -761,6 +761,9 @@ function calleeReturnMayCarryParam(
   // added as a seed and the tracker re-run until nothing new is reached.
   const text = slice.join('\n');
   const seeds = new Set<string>(paramNames);
+  // Receivers that carry a value only because they were mutated with it: their
+  // declaration (`new String[n]`, `new StringBuilder()`) never does.
+  const mutated = new Set<string>();
   let live = new Set<string>(seeds);
   for (let round = 0; round < 8; round++) {
     live = new Set<string>([...seeds, ...buildJavaTaintedVars(text, seeds, dead, { trackSlots: true }).keys()]);
@@ -772,6 +775,18 @@ function calleeReturnMayCarryParam(
         const args = call[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
         if (args.some(t => live.has(t))) {
           seeds.add(call[1]);
+          mutated.add(call[1]);
+          grew = true;
+        }
+      }
+      // An element or field store (`vars[i] = name + "=" + value;`, `o.f = value;`)
+      // carries the value into its base (plexus-utils getEnvironmentVariables()).
+      const store = /^\s*([A-Za-z_]\w*)\s*(?:(?:\[[^\]=]*\]\s*)+|\.\s*[A-Za-z_]\w*\s*)=(?!=)\s*(.*?);?\s*$/.exec(slice[i]);
+      if (store && store[1] !== 'this' && !live.has(store[1])) {
+        const rhs = store[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
+        if (rhs.some(t => live.has(t))) {
+          seeds.add(store[1]);
+          mutated.add(store[1]);
           grew = true;
         }
       }
@@ -787,6 +802,7 @@ function calleeReturnMayCarryParam(
     sawReturn = true;
     const expr = m[1];
     const bare = /^[A-Za-z_]\w*$/.test(expr) ? expr : null;
+    if (bare && mutated.has(bare)) return true;
     if (bare && live.has(bare)) {
       // The tracker is flow-insensitive: `bar = map.get("tainted-key"); bar =
       // map.get("safe-key"); return bar;` reaches it either way. Judge the
