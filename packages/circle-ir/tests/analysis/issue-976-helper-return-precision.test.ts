@@ -75,3 +75,55 @@ describe('#976 helper-return precision for sinks inside try', () => {
     expect(flows.length).toBeGreaterThan(0);
   });
 });
+
+// CWE-Bench-Java plexus-utils CVE-2017-1000487 (req-012): the callee's source
+// reaches its return through an array element store, and the sink sits in a try.
+const commandline = (fill: string) => `import java.io.*;
+import java.util.*;
+public class Commandline {
+  private Map envVars = new HashMap();
+  public String[] getEnvironmentVariables() {
+    String[] environmentVars = new String[envVars.size()];
+    int i = 0;
+    for (Iterator it = envVars.keySet().iterator(); it.hasNext(); ) {
+      String name = (String) it.next();
+      String value = System.getenv(name);
+${fill}
+      i++;
+    }
+    return environmentVars;
+  }
+  public Process execute(String[] cmd) throws Exception {
+    Process process;
+    String[] environment = getEnvironmentVariables();
+    try {
+      process = Runtime.getRuntime().exec(cmd, environment);
+    } catch (IOException ex) {
+      throw new RuntimeException(ex);
+    }
+    return process;
+  }
+}`;
+
+/** command_injection flows whose source is the callee's `System.getenv` (not `execute`'s own parameter). */
+const envCmdFlows = async (code: string) => {
+  const envLine = code.split('\n').findIndex(l => l.includes('System.getenv')) + 1;
+  return (await analyze(code, 'Commandline.java', 'java')).taint.flows.filter(
+    f => f.sink_type === 'command_injection' && f.source_line === envLine,
+  );
+};
+
+describe('#976 callee source returned through an element store (plexus-utils CWE-78)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps the flow when the source is stored into the returned array', async () => {
+    const flows = await envCmdFlows(commandline(`      environmentVars[i] = name + "=" + value;`));
+    expect(flows.length).toBeGreaterThan(0);
+  });
+
+  it('drops it when the stored array is not what the callee returns', async () => {
+    const flows = await envCmdFlows(commandline(`      String[] scratch = new String[1];
+      scratch[0] = value;`));
+    expect(flows).toHaveLength(0);
+  });
+});

@@ -531,9 +531,32 @@ function calleeSourceReachesReturn(
           changed = true;
         }
       }
+      // An element or field store (`arr[i] = name + "=" + value;`, `o.f = value;`)
+      // defines no local, but the value now lives in the base: follow the base's
+      // def (plexus-utils `getEnvironmentVariables()` fills an array it returns).
+      // Container calls (`map.put`, `list.add`) are not followed: the keyed
+      // overwrite cases above depend on them ending the chain.
+      const base = storeBase(lines[stmt - 1] ?? '');
+      if (base && base !== u.variable) {
+        for (const b of graph.ir.dfg.uses) {
+          if ((b.line === u.line || b.line === stmt) && b.variable === base &&
+              b.def_id !== null && !reached.has(b.def_id)) {
+            reached.add(b.def_id);
+            changed = true;
+          }
+        }
+      }
     }
   }
   return false;
+}
+
+/** `arr[i] = …` / `arr[i][j] = …` / `obj.field = …` → the base local's name; else null. */
+function storeBase(line: string): string | null {
+  const m = /^\s*([A-Za-z_]\w*)\s*(?:\[[^\]=]*\]\s*)+=(?!=)/.exec(line) ??
+    /^\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*\s*=(?!=)/.exec(line);
+  if (!m || m[1] === 'this') return null;
+  return m[1];
 }
 
 /** cognium-dev#590 — connect a source inside a callee to a sink in the caller. */
