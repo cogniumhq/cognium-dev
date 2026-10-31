@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.18.1] - 2026-10-31
+
+### Changes
+
+- Built on circle-ir 4.18.1: Java `try`/`catch`/`finally` locals get DFG defs, and OWASP Benchmark 1.2 false positives fall from 163 to 87 (score 85.4 → 91.9) with no new one in any category (#976).
+
 ## [4.18.0] - 2026-10-30
 
 ### Added
