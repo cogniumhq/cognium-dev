@@ -302,3 +302,57 @@ public class ${cls} extends HttpServlet {
     expect((await flowsIn('t/B.java')).length).toBeGreaterThan(0);
   });
 });
+
+describe('#976 cross-file: a same-file helper that returns no parameter stops the caller path (OWASP 02379)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+}`;
+  const servlet = (pick: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.getTheParameter("p");
+    if (param == null) param = "";
+    String bar = doSomething(request, param);
+    try {
+      new java.io.File(bar, "/Test.txt");
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+  private static String doSomething(HttpServletRequest request, String param) {
+    String bar = "alsosafe";
+    if (param != null) {
+      java.util.List<String> valuesList = new java.util.ArrayList<String>();
+      valuesList.add("safe");
+      valuesList.add(param);
+      valuesList.add("moresafe");
+      valuesList.remove(0);
+      bar = valuesList.get(${pick});
+    }
+    return bar;
+  }
+}`;
+  const paths = async (pick: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet(pick), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.sink.type === 'path_traversal');
+  };
+
+  it('drops the path when the helper returns the safe slot', async () => {
+    expect(await paths('1')).toHaveLength(0);
+  });
+
+  it('keeps it when the helper returns the parameter slot', async () => {
+    expect((await paths('0')).length).toBeGreaterThan(0);
+  });
+});

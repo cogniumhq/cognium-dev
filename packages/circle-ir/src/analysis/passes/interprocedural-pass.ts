@@ -742,7 +742,7 @@ const HELPER_RETURN_GATED_SINKS = new Set([
  * after `list.remove(0)`, `map.get("<literal key>")` and a ternary whose
  * condition folds to a constant pick the value actually returned.
  */
-function calleeReturnMayCarryParam(
+export function calleeReturnMayCarryParam(
   code: string,
   startLine: number,
   endLine: number,
