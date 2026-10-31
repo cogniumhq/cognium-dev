@@ -321,12 +321,14 @@ export type {
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
 export type {
   DependencyCallsOptions,
   DependencyCall,
   DependencyCallTest,
   DependencyCallsResult,
+  MavenPackages,
+  MavenPackageSource,
   ReachInput,
   ReachOptions,
   ReachResult,

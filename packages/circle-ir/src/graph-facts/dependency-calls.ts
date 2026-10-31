@@ -6,8 +6,10 @@
  *
  * - **Calls**: `external` unresolved sites whose receiver type (the
  *   constructed type, or a static import's owner) is in one of the
- *   library's packages. The caller gives the packages: an artifact's
- *   packages are not readable from the subject's sources.
+ *   library's packages. The caller gives the packages, or a Maven
+ *   `groupId:artifactId` (with the resolved jar's bytes, or a fallback
+ *   table row): an artifact's packages are not readable from the subject's
+ *   sources (`maven-packages.ts`).
  * - **Tests**: each `test` entry is walked on its own over the reach core's
  *   graph. A test reaches a call **strongly** when its path to the calling
  *   method uses only strong edges, **weakly** otherwise.
@@ -23,14 +25,22 @@
  */
 
 import type { UnresolvedCall } from '../navigation/ts-call-edges.js';
+import { mavenPackages, type MavenPackageSource } from './maven-packages.js';
 import { ReachGraph, partialFileDetails, walkFrom, type PartialFile, type ReachInput, type ReachSite } from './reach.js';
 
 export const DEPENDENCY_CALLS_SCHEME = 'dependency-calls@0.1' as const;
 
-export interface DependencyCallsOptions {
-  /** The library's packages, e.g. `com.fasterxml.jackson`; a package covers its subpackages. */
-  packages: readonly string[];
-}
+export type DependencyCallsOptions =
+  | {
+      /** The library's packages, e.g. `com.fasterxml.jackson`; a package covers its subpackages. */
+      packages: readonly string[];
+    }
+  | {
+      /** Maven `groupId:artifactId` (a version, if given, is ignored). */
+      artifact: string;
+      /** The resolved jar's bytes; without it the fallback table decides. Throws `UnknownArtifact` if neither does. */
+      jar?: Uint8Array;
+    };
 
 export interface DependencyCallTest {
   /** The test entry's declaration id. */
@@ -54,7 +64,11 @@ export interface DependencyCall {
 export interface DependencyCallsResult {
   scheme: typeof DEPENDENCY_CALLS_SCHEME;
   ids: 'ids@0.1';
+  /** `groupId:artifactId` when the options named one. */
+  artifact?: string;
   packages: string[];
+  /** Where `packages` came from: the caller, the jar or the fallback table. */
+  packageSource: 'given' | MavenPackageSource;
   calls: DependencyCall[];
   /** Calls with no strong test path. */
   uncovered: number;
@@ -80,7 +94,9 @@ export function dependencyCalls(
   input: Omit<ReachInput, 'unresolved'> & { unresolved: readonly UnresolvedCall[] },
   options: DependencyCallsOptions,
 ): DependencyCallsResult {
-  const packages = [...new Set(options.packages)].sort();
+  const resolved = 'artifact' in options ? mavenPackages(options.artifact, { jar: options.jar }) : null;
+  const given: readonly string[] = 'artifact' in options ? [] : options.packages;
+  const packages = [...new Set(resolved ? resolved.packages : given)].sort();
   const external = input.unresolved.filter(u => u.reason === 'external');
   const hits = external.filter(u => u.receiver !== undefined && inPackages(u.receiver, packages));
   const unattributed = external.filter(u => u.receiver === undefined || (!u.receiver.includes('.') && !JAVA_LANG.has(u.receiver))).length;
@@ -115,7 +131,9 @@ export function dependencyCalls(
   return {
     scheme: DEPENDENCY_CALLS_SCHEME,
     ids: 'ids@0.1',
+    ...(resolved ? { artifact: resolved.artifact } : {}),
     packages,
+    packageSource: resolved ? resolved.source : 'given',
     calls,
     uncovered,
     covered: uncovered === 0 && input.partial.length === 0,

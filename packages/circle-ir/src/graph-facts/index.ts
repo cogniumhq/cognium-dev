@@ -50,3 +50,13 @@ export {
   type DependencyCallTest,
   type DependencyCallsResult,
 } from './dependency-calls.js';
+export {
+  MAVEN_PACKAGE_FALLBACK,
+  UnknownArtifact,
+  jarPackages,
+  mavenArtifact,
+  mavenPackages,
+  zipEntryNames,
+  type MavenPackages,
+  type MavenPackageSource,
+} from './maven-packages.js';
