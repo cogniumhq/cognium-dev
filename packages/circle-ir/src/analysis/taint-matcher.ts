@@ -4,6 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
+import { jsHelperReturnsNoParam } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
 import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
@@ -558,7 +559,17 @@ function findSources(
   const propertyPatterns = patterns.filter(p => p.property && p.object && p.property_tainted);
   const hasPropertyPatterns = propertyPatterns.length > 0;
 
+  const jsCode = (language === 'javascript' || language === 'typescript') && sourceLines ? sourceLines.join('\n') : undefined;
+  const noParamHelper = new Map<string, boolean>();
   for (const call of calls) {
+    // #992: a request value passed to a same-file helper that returns none of
+    // its parameters (`pick(req.query.x)` → `return ['safe', x][0]`) is not a
+    // source at this call.
+    if (jsCode !== undefined && !call.receiver) {
+      let drop = noParamHelper.get(call.method_name);
+      if (drop === undefined) noParamHelper.set(call.method_name, drop = jsHelperReturnsNoParam(jsCode, call.method_name));
+      if (drop) continue;
+    }
     for (const arg of call.arguments) {
       if (arg.expression) {
         const taintCheck = isJavaScriptTaintedArgument(arg.expression, hasPropertyPatterns ? patterns : undefined);
