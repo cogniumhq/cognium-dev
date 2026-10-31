@@ -220,3 +220,38 @@ public class Bench extends HttpServlet {
     expect((await pathFlows('(7 * 42) - num > 400')).length).toBeGreaterThan(0);
   });
 });
+
+describe('#976 cross-file: a JDK receiver is not a project method of the same name (OWASP 01237)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const props = `package h;
+import java.util.Properties;
+public class PropertiesManager {
+  private Properties props = new Properties();
+  public String getProperty(String key, String def) { return props.getProperty(key, def); }
+}`;
+  const servlet = (osCall: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String slashes = "";
+    if (${osCall}.indexOf("Windows") != -1) slashes = "/";
+    try {
+      new java.io.File(new java.net.URI("file:" + slashes + "/tmp/x"));
+    } catch (java.net.URISyntaxException e) {
+      throw new RuntimeException(e);
+    }
+  }
+}`;
+  const paths = async (osCall: string) => {
+    const r = await analyzeProject([
+      { code: props, filePath: 'h/PropertiesManager.java', language: 'java' },
+      { code: servlet(osCall), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.source.file === 'h/PropertiesManager.java');
+  };
+
+  it('System.getProperty does not resolve to PropertiesManager.getProperty', async () => {
+    expect(await paths('System.getProperty("os.name")')).toHaveLength(0);
+  });
+});
