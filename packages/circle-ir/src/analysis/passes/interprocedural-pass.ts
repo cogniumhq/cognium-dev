@@ -478,6 +478,27 @@ function callArgumentIsConstPropTainted(
 }
 
 /**
+ * Does the callee `return` a variable const-prop holds tainted elements or keys
+ * for (`vars[i] = "X=" + param; return vars;`)? Const-prop does not carry that
+ * into the call's result, so its "clean" assignee is not proof here.
+ */
+function calleeReturnsTaintedContainer(
+  constProp: ConstantPropagatorResult,
+  code: string,
+  startLine: number,
+  endLine: number,
+): boolean {
+  const lines = code.split('\n');
+  for (let l = startLine; l <= endLine; l++) {
+    const m = /^\s*return\s+([A-Za-z_]\w*)\s*;/.exec(lines[l - 1] ?? '');
+    if (!m) continue;
+    if ((constProp.taintedArrayElements.get(m[1])?.size ?? 0) > 0) return true;
+    if ((constProp.taintedCollections.get(m[1])?.size ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Sink types whose parameter-sourced helper flows are dropped when the
  * parameter reaches the helper's return only through a constant-dead branch
  * (`if ((7 * 42) - num > 200) bar = "safe"; else bar = param;`).
@@ -532,9 +553,32 @@ function calleeSourceReachesReturn(
           changed = true;
         }
       }
+      // An element or field store (`arr[i] = name + "=" + value;`, `o.f = value;`)
+      // defines no local, but the value now lives in the base: follow the base's
+      // def (plexus-utils `getEnvironmentVariables()` fills an array it returns).
+      // Container calls (`map.put`, `list.add`) are not followed: the keyed
+      // overwrite cases above depend on them ending the chain.
+      const base = storeBase(lines[stmt - 1] ?? '');
+      if (base && base !== u.variable) {
+        for (const b of graph.ir.dfg.uses) {
+          if ((b.line === u.line || b.line === stmt) && b.variable === base &&
+              b.def_id !== null && !reached.has(b.def_id)) {
+            reached.add(b.def_id);
+            changed = true;
+          }
+        }
+      }
     }
   }
   return false;
+}
+
+/** `arr[i] = …` / `arr[i][j] = …` / `obj.field = …` → the base local's name; else null. */
+function storeBase(line: string): string | null {
+  const m = /^\s*([A-Za-z_]\w*)\s*(?:\[[^\]=]*\]\s*)+=(?!=)/.exec(line) ??
+    /^\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*\s*=(?!=)/.exec(line);
+  if (!m || m[1] === 'this') return null;
+  return m[1];
 }
 
 /** cognium-dev#590 — connect a source inside a callee to a sink in the caller. */
@@ -581,7 +625,8 @@ function appendCalleeSourceCallerSinkFlows(
     if (
       constProp &&
       callArgumentIsConstPropTainted(graph, constProp, edge.callerMethod, edge.callLine) &&
-      assigneeIsConstPropClean(constProp, edge.callerMethod, assignee.variable)
+      assigneeIsConstPropClean(constProp, edge.callerMethod, assignee.variable) &&
+      !(fileCode && calleeReturnsTaintedContainer(constProp, fileCode, callee.startLine, callee.endLine))
     ) {
       continue;
     }
@@ -614,6 +659,27 @@ function appendCalleeSourceCallerSinkFlows(
           callee.endLine,
           source.variable,
           assignee.variable,
+        )
+      ) {
+        continue;
+      }
+      // cognium-dev#913 / #914 / #916 / #917 — the helper's return value cannot
+      // carry any of its parameters on a live path (constant / literal-slot /
+      // folded-ternary returns). Every source inside the callee must be a
+      // parameter source, and none may reach the return: a helper taking
+      // `(request, param)` is judged on both, and a real source inside the
+      // callee is never gated here.
+      if (
+        fileCode &&
+        HELPER_RETURN_GATED_SINKS.has(sink.type) &&
+        calleeSources.every(
+          s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
+        ) &&
+        !calleeReturnMayCarryParam(
+          fileCode,
+          callee.startLine,
+          callee.endLine,
+          calleeSources.map(s => s.variable!),
         )
       ) {
         continue;
@@ -655,6 +721,243 @@ function interproceduralParamReachIsDeadBranchOnly(
   const onLivePaths = buildJavaTaintedVars(sliceText, new Set([paramName]), dead);
   const ifDeadLinesCount = buildJavaTaintedVars(sliceText, new Set([paramName]), new Set());
   return ifDeadLinesCount.has(localName) && !onLivePaths.has(localName);
+}
+
+/** Sink types whose caller-side flow is dropped when the helper cannot return the parameter. */
+const HELPER_RETURN_GATED_SINKS = new Set([
+  'sql_injection',
+  'trust_boundary',
+  'command_injection',
+  'path_traversal',
+  // #976: the same helper shapes feed LDAP and XPath sinks (OWASP ldapi/xpathi).
+  'ldap_injection',
+  'xpath_injection',
+]);
+
+/**
+ * Can the callee's return value carry any of `sourceVars` (or a declared
+ * parameter) on a live path?
+ * cognium-dev#913 / #914 / #916 / #917.
+ *
+ * Conservative: answers false (gate the flow) only when every `return` on a live
+ * path is understood and none can carry the parameter. A return expression that
+ * mentions the parameter or anything derived from it, or a callee with no
+ * readable `return`, answers true.
+ * Derivation uses `buildJavaTaintedVars` with slot tracking, so `list.get(1)`
+ * after `list.remove(0)`, `map.get("<literal key>")` and a ternary whose
+ * condition folds to a constant pick the value actually returned.
+ */
+export function calleeReturnMayCarryParam(
+  code: string,
+  startLine: number,
+  endLine: number,
+  sourceVars: readonly string[],
+): boolean {
+  const raw = code.split('\n').slice(startLine - 1, endLine);
+  // Seed with the helper's declared parameters as well as the sources found in
+  // it: a `plugin_param` on `bar = (String) map.get("keyB")` stands for the
+  // parameter stored under that key, which the slot tables resolve.
+  const paramNames = [...sourceVars, ...javaMethodParamNames(raw)];
+  const dead = computeDeadJavaBranchLines(raw);
+  const inlined = new Set<number>();
+  const slice = joinWrappedStatements(raw, inlined);
+  // The tracker follows assignments. A receiver mutated by a call with a carried
+  // argument (`sb.append(param)`, `parts.addAll(list)`) carries it too, so it is
+  // added as a seed and the tracker re-run until nothing new is reached.
+  const text = slice.join('\n');
+  const seeds = new Set<string>(paramNames);
+  // Receivers that carry a value only because they were mutated with it: their
+  // declaration (`new String[n]`, `new StringBuilder()`) never does.
+  const mutated = new Set<string>();
+  let live = new Set<string>(seeds);
+  for (let round = 0; round < 8; round++) {
+    live = new Set<string>([...seeds, ...buildJavaTaintedVars(text, seeds, dead, { trackSlots: true }).keys()]);
+    let grew = false;
+    for (let i = 0; i < slice.length; i++) {
+      if (dead.has(i)) continue;
+      for (const call of slice[i].matchAll(/([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*\s*\(([^;]*)\)/g)) {
+        if (live.has(call[1])) continue;
+        const args = call[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
+        if (args.some(t => live.has(t))) {
+          seeds.add(call[1]);
+          mutated.add(call[1]);
+          grew = true;
+        }
+      }
+      // An element or field store (`vars[i] = name + "=" + value;`, `o.f = value;`)
+      // carries the value into its base (plexus-utils getEnvironmentVariables()).
+      const store = /^\s*([A-Za-z_]\w*)\s*(?:(?:\[[^\]=]*\]\s*)+|\.\s*[A-Za-z_]\w*\s*)=(?!=)\s*(.*?);?\s*$/.exec(slice[i]);
+      if (store && store[1] !== 'this' && !live.has(store[1])) {
+        const rhs = store[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
+        if (rhs.some(t => live.has(t))) {
+          seeds.add(store[1]);
+          mutated.add(store[1]);
+          grew = true;
+        }
+      }
+    }
+    if (!grew) break;
+  }
+
+  let sawReturn = false;
+  for (let i = 0; i < slice.length; i++) {
+    if (dead.has(i) || !/^\s*return\b/.test(slice[i])) continue;
+    const m = /^\s*return\b\s*(.*?)\s*;\s*(?:\/\/.*)?$/.exec(slice[i]);
+    if (!m) return true; // could not read this return
+    sawReturn = true;
+    const expr = m[1];
+    const bare = /^[A-Za-z_]\w*$/.test(expr) ? expr : null;
+    if (bare && mutated.has(bare)) return true;
+    if (bare && live.has(bare)) {
+      // The tracker is flow-insensitive: `bar = map.get("tainted-key"); bar =
+      // map.get("safe-key"); return bar;` reaches it either way. Judge the
+      // assignment that actually reaches this return instead, when there is one.
+      const def = mustReachingAssignment(slice, dead, i, bare, inlined);
+      if (!def) return true;
+      const upTo = slice.slice(0, def.line);
+      upTo.push(`__helperReturn = ${def.rhs};`);
+      const atDef = buildJavaTaintedVars(upTo.join('\n'), seeds, dead, { trackSlots: true });
+      if (atDef.has('__helperReturn')) return true;
+      continue;
+    }
+    const idents = (expr.replace(/"(?:[^"\\]|\\.)*"/g, ' ').replace(/'(?:[^'\\]|\\.)'/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? []);
+    if (idents.some(t => live.has(t))) return true;
+  }
+  return !sawReturn;
+}
+
+/** Parameter names from a Java method header (the lines before its body's `{`). */
+function javaMethodParamNames(lines: readonly string[]): string[] {
+  const header = lines.join('\n').split('{')[0];
+  const open = header.indexOf('(');
+  if (open < 0) return [];
+  let depth = 0;
+  let end = -1;
+  for (let k = open; k < header.length; k++) {
+    if (header[k] === '(') depth++;
+    else if (header[k] === ')' && --depth === 0) { end = k; break; }
+  }
+  if (end < 0) return [];
+  const names: string[] = [];
+  let angle = 0;
+  let piece = '';
+  for (const c of header.slice(open + 1, end) + ',') {
+    if (c === '<') angle++;
+    else if (c === '>') angle--;
+    if (c === ',' && angle === 0) {
+      const m = /([A-Za-z_]\w*)\s*(?:\[\s*\])*\s*$/.exec(piece.trim());
+      if (m) names.push(m[1]);
+      piece = '';
+    } else piece += c;
+  }
+  return names;
+}
+
+/**
+ * Join each statement that wraps over several lines onto its first line and
+ * leave the continuation lines blank, so line indices (and dead-branch lines)
+ * still line up: `bar =\n  new String(\n    param.getBytes());` reads as one
+ * assignment. Control-flow headers (`if (x)` with the statement on the next
+ * line) and annotations are left as they are, as are comment lines.
+ */
+function joinWrappedStatements(lines: readonly string[], inlined: Set<number>): string[] {
+  const out = [...lines];
+  const ends = /[;{}:]\s*(?:\/\/.*)?$/;
+  const header = /^\s*(?:if|else|for|while|do|switch|case|default|try|catch|finally|synchronized)\b|^\s*@|^\s*(?:\/\/|\/?\*)/;
+  for (let i = 0; i < out.length; i++) {
+    const line = out[i];
+    if (line.trim() === '' || ends.test(line) || header.test(line)) continue;
+    let joined = line;
+    let j = i + 1;
+    for (; j < out.length && j < i + 15; j++) {
+      joined += ' ' + out[j].trim();
+      if (ends.test(out[j])) break;
+    }
+    if (j >= out.length || j >= i + 15) continue; // never terminated: leave it alone
+    out[i] = joined;
+    for (let k = i + 1; k <= j; k++) out[k] = '';
+    i = j;
+  }
+  return out.map((line, i) => {
+    const body = inlineControlBody(line);
+    if (body !== line) inlined.add(i);
+    return body;
+  });
+}
+
+/**
+ * `if (c) bar = param;` → `bar = param;` (also `else …`, `else if (c) …`,
+ * `for (…) …`, `while (…) …`). The tracker anchors assignments at the start of
+ * the line, so a one-line branch body was invisible to it. Dead branches were
+ * already computed on the original lines, so only the reading changes.
+ */
+function inlineControlBody(line: string): string {
+  let rest = line;
+  const indent = /^\s*/.exec(line)![0];
+  for (let guard = 0; guard < 4; guard++) {
+    const t = rest.trimStart();
+    const elseM = /^(?:\}\s*)?else\b\s*/.exec(t);
+    if (elseM && !/^(?:\}\s*)?else\s+if\b/.test(t)) {
+      rest = t.slice(elseM[0].length);
+      continue;
+    }
+    const head = /^(?:\}\s*)?(?:else\s+)?(?:if|for|while)\s*\(/.exec(t);
+    if (!head) break;
+    // Skip the balanced condition.
+    let depth = 1;
+    let k = head[0].length;
+    for (; k < t.length && depth > 0; k++) {
+      if (t[k] === '(') depth++;
+      else if (t[k] === ')') depth--;
+    }
+    if (depth !== 0) return line;
+    rest = t.slice(k);
+  }
+  const body = rest.trim();
+  if (body === '' || body === rest.trim() && body === line.trim() || body.startsWith('{')) return line;
+  return indent + body;
+}
+
+/**
+ * The assignment to `name` that must reach the `return` on slice line `retLine`:
+ * the closest preceding single-line `name = …;` in the same block, with no
+ * assignment to `name` in a nested block after it and no exit from the block in
+ * between. `null` when there is no such assignment (the caller then stays
+ * conservative).
+ */
+function mustReachingAssignment(
+  slice: readonly string[],
+  dead: Set<number>,
+  retLine: number,
+  name: string,
+  /** lines that were a one-line branch body: an assignment there is conditional */
+  inlined: Set<number>,
+): { line: number; rhs: string } | null {
+  // Brace depth at the start of each line, string and char literals skipped.
+  const depth: number[] = [];
+  let d = 0;
+  for (const line of slice) {
+    depth.push(d);
+    const code = line.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'(?:[^'\\]|\\.)'/g, "''").replace(/\/\/.*$/, '');
+    for (const c of code) {
+      if (c === '{') d++;
+      else if (c === '}') d--;
+    }
+  }
+  const target = depth[retLine];
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const assign = new RegExp(`^\\s*(?:(?:final\\s+)?[A-Za-z_][\\w.]*(?:\\s*<[^>]*>)?(?:\\s*\\[\\s*\\])*\\s+)?${esc}\\s*=\\s*(.+?);\\s*(?://.*)?$`);
+  const mentionsAssign = new RegExp(`(?<![\\w.])${esc}\\s*=(?!=)`);
+  for (let j = retLine - 1; j >= 0; j--) {
+    if (depth[j] < target) return null; // left the return's block
+    if (dead.has(j)) continue;
+    if (!mentionsAssign.test(slice[j])) continue;
+    if (depth[j] > target || inlined.has(j)) return null; // a conditional reassignment
+    const m = assign.exec(slice[j]);
+    if (!m) return null; // wrapped or compound assignment
+    return { line: j, rhs: m[1] };
+  }
+  return null;
 }
 
 /** DFG-forward names reachable from a helper-return assignment LHS (same file). */

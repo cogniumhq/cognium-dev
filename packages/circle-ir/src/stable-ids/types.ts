@@ -64,13 +64,27 @@ export interface StableIdFile {
   scheme: StableIdScheme;
   file: string;
   /** `typescript` for `.ts`/`.tsx`, `javascript` for `.js`/`.jsx`, `java` for `.java`, `python` for `.py`. */
-  language: 'javascript' | 'typescript' | 'java' | 'python';
+  language: 'javascript' | 'typescript' | 'java' | 'python' | 'go';
   /** The module path every qualified name in this file starts with. */
   module: string;
   /** Source order, a parent before its members. The first entry is the module. */
   decls: StableDecl[];
   /** `true` when the parse had errors; ids under an error region may be missing. */
   partial: boolean;
+  /** When `partial`: the first error, in source order, that made it so. */
+  parseError?: ParseErrorSite;
+}
+
+/**
+ * Where a file stopped parsing. `nodeKind` is `ERROR` for a region the
+ * grammar could not read, or `MISSING <token>` for a token the parser had to
+ * insert; `parent` is the syntax node it sits in. Lines and columns are 1-based.
+ */
+export interface ParseErrorSite {
+  line: number;
+  column: number;
+  nodeKind: string;
+  parent: string;
 }
 
 export interface StableIdOptions {

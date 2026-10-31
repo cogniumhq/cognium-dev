@@ -17,12 +17,14 @@ import {
   type PassOptions,
   type ProjectProfile,
   parseNpmDependencies, parseNpmLockDependencies,
+  parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
   parseMavenDependencies, parseGradleDependencies,
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
-  type Dependency, type SbomMetadata,
+  licenseFromPackageJson, applyLicenses,
+  type Dependency, type SbomMetadata, type LicenseMap,
 } from 'circle-ir';
 import {
   detectProjectProfiles,
@@ -38,8 +40,25 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
+import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
+import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
 import { colors } from './utils/colors.js';
+import {
+  computeDeadCode,
+  computeEntries,
+  computeReach,
+  deadCodeJson,
+  deadCodeSarif,
+  deadCodeText,
+  entriesText,
+  parseDeadCodeOptions,
+  parseEntriesOptions,
+  parseReachOptions,
+  reachJson,
+  reachSarif,
+  reachText,
+} from './graph-facts.js';
 
 // =============================================================================
 // Configuration Types
@@ -360,6 +379,8 @@ interface ScanOptions {
   language?: string;
   format: 'text' | 'json' | 'sarif';
   threads: number;
+  /** `--file-timeout-ms`: skip (and report) a file whose analysis passes this (#1007). */
+  fileTimeoutMs?: number;
   severity?: string;
   category?: string;
   output?: string;
@@ -556,9 +577,50 @@ interface CollectFilesOptions {
   includePatterns?: string[];
   excludePatterns?: string[];
   basePath?: string;
+  /**
+   * #1025: the walk is inside a skipped directory the user asked for (the scan
+   * path itself, or one an `include` pattern names), so the default skip list
+   * no longer applies.
+   */
+  optedIn?: boolean;
 }
 
-async function collectFiles(targetPath: string, options: CollectFilesOptions = {}): Promise<string[]> {
+/**
+ * #1025: how a config `include` reaches a default-skipped directory at `relDir`
+ * (relative to the scan root).
+ *
+ * - `'names'`: a pattern names this directory — one of its literal segments is
+ *   the directory's name and the pattern up to that segment matches `relDir`
+ *   (`coverage/**`, `**\/vendor/**`, `packages/*\/coverage/*.js`). The walk
+ *   enters it and the default skip list no longer applies below it.
+ * - `'above'`: a pattern names a skipped directory that may lie below this one
+ *   (`**\/lcov-report/**` reaching `coverage/`). The walk enters it, but
+ *   other skipped directories below it stay skipped.
+ * - `'none'`: the directory stays skipped.
+ */
+export function includeReach(
+  relDir: string,
+  includePatterns: readonly string[] | undefined,
+): 'names' | 'above' | 'none' {
+  if (!includePatterns || includePatterns.length === 0) return 'none';
+  const dir = relDir.replace(/\\/g, '/');
+  const name = dir.slice(dir.lastIndexOf('/') + 1);
+  let reach: 'above' | 'none' = 'none';
+  for (const pattern of includePatterns) {
+    const segments = pattern.replace(/\\/g, '/').replace(/^\.\//, '').split('/');
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (/[*?]/.test(seg) || !isScanSkippedDirectory(seg)) continue;
+      if (seg === name && matchesGlob(dir, segments.slice(0, i + 1).join('/'))) return 'names';
+      for (let j = 0; j < i && reach === 'none'; j++) {
+        if (matchesGlob(dir, segments.slice(0, j + 1).join('/'))) reach = 'above';
+      }
+    }
+  }
+  return reach;
+}
+
+export async function collectFiles(targetPath: string, options: CollectFilesOptions = {}): Promise<string[]> {
   const { language, excludeTests = false, includePatterns, excludePatterns, basePath } = options;
   const files: string[] = [];
   const pathStat = await stat(targetPath);
@@ -582,15 +644,30 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
       files.push(targetPath);
     }
   } else if (pathStat.isDirectory()) {
+    // #1025: a scan path that is itself a skipped directory (`scan ./coverage`)
+    // is read in full.
+    const optedIn = options.optedIn
+      || ((!basePath || basePath === targetPath) && SCAN_SKIPPED_DIRECTORIES.includes(basename(targetPath)));
     const entries = await readdir(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       // Skip test directories if excludeTests is enabled
       if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
 
-      // Check if directory matches exclude patterns (e.g., dist/**)
       const fullPath = join(targetPath, entry.name);
       const relativePath = basePath ? relative(basePath, fullPath) : fullPath;
+      // #1025: dot-files are skipped. Dependencies, generated reports and
+      // dot-directories are skipped unless the user asked for them (see
+      // `includeReach`). A symlink is checked by name like a directory.
+      let childOptedIn = optedIn;
+      if (entry.isFile()) {
+        if (entry.name.startsWith('.')) continue;
+      } else if (!optedIn && isScanSkippedDirectory(entry.name)) {
+        const reach = includeReach(relativePath, includePatterns);
+        if (reach === 'none') continue;
+        childOptedIn = reach === 'names';
+      }
+
+      // Check if directory matches exclude patterns (e.g., dist/**)
       if (excludePatterns && entry.isDirectory()) {
         // Check if the directory itself should be excluded
         const dirPattern = relativePath + '/';
@@ -599,7 +676,7 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
         }
       }
 
-      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath }));
+      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn }));
     }
   }
 
@@ -609,7 +686,8 @@ async function collectFiles(targetPath: string, options: CollectFilesOptions = {
 /**
  * #591: project resource files that analysis passes may read (`*.properties`).
  * Collected from a directory scan with the same skip rules as `collectFiles`
- * (dot-directories, `node_modules`, `--exclude-tests`, config `exclude`). Keys
+ * (dot-directories, `SCAN_SKIPPED_DIRECTORIES`, `--exclude-tests`, config
+ * `exclude`). Keys
  * are the file paths as found; a file over 1 MB is ignored.
  */
 export async function collectResourceFiles(
@@ -629,7 +707,7 @@ export async function collectResourceFiles(
   }
   if (!pathStat.isDirectory()) return out;
   for (const entry of await readdir(targetPath, { withFileTypes: true })) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    if (entry.name.startsWith('.') || (!entry.isFile() && isScanSkippedDirectory(entry.name))) continue;
     if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
     const fullPath = join(targetPath, entry.name);
     const relativePath = basePath ? relative(basePath, fullPath) : fullPath;
@@ -648,6 +726,8 @@ export async function collectResourceFiles(
 interface AnalyzeOptions {
   passOptions?: PassOptions;
   disabledPasses?: string[];
+  /** Per-file analysis time limit (ms), circle-ir `fileTimeoutMs` (#1007). 0/absent = off. */
+  fileTimeoutMs?: number;
   /**
    * Per-file project profile resolved by the CLI's
    * `detectProjectProfiles()` (or a forced single profile from
@@ -669,6 +749,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       passOptions: analyzeOpts?.passOptions,
       disabledPasses: analyzeOpts?.disabledPasses,
       ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
+      ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     });
 
     // Security findings from taint flows
@@ -793,6 +874,7 @@ async function scanProject(
     ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
     // #591: `*.properties` from the scan set, for passes that resolve config-held values.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
+    ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -819,6 +901,14 @@ async function scanProject(
     }
     return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
   });
+  // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
+  for (const t of projectResult.timed_out_files ?? []) {
+    results.push({
+      file: t.file,
+      vulnerabilities: [],
+      error: `analysis timed out after ${t.elapsed_ms}ms (at ${t.phase}); file skipped`,
+    });
+  }
 
   return {
     results,
@@ -1050,7 +1140,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
   // Apply config-level severity/category defaults (CLI flags override)
   if (!options.severity && config?.severity) {
-    options.severity = config.severity;
+    // #1006: validate the config's value too, before any file is read.
+    options.severity = parseSeverity(config.severity);
   }
   if (!options.category && config?.categories?.length) {
     options.category = config.categories.join(',');
@@ -1122,6 +1213,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     const analyzeOpts: AnalyzeOptions = {
       passOptions,
       disabledPasses,
+      ...(options.fileTimeoutMs ? { fileTimeoutMs: options.fileTimeoutMs } : {}),
       ...(resolvedProfiles
         ? { projectProfile: resolvedProfiles }
         : forcedProfile && !options.noProjectProfile
@@ -1353,12 +1445,12 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
         console.error(colors.green(`Results written to ${options.output}`));
       } else if (output.trim()) {
-        console.log(output);
+        writeStdout(output + '\n');
       }
 
       // Summary
       if (!options.quiet && options.format === 'text') {
-        console.log();
+        writeStdout('\n');
         // #424: when the size ceiling truncated the scan, `files` is what was
         // DISCOVERED, not what was analysed. Reporting the discovered count
         // here would state a clean scan of files that were never opened —
@@ -1370,28 +1462,28 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           ? `${scanned} of ${crossFileData.filesTotal ?? files.length} file(s) analysed`
           : `${scanned} file(s)`;
         if (securityCount > 0) {
-          console.log(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`));
+          writeStdout(colors.red(`Found ${securityCount} security finding(s) in ${scannedLabel}`) + '\n');
         }
         if (qualityCount > 0) {
           const label = securityCount > 0 ? 'Also found' : 'Found';
-          console.log(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`));
+          writeStdout(colors.yellow(`${label} ${qualityCount} code quality finding(s) in ${scannedLabel}`) + '\n');
         }
         if (securityCount === 0 && qualityCount === 0 && options.verbose) {
-          console.log(colors.green(`No findings in ${scannedLabel}`));
+          writeStdout(colors.green(`No findings in ${scannedLabel}`) + '\n');
         }
         if (errors > 0) {
-          console.log(colors.yellow(`${errors} file(s) had errors during analysis`));
+          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis`) + '\n');
         }
       }
     }
 
     // Exit code: 1 for security findings, 0 for quality-only or clean
-    process.exit(securityCount > 0 ? 1 : 0);
+    await exitAfterFlush(securityCount > 0 ? 1 : 0);
 
   } catch (error) {
     if (spin) spin.fail('Analysis failed');
     console.error(colors.red(error instanceof Error ? error.message : 'Unknown error'));
-    process.exit(2);
+    await exitAfterFlush(error instanceof UsageError ? 1 : 2);
   }
 }
 
@@ -1560,10 +1652,10 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       // 3.89.2: status to stderr (stdout reserved for payload).
       console.error(colors.green(`Results written to ${options.output}`));
     } else {
-      console.log(output);
+      writeStdout(output + '\n');
     }
 
-    process.exit(0);
+    await exitAfterFlush(0);
 
   } catch (error) {
     if (spin) spin.fail('Metrics analysis failed');
@@ -1793,6 +1885,9 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
   'package.json': parseNpmDependencies,
   'package-lock.json': parseNpmLockDependencies,
   'npm-shrinkwrap.json': parseNpmLockDependencies,
+  'pnpm-lock.yaml': parsePnpmLockDependencies,
+  // yarn.lock reads its sibling package.json for the roots (see the loop below).
+  'yarn.lock': (c) => parseYarnLockDependencies(c),
   'requirements.txt': parsePypiDependencies,
   'pyproject.toml': parsePyprojectDependencies,
   'poetry.lock': parsePoetryLockDependencies,
@@ -1813,6 +1908,10 @@ const SBOM_MANIFESTS: Record<string, (content: string) => Dependency[]> = {
 const SBOM_SUPERSEDES: Record<string, string[]> = {
   'package-lock.json': ['package.json'],
   'npm-shrinkwrap.json': ['package.json'],
+  // DT4: resolved npm sets supersede the declared manifest; pnpm wins over
+  // the others when more than one lockfile sits in a directory.
+  'pnpm-lock.yaml': ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock'],
+  'yarn.lock': ['package.json'],
   'poetry.lock': ['pyproject.toml'],
   'Cargo.lock': ['Cargo.toml'],
   'dependency-tree.txt': ['pom.xml', 'dependency-list.txt'],
@@ -1843,10 +1942,8 @@ function gradleLockDirProject(file: string): string | null {
 const isSbomInput = (file: string): boolean =>
   Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null;
 
-const SBOM_SKIP_DIRS = /^(node_modules|vendor|target|dist|build|out|coverage)$/;
-
 /** Recursively find recognised manifest files under a path (or the path itself if it is one). */
-async function collectManifestFiles(targetPath: string): Promise<string[]> {
+export async function collectManifestFiles(targetPath: string): Promise<string[]> {
   const found: string[] = [];
   const pathStat = await stat(targetPath);
   if (pathStat.isFile()) {
@@ -1857,7 +1954,7 @@ async function collectManifestFiles(targetPath: string): Promise<string[]> {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
       if (e.isDirectory()) {
-        if (SBOM_SKIP_DIRS.test(e.name)) continue;
+        if (isStructureSkippedDirectory(e.name)) continue;
         await walk(join(dir, e.name));
       } else if (isSbomInput(join(dir, e.name))) {
         found.push(join(dir, e.name));
@@ -1874,6 +1971,58 @@ interface SbomOptions {
   name?: string;
   prodOnly?: boolean;
   deterministic?: boolean;
+  /** JSON file `{ "name@version" | "name": "<SPDX>" }`, applied after node_modules. */
+  licenseMap?: string;
+}
+
+/**
+ * npm licences from installed packages, read offline: pnpm's store layout
+ * (`node_modules/.pnpm/<name>@<version>/node_modules/<name>`) first, then a
+ * hoisted `node_modules/<name>` whose version matches exactly. Returns the
+ * number of dependencies that gained a licence.
+ */
+export function npmLicensesFromNodeModules(deps: Dependency[], roots: string[]): number {
+  let filled = 0;
+  for (const d of deps) {
+    if (d.ecosystem !== 'npm' || d.license) continue;
+    for (const root of roots) {
+      const pnpmDir = `${d.name.replace(/\//g, '+')}@${d.version}`;
+      const candidates = [
+        join(root, 'node_modules', '.pnpm', pnpmDir, 'node_modules', d.name, 'package.json'),
+        join(root, 'node_modules', d.name, 'package.json'),
+      ];
+      let lic: string | undefined;
+      for (const [i, c] of candidates.entries()) {
+        if (!existsSync(c)) continue;
+        const text = readFileSync(c, 'utf-8');
+        if (i === 1) {
+          try {
+            if ((JSON.parse(text) as { version?: unknown }).version !== d.version) continue;
+          } catch { continue; }
+        }
+        lic = licenseFromPackageJson(text);
+        if (lic) break;
+      }
+      if (lic) { d.license = lic; filled++; break; }
+    }
+  }
+  return filled;
+}
+
+function readLicenseMap(file: string): LicenseMap {
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(file, 'utf-8')); } catch (e) {
+    throw new UsageError(`--license-map: cannot read ${file} as JSON (${(e as Error).message})`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new UsageError('--license-map: expected a JSON object of "name@version" or "name" to licence');
+  }
+  const map: LicenseMap = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v !== 'string' || !v.trim()) throw new UsageError(`--license-map: value for '${k}' must be a non-empty string`);
+    map[k] = v.trim();
+  }
+  return map;
 }
 
 async function runSbom(targetPath: string, options: SbomOptions): Promise<void> {
@@ -1905,6 +2054,13 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     for (const superseded of SBOM_SUPERSEDES[basename(m)] ?? []) {
       supersededInDir.add(`${dirname(m)}\0${superseded}`);
     }
+    // A pnpm workspace lockfile resolves every importer's package.json.
+    if (basename(m) === 'pnpm-lock.yaml') {
+      for (const importer of pnpmLockImporters(readFileSync(m, 'utf-8'))) {
+        const dir = join(dirname(m), importer);
+        for (const superseded of SBOM_SUPERSEDES['pnpm-lock.yaml']) supersededInDir.add(`${dir}\0${superseded}`);
+      }
+    }
     const project = gradleLockDirProject(m);
     if (project) {
       supersededInDir.add(`${project}\0build.gradle`);
@@ -1934,6 +2090,11 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   let deps: Dependency[] = [];
   for (const m of effective) {
     const text = readFileSync(m, 'utf-8');
+    if (basename(m) === 'yarn.lock') {
+      const pkg = join(dirname(m), 'package.json');
+      deps.push(...parseYarnLockDependencies(text, existsSync(pkg) ? readFileSync(pkg, 'utf-8') : undefined));
+      continue;
+    }
     const parse = SBOM_MANIFESTS[basename(m)];
     deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
   }
@@ -1947,6 +2108,12 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
     return true;
   });
   if (options.prodOnly) deps = deps.filter((d) => d.scope !== 'dev');
+
+  // Licences, offline: installed node_modules first, then the caller's map.
+  const roots = [...new Set([absPath, ...effective.map((m) => dirname(m))])];
+  npmLicensesFromNodeModules(deps, roots);
+  if (options.licenseMap) deps = applyLicenses(deps, readLicenseMap(options.licenseMap));
+  const licensed = deps.filter((d) => d.license).length;
 
   if (!projectName) projectName = basename(absPath) || 'project';
 
@@ -1965,12 +2132,12 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
   if (options.output) {
     writeFileSync(options.output, out);
     // stdout is reserved for payload; status goes to stderr (3.89.2).
-    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s)`));
+    console.error(colors.green(`SBOM written to ${options.output} — ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   } else {
-    console.log(out);
-    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s)`));
+    writeStdout(out + '\n');
+    console.error(colors.green(`SBOM: ${deps.length} dependencies from ${effective.length} manifest(s); licences: ${licensed} known, ${deps.length - licensed} unknown`));
   }
-  process.exit(0);
+  await exitAfterFlush(0);
 }
 
 async function main(): Promise<void> {
@@ -2018,7 +2185,7 @@ async function main(): Promise<void> {
 
     const targetPath = args[0];
     const metricsOptions: MetricsOptions = {
-      format: (options.format || options.f || 'text') as 'text' | 'json',
+      format: parseFormat(options.format ?? options.f, ['text', 'json'] as const, 'text'),
       category: (options.category) as string | undefined,
       output: (options.output || options.o) as string | undefined,
       quiet: options.quiet === true || options.q === true,
@@ -2043,14 +2210,66 @@ async function main(): Promise<void> {
       console.error(colors.red(`Error: unknown SBOM format '${rawFormat}' (expected 'cyclonedx' or 'spdx')`));
       process.exit(1);
     }
+    if (options['license-map'] === true) {
+      console.error(colors.red('Error: --license-map needs a file path'));
+      process.exit(1);
+    }
     const sbomOptions: SbomOptions = {
       format: rawFormat as 'cyclonedx' | 'spdx',
       output: (options.output || options.o) as string | undefined,
       name: options.name as string | undefined,
       prodOnly: options['prod-only'] === true || options.prod === true,
       deterministic: options.deterministic === true,
+      licenseMap: options['license-map'] as string | undefined,
     };
-    await runSbom(args[0], sbomOptions);
+    try {
+      await runSbom(args[0], sbomOptions);
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      throw e;
+    }
+    return;
+  }
+
+  // Graph facts: dead code, removal reach, entry points. Options are refused
+  // before any file is read (#1006); stdout drains before exit (#1001).
+  if (command === 'deadcode' || command === 'reach' || command === 'entries') {
+    const target = args[0] ?? '.';
+    try {
+      let payload: string;
+      let outputFile: string | undefined;
+      if (command === 'deadcode') {
+        const opts = parseDeadCodeOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeDeadCode(target, opts);
+        payload = opts.format === 'json' ? deadCodeJson(report)
+          : opts.format === 'sarif' ? deadCodeSarif(report) : deadCodeText(report);
+      } else if (command === 'reach') {
+        const opts = parseReachOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeReach(target, opts);
+        payload = opts.format === 'json' ? reachJson(report)
+          : opts.format === 'sarif' ? reachSarif(report) : reachText(report);
+      } else {
+        const opts = parseEntriesOptions(options);
+        outputFile = opts.output;
+        await initWasm(null);
+        const report = await computeEntries(target, opts);
+        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : entriesText(report);
+      }
+      if (outputFile) {
+        writeFileSync(outputFile, payload + '\n');
+        console.error(`Wrote ${outputFile}`);
+      } else {
+        writeStdout(payload + '\n');
+      }
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
+      throw e;
+    }
+    await exitAfterFlush(0);
     return;
   }
 
@@ -2065,9 +2284,10 @@ async function main(): Promise<void> {
     const targetPath = args[0];
     const scanOptions: ScanOptions = {
       language: languageFromCliOptions(options),
-      format: (options.format || options.f || 'text') as 'text' | 'json' | 'sarif',
-      threads: parseInt((options.threads as string) || '4', 10),
-      severity: (options.severity) as string | undefined,
+      format: parseFormat(options.format ?? options.f, ['text', 'json', 'sarif'] as const, 'text'),
+      threads: parseWholeNumber('threads', options.threads, 4, 1),
+      fileTimeoutMs: parseWholeNumber('file-timeout-ms', options['file-timeout-ms'], 0, 0),
+      severity: parseSeverity(options.severity),
       category: (options.category) as string | undefined,
       output: (options.output || options.o) as string | undefined,
       quiet: options.quiet === true || options.q === true,
@@ -2099,6 +2319,12 @@ async function main(): Promise<void> {
 
 // Run the CLI
 main().catch((error) => {
+  // #1006: a bad option is a usage error (exit 1), reported before any scan work.
+  if (error instanceof UsageError) {
+    console.error(colors.red(`Error: ${error.message}`));
+    console.error('\nRun \'cognium-dev --help\' for usage information');
+    process.exit(1);
+  }
   console.error(colors.red('Fatal error:'), error.message);
   process.exit(2);
 });

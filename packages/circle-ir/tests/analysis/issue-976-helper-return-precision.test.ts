@@ -8,7 +8,7 @@
  *    assignee untainted, the helper dropped it (constant branch, safe key).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initAnalyzer, analyze } from '../../src/analyzer.js';
+import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
 
 const servlet = (helperBody: string) => `import javax.servlet.http.*;
 import java.sql.*;
@@ -73,5 +73,333 @@ describe('#976 helper-return precision for sinks inside try', () => {
     const flows = await sqlFlows(servlet(`      String bar = param;
       return bar;`));
     expect(flows.length).toBeGreaterThan(0);
+  });
+});
+
+// CWE-Bench-Java plexus-utils CVE-2017-1000487 (req-012): the callee's source
+// reaches its return through an array element store, and the sink sits in a try.
+const commandline = (fill: string) => `import java.io.*;
+import java.util.*;
+public class Commandline {
+  private Map envVars = new HashMap();
+  public String[] getEnvironmentVariables() {
+    String[] environmentVars = new String[envVars.size()];
+    int i = 0;
+    for (Iterator it = envVars.keySet().iterator(); it.hasNext(); ) {
+      String name = (String) it.next();
+      String value = System.getenv(name);
+${fill}
+      i++;
+    }
+    return environmentVars;
+  }
+  public Process execute(String[] cmd) throws Exception {
+    Process process;
+    String[] environment = getEnvironmentVariables();
+    try {
+      process = Runtime.getRuntime().exec(cmd, environment);
+    } catch (IOException ex) {
+      throw new RuntimeException(ex);
+    }
+    return process;
+  }
+}`;
+
+/** command_injection flows whose source is the callee's `System.getenv` (not `execute`'s own parameter). */
+const envCmdFlows = async (code: string) => {
+  const envLine = code.split('\n').findIndex(l => l.includes('System.getenv')) + 1;
+  return (await analyze(code, 'Commandline.java', 'java')).taint.flows.filter(
+    f => f.sink_type === 'command_injection' && f.source_line === envLine,
+  );
+};
+
+describe('#976 callee source returned through an element store (plexus-utils CWE-78)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps the flow when the source is stored into the returned array', async () => {
+    const flows = await envCmdFlows(commandline(`      environmentVars[i] = name + "=" + value;`));
+    expect(flows.length).toBeGreaterThan(0);
+  });
+
+  it('drops it when the stored array is not what the callee returns', async () => {
+    const flows = await envCmdFlows(commandline(`      String[] scratch = new String[1];
+      scratch[0] = value;`));
+    expect(flows).toHaveLength(0);
+  });
+});
+
+describe('#976 const-prop: an anti-sanitizer over an inline sanitizer is a round trip', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps Base64 decode(encode(param)) in a branch as the returned taint', async () => {
+    const flows = await sqlFlows(servlet(`      String bar = "";
+      if (param != null) bar = new String(java.util.Base64.getDecoder().decode(java.util.Base64.getEncoder().encode(param.getBytes())));
+      return bar;`));
+    expect(flows.length).toBeGreaterThan(0);
+  });
+
+  it('the constant-dead branch veto still drops the flow', async () => {
+    const flows = await sqlFlows(servlet(`      String bar = "";
+      if ((7 * 42) - 86 > 200) bar = "safe"; else bar = param;
+      return bar;`));
+    expect(flows).toHaveLength(0);
+  });
+});
+
+describe('#976 veto: a helper returning an array it stored the input into', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  it('keeps the flow (const-prop holds the element tainted, not the call result)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Arr extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getParameter("p");
+    String[] bar = new Test().doSomething(request, param);
+    try {
+      Runtime.getRuntime().exec(bar);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+  class Test {
+    String[] doSomething(HttpServletRequest request, String param) {
+      String[] vars = new String[1];
+      vars[0] = "X=" + param;
+      return vars;
+    }
+  }
+}`;
+    const flows = (await analyze(code, 'Arr.java', 'java')).taint.flows.filter(f => f.sink_type === 'command_injection');
+    expect(flows.length).toBeGreaterThan(0);
+  });
+});
+
+describe('#976 dead-branch def with a source from another file (OWASP 00625)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const helperFile = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+}`;
+  const servletFile = (cond: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.getTheParameter("p");
+    if (param == null) param = "";
+    String bar;
+    int num = 86;
+    if (${cond}) bar = "This_should_always_happen";
+    else bar = param;
+    String fileName = null;
+    try {
+      fileName = "/tmp/" + bar;
+      new java.io.FileOutputStream(new java.io.File(fileName), false);
+    } catch (Exception e) {
+      System.out.println("x");
+    }
+  }
+}`;
+  const pathFlows = async (cond: string) => {
+    const r = await analyzeProject([
+      { code: helperFile, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servletFile(cond), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.sink.type === 'path_traversal');
+  };
+
+  it('drops the flow through the dead else', async () => {
+    expect(await pathFlows('(7 * 42) - num > 200')).toHaveLength(0);
+  });
+
+  it('keeps it when the else is live', async () => {
+    expect((await pathFlows('(7 * 42) - num > 400')).length).toBeGreaterThan(0);
+  });
+});
+
+describe('#976 cross-file: a JDK receiver is not a project method of the same name (OWASP 01237)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const props = `package h;
+import java.util.Properties;
+public class PropertiesManager {
+  private Properties props = new Properties();
+  public String getProperty(String key, String def) { return props.getProperty(key, def); }
+}`;
+  const servlet = (osCall: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String slashes = "";
+    if (${osCall}.indexOf("Windows") != -1) slashes = "/";
+    try {
+      new java.io.File(new java.net.URI("file:" + slashes + "/tmp/x"));
+    } catch (java.net.URISyntaxException e) {
+      throw new RuntimeException(e);
+    }
+  }
+}`;
+  const paths = async (osCall: string) => {
+    const r = await analyzeProject([
+      { code: props, filePath: 'h/PropertiesManager.java', language: 'java' },
+      { code: servlet(osCall), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.source.file === 'h/PropertiesManager.java');
+  };
+
+  it('System.getProperty does not resolve to PropertiesManager.getProperty', async () => {
+    expect(await paths('System.getProperty("os.name")')).toHaveLength(0);
+  });
+});
+
+describe('#976 constant-caller gate: constant-returning source, sibling inner classes of one name', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+  public String getTheValue(String p) { return "bar"; }
+}`;
+  const servlet = (cls: string, getter: string) => `package t;
+import javax.servlet.http.*;
+public class ${cls} extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.${getter}("p");
+    String bar = new Test().doSomething(request, param);
+    new java.io.File(bar, "/Test.txt");
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      String bar = param;
+      return bar;
+    }
+  }
+}`;
+  const flowsIn = async (file: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet('A', 'getTheValue'), filePath: 't/A.java', language: 'java' },
+      { code: servlet('B', 'getTheParameter'), filePath: 't/B.java', language: 'java' },
+    ]);
+    const fa = r.files.find(f => f.file === file)!;
+    const out = fa.analysis.taint.flows.filter(f => f.sink_type === 'path_traversal');
+    return out;
+  };
+
+  it("drops the helper-parameter flow when the file's only caller passes getTheValue's constant", async () => {
+    expect(await flowsIn('t/A.java')).toHaveLength(0);
+  });
+
+  it('keeps it in the sibling file whose caller passes getTheParameter', async () => {
+    expect((await flowsIn('t/B.java')).length).toBeGreaterThan(0);
+  });
+});
+
+describe('#976 cross-file: a same-file helper that returns no parameter stops the caller path (OWASP 02379)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+}`;
+  const servlet = (pick: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.getTheParameter("p");
+    if (param == null) param = "";
+    String bar = doSomething(request, param);
+    try {
+      new java.io.File(bar, "/Test.txt");
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+  private static String doSomething(HttpServletRequest request, String param) {
+    String bar = "alsosafe";
+    if (param != null) {
+      java.util.List<String> valuesList = new java.util.ArrayList<String>();
+      valuesList.add("safe");
+      valuesList.add(param);
+      valuesList.add("moresafe");
+      valuesList.remove(0);
+      bar = valuesList.get(${pick});
+    }
+    return bar;
+  }
+}`;
+  const paths = async (pick: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet(pick), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.taint_paths.filter(p => p.sink.file === 't/Bench.java' && p.sink.type === 'path_traversal');
+  };
+
+  it('drops the path when the helper returns the safe slot', async () => {
+    expect(await paths('1')).toHaveLength(0);
+  });
+
+  it('keeps it when the helper returns the parameter slot', async () => {
+    expect((await paths('0')).length).toBeGreaterThan(0);
+  });
+});
+
+describe('#976 constant-caller gate: a helper-built map read fed by a constant caller (OWASP 02668)', () => {
+  beforeAll(async () => { await initAnalyzer(); });
+
+  const scr = `package h;
+import javax.servlet.http.HttpServletRequest;
+public class SeparateClassRequest {
+  private HttpServletRequest request;
+  public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+  public String getTheParameter(String p) { return request.getParameter(p); }
+  public String getTheValue(String p) { return "bar"; }
+}`;
+  const servlet = (getter: string) => `package t;
+import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    h.SeparateClassRequest scr = new h.SeparateClassRequest(request);
+    String param = scr.${getter}("p");
+    String bar = doSomething(request, param);
+    new java.io.File(bar, "/Test.txt");
+  }
+  private static String doSomething(HttpServletRequest request, String param) {
+    String bar = "safe!";
+    java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+    map.put("keyA", "a-Value");
+    map.put("keyB", param);
+    bar = (String) map.get("keyB");
+    return bar;
+  }
+}`;
+  const fileFlows = async (getter: string) => {
+    const r = await analyzeProject([
+      { code: scr, filePath: 'h/SeparateClassRequest.java', language: 'java' },
+      { code: servlet(getter), filePath: 't/Bench.java', language: 'java' },
+    ]);
+    return r.files.find(f => f.file === 't/Bench.java')!.analysis.taint.flows
+      .filter(f => f.sink_type === 'path_traversal' && f.source_type === 'plugin_param');
+  };
+
+  it('drops it when the only caller passes getTheValue', async () => {
+    expect(await fileFlows('getTheValue')).toHaveLength(0);
+  });
+
+  it('keeps it when the caller passes getTheParameter', async () => {
+    expect((await fileFlows('getTheParameter')).length).toBeGreaterThan(0);
   });
 });

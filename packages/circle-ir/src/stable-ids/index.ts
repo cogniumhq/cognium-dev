@@ -11,6 +11,7 @@ import { disposeTree, parse, type SupportedLanguage } from '../core/parser.js';
 import { deriveTypeScriptIds } from './typescript.js';
 import { deriveJavaIds } from './java.js';
 import { derivePythonIds } from './python.js';
+import { deriveGoIds } from './go.js';
 import type { StableIdFile, StableIdOptions } from './types.js';
 
 export { STABLE_ID_SCHEME } from './types.js';
@@ -22,10 +23,13 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  ParseErrorSite,
 } from './types.js';
+export { firstParseError } from './parse-errors.js';
 export { deriveTypeScriptIds, moduleNameFor } from './typescript.js';
 export { deriveJavaIds, eraseJavaType } from './java.js';
 export { derivePythonIds, pythonModuleName, pythonSignature } from './python.js';
+export { deriveGoIds, goPackageDir, goSignature, goReceiverType } from './go.js';
 export { assignNodeIds, type NodeIdSource } from './nodes.js';
 export { diffStableIds, type StableIdDiff } from './diff.js';
 export {
@@ -43,7 +47,7 @@ export { blake3, base32, digest128 } from './hash.js';
 
 /** True when `ids@0.1` covers the language. */
 export function stableIdsSupport(language: SupportedLanguage): boolean {
-  return language === 'typescript' || language === 'javascript' || language === 'tsx' || language === 'java' || language === 'python';
+  return language === 'typescript' || language === 'javascript' || language === 'tsx' || language === 'java' || language === 'python' || language === 'go';
 }
 
 /**
@@ -58,11 +62,12 @@ export async function deriveStableIds(
   options: StableIdOptions = {},
 ): Promise<StableIdFile> {
   if (!stableIdsSupport(language)) {
-    throw new Error(`stable-ids: ${language} is not covered by ids@0.1 (TypeScript, JavaScript, Java and Python)`);
+    throw new Error(`stable-ids: ${language} is not covered by ids@0.1 (TypeScript, JavaScript, Java, Python and Go)`);
   }
-  if (language === 'java' || language === 'python') {
+  if (language === 'java' || language === 'python' || language === 'go') {
     const tree = await parse(code, language);
     try {
+      if (language === 'go') return deriveGoIds(tree, filePath, options);
       return language === 'java' ? deriveJavaIds(tree, filePath, options) : derivePythonIds(tree, filePath, options);
     } finally {
       disposeTree(tree);

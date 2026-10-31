@@ -16,6 +16,10 @@ export {
   handedNames,
 } from './path-set.js';
 export { deriveBranchFacts, sideOf } from './branches.js';
+export { findingDiff } from './finding-diff.js';
+export type { FindingDiff, FindingDiffSide, NewFinding, MatchedBy } from './finding-diff.js';
+export { diffLines, splitLines } from './line-diff.js';
+export type { LineDiff } from './line-diff.js';
 export { deriveTemplateFacts, templateEngineOf, expressionNames } from './templates.js';
 export type { TemplateFact, TemplateEngine } from './templates.js';
 export type { BranchFact, BranchCall, BranchRange, BranchSide } from './branches.js';
