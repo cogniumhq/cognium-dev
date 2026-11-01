@@ -29,6 +29,7 @@ import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
 import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js';
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 import { jsReplaceChainVerdict } from '../js-crlf-strip.js';
+import { jsHelperReturnsNoParam } from '../js-helper-return.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -2263,6 +2264,36 @@ function classifyCSharpLambdaParam(
   return null;
 }
 
+/**
+ * cognium-dev#1049 — an Express handler that destructures the request
+ * (`({ query }: Request, res: Response) => { … query.to … }`, OWASP Juice Shop
+ * `routes/redirect.ts`) reads `query.to`, which no `req.query` pattern matches.
+ * When a parameter object pattern is typed `Request` (optionally
+ * `express.Request`), each request field it binds — `query`, `params`, `body`,
+ * `headers`, `cookies`, under its own name or a rename (`query: q`) — becomes a
+ * source pattern for that binding.
+ */
+const REQUEST_FIELD_TYPES: Record<string, TaintSource['type']> = {
+  query: 'http_param', params: 'http_param', body: 'http_body', headers: 'http_header', cookies: 'http_cookie',
+};
+function destructuredRequestPatterns(sourceCode: string): Array<{ pattern: RegExp; type: TaintSource['type'] }> {
+  const out: Array<{ pattern: RegExp; type: TaintSource['type'] }> = [];
+  const seen = new Set<string>();
+  for (const m of sourceCode.matchAll(/[(,]\s*\{([^{}]*)\}\s*:\s*(?:express\.)?Request\b/g)) {
+    for (const part of m[1].split(',')) {
+      const bind = /^\s*(\w+)\s*(?::\s*(\w+))?\s*(?:=[^,]*)?$/.exec(part);
+      if (!bind) continue;
+      const field = bind[1];
+      const local = bind[2] ?? bind[1];
+      const type = REQUEST_FIELD_TYPES[field];
+      if (!type || seen.has(local)) continue;
+      seen.add(local);
+      out.push({ pattern: new RegExp(`(?<![\\w.])${local}\\s*[.[]`), type });
+    }
+  }
+  return out;
+}
+
 function findJavaScriptAssignmentSources(sourceCode: string, language: string): TaintSource[] {
   if (!['javascript', 'typescript'].includes(language)) return [];
   const sources: TaintSource[] = [];
@@ -2277,9 +2308,10 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   const isRouteHandler =
     /export\s+(?:async\s+)?(?:function\s+(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action)\b|const\s+(?:GET|POST|PUT|PATCH|DELETE|loader|action)\b)/.test(sourceCode)
     && /\{[^}]*\bparams\b[^}]*\}/.test(sourceCode);
-  const patterns = isRouteHandler
+  const patterns: Array<{ pattern: RegExp; type: TaintSource['type'] }> = isRouteHandler
     ? [...JS_TAINTED_PATTERNS, { pattern: /\bparams\s*[.[]/, type: 'http_path' as const }]
-    : JS_TAINTED_PATTERNS;
+    : [...JS_TAINTED_PATTERNS];
+  patterns.push(...destructuredRequestPatterns(sourceCode));
 
   // #667: `REGISTRY[req.query.mod]` on a constant table yields a value the
   // program wrote, not request data.
@@ -2313,6 +2345,11 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
         rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
       }
       if (isConstTableLookup(rhs, lookupTables)) continue;
+      // #992: `v = pick(req.query.x)` where the same-file `pick` returns no
+      // parameter (a literal, or a literal slot of a local array) — the request
+      // value goes in but never comes out.
+      const wholeCall = /^\s*([A-Za-z_$][\w$]*)\s*\(.*\)\s*;?\s*$/.exec(rhs);
+      if (wholeCall && jsHelperReturnsNoParam(sourceCode, wholeCall[1]!)) continue;
 
       for (const { pattern, type } of patterns) {
         if (pattern.test(rhs)) {

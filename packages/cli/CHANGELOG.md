@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`recheck`** (E20/engine): the deterministic re-check of a code-fix change. `cognium-dev recheck <path> --changed <file[,file…]|@list.txt> [--baseline <before.json>] [-o file]` analyses only the changed files and keys every security finding by CWE × enclosing declaration × rule. The declaration is the method's stable id (`ids@0.1`) where the language has one (Java, TypeScript, JavaScript, Python, Go), so the key survives edits that only move lines.
+  - With `--baseline` (the report from the same files before the change), each key gets a verdict: `gone`, `still-present`, `new-high` (high or critical) or `new-other`, plus a summary.
+  - The no-new-high rule (`noNewHigh: pass|fail`) passes when there's no `new-high`. Exit code 0 on pass, 1 on fail, 2 on a usage error.
+  - Always JSON (`cognium-recheck@0.1`). No model, no network: the same files give the same report.
+
 ## [4.18.1] - 2026-10-31
 
 ### Changes

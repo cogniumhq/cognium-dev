@@ -1291,6 +1291,9 @@ const FETCH_MEMBER_RECEIVER_RE = /[\w$)\]]\s*\.\s*fetch\s*\(/;
 // sink" test. Real `collection.find({ ... })` passes an object literal and is
 // unaffected.
 const NOSQL_ARRAY_METHODS = new Set(['find', 'filter', 'some', 'every', 'findIndex', 'findLast']);
+/** A shell or interpreter that would run its arguments as a command. */
+const SHELL_PROGRAM = /(?:^|[\\/])(?:sh|bash|zsh|dash|ksh|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh|node|python3?|perl|ruby|php|osascript|env)$/i;
+
 const FUNCTION_FIRST_ARG_RE =
   /\.\s*(?:find|filter|some|every|findIndex|findLast)\s*\(\s*(?:async\s+)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
 
@@ -3211,6 +3214,32 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15f2 — JS/TS: spawn / spawnSync / execFile / execFileSync with a
+    // fixed program (`process.execPath` or a string literal that is not a
+    // shell), no `shell: true`, and no node `-e`/`--eval`/`-p`: the arguments
+    // array reaches the program as argv and cannot become a command (dogfood
+    // 2026-10-31: cognium-ai benchmark runners re-invoking node on a file).
+    if (['javascript', 'typescript'].includes(language)) {
+      const lines = ctx.code.split('\n');
+      const FIXED_PROGRAM_EXEC = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync']);
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'command_injection' || !FIXED_PROGRAM_EXEC.has(sink.method ?? '')) return true;
+        let stmt = lines[sink.line - 1] ?? '';
+        for (let k = 0; k < 8 && !/\)\s*;?\s*$/.test(stmt.replace(/\/\/.*$/, '')); k++) {
+          stmt += ' ' + (lines[sink.line + k] ?? '').trim();
+        }
+        const call = new RegExp(`\\b${sink.method}\\s*\\(\\s*([^,)]+)`).exec(stmt);
+        if (!call) return true;
+        const program = call[1]!.trim();
+        const literal = /^(['"`])([^'"`$]*)\1$/.exec(program);
+        const fixed = program === 'process.execPath' || (literal !== null && !SHELL_PROGRAM.test(literal[2]!));
+        if (!fixed) return true;
+        if (/\bshell\s*:\s*(?!false\b)/.test(stmt)) return true;
+        if (/['"`]-(?:e|p|-eval|-print)['"`]/.test(stmt)) return true;
+        return false;
+      });
+    }
+
     // Stage 15g — JS/TS nosql: `.find(fn)` etc. is Array.prototype iteration,
     // not a Mongo query. (cognium-ai#279 R-2) Drop a `nosql_injection` sink on an
     // array method whose first argument is a function (arrow / `function`);
@@ -3220,7 +3249,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'nosql_injection') return true;
         if (!NOSQL_ARRAY_METHODS.has(sink.method ?? '')) return true;
-        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // The predicate may start on the next line (`args.find(\n  (a) => …,\n)`,
+        // cognium-dev#988): read the call up to its first argument.
+        let sinkLineText = sourceLines[sink.line - 1] ?? '';
+        for (let k = 0; k < 3 && /\(\s*$/.test(sinkLineText); k++) {
+          sinkLineText += ' ' + (sourceLines[sink.line + k] ?? '').trim();
+        }
         if (FUNCTION_FIRST_ARG_RE.test(sinkLineText)) return false;
         // cognium-dev#1000 — `ancestors.find(meaningful)`: a named predicate
         // declared as a function in this file, or a receiver declared as an
