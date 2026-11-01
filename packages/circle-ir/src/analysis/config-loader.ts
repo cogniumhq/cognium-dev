@@ -2533,16 +2533,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'XMLParser', class: 'lxml', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
 
   // Python LDAP Injection
-  { method: 'search', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_ext', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_ext_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
+  { method: 'search', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_ext', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_ext_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
   // ldap3 library (different API from python-ldap)
-  { method: 'search', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1] },
-  { method: 'extend', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'modify', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'add', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'delete', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
+  { method: 'search', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'extend', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'modify', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'add', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'delete', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python Trust Boundary (CWE-501)
   // The vulnerability is storing untrusted data in session that gets trusted later
