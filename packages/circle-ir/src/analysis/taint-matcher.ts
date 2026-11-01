@@ -2664,6 +2664,16 @@ function findSinks(
         ) {
           continue;
         }
+        // Dogfood 2026-10-31: the same Map evidence holds for every `.get`
+        // sink, not just SQL — `tps.get(path)` with `tps: ReadonlyMap<…>`
+        // matched `https.get` (SSRF) through the receiver-name heuristic.
+        if (
+          call.method_name === 'get' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isInMemoryMapGetReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
 
         // cognium-dev #311 (from cognium-ai#196) — Python's classless
         // `compile` CWE-94 sink models the builtin `compile(src, name, mode)`.
