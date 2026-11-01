@@ -29,6 +29,7 @@ import { findGoStringsReplacerSanitizers } from '../go-strings-replacer.js';
 import { findRustLiteralEqualityGuardSanitizers } from '../rust-literal-guard.js';
 import { constLookupTables, isConstTableLookup } from '../const-table-lookup.js';
 import { jsReplaceChainVerdict } from '../js-crlf-strip.js';
+import { jsHelperReturnsNoParam } from '../js-helper-return.js';
 
 // ---------------------------------------------------------------------------
 // Pattern tables (moved from analyzer.ts)
@@ -2313,6 +2314,11 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
         rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
       }
       if (isConstTableLookup(rhs, lookupTables)) continue;
+      // #992: `v = pick(req.query.x)` where the same-file `pick` returns no
+      // parameter (a literal, or a literal slot of a local array) — the request
+      // value goes in but never comes out.
+      const wholeCall = /^\s*([A-Za-z_$][\w$]*)\s*\(.*\)\s*;?\s*$/.exec(rhs);
+      if (wholeCall && jsHelperReturnsNoParam(sourceCode, wholeCall[1]!)) continue;
 
       for (const { pattern, type } of patterns) {
         if (pattern.test(rhs)) {

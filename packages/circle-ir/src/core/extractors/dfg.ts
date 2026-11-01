@@ -732,14 +732,44 @@ function processStatement(
 
     case 'try_statement':
     case 'try_with_resources_statement': {
-      // Java only (JavaScript's `try` keeps the default below: uses only).
-      // Before this case a Java `try` recorded uses only, so no local declared
-      // in a try body, catch or finally — nor a try-with-resources resource —
-      // had a def, and nothing used inside or after it had a reaching def.
+      // Before this case a `try` recorded uses only, so no local declared in a
+      // try body, catch or finally — nor a try-with-resources resource — had a
+      // def, and nothing used inside or after it had a reaching def.
       if (isJavaScript) {
-        const stmtUses = extractUses(stmt, useId, scopeStack, isJavaScript);
-        uses.push(...stmtUses.uses);
-        useId = stmtUses.nextId;
+        // JavaScript / TypeScript: `try { } catch (e | { pattern }) { } finally { }`
+        const tryBody = stmt.childForFieldName('body');
+        if (tryBody) {
+          const r = processStatement(tryBody, defId, useId, scopeStack, isJavaScript);
+          defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+        }
+        const handler = stmt.childForFieldName('handler');
+        if (handler) {
+          scopeStack.push(new Map());
+          const param = handler.childForFieldName('parameter');
+          if (param) {
+            const paramDefs: DFGDef[] = param.type === 'identifier'
+              ? [{ id: defId, variable: getNodeText(param), line: param.startPosition.row + 1, column: param.startPosition.column, kind: 'local' }]
+              : extractDestructuringDefs(param, defId);
+            for (const def of paramDefs) {
+              defs.push(def);
+              currentScope(scopeStack).set(def.variable, def.id);
+              markDeclared(currentScope(scopeStack), def.variable);
+              defId++;
+            }
+          }
+          const handlerBody = handler.childForFieldName('body');
+          if (handlerBody) {
+            const r = processStatement(handlerBody, defId, useId, scopeStack, isJavaScript);
+            defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+          }
+          carryBranchDefsOut(scopeStack.pop()!, scopeStack, false);
+        }
+        const finalizer = stmt.childForFieldName('finalizer');
+        const finallyBody = finalizer?.childForFieldName('body');
+        if (finallyBody) {
+          const r = processStatement(finallyBody, defId, useId, scopeStack, isJavaScript);
+          defs.push(...r.defs); uses.push(...r.uses); defId = r.nextDefId; useId = r.nextUseId;
+        }
         break;
       }
       // Resources are scoped to the statement: visible in the body, gone after it.

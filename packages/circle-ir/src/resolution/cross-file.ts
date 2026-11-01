@@ -391,8 +391,25 @@ export class CrossFileResolver {
     const lang = this.fileIRs.get(fromFile)?.meta.language;
     if (receiverType ? isJdkType(receiverType, lang) : isJdkClassReceiver(receiver, lang)) return undefined;
 
+    // JS/TS: `signer.getAddress()` on a receiver of unknown type is a method of
+    // that object, not a module-level function that happens to share the name
+    // (juice-shop: the ethers Signer resolved to routes/address.ts getAddress and
+    // made req.body a source in the frontend, #992). Only a receiver bound by an
+    // import (`import * as addr from './address'`) may reach a module function.
+    if (!receiverType && (lang === 'javascript' || lang === 'typescript')) {
+      const byName = this.resolveByMethodName(call, fromFile);
+      if (byName && byName.targetClass === '<module>' && !this.isImportBinding(fromFile, receiver)) return undefined;
+      return byName;
+    }
+
     // Fallback: search by method name
     return this.resolveByMethodName(call, fromFile);
+  }
+
+  /** Is `name` bound by an import in `file` (alias, default or namespace import)? */
+  private isImportBinding(file: string, name: string): boolean {
+    const ir = this.fileIRs.get(file);
+    return (ir?.imports ?? []).some(i => (i.alias ?? i.imported_name) === name);
   }
 
   /**

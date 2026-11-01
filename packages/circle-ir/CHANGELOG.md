@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **JavaScript / TypeScript: locals declared in `try`, `catch` and `finally` now have DFG defs, and so does the catch parameter.** This covers an identifier or a destructuring pattern; a parameterless `catch` is handled too. As for Java, the blocks are processed like other blocks (defs carried out as alternates), and the catch parameter is a def in its clause. **Answers change:** flows through locals inside JavaScript and TypeScript `try` blocks can now be found where they were not.
+- **JavaScript/TypeScript: the Java helper-return check (#590 link, 4.18.1) also applies** (a callee source must reach the callee's `return`), now that `try` locals are defined there too. Held for a JS benchmark comparison.
+- **JavaScript/TypeScript: a receiver call with no known receiver type (`signer.getAddress()`) no longer resolves by name to a module-level function in another file** (unless the receiver is an import binding). juice-shop's ethers `Signer` had resolved to `routes/address.ts` `getAddress` (#992).
+- **JavaScript/TypeScript: a request value passed into a same-file helper that returns none of its parameters is not a source** (`v = pick(req.query.x)` where `pick` returns a literal, or a literal slot of a local array). The JS try/catch micro-suite goes from 6 FP to 0 with the 18 TP kept (#992).
+
 ## [4.18.1] - 2026-10-31
 
 ### Fixed
