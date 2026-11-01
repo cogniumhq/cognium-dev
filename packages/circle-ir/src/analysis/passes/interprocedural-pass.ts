@@ -111,6 +111,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     if (sinks.length > 0) {
       const interProc = analyzeInterprocedural(graph, sources, sinks, sanitizers, {
         taintedVariables: constProp.tainted,
+        sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
       // Collect propagated sinks (skip external_taint_escape — only used in fallback)
@@ -252,6 +253,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       }
       const interProc = analyzeInterprocedural(graph, fallbackSources, [], sanitizers, {
         taintedVariables: constProp.tainted,
+        sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
       // A call the sink registry matched and SinkFilterPass then cleared (a
