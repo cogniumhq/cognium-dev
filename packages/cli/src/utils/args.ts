@@ -72,6 +72,10 @@ COMMANDS:
                          (removal-reach@0.1); --base is a git ref or a directory
   entries [path]       The entry-point index (routes, listeners, mains, exports, …)
   depcalls --artifact <g:a[:v]> [path]
+  recheck --changed <files> [--baseline <before.json>] [path]
+                             Re-check a code fix: findings on the changed files keyed by
+                             CWE × declaration; with --baseline, gone / still-present /
+                             new-high / new-other and the no-new-high rule (exit 1 on fail)
                        Java: calls into one Maven artifact, covered or not by tests
                          (dependency-calls@0.1); packages from --jar, the Maven
                          repository (with a version), else a built-in table

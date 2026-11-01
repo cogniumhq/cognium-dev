@@ -382,8 +382,34 @@ export class CrossFileResolver {
       }
     }
 
+    // A JDK receiver (`System.getProperty`, `props.getProperty` on a
+    // `java.util.Properties`, `Integer.parseInt`) is not a project method that
+    // happens to share the name: OWASP's `System.getProperty("os.name")` resolved to the project's
+    // `PropertiesManager.getProperty` and made a `config_param` source (#976).
+    // Only a project type of that simple name may shadow it, and that case was
+    // resolved above.
+    const lang = this.fileIRs.get(fromFile)?.meta.language;
+    if (receiverType ? isJdkType(receiverType, lang) : isJdkClassReceiver(receiver, lang)) return undefined;
+
+    // JS/TS: `signer.getAddress()` on a receiver of unknown type is a method of
+    // that object, not a module-level function that happens to share the name
+    // (juice-shop: the ethers Signer resolved to routes/address.ts getAddress and
+    // made req.body a source in the frontend, #992). Only a receiver bound by an
+    // import (`import * as addr from './address'`) may reach a module function.
+    if (!receiverType && (lang === 'javascript' || lang === 'typescript')) {
+      const byName = this.resolveByMethodName(call, fromFile);
+      if (byName && byName.targetClass === '<module>' && !this.isImportBinding(fromFile, receiver)) return undefined;
+      return byName;
+    }
+
     // Fallback: search by method name
     return this.resolveByMethodName(call, fromFile);
+  }
+
+  /** Is `name` bound by an import in `file` (alias, default or namespace import)? */
+  private isImportBinding(file: string, name: string): boolean {
+    const ir = this.fileIRs.get(file);
+    return (ir?.imports ?? []).some(i => (i.alias ?? i.imported_name) === name);
   }
 
   /**
@@ -2064,4 +2090,22 @@ export function buildCrossFileResolver(
   }
 
   return resolver;
+}
+
+/** java.lang classes callers name unqualified, plus anything qualified under java./javax. */
+const JAVA_LANG_CLASSES: ReadonlySet<string> = new Set([
+  'System', 'Math', 'StrictMath', 'Integer', 'Long', 'Short', 'Byte', 'Double', 'Float',
+  'Boolean', 'Character', 'String', 'StringBuilder', 'StringBuffer', 'Objects', 'Thread',
+  'Runtime', 'Class', 'ClassLoader', 'Enum', 'Process', 'ProcessBuilder', 'Number',
+]);
+
+/** A resolved receiver type in the JDK (`java.lang.System`, `java.util.Properties`). */
+function isJdkType(fqn: string, language: string | undefined): boolean {
+  return (language === undefined || language === 'java') && /^javax?\.[a-z]/.test(fqn);
+}
+
+function isJdkClassReceiver(receiver: string, language: string | undefined): boolean {
+  if (language !== undefined && language !== 'java') return false;
+  if (/^javax?\.[a-z]/.test(receiver)) return true;
+  return JAVA_LANG_CLASSES.has(receiver);
 }

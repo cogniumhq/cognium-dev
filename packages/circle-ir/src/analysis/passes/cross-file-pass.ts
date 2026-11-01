@@ -25,7 +25,7 @@ import type { InterproceduralTaintPath } from '../../resolution/cross-file.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
 import { CSharpCredit } from './csharp-sanitizer-credit.js';
-import { csharpParamReachesSink } from './interprocedural-pass.js';
+import { calleeReturnMayCarryParam, csharpParamReachesSink } from './interprocedural-pass.js';
 
 export interface CrossFilePassResult {
   /** Inter-file method calls (source file → target file). */
@@ -211,6 +211,11 @@ export class CrossFilePass {
       if (sinkIR.meta.language === 'csharp' && p.calleeArgPositions && sinkHop?.kind === 'sink' &&
           !csharpCalleeReachesSink(sinkIR, sourceLines.get(p.sink.file) ?? [], sinkHop.method, p.calleeArgPositions, matchedSink,
             callHop?.kind === 'sink_call' ? sourceLines.get(callHop.file)?.[callHop.line - 1] : undefined)) {
+        continue;
+      }
+
+      if (sinkIR.meta.language === 'java' &&
+          javaHelperStopsCallerPath(sinkIR, sourceLines.get(p.sink.file) ?? [], p)) {
         continue;
       }
 
@@ -530,4 +535,66 @@ function findCrossInstanceAliasingPaths(
   }
 
   return paths;
+}
+
+/**
+ * Java (#976): the interprocedural walker follows the caller's DFG chains
+ * through `bar = new Test().doSomething(request, param)` without asking whether
+ * that same-file helper can return its argument. Re-walk the caller side from
+ * the last hop before the sink, stopping at defs assigned from a same-file
+ * method that #1010's helper-return gate shows returns no parameter (a
+ * constant-folding ternary, a list read of a safe slot). True when the sink is
+ * then no longer reached. Without chains, or with nothing to stop, nothing changes.
+ */
+function javaHelperStopsCallerPath(ir: CircleIR, lines: string[], p: InterproceduralTaintPath): boolean {
+  const chains = ir.dfg.chains;
+  if (!chains || chains.length === 0 || lines.length === 0) return false;
+  const hops = p.hops;
+  const before = hops.length >= 2 ? hops[hops.length - 2] : undefined;
+  if (!before || before.file !== p.sink.file || before.line >= p.sink.line) return false;
+  const code = lines.join('\n');
+
+  const localMethods = new Map<string, { start: number; end: number }[]>();
+  for (const t of ir.types) for (const m of t.methods) {
+    const arr = localMethods.get(m.name) ?? [];
+    arr.push({ start: m.start_line, end: m.end_line });
+    localMethods.set(m.name, arr);
+  }
+  const blockedLine = new Map<number, boolean>();
+  const isBlocked = (line: number): boolean => {
+    let b = blockedLine.get(line);
+    if (b !== undefined) return b;
+    b = false;
+    for (const c of ir.calls) {
+      if (c.location.line !== line) continue;
+      const ms = localMethods.get(c.method_name);
+      if (!ms || ms.length !== 1) continue;
+      if (!calleeReturnMayCarryParam(code, ms[0].start, ms[0].end, [])) { b = true; break; }
+    }
+    blockedLine.set(line, b);
+    return b;
+  };
+
+  const lineOf = new Map<number, number>();
+  for (const d of ir.dfg.defs) lineOf.set(d.id, d.line);
+  const seeds = ir.dfg.defs.filter(d => d.line === before.line && d.kind === 'local').map(d => d.id);
+  if (seeds.length === 0) return false;
+  let stopped = false;
+  const reached = new Set<number>(seeds);
+  const frontier = [...seeds];
+  while (frontier.length > 0) {
+    const cur = frontier.pop()!;
+    for (const ch of chains) {
+      if (ch.from_def !== cur || reached.has(ch.to_def)) continue;
+      const l = lineOf.get(ch.to_def);
+      if (l !== undefined && l !== before.line && isBlocked(l)) { stopped = true; continue; }
+      reached.add(ch.to_def);
+      frontier.push(ch.to_def);
+    }
+  }
+  if (!stopped) return false;
+  // The sink statement may wrap: its arguments can sit on later lines.
+  let end = p.sink.line;
+  while (end < lines.length && !/[;{}]\s*$/.test((lines[end - 1] ?? '').replace(/\/\/.*$/, '').trimEnd())) end++;
+  return !ir.dfg.uses.some(u => u.line >= p.sink.line && u.line <= end && u.def_id !== null && reached.has(u.def_id));
 }

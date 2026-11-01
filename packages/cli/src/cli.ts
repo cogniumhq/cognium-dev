@@ -40,6 +40,7 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
+import { computeRecheck, parseRecheckOptions } from './recheck.js';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
@@ -2279,6 +2280,29 @@ async function main(): Promise<void> {
       throw e;
     }
     await exitAfterFlush(0);
+    return;
+  }
+
+  // E20/engine: the deterministic re-check of a code-fix change.
+  // Always JSON; exit 1 when the no-new-high rule fails (with --baseline).
+  if (command === 'recheck') {
+    const target = args[0] ?? '.';
+    try {
+      const opts = parseRecheckOptions(options);
+      await initWasm(null);
+      const report = await computeRecheck(target, opts);
+      const payload = JSON.stringify(report, null, 2);
+      if (opts.output) {
+        writeFileSync(opts.output, payload + '\n');
+        console.error(`Wrote ${opts.output}`);
+      } else {
+        writeStdout(payload + '\n');
+      }
+      await exitAfterFlush(report.noNewHigh === 'fail' ? 1 : 0);
+    } catch (e) {
+      if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(2); }
+      throw e;
+    }
     return;
   }
 
