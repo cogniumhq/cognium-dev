@@ -186,13 +186,13 @@ export class XmlEntityExpansionPass
       // #173 — output-only TransformerFactory + empty DocumentBuilder.
       // File-level heuristics; conservative-bias (only suppress when the
       // file shows ONLY the safe shape and NO unsafe shape).
+      const codeFor173 = stripJavaComments(code);
       const isXmlOutputOnly =
-        JAVA_XML_OUTPUT_ONLY_RE.test(code) &&
-        !JAVA_XML_PARSE_INPUT_RE.test(code);
-      const codeNoComments = stripJavaComments(code);
+        JAVA_XML_OUTPUT_ONLY_RE.test(codeFor173) &&
+        !JAVA_XML_PARSE_INPUT_RE.test(codeFor173);
       const isDocumentBuilderEmptyOnly =
-        JAVA_DOC_BUILDER_NEW_DOCUMENT_RE.test(codeNoComments) &&
-        !JAVA_DOC_BUILDER_PARSE_RE.test(codeNoComments);
+        JAVA_DOC_BUILDER_NEW_DOCUMENT_RE.test(codeFor173) &&
+        !JAVA_DOC_BUILDER_PARSE_RE.test(codeFor173);
 
       for (const call of graph.ir.calls) {
         const det = this.detectJavaCall(call);
