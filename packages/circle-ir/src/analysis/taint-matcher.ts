@@ -1832,8 +1832,17 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
   if (r.startsWith('/') && /\/[a-z]*$/.test(r)) return true;
   if (/^(?:new\s+)?RegExp\s*\(/.test(r)) return true;
   if (!/^[A-Za-z_$][\w$]*$/.test(r) || !sourceLines) return false;
-  const decl = new RegExp(`(?:const|let|var)\\s+${escapeRe(r)}\\s*=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
-  return sourceLines.some(l => decl.test(l));
+  const n = escapeRe(r);
+  const decl = new RegExp(`(?:const|let|var)\\s+${n}\\s*(?::\\s*RegExp\\s*)?=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
+  if (sourceLines.some(l => decl.test(l))) return true;
+  // The literal on the next line (`const METHOD_DECL =\n  /…/;`, dogfood
+  // 2026-10-31: cognium-ai juliet-method-scope.ts `METHOD_DECL.exec(line)` was
+  // a command_injection), or a `: RegExp` annotation with no initializer here.
+  const wrapped = new RegExp(`(?:const|let|var)\\s+${n}\\s*(?::\\s*RegExp\\s*)?=\\s*$`);
+  const typed = new RegExp(`\\b${n}\\s*[?!]?\\s*:\\s*RegExp\\b`);
+  return sourceLines.some((l, i) =>
+    typed.test(l) ||
+    (wrapped.test(l) && /^\s*(?:\/|(?:new\s+)?RegExp\s*\()/.test(sourceLines[i + 1] ?? '')));
 }
 
 /**
