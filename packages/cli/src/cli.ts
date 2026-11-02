@@ -42,6 +42,7 @@ import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
 import { computeRecheck, parseRecheckOptions } from './recheck.js';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
+import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
 import { SCAN_SKIPPED_DIRECTORIES, isScanSkippedDirectory, isStructureSkippedDirectory } from './utils/skip-dirs.js';
 import { colors } from './utils/colors.js';
@@ -49,17 +50,17 @@ import {
   computeDeadCode,
   computeEntries,
   computeReach,
-  deadCodeJson,
   deadCodeSarif,
   deadCodeText,
   entriesText,
   parseDeadCodeOptions,
   parseDepCallsOptions,
   computeDepCalls,
+  deadCodeJsonValue,
+  reachJsonValue,
   depCallsText,
   parseEntriesOptions,
   parseReachOptions,
-  reachJson,
   reachSarif,
   reachText,
 } from './graph-facts.js';
@@ -2294,41 +2295,42 @@ async function main(): Promise<void> {
   if (command === 'deadcode' || command === 'reach' || command === 'entries' || command === 'depcalls') {
     const target = args[0] ?? '.';
     try {
-      let payload: string;
+      // JSON reports are streamed (#1079): one JSON.stringify of a large report passed
+      // V8's string limit. Text and SARIF stay single strings.
+      let payload: string | undefined;
+      let json: unknown;
       let outputFile: string | undefined;
       if (command === 'deadcode') {
         const opts = parseDeadCodeOptions(options);
         outputFile = opts.output;
         await initWasm(null);
         const report = await computeDeadCode(target, opts);
-        payload = opts.format === 'json' ? deadCodeJson(report)
-          : opts.format === 'sarif' ? deadCodeSarif(report) : deadCodeText(report);
+        if (opts.format === 'json') json = deadCodeJsonValue(report);
+        else payload = opts.format === 'sarif' ? deadCodeSarif(report) : deadCodeText(report);
       } else if (command === 'reach') {
         const opts = parseReachOptions(options);
         outputFile = opts.output;
         await initWasm(null);
         const report = await computeReach(target, opts);
-        payload = opts.format === 'json' ? reachJson(report)
-          : opts.format === 'sarif' ? reachSarif(report) : reachText(report);
+        if (opts.format === 'json') json = reachJsonValue(report);
+        else payload = opts.format === 'sarif' ? reachSarif(report) : reachText(report);
       } else if (command === 'depcalls') {
         const opts = parseDepCallsOptions(options);
         outputFile = opts.output;
         await initWasm(null);
         const report = await computeDepCalls(target, opts);
-        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : depCallsText(report);
+        if (opts.format === 'json') json = report; else payload = depCallsText(report);
       } else {
         const opts = parseEntriesOptions(options);
         outputFile = opts.output;
         await initWasm(null);
         const report = await computeEntries(target, opts);
-        payload = opts.format === 'json' ? JSON.stringify(report, null, 2) : entriesText(report);
+        if (opts.format === 'json') json = report; else payload = entriesText(report);
       }
-      if (outputFile) {
-        writeFileSync(outputFile, payload + '\n');
-        console.error(`Wrote ${outputFile}`);
-      } else {
-        writeStdout(payload + '\n');
-      }
+      if (payload === undefined) writeJson(json, outputFile);
+      else if (outputFile) writeFileSync(outputFile, payload + '\n');
+      else writeStdout(payload + '\n');
+      if (outputFile) console.error(`Wrote ${outputFile}`);
     } catch (e) {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(1); }
       throw e;

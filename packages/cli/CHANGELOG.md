@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changes
 - **`sbom` reads Eclipse/Tycho `*.target` files** and pom `<artifactItem>`s (#1077), through circle-ir's new parsers.
 
+### Fixed
+- **`deadcode` / `reach` / `depcalls` / `entries` JSON reports are written in pieces** (#1079). Each report was one `JSON.stringify(report, null, 2)`. On iDempiere, a `depcalls` run against the 7 ZK jars made a 1.2 GB report, past V8's maximum string length, so it exited 2 with `Invalid string length` after 347 s at 6.47 GB RSS and wrote nothing. `writeJson` now yields the same text, byte for byte, and writes it in ~1 MB pieces: synchronously to `-o <file>`, or to stdout. The same run now exits 0 in 427 s at 3.34 GiB and writes the full 1.2 GB report (37,811 call sites). Text and SARIF output are unchanged.
+
 ### Added
 - **`entries --facts-arrow <dir>`** (Java only; `facts@1`): after the graph is built, also writes the eight fact relations as Arrow IPC files (`<relation>.arrow`) plus `manifest.json` into `<dir>`. The relations are sets (the manifest records `duplicates_dropped` per relation) with no nulls; the manifest's file digests are hex; `flow` carries the def-use edges of every file's DFG on fixed-width `ids@0.1` node ids (stable-ids decision 1a). The report on stdout and `-o` is unchanged. Off unless asked for.
 
