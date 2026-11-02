@@ -4,6 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
+import { runsArgvAsCommand } from './arg-executing-programs.js';
 import { jsHelperReturnsNoParam } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
@@ -969,8 +970,23 @@ function isSafePythonSubprocessCall(call: CallInfo, pattern: SinkPattern, langua
     if (/^shell\s*=\s*True\b/.test(e)) return false;
   }
 
+  // #1072 — the list's argv[0] decides it, as in the JS/Go/Rust/C# gates: a shell, a
+  // program that runs its argv as a command (#1066), or an interpreter given code with
+  // `-c` / `-e` keeps the sink. A non-literal argv[0] keeps today's safe-shape skip.
+  const first = /^\[\s*(?:[rbuRBU]{0,2})(['"])([^'"]*)\1\s*(?:,|\])/.exec(expr0);
+  if (first) {
+    const program = (first[2]!.split(/[\\/]/).pop() ?? first[2]!).toLowerCase().replace(/\.exe$/, '');
+    if (PYTHON_LIST_SHELLS.has(program) || runsArgvAsCommand(program)) return false;
+    if (PYTHON_LIST_INTERPRETERS.test(program) && /,\s*(?:[rbuRBU]{0,2})(['"])-(?:c|e|-eval|-command)\1/.test(expr0)) return false;
+  }
+
   return true;
 }
+
+/** Shells for the Python list-form gate (#1072). */
+const PYTHON_LIST_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ash', 'ksh', 'csh', 'tcsh', 'fish', 'cmd', 'powershell', 'pwsh']);
+/** Interpreters that run code given with `-c` / `-e` (#1072). */
+const PYTHON_LIST_INTERPRETERS = /^(?:python[\d.]*|pypy[\d.]*|perl|ruby|node|nodejs|php|lua|osascript)$/;
 
 /**
  * Check if a Go `exec.Command(...)` / `exec.CommandContext(...)` call is
@@ -1029,6 +1045,7 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   // cognium-dev #218 (CVE-2026-33634) — package-manager install/exec
   // subcommands fetch and execute code from user-controlled package
@@ -1160,6 +1177,7 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   return true;
 }
@@ -1186,7 +1204,7 @@ function isConstNonShellExe(raw: string | null | undefined): boolean {
   if (!/^@?"[^"]*"$/.test(t)) return false;
   const program = (t.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
     .toLowerCase().replace(/\.exe$/, '');
-  return !CSHARP_SHELL_PROGRAMS.has(program);
+  return !CSHARP_SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
 }
 
 // Extract the executable literal from a `new ProcessStartInfo("exe", …)`
@@ -1600,7 +1618,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
       const stripped = expr.slice(1, -1);
       program = stripped.split('/').pop() ?? stripped;
     }
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   if (
@@ -1615,7 +1633,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
     const receiverText = call.receiver ?? '';
     const program = extractProgram(receiverText);
     if (program === null) return false;
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   return false;

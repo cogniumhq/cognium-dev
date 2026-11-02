@@ -14,6 +14,7 @@
  * Depends on: taint-matcher, constant-propagation
  */
 
+import { runsArgvAsCommand } from '../arg-executing-programs.js';
 import type { TaintSource, TaintSink, TaintSanitizer, TypeInfo, ImportInfo, CallInfo, SourceType, SastFinding, DFG } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import {
@@ -7478,7 +7479,9 @@ function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
  * cannot smuggle shell metacharacters into a separate command.
  *
  * The shell-via-argv form `execFile('sh', ['-c', tainted])` is excluded
- * since `-c` re-enables shell parsing of the subsequent argv slot. A
+ * since `-c` re-enables shell parsing of the subsequent argv slot, and so is
+ * a program that runs its argv as a command (`ssh`, `sudo`, `docker`, …;
+ * cognium-dev#1066). A
  * tainted-program slot `execFile(prog, [arg])` is NOT matched (TP-2
  * control), nor is the single-string `exec("cmd " + arg)` form (TP-1
  * control — `exec` itself spawns a shell regardless).
@@ -7505,6 +7508,9 @@ function findJsArgvFormExecSanitizers(
     const text = lines[i];
     if (!argvExecRe.test(text)) continue;
     if (shellArgvRe.test(text)) continue;
+    // #1066: ssh / sudo / docker / xargs / … run their argv as a command.
+    const prog = /\b(?:execFile|spawn)(?:Sync)?\s*\(\s*(['"`])([^'"`]*)\1/.exec(text);
+    if (prog && runsArgvAsCommand(prog[2]!)) continue;
     sanitizers.push({
       type: 'js_argv_form_exec',
       method: 'execFile',

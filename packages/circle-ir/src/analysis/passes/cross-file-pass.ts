@@ -72,6 +72,7 @@ export class CrossFilePass {
     // --- 1. Cross-file taint flows → TaintPath[] ----------------------------
     const phase1Start = Date.now();
     logger.debug('cross-file: phase 1/4 starting (findCrossFileTaintFlows)');
+    resolver.setSourceLines?.(sourceLines);  // optional: resolver stubs in tests lack it
     const flows = resolver.findCrossFileTaintFlows(budgetExceeded);
     // #366 — phase 1 can now stop mid-walk, so the flag has to be set here
     // too; previously `exceeded` could only become true at a phase boundary.

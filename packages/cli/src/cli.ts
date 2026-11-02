@@ -744,6 +744,34 @@ interface AnalyzeOptions {
    * `AnalyzerOptions.resources` (#591). Directory scans only.
    */
   resources?: ReadonlyMap<string, string>;
+  /**
+   * The npm manifest and lockfile nearest the scan target, forwarded to
+   * circle-ir `AnalyzerOptions.dependencyContext.js` (the js-yaml
+   * deserialization gate reads the installed major from it).
+   */
+  dependencyContext?: { js: { packageJson?: string; packageLock?: string } };
+}
+
+/**
+ * The nearest `package.json` at or above `start`, and the nearest
+ * `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm
+ * workspace keeps its one lockfile at the root). Stops at a `.git` directory
+ * or the filesystem root. Undefined when neither is found.
+ */
+export function nearestNpmManifests(start: string): AnalyzeOptions['dependencyContext'] {
+  const read = (f: string): string | undefined => { try { return readFileSync(f, 'utf-8'); } catch { return undefined; } };
+  let dir = start;
+  let packageJson: string | undefined;
+  let packageLock: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    packageJson ??= read(join(dir, 'package.json'));
+    if (packageJson !== undefined) packageLock ??= read(join(dir, 'package-lock.json')) ?? read(join(dir, 'npm-shrinkwrap.json'));
+    if (packageLock !== undefined || existsSync(join(dir, '.git'))) break;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return packageJson !== undefined || packageLock !== undefined ? { js: { packageJson, packageLock } } : undefined;
 }
 
 async function scanFile(filePath: string, language: string, analyzeOpts?: AnalyzeOptions): Promise<ScanResult> {
@@ -754,6 +782,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       disabledPasses: analyzeOpts?.disabledPasses,
       ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
       ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+      ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
     });
 
     // Security findings from taint flows
@@ -879,6 +908,7 @@ async function scanProject(
     // #591: `*.properties` from the scan set, for passes that resolve config-held values.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+    ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
   });
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
@@ -1224,8 +1254,11 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           ? { projectProfile: forcedProfile }
           : {}),
     };
+    const isDir = (await stat(absPath)).isDirectory();
+    const npm = nearestNpmManifests(isDir ? absPath : dirname(absPath));
+    if (npm) analyzeOpts.dependencyContext = npm;
 
-    if ((await stat(absPath)).isDirectory()) {
+    if (isDir) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
       analyzeOpts.resources = await collectResourceFiles(absPath, {
         excludeTests: options.excludeTests,
