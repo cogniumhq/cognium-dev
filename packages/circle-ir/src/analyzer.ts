@@ -89,7 +89,7 @@ import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
 import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
-import { applyConstantCallerGate } from './analysis/constant-caller-gate.js';
+import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
@@ -1479,6 +1479,13 @@ export async function analyze(
     coalescedFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
+
+  // cognium-dev #913 S5 — per-file OWASP map helpers (getTheValue + map shuffle).
+  if (language === 'java' && (taint.flows ?? []).some(f => f.source_type === 'plugin_param')) {
+    applySingleFileJavaMapConstantCallerGate(filePath, {
+      meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
+    }, code.split('\n'));
+  }
 
   return {
     meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
