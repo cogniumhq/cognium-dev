@@ -1992,6 +1992,14 @@ function detectCollectionFlows(
     callsByLine.set(call.location.line, existing);
   }
 
+  const javaDerivedVars =
+    typeof code === 'string'
+      ? buildJavaTaintedVars(
+          code,
+          new Set(sources.map(s => s.variable).filter((v): v is string => Boolean(v))),
+        )
+      : undefined;
+
   for (const sink of sinks) {
     if (unreachableLines.has(sink.line)) continue;
     const callsAtSink = callsByLine.get(sink.line) ?? [];
@@ -2046,7 +2054,7 @@ function detectCollectionFlows(
             // last-resort fallback to preserve existing behaviour when no
             // better source is available.
             const source = pickScopedSource(
-              sources, sink.line, call.in_method ?? null, types, varName, code, 'java',
+              sources, sink.line, call.in_method ?? null, types, varName, code, 'java', true, javaDerivedVars,
             );
             if (source) {
               // cognium-dev #101 (Sprint 14 Phase E): when the picked source
@@ -2122,7 +2130,7 @@ function detectCollectionFlows(
               {
                 // Sprint 13 #70 — same method-scoped picker as above.
                 const source = pickScopedSource(
-                  sources, sink.line, call.in_method ?? null, types, collectionVar, code, 'java',
+                  sources, sink.line, call.in_method ?? null, types, collectionVar, code, 'java', false, javaDerivedVars,
                 );
                 if (source) {
                   // cognium-dev #101 (Sprint 14 Phase E): cross-method
@@ -4708,6 +4716,9 @@ function pickScopedSource(
   taintedVar: string | undefined,
   code?: string,
   language?: string,
+  /** When true (#914 S5), do not pair a sink arg with an unrelated preceding source. */
+  strictUnrelatedSourceGuard = false,
+  javaDerivedVars?: Map<string, number>,
 ): CircleIR['taint']['sources'][0] | undefined {
   if (sources.length === 0) return undefined;
 
@@ -4738,32 +4749,28 @@ function pickScopedSource(
   // decoy source in the same method (alias entries can still carry a stale anchor).
   if (
     taintedVar &&
+    strictUnrelatedSourceGuard &&
     typeof code === 'string' &&
-    (language === 'java' || language === 'csharp')
+    (language === 'java' || language === 'csharp') &&
+    javaDerivedVars?.has(taintedVar)
   ) {
-    const seedVars = new Set(
-      sources.map(s => s.variable).filter((v): v is string => Boolean(v)),
-    );
-    const derived = buildJavaTaintedVars(code, seedVars);
-    if (derived.has(taintedVar)) {
-      const owner = methodName ?? methodAt(sinkLine);
-      const realSourceByVar = new Map<string, CircleIR['taint']['sources'][0]>();
-      for (const s of sources) {
-        if (!s.variable) continue;
-        const sOwner = s.in_method ?? methodAt(s.line);
-        if (owner && sOwner !== owner) continue;
-        const prev = realSourceByVar.get(s.variable);
-        if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
-      }
-      const referenced = resolveJavaDerivedAnchor(
-        taintedVar,
-        derived,
-        realSourceByVar,
-        code.split('\n'),
-        new Set(),
-      );
-      if (referenced && referenced.line < sinkLine) return referenced;
+    const owner = methodName ?? methodAt(sinkLine);
+    const realSourceByVar = new Map<string, CircleIR['taint']['sources'][0]>();
+    for (const s of sources) {
+      if (!s.variable) continue;
+      const sOwner = s.in_method ?? methodAt(s.line);
+      if (owner && sOwner !== owner) continue;
+      const prev = realSourceByVar.get(s.variable);
+      if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
     }
+    const referenced = resolveJavaDerivedAnchor(
+      taintedVar,
+      javaDerivedVars,
+      realSourceByVar,
+      code.split('\n'),
+      new Set(),
+    );
+    if (referenced && referenced.line < sinkLine) return referenced;
   }
 
   // 1. Variable match (preferred — even across methods, falls within the
@@ -4777,8 +4784,16 @@ function pickScopedSource(
   // When the sink arg is a named tainted var, do not attribute it to an unrelated
   // source (cognium-dev #914 — OWASP BenchmarkTest01791: `bar` at exec paired with
   // `osName` from System.getProperty because it was the closest preceding source in doPost).
+  // Collection/array flows pass a container name (e.g. `m`) that will not match any
+  // source.variable — they keep the scoped / last-resort fallback (strict guard off).
+  // Loop/`StringBuilder` locals often have no stamped source; only apply the guard when
+  // at least one source carries this variable name on a line before the sink.
+  const hasPrecedingNamedSource = Boolean(
+    taintedVar && sources.some(s => s.variable === taintedVar && s.line < sinkLine),
+  );
+  const guardUnrelatedSources = strictUnrelatedSourceGuard && hasPrecedingNamedSource;
   const matchesTaintedVar = (s: CircleIR['taint']['sources'][0]): boolean =>
-    !taintedVar || s.variable === taintedVar;
+    !guardUnrelatedSources || !taintedVar || s.variable === taintedVar;
 
   // 2. Scope match — restrict to sources whose line is inside the same
   //    method as the sink.
@@ -4810,6 +4825,6 @@ function pickScopedSource(
 
   // 4. Last resort — preserve historical behaviour when there's nothing
   //    preceding the sink (e.g. synthetic same-line sources).
-  if (taintedVar) return undefined;
+  if (guardUnrelatedSources && taintedVar) return undefined;
   return sources[0];
 }
