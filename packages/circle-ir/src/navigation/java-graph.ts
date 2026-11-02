@@ -203,6 +203,8 @@ class JavaGraphBuilder {
   readonly references: ReferenceEdge[] = [];
   readonly unresolved: UnresolvedCall[] = [];
   readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
+  /** Registrations with a `bound`, filled with `boundTypes` once the type hierarchy is known (#1092). */
+  readonly pendingBounds: UnresolvedRegistration[] = [];
   readonly typeOnly = new Set<string>();
   private readonly typesBySimple = new Map<string, StableDecl[]>();
   private readonly typesByQname = new Map<string, StableDecl>();
@@ -385,11 +387,28 @@ class JavaGraphBuilder {
     const args = node.childForFieldName('arguments');
     const first = args ? namedChildren(args)[0] : undefined;
     const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
-    if (first?.type !== 'string_literal') {
-      this.unresolvedRegistrations.push({ site, reason: 'handler-unresolved', evidence: 'Class.forName with a computed name' });
+    if (first?.type === 'string_literal') {
+      this.reflect(stringsOf(first)[0] ?? '', ctx.path, 'Class.forName');
       return;
     }
-    this.reflect(stringsOf(first)[0] ?? '', ctx.path, 'Class.forName');
+    // #1092: a local (or static final field) whose every assignment is a string literal
+    // is the literal case: each name is a reflection entry, a name outside the tree nothing.
+    const method = enclosingBody(node);
+    if (first?.type === 'identifier' && method) {
+      const names = constantStrings(method, first.text);
+      if (names) {
+        for (const n of names) this.reflect(n, ctx.path, 'Class.forName (local constant)');
+        return;
+      }
+    }
+    const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
+    const bound = method ? boundTypeNames(method.text) : [];
+    const reg: UnresolvedRegistration = { site, reason: 'handler-unresolved', evidence: 'Class.forName with a computed name', from };
+    if (bound.length > 0) {
+      reg.bound = bound.map(b => resolveTypeName(b, ctx));
+      this.pendingBounds.push(reg);
+    }
+    this.unresolvedRegistrations.push(reg);
   }
 
   reflect(fqn: string, file: string, evidence: string): void {
@@ -442,6 +461,30 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
 
     // Call edges from the navigation index, keyed to declaration ids.
     const index = buildNavigationIndex(irs.map(f => ({ path: f.path, language: 'java' as const, ir: f.ir, source: f.code })));
+    // #1092: a bound names the in-tree types that are it or extend / implement it.
+    if (b.pendingBounds.length > 0) {
+      const typeIdByFqn = new Map<string, string>();
+      for (const c of ctxs) for (const d of c.ids.decls) {
+        if (d.kind !== 'type') continue;
+        const [pkg, path] = d.qualified_name.split(':');
+        typeIdByFqn.set(pkg && pkg !== '<default>' ? `${pkg}.${path}` : path, d.id);
+      }
+      const pkgByFile = new Map(ctxs.map(c => [c.path, c.imports.pkg]));
+      for (const reg of b.pendingBounds) {
+        const ids = new Set<string>();
+        for (const name of reg.bound ?? []) {
+          const pkg = pkgByFile.get(reg.site.file) ?? '';
+          const cands = name.includes('.') ? [name] : [pkg ? `${pkg}.${name}` : name, `java.lang.${name}`, name];
+          for (const c of cands) {
+            for (const fqn of [c, ...index.subtypesOf(c)]) {
+              const id = typeIdByFqn.get(fqn) ?? typeIdByFqn.get(fqn.replace(/\$/g, '.'));
+              if (id) ids.add(id);
+            }
+          }
+        }
+        reg.boundTypes = [...ids].sort();
+      }
+    }
     const byPath = new Map(ctxs.map(c => [c.path, c]));
     const keyOf = (t: IndexedTarget): StableDecl | undefined => {
       const ctx = byPath.get(t.file);
@@ -519,3 +562,74 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     for (const t of trees) disposeTree(t);
   }
 }
+
+/** The method, constructor, initializer or lambda body enclosing `node` (#1092). */
+function enclosingBody(node: Node): Node | null {
+  let n: Node | null = node.parent;
+  while (n && !['method_declaration', 'constructor_declaration', 'static_initializer', 'lambda_expression', 'class_body'].includes(n.type)) n = n.parent;
+  return n && n.type !== 'class_body' ? n : null;
+}
+
+/**
+ * The string literals `name` can hold at a `Class.forName(name)` in `body` (#1092): every
+ * local declaration and assignment of it in the body is a string literal, or it is a
+ * `static final String` field of the enclosing class with a literal value. Null when any
+ * assignment is not a literal, or nothing assigns it.
+ */
+function constantStrings(body: Node, name: string): string[] | null {
+  const values: string[] = [];
+  let other = false;
+  const visit = (n: Node): void => {
+    if (n.type === 'variable_declarator' && n.childForFieldName('name')?.text === name) {
+      const v = n.childForFieldName('value');
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v) other = true;
+    } else if (n.type === 'assignment_expression' && n.childForFieldName('left')?.text === name) {
+      const v = n.childForFieldName('right');
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else other = true;
+    } else if ((n.type === 'formal_parameter' || n.type === 'catch_formal_parameter') && n.childForFieldName('name')?.text === name) {
+      other = true;
+    }
+    for (const c of namedChildren(n)) visit(c);
+  };
+  visit(body);
+  if (other) return null;
+  if (values.length > 0) return values;
+  // a static final String field of the enclosing class
+  let cls: Node | null = body.parent;
+  while (cls && cls.type !== 'class_body') cls = cls.parent;
+  for (const f of cls ? namedChildren(cls).filter(m => m.type === 'field_declaration') : []) {
+    const mods = f.children.find(ch => ch.type === 'modifiers')?.text ?? '';
+    if (!/\bstatic\b/.test(mods) || !/\bfinal\b/.test(mods)) continue;
+    for (const d of namedChildren(f).filter(x => x.type === 'variable_declarator')) {
+      if (d.childForFieldName('name')?.text !== name) continue;
+      const v = d.childForFieldName('value');
+      return v?.type === 'string_literal' ? stringsOf(v) : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The type a reflectively loaded class must be, from how the method uses it (#1092): a cast
+ * of `newInstance()` (directly or through `getDeclaredConstructor` / `getConstructor`),
+ * `asSubclass(T.class)`, `instanceof T`, `T.class.isAssignableFrom(…)`, or a
+ * `getSuperclass() == T.class` walk. Names as written, generics stripped.
+ */
+function boundTypeNames(text: string): string[] {
+  const out = new Set<string>();
+  const add = (t: string | undefined) => { const c = (t ?? '').replace(/<.*$/s, '').trim(); if (/^[A-Za-z_$][\w$.]*$/.test(c) && c !== 'Object' && !c.endsWith('.class')) out.add(c); };
+  for (const m of text.matchAll(/\(\s*([A-Z][\w$.]*(?:<[^()]*>)?)\s*\)\s*[\w$.\s]*?(?:\.\s*getDeclaredConstructor\s*\([^)]*\)|\.\s*getConstructor\s*\([^)]*\))?\s*\.\s*newInstance\s*\(/g)) add(m[1]);
+  for (const m of text.matchAll(/\(\s*([A-Z][\w$.]*(?:<[^()]*>)?)\s*\)\s*Class\s*\.\s*forName\s*\([^)]*\)\s*\.\s*(?:getDeclaredConstructor|getConstructor)\s*\([^)]*\)\s*\.\s*newInstance\s*\(/g)) add(m[1]);
+  for (const m of text.matchAll(/\.\s*asSubclass\s*\(\s*([\w$.]+)\s*\.\s*class\s*\)/g)) add(m[1]);
+  for (const m of text.matchAll(/\binstanceof\s+([A-Z][\w$.]*)/g)) add(m[1]);
+  for (const m of text.matchAll(/\b([\w$.]+)\s*\.\s*class\s*\.\s*isAssignableFrom\s*\(/g)) add(m[1]);
+  for (const m of text.matchAll(/getSuperclass\s*\(\s*\)\s*==\s*([\w$.]+)\s*\.\s*class/g)) add(m[1]);
+  return [...out].sort();
+}
+
+/** A type name as written, qualified through the file's explicit imports when it is simple. */
+function resolveTypeName(name: string, ctx: FileCtx): string {
+  if (name.includes('.')) return name;
+  return ctx.imports.explicit.get(name) ? `${ctx.imports.explicit.get(name)}.${name}` : name;
+}
+

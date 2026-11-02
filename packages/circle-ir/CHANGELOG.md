@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **java-graph: `Class.forName(<computed>)` registrations no longer name every declaration** (#1092). Removal reach and dead code attached each `handler-unresolved` registration to every declaration without a strong path; on iDempiere, 26 sites held 25,707 of 39,869 may-be-live declarations. Three changes:
+  - **Scope:** a registration carries `from`, the body that holds the site, and counts only when that body is reached, the rule unresolved calls already follow.
+  - **Local constant:** a local, or a `static final String` field, whose every assignment is a string literal is the literal case. Each name becomes a `reflection` entry, and a name outside the tree gives nothing.
+  - **Type bound:** when the method casts the new instance (`(T) c.newInstance()`, also through `getDeclaredConstructor` / `getConstructor`), or uses `asSubclass(T.class)`, `instanceof T`, `T.class.isAssignableFrom(c)` or `getSuperclass() == T.class`, the registration carries `bound` and `boundTypes` (T and its in-tree subtypes, from the navigation index's new `subtypesOf`). It then names only declarations of those types; an external `T` with no in-tree subtype names nothing.
+  - An unbound, reached registration behaves as before.
+  - Soundness note, for review: `Class.forName` initialises whatever it names even when the cast later fails, so the bound treats a non-T name at a T-bound site as a configuration error. The bound is kept on the site as evidence.
+  - **Answers change:** fewer may-be-live declarations; strong and weak paths are unchanged.
 - **Java: OWASP safe `Runtime.exec(cmd + bar)` no longer pairs `bar` with a later unrelated `System.getProperty` env_input (#914 S6).** Derived-alias seeding no longer copies an env_input anchor onto an earlier local (BenchmarkTest01791).
 - **SBOM: `maven-dependency-plugin` `<artifactItem>`s and Tycho `*.target` Maven locations are declarations** (#1077). On an Eclipse/Tycho project the third-party versions live there, not in pom `<dependency>` rows, so the census found none (iDempiere: 0 pom rows).
   - `parseMavenDependencies` now also reads `<artifactItem>`s as `required`. A `${property}` version is resolved from the same pom's `<properties>`; a parent pom's property stays `unknown`.
