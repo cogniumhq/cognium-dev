@@ -686,11 +686,13 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
-      // cognium-dev#917 S4 — pass-through helpers must not reach trust_boundary when
+      // cognium-dev#917 S4 / #913 S4 — pass-through helpers must not reach sinks when
       // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
+      // sql_injection: instance inner-class helpers only (#913); static helpers can still carry param (02625).
       if (
         fileCode &&
-        sink.type === 'trust_boundary' &&
+        (sink.type === 'trust_boundary' ||
+          (sink.type === 'sql_injection' && javaHelperCallHasInstanceReceiver(graph, edge))) &&
         calleeSources.every(
           s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
         ) &&
@@ -1053,6 +1055,17 @@ function enclosingMethodName(types: TypeInfo[], line: number): string | null {
  * caller argument fed only by SeparateClassRequest.getTheValue (OWASP safe
  * BenchmarkTest01802), not getTheParameter or other http-tainted inputs.
  */
+function javaHelperCallHasInstanceReceiver(
+  graph: PassContext['graph'],
+  edge: import('../interprocedural.js').CallEdge,
+): boolean {
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  const recv = callSite?.receiver?.trim();
+  return !!recv;
+}
+
 function skipPassThroughTrustBoundaryWithoutHttpArg(
   graph: PassContext['graph'],
   fileCode: string,
