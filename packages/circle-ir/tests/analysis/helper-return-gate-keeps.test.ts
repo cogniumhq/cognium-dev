@@ -130,4 +130,36 @@ describe('helper-return gate keeps live flows', () => {
     const r = await analyze(servlet(helper, CMD), 'Bench.java', 'java');
     expect(FLOWS(r, 'command_injection')).toEqual([]);
   });
+  it('a value stored into an array the helper returns is still the returned taint (plexus-utils CWE-78)', async () => {
+    const helper = `  class Test {
+    String[] doSomething(HttpServletRequest request, String param) throws Exception {
+      String[] vars = new String[1];
+      int i = 0;
+      vars[i] = "X=" + param;
+      return vars;
+    }
+  }`;
+    const r = await analyze(
+      servlet(helper, 'Runtime.getRuntime().exec(bar);', 'new Test().doSomething(request, param)').replace('String bar =', 'String[] bar ='),
+      'Bench.java',
+      'java',
+    );
+    expect(FLOWS(r, 'command_injection').length).toBeGreaterThan(0);
+  });
+
+  it('an array the helper fills with constants only is still gated', async () => {
+    const helper = `  class Test {
+    String[] doSomething(HttpServletRequest request, String param) throws Exception {
+      String[] vars = new String[1];
+      vars[0] = "X=1";
+      return vars;
+    }
+  }`;
+    const r = await analyze(
+      servlet(helper, 'Runtime.getRuntime().exec(bar);').replace('String bar =', 'String[] bar ='),
+      'Bench.java',
+      'java',
+    );
+    expect(FLOWS(r, 'command_injection')).toHaveLength(0);
+  });
 });

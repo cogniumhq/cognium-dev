@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { analyze, initAnalyzer } from '../../src/analyzer.js';
-import { assignNodeIds, deriveStableIds, type StableIdFile } from '../../src/stable-ids/index.js';
+import { assignNodeIds, deriveStableIds, locateNodes, nodeIdBytes, nodeIdBytesOfPrinted, printedNodeId, NodeIdWriter, digest128Bytes, base32, type StableIdFile } from '../../src/stable-ids/index.js';
 import type { CircleIR } from '../../src/types/index.js';
 
 beforeAll(async () => {
@@ -87,5 +87,55 @@ describe('assignNodeIds', () => {
     expect(n.calls).toEqual(['x.h/c0', null, null]);
     expect(n.dfg_defs).toEqual([null]);
     expect(n.cfg_blocks).toEqual([]);
+  });
+});
+
+describe('fixed-width node ids (stable-ids decision 1a)', () => {
+  const body = 'a'.repeat(26) + '.' + 'b'.repeat(26);
+
+  it('are digest128 over ids@0.1 · node · body_id · kind · ordinal, 16 bytes, a function of the printed id', () => {
+    const bytes = nodeIdBytes(body, 'use', 7);
+    expect(bytes.length).toBe(16);
+    expect(bytes).toEqual(digest128Bytes(['ids@0.1', 'node', body, 'use', '7']));
+    expect(printedNodeId(body, 'use', 7)).toBe(`${body}/u7`);
+    expect(nodeIdBytesOfPrinted(`${body}/u7`)).toEqual(bytes);
+    expect(nodeIdBytesOfPrinted(`${body}/d0`)).toEqual(nodeIdBytes(body, 'def', 0));
+    expect(nodeIdBytesOfPrinted(`${body}/b12`)).toEqual(nodeIdBytes(body, 'block', 12));
+    expect(nodeIdBytesOfPrinted(`${body}/c3`)).toEqual(nodeIdBytes(body, 'call', 3));
+    // Distinct in every part.
+    const all = [nodeIdBytes(body, 'def', 7), nodeIdBytes(body, 'use', 8), nodeIdBytes(body.replace('a', 'c'), 'use', 7), bytes].map(b => base32(b));
+    expect(new Set(all).size).toBe(4);
+    for (const bad of ['x', `${body}/z1`, `${body}/u`, `${body}/u01`, `${body}/u-1`, `${body}/u1.5`]) {
+      expect(() => nodeIdBytesOfPrinted(bad)).toThrow(/printed node id/);
+    }
+  });
+
+  it('NodeIdWriter writes the same bytes as nodeIdBytes for every ordinal shape', () => {
+    const w = new NodeIdWriter();
+    const out = new Uint8Array(16 * 6);
+    const ordinals = [0, 1, 9, 10, 1234, 2 ** 31 - 1];
+    w.forBody(body, 'def');
+    ordinals.forEach((n, i) => w.write(n, out, i * 16));
+    ordinals.forEach((n, i) => expect(out.subarray(i * 16, i * 16 + 16), String(n)).toEqual(nodeIdBytes(body, 'def', n)));
+    // Switching body and kind re-encodes the prefix.
+    const other = 'c'.repeat(26) + '.' + 'd'.repeat(26);
+    w.forBody(other, 'use');
+    w.write(5, out, 0);
+    expect(out.subarray(0, 16)).toEqual(nodeIdBytes(other, 'use', 5));
+    w.forBody(body, 'def');
+    w.write(5, out, 0);
+    expect(out.subarray(0, 16)).toEqual(nodeIdBytes(body, 'def', 5));
+    expect(() => w.forBody('x'.repeat(300), 'def')).toThrow(RangeError);
+  });
+
+  it('locateNodes gives the body and per-body ordinal that assignNodeIds prints', async () => {
+    const { ir, ids } = await both(A + B);
+    const n = assignNodeIds(ids, ir);
+    const located = locateNodes(ids, ir.dfg.uses, (u, at) => at(u.line, u.column));
+    expect(located.length).toBe(ir.dfg.uses.length);
+    located.forEach((l, i) => {
+      expect(l).not.toBeNull();
+      expect(printedNodeId((l as NonNullable<typeof l>).decl.body_id, 'use', (l as NonNullable<typeof l>).ordinal)).toBe(n.dfg_uses[i]);
+    });
   });
 });

@@ -1992,6 +1992,14 @@ function detectCollectionFlows(
     callsByLine.set(call.location.line, existing);
   }
 
+  const javaDerivedVars =
+    typeof code === 'string'
+      ? buildJavaTaintedVars(
+          code,
+          new Set(sources.map(s => s.variable).filter((v): v is string => Boolean(v))),
+        )
+      : undefined;
+
   for (const sink of sinks) {
     if (unreachableLines.has(sink.line)) continue;
     const callsAtSink = callsByLine.get(sink.line) ?? [];
@@ -2045,7 +2053,9 @@ function detectCollectionFlows(
             // primary; method-scope is the tiebreaker; sources[0] is the
             // last-resort fallback to preserve existing behaviour when no
             // better source is available.
-            const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, varName);
+            const source = pickScopedSource(
+              sources, sink.line, call.in_method ?? null, types, varName, code, 'java', true, javaDerivedVars,
+            );
             if (source) {
               // cognium-dev #101 (Sprint 14 Phase E): when the picked source
               // has a binding variable that differs from the sink arg's
@@ -2119,7 +2129,9 @@ function detectCollectionFlows(
               if (!collectionTainted) continue;
               {
                 // Sprint 13 #70 — same method-scoped picker as above.
-                const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, collectionVar);
+                const source = pickScopedSource(
+                  sources, sink.line, call.in_method ?? null, types, collectionVar, code, 'java', false, javaDerivedVars,
+                );
                 if (source) {
                   // cognium-dev #101 (Sprint 14 Phase E): cross-method
                   // bleed guard. See the analogous guard in the
@@ -2197,7 +2209,9 @@ function detectArrayElementFlows(
             const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
-              const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, base);
+              const source = pickScopedSource(
+                sources, sink.line, call.in_method ?? null, types, base,
+              );
               if (source) {
                 flows.push({
                   source_line: source.line, sink_line: sink.line,
@@ -4637,6 +4651,20 @@ function detectExpressionScanFlows(
       ) {
         continue;
       }
+      // cognium-dev #914 — OWASP `Runtime.exec(args, env, new File(System.getProperty(...)))`:
+      // the working-directory argument is not shell command input; inline colocation
+      // would otherwise pair `env_input` getProperty with `command_injection` exec.
+      if (
+        source.type === 'env_input' &&
+        sink.type === 'command_injection' &&
+        sink.method === 'exec' &&
+        /System\s*\.\s*getProperty\s*\(/.test(source.location ?? '')
+      ) {
+        const sinkCode = (sink as { code?: string }).code ?? '';
+        if (/new\s+(?:java\.io\.)?File\s*\(\s*System\s*\.\s*getProperty\s*\(/.test(sinkCode)) {
+          continue;
+        }
+      }
       if (flows.some(f =>
         f.source_line === source.line &&
         f.sink_line === sink.line &&
@@ -4686,6 +4714,11 @@ function pickScopedSource(
   methodName: string | null,
   types: CircleIR['types'] | undefined,
   taintedVar: string | undefined,
+  code?: string,
+  language?: string,
+  /** When true (#914 S5), do not pair a sink arg with an unrelated preceding source. */
+  strictUnrelatedSourceGuard = false,
+  javaDerivedVars?: Map<string, number>,
 ): CircleIR['taint']['sources'][0] | undefined {
   if (sources.length === 0) return undefined;
 
@@ -4702,6 +4735,44 @@ function pickScopedSource(
     return best;
   };
 
+  const methodAt = (line: number): string | null => {
+    if (!types) return null;
+    for (const t of types) {
+      for (const m of t.methods) {
+        if (line >= m.start_line && line <= m.end_line) return m.name;
+      }
+    }
+    return null;
+  };
+
+  // cognium-dev#515 — derived locals must credit the RHS read, not an earlier
+  // decoy source in the same method (alias entries can still carry a stale anchor).
+  if (
+    taintedVar &&
+    strictUnrelatedSourceGuard &&
+    typeof code === 'string' &&
+    (language === 'java' || language === 'csharp') &&
+    javaDerivedVars?.has(taintedVar)
+  ) {
+    const owner = methodName ?? methodAt(sinkLine);
+    const realSourceByVar = new Map<string, CircleIR['taint']['sources'][0]>();
+    for (const s of sources) {
+      if (!s.variable) continue;
+      const sOwner = s.in_method ?? methodAt(s.line);
+      if (owner && sOwner !== owner) continue;
+      const prev = realSourceByVar.get(s.variable);
+      if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
+    }
+    const referenced = resolveJavaDerivedAnchor(
+      taintedVar,
+      javaDerivedVars,
+      realSourceByVar,
+      code.split('\n'),
+      new Set(),
+    );
+    if (referenced && referenced.line < sinkLine) return referenced;
+  }
+
   // 1. Variable match (preferred — even across methods, falls within the
   //    method scope check below for the tiebreak).
   if (taintedVar) {
@@ -4709,6 +4780,20 @@ function pickScopedSource(
     const pick = closestPreceding(byVar);
     if (pick) return pick;
   }
+
+  // When the sink arg is a named tainted var, do not attribute it to an unrelated
+  // source (cognium-dev #914 — OWASP BenchmarkTest01791: `bar` at exec paired with
+  // `osName` from System.getProperty because it was the closest preceding source in doPost).
+  // Collection/array flows pass a container name (e.g. `m`) that will not match any
+  // source.variable — they keep the scoped / last-resort fallback (strict guard off).
+  // Loop/`StringBuilder` locals often have no stamped source; only apply the guard when
+  // at least one source carries this variable name on a line before the sink.
+  const hasPrecedingNamedSource = Boolean(
+    taintedVar && sources.some(s => s.variable === taintedVar && s.line < sinkLine),
+  );
+  const guardUnrelatedSources = strictUnrelatedSourceGuard && hasPrecedingNamedSource;
+  const matchesTaintedVar = (s: CircleIR['taint']['sources'][0]): boolean =>
+    !guardUnrelatedSources || !taintedVar || s.variable === taintedVar;
 
   // 2. Scope match — restrict to sources whose line is inside the same
   //    method as the sink.
@@ -4726,17 +4811,20 @@ function pickScopedSource(
       if (methodStart > 0) break;
     }
     if (methodStart > 0 && methodEnd >= methodStart) {
-      const inScope = sources.filter(s => s.line >= methodStart && s.line <= methodEnd);
+      const inScope = sources.filter(
+        s => s.line >= methodStart && s.line <= methodEnd && matchesTaintedVar(s),
+      );
       const pick = closestPreceding(inScope);
       if (pick) return pick;
     }
   }
 
   // 3. Closest preceding source globally.
-  const globalPick = closestPreceding(sources);
+  const globalPick = closestPreceding(sources.filter(matchesTaintedVar));
   if (globalPick) return globalPick;
 
   // 4. Last resort — preserve historical behaviour when there's nothing
   //    preceding the sink (e.g. synthetic same-line sources).
+  if (guardUnrelatedSources && taintedVar) return undefined;
   return sources[0];
 }

@@ -1,5 +1,6 @@
 /**
- * Graph facts on the command line: `deadcode`, `reach` and `entries`.
+ * Graph facts on the command line: `deadcode`, `reach`, `entries` and
+ * `depcalls` (calls into one Maven artifact, `dependency-calls@0.1`, E02).
  *
  * The engine's graph facts over stable ids (`dead-code@0.1`,
  * `removal-reach@0.1`) were reachable only through the MCP server's
@@ -14,10 +15,10 @@
  * only after stdout drains (#1001).
  */
 
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { join, relative, resolve, sep } from 'path';
 import {
   buildGoGraph,
@@ -25,13 +26,17 @@ import {
   buildPythonGraph,
   buildTsCallGraph,
   deadCode,
+  dependencyCalls,
   deriveStableIds,
+  mavenArtifact,
   entryIndexDigest,
   partialFileDetails,
   removalReach,
   type DeadCodeFact,
   type DeadCodeResult,
+  type DependencyCallsResult,
   type EntryKind,
+  type FactsArrow,
   type PartialFile,
   type ReachInput,
   type RemovalReachResult,
@@ -116,6 +121,21 @@ export interface EntriesCliOptions {
   language?: GraphLanguage;
   format: 'text' | 'json';
   output?: string;
+  /**
+   * Directory for the `facts@1` relations (proposed; graph-store plan T2) as
+   * Arrow IPC files plus `manifest.json`, written after the graph is built.
+   * Java only. The report is the same with or without it.
+   */
+  factsArrow?: string;
+}
+
+export interface DepCallsCliOptions {
+  /** `groupId:artifactId[:version]`. */
+  artifact: string;
+  jar?: string;
+  mavenRepo?: string;
+  format: 'text' | 'json';
+  output?: string;
 }
 
 type Raw = Record<string, string | boolean | undefined>;
@@ -151,10 +171,16 @@ export function parseReachOptions(o: Raw): ReachCliOptions {
 }
 
 export function parseEntriesOptions(o: Raw): EntriesCliOptions {
+  const language = parseGraphLanguage(o.language ?? o.l);
+  const factsArrow = optionalString('facts-arrow', o['facts-arrow']);
+  if (factsArrow !== undefined && language !== undefined && language !== 'java') {
+    throw new UsageError('--facts-arrow is available for --language java only');
+  }
   return {
-    language: parseGraphLanguage(o.language ?? o.l),
+    language,
     format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
     output: optionalString('output', o.output ?? o.o),
+    ...(factsArrow !== undefined ? { factsArrow } : {}),
   };
 }
 
@@ -282,8 +308,13 @@ export function pickLanguage(roots: readonly string[], asked?: GraphLanguage): G
 }
 
 /** The engine's reach input for one tree: its call graph with the entry index. */
-export async function buildGraph(root: string, language: GraphLanguage): Promise<ReachInput> {
-  if (language === 'java') return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root) });
+export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow' } = {}): Promise<ReachInput & { facts?: FactsArrow }> {
+  if (language === 'java') {
+    const facts = graphOptions.emitFacts === 'arrow'
+      ? { emitFacts: 'arrow' as const, facts: { engine: `circle-ir@${engineIdentity().version}` } }
+      : {};
+    return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root), ...facts });
+  }
   if (language === 'python') return buildPythonGraph(sources(root, 'python'), { consoleScripts: consoleScripts(root) });
   if (language === 'go') {
     const modulePath = goModulePath(root);
@@ -447,10 +478,31 @@ export interface EntriesReport {
   summary: Record<string, number>;
 }
 
+/** `facts@1` as the files the store reads: `<dir>/<relation>.arrow` and `<dir>/manifest.json`. */
+export function writeFactsArrow(dir: string, facts: FactsArrow): string[] {
+  mkdirSync(dir, { recursive: true });
+  const written: string[] = [];
+  for (const [name, bytes] of Object.entries(facts.relations)) {
+    const file = join(dir, `${name}.arrow`);
+    writeFileSync(file, bytes);
+    written.push(file);
+  }
+  const manifest = join(dir, 'manifest.json');
+  writeFileSync(manifest, JSON.stringify(facts.manifest, null, 2) + '\n');
+  written.push(manifest);
+  return written;
+}
+
 export async function computeEntries(path: string, opts: EntriesCliOptions): Promise<EntriesReport> {
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
-  const graph = await buildGraph(root, language);
+  if (opts.factsArrow !== undefined && language !== 'java') throw new UsageError('--facts-arrow is available for Java trees only');
+  const graph = await buildGraph(root, language, opts.factsArrow !== undefined ? { emitFacts: 'arrow' } : {});
+  if (opts.factsArrow !== undefined) {
+    if (!graph.facts) throw new Error('facts@1: the engine returned no facts');
+    writeFactsArrow(opts.factsArrow, graph.facts);
+    console.error(`Wrote facts@1 (${Object.keys(graph.facts.relations).length} relations + manifest.json) to ${opts.factsArrow}`);
+  }
   const summary: Record<string, number> = {};
   for (const e of graph.entries) summary[e.kind] = (summary[e.kind] ?? 0) + 1;
   return {
@@ -464,6 +516,85 @@ export async function computeEntries(path: string, opts: EntriesCliOptions): Pro
     partialFiles: partialFileDetails(graph.partial, graph.files),
     summary,
   };
+}
+
+// ─── depcalls ────────────────────────────────────────────────────────────────
+
+export function parseDepCallsOptions(o: Raw): DepCallsCliOptions {
+  const artifact = o.artifact;
+  if (artifact === undefined || typeof artifact !== 'string' || artifact.trim() === '') {
+    throw new UsageError('depcalls requires --artifact <groupId:artifactId[:version]>');
+  }
+  mavenArtifactOrUsage(artifact);
+  if (o.language !== undefined || o.l !== undefined) {
+    if (parseGraphLanguage(o.language ?? o.l) !== 'java') throw new UsageError('depcalls supports --language java only');
+  }
+  return {
+    artifact: artifact.trim(),
+    jar: optionalString('jar', o.jar),
+    mavenRepo: optionalString('maven-repo', o['maven-repo']),
+    format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
+    output: optionalString('output', o.output ?? o.o),
+  };
+}
+
+function mavenArtifactOrUsage(coordinate: string): string {
+  try {
+    return mavenArtifact(coordinate);
+  } catch {
+    throw new UsageError(`--artifact '${coordinate}' is not groupId:artifactId[:version]`);
+  }
+}
+
+/** `<repo>/<group path>/<artifact>/<version>/<artifact>-<version>.jar` for a versioned coordinate. */
+export function mavenJarPath(coordinate: string, repo: string): string | null {
+  const [group, artifact, version] = coordinate.trim().split(':');
+  if (!group || !artifact || !version) return null;
+  return join(repo, ...group.split('.'), artifact, version, `${artifact}-${version}.jar`);
+}
+
+export interface DepCallsReport extends DependencyCallsResult {
+  root: string;
+  language: 'java';
+  engine: { package: 'circle-ir'; version: string };
+  /** The jar the packages were read from; absent when the fallback table decided. */
+  jar?: string;
+}
+
+export async function computeDepCalls(path: string, opts: DepCallsCliOptions): Promise<DepCallsReport> {
+  const root = checkDirectory(path);
+  const repo = opts.mavenRepo ?? process.env.MAVEN_REPO_LOCAL ?? join(homedir(), '.m2', 'repository');
+  const found = opts.jar ?? mavenJarPath(opts.artifact, repo) ?? undefined;
+  if (opts.jar && !existsSync(opts.jar)) throw new UsageError(`--jar '${opts.jar}' does not exist`);
+  const jarPath = found && existsSync(found) ? found : undefined;
+  const graph = await buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root) });
+  let result: DependencyCallsResult;
+  try {
+    result = dependencyCalls(graph, jarPath ? { artifact: opts.artifact, jar: readFileSync(jarPath) } : { artifact: opts.artifact });
+  } catch (e) {
+    if (e instanceof Error && e.name === 'UnknownArtifact') {
+      throw new UsageError(`${e.message}; pass --jar, or a version so the Maven repository can be read`);
+    }
+    throw e;
+  }
+  return { root, language: 'java', engine: engineIdentity(), ...(jarPath ? { jar: jarPath } : {}), ...result };
+}
+
+export function depCallsText(r: DepCallsReport): string {
+  const covered = r.calls.length - r.uncovered;
+  const lines = [
+    `${r.artifact ?? r.packages.join(', ')} (packages from ${r.packageSource}${r.jar ? `: ${r.jar}` : ''})`,
+    `${r.calls.length} call(s): ${covered} covered, ${r.uncovered} uncovered · ${r.unattributed} unattributed · ${r.covered ? 'covered' : 'not covered'}`,
+  ];
+  for (const c of r.calls) {
+    const strong = c.tests.find(t => t.class === 'strong');
+    lines.push(`  ${strong ? 'covered  ' : 'uncovered'} ${c.site.file}:${c.site.line}  ${c.receiver}.${c.methodName}${strong ? `  ← ${strong.file}:${strong.line}` : ''}`);
+  }
+  for (const u of r.unattributedSites) {
+    lines.push(`  unattributed ${u.site.file}:${u.site.line}  ${u.receiver ? `${u.receiver}.` : ''}${u.methodName}`);
+  }
+  if (r.partial.length) lines.push(`partial: ${r.partial.join(', ')}`);
+  return lines.join('\n');
 }
 
 // ─── Output ──────────────────────────────────────────────────────────────────

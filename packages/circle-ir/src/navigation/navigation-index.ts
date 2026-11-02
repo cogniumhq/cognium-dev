@@ -192,7 +192,14 @@ export interface IndexedTarget {
 /** One call site, bound or not (`callSites`). */
 export type IndexedCallSite =
   | { site: { file: string; line: number; col: number }; methodName: string; kind: 'bound'; tier: Tier; declaring: IndexedTarget; bodies: IndexedTarget[] }
-  | { site: { file: string; line: number; col: number }; methodName: string; kind: 'unresolved'; reason: UnresolvedReason };
+  | {
+      site: { file: string; line: number; col: number };
+      methodName: string;
+      kind: 'unresolved';
+      reason: UnresolvedReason;
+      /** `external` sites: the type outside the tree the call lands on, qualified through the file's imports where they say. */
+      receiver?: string;
+    };
 
 /** One overload, with the type that declares it. */
 interface Candidate {
@@ -666,11 +673,27 @@ export class NavigationIndex {
           }
           out.push({ site, methodName: call.method_name, kind: 'bound', tier: b.result.tier, declaring: this.targetOf(b.owner, b.name, b.overload), bodies });
         } else {
-          out.push({ site, methodName: call.method_name, kind: 'unresolved', reason: b?.kind === 'ambiguous' ? 'overload-ambiguous' : this.reasonFor(call, rec) });
+          const reason = b?.kind === 'ambiguous' ? 'overload-ambiguous' : this.reasonFor(call, rec);
+          const receiver = reason === 'external' ? this.foreignTypeOf(call, rec) : undefined;
+          out.push({ site, methodName: call.method_name, kind: 'unresolved', reason, ...(receiver ? { receiver } : {}) });
         }
       }
     }
     return out;
+  }
+
+  /** The type outside the tree an `external` site lands on: its receiver, the constructed type, or a static import's owner. */
+  private foreignTypeOf(call: CallInfo, rec: FileRecord): string | undefined {
+    let name: string | undefined;
+    if (call.is_constructor) name = call.receiver_type_fqn ?? call.receiver_type ?? call.method_name;
+    else if (call.receiver === null && !call.receiver_type) name = rec.staticImports.get(call.method_name);
+    else {
+      const t = this.receiverTypeOf(call, rec);
+      if (t?.kind === 'foreign') name = t.name;
+    }
+    const bare = name?.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
+    if (!bare) return undefined;
+    return bare.includes('.') ? bare : rec.imports.get(bare) ?? bare;
   }
 
   private targetOf(owner: TypeRecord, name: string, overload: Overload | undefined): IndexedTarget {
