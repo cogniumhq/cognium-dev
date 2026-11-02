@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.19.0] - 2026-11-01
+
 ### Fixed
+- **False positives found by dogfooding 4.18 on Cognium's own repos.** Each is one class, with the §7 bench-diff gate PASS (tp_loss = 0) in its PR. **Answers change:** fewer findings of these shapes; no true positive lost on the gated corpora.
+  - JavaScript: `setTimeout(resolve, ms)` inside a Promise executor is not code injection; the executor's `resolve`/`reject` are function references (#1042, #1043).
+  - A bare `open(...)` is a resource factory only in Python, not in JavaScript/TypeScript (#1044, #1045).
+  - AntiSamy XSS sinks are Java-only (#989, #1046); python-ldap / ldap3 LDAP sinks are Python-only (#1047, #1048).
+  - JavaScript: `Array.find` with its predicate on the next line is not a NoSQL sink (#988, #1050).
+  - `.get()` on an explicitly typed non-database receiver is not a SQL sink (#985, #1051); a `Map`-typed receiver's `.get()` is not a sink of any kind (#1060, #1061).
+  - A regex receiver declared across two lines, or typed `RegExp`, is not command execution (#1056, #1057).
+  - The `spawn` family with a fixed non-shell program and an argv array is not command injection (#1058, #1059).
+  - A method called on a built-in `Map`/`Set` field does not resolve to the class's own method of the same name (#1062, #1063).
+  - Cross-file: a source with no assigned variable reaches only the call on its own line, not every later call in the method (#1052, #1053).
+- **JavaScript/TypeScript: destructured Express request parameters (`({ query }: Request)`, `const { body } = req`) are taint sources** (false negative; #1049, #1054). +5 juice-shop flows, none removed.
 - **JavaScript / TypeScript: locals declared in `try`, `catch` and `finally` now have DFG defs, and so does the catch parameter.** This covers an identifier or a destructuring pattern; a parameterless `catch` is handled too. As for Java, the blocks are processed like other blocks (defs carried out as alternates), and the catch parameter is a def in its clause. **Answers change:** flows through locals inside JavaScript and TypeScript `try` blocks can now be found where they were not.
 - **JavaScript/TypeScript: the Java helper-return check (#590 link, 4.18.1) also applies** (a callee source must reach the callee's `return`), now that `try` locals are defined there too. Held for a JS benchmark comparison.
 - **JavaScript/TypeScript: a receiver call with no known receiver type (`signer.getAddress()`) no longer resolves by name to a module-level function in another file** (unless the receiver is an import binding). juice-shop's ethers `Signer` had resolved to `routes/address.ts` `getAddress` (#992).
