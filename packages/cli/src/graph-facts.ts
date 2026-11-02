@@ -631,8 +631,13 @@ function partialParseResults(partial: readonly PartialFile[], scheme: string): o
 
 /** JSON: the engine's scheme fields unchanged, plus the envelope; `locations` is internal. */
 export function deadCodeJson(r: DeadCodeReport): string {
+  return JSON.stringify(deadCodeJsonValue(r), null, 2);
+}
+
+/** The value `deadCodeJson` prints, for the streaming writer (#1079). */
+export function deadCodeJsonValue(r: DeadCodeReport): Omit<DeadCodeReport, 'locations'> {
   const { locations: _locations, ...rest } = r;
-  return JSON.stringify(rest, null, 2);
+  return rest;
 }
 
 export function deadCodeText(r: DeadCodeReport): string {
@@ -713,8 +718,13 @@ export function reachText(r: ReachReport): string {
 
 /** JSON: the engine's scheme fields unchanged, plus the envelope; `locations` is internal. */
 export function reachJson(r: ReachReport): string {
+  return JSON.stringify(reachJsonValue(r), null, 2);
+}
+
+/** The value `reachJson` prints, for the streaming writer (#1079). */
+export function reachJsonValue(r: ReachReport): Omit<ReachReport, 'locations'> {
   const { locations: _locations, ...rest } = r;
-  return JSON.stringify(rest, null, 2);
+  return rest;
 }
 
 /**
