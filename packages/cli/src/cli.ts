@@ -19,7 +19,7 @@ import {
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
-  parseMavenDependencies, parseGradleDependencies,
+  parseMavenDependencies, parseTychoTargetDependencies, parseGradleDependencies,
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
@@ -652,7 +652,10 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
     // is read in full.
     const optedIn = options.optedIn
       || ((!basePath || basePath === targetPath) && SCAN_SKIPPED_DIRECTORIES.includes(basename(targetPath)));
-    const entries = await readdir(targetPath, { withFileTypes: true });
+    // #1032: name order, not the filesystem's, so the file set and the point
+    // where a size ceiling stops reading are the same on every machine.
+    const entries = (await readdir(targetPath, { withFileTypes: true }))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       // Skip test directories if excludeTests is enabled
       if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
@@ -710,7 +713,9 @@ export async function collectResourceFiles(
     return out;
   }
   if (!pathStat.isDirectory()) return out;
-  for (const entry of await readdir(targetPath, { withFileTypes: true })) {
+  const entries = (await readdir(targetPath, { withFileTypes: true }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const entry of entries) {
     if (entry.name.startsWith('.') || (!entry.isFile() && isScanSkippedDirectory(entry.name))) continue;
     if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
     const fullPath = join(targetPath, entry.name);
@@ -849,15 +854,28 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
  */
 const CHARS_PER_MB_OF_HEAP = 7_000;
 
-function defaultMaxProjectSourceChars(): number {
+/**
+ * The default for a runtime with no fixed heap limit (#1032). Bun runs on
+ * JavaScriptCore, whose `node:v8` `heap_size_limit` is the *current* heap
+ * size (~190 MB, different on every run), so deriving the ceiling from it
+ * cut scans at a different file each run. 32M chars is the value measured
+ * safe for a default 4 GB Node heap (see above).
+ */
+export const FIXED_MAX_PROJECT_SOURCE_CHARS = 32_000_000;
+
+export function defaultMaxProjectSourceChars(
+  runtime: { bun?: string } = process.versions as { bun?: string },
+  heapSizeLimit: () => number = () => getHeapStatistics().heap_size_limit,
+): number {
+  if (runtime.bun) return FIXED_MAX_PROJECT_SOURCE_CHARS;
   try {
-    const heapMb = getHeapStatistics().heap_size_limit / (1024 * 1024);
-    if (!Number.isFinite(heapMb) || heapMb <= 0) return 32_000_000;
+    const heapMb = heapSizeLimit() / (1024 * 1024);
+    if (!Number.isFinite(heapMb) || heapMb <= 0) return FIXED_MAX_PROJECT_SOURCE_CHARS;
     return Math.floor(heapMb * CHARS_PER_MB_OF_HEAP);
   } catch {
     // v8 module unavailable for any reason — fall back to the measured-safe
     // value for a default heap rather than to "unlimited".
-    return 32_000_000;
+    return FIXED_MAX_PROJECT_SOURCE_CHARS;
   }
 }
 
@@ -1976,8 +1994,11 @@ function gradleLockDirProject(file: string): string | null {
   return dirname(gradleDir);
 }
 
+/** An Eclipse PDE / Tycho target-platform file (#1077). */
+const isTychoTarget = (file: string): boolean => file.endsWith('.target') && basename(file) !== '.target';
+
 const isSbomInput = (file: string): boolean =>
-  Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null;
+  Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null || isTychoTarget(file);
 
 /** Recursively find recognised manifest files under a path (or the path itself if it is one). */
 export async function collectManifestFiles(targetPath: string): Promise<string[]> {
@@ -2071,7 +2092,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
-    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod)'));
+    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
     process.exit(1);
   }
 
@@ -2132,7 +2153,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
       deps.push(...parseYarnLockDependencies(text, existsSync(pkg) ? readFileSync(pkg, 'utf-8') : undefined));
       continue;
     }
-    const parse = SBOM_MANIFESTS[basename(m)];
+    const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
     deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
   }
 

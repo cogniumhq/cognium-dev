@@ -564,6 +564,12 @@ export interface DependencyContext {
      * where it supersedes `pomXml`.
      */
     mavenResolved?: string;
+    /**
+     * Raw Eclipse PDE / Tycho target-platform files (`*.target`), whose
+     * `<location type="Maven">` entries carry third-party versions on an
+     * Eclipse-based build. Read by SBOM collection (cognium-dev#1077).
+     */
+    targetPlatforms?: string[];
   };
   /**
    * Python project manifests (added cognium-dev #261 Python slice). Both
