@@ -111,6 +111,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     if (sinks.length > 0) {
       const interProc = analyzeInterprocedural(graph, sources, sinks, sanitizers, {
         taintedVariables: constProp.tainted,
+        sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
       // Collect propagated sinks (skip external_taint_escape — only used in fallback)
@@ -212,6 +213,8 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
         interProc,
         additionalFlows,
         language === 'java' ? ctx.code : undefined,
+        language === 'java' ? constProp : undefined,
+        language === 'java' || language === 'javascript' || language === 'typescript' ? ctx.code : undefined,
       );
 
       const taintBridges = findTaintBridges(interProc);
@@ -251,6 +254,7 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       }
       const interProc = analyzeInterprocedural(graph, fallbackSources, [], sanitizers, {
         taintedVariables: constProp.tainted,
+        sourceCode: typeof ctx.code === 'string' ? ctx.code : undefined,
       });
 
       // A call the sink registry matched and SinkFilterPass then cleared (a
@@ -422,6 +426,163 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
  * The sink is reached when its statement mentions a derived name that is not
  * sanitized or guarded there.
  */
+/**
+ * True when constant propagation tracked `variable` in `method` and did not
+ * mark it tainted. Only a tracked symbol counts: "not in the tainted set" alone
+ * also means "never looked at" (see `isFalsePositive` reason 3).
+ */
+function assigneeIsConstPropClean(
+  constProp: ConstantPropagatorResult,
+  method: string | null | undefined,
+  variable: string,
+): boolean {
+  if (!method) return false;
+  const scoped = `${method}:${variable}`;
+  if (!constProp.symbols.has(scoped)) return false;
+  if (constProp.tainted.has(scoped)) return false;
+  for (const t of constProp.tainted) {
+    if (t.startsWith(`${method}:`) && t.endsWith(`:${variable}`)) return false;
+  }
+  if (constProp.sanitizedVarUncovered?.has(scoped)) return false;
+  return true;
+}
+
+function constPropTaints(
+  constProp: ConstantPropagatorResult,
+  method: string,
+  variable: string,
+): boolean {
+  if (constProp.tainted.has(`${method}:${variable}`)) return true;
+  for (const t of constProp.tainted) {
+    if (t.startsWith(`${method}:`) && t.endsWith(`:${variable}`)) return true;
+  }
+  return false;
+}
+
+/** Does a call on `line` in `method` take an argument const-prop holds tainted? */
+function callArgumentIsConstPropTainted(
+  graph: PassContext['graph'],
+  constProp: ConstantPropagatorResult,
+  method: string | null | undefined,
+  line: number,
+): boolean {
+  if (!method) return false;
+  for (const call of graph.ir.calls) {
+    if (call.location.line !== line) continue;
+    for (const arg of call.arguments) {
+      const names = arg.variable
+        ? [arg.variable]
+        : (arg.expression ?? '').match(/[A-Za-z_]\w*/g) ?? [];
+      if (names.some(n => constPropTaints(constProp, method, n))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Does the callee `return` a variable const-prop holds tainted elements or keys
+ * for (`vars[i] = "X=" + param; return vars;`)? Const-prop does not carry that
+ * into the call's result, so its "clean" assignee is not proof here.
+ */
+function calleeReturnsTaintedContainer(
+  constProp: ConstantPropagatorResult,
+  code: string,
+  startLine: number,
+  endLine: number,
+): boolean {
+  const lines = code.split('\n');
+  for (let l = startLine; l <= endLine; l++) {
+    const m = /^\s*return\s+([A-Za-z_]\w*)\s*;/.exec(lines[l - 1] ?? '');
+    if (!m) continue;
+    if ((constProp.taintedArrayElements.get(m[1])?.size ?? 0) > 0) return true;
+    if ((constProp.taintedCollections.get(m[1])?.size ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Sink types whose parameter-sourced helper flows are dropped when the
+ * parameter reaches the helper's return only through a constant-dead branch
+ * (`if ((7 * 42) - num > 200) bar = "safe"; else bar = param;`).
+ */
+const DEAD_BRANCH_CHECKED_SINKS: ReadonlySet<string> = new Set([
+  'sql_injection', 'trust_boundary', 'path_traversal', 'ldap_injection', 'xpath_injection',
+]);
+
+/**
+ * Do the defs a callee source creates reach a `return` of the callee? (Java, JS, TS)
+ * Follows def-use chains forward (a use of a reached def reaches the locals
+ * defined on its line), so an overwrite before the return ends the chain.
+ * A source on the return line itself reaches it.
+ */
+function calleeSourceReachesReturn(
+  graph: PassContext['graph'],
+  code: string,
+  startLine: number,
+  endLine: number,
+  sourceLine: number,
+): boolean {
+  const lines = code.split('\n');
+  const returnLines = new Set<number>();
+  for (let l = startLine; l <= endLine; l++) {
+    if (/^\s*return\b/.test(lines[l - 1] ?? '')) returnLines.add(l);
+  }
+  if (returnLines.size === 0) return true; // nothing to prove against: keep the source
+  if (returnLines.has(sourceLine)) return true;
+  const inRange = (l: number) => l >= startLine && l <= endLine;
+  // A statement can span lines (`String e =\n new String(\n … d.getBytes()));`):
+  // the def sits on its first line, the uses on later ones.
+  const ends = (l: number) => /[;{}]\s*$/.test((lines[l - 1] ?? '').replace(/\/\/.*$/, '').trimEnd());
+  const statementStart = (l: number) => {
+    let s = l;
+    while (s > startLine && !ends(s - 1) && (lines[s - 2] ?? '').trim() !== '') s--;
+    return s;
+  };
+  const reached = new Set<number>(
+    graph.ir.dfg.defs.filter(d => d.line === sourceLine && d.kind === 'local').map(d => d.id),
+  );
+  if (reached.size === 0) return true; // the source defines nothing we can follow
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const u of graph.ir.dfg.uses) {
+      if (u.def_id === null || !reached.has(u.def_id) || !inRange(u.line)) continue;
+      const stmt = statementStart(u.line);
+      if (returnLines.has(u.line) || returnLines.has(stmt)) return true;
+      for (const d of graph.ir.dfg.defs) {
+        if ((d.line === u.line || d.line === stmt) && d.kind === 'local' && !reached.has(d.id)) {
+          reached.add(d.id);
+          changed = true;
+        }
+      }
+      // An element or field store (`arr[i] = name + "=" + value;`, `o.f = value;`)
+      // defines no local, but the value now lives in the base: follow the base's
+      // def (plexus-utils `getEnvironmentVariables()` fills an array it returns).
+      // Container calls (`map.put`, `list.add`) are not followed: the keyed
+      // overwrite cases above depend on them ending the chain.
+      const base = storeBase(lines[stmt - 1] ?? '');
+      if (base && base !== u.variable) {
+        for (const b of graph.ir.dfg.uses) {
+          if ((b.line === u.line || b.line === stmt) && b.variable === base &&
+              b.def_id !== null && !reached.has(b.def_id)) {
+            reached.add(b.def_id);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** `arr[i] = …` / `arr[i][j] = …` / `obj.field = …` → the base local's name; else null. */
+function storeBase(line: string): string | null {
+  const m = /^\s*([A-Za-z_]\w*)\s*(?:\[[^\]=]*\]\s*)+=(?!=)/.exec(line) ??
+    /^\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*\s*=(?!=)/.exec(line);
+  if (!m || m[1] === 'this') return null;
+  return m[1];
+}
+
 /** cognium-dev#590 — connect a source inside a callee to a sink in the caller. */
 function appendCalleeSourceCallerSinkFlows(
   graph: PassContext['graph'],
@@ -430,14 +591,22 @@ function appendCalleeSourceCallerSinkFlows(
   interProc: InterproceduralResult,
   additionalFlows: TaintFlowInfo[],
   fileCode?: string,
+  constProp?: ConstantPropagatorResult,
+  returnReachCode?: string,
 ): void {
   const types = graph.ir.types ?? [];
   for (const edge of interProc.callEdges) {
     const callee = interProc.methodNodes.get(edge.calleeMethod);
     if (!callee) continue;
 
+    // Java and JS/TS (with #992's try defs): a source the callee overwrites before it returns
+    // (`bar = map.get("keyB"); bar = map.get("keyA"); return bar;`) does not
+    // reach the caller. Parameters are kept here; their live reach is the
+    // dead-branch check below.
     const calleeSources = sources.filter(
-      s => s.line >= callee.startLine && s.line <= callee.endLine,
+      s => s.line >= callee.startLine && s.line <= callee.endLine &&
+        (!returnReachCode || s.type === 'interprocedural_param' ||
+          calleeSourceReachesReturn(graph, returnReachCode, callee.startLine, callee.endLine, s.line)),
     );
     if (calleeSources.length === 0) continue;
 
@@ -445,6 +614,24 @@ function appendCalleeSourceCallerSinkFlows(
       d => d.line === edge.callLine && d.kind === 'local',
     );
     if (!assignee?.variable) continue;
+    // A source inside the callee taints the caller only through the value the
+    // callee returns. Constant propagation evaluates that return with the
+    // callee's arguments (map keys, list indexes, constant branches, switch
+    // arms), and the DFG flows it vetoes are not reported either. When it has
+    // the assignee as a tracked, untainted value, the callee's source does not
+    // reach the return (OWASP `doSomething` helpers: `map.get("keyA")` after a
+    // `map.get("keyB")`, `if ((7 * 42) - num > 200)`, `valuesList.get(1)`).
+    // Its verdict is informed only when it saw tainted data go into the call:
+    // a value from another file (`scr.getTheParameter(…)`) is not a source to
+    // it, and then "clean" means "never tainted here", not "the callee drops it".
+    if (
+      constProp &&
+      callArgumentIsConstPropTainted(graph, constProp, edge.callerMethod, edge.callLine) &&
+      assigneeIsConstPropClean(constProp, edge.callerMethod, assignee.variable) &&
+      !(fileCode && calleeReturnsTaintedContainer(constProp, fileCode, callee.startLine, callee.endLine))
+    ) {
+      continue;
+    }
 
     const derivedLocals = localsDerivedFromAssignee(
       graph,
@@ -467,7 +654,7 @@ function appendCalleeSourceCallerSinkFlows(
         fileCode &&
         source.type === 'interprocedural_param' &&
         source.variable &&
-        (sink.type === 'sql_injection' || sink.type === 'trust_boundary') &&
+        DEAD_BRANCH_CHECKED_SINKS.has(sink.type) &&
         interproceduralParamReachIsDeadBranchOnly(
           fileCode,
           callee.startLine,
@@ -494,6 +681,32 @@ function appendCalleeSourceCallerSinkFlows(
           fileCode,
           callee.startLine,
           callee.endLine,
+          calleeSources.map(s => s.variable!),
+        )
+      ) {
+        continue;
+      }
+      // cognium-dev#917 S4 / #913 S4 / #914 S4 — pass-through helpers must not reach sinks when
+      // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
+      // sql_injection / command_injection / path_traversal: instance inner-class helpers only;
+      // static helpers can still carry param (e.g. #913 BenchmarkTest02625, #914 BenchmarkTest01929).
+      if (
+        fileCode &&
+        (sink.type === 'trust_boundary' ||
+          ((sink.type === 'sql_injection' ||
+            sink.type === 'command_injection' ||
+            sink.type === 'path_traversal') &&
+            javaHelperCallHasInstanceReceiver(graph, edge))) &&
+        calleeSources.every(
+          s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
+        ) &&
+        skipPassThroughTrustBoundaryWithoutHttpArg(
+          graph,
+          fileCode,
+          edge,
+          callee.startLine,
+          callee.endLine,
+          sources,
           calleeSources.map(s => s.variable!),
         )
       ) {
@@ -544,6 +757,9 @@ const HELPER_RETURN_GATED_SINKS = new Set([
   'trust_boundary',
   'command_injection',
   'path_traversal',
+  // #976: the same helper shapes feed LDAP and XPath sinks (OWASP ldapi/xpathi).
+  'ldap_injection',
+  'xpath_injection',
 ]);
 
 /**
@@ -559,7 +775,7 @@ const HELPER_RETURN_GATED_SINKS = new Set([
  * after `list.remove(0)`, `map.get("<literal key>")` and a ternary whose
  * condition folds to a constant pick the value actually returned.
  */
-function calleeReturnMayCarryParam(
+export function calleeReturnMayCarryParam(
   code: string,
   startLine: number,
   endLine: number,
@@ -578,6 +794,9 @@ function calleeReturnMayCarryParam(
   // added as a seed and the tracker re-run until nothing new is reached.
   const text = slice.join('\n');
   const seeds = new Set<string>(paramNames);
+  // Receivers that carry a value only because they were mutated with it: their
+  // declaration (`new String[n]`, `new StringBuilder()`) never does.
+  const mutated = new Set<string>();
   let live = new Set<string>(seeds);
   for (let round = 0; round < 8; round++) {
     live = new Set<string>([...seeds, ...buildJavaTaintedVars(text, seeds, dead, { trackSlots: true }).keys()]);
@@ -589,6 +808,18 @@ function calleeReturnMayCarryParam(
         const args = call[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
         if (args.some(t => live.has(t))) {
           seeds.add(call[1]);
+          mutated.add(call[1]);
+          grew = true;
+        }
+      }
+      // An element or field store (`vars[i] = name + "=" + value;`, `o.f = value;`)
+      // carries the value into its base (plexus-utils getEnvironmentVariables()).
+      const store = /^\s*([A-Za-z_]\w*)\s*(?:(?:\[[^\]=]*\]\s*)+|\.\s*[A-Za-z_]\w*\s*)=(?!=)\s*(.*?);?\s*$/.exec(slice[i]);
+      if (store && store[1] !== 'this' && !live.has(store[1])) {
+        const rhs = store[2].replace(/"(?:[^"\\]|\\.)*"/g, ' ').match(/[\p{L}\p{N}_]+/gu) ?? [];
+        if (rhs.some(t => live.has(t))) {
+          seeds.add(store[1]);
+          mutated.add(store[1]);
           grew = true;
         }
       }
@@ -604,6 +835,7 @@ function calleeReturnMayCarryParam(
     sawReturn = true;
     const expr = m[1];
     const bare = /^[A-Za-z_]\w*$/.test(expr) ? expr : null;
+    if (bare && mutated.has(bare)) return true;
     if (bare && live.has(bare)) {
       // The tracker is flow-insensitive: `bar = map.get("tainted-key"); bar =
       // map.get("safe-key"); return bar;` reaches it either way. Judge the
@@ -820,6 +1052,80 @@ function enclosingMethodName(types: TypeInfo[], line: number): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Skip interprocedural trust_boundary when every callee parameter maps to a
+ * caller argument fed only by SeparateClassRequest.getTheValue (OWASP safe
+ * BenchmarkTest01802), not getTheParameter or other http-tainted inputs.
+ */
+function javaHelperCallHasInstanceReceiver(
+  graph: PassContext['graph'],
+  edge: import('../interprocedural.js').CallEdge,
+): boolean {
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  const recv = callSite?.receiver?.trim();
+  return !!recv;
+}
+
+function skipPassThroughTrustBoundaryWithoutHttpArg(
+  graph: PassContext['graph'],
+  fileCode: string,
+  edge: import('../interprocedural.js').CallEdge,
+  calleeStart: number,
+  calleeEnd: number,
+  fileSources: import('../../types/index.js').TaintSource[],
+  paramVars: string[],
+): boolean {
+  const lines = fileCode.split('\n');
+  const paramNames = javaMethodParamNames(lines.slice(calleeStart - 1, calleeEnd));
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  for (const paramVar of paramVars) {
+    const idx = paramNames.indexOf(paramVar);
+    if (idx < 0) continue;
+    const fromCall = callSite?.arguments?.find(a => a.position === idx);
+    const argVar =
+      fromCall?.variable ??
+      (fromCall?.expression && /^[A-Za-z_]\w*$/.test(fromCall.expression.trim())
+        ? fromCall.expression.trim()
+        : undefined);
+    if (!argVar) return false;
+    const hasHttp = fileSources.some(
+      s =>
+        s.variable === argVar &&
+        s.line <= edge.callLine &&
+        s.line < calleeStart &&
+        s.type.startsWith('http_') &&
+        (s.in_method ? s.in_method === edge.callerMethod : true),
+    );
+    if (hasHttp) return false;
+    if (!callerArgFromSeparateClassGetTheValue(fileCode, edge.callLine, argVar)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when `argVar` is assigned from SeparateClassRequest.getTheValue before `callLine`. */
+function callerArgFromSeparateClassGetTheValue(
+  fileCode: string,
+  callLine: number,
+  argVar: string,
+): boolean {
+  const lines = fileCode.split('\n');
+  const assignRe = new RegExp(`\\b${argVar}\\s*=`);
+  for (let i = callLine - 2; i >= 0; i--) {
+    const line = lines[i] ?? '';
+    if (!assignRe.test(line)) continue;
+    if (/\.getTheValue\s*\(/.test(line)) return true;
+    if (/\.getTheParameter\s*\(/.test(line)) return false;
+    return false;
+  }
+  return false;
 }
 
 export function csharpParamReachesSink(

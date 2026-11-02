@@ -7,9 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`entries --facts-arrow <dir>`** (Java only; `facts@1`): after the graph is built, also writes the eight fact relations as Arrow IPC files (`<relation>.arrow`) plus `manifest.json` into `<dir>`. The relations are sets (the manifest records `duplicates_dropped` per relation) with no nulls; the manifest's file digests are hex; `flow` carries the def-use edges of every file's DFG on fixed-width `ids@0.1` node ids (stable-ids decision 1a). The report on stdout and `-o` is unchanged. Off unless asked for.
+
+### Changes
+- **`scan` hands the nearest `package.json` and npm lockfile to circle-ir** (`dependencyContext.js`): the `package.json` at or above the target, and the `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm workspace's root lockfile). The walk stops at `.git`. With it, the js-yaml deserialization gate sees the installed version: `yaml.load(req.body)` under js-yaml 4 is no CWE-502 finding, and under js-yaml 3 it still is.
+- **Scans are deterministic under Bun and the standalone binary** (#1032). The default source ceiling (#424) came from `node:v8`'s `heap_size_limit`, which under Bun is JavaScriptCore's *current* heap size (~190 MB, different each run). So a directory scan stopped at a different file every run (205–212 of 234 files on `packages/circle-ir/src`, flagged only as `project_size_budget_exceeded`). Under Bun the default is now a fixed 32M chars, and directory walks run in name order. Ten runs on that tree now give the same JSON (apart from `timestamp`) on Node and on Bun.
+
+## [4.19.0] - 2026-11-01
+
+### Added
+- **`recheck`** (E20/engine): the deterministic re-check of a code-fix change. `cognium-dev recheck <path> --changed <file[,file…]|@list.txt> [--baseline <before.json>] [-o file]` analyses only the changed files and keys every security finding by CWE × enclosing declaration × rule. The declaration is the method's stable id (`ids@0.1`) where the language has one (Java, TypeScript, JavaScript, Python, Go), so the key survives edits that only move lines.
+  - With `--baseline` (the report from the same files before the change), each key gets a verdict: `gone`, `still-present`, `new-high` (high or critical) or `new-other`, plus a summary.
+  - The no-new-high rule (`noNewHigh: pass|fail`) passes when there's no `new-high`. Exit code 0 on pass, 1 on fail, 2 on a usage error.
+  - Always JSON (`cognium-recheck@0.1`). No model, no network: the same files give the same report.
+
 ### Changes
 
-- **Scans are deterministic under Bun and the standalone binary** (#1032). The default source ceiling (#424) came from `node:v8`'s `heap_size_limit`, which under Bun is JavaScriptCore's *current* heap size (~190 MB, different each run). So a directory scan stopped at a different file every run (205–212 of 234 files on `packages/circle-ir/src`, flagged only as `project_size_budget_exceeded`). Under Bun the default is now a fixed 32M chars, and directory walks run in name order. Ten runs on that tree now give the same JSON (apart from `timestamp`) on Node and on Bun.
+- Built on circle-ir 4.19.0: JavaScript/TypeScript `try`/`catch`/`finally` locals get DFG defs (#992, #1055), destructured Express request parameters are sources (#1054), and twelve false-positive classes found by dogfooding are fixed (#1043–#1063).
+
+## [4.18.1] - 2026-10-31
+
+### Changes
+
+- Built on circle-ir 4.18.1: Java `try`/`catch`/`finally` locals get DFG defs, and OWASP Benchmark 1.2 false positives fall from 163 to 87 (score 85.4 → 91.9) with no new one in any category (#976).
+
+## [4.18.0] - 2026-10-30
+
+### Added
+- **`depcalls`** (E02): `cognium-dev depcalls --artifact <groupId:artifactId[:version]> [path]` lists every call in a Java tree into one Maven artifact, covered or not by a test (circle-ir `dependency-calls@0.1`), and the external sites that can't be attributed. Packages come from `--jar`, the local Maven repository (`--maven-repo`, `$MAVEN_REPO_LOCAL`, else `~/.m2/repository`) for a versioned coordinate, else circle-ir's table for the demo dependencies; an artifact nothing resolves exits 1. `-f text|json`, `-o`.
+
+### Changes
+
+- Built on circle-ir 4.18.0.
 - **`deadcode`, `reach` and `entries` say which files did not parse, and where** (cognium-dev#1004). Text lists each partial file as `file:line:column  ERROR in <parent>` (or `MISSING <token>`) instead of the first five paths. JSON gains `partialFiles` beside `partial`. `deadcode -f sarif` adds a note-level `graph-facts/partial-parse` result per file, located at its first blocking error, and `partialFiles` in the run properties.
 - **`reach -f sarif`.** One result per removed declaration, located at the base (`BASEROOT` for a directory base): `removal-reach/reached` (a warning) when a product entry point reached it strongly at the base, `removal-reach/removed` (a note) otherwise; plus the `graph-facts/partial-parse` notes.
 - **One stdout path for large output.** `scan`, `metrics` and `sbom` now write their payload (and `scan`'s summary) through `writeStdout()`, like `deadcode`, `reach` and `entries`, and exit only after a slow pipe has drained. A reader that stops early (`| head`) now ends every one of these commands quietly with status 141 instead of a Bun `EPIPE` stack trace.

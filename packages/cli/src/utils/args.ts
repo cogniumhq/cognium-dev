@@ -71,11 +71,19 @@ COMMANDS:
                        Removal reach: what a change removes and what still reached it
                          (removal-reach@0.1); --base is a git ref or a directory
   entries [path]       The entry-point index (routes, listeners, mains, exports, …)
+  depcalls --artifact <g:a[:v]> [path]
+  recheck --changed <files> [--baseline <before.json>] [path]
+                             Re-check a code fix: findings on the changed files keyed by
+                             CWE × declaration; with --baseline, gone / still-present /
+                             new-high / new-other and the no-new-high rule (exit 1 on fail)
+                       Java: calls into one Maven artifact, covered or not by tests
+                         (dependency-calls@0.1); packages from --jar, the Maven
+                         repository (with a version), else a built-in table
   list-passes [cat]    List all analysis passes (optionally filter by category)
   init                 Initialize a configuration file in your project
   version              Display version information
 
-GRAPH FACT OPTIONS (deadcode, reach, entries):
+GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   -l, --language <lang>      ts|java|python|go (js shares the ts graph); required when
                                the tree mixes languages
   -f, --format <format>      text|json; deadcode and reach also take sarif [default: text]
@@ -85,6 +93,12 @@ GRAPH FACT OPTIONS (deadcode, reach, entries):
   --verdicts <list>          deadcode: facts to list (live,may-be-live,dead)
                                [default: dead,may-be-live]; the summary counts all
   -o, --output <file>        Write to a file instead of stdout
+  --jar <file>               depcalls: the resolved jar to read packages from
+  --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,
+                               else ~/.m2/repository]
+  --facts-arrow <dir>        entries, Java only: also write the facts@1 relations (proposed)
+                               as Arrow IPC files plus manifest.json into <dir>; the
+                               report itself is unchanged
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
@@ -183,6 +197,8 @@ EXAMPLES:
   cognium-dev deadcode src --language ts --verdicts dead
   cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
   cognium-dev entries . -f json
+  cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
+  cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init
