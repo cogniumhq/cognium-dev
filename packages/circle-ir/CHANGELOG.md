@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **TS/JS: literal-only local `Map` reads are no longer `plugin_param` sources** (#985 S2, port of #584). `new Map()` with literal `.set` / unwritten literal `.get` drops the spurious source on dogfood `Map.get` pairings.
 - **java-graph: `X[]::new` and `Ext::new` method references no longer name every constructor** (#1093). Both were emitted as `dynamic` unresolved sites with methodName `constructor`, which removal reach and dead code treat as naming every constructor in the tree (iDempiere: 83 rows, the source of B3's `constructor = 43` counts). `T[]::new` now emits no row, since it calls no declared constructor. A constructor reference to a type not declared in the tree is `external` with `receiver` (the imported or written type), like `new Ext()`, and reach does not attach external rows to declarations. A reference to a type in the tree still links to its constructors. **Answers change:** fewer may-be-live constructors.
 - **Java: OWASP safe `Runtime.exec(cmd + bar)` no longer pairs `bar` with a later unrelated `System.getProperty` env_input (#914 S6).** Derived-alias seeding no longer copies an env_input anchor onto an earlier local (BenchmarkTest01791).
 - **SBOM: `maven-dependency-plugin` `<artifactItem>`s and Tycho `*.target` Maven locations are declarations** (#1077). On an Eclipse/Tycho project the third-party versions live there, not in pom `<dependency>` rows, so the census found none (iDempiere: 0 pom rows).
