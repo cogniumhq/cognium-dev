@@ -2045,7 +2045,9 @@ function detectCollectionFlows(
             // primary; method-scope is the tiebreaker; sources[0] is the
             // last-resort fallback to preserve existing behaviour when no
             // better source is available.
-            const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, varName);
+            const source = pickScopedSource(
+              sources, sink.line, call.in_method ?? null, types, varName, code, 'java',
+            );
             if (source) {
               // cognium-dev #101 (Sprint 14 Phase E): when the picked source
               // has a binding variable that differs from the sink arg's
@@ -2119,7 +2121,9 @@ function detectCollectionFlows(
               if (!collectionTainted) continue;
               {
                 // Sprint 13 #70 — same method-scoped picker as above.
-                const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, collectionVar);
+                const source = pickScopedSource(
+                  sources, sink.line, call.in_method ?? null, types, collectionVar, code, 'java',
+                );
                 if (source) {
                   // cognium-dev #101 (Sprint 14 Phase E): cross-method
                   // bleed guard. See the analogous guard in the
@@ -2197,7 +2201,9 @@ function detectArrayElementFlows(
             const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
-              const source = pickScopedSource(sources, sink.line, call.in_method ?? null, types, base);
+              const source = pickScopedSource(
+                sources, sink.line, call.in_method ?? null, types, base, code, 'java',
+              );
               if (source) {
                 flows.push({
                   source_line: source.line, sink_line: sink.line,
@@ -4700,6 +4706,8 @@ function pickScopedSource(
   methodName: string | null,
   types: CircleIR['types'] | undefined,
   taintedVar: string | undefined,
+  code?: string,
+  language?: string,
 ): CircleIR['taint']['sources'][0] | undefined {
   if (sources.length === 0) return undefined;
 
@@ -4716,6 +4724,48 @@ function pickScopedSource(
     return best;
   };
 
+  const methodAt = (line: number): string | null => {
+    if (!types) return null;
+    for (const t of types) {
+      for (const m of t.methods) {
+        if (line >= m.start_line && line <= m.end_line) return m.name;
+      }
+    }
+    return null;
+  };
+
+  // cognium-dev#515 — derived locals must credit the RHS read, not an earlier
+  // decoy source in the same method (alias entries can still carry a stale anchor).
+  if (
+    taintedVar &&
+    typeof code === 'string' &&
+    (language === 'java' || language === 'csharp')
+  ) {
+    const seedVars = new Set(
+      sources.map(s => s.variable).filter((v): v is string => Boolean(v)),
+    );
+    const derived = buildJavaTaintedVars(code, seedVars);
+    if (derived.has(taintedVar)) {
+      const owner = methodName ?? methodAt(sinkLine);
+      const realSourceByVar = new Map<string, CircleIR['taint']['sources'][0]>();
+      for (const s of sources) {
+        if (!s.variable) continue;
+        const sOwner = s.in_method ?? methodAt(s.line);
+        if (owner && sOwner !== owner) continue;
+        const prev = realSourceByVar.get(s.variable);
+        if (!prev || s.line < prev.line) realSourceByVar.set(s.variable, s);
+      }
+      const referenced = resolveJavaDerivedAnchor(
+        taintedVar,
+        derived,
+        realSourceByVar,
+        code.split('\n'),
+        new Set(),
+      );
+      if (referenced && referenced.line < sinkLine) return referenced;
+    }
+  }
+
   // 1. Variable match (preferred — even across methods, falls within the
   //    method scope check below for the tiebreak).
   if (taintedVar) {
@@ -4728,7 +4778,7 @@ function pickScopedSource(
   // source (cognium-dev #914 — OWASP BenchmarkTest01791: `bar` at exec paired with
   // `osName` from System.getProperty because it was the closest preceding source in doPost).
   const matchesTaintedVar = (s: CircleIR['taint']['sources'][0]): boolean =>
-    !taintedVar || !s.variable || s.variable === taintedVar;
+    !taintedVar || s.variable === taintedVar;
 
   // 2. Scope match — restrict to sources whose line is inside the same
   //    method as the sink.
@@ -4760,5 +4810,6 @@ function pickScopedSource(
 
   // 4. Last resort — preserve historical behaviour when there's nothing
   //    preceding the sink (e.g. synthetic same-line sources).
+  if (taintedVar) return undefined;
   return sources[0];
 }
