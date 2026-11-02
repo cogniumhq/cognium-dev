@@ -3906,12 +3906,23 @@ function detectExpressionScanFlows(
             literal_kill_line: derivedLine,
           });
         } else {
-          sourcesWithVar.push({
-            ...scopedAnchor,
-            variable: varName,
-            literal_kill_line: derivedLine,
-            ...(owner ? { in_method: owner } : {}),
-          });
+          // cognium-dev #914 S6 — a derived local assigned before an unrelated
+          // env_input (e.g. `bar = helper(param)` then `osName = getProperty`)
+          // must not inherit osName's env_input tag for expression-scan pairing
+          // (OWASP BenchmarkTest01791: `cmd + bar` at exec mis-attributed to
+          // System.getProperty on a later line).
+          const unrelatedEnvAnchor =
+            scopedAnchor.type === 'env_input' &&
+            scopedAnchor.variable !== varName &&
+            derivedLine < scopedAnchor.line;
+          if (!unrelatedEnvAnchor) {
+            sourcesWithVar.push({
+              ...scopedAnchor,
+              variable: varName,
+              literal_kill_line: derivedLine,
+              ...(owner ? { in_method: owner } : {}),
+            });
+          }
         }
         existingVars.add(varName);
       }
