@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **js-yaml: `load` on js-yaml ≥ 4, or with a schema that builds no code, is not a deserialization sink** (deserialization gate E). js-yaml 4 removed the `!!js/function` / `!!js/regexp` types (5.x keeps that), so its `load` cannot construct code. 4.18.1 flagged `yaml.load(readFileSync(...))` as a critical CWE-502 (found by conformis' SAST gate). A `load` / `loadAll` on a js-yaml binding (default, namespace, `require` or named import) is dropped in two cases: the call passes `schema:` `FAILSAFE_SCHEMA`, `JSON_SCHEMA`, `CORE_SCHEMA`, `DEFAULT_SCHEMA` or `DEFAULT_SAFE_SCHEMA`; or `AnalyzerOptions.dependencyContext.js` pins js-yaml ≥ 4 (the installed version from `package-lock.json` first, then a single-major `package.json` range; `resolveJsYamlMajor`). It is kept for js-yaml 3, an unknown version, another `schema:`, and a file that uses `DEFAULT_FULL_SCHEMA` or `js-yaml/lib/js-yaml`. **Answers change:** fewer CWE-502 findings on js-yaml ≥ 4 code when the caller supplies the manifests.
+
 ## [4.19.0] - 2026-11-01
 
 ### Fixed

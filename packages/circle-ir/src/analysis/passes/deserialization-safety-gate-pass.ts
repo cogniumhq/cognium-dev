@@ -31,6 +31,17 @@
  *     builds any Yaml with SafeConstructor, drop `Yaml.load` /
  *     `Yaml.loadAs` / `Yaml.loadAll` deserialization sinks.
  *
+ *   Gate E — js-yaml ≥ 4 or an explicit safe schema (JS/TS).
+ *     js-yaml 4 removed the `!!js/function` / `!!js/regexp` types, so its
+ *     `load` cannot build code (5.x keeps that); js-yaml 3's `load` used
+ *     `DEFAULT_FULL_SCHEMA`. A `load` / `loadAll` on a js-yaml binding is
+ *     dropped when the call passes a schema that builds no code
+ *     (`{ schema: yaml.CORE_SCHEMA }`, `FAILSAFE`, `JSON`, `DEFAULT`), or
+ *     when the lockfile / package.json pins js-yaml ≥ 4
+ *     (`AnalyzerOptions.dependencyContext.js`). Never dropped when the file
+ *     uses `DEFAULT_FULL_SCHEMA` or `js-yaml/lib/js-yaml`, when the call
+ *     passes another schema, or when the version is unknown.
+ *
  * Each sub-gate is defensive: on missing signal it defaults to *do
  * not drop* (the sink continues to fire). So a resolver bug can only
  * ever regress toward the current over-firing behaviour, never toward
@@ -53,6 +64,9 @@ import {
   fileReenablesFastjsonAutotype,
   fileEnablesJacksonPolymorphism,
   fileConfiguresSnakeYamlSafely,
+  resolveJsYamlMajor,
+  jsYamlBindings,
+  JS_YAML_SAFE_SCHEMA_RE,
 } from '../dependency-versions.js';
 
 export interface DeserializationSafetyGateResult {
@@ -64,6 +78,8 @@ export interface DeserializationSafetyGateResult {
   droppedSnakeYaml: number;
   /** Sinks dropped by Gate D (Python PyYAML ≥ 6.0 default-safe). */
   droppedPyYaml: number;
+  /** Sinks dropped by Gate E (js-yaml ≥ 4 or an explicit safe schema). */
+  droppedJsYaml?: number;
 }
 
 const FASTJSON_METHODS = new Set(['parseObject', 'parse']);
@@ -79,6 +95,9 @@ const SNAKEYAML_CLASSES = new Set(['Yaml']);
 const PYYAML_METHODS = new Set(['load']);
 const PYYAML_CLASSES = new Set(['yaml']);
 
+// js-yaml gate (Gate E).
+const JSYAML_METHODS = new Set(['load', 'loadAll']);
+
 export class DeserializationSafetyGatePass
   implements AnalysisPass<DeserializationSafetyGateResult>
 {
@@ -93,6 +112,7 @@ export class DeserializationSafetyGatePass
     // Java + Python for the MVP. Other languages (JS Deserialize,
     // Rust bincode) can extend the gate on their own manifests in
     // follow-up scopes.
+    if (language === 'javascript' || language === 'typescript') return this.runJsYaml(ctx);
     if (language !== 'java' && language !== 'python') {
       return { droppedFastjson: 0, droppedJackson: 0, droppedSnakeYaml: 0, droppedPyYaml: 0 };
     }
@@ -219,5 +239,37 @@ export class DeserializationSafetyGatePass
     }
 
     return { droppedFastjson, droppedJackson, droppedSnakeYaml, droppedPyYaml };
+  }
+
+  /** Gate E — js-yaml (JS/TS). */
+  private runJsYaml(ctx: PassContext): DeserializationSafetyGateResult {
+    const none = { droppedFastjson: 0, droppedJackson: 0, droppedSnakeYaml: 0, droppedPyYaml: 0, droppedJsYaml: 0 };
+    const { graph, code } = ctx;
+    const sinks: TaintSink[] = ctx.hasResult('sink-filter')
+      ? ctx.getResult<SinkFilterResult>('sink-filter').sinks
+      : graph.ir.taint.sinks;
+    if (!sinks.some(s => s.type === 'deserialization' && s.method && JSYAML_METHODS.has(s.method))) return none;
+    const { namespaces, functions, full } = jsYamlBindings(code);
+    if (full || (namespaces.size === 0 && functions.size === 0)) return none;
+    const major = resolveJsYamlMajor(this.dependencyContext?.js)?.major;
+    const lines = code.split('\n');
+    let droppedJsYaml = 0;
+    const kept = sinks.filter(sink => {
+      if (sink.type !== 'deserialization' || !sink.method || !JSYAML_METHODS.has(sink.method)) return true;
+      // The call text: the sink line and the lines up to its closing paren.
+      let call = lines[sink.line - 1] ?? '';
+      for (let k = 0; k < 8 && !/\)\s*[;,)]?\s*$/.test(call.replace(/\/\/.*$/, '')); k++) call += ' ' + (lines[sink.line + k] ?? '').trim();
+      const m = new RegExp(`(?:([A-Za-z_$][\\w$]*)\\s*\\.\\s*)?\\b${sink.method}\\s*\\(`).exec(call);
+      if (!m) return true;
+      const onJsYaml = m[1] !== undefined ? namespaces.has(m[1]) : functions.has(sink.method);
+      if (!onJsYaml) return true;
+      const after = call.slice(m.index);
+      const safeSchema = JS_YAML_SAFE_SCHEMA_RE.test(after);
+      if (!safeSchema && /\bschema\s*:/.test(after)) return true;  // another schema: keep
+      if (safeSchema || (major !== undefined && major >= 4)) { droppedJsYaml++; return false; }
+      return true;
+    });
+    if (droppedJsYaml > 0) { sinks.length = 0; sinks.push(...kept); }
+    return { ...none, droppedJsYaml };
   }
 }
