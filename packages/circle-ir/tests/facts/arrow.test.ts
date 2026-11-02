@@ -1,16 +1,18 @@
 /**
  * `facts@1` Arrow emission as a post-pass over `buildJavaGraph` (graph-store
  * plan T2, first half): off by default and invisible when off; on, two runs
- * give byte-identical IPC files whose row counts are the JSON view's counts.
+ * give byte-identical IPC files whose row counts are the JSON view's counts
+ * less the exact duplicates a set collapses (reported in the manifest).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { tableFromIPC, type Table } from 'apache-arrow';
 import { buildJavaGraph, type JavaGraph } from '../../src/navigation/index.js';
 import { FACTS_RELATION_NAMES, FACTS_RELATIONS, FACTS_SCHEME, type FactsArrow } from '../../src/facts/index.js';
-import { javaGraphFacts, contentHash } from '../../src/facts/java-facts.js';
+import { javaGraphFactSet, contentHash } from '../../src/facts/java-facts.js';
 import { factsToArrow, relationToArrowIpc } from '../../src/facts/arrow.js';
 import { idBytes, rowComparator } from '../../src/facts/order.js';
+import { keyCollisions, tableRows } from '../../src/facts/table.js';
 import { base32 } from '../../src/stable-ids/hash.js';
 import { JAVA_APP } from '../graph-facts/java-fixture.js';
 
@@ -49,6 +51,8 @@ describe('facts@1 Arrow emission', () => {
       expect(t.schema.fields.map(f => f.name), name).toEqual(FACTS_RELATIONS[name].columns.map(c => c.name));
       expect(t.schema.fields.map(f => f.nullable), name).toEqual(FACTS_RELATIONS[name].columns.map(c => c.nullable));
       expect(Object.fromEntries(t.schema.metadata), name).toEqual({ facts: 'facts@1', ids: 'ids@0.1', engine: 'circle-ir@test', parser: 'tree-sitter-java@test' });
+      expect(t.schema.fields.every(f => !f.nullable), name).toBe(true);
+      for (const f of t.schema.fields) expect(t.getChild(f.name)?.nullCount, `${name}.${f.name}`).toBe(0);
       for (const [i, c] of FACTS_RELATIONS[name].columns.entries()) {
         const type = String(t.schema.fields[i].type);
         const want = { fixed16: 'FixedSizeBinary[16]', u32: 'Uint32', utf8: 'Utf8', bool: 'Bool', dict: 'Dictionary<Int8, Utf8>' }[c.type];
@@ -65,23 +69,39 @@ describe('facts@1 Arrow emission', () => {
     expect(JSON.stringify(second.manifest)).toBe(JSON.stringify(facts.manifest));
   });
 
-  it('row counts equal the JSON view\'s counts', () => {
-    expect(tables.files.numRows).toBe(plain.files.length);
-    expect(tables.decl.numRows).toBe(plain.files.reduce((n, f) => n + f.decls.length, 0));
-    expect(tables.call.numRows).toBe(plain.edges.length);
-    expect(tables.unresolved.numRows).toBe(plain.unresolved.length);
-    expect(tables.entries.numRows).toBe(plain.entries.length);
+  it('row counts equal the JSON view\'s counts less the duplicates a set collapses', () => {
+    const m = facts.manifest.relations;
+    const rows = (name: (typeof FACTS_RELATION_NAMES)[number]) => tables[name].numRows + m[name].duplicates_dropped;
+    expect(rows('files')).toBe(plain.files.length);
+    expect(rows('decl')).toBe(plain.files.reduce((n, f) => n + f.decls.length, 0));
+    expect(rows('call')).toBe(plain.edges.length);
+    expect(rows('unresolved')).toBe(plain.unresolved.length);
+    expect(rows('entries')).toBe(plain.entries.length);
     const importLines = Object.values(JAVA_APP).reduce((n, code) => n + code.split('\n').filter(l => /^\s*import\s/.test(l)).length, 0);
-    expect(tables.imports.numRows).toBe(importLines);
+    expect(rows('imports')).toBe(importLines);
     expect(tables.flow.numRows).toBe(0);
     expect(tables.moved.numRows).toBe(0);
     for (const name of FACTS_RELATION_NAMES) {
-      expect(facts.manifest.relations[name].rows, name).toBe(tables[name].numRows);
-      expect(facts.manifest.relations[name].bytes, name).toBe(facts.relations[name].length);
-      expect(facts.manifest.relations[name].batches, name).toBe(tables[name].numRows === 0 ? 0 : 1);
-      expect(facts.manifest.relations[name].file).toBe(`${name}.arrow`);
+      expect(m[name].rows, name).toBe(tables[name].numRows);
+      expect(m[name].bytes, name).toBe(facts.relations[name].length);
+      expect(m[name].batches, name).toBe(tables[name].numRows === 0 ? 0 : 1);
+      expect(m[name].file).toBe(`${name}.arrow`);
+      expect(m[name].blake3, name).toMatch(/^[0-9a-f]{64}$/);
+      expect(m[name].duplicates_dropped, name).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(m[name])).toEqual(['file', 'rows', 'batches', 'bytes', 'blake3', 'duplicates_dropped']);
     }
     expect(facts.manifest).toMatchObject({ facts: 'facts@1', ids: 'ids@0.1', source: 'java-graph@0.1', engine: 'circle-ir@test', chunk_rows: 65536 });
+  });
+
+  it('every relation is a set with unique keys, in strictly increasing canonical order', () => {
+    const set = javaGraphFactSet(plain, files(JAVA_APP).map(f => ({ ...f, imports: [] })));
+    for (const name of FACTS_RELATION_NAMES) {
+      const rel = FACTS_RELATIONS[name];
+      const rows = tableRows(rel, set.relations[name]);
+      const cmp = rowComparator(rel);
+      for (let i = 1; i < rows.length; i++) expect(cmp(rows[i - 1], rows[i]), name).toBeLessThan(0);
+      expect(keyCollisions(rel, set.relations[name]), name).toBe(0);
+    }
   });
 
   it('rows are in canonical order and carry the ids@0.1 ids and the graph\'s values', () => {
@@ -97,9 +117,9 @@ describe('facts@1 Arrow emission', () => {
     expect(new Set(sorted)).toEqual(new Set(plain.files.flatMap(f => f.decls.map(d => d.id))));
     for (let i = 1; i < declIds.length; i++) expect(Buffer.compare(Buffer.from(declIds[i - 1]), Buffer.from(declIds[i]))).toBeLessThanOrEqual(0);
 
-    const rows = javaGraphFacts(plain, files(JAVA_APP).map(f => ({ ...f, imports: [] })));
+    const rows = tableRows(FACTS_RELATIONS.call, javaGraphFactSet(plain, files(JAVA_APP).map(f => ({ ...f, imports: [] }))).relations.call);
     const cmp = rowComparator(FACTS_RELATIONS.call);
-    for (let i = 1; i < rows.call.length; i++) expect(cmp(rows.call[i - 1], rows.call[i])).toBeLessThanOrEqual(0);
+    for (let i = 1; i < rows.length; i++) expect(cmp(rows[i - 1], rows[i])).toBeLessThan(0);
 
     const calls = tables.call.toArray().map(r => r.toJSON() as { caller_id: Uint8Array; callee_id: Uint8Array; tier: string; method_name: string; site_file: number; site_line: number; site_col: number });
     const q = new Map(plain.files.flatMap(f => f.decls.map(d => [d.id, d.qualified_name] as const)));
@@ -115,19 +135,27 @@ describe('facts@1 Arrow emission', () => {
     expect(imports).toContainEqual({ file_id: paths.indexOf('src/main/java/app/web/UserController.java'), target: 'app.core.UserService', wildcard: false });
     const entries = tables.entries.toArray().map(r => r.toJSON() as { decl_id: Uint8Array; kind: string; source: string; certainty: string });
     expect(entries.map(e => `${e.kind} ${e.certainty} ${q.get(base32(e.decl_id))} ${e.source}`)).toContain('main declared app:Main.main public static void main(String[])');
-    const unresolved = tables.unresolved.toArray().map(r => r.toJSON() as { reason: string; receiver: string | null });
-    expect(unresolved.length).toBe(plain.unresolved.length);
-    expect(unresolved.map(u => u.receiver ?? null).sort()).toEqual(plain.unresolved.map(u => u.receiver ?? null).sort());
+    const unresolved = tables.unresolved.toArray().map(r => r.toJSON() as { reason: string; receiver: string });
+    expect(unresolved.length + facts.manifest.relations.unresolved.duplicates_dropped).toBe(plain.unresolved.length);
+    // No nulls: an unknown receiver is the empty string.
+    expect(new Set(unresolved.map(u => u.receiver))).toEqual(new Set(plain.unresolved.map(u => u.receiver ?? '')));
     expect(new Set(unresolved.map(u => u.reason))).toEqual(new Set(plain.unresolved.map(u => u.reason)));
+    const bodyHashes = tables.decl.getChild('body_hash')?.toArray() as Uint8Array[];
+    expect(bodyHashes.every(b => b.length === 16 && b.some(x => x !== 0))).toBe(true); // Java always derives one
+    const entryKinds = new Set(tables.entries.getChild('kind')?.toArray() as string[]);
+    expect(entryKinds.has('bean')).toBe(false);
   });
 });
 
 describe('relationToArrowIpc', () => {
   it('chunks rows at 65536 and writes the whole vocabulary as the dictionary', async () => {
     const id = idBytes('a'.repeat(26));
-    const rows = Array.from({ length: 65536 + 3 }, (_, i) => [id, id, 'def-use'] as const);
-    const { bytes, batches } = await relationToArrowIpc('flow', rows.map(r => [...r]));
+    // Distinct rows (a set): the id's last two bytes count up.
+    const rows = Array.from({ length: 65536 + 3 }, (_, i) => { const to = new Uint8Array(id); to[13] = i >> 16; to[14] = (i >> 8) & 0xff; to[15] = i & 0xff; return [id, to, 'def-use']; });
+    const { bytes, batches, rows: kept, duplicatesDropped } = await relationToArrowIpc('flow', rows);
     expect(batches).toBe(2);
+    expect(kept).toBe(65536 + 3);
+    expect(duplicatesDropped).toBe(0);
     const t = tableFromIPC(bytes);
     expect(t.numRows).toBe(65536 + 3);
     expect(t.batches.map(b => b.numRows)).toEqual([65536, 3]);
@@ -136,11 +164,25 @@ describe('relationToArrowIpc', () => {
     expect(kind?.get(0)).toBe('def-use');
   });
 
-  it('refuses a cell that does not fit its column', async () => {
+  it('rows in the row form are made canonical: sorted and deduplicated, duplicates counted', async () => {
+    const a = idBytes('a'.repeat(26));
+    const b = new Uint8Array(16);
+    b[0] = 1;
+    const { bytes, rows, duplicatesDropped } = await relationToArrowIpc('flow', [[b, a, 'taint'], [a, b, 'def-use'], [b, a, 'taint'], [a, b, 'def-use']]);
+    expect(rows).toBe(2);
+    expect(duplicatesDropped).toBe(2);
+    const t = tableFromIPC(bytes);
+    expect(t.toArray().map(r => { const j = r.toJSON() as { from_id: Uint8Array; kind: string }; return `${j.from_id[0]} ${j.kind}`; })).toEqual(['0 def-use', '1 taint']);
+    const out = await factsToArrow({ files: [], decl: [], call: [], unresolved: [], flow: [[a, b, 'taint'], [a, b, 'taint']], imports: [], entries: [], moved: [] });
+    expect(out.manifest.relations.flow).toMatchObject({ rows: 1, duplicates_dropped: 1 });
+  });
+
+  it('refuses a cell that does not fit its column, nulls included', async () => {
     const id = idBytes('a'.repeat(26));
     await expect(relationToArrowIpc('flow', [[id, id, 'nope']])).rejects.toThrow(/vocabulary/);
     await expect(relationToArrowIpc('flow', [[id, id]])).rejects.toThrow(/cells/);
     await expect(relationToArrowIpc('files', [[1, 'p', id, null]])).rejects.toThrow(/non-nullable/);
+    await expect(relationToArrowIpc('unresolved', [[id, 'external', null, 'm', 1, 2, 3]])).rejects.toThrow(/non-nullable/);
     await expect(relationToArrowIpc('files', [[-1, 'p', id, 'java']])).rejects.toThrow(/unsigned 32-bit/);
     await expect(relationToArrowIpc('files', [[1, 7, id, 'java']])).rejects.toThrow(/string/);
     await expect(relationToArrowIpc('files', [[1, 'p', new Uint8Array(3), 'java']])).rejects.toThrow(/16 id bytes/);
@@ -156,6 +198,7 @@ describe('relationToArrowIpc', () => {
       expect(t.schema.fields.map(f => f.name)).toEqual(FACTS_RELATIONS[name].columns.map(c => c.name));
     }
     expect(Object.keys(out.manifest)).toEqual(['facts', 'ids', 'chunk_rows', 'relations']);
+    for (const name of FACTS_RELATION_NAMES) expect(out.manifest.relations[name].duplicates_dropped).toBe(0);
   });
 });
 

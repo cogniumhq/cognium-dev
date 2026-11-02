@@ -1,6 +1,7 @@
 /**
- * `facts@1` (PROPOSED): the schema file is well-formed, the TypeScript mirror
- * agrees with it, and the canonical-order comparator is a total order.
+ * `facts@1`: the schema file is well-formed, the TypeScript mirror agrees
+ * with it, no column is nullable (sets, no nulls), and the canonical-order
+ * comparator is a total order.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -17,7 +18,7 @@ import {
   type FactRow,
   type FactValue,
 } from '../../src/facts/schema.js';
-import { canonicalRows, compareBytes, compareCodePoints, compareValues, idBytes, rowComparator } from '../../src/facts/order.js';
+import { canonicalRows, canonicalSet, compareBytes, compareCodePoints, compareValues, idBytes, rowComparator } from '../../src/facts/order.js';
 import { base32, digest128 } from '../../src/stable-ids/hash.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +28,7 @@ interface SchemaFile {
   ids: string;
   id_encoding: { arrow: string; width: number };
   types: Record<string, string>;
-  canonical_order: { key_then_remaining_columns: boolean; null_first: boolean; strings: string };
+  canonical_order: { key_then_remaining_columns: boolean; null_first: boolean; strings: string; sets: boolean };
   chunking: { chunk_rows: number; ipc: string };
   relations: Record<string, { key: string[]; columns: { name: string; type: string; nullable: boolean; values?: string[] }[] }>;
 }
@@ -45,6 +46,21 @@ describe('facts@1 schema file', () => {
     expect(schema.canonical_order.key_then_remaining_columns).toBe(true);
     expect(schema.canonical_order.null_first).toBe(true);
     expect(schema.canonical_order.strings).toBe('code-point');
+    expect(schema.canonical_order.sets).toBe(true);
+  });
+
+  it('has no nullable column (reconciliation decision 4) and no `bean` (decision 6)', () => {
+    for (const [name, rel] of Object.entries(schema.relations)) {
+      for (const c of rel.columns) expect(c.nullable, `${name}.${c.name}`).toBe(false);
+    }
+    expect(schema.relations.entries.columns.find(c => c.name === 'kind')?.values).not.toContain('bean');
+    expect(schema.relations.entries.columns.find(c => c.name === 'kind')?.values).toContain('di');
+  });
+
+  it('keys tell real rows apart: unresolved by site + name + receiver + reason, imports by wildcard too', () => {
+    expect(schema.relations.unresolved.key).toEqual(['site_file', 'site_line', 'site_col', 'method_name', 'receiver', 'reason']);
+    expect(schema.relations.imports.key).toEqual(['file_id', 'target', 'wildcard']);
+    expect(schema.relations.call.key).toEqual(['caller_id', 'site_file', 'site_line', 'site_col', 'callee_id']);
   });
 
   it('has exactly the eight relations, in the order the TypeScript mirror lists them', () => {
@@ -181,6 +197,11 @@ describe('canonical order is total', () => {
       const sorted = canonicalRows(rel, rows);
       expect(canonicalRows(rel, sorted)).toEqual(sorted);
       expect(canonicalRows(rel, [...rows].reverse())).toEqual(sorted);
+      // A set: every row once, in the same order, and the count of what was dropped.
+      const set = canonicalSet(rel, [...rows, ...rows]);
+      expect(set.duplicatesDropped).toBe(rows.length + (rows.length - set.rows.length));
+      for (let i = 1; i < set.rows.length; i++) expect(cmp(set.rows[i - 1], set.rows[i]), name).toBeLessThan(0);
+      expect(canonicalSet(rel, set.rows).duplicatesDropped).toBe(0);
     }
   });
 });

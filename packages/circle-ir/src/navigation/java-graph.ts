@@ -32,7 +32,7 @@ import type { EntryCertainty, EntryKind } from './ts-entry-tables.js';
 import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from './ts-call-edges.js';
 import { joinRoutePath } from './ts-call-edges.js';
 import { factsToArrow, type FactsArrow, type FactsArrowOptions } from '../facts/arrow.js';
-import { javaGraphFacts, type JavaImportRow } from '../facts/java-facts.js';
+import { javaGraphFactSet, type JavaImportRow } from '../facts/java-facts.js';
 
 export const JAVA_GRAPH_SCHEME = 'java-graph@0.1' as const;
 
@@ -51,9 +51,10 @@ export interface JavaGraphOptions {
   mainFiles?: readonly string[];
   entryTables?: JavaEntryTables;
   /**
-   * `'arrow'`: also emit the `facts@1` relations (PROPOSED; graph-store plan
-   * T2) as Arrow IPC file bytes in `JavaGraph.facts`, derived from the
-   * finished graph as a post-pass. Off by default, and when off the graph is
+   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2) as
+   * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
+   * graph as a post-pass (relations are sets: exact duplicates of the graph's
+   * rows collapse, counted in the manifest). Off by default, and when off the graph is
    * exactly what it was: no `facts` key, same JSON. Needs the optional
    * dependency `apache-arrow`.
    */
@@ -510,7 +511,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     };
     if (options.emitFacts === 'arrow') {
       const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode) }));
-      graph.facts = await factsToArrow(javaGraphFacts(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
+      graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
     }
     return graph;
   } finally {

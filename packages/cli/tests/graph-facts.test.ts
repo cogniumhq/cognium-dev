@@ -302,6 +302,9 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
       expect(readFileSync(file).length).toBe(manifest.relations[name].bytes);
       // Arrow IPC file magic.
       expect(readFileSync(file).subarray(0, 6).toString()).toBe('ARROW1');
+      // Digests in hex; relations are sets with the dedupe count recorded.
+      expect(manifest.relations[name].blake3).toMatch(/^[0-9a-f]{64}$/);
+      expect(manifest.relations[name].duplicates_dropped).toBe(0);
     }
     expect(manifest.relations.files.rows).toBe(2);
     expect(manifest.relations.imports.rows).toBe(2);

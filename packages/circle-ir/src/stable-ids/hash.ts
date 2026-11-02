@@ -4,10 +4,11 @@
  *
  * A dependency-free implementation so the library keeps its two dependencies
  * and runs unchanged in Node.js, browsers and Workers. It is the plain
- * reference algorithm (no SIMD, no incremental API): ids hash short strings —
- * a qualified name, a signature, one function body — so throughput is not the
- * constraint, and determinism across hosts is. Checked against the published
- * BLAKE3 test vectors in `tests/stable-ids/hash.test.ts`.
+ * reference algorithm (no SIMD, no incremental API) with an allocation-free
+ * compression function: ids hash short strings — a qualified name, a
+ * signature, one function body — but the `facts@1` emitter also digests
+ * every IPC file it writes (tens of MB), so the inner loop matters. Checked
+ * against the published BLAKE3 test vectors in `tests/stable-ids/hash.test.ts`.
  */
 
 const IV = new Uint32Array([
@@ -17,6 +18,16 @@ const IV = new Uint32Array([
 
 const MSG_PERMUTATION = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
 
+/** `SCHEDULE[r][i]`: which message word round `r` reads at position `i` (the permutation applied `r` times). */
+const SCHEDULE: Uint8Array[] = [];
+{
+  let perm = Array.from({ length: 16 }, (_, i) => i);
+  for (let r = 0; r < 7; r++) {
+    SCHEDULE.push(Uint8Array.from(perm));
+    perm = MSG_PERMUTATION.map(i => perm[i]);
+  }
+}
+
 const CHUNK_START = 1;
 const CHUNK_END = 2;
 const PARENT = 4;
@@ -25,68 +36,134 @@ const ROOT = 8;
 const BLOCK_LEN = 64;
 const CHUNK_LEN = 1024;
 
-function rotr(x: number, n: number): number {
-  return ((x >>> n) | (x << (32 - n))) >>> 0;
-}
+// The message block of the compression in flight, shared by every call (the
+// function is synchronous and not re-entrant): no allocation per block, which
+// is what makes hashing a 50 MB IPC file cost tens of milliseconds, not
+// seconds.
+const M = new Uint32Array(16);
 
-function g(s: Uint32Array, a: number, b: number, c: number, d: number, mx: number, my: number): void {
-  s[a] = (s[a] + s[b] + mx) >>> 0;
-  s[d] = rotr(s[d] ^ s[a], 16);
-  s[c] = (s[c] + s[d]) >>> 0;
-  s[b] = rotr(s[b] ^ s[c], 12);
-  s[a] = (s[a] + s[b] + my) >>> 0;
-  s[d] = rotr(s[d] ^ s[a], 8);
-  s[c] = (s[c] + s[d]) >>> 0;
-  s[b] = rotr(s[b] ^ s[c], 7);
-}
-
-function round(s: Uint32Array, m: Uint32Array): void {
-  g(s, 0, 4, 8, 12, m[0], m[1]);
-  g(s, 1, 5, 9, 13, m[2], m[3]);
-  g(s, 2, 6, 10, 14, m[4], m[5]);
-  g(s, 3, 7, 11, 15, m[6], m[7]);
-  g(s, 0, 5, 10, 15, m[8], m[9]);
-  g(s, 1, 6, 11, 12, m[10], m[11]);
-  g(s, 2, 7, 8, 13, m[12], m[13]);
-  g(s, 3, 4, 9, 14, m[14], m[15]);
-}
-
-/** The compression function; returns the first 8 output words. */
-function compress(
-  cv: Uint32Array,
-  block: Uint32Array,
-  counter: number,
-  blockLen: number,
-  flags: number,
-): Uint32Array {
-  const s = new Uint32Array(16);
-  s.set(cv, 0);
-  s.set(IV.subarray(0, 4), 8);
-  s[12] = counter >>> 0;
+/**
+ * The compression function on `cv` (8 words at `cvOffset`) and the block in
+ * `M`; writes the first 8 output words to `out[outOffset..]`, or all 16 (root
+ * output) when `full` is set. The state lives in locals and the eight G
+ * steps of a round are written out: the quarter-round mixing is the whole
+ * cost of the hash, and a G helper over a state array spends it on loads.
+ */
+function compress(cv: Uint32Array, cvOffset: number, counter: number, blockLen: number, flags: number, out: Uint32Array, outOffset: number, full = false): void {
+  let v0 = cv[cvOffset];
+  let v1 = cv[cvOffset + 1];
+  let v2 = cv[cvOffset + 2];
+  let v3 = cv[cvOffset + 3];
+  let v4 = cv[cvOffset + 4];
+  let v5 = cv[cvOffset + 5];
+  let v6 = cv[cvOffset + 6];
+  let v7 = cv[cvOffset + 7];
+  let v8 = IV[0];
+  let v9 = IV[1];
+  let v10 = IV[2];
+  let v11 = IV[3];
+  let v12 = counter >>> 0;
   // Counters here never exceed 2^53 (a JS number); the high word is exact.
-  s[13] = Math.floor(counter / 0x100000000) >>> 0;
-  s[14] = blockLen;
-  s[15] = flags;
-  let m = Uint32Array.from(block);
+  let v13 = Math.floor(counter / 0x100000000) >>> 0;
+  let v14 = blockLen;
+  let v15 = flags;
   for (let r = 0; r < 7; r++) {
-    round(s, m);
-    if (r < 6) {
-      const p = new Uint32Array(16);
-      for (let i = 0; i < 16; i++) p[i] = m[MSG_PERMUTATION[i]];
-      m = p;
-    }
+    const p = SCHEDULE[r];
+    v0 = (v0 + v4 + M[p[0]]) >>> 0;
+    v12 ^= v0; v12 = ((v12 >>> 16) | (v12 << 16)) >>> 0;
+    v8 = (v8 + v12) >>> 0;
+    v4 ^= v8; v4 = ((v4 >>> 12) | (v4 << 20)) >>> 0;
+    v0 = (v0 + v4 + M[p[1]]) >>> 0;
+    v12 ^= v0; v12 = ((v12 >>> 8) | (v12 << 24)) >>> 0;
+    v8 = (v8 + v12) >>> 0;
+    v4 ^= v8; v4 = ((v4 >>> 7) | (v4 << 25)) >>> 0;
+    v1 = (v1 + v5 + M[p[2]]) >>> 0;
+    v13 ^= v1; v13 = ((v13 >>> 16) | (v13 << 16)) >>> 0;
+    v9 = (v9 + v13) >>> 0;
+    v5 ^= v9; v5 = ((v5 >>> 12) | (v5 << 20)) >>> 0;
+    v1 = (v1 + v5 + M[p[3]]) >>> 0;
+    v13 ^= v1; v13 = ((v13 >>> 8) | (v13 << 24)) >>> 0;
+    v9 = (v9 + v13) >>> 0;
+    v5 ^= v9; v5 = ((v5 >>> 7) | (v5 << 25)) >>> 0;
+    v2 = (v2 + v6 + M[p[4]]) >>> 0;
+    v14 ^= v2; v14 = ((v14 >>> 16) | (v14 << 16)) >>> 0;
+    v10 = (v10 + v14) >>> 0;
+    v6 ^= v10; v6 = ((v6 >>> 12) | (v6 << 20)) >>> 0;
+    v2 = (v2 + v6 + M[p[5]]) >>> 0;
+    v14 ^= v2; v14 = ((v14 >>> 8) | (v14 << 24)) >>> 0;
+    v10 = (v10 + v14) >>> 0;
+    v6 ^= v10; v6 = ((v6 >>> 7) | (v6 << 25)) >>> 0;
+    v3 = (v3 + v7 + M[p[6]]) >>> 0;
+    v15 ^= v3; v15 = ((v15 >>> 16) | (v15 << 16)) >>> 0;
+    v11 = (v11 + v15) >>> 0;
+    v7 ^= v11; v7 = ((v7 >>> 12) | (v7 << 20)) >>> 0;
+    v3 = (v3 + v7 + M[p[7]]) >>> 0;
+    v15 ^= v3; v15 = ((v15 >>> 8) | (v15 << 24)) >>> 0;
+    v11 = (v11 + v15) >>> 0;
+    v7 ^= v11; v7 = ((v7 >>> 7) | (v7 << 25)) >>> 0;
+    v0 = (v0 + v5 + M[p[8]]) >>> 0;
+    v15 ^= v0; v15 = ((v15 >>> 16) | (v15 << 16)) >>> 0;
+    v10 = (v10 + v15) >>> 0;
+    v5 ^= v10; v5 = ((v5 >>> 12) | (v5 << 20)) >>> 0;
+    v0 = (v0 + v5 + M[p[9]]) >>> 0;
+    v15 ^= v0; v15 = ((v15 >>> 8) | (v15 << 24)) >>> 0;
+    v10 = (v10 + v15) >>> 0;
+    v5 ^= v10; v5 = ((v5 >>> 7) | (v5 << 25)) >>> 0;
+    v1 = (v1 + v6 + M[p[10]]) >>> 0;
+    v12 ^= v1; v12 = ((v12 >>> 16) | (v12 << 16)) >>> 0;
+    v11 = (v11 + v12) >>> 0;
+    v6 ^= v11; v6 = ((v6 >>> 12) | (v6 << 20)) >>> 0;
+    v1 = (v1 + v6 + M[p[11]]) >>> 0;
+    v12 ^= v1; v12 = ((v12 >>> 8) | (v12 << 24)) >>> 0;
+    v11 = (v11 + v12) >>> 0;
+    v6 ^= v11; v6 = ((v6 >>> 7) | (v6 << 25)) >>> 0;
+    v2 = (v2 + v7 + M[p[12]]) >>> 0;
+    v13 ^= v2; v13 = ((v13 >>> 16) | (v13 << 16)) >>> 0;
+    v8 = (v8 + v13) >>> 0;
+    v7 ^= v8; v7 = ((v7 >>> 12) | (v7 << 20)) >>> 0;
+    v2 = (v2 + v7 + M[p[13]]) >>> 0;
+    v13 ^= v2; v13 = ((v13 >>> 8) | (v13 << 24)) >>> 0;
+    v8 = (v8 + v13) >>> 0;
+    v7 ^= v8; v7 = ((v7 >>> 7) | (v7 << 25)) >>> 0;
+    v3 = (v3 + v4 + M[p[14]]) >>> 0;
+    v14 ^= v3; v14 = ((v14 >>> 16) | (v14 << 16)) >>> 0;
+    v9 = (v9 + v14) >>> 0;
+    v4 ^= v9; v4 = ((v4 >>> 12) | (v4 << 20)) >>> 0;
+    v3 = (v3 + v4 + M[p[15]]) >>> 0;
+    v14 ^= v3; v14 = ((v14 >>> 8) | (v14 << 24)) >>> 0;
+    v9 = (v9 + v14) >>> 0;
+    v4 ^= v9; v4 = ((v4 >>> 7) | (v4 << 25)) >>> 0;
   }
-  const out = new Uint32Array(8);
-  for (let i = 0; i < 8; i++) out[i] = (s[i] ^ s[i + 8]) >>> 0;
-  return out;
+  out[outOffset] = (v0 ^ v8) >>> 0;
+  out[outOffset + 1] = (v1 ^ v9) >>> 0;
+  out[outOffset + 2] = (v2 ^ v10) >>> 0;
+  out[outOffset + 3] = (v3 ^ v11) >>> 0;
+  out[outOffset + 4] = (v4 ^ v12) >>> 0;
+  out[outOffset + 5] = (v5 ^ v13) >>> 0;
+  out[outOffset + 6] = (v6 ^ v14) >>> 0;
+  out[outOffset + 7] = (v7 ^ v15) >>> 0;
+  if (full) {
+    out[outOffset + 8] = (v8 ^ cv[cvOffset]) >>> 0;
+    out[outOffset + 9] = (v9 ^ cv[cvOffset + 1]) >>> 0;
+    out[outOffset + 10] = (v10 ^ cv[cvOffset + 2]) >>> 0;
+    out[outOffset + 11] = (v11 ^ cv[cvOffset + 3]) >>> 0;
+    out[outOffset + 12] = (v12 ^ cv[cvOffset + 4]) >>> 0;
+    out[outOffset + 13] = (v13 ^ cv[cvOffset + 5]) >>> 0;
+    out[outOffset + 14] = (v14 ^ cv[cvOffset + 6]) >>> 0;
+    out[outOffset + 15] = (v15 ^ cv[cvOffset + 7]) >>> 0;
+  }
 }
 
-function blockWords(bytes: Uint8Array, offset: number, len: number): Uint32Array {
-  const w = new Uint32Array(16);
-  for (let i = 0; i < len; i++) {
-    w[i >> 2] |= bytes[offset + i] << ((i & 3) * 8);
+/** Load `len` bytes at `offset` into `M` as little-endian words, zero-padded. */
+function loadBlock(bytes: Uint8Array, offset: number, len: number): void {
+  if (len === BLOCK_LEN) {
+    for (let i = 0, o = offset; i < 16; i++, o += 4) {
+      M[i] = (bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24)) >>> 0;
+    }
+    return;
   }
-  return w;
+  M.fill(0);
+  for (let i = 0; i < len; i++) M[i >> 2] |= bytes[offset + i] << ((i & 3) * 8);
 }
 
 /** The pending compression of a chunk's last block or of a parent node. */
@@ -98,58 +175,89 @@ interface Output {
   flags: number;
 }
 
-function chainingValue(o: Output): Uint32Array {
-  return compress(o.cv, o.block, o.counter, o.blockLen, o.flags);
-}
-
-function chunkOutput(input: Uint8Array, start: number, end: number, chunkCounter: number): Output {
-  let cv: Uint32Array = IV;
+/**
+ * Compress the whole chunk `[start, end)` (not the final one) and write its
+ * chaining value to `out[outOffset..]`.
+ */
+function chunkChainingValue(input: Uint8Array, start: number, end: number, chunkCounter: number, out: Uint32Array, outOffset: number): void {
+  const cv = new Uint32Array(8);
+  cv.set(IV);
   let offset = start;
   let blocksDone = 0;
-  // Every block but the last is compressed straight into the chaining value.
   while (end - offset > BLOCK_LEN) {
-    const flags = blocksDone === 0 ? CHUNK_START : 0;
-    cv = compress(cv, blockWords(input, offset, BLOCK_LEN), chunkCounter, BLOCK_LEN, flags);
+    loadBlock(input, offset, BLOCK_LEN);
+    compress(cv, 0, chunkCounter, BLOCK_LEN, blocksDone === 0 ? CHUNK_START : 0, cv, 0);
     offset += BLOCK_LEN;
     blocksDone++;
   }
   const len = end - offset;
-  return {
-    cv,
-    block: blockWords(input, offset, len),
-    counter: chunkCounter,
-    blockLen: len,
-    flags: (blocksDone === 0 ? CHUNK_START : 0) | CHUNK_END,
-  };
+  loadBlock(input, offset, len);
+  compress(cv, 0, chunkCounter, len, (blocksDone === 0 ? CHUNK_START : 0) | CHUNK_END, out, outOffset);
 }
 
-function parentOutput(left: Uint32Array, right: Uint32Array): Output {
+/** The final chunk's pending output (its last block is compressed with the root flag later). */
+function finalChunkOutput(input: Uint8Array, start: number, end: number, chunkCounter: number): Output {
+  const cv = new Uint32Array(8);
+  cv.set(IV);
+  let offset = start;
+  let blocksDone = 0;
+  while (end - offset > BLOCK_LEN) {
+    loadBlock(input, offset, BLOCK_LEN);
+    compress(cv, 0, chunkCounter, BLOCK_LEN, blocksDone === 0 ? CHUNK_START : 0, cv, 0);
+    offset += BLOCK_LEN;
+    blocksDone++;
+  }
+  const len = end - offset;
+  loadBlock(input, offset, len);
+  return { cv, block: Uint32Array.from(M), counter: chunkCounter, blockLen: len, flags: (blocksDone === 0 ? CHUNK_START : 0) | CHUNK_END };
+}
+
+const IV_CV = new Uint32Array(IV);
+
+/** Parent node of two chaining values (`left` at `stack[leftOffset..]`, `right` at `rightOffset`) as a pending output. */
+function parentOutput(stack: Uint32Array, leftOffset: number, right: Uint32Array, rightOffset: number): Output {
   const block = new Uint32Array(16);
-  block.set(left, 0);
-  block.set(right, 8);
-  return { cv: IV, block, counter: 0, blockLen: BLOCK_LEN, flags: PARENT };
+  for (let i = 0; i < 8; i++) {
+    block[i] = stack[leftOffset + i];
+    block[8 + i] = right[rightOffset + i];
+  }
+  return { cv: IV_CV, block, counter: 0, blockLen: BLOCK_LEN, flags: PARENT };
 }
 
 /** BLAKE3 of `input`, the default 32-byte output. */
 export function blake3(input: Uint8Array): Uint8Array {
   const chunkCount = Math.max(1, Math.ceil(input.length / CHUNK_LEN));
-  const stack: Uint32Array[] = [];
+  // The chaining-value stack: at most 54 subtrees for any JS-sized input.
+  const stack = new Uint32Array(8 * 54);
+  let depth = 0;
+  const cv = new Uint32Array(8);
   for (let i = 0; i < chunkCount - 1; i++) {
-    let cv = chainingValue(chunkOutput(input, i * CHUNK_LEN, (i + 1) * CHUNK_LEN, i));
+    chunkChainingValue(input, i * CHUNK_LEN, (i + 1) * CHUNK_LEN, i, cv, 0);
     // Merge completed subtrees: one merge per trailing zero bit of the count.
     let total = i + 1;
     while ((total & 1) === 0) {
-      cv = chainingValue(parentOutput(stack.pop() as Uint32Array, cv));
+      depth--;
+      for (let k = 0; k < 8; k++) {
+        M[k] = stack[depth * 8 + k];
+        M[8 + k] = cv[k];
+      }
+      compress(IV_CV, 0, 0, BLOCK_LEN, PARENT, cv, 0);
       total >>= 1;
     }
-    stack.push(cv);
+    stack.set(cv, depth * 8);
+    depth++;
   }
   const last = chunkCount - 1;
-  let output = chunkOutput(input, last * CHUNK_LEN, input.length, last);
-  while (stack.length > 0) {
-    output = parentOutput(stack.pop() as Uint32Array, chainingValue(output));
+  let output = finalChunkOutput(input, last * CHUNK_LEN, input.length, last);
+  while (depth > 0) {
+    M.set(output.block);
+    compress(output.cv, 0, output.counter, output.blockLen, output.flags, cv, 0);
+    depth--;
+    output = parentOutput(stack, depth * 8, cv, 0);
   }
-  const words = compress(output.cv, output.block, 0, output.blockLen, output.flags | ROOT);
+  M.set(output.block);
+  const words = new Uint32Array(8);
+  compress(output.cv, 0, 0, output.blockLen, output.flags | ROOT, words, 0);
   const bytes = new Uint8Array(32);
   for (let i = 0; i < 8; i++) {
     bytes[i * 4] = words[i] & 0xff;

@@ -1,6 +1,6 @@
 /**
- * `facts@1` (PROPOSED): the fact relations as columns in canonical order,
- * keyed by `ids@0.1`, and their Arrow IPC wire form. Opt-in — see
+ * `facts@1`: the fact relations as columns in canonical order (sets, no
+ * nulls), keyed by `ids@0.1`, and their Arrow IPC wire form. Opt-in — see
  * `JavaGraphOptions.emitFacts`.
  */
 
@@ -21,8 +21,10 @@ export {
   sortColumns,
 } from './schema.js';
 export type { FactsScheme, FactsColumnType, FactsColumn, FactsRelation, FactsRelationName, FactValue, FactRow, FactRows } from './schema.js';
-export { compareBytes, compareCodePoints, compareValues, rowComparator, canonicalRows, idBytes } from './order.js';
-export { javaGraphFacts, contentHash } from './java-facts.js';
-export type { JavaImportRow, JavaFactsInput } from './java-facts.js';
-export { factsToArrow, relationToArrowIpc, loadArrow } from './arrow.js';
+export { compareBytes, compareCodePoints, compareValues, rowComparator, canonicalRows, canonicalSet, idBytes } from './order.js';
+export { IdDecoder, allocColumn, allocTable, dictIndex, idBytesInto, compareStrings, tableComparator, canonicalTable, keyCollisions, tableRow, tableRows, tableFromRows } from './table.js';
+export type { FactColumnData, FactTable } from './table.js';
+export { javaGraphFacts, javaGraphFactSet, contentHash, factsEntryKind } from './java-facts.js';
+export type { JavaImportRow, JavaFactsInput, FactSet } from './java-facts.js';
+export { factsToArrow, relationToArrowIpc, loadArrow, hex } from './arrow.js';
 export type { FactsArrow, FactsArrowOptions, FactsManifest, FactsManifestRelation } from './arrow.js';

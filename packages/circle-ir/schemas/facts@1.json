@@ -1,5 +1,5 @@
 {
-  "$comment": "facts@1 — PROPOSED (graph-store plan 0.1, T1). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1. Adopted when the stable-ids plan (#20) is; until then every consumer treats this file as a draft. The TypeScript mirror is src/facts/schema.ts and tests/facts/schema.test.ts locks the two together.",
+  "$comment": "facts@1 (graph-store plan 0.1, T1). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1 (stable-ids plan adopted 2026-11-01). The contract follows the 2026-11-01 reconciliation record (decisions 1-11): 128-bit ids, sets with no nulls, the producer's metadata keys, hex digests. This file is the schema the store reads; the TypeScript mirror is src/facts/schema.ts and tests/facts/schema.test.ts locks the two together.",
   "scheme": "facts@1",
   "ids": "ids@0.1",
   "id_encoding": {
@@ -16,10 +16,11 @@
     "dict": "Dictionary<Int8, Utf8>"
   },
   "canonical_order": {
-    "$comment": "Within a relation rows are sorted ascending by the key columns in key order, then by every remaining column in schema order, so the comparator is total and a relation with duplicate keys still has one byte form. Column orders: fixed16 by unsigned bytes; u32 numerically; utf8 and dict by Unicode code point (which equals UTF-8 byte order), never by UTF-16 code unit or dictionary index; bool false before true; null before every value.",
+    "$comment": "Within a relation rows are sorted ascending by the key columns in key order, then by every remaining column in schema order, so the comparator is total and a relation has one byte form. Column orders: fixed16 by unsigned bytes; u32 numerically; utf8 and dict by Unicode code point (which equals UTF-8 byte order), never by UTF-16 code unit or dictionary index; bool false before true; null before every value (a dead branch: no column is nullable). Relations are sets: after the sort exact duplicate rows are dropped and counted (manifest duplicates_dropped per relation), so rows are strictly increasing and a store may refuse equal rows.",
     "key_then_remaining_columns": true,
     "null_first": true,
-    "strings": "code-point"
+    "strings": "code-point",
+    "sets": true
   },
   "chunking": {
     "$comment": "After the canonical sort a relation is cut into record batches of chunk_rows rows each (the last one shorter); a relation with no rows has no record batch. One Arrow IPC file per relation, so the batch boundaries are part of the bytes. Fixed row-count chunks were chosen over the design's file_id ranges because five of the eight relations are not keyed by file_id; see the plan's open questions.",
@@ -27,7 +28,7 @@
     "ipc": "file"
   },
   "metadata": {
-    "$comment": "Schema-level custom metadata, and nothing else (no timestamps, no host): facts and ids always; engine and parser when the caller names them.",
+    "$comment": "Schema-level custom metadata, and nothing else (no timestamps, no host): facts (the value facts@1, never a -draft) and ids always; engine and parser when the caller names them. The producer's manifest.json beside the files repeats them and adds source, chunk_rows and per relation file, rows, batches, bytes, blake3 (file-byte digest, hex) and duplicates_dropped.",
     "facts": "facts@1",
     "ids": "ids@0.1",
     "engine": "optional, e.g. circle-ir@4.19.0",
@@ -46,13 +47,13 @@
     "decl": {
       "key": ["id"],
       "columns": [
-        { "name": "id", "type": "fixed16", "nullable": false, "doc": "ids@0.1 declaration id." },
+        { "name": "id", "type": "fixed16", "nullable": false, "doc": "ids@0.1 declaration id. Unique per snapshot: when two files derive the same id (two package-info.java of one package in different bundles), the later one in file order takes the stable-ids #n suffix on its qualified_name and the id derived from it, as the ids@0.1 duplicate rule does within one scope." },
         { "name": "kind", "type": "dict", "nullable": false, "values": ["module", "type", "method", "field", "function"] },
         { "name": "qualified_name", "type": "utf8", "nullable": false },
         { "name": "signature", "type": "utf8", "nullable": false, "doc": "The ids@0.1 canonical signature as written; empty for modules and types without type parameters." },
         { "name": "file_id", "type": "u32", "nullable": false },
         { "name": "line", "type": "u32", "nullable": false, "doc": "1-based start line." },
-        { "name": "body_hash", "type": "fixed16", "nullable": true, "doc": "ids@0.1 body hash; null when the engine derived none." }
+        { "name": "body_hash", "type": "fixed16", "nullable": false, "doc": "ids@0.1 body hash; all-zero bytes when the engine derived none (no nulls in facts@1; Java always derives one)." }
       ]
     },
     "call": {
@@ -68,11 +69,12 @@
       ]
     },
     "unresolved": {
-      "key": ["site_file", "site_line", "site_col"],
+      "key": ["site_file", "site_line", "site_col", "method_name", "receiver", "reason"],
+      "doc": "Key: the site and the name as written (reconciliation row 9) plus receiver and reason, because on real data one site and name still carries several rows that differ only in those (T4, 2026-11-01). caller_id is a function of the site and not in the key.",
       "columns": [
         { "name": "caller_id", "type": "fixed16", "nullable": false },
         { "name": "reason", "type": "dict", "nullable": false, "values": ["external", "dynamic", "generated", "overload-ambiguous", "parse-error", "unsupported-language", "unknown"] },
-        { "name": "receiver", "type": "utf8", "nullable": true, "doc": "The library type the call lands on, when known." },
+        { "name": "receiver", "type": "utf8", "nullable": false, "doc": "The library type the call lands on; empty when unknown (no nulls in facts@1)." },
         { "name": "method_name", "type": "utf8", "nullable": false },
         { "name": "site_file", "type": "u32", "nullable": false },
         { "name": "site_line", "type": "u32", "nullable": false },
@@ -89,18 +91,18 @@
       "doc": "Def-use and taint edges. Empty from the java-graph@0.1 post-pass: these edges live on ids@0.1 node ids, which have no fixed-width form yet."
     },
     "imports": {
-      "key": ["file_id", "target"],
+      "key": ["file_id", "target", "wildcard"],
       "columns": [
         { "name": "file_id", "type": "u32", "nullable": false },
         { "name": "target", "type": "utf8", "nullable": false, "doc": "The imported name as written, without a trailing `.*`; a static import's member path for `import static`." },
-        { "name": "wildcard", "type": "bool", "nullable": false }
+        { "name": "wildcard", "type": "bool", "nullable": false, "doc": "In the key: one file may import both X and X.*, which share target." }
       ]
     },
     "entries": {
       "key": ["decl_id", "kind", "source"],
       "columns": [
         { "name": "decl_id", "type": "fixed16", "nullable": false },
-        { "name": "kind", "type": "dict", "nullable": false, "values": ["main", "route", "listener", "scheduled", "export", "bean", "di", "reflection", "lifecycle", "test", "osgi-ds", "extension-point", "data-declared", "script"], "doc": "entry-index@0.1 kinds plus the design's data-declared kinds; `bean` is the engine's name for the design's `di`." },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["main", "route", "listener", "scheduled", "export", "di", "reflection", "lifecycle", "test", "osgi-ds", "extension-point", "data-declared", "script"], "doc": "entry-index@0.1 kinds plus the design's data-declared kinds; the engine's `bean` is written as `di` (one meaning, one word)." },
         { "name": "source", "type": "utf8", "nullable": false, "doc": "What declared the entry — the annotation, the supertype member, the manifest or file; the engine's evidence line." },
         { "name": "certainty", "type": "dict", "nullable": false, "values": ["declared", "conventional", "inferred"] }
       ]

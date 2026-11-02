@@ -6,8 +6,10 @@
  * Cells compare by type — id bytes unsigned bytewise, integers numerically,
  * strings by Unicode code point (which is UTF-8 byte order, so a Rust reader
  * sorting the raw bytes agrees), booleans false before true, null before any
- * value — and rows by the key columns first, then every remaining column in
- * schema order. Two rows compare equal only when every cell is equal.
+ * value (a dead branch: `facts@1` has no nullable column) — and rows by the
+ * key columns first, then every remaining column in schema order. Two rows
+ * compare equal only when every cell is equal; relations are sets, so equal
+ * rows collapse to one (`canonicalSet`).
  */
 
 import { FACTS_ID_WIDTH, type FactRow, type FactValue, type FactsRelation, sortColumns } from './schema.js';
@@ -60,9 +62,25 @@ export function rowComparator(relation: FactsRelation): (a: FactRow, b: FactRow)
   };
 }
 
-/** `rows` sorted in canonical order (a new array). */
+/** `rows` sorted in canonical order (a new array); duplicates kept. */
 export function canonicalRows(relation: FactsRelation, rows: readonly FactRow[]): FactRow[] {
   return [...rows].sort(rowComparator(relation));
+}
+
+/**
+ * `rows` as a canonical set: sorted, exact duplicates (equal under the total
+ * order) dropped and counted. The row-form reference for what the emitter
+ * does on columns (`canonicalTable`).
+ */
+export function canonicalSet(relation: FactsRelation, rows: readonly FactRow[]): { rows: FactRow[]; duplicatesDropped: number } {
+  const cmp = rowComparator(relation);
+  const sorted = [...rows].sort(cmp);
+  const out: FactRow[] = [];
+  for (const r of sorted) {
+    if (out.length > 0 && cmp(out[out.length - 1], r) === 0) continue;
+    out.push(r);
+  }
+  return { rows: out, duplicatesDropped: rows.length - out.length };
 }
 
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';

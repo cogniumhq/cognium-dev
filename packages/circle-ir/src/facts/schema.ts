@@ -1,6 +1,11 @@
 /**
- * `facts@1` — PROPOSED. The fact relations circle-ir owes a graph store, as
- * columns in canonical order keyed by `ids@0.1` (graph-store plan 0.1, T1).
+ * `facts@1` — the fact relations circle-ir owes a graph store, as columns in
+ * canonical order keyed by `ids@0.1` (graph-store plan 0.1, T1; contract per
+ * the 2026-11-01 reconciliation record, decisions 1–11).
+ *
+ * Relations are **sets** with **no nulls**: the producer deduplicates after
+ * the canonical sort and reports what it dropped; "none" is a sentinel
+ * (`unresolved.receiver` empty, `decl.body_hash` all-zero bytes).
  *
  * This module mirrors `schemas/facts@1.json` field for field;
  * `tests/facts/schema.test.ts` fails when the two drift. The JSON file is the
@@ -23,6 +28,7 @@ export type FactsColumnType = 'fixed16' | 'u32' | 'utf8' | 'bool' | 'dict';
 export interface FactsColumn {
   readonly name: string;
   readonly type: FactsColumnType;
+  /** Always `false` in `facts@1` (no nulls); kept so the schema file and the Arrow fields state it. */
   readonly nullable: boolean;
   /** `dict` columns: the whole vocabulary, in dictionary order. */
   readonly values?: readonly string[];
@@ -42,7 +48,8 @@ export const FACTS_DECL_KINDS = ['module', 'type', 'method', 'field', 'function'
 export const FACTS_TIERS = ['exact', 'polymorphic', 'inferred'] as const;
 export const FACTS_UNRESOLVED_REASONS = ['external', 'dynamic', 'generated', 'overload-ambiguous', 'parse-error', 'unsupported-language', 'unknown'] as const;
 export const FACTS_FLOW_KINDS = ['def-use', 'taint'] as const;
-export const FACTS_ENTRY_KINDS = ['main', 'route', 'listener', 'scheduled', 'export', 'bean', 'di', 'reflection', 'lifecycle', 'test', 'osgi-ds', 'extension-point', 'data-declared', 'script'] as const;
+/** The engine's `entry-index@0.1` kinds (its `bean` written as `di`) plus the design's data-declared kinds. */
+export const FACTS_ENTRY_KINDS = ['main', 'route', 'listener', 'scheduled', 'export', 'di', 'reflection', 'lifecycle', 'test', 'osgi-ds', 'extension-point', 'data-declared', 'script'] as const;
 export const FACTS_ENTRY_CERTAINTIES = ['declared', 'conventional', 'inferred'] as const;
 export const FACTS_MOVE_KINDS = ['moved', 'renamed'] as const;
 
@@ -68,7 +75,7 @@ export const FACTS_RELATIONS: Readonly<Record<FactsRelationName, FactsRelation>>
       col('signature', 'utf8'),
       col('file_id', 'u32'),
       col('line', 'u32'),
-      col('body_hash', 'fixed16', true),
+      col('body_hash', 'fixed16'),
     ],
   },
   call: {
@@ -84,11 +91,11 @@ export const FACTS_RELATIONS: Readonly<Record<FactsRelationName, FactsRelation>>
     ],
   },
   unresolved: {
-    key: ['site_file', 'site_line', 'site_col'],
+    key: ['site_file', 'site_line', 'site_col', 'method_name', 'receiver', 'reason'],
     columns: [
       col('caller_id', 'fixed16'),
       col('reason', 'dict', false, FACTS_UNRESOLVED_REASONS),
-      col('receiver', 'utf8', true),
+      col('receiver', 'utf8'),
       col('method_name', 'utf8'),
       col('site_file', 'u32'),
       col('site_line', 'u32'),
@@ -104,7 +111,7 @@ export const FACTS_RELATIONS: Readonly<Record<FactsRelationName, FactsRelation>>
     ],
   },
   imports: {
-    key: ['file_id', 'target'],
+    key: ['file_id', 'target', 'wildcard'],
     columns: [
       col('file_id', 'u32'),
       col('target', 'utf8'),
@@ -144,7 +151,8 @@ export function sortColumns(relation: FactsRelation): number[] {
 
 /**
  * A cell: 16 id bytes, an unsigned 32-bit integer, a string (utf8 and dict
- * columns alike), a boolean, or null on a nullable column.
+ * columns alike) or a boolean. `null` stays in the type for the comparator's
+ * null-first rule (a dead branch: `facts@1` has no nullable column).
  */
 export type FactValue = Uint8Array | number | string | boolean | null;
 
