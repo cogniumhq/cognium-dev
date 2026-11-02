@@ -686,11 +686,11 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
-      // cognium-dev#917 S4 — pass-through helpers must not reach trust_boundary when
+      // cognium-dev#917 S4 / #913 S4 — pass-through helpers must not reach sinks when
       // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
       if (
         fileCode &&
-        sink.type === 'trust_boundary' &&
+        (sink.type === 'trust_boundary' || sink.type === 'sql_injection') &&
         calleeSources.every(
           s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
         ) &&
