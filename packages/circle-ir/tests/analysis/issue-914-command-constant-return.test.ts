@@ -3,6 +3,7 @@
  * while param is unused on live paths.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
 import { initAnalyzer, analyze } from '../../src/analyzer.js';
 
 describe('#914 OWASP constant helper return (command_injection)', () => {
@@ -193,6 +194,17 @@ public class Bench extends HttpServlet {
   }
 }`;
     const r = await analyze(code, 'Bench.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi).toHaveLength(0);
+  });
+
+  it('OWASP BenchmarkTest01791 corpus stays clean when CORPUS_ROOT is set (#914 S6)', async () => {
+    const root = process.env.CORPUS_ROOT;
+    if (!root) return;
+    const path = `${root}/.owasp-benchmark-java/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest01791.java`;
+    if (!existsSync(path)) return;
+    const code = readFileSync(path, 'utf8');
+    const r = await analyze(code, 'BenchmarkTest01791.java', 'java');
     const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
     expect(cmdi).toHaveLength(0);
   });

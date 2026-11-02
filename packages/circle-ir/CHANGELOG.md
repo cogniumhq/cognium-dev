@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Java: OWASP safe `Runtime.exec(cmd + bar)` no longer pairs `bar` with a later unrelated `System.getProperty` env_input (#914 S6).** Derived-alias seeding no longer copies an env_input anchor onto an earlier local (BenchmarkTest01791).
 - **SBOM: `maven-dependency-plugin` `<artifactItem>`s and Tycho `*.target` Maven locations are declarations** (#1077). On an Eclipse/Tycho project the third-party versions live there, not in pom `<dependency>` rows, so the census found none (iDempiere: 0 pom rows).
   - `parseMavenDependencies` now also reads `<artifactItem>`s as `required`. A `${property}` version is resolved from the same pom's `<properties>`; a parent pom's property stays `unknown`.
   - New `parseTychoTargetDependencies` reads `<location type="Maven">` in both the flat form and the `<dependencies><dependency>` form. Comments and CDATA are ignored, and other location types are skipped.
