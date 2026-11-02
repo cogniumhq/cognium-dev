@@ -13,7 +13,7 @@
  * Depends on: sink-filter, constant-propagation, taint-propagation
  */
 
-import type { TaintSink, TaintFlowInfo, InterproceduralInfo, TypeInfo, MethodInfo } from '../../types/index.js';
+import type { TaintSink, TaintFlowInfo, InterproceduralInfo, TypeInfo, MethodInfo, CircleIR } from '../../types/index.js';
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import { CSharpCredit } from './csharp-sanitizer-credit.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
@@ -147,6 +147,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
             // is what the sink receives.
             if (language === 'csharp' && typeof ctx.code === 'string' &&
                 !csharpParamReachesSink(ctx.code, method, edge.taintedArgs, sink, csCredit)) {
+              continue;
+            }
+            // A callee sink whose arguments are built from literals alone
+            // (`console.error(bold('═══'))`, `console.error(colors.red('Error: …'))`)
+            // receives nothing from the tainted parameter (dogfood 2026-11-02).
+            if ((language === 'javascript' || language === 'typescript') &&
+                jsSinkArgsAreConstant(graph.ir, method, sink)) {
               continue;
             }
 
@@ -1126,6 +1133,64 @@ function callerArgFromSeparateClassGetTheValue(
     return false;
   }
   return false;
+}
+
+/**
+ * JS/TS: true when every argument of the sink call is built from literals
+ * alone, so no parameter of the callee (or anything derived from it) can be
+ * what the sink receives. A literal may be passed through calls whose callee
+ * is not a value of the method (`bold('…')`, `colors.red('…')`,
+ * `' '.repeat(60)`); any other identifier, an interpolation hole, `this`, or a
+ * call on a parameter or local of the method keeps the sink. Unknown shape
+ * (the call is not found) keeps the sink.
+ */
+export function jsSinkArgsAreConstant(
+  ir: Pick<CircleIR, 'calls' | 'dfg'>,
+  method: { parameters: Array<{ name: string }>; startLine: number; endLine: number },
+  sink: { line: number; method?: string; callColumn?: number },
+): boolean {
+  const atLine = ir.calls.filter(c =>
+    c.location.line === sink.line &&
+    (!sink.method || c.method_name === sink.method) &&
+    (sink.callColumn === undefined || c.location.column === sink.callColumn));
+  if (atLine.length !== 1) return false;
+  const args = atLine[0].arguments;
+  if (args.length === 0) return false;
+  const values = new Set(method.parameters.map(p => p.name));
+  for (const def of ir.dfg?.defs ?? []) {
+    if (def.line >= method.startLine && def.line <= method.endLine) values.add(def.variable);
+  }
+  return args.every(a => jsExpressionIsConstant(a.expression ?? '', values));
+}
+
+const JS_KEYWORD_CONSTANTS = new Set(['true', 'false', 'null', 'undefined', 'NaN', 'Infinity']);
+
+/** True when `expr` holds no value other than literals (see `jsSinkArgsAreConstant`). */
+export function jsExpressionIsConstant(expr: string, values: ReadonlySet<string>): boolean {
+  if (expr.trim() === '') return false;
+  // A template literal with an interpolation hole is not a constant.
+  if (/`(?:[^`\\]|\\.)*\$\{/.test(expr)) return false;
+  const bare = expr
+    .replace(/`(?:[^`\\]|\\.)*`/g, ' 0 ')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, ' 0 ')
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, ' 0 ');
+  if (/[`'"]/.test(bare)) return false; // unbalanced quote: not a shape we read
+  // Built from literals: a bare call such as `security.denyAll()` carries no
+  // literal and stays a sink (its value is not read off the text).
+  if (!/\b0\b|\b\d/.test(bare)) return false;
+  // Callee chains: `bold(`, `colors.red(`, `.repeat(` — the root must not be a
+  // value of the method, and the chain must be called.
+  const callee = /(?<![\w$.])([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g;
+  let rest = bare;
+  for (const m of bare.matchAll(callee)) {
+    if (m[1] === 'this' || values.has(m[1])) return false;
+  }
+  rest = rest.replace(callee, ' (').replace(/\.\s*[A-Za-z_$][\w$]*\s*\(/g, ' (');
+  rest = rest.replace(/\b\d[\w.]*\b/g, ' ');
+  for (const id of rest.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+    if (!JS_KEYWORD_CONSTANTS.has(id)) return false;
+  }
+  return true;
 }
 
 export function csharpParamReachesSink(

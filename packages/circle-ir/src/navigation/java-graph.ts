@@ -357,18 +357,25 @@ class JavaGraphBuilder {
     const target = parts[0];
     const last = parts[parts.length - 1];
     const isNew = node.text.trimEnd().endsWith('::new');
+    // #1093: `T[]::new` creates an array; it calls no declared constructor.
+    if (isNew && target?.type === 'array_type') return;
     const name = isNew ? 'constructor' : last?.text ?? '';
     const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
     const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
     let types: StableDecl[] = [];
+    let typeName: string | null = null;
     if (target?.type === 'this' || target?.type === 'super') {
       // The enclosing class's own methods (an inherited one is reached through the call graph's types).
       let enclosing = ctx.locate(site.line, site.col);
       while (enclosing && enclosing.kind !== 'type') enclosing = ctx.ids.decls.find(d => d.id === enclosing?.parent) ?? null;
       if (enclosing) types = [enclosing];
-    } else if (target && (target.type === 'identifier' || target.type === 'type_identifier' || target.type === 'scoped_type_identifier' || target.type === 'generic_type')) {
-      const simple = target.text.replace(/<.*$/s, '').split('.').pop() ?? '';
+    } else if (target && (target.type === 'identifier' || target.type === 'type_identifier' || target.type === 'scoped_type_identifier' || target.type === 'generic_type'
+      // #1093: a qualified type before `::new` (`java.util.LinkedList::new`) parses as an expression
+      || (isNew && (target.type === 'field_access' || target.type === 'scoped_identifier')))) {
+      const written = target.text.replace(/<.*$/s, '');
+      const simple = written.split('.').pop() ?? '';
       const fqnPkg = ctx.imports.explicit.get(simple);
+      typeName = written.includes('.') ? written : fqnPkg ? `${fqnPkg}.${simple}` : simple;
       const all = this.typesBySimple.get(simple) ?? [];
       const exact = fqnPkg ? all.filter(t => t.qualified_name === `${fqnPkg}:${simple}`) : all.filter(t => t.qualified_name.startsWith(`${ctx.imports.pkg || '<default>'}:`));
       types = exact.length > 0 ? exact : all;
@@ -376,6 +383,12 @@ class JavaGraphBuilder {
     const targets = types.flatMap(t => this.files.flatMap(f => f.ids.decls.filter(d => d.parent === t.id && d.kind === 'method' && d.name === name)));
     if (isNew && targets.length === 0) targets.push(...types);
     if (targets.length === 0) {
+      // #1093: `Ext::new` on a type that is not declared in the tree is a call into a
+      // library, like `new Ext()`: external, naming its receiver, not every constructor.
+      if (isNew && types.length === 0 && typeName) {
+        this.unresolved.push({ from, methodName: name, site, reason: 'external', evidence: 'constructor reference to a type outside the tree', receiver: typeName });
+        return;
+      }
       this.unresolved.push({ from, methodName: name, site, reason: 'dynamic', evidence: 'method reference not tied to a declaration' });
       return;
     }
