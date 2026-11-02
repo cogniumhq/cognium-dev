@@ -16,6 +16,7 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
+import { runsArgvAsCommand } from '../arg-executing-programs.js';
 import type {
   TaintSource,
   TaintSink,
@@ -3232,7 +3233,8 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (!call) return true;
         const program = call[1]!.trim();
         const literal = /^(['"`])([^'"`$]*)\1$/.exec(program);
-        const fixed = program === 'process.execPath' || (literal !== null && !SHELL_PROGRAM.test(literal[2]!));
+        const fixed = program === 'process.execPath'
+          || (literal !== null && !SHELL_PROGRAM.test(literal[2]!) && !runsArgvAsCommand(literal[2]!));  // #1066
         if (!fixed) return true;
         if (/\bshell\s*:\s*(?!false\b)/.test(stmt)) return true;
         if (/['"`]-(?:e|p|-eval|-print)['"`]/.test(stmt)) return true;
