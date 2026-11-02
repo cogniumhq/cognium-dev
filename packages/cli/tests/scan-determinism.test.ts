@@ -15,19 +15,25 @@ import { collectFiles, defaultMaxProjectSourceChars, FIXED_MAX_PROJECT_SOURCE_CH
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts');
 const FILES = 30;
 let root: string;
+let totalChars = 0;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'cog-det-'));
-  // ~10M chars: over the 1–5M ceiling Bun's heap figure used to give,
-  // well under the fixed 32M.
+  // ~8M chars: over the 1–5M ceiling Bun's heap figure used to give,
+  // well under the fixed 32M. One long string literal per file: many chars,
+  // a handful of syntax nodes, so each scan takes well under a second. (Many
+  // long `export const` literals per file made each scan take minutes.)
   for (let f = 0; f < FILES; f++) {
-    // Long string literals: many chars, few syntax nodes, so analysis is quick.
-    const lines = [`import { readFileSync } from 'fs';`];
-    for (let i = 0; i < 200; i++) lines.push(`export const s${f}_${i} = '${'x'.repeat(1600)}';`);
-    lines.push(`export function read${f}(p: string): string { return readFileSync(p, 'utf-8'); }`);
+    const lines = [
+      `import { readFileSync } from 'fs';`,
+      `export const s${f} = '${'x'.repeat(270_000)}';`,
+      `export function read${f}(p: string): string { return readFileSync(p, 'utf-8'); }`,
+    ];
     const dir = join(root, 'src', f % 2 ? 'b' : 'a');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `file${String(FILES - f).padStart(2, '0')}.ts`), lines.join('\n') + '\n');
+    const text = lines.join('\n') + '\n';
+    totalChars += text.length;
+    writeFileSync(join(dir, `file${String(FILES - f).padStart(2, '0')}.ts`), text);
   }
 });
 
@@ -53,6 +59,9 @@ test('collectFiles walks in name order', async () => {
 });
 
 test('three scans give the same complete result', async () => {
+  // The tree must exceed the old moving ceiling, or the test proves nothing.
+  expect(totalChars).toBeGreaterThan(6_000_000);
+  expect(totalChars).toBeLessThan(FIXED_MAX_PROJECT_SOURCE_CHARS);
   const outs: string[] = [];
   for (let i = 0; i < 3; i++) {
     const proc = Bun.spawn([process.execPath, 'run', CLI, 'scan', join(root, 'src'), '-f', 'json', '-q'], {
@@ -68,4 +77,4 @@ test('three scans give the same complete result', async () => {
   }
   expect(outs[1]).toBe(outs[0]);
   expect(outs[2]).toBe(outs[0]);
-}, 180_000);
+}, 120_000);
