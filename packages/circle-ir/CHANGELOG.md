@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **TS/JS: `.get()` on a Map/WeakMap receiver is no longer a `db_input` source (#985).** `this.memoryCache.get(digest)` with `memoryCache = new Map()` matched the `cache.get` source by receiver name and paired with an unrelated `.get()` SQL sink on the next line, reported as a critical sql_injection. The #997/#1061 Map evidence (a `new Map()`/`new WeakMap()` initialiser or a `Map<…>`-typed declaration in the file) now gates `db_input` sources too; an untyped or injected receiver (`this.redisCache = c`) keeps the source.
 - **Java: OWASP safe `Runtime.exec(cmd + bar)` no longer pairs `bar` with a later unrelated `System.getProperty` env_input (#914 S6).** Derived-alias seeding no longer copies an env_input anchor onto an earlier local (BenchmarkTest01791).
 - **SBOM: `maven-dependency-plugin` `<artifactItem>`s and Tycho `*.target` Maven locations are declarations** (#1077). On an Eclipse/Tycho project the third-party versions live there, not in pom `<dependency>` rows, so the census found none (iDempiere: 0 pom rows).
   - `parseMavenDependencies` now also reads `<artifactItem>`s as `required`. A `${property}` version is resolved from the same pom's `<properties>`; a parent pom's property stays `unknown`.
