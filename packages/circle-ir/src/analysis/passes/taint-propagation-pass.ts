@@ -4637,6 +4637,20 @@ function detectExpressionScanFlows(
       ) {
         continue;
       }
+      // cognium-dev #914 — OWASP `Runtime.exec(args, env, new File(System.getProperty(...)))`:
+      // the working-directory argument is not shell command input; inline colocation
+      // would otherwise pair `env_input` getProperty with `command_injection` exec.
+      if (
+        source.type === 'env_input' &&
+        sink.type === 'command_injection' &&
+        sink.method === 'exec' &&
+        /System\s*\.\s*getProperty\s*\(/.test(source.location ?? '')
+      ) {
+        const sinkCode = (sink as { code?: string }).code ?? '';
+        if (/new\s+(?:java\.io\.)?File\s*\(\s*System\s*\.\s*getProperty\s*\(/.test(sinkCode)) {
+          continue;
+        }
+      }
       if (flows.some(f =>
         f.source_line === source.line &&
         f.sink_line === sink.line &&
