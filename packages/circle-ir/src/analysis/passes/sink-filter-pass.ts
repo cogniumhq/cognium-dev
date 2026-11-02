@@ -3215,6 +3215,41 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15f3 — JS/TS: `.get` / `.all` / `.run` / `.each` / `.iterate` /
+    // `.pluck` on a prepared statement take bound parameters, not SQL. The
+    // `Connection` rows (sqlite3's `db.get(sql, …)`) also matched
+    // `db.prepare(sql).get(...params)` (better-sqlite3, sqlite3's Statement),
+    // so a request value passed as a `?` binding was a critical sql_injection
+    // (dogfood 2026-11-01: circle-pack findings store). The receiver is a
+    // statement when the call chains off `.prepare(…)` or is a variable
+    // assigned from `.prepare(…)` in the file. The SQL text itself is the
+    // argument of `prepare`, which this stage does not touch.
+    if (['javascript', 'typescript'].includes(language)) {
+      const lines = ctx.code.split('\n');
+      const STATEMENT_METHODS = new Set(['get', 'all', 'run', 'each', 'iterate', 'pluck']);
+      let statementVars: Set<string> | null = null;
+      const isStatementVar = (name: string): boolean => {
+        if (statementVars === null) {
+          statementVars = new Set();
+          for (const m of ctx.code.matchAll(/(?:\b(?:const|let|var)\s+|\bthis\s*\.\s*|^\s*)([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[\w$.]*\.\s*prepare\s*\(/gm)) statementVars.add(m[1]!);
+        }
+        return statementVars.has(name);
+      };
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection' || !STATEMENT_METHODS.has(sink.method ?? '')) return true;
+        const method = sink.method!;
+        // The statement from the sink line until it ends and contains the call (a chain may span lines).
+        const callRe = new RegExp(`\\.\\s*${method}\\s*\\(`);
+        let stmt = lines[sink.line - 1] ?? '';
+        for (let k = 0; k < 6 && !(callRe.test(stmt) && /[;)]\s*$/.test(stmt.replace(/\/\/.*$/, ''))); k++) stmt += ' ' + (lines[sink.line + k] ?? '').trim();
+        // `….prepare( … ).get(` — the prepare call's parentheses balanced across one nesting level.
+        if (new RegExp(`\\.\\s*prepare\\s*\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*\\.\\s*${method}\\s*\\(`).test(stmt)) return false;
+        const recv = new RegExp(`(?:\\bthis\\s*\\.\\s*)?([A-Za-z_$][\\w$]*)\\s*\\.\\s*${method}\\s*\\(`).exec(stmt);
+        if (recv && isStatementVar(recv[1]!)) return false;
+        return true;
+      });
+    }
+
     // Stage 15f2 — JS/TS: spawn / spawnSync / execFile / execFileSync with a
     // fixed program (`process.execPath` or a string literal that is not a
     // shell), no `shell: true`, and no node `-e`/`--eval`/`-p`: the arguments
