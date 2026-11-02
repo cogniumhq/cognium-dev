@@ -16,6 +16,7 @@
  * Depends on: taint-matcher, constant-propagation, language-sources
  */
 
+import { runsArgvAsCommand } from '../arg-executing-programs.js';
 import type {
   TaintSource,
   TaintSink,
@@ -1291,6 +1292,9 @@ const FETCH_MEMBER_RECEIVER_RE = /[\w$)\]]\s*\.\s*fetch\s*\(/;
 // sink" test. Real `collection.find({ ... })` passes an object literal and is
 // unaffected.
 const NOSQL_ARRAY_METHODS = new Set(['find', 'filter', 'some', 'every', 'findIndex', 'findLast']);
+/** A shell or interpreter that would run its arguments as a command. */
+const SHELL_PROGRAM = /(?:^|[\\/])(?:sh|bash|zsh|dash|ksh|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh|node|python3?|perl|ruby|php|osascript|env)$/i;
+
 const FUNCTION_FIRST_ARG_RE =
   /\.\s*(?:find|filter|some|every|findIndex|findLast)\s*\(\s*(?:async\s+)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
 
@@ -1637,7 +1641,9 @@ function isUnwrittenLocalMapKeyRead(code: string, source: TaintSource): boolean 
 
   // (a) locally constructed map
   const ctorRe = new RegExp(
-    `\\b${recv}\\s*=\\s*new\\s+(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
+    // `new HashMap<>()` or the qualified `new java.util.HashMap<>()` (OWASP
+    // BenchmarkJava writes the qualified form throughout).
+    `\\b${recv}\\s*=\\s*new\\s+(?:java\\.util\\.(?:concurrent\\.)?)?(?:Hash|Tree|LinkedHash|ConcurrentHash|Concurrent|Identity|Weak)?Map\\s*(?:<[^>]*>)?\\s*\\(`,
   );
   if (!lines.some(l => ctorRe.test(l))) return false;
 
@@ -3209,6 +3215,68 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15f3 — JS/TS: `.get` / `.all` / `.run` / `.each` / `.iterate` /
+    // `.pluck` on a prepared statement take bound parameters, not SQL. The
+    // `Connection` rows (sqlite3's `db.get(sql, …)`) also matched
+    // `db.prepare(sql).get(...params)` (better-sqlite3, sqlite3's Statement),
+    // so a request value passed as a `?` binding was a critical sql_injection
+    // (dogfood 2026-11-01: circle-pack findings store). The receiver is a
+    // statement when the call chains off `.prepare(…)` or is a variable
+    // assigned from `.prepare(…)` in the file. The SQL text itself is the
+    // argument of `prepare`, which this stage does not touch.
+    if (['javascript', 'typescript'].includes(language)) {
+      const lines = ctx.code.split('\n');
+      const STATEMENT_METHODS = new Set(['get', 'all', 'run', 'each', 'iterate', 'pluck']);
+      let statementVars: Set<string> | null = null;
+      const isStatementVar = (name: string): boolean => {
+        if (statementVars === null) {
+          statementVars = new Set();
+          for (const m of ctx.code.matchAll(/(?:\b(?:const|let|var)\s+|\bthis\s*\.\s*|^\s*)([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[\w$.]*\.\s*prepare\s*\(/gm)) statementVars.add(m[1]!);
+        }
+        return statementVars.has(name);
+      };
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'sql_injection' || !STATEMENT_METHODS.has(sink.method ?? '')) return true;
+        const method = sink.method!;
+        // The statement from the sink line until it ends and contains the call (a chain may span lines).
+        const callRe = new RegExp(`\\.\\s*${method}\\s*\\(`);
+        let stmt = lines[sink.line - 1] ?? '';
+        for (let k = 0; k < 6 && !(callRe.test(stmt) && /[;)]\s*$/.test(stmt.replace(/\/\/.*$/, ''))); k++) stmt += ' ' + (lines[sink.line + k] ?? '').trim();
+        // `….prepare( … ).get(` — the prepare call's parentheses balanced across one nesting level.
+        if (new RegExp(`\\.\\s*prepare\\s*\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)\\s*\\.\\s*${method}\\s*\\(`).test(stmt)) return false;
+        const recv = new RegExp(`(?:\\bthis\\s*\\.\\s*)?([A-Za-z_$][\\w$]*)\\s*\\.\\s*${method}\\s*\\(`).exec(stmt);
+        if (recv && isStatementVar(recv[1]!)) return false;
+        return true;
+      });
+    }
+
+    // Stage 15f2 — JS/TS: spawn / spawnSync / execFile / execFileSync with a
+    // fixed program (`process.execPath` or a string literal that is not a
+    // shell), no `shell: true`, and no node `-e`/`--eval`/`-p`: the arguments
+    // array reaches the program as argv and cannot become a command (dogfood
+    // 2026-10-31: cognium-ai benchmark runners re-invoking node on a file).
+    if (['javascript', 'typescript'].includes(language)) {
+      const lines = ctx.code.split('\n');
+      const FIXED_PROGRAM_EXEC = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync']);
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'command_injection' || !FIXED_PROGRAM_EXEC.has(sink.method ?? '')) return true;
+        let stmt = lines[sink.line - 1] ?? '';
+        for (let k = 0; k < 8 && !/\)\s*;?\s*$/.test(stmt.replace(/\/\/.*$/, '')); k++) {
+          stmt += ' ' + (lines[sink.line + k] ?? '').trim();
+        }
+        const call = new RegExp(`\\b${sink.method}\\s*\\(\\s*([^,)]+)`).exec(stmt);
+        if (!call) return true;
+        const program = call[1]!.trim();
+        const literal = /^(['"`])([^'"`$]*)\1$/.exec(program);
+        const fixed = program === 'process.execPath'
+          || (literal !== null && !SHELL_PROGRAM.test(literal[2]!) && !runsArgvAsCommand(literal[2]!));  // #1066
+        if (!fixed) return true;
+        if (/\bshell\s*:\s*(?!false\b)/.test(stmt)) return true;
+        if (/['"`]-(?:e|p|-eval|-print)['"`]/.test(stmt)) return true;
+        return false;
+      });
+    }
+
     // Stage 15g — JS/TS nosql: `.find(fn)` etc. is Array.prototype iteration,
     // not a Mongo query. (cognium-ai#279 R-2) Drop a `nosql_injection` sink on an
     // array method whose first argument is a function (arrow / `function`);
@@ -3218,7 +3286,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered = filtered.filter(sink => {
         if (sink.type !== 'nosql_injection') return true;
         if (!NOSQL_ARRAY_METHODS.has(sink.method ?? '')) return true;
-        const sinkLineText = sourceLines[sink.line - 1] ?? '';
+        // The predicate may start on the next line (`args.find(\n  (a) => …,\n)`,
+        // cognium-dev#988): read the call up to its first argument.
+        let sinkLineText = sourceLines[sink.line - 1] ?? '';
+        for (let k = 0; k < 3 && /\(\s*$/.test(sinkLineText); k++) {
+          sinkLineText += ' ' + (sourceLines[sink.line + k] ?? '').trim();
+        }
         if (FUNCTION_FIRST_ARG_RE.test(sinkLineText)) return false;
         // cognium-dev#1000 — `ancestors.find(meaningful)`: a named predicate
         // declared as a function in this file, or a receiver declared as an

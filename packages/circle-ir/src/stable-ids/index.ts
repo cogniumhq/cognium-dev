@@ -30,7 +30,7 @@ export { deriveTypeScriptIds, moduleNameFor } from './typescript.js';
 export { deriveJavaIds, eraseJavaType } from './java.js';
 export { derivePythonIds, pythonModuleName, pythonSignature } from './python.js';
 export { deriveGoIds, goPackageDir, goSignature, goReceiverType } from './go.js';
-export { assignNodeIds, type NodeIdSource } from './nodes.js';
+export { assignNodeIds, locateNodes, nodeIdBytes, nodeIdBytesOfPrinted, printedNodeId, NodeIdWriter, type NodeIdSource, type LocatedNode, type StableNodeKind } from './nodes.js';
 export { diffStableIds, type StableIdDiff } from './diff.js';
 export {
   detectMoves,
@@ -43,7 +43,7 @@ export {
   type MoveOptions,
   type MoveDetection,
 } from './moves.js';
-export { blake3, base32, digest128 } from './hash.js';
+export { blake3, blake3Short128Into, base32, digest128, digest128Bytes } from './hash.js';
 
 /** True when `ids@0.1` covers the language. */
 export function stableIdsSupport(language: SupportedLanguage): boolean {

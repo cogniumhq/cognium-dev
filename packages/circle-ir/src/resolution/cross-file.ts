@@ -245,6 +245,7 @@ export class CrossFileResolver {
 
   // Cache: file -> IR
   private fileIRs: Map<string, CircleIR> = new Map();
+  private sourceLines?: Map<string, string[]>;
 
   // Cache: method FQN -> taint info
   private methodTaintInfo: Map<string, MethodTaintInfo> = new Map();
@@ -272,6 +273,15 @@ export class CrossFileResolver {
   /**
    * Add a file's IR for analysis
    */
+  /**
+   * Raw source lines per file. Optional: the JS/TS parameter-to-sink check reads a
+   * def's right-hand side from them (the DFG carries none) to stop at literal-only
+   * values; without them the check still runs, only less precisely.
+   */
+  setSourceLines(lines: Map<string, string[]>): void {
+    this.sourceLines = lines;
+  }
+
   addFile(filePath: string, ir: CircleIR): void {
     this.fileIRs.set(filePath, ir);
     this.symbolTable.addFromIR(ir, filePath);
@@ -382,8 +392,34 @@ export class CrossFileResolver {
       }
     }
 
+    // A JDK receiver (`System.getProperty`, `props.getProperty` on a
+    // `java.util.Properties`, `Integer.parseInt`) is not a project method that
+    // happens to share the name: OWASP's `System.getProperty("os.name")` resolved to the project's
+    // `PropertiesManager.getProperty` and made a `config_param` source (#976).
+    // Only a project type of that simple name may shadow it, and that case was
+    // resolved above.
+    const lang = this.fileIRs.get(fromFile)?.meta.language;
+    if (receiverType ? isJdkType(receiverType, lang) : isJdkClassReceiver(receiver, lang)) return undefined;
+
+    // JS/TS: `signer.getAddress()` on a receiver of unknown type is a method of
+    // that object, not a module-level function that happens to share the name
+    // (juice-shop: the ethers Signer resolved to routes/address.ts getAddress and
+    // made req.body a source in the frontend, #992). Only a receiver bound by an
+    // import (`import * as addr from './address'`) may reach a module function.
+    if (!receiverType && (lang === 'javascript' || lang === 'typescript')) {
+      const byName = this.resolveByMethodName(call, fromFile);
+      if (byName && byName.targetClass === '<module>' && !this.isImportBinding(fromFile, receiver)) return undefined;
+      return byName;
+    }
+
     // Fallback: search by method name
     return this.resolveByMethodName(call, fromFile);
+  }
+
+  /** Is `name` bound by an import in `file` (alias, default or namespace import)? */
+  private isImportBinding(file: string, name: string): boolean {
+    const ir = this.fileIRs.get(file);
+    return (ir?.imports ?? []).some(i => (i.alias ?? i.imported_name) === name);
   }
 
   /**
@@ -927,6 +963,11 @@ export class CrossFileResolver {
         // Find calls at or after the source line
         for (const call of ir.calls) {
           if (call.location.line < source.line) continue;
+          // A source with no variable (`parse(fs.readFileSync(p))`) can reach
+          // only the call it is nested in, on its own line — not every later
+          // cross-file call in the file (dogfood 2026-10-31: one principles.md
+          // read in security-scan/scanner.ts reached readFileSync in 12 files).
+          if (!reachable && call.location.line !== source.line) continue;
 
           const resolved = this.resolveCall(call, filePath);
           if (!resolved || resolved.targetFile === filePath) continue;
@@ -1015,6 +1056,14 @@ export class CrossFileResolver {
           if (sinksInMethod.length === 0) continue;
 
           for (const sink of sinksInMethod) {
+            // JS/TS: the carried parameter must reach the sink's own arguments, not just
+            // any line of the callee (dogfood 2026-11-01: a route value bound as a `?`
+            // parameter was credited to `db.prepare(<constant SQL>)` in the same method).
+            // Every parameter is tried, not only `term.positions`: the caller-side carried
+            // positions can miss the real carrier (juice-shop `downloadToFile(imageUrl, dest)`
+            // reported [1] only), and this check must not lose a flow on that.
+            if ((targetIR.meta.language === 'javascript' || targetIR.meta.language === 'typescript')
+                && !this.jsParamReachesSinkArgs(targetIR, targetMethod, targetMethod.parameters.map((_, i) => i), sink, term.file)) continue;
             const key = `${filePath}:${source.line}→${term.file}:${sink.line}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -1037,6 +1086,56 @@ export class CrossFileResolver {
     }
 
     return flows;
+  }
+
+  /**
+   * JS/TS: does a value in one of the parameters at `positions` of `method` reach the
+   * arguments of `sink`? Names derived from those parameters by def-use chains are matched
+   * against the sink call's dangerous arguments (`argPositions`, else all). Conservative:
+   * true when the sink call or the parameter defs cannot be found, so it only drops a
+   * flow whose sink call is present and mentions none of those names.
+   */
+  private jsParamReachesSinkArgs(
+    ir: CircleIR,
+    method: MethodInfo,
+    positions: number[],
+    sink: TaintSink,
+    file: string,
+  ): boolean {
+    const params = positions.map(i => method.parameters[i]?.name).filter((n): n is string => !!n);
+    if (params.length === 0) return true;
+    const calls = (this.getFileIndex(ir).callsByLine.get(sink.line) ?? [])
+      .filter(c => c.method_name === sink.method
+        && (sink.callColumn === undefined || c.location.column === undefined || c.location.column === sink.callColumn));
+    if (calls.length === 0) return true;
+    const seeds = ir.dfg.defs
+      .filter(d => params.includes(d.variable) && d.line >= method.start_line && d.line <= method.end_line)
+      .map(d => d.id);
+    const names = new Set<string>(params);
+    if (seeds.length > 0) {
+      // Def-use walk from the parameters that does not pass through a def whose value is
+      // literal-only (`const where = options.id ? 'WHERE id = ?' : ''`): the parameter
+      // decides which literal, but the value carries none of it.
+      const lines = this.sourceLines?.get(file);
+      const defById = new Map(ir.dfg.defs.map(d => [d.id, d]));
+      const visited = new Set<number>(seeds);
+      const frontier = [...seeds];
+      while (frontier.length > 0) {
+        const cur = frontier.shift()!;
+        for (const ch of ir.dfg.chains ?? []) {
+          if (ch.from_def !== cur || visited.has(ch.to_def)) continue;
+          visited.add(ch.to_def);
+          const d = defById.get(ch.to_def);
+          if (!d || (lines && literalOnlyAssignment(lines[d.line - 1] ?? '', d.variable))) continue;
+          if (d.variable) names.add(d.variable);
+          frontier.push(ch.to_def);
+        }
+      }
+    }
+    const res = [...names].map(n => new RegExp(`(?<![\\w$.])${escapeRegExp(n)}(?![\\w$])`));
+    return calls.some(c => c.arguments
+      .filter(a => !sink.argPositions || sink.argPositions.length === 0 || sink.argPositions.includes(a.position))
+      .some(a => (a.variable && names.has(a.variable)) || res.some(re => re.test(a.expression ?? ''))));
   }
 
   /**
@@ -2059,4 +2158,35 @@ export function buildCrossFileResolver(
   }
 
   return resolver;
+}
+
+/** java.lang classes callers name unqualified, plus anything qualified under java./javax. */
+const JAVA_LANG_CLASSES: ReadonlySet<string> = new Set([
+  'System', 'Math', 'StrictMath', 'Integer', 'Long', 'Short', 'Byte', 'Double', 'Float',
+  'Boolean', 'Character', 'String', 'StringBuilder', 'StringBuffer', 'Objects', 'Thread',
+  'Runtime', 'Class', 'ClassLoader', 'Enum', 'Process', 'ProcessBuilder', 'Number',
+]);
+
+/** A resolved receiver type in the JDK (`java.lang.System`, `java.util.Properties`). */
+function isJdkType(fqn: string, language: string | undefined): boolean {
+  return (language === undefined || language === 'java') && /^javax?\.[a-z]/.test(fqn);
+}
+
+function isJdkClassReceiver(receiver: string, language: string | undefined): boolean {
+  if (language !== undefined && language !== 'java') return false;
+  if (/^javax?\.[a-z]/.test(receiver)) return true;
+  return JAVA_LANG_CLASSES.has(receiver);
+}
+
+// A JS literal: quoted string, a template literal without `${…}`, number, boolean, null, undefined.
+const JS_LITERAL = '(?:\'(?:[^\'\\\\]|\\\\.)*\'|"(?:[^"\\\\]|\\\\.)*"|`[^`$\\\\]*`|-?\\d+(?:\\.\\d+)?|true|false|null|undefined)';
+const LITERAL_RHS = new RegExp(`^(?:${JS_LITERAL}|[^?;]+\\?\\s*${JS_LITERAL}\\s*:\\s*${JS_LITERAL})$`);
+
+/**
+ * True when the line assigns `variable` a literal-only value: a literal, or a
+ * conditional whose two branches are literals (`x = cond ? 'a' : ''`).
+ */
+function literalOnlyAssignment(line: string, variable: string): boolean {
+  const m = new RegExp(`(?:^|[^\\w$.])${escapeRegExp(variable)}\\s*(?::[^=]+)?=(?!=)\\s*(.+?);?\\s*$`).exec(line);
+  return m !== null && LITERAL_RHS.test(m[1]!.trim());
 }

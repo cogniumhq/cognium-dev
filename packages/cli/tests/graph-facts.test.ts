@@ -3,7 +3,7 @@
  * small fixtures (TypeScript, Python, Go, and a git base for `reach`).
  */
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -36,6 +36,7 @@ let ts: string;
 let py: string;
 let go: string;
 let mixed: string;
+let java: string;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'graph-facts-'));
@@ -56,6 +57,10 @@ beforeAll(() => {
   mixed = join(dir, 'mixed');
   write(mixed, 'a.py', 'x = 1\n');
   write(mixed, 'b.ts', 'export const b = 1;\n');
+
+  java = join(dir, 'java');
+  write(java, 'src/main/java/app/Main.java', 'package app;\n\nimport java.util.List;\nimport java.util.*;\n\npublic class Main {\n  public static void main(String[] args) { new Svc().run(); List.of(1); }\n}\n');
+  write(java, 'src/main/java/app/Svc.java', 'package app;\n\npublic class Svc {\n  void run() { String s = name(); helper(s); }\n  String name() { return "x"; }\n  void helper(String s) {}\n  void orphan() {}\n}\n');
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -152,6 +157,10 @@ describe('option parsing', () => {
     expect(parseDeadCodeOptions({})).toMatchObject({ format: 'text', verdicts: ['dead', 'may-be-live'] });
     expect(parseDeadCodeOptions({ f: 'sarif' }).format).toBe('sarif');
     expect(() => parseEntriesOptions({ format: 'sarif' })).toThrow(UsageError);
+    expect(parseEntriesOptions({ 'facts-arrow': 'out', language: 'java' })).toMatchObject({ factsArrow: 'out', language: 'java' });
+    expect('factsArrow' in parseEntriesOptions({})).toBe(false);
+    expect(() => parseEntriesOptions({ 'facts-arrow': true })).toThrow(/--facts-arrow/);
+    expect(() => parseEntriesOptions({ 'facts-arrow': 'out', language: 'ts' })).toThrow(/java only/);
     expect(() => parseReachOptions({})).toThrow(/--base/);
     expect(() => parseReachOptions({ base: true })).toThrow(/--base/);
     expect(parseReachOptions({ base: 'main', format: 'json' })).toMatchObject({ base: 'main', format: 'json' });
@@ -269,6 +278,54 @@ describe('entries', () => {
     expect(out.entries.some((e: { kind: string; file: string }) => e.kind === 'export' && e.file === 'src/index.ts')).toBe(true);
     expect(out.summary.export).toBeGreaterThan(0);
     expect(typeof out.entryIndexDigest).toBe('string');
+  });
+});
+
+describe('entries --facts-arrow (facts@1, proposed)', () => {
+  test('writes the eight relations and a manifest; the report is unchanged', async () => {
+    const plain = await runCli(['entries', java, '-f', 'json']);
+    expect(plain.code).toBe(0);
+    const out = join(dir, 'facts');
+    const withFacts = await runCli(['entries', java, '-f', 'json', '--facts-arrow', out]);
+    expect(withFacts.code).toBe(0);
+    expect(withFacts.stdout).toBe(plain.stdout);
+    expect(withFacts.stderr).toContain('Wrote facts@1');
+    const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'));
+    expect(manifest.facts).toBe('facts@1');
+    expect(manifest.ids).toBe('ids@0.1');
+    expect(manifest.engine).toMatch(/^circle-ir@\d/);
+    const names = Object.keys(manifest.relations).sort();
+    expect(names).toEqual(['call', 'decl', 'entries', 'files', 'flow', 'imports', 'moved', 'unresolved']);
+    for (const name of names) {
+      const file = join(out, `${name}.arrow`);
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file).length).toBe(manifest.relations[name].bytes);
+      // Arrow IPC file magic.
+      expect(readFileSync(file).subarray(0, 6).toString()).toBe('ARROW1');
+      // Digests in hex; relations are sets with the dedupe count recorded.
+      expect(manifest.relations[name].blake3).toMatch(/^[0-9a-f]{64}$/);
+      expect(manifest.relations[name].duplicates_dropped).toBe(0);
+    }
+    expect(manifest.relations.files.rows).toBe(2);
+    expect(manifest.relations.imports.rows).toBe(2);
+    expect(manifest.relations.entries.rows).toBe(JSON.parse(plain.stdout).entries.length);
+    expect(manifest.relations.call.rows).toBeGreaterThan(0);
+    // `flow` fills from the DFG on fixed-width node ids; `moved` stays empty from one snapshot.
+    expect(manifest.relations.flow.rows).toBeGreaterThan(0);
+    expect(manifest.relations.moved.rows).toBe(0);
+
+    // A second run is byte-identical.
+    const out2 = join(dir, 'facts2');
+    await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2]);
+    for (const name of names) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(out2, `${name}.arrow`)))).toBe(0);
+    expect(readFileSync(join(out2, 'manifest.json'), 'utf8')).toBe(readFileSync(join(out, 'manifest.json'), 'utf8'));
+  }, 120_000);
+
+  test('is refused on a non-Java tree', async () => {
+    const r = await runCli(['entries', ts, '--facts-arrow', join(dir, 'nope')]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('Java');
   });
 });
 

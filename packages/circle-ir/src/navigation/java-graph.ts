@@ -31,6 +31,8 @@ import { DEFAULT_JAVA_ENTRY_TABLES, type JavaEntryTables } from './java-entry-ta
 import type { EntryCertainty, EntryKind } from './ts-entry-tables.js';
 import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from './ts-call-edges.js';
 import { joinRoutePath } from './ts-call-edges.js';
+import { factsToArrow, type FactsArrow, type FactsArrowOptions } from '../facts/arrow.js';
+import { javaGraphFactSet, type JavaImportRow } from '../facts/java-facts.js';
 
 export const JAVA_GRAPH_SCHEME = 'java-graph@0.1' as const;
 
@@ -48,6 +50,18 @@ export interface JavaGraphOptions {
   /** Files run as programs, in addition to `main` methods. */
   mainFiles?: readonly string[];
   entryTables?: JavaEntryTables;
+  /**
+   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2) as
+   * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
+   * graph as a post-pass (relations are sets: exact duplicates of the graph's
+   * rows collapse, counted in the manifest); `flow` comes from each file's
+   * DFG on fixed-width `ids@0.1` node ids. Off by default, and when off the graph is
+   * exactly what it was: no `facts` key, same JSON. Needs the optional
+   * dependency `apache-arrow`.
+   */
+  emitFacts?: 'arrow';
+  /** Metadata written with the facts (`engine`, `parser`); only read with `emitFacts`. */
+  facts?: FactsArrowOptions;
 }
 
 export interface JavaGraph {
@@ -65,6 +79,20 @@ export interface JavaGraph {
   typeOnly: string[];
   /** Call sites from the navigation index; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
+  /** The `facts@1` relations as Arrow IPC bytes; present only under `emitFacts: 'arrow'`. */
+  facts?: FactsArrow;
+}
+
+/** Every `import` of a file, as the `facts@1` `imports` relation records it (static imports included). */
+function importRows(root: Node): JavaImportRow[] {
+  const out: JavaImportRow[] = [];
+  for (const c of namedChildren(root)) {
+    if (c.type !== 'import_declaration') continue;
+    const text = c.text.replace(/^import\s+/, '').replace(/;\s*$/, '').replace(/^static\s+/, '').replace(/\s+/g, '');
+    if (text.endsWith('.*')) out.push({ target: text.slice(0, -2), wildcard: true });
+    else out.push({ target: text, wildcard: false });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +495,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
         seen.add(k);
         return true;
       });
-    return {
+    const graph: JavaGraph = {
       scheme: JAVA_GRAPH_SCHEME,
       ids: 'ids@0.1',
       files: ctxs.map(c => c.ids),
@@ -482,6 +510,11 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       typeOnly: [...b.typeOnly].sort(),
       sites: sites.filter(s => byPath.has(s.site.file)).length,
     };
+    if (options.emitFacts === 'arrow') {
+      const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode), dfg: irs[i].ir.dfg }));
+      graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
+    }
+    return graph;
   } finally {
     for (const t of trees) disposeTree(t);
   }

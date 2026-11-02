@@ -358,6 +358,9 @@ export {
   stableIdsSupport,
   moduleNameFor,
   assignNodeIds,
+  nodeIdBytes,
+  nodeIdBytesOfPrinted,
+  printedNodeId,
   diffStableIds,
   deriveJavaIds,
   eraseJavaType,
@@ -376,6 +379,7 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  StableNodeKind,
   ParseErrorSite,
   NodeIdSource,
   StableIdDiff,
@@ -387,6 +391,50 @@ export type {
   MoveOptions,
   MoveDetection,
 } from './stable-ids/index.js';
+
+// `facts@1` (graph-store plan T1/T2): the fact relations as columns in
+// canonical order (sets, no nulls) keyed by `ids@0.1`, and their Arrow IPC wire form.
+// Opt-in through `buildJavaGraph(files, { emitFacts: 'arrow' })`; needs the
+// optional dependency `apache-arrow`, loaded on first use.
+export {
+  FACTS_SCHEME,
+  FACTS_ID_WIDTH,
+  FACTS_CHUNK_ROWS,
+  FACTS_RELATION_NAMES,
+  FACTS_RELATIONS,
+  sortColumns as factsSortColumns,
+  rowComparator as factsRowComparator,
+  canonicalRows as factsCanonicalRows,
+  canonicalSet as factsCanonicalSet,
+  canonicalTable as factsCanonicalTable,
+  tableFromRows as factsTableFromRows,
+  tableRows as factsTableRows,
+  keyCollisions as factsKeyCollisions,
+  compareCodePoints,
+  idBytes,
+  javaGraphFacts,
+  javaGraphFactSet,
+  factsToArrow,
+} from './facts/index.js';
+export type {
+  FactsScheme,
+  FactsColumnType,
+  FactsColumn,
+  FactsRelation,
+  FactsRelationName,
+  FactValue,
+  FactRow,
+  FactRows,
+  FactTable,
+  FactColumnData,
+  FactSet,
+  JavaImportRow,
+  JavaFactsInput,
+  FactsArrow,
+  FactsArrowOptions,
+  FactsManifest,
+  FactsManifestRelation,
+} from './facts/index.js';
 
 // Remedy-class tables: reader and digest for caller-supplied
 // `safe-construct-table@0.1` inputs (the library ships no table).
