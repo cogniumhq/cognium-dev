@@ -768,6 +768,66 @@ export function parseMavenDependencies(pomXml: string): Dependency[] {
       mvnScope === 'test' || mvnScope === 'provided' ? 'dev' : optional ? 'optional' : 'required';
     out.push(dep('maven', `${gid}:${aid}`, version, scope));
   }
+  // cognium-dev#1077 — `maven-dependency-plugin` `<artifactItem>`s (`copy` / `unpack`)
+  // put third-party jars into a module (e.g. an OSGi bundle's `lib/` on
+  // `Bundle-ClassPath`). They ship with it, so they count as `required` declarations.
+  // A `${property}` version is resolved from this pom's own `<properties>`; one defined
+  // in a parent pom is not visible here and stays `unknown`.
+  const props = pomProperties(pomXml);
+  const itemRe = /<artifactItem>([\s\S]*?)<\/artifactItem>/g;
+  while ((m = itemRe.exec(pomXml)) !== null) {
+    const block = m[1];
+    const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];
+    const aid = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
+    if (!gid || !aid) continue;
+    let version = block.match(/<version>\s*([^<\s]+)\s*<\/version>/)?.[1] ?? 'unknown';
+    const ref = /^\$\{([^}]+)\}$/.exec(version);
+    if (ref) version = props.get(ref[1]) ?? 'unknown';
+    else if (version.includes('${')) version = 'unknown';
+    out.push(dep('maven', `${gid}:${aid}`, version, 'required'));
+  }
+  return out;
+}
+
+/** A pom's own `<properties>` (name → literal value); values that reference another property are left out. */
+function pomProperties(pomXml: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const block of pomXml.match(/<properties>[\s\S]*?<\/properties>/g) ?? []) {
+    for (const p of block.matchAll(/<([A-Za-z_][\w.-]*)>\s*([^<]*?)\s*<\/\1>/g)) {
+      if (p[2] && !p[2].includes('${')) out.set(p[1], p[2]);
+    }
+  }
+  return out;
+}
+
+/**
+ * cognium-dev#1077 — Maven locations of an Eclipse PDE / Tycho target platform
+ * (`*.target`): `<location type="Maven">` with either the flat `groupId` / `artifactId`
+ * / `version` form or a `<dependencies><dependency>` list. Tycho resolves the bundles of
+ * an Eclipse-based build from these, so on such a project they, not pom `<dependency>`
+ * rows, carry the third-party versions. Comments are ignored; `required` scope.
+ */
+export function parseTychoTargetDependencies(targetXml: string): Dependency[] {
+  if (!targetXml) return [];
+  const text = targetXml.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  const out: Dependency[] = [];
+  const coord = (block: string): void => {
+    const gid = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/)?.[1];
+    const aid = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/)?.[1];
+    if (!gid || !aid) return;
+    let version = block.match(/<version>\s*([^<\s]+)\s*<\/version>/)?.[1] ?? 'unknown';
+    if (version.includes('${')) version = 'unknown';
+    out.push(dep('maven', `${gid}:${aid}`, version, 'required'));
+  };
+  const locRe = /<location\b([^>]*)>([\s\S]*?)<\/location>/g;
+  let m: RegExpExecArray | null;
+  while ((m = locRe.exec(text)) !== null) {
+    if (!/\btype\s*=\s*["']Maven["']/i.test(m[1])) continue;
+    const body = m[2];
+    const deps = body.match(/<dependency>[\s\S]*?<\/dependency>/g);
+    if (deps) for (const d of deps) coord(d);
+    else coord(body);
+  }
   return out;
 }
 
@@ -988,6 +1048,7 @@ export function collectDependencies(ctx: DependencyContext | undefined): Depende
   // manifest they came from, as a lockfile does for npm, Cargo and Poetry.
   if (ctx.java?.mavenResolved) all.push(...parseMavenResolvedDependencies(ctx.java.mavenResolved));
   else if (ctx.java?.pomXml) all.push(...parseMavenDependencies(ctx.java.pomXml));
+  for (const t of ctx.java?.targetPlatforms ?? []) all.push(...parseTychoTargetDependencies(t));
   if (ctx.java?.gradleLockfile) all.push(...parseGradleLockfile(ctx.java.gradleLockfile));
   else if (ctx.java?.buildGradle) all.push(...parseGradleDependencies(ctx.java.buildGradle));
   if (ctx.rust?.cargoToml) all.push(...parseCargoDependencies(ctx.rust.cargoToml));

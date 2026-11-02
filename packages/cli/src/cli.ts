@@ -19,7 +19,7 @@ import {
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
-  parseMavenDependencies, parseGradleDependencies,
+  parseMavenDependencies, parseTychoTargetDependencies, parseGradleDependencies,
   parseMavenResolvedDependencies, parseGradleLockfile,
   parseCargoDependencies, parseCargoLockDependencies, parseGoDependencies,
   toCycloneDx, toSpdx,
@@ -1976,8 +1976,11 @@ function gradleLockDirProject(file: string): string | null {
   return dirname(gradleDir);
 }
 
+/** An Eclipse PDE / Tycho target-platform file (#1077). */
+const isTychoTarget = (file: string): boolean => file.endsWith('.target') && basename(file) !== '.target';
+
 const isSbomInput = (file: string): boolean =>
-  Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null;
+  Boolean(SBOM_MANIFESTS[basename(file)]) || gradleLockDirProject(file) !== null || isTychoTarget(file);
 
 /** Recursively find recognised manifest files under a path (or the path itself if it is one). */
 export async function collectManifestFiles(targetPath: string): Promise<string[]> {
@@ -2071,7 +2074,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
 
   const manifests = await collectManifestFiles(absPath);
   if (manifests.length === 0) {
-    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod)'));
+    console.error(colors.red('Error: no supported manifests found (package.json/-lock, requirements.txt, pyproject.toml, poetry.lock, pom.xml with dependency-tree.txt/-list.txt, build.gradle, gradle.lockfile, Cargo.toml/.lock, go.mod, *.target)'));
     process.exit(1);
   }
 
@@ -2132,7 +2135,7 @@ async function runSbom(targetPath: string, options: SbomOptions): Promise<void> 
       deps.push(...parseYarnLockDependencies(text, existsSync(pkg) ? readFileSync(pkg, 'utf-8') : undefined));
       continue;
     }
-    const parse = SBOM_MANIFESTS[basename(m)];
+    const parse = SBOM_MANIFESTS[basename(m)] ?? (isTychoTarget(m) ? parseTychoTargetDependencies : undefined);
     deps.push(...(parse ? parse(text) : parseGradleLockfile(text)));
   }
 
