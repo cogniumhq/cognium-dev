@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blake3, base32, digest128 } from '../../src/stable-ids/hash.js';
+import { blake3, blake3Short128Into, base32, digest128, digest128Bytes } from '../../src/stable-ids/hash.js';
 
 const hex = (b: Uint8Array): string => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 
@@ -18,6 +18,21 @@ describe('blake3', () => {
       [1024, '42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7'],
       [1025, 'd00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444'],
       [2048, 'e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a'],
+      // Block boundaries and every tree shape up to eight chunks, plus the longer published inputs.
+      [63, 'e9bc37a594daad83be9470df7f7b3798297c3d834ce80ba85d6e207627b7db7b'],
+      [64, '4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98'],
+      [65, 'de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee'],
+      [2049, '5f4d72f40d7a5f82b15ca2b2e44b1de3c2ef86c426c95c1af0b6879522563030'],
+      [3072, 'b98cb0ff3623be03326b373de6b9095218513e64f1ee2edd2525c7ad1e5cffd2'],
+      [3073, '7124b49501012f81cc7f11ca069ec9226cecb8a2c850cfe644e327d22d3e1cd3'],
+      [4096, '015094013f57a5277b59d8475c0501042c0b642e531b0a1c8f58d2163229e969'],
+      [5120, '9cadc15fed8b5d854562b26a9536d9707cadeda9b143978f319ab34230535833'],
+      [6144, '3e2e5b74e048f3add6d21faab3f83aa44d3b2278afb83b80b3c35164ebeca205'],
+      [7168, '61da957ec2499a95d6b8023e2b0e604ec7f6b50e80a9678b89d2628e99ada77a'],
+      [8192, 'aae792484c8efe4f19e2ca7d371d8c467ffb10748d8a5a1ae579948f718a2a63'],
+      [8193, 'bab6c09cb8ce8cf459261398d2e7aef35700bf488116ceb94a36d0f5f1b7bc3b'],
+      [31744, '62b6960e1a44bcc1eb1a611a8d6235b6b4b78f32e7abc4fb4c6cdcce94895c47'],
+      [102400, 'bc3e3d41a1146b069abffad3c0d44860cf664390afce4d9661f7902e7943e085'],
     ];
     for (const [len, want] of cases) expect(hex(blake3(vectorInput(len))), `len ${len}`).toBe(want);
   });
@@ -26,6 +41,25 @@ describe('blake3', () => {
     expect(hex(blake3(new TextEncoder().encode('abc')))).toBe(
       '6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85',
     );
+  });
+});
+
+describe('blake3Short128Into', () => {
+  it('equals the first 16 bytes of blake3 for every input up to one chunk, at any offset, and refuses more', () => {
+    const out = new Uint8Array(40);
+    for (const len of [0, 1, 3, 63, 64, 65, 80, 127, 128, 129, 500, 1023, 1024]) {
+      const input = vectorInput(len);
+      out.fill(0xee);
+      blake3Short128Into(input, out, 7);
+      expect(hex(out.subarray(7, 23)), String(len)).toBe(hex(blake3(input).subarray(0, 16)));
+      expect(out[6]).toBe(0xee);
+      expect(out[23]).toBe(0xee);
+    }
+    expect(() => blake3Short128Into(vectorInput(1025), out, 0)).toThrow(RangeError);
+    // A subarray view hashes its own bytes, not the buffer's.
+    const buf = vectorInput(300);
+    blake3Short128Into(buf.subarray(10, 90), out, 0);
+    expect(hex(out.subarray(0, 16))).toBe(hex(blake3(vectorInput(300).slice(10, 90)).subarray(0, 16)));
   });
 });
 
@@ -41,6 +75,11 @@ describe('base32', () => {
 });
 
 describe('digest128', () => {
+  it('prints digest128Bytes', () => {
+    expect(digest128(['ids@0.1', 'x'])).toBe(base32(digest128Bytes(['ids@0.1', 'x'])));
+    expect(digest128Bytes(['a']).length).toBe(16);
+  });
+
   it('is 26 base32 characters and separates parts', () => {
     const d = digest128(['ab', 'c']);
     expect(d).toMatch(/^[a-z2-7]{26}$/);

@@ -96,6 +96,9 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   --jar <file>               depcalls: the resolved jar to read packages from
   --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,
                                else ~/.m2/repository]
+  --facts-arrow <dir>        entries, Java only: also write the facts@1 relations (proposed)
+                               as Arrow IPC files plus manifest.json into <dir>; the
+                               report itself is unchanged
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
@@ -194,6 +197,7 @@ EXAMPLES:
   cognium-dev deadcode src --language ts --verdicts dead
   cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
   cognium-dev entries . -f json
+  cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
   cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
   cognium-dev list-passes
   cognium-dev list-passes reliability
