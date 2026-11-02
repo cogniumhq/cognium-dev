@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Java: OWASP safe `Runtime.exec(cmd + bar)` no longer pairs `bar` with a later unrelated `System.getProperty` env_input (#914 S6).** Derived-alias seeding no longer copies an env_input anchor onto an earlier local (BenchmarkTest01791).
+- **SBOM: `maven-dependency-plugin` `<artifactItem>`s and Tycho `*.target` Maven locations are declarations** (#1077). On an Eclipse/Tycho project the third-party versions live there, not in pom `<dependency>` rows, so the census found none (iDempiere: 0 pom rows).
+  - `parseMavenDependencies` now also reads `<artifactItem>`s as `required`. A `${property}` version is resolved from the same pom's `<properties>`; a parent pom's property stays `unknown`.
+  - New `parseTychoTargetDependencies` reads `<location type="Maven">` in both the flat form and the `<dependencies><dependency>` form. Comments and CDATA are ignored, and other location types are skipped.
+  - `collectDependencies` reads `dependencyContext.java.targetPlatforms`.
+  - **Answers change:** on iDempiere the SBOM goes from 27 to 302 dependencies (+225 target locations, +50 artifactItems; nimbus-jose-jwt 9.37.3 and hazelcast 5.3.7 now present).
+- **Java XXE (#1035): #173 empty-DocumentBuilder suppression no longer drops a live `.parse(...)` when `newDocument()` appears only in a comment.** File-level #173 heuristics run on comment-stripped source and treat any `.parse(` as parse evidence.
+
 ### Added
 - **`facts@1` (opt-in).** The fact relations circle-ir owes a graph store, as Arrow columns in canonical order keyed by `ids@0.1`: `schemas/facts@1.json` defines the eight relations (`files`, `decl`, `call`, `unresolved`, `flow`, `imports`, `entries`, `moved`) with column types, sort keys and chunking; `src/facts/` mirrors it in TypeScript with a total row comparator. `buildJavaGraph(files, { emitFacts: 'arrow' })` adds `graph.facts` — one Arrow IPC file per relation plus a manifest — as a post-pass over the finished `java-graph@0.1`; two runs give byte-identical files. Off by default: without the option the graph is exactly what it was. Needs the new optional dependency `apache-arrow` (pinned 21.1.0, loaded on first use, external to the browser and core bundles). `moved` is empty from one snapshot.
   - **`flow` filled (stable-ids decision 1a, 2026-11-01).** An `ids@0.1` node id has a fixed-width form: `digest128([ids@0.1, node, <body_id>, <kind>, <ordinal>])` — the enclosing declaration's printed body id, the node kind (`block`, `def`, `use`, `call`) and its per-body ordinal — so it fits a `fixed16` column like every other id (`nodeIdBytes`, `nodeIdBytesOfPrinted`, `printedNodeId`; `schemas/facts@1.json` `node_id` carries the inputs and a test vector). The post-pass writes one `def-use` row per DFG use with a reaching definition in its file, `from_id` the definition's node, `to_id` the use's; an edit to one method re-keys only that method's rows. `taint` rows are not written yet. `JavaFactsInput.dfg` carries the file's DFG; `buildJavaGraph` passes the IR it already has.

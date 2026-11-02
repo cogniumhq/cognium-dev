@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changes
+- **`sbom` reads Eclipse/Tycho `*.target` files** and pom `<artifactItem>`s (#1077), through circle-ir's new parsers.
+
+### Fixed
+- **`deadcode` / `reach` / `depcalls` / `entries` JSON reports are written in pieces** (#1079). Each report was one `JSON.stringify(report, null, 2)`. On iDempiere, a `depcalls` run against the 7 ZK jars made a 1.2 GB report, past V8's maximum string length, so it exited 2 with `Invalid string length` after 347 s at 6.47 GB RSS and wrote nothing. `writeJson` now yields the same text, byte for byte, and writes it in ~1 MB pieces: synchronously to `-o <file>`, or to stdout. The same run now exits 0 in 427 s at 3.34 GiB and writes the full 1.2 GB report (37,811 call sites). Text and SARIF output are unchanged.
+
 ### Added
 - **`entries --facts-arrow <dir>`** (Java only; `facts@1`): after the graph is built, also writes the eight fact relations as Arrow IPC files (`<relation>.arrow`) plus `manifest.json` into `<dir>`. The relations are sets (the manifest records `duplicates_dropped` per relation) with no nulls; the manifest's file digests are hex; `flow` carries the def-use edges of every file's DFG on fixed-width `ids@0.1` node ids (stable-ids decision 1a). The report on stdout and `-o` is unchanged. Off unless asked for.
 
 ### Changes
 - **`scan` hands the nearest `package.json` and npm lockfile to circle-ir** (`dependencyContext.js`): the `package.json` at or above the target, and the `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm workspace's root lockfile). The walk stops at `.git`. With it, the js-yaml deserialization gate sees the installed version: `yaml.load(req.body)` under js-yaml 4 is no CWE-502 finding, and under js-yaml 3 it still is.
 - **The standalone binary starts as built.** `build:standalone` copied only the grammars from `packages/circle-ir/wasm/`, so `wasm/` lacked `web-tree-sitter.wasm` (it ships in the `web-tree-sitter` package) and the binary exited with "WASM files not found". `scripts/build.mjs --standalone` now stages the grammars and the runtime itself and fails the build if any of the 11 files is missing. CI builds the binary, moves it out of the checkout with its `wasm/`, and runs `--version` and a one-file scan.
+- **Scans are deterministic under Bun and the standalone binary** (#1032). The default source ceiling (#424) came from `node:v8`'s `heap_size_limit`, which under Bun is JavaScriptCore's *current* heap size (~190 MB, different each run). So a directory scan stopped at a different file every run (205–212 of 234 files on `packages/circle-ir/src`, flagged only as `project_size_budget_exceeded`). Under Bun the default is now a fixed 32M chars, and directory walks run in name order. Ten runs on that tree now give the same JSON (apart from `timestamp`) on Node and on Bun.
 
 ## [4.19.0] - 2026-11-01
 

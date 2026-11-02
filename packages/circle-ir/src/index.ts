@@ -26,6 +26,7 @@ export {
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
+  parseTychoTargetDependencies,
   parseGradleDependencies,
   parseGradleLockfile,
   parseMavenResolvedDependencies,
