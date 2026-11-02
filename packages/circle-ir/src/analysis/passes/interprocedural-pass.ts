@@ -1175,6 +1175,9 @@ export function jsExpressionIsConstant(expr: string, values: ReadonlySet<string>
     .replace(/'(?:[^'\\\n]|\\.)*'/g, ' 0 ')
     .replace(/"(?:[^"\\\n]|\\.)*"/g, ' 0 ');
   if (/[`'"]/.test(bare)) return false; // unbalanced quote: not a shape we read
+  // Built from literals: a bare call such as `security.denyAll()` carries no
+  // literal and stays a sink (its value is not read off the text).
+  if (!/\b0\b|\b\d/.test(bare)) return false;
   // Callee chains: `bold(`, `colors.red(`, `.repeat(` — the root must not be a
   // value of the method, and the chain must be called.
   const callee = /(?<![\w$.])([A-Za-z_$][\w$]*)((?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\(/g;

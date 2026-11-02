@@ -65,6 +65,8 @@ describe('jsExpressionIsConstant', () => {
     [`this.name`, false],
     [`bold(SOME_CONST)`, false],
     [`colors.reset`, false],
+    [`security.denyAll()`, false],
+    [`bold()`, false],
     [`x => x`, false],
     [``, false],
   ])('%s → %s', (expr, expected) => {
