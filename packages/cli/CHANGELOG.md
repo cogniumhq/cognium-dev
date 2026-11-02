@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`entries --facts-arrow <dir>`** (Java only; `facts@1`): after the graph is built, also writes the eight fact relations as Arrow IPC files (`<relation>.arrow`) plus `manifest.json` into `<dir>`. The relations are sets (the manifest records `duplicates_dropped` per relation) with no nulls; the manifest's file digests are hex; `flow` carries the def-use edges of every file's DFG on fixed-width `ids@0.1` node ids (stable-ids decision 1a). The report on stdout and `-o` is unchanged. Off unless asked for.
 
+### Changes
+- **`scan` hands the nearest `package.json` and npm lockfile to circle-ir** (`dependencyContext.js`): the `package.json` at or above the target, and the `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm workspace's root lockfile). The walk stops at `.git`. With it, the js-yaml deserialization gate sees the installed version: `yaml.load(req.body)` under js-yaml 4 is no CWE-502 finding, and under js-yaml 3 it still is.
+
 ## [4.19.0] - 2026-11-01
 
 ### Added

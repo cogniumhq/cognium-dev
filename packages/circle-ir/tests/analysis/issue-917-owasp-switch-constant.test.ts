@@ -217,6 +217,28 @@ public class Bench extends HttpServlet {
     expect(tb).toEqual([]);
   });
 
+  it('does not flag trust_boundary when SeparateClassRequest.getTheValue feeds a pass-through helper (BenchmarkTest01802)', async () => {
+    const code = `import javax.servlet.http.*;
+public class BenchmarkTest01802 extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    org.owasp.benchmark.helpers.SeparateClassRequest scr =
+        new org.owasp.benchmark.helpers.SeparateClassRequest(request);
+    String param = scr.getTheValue("BenchmarkTest01802");
+    String bar = new Test().doSomething(request, param);
+    request.getSession().putValue(bar, "10340");
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      String bar = param;
+      return bar;
+    }
+  }
+}`;
+    const r = await analyze(code, 'BenchmarkTest01802.java', 'java');
+    const tb = (r.taint?.flows ?? []).filter(f => f.sink_type === 'trust_boundary');
+    expect(tb).toEqual([]);
+  });
+
   it('OWASP corpus files stay clean when CORPUS_ROOT is set', async () => {
     for (const name of [
       'BenchmarkTest00322',
@@ -224,6 +246,7 @@ public class Bench extends HttpServlet {
       'BenchmarkTest00992',
       'BenchmarkTest01205',
       'BenchmarkTest01207',
+      'BenchmarkTest01802',
     ]) {
       const code = owaspFile(name);
       if (!code) return;

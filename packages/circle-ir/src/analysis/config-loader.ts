@@ -2209,6 +2209,10 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // not reach it.
   { method: 'run', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async'] },
   { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
+  // #1073 — better-sqlite3 / sqlite3: `db.prepare(sql)` takes the SQL text (arg 0); the statement's
+  // `get` / `all` / `run` take bound parameters (sink-filter Stage 15f3). Without this row a tainted
+  // query built into `prepare` was no sink in either library.
+  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['better-sqlite3', 'sqlite3'] },
   { method: 'stream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
   { method: 'runAndRead', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
   { method: 'runAndReadAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },

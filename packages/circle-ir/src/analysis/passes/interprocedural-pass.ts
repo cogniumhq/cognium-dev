@@ -686,6 +686,32 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
+      // cognium-dev#917 S4 / #913 S4 / #914 S4 — pass-through helpers must not reach sinks when
+      // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
+      // sql_injection / command_injection / path_traversal: instance inner-class helpers only;
+      // static helpers can still carry param (e.g. #913 BenchmarkTest02625, #914 BenchmarkTest01929).
+      if (
+        fileCode &&
+        (sink.type === 'trust_boundary' ||
+          ((sink.type === 'sql_injection' ||
+            sink.type === 'command_injection' ||
+            sink.type === 'path_traversal') &&
+            javaHelperCallHasInstanceReceiver(graph, edge))) &&
+        calleeSources.every(
+          s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
+        ) &&
+        skipPassThroughTrustBoundaryWithoutHttpArg(
+          graph,
+          fileCode,
+          edge,
+          callee.startLine,
+          callee.endLine,
+          sources,
+          calleeSources.map(s => s.variable!),
+        )
+      ) {
+        continue;
+      }
       additionalFlows.push({
         source_line: source.line,
         sink_line: sink.line,
@@ -1026,6 +1052,80 @@ function enclosingMethodName(types: TypeInfo[], line: number): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Skip interprocedural trust_boundary when every callee parameter maps to a
+ * caller argument fed only by SeparateClassRequest.getTheValue (OWASP safe
+ * BenchmarkTest01802), not getTheParameter or other http-tainted inputs.
+ */
+function javaHelperCallHasInstanceReceiver(
+  graph: PassContext['graph'],
+  edge: import('../interprocedural.js').CallEdge,
+): boolean {
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  const recv = callSite?.receiver?.trim();
+  return !!recv;
+}
+
+function skipPassThroughTrustBoundaryWithoutHttpArg(
+  graph: PassContext['graph'],
+  fileCode: string,
+  edge: import('../interprocedural.js').CallEdge,
+  calleeStart: number,
+  calleeEnd: number,
+  fileSources: import('../../types/index.js').TaintSource[],
+  paramVars: string[],
+): boolean {
+  const lines = fileCode.split('\n');
+  const paramNames = javaMethodParamNames(lines.slice(calleeStart - 1, calleeEnd));
+  const callSite = graph.ir.calls?.find(
+    c => c.location.line === edge.callLine && (c.in_method ?? null) === edge.callerMethod,
+  );
+  for (const paramVar of paramVars) {
+    const idx = paramNames.indexOf(paramVar);
+    if (idx < 0) continue;
+    const fromCall = callSite?.arguments?.find(a => a.position === idx);
+    const argVar =
+      fromCall?.variable ??
+      (fromCall?.expression && /^[A-Za-z_]\w*$/.test(fromCall.expression.trim())
+        ? fromCall.expression.trim()
+        : undefined);
+    if (!argVar) return false;
+    const hasHttp = fileSources.some(
+      s =>
+        s.variable === argVar &&
+        s.line <= edge.callLine &&
+        s.line < calleeStart &&
+        s.type.startsWith('http_') &&
+        (s.in_method ? s.in_method === edge.callerMethod : true),
+    );
+    if (hasHttp) return false;
+    if (!callerArgFromSeparateClassGetTheValue(fileCode, edge.callLine, argVar)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when `argVar` is assigned from SeparateClassRequest.getTheValue before `callLine`. */
+function callerArgFromSeparateClassGetTheValue(
+  fileCode: string,
+  callLine: number,
+  argVar: string,
+): boolean {
+  const lines = fileCode.split('\n');
+  const assignRe = new RegExp(`\\b${argVar}\\s*=`);
+  for (let i = callLine - 2; i >= 0; i--) {
+    const line = lines[i] ?? '';
+    if (!assignRe.test(line)) continue;
+    if (/\.getTheValue\s*\(/.test(line)) return true;
+    if (/\.getTheParameter\s*\(/.test(line)) return false;
+    return false;
+  }
+  return false;
 }
 
 export function csharpParamReachesSink(

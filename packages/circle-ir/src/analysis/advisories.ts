@@ -91,7 +91,11 @@ export interface OsvRange {
 }
 
 export interface OsvAffected {
-  package: { ecosystem: string; name: string; purl?: string };
+  /**
+   * Absent on some published records (an entry with only a `GIT` range, as in
+   * EEF-CVE-2026-56812): such an entry names no package and is skipped (#1067).
+   */
+  package?: { ecosystem: string; name: string; purl?: string };
   ranges?: OsvRange[];
   versions?: string[];
 }
@@ -147,6 +151,8 @@ export interface AdvisoryIndex {
   ecosystem: string;
   /** Live (non-withdrawn) records read. */
   records: number;
+  /** `affected[]` entries with no `package`, skipped (#1067). */
+  affectedWithoutPackage?: number;
   /** The greatest `modified` across all records read: the data's own date. */
   snapshotDate: string | null;
   /** Withdrawn records, never matched: id, aliases and withdrawal time. */
@@ -170,7 +176,9 @@ export function buildAdvisoryIndex(records: OsvRecord[], ecosystem = 'Maven'): A
   let snapshotDate: string | null = null;
   const withdrawn: AdvisoryIndex['withdrawn'] = [];
   const live: OsvRecord[] = [];
+  let affectedWithoutPackage = 0;
   for (const r of records) {
+    for (const a of r.affected ?? []) if (!a.package) affectedWithoutPackage++;
     if (snapshotDate === null || r.modified > snapshotDate) snapshotDate = r.modified;
     if (r.withdrawn) {
       withdrawn.push({ id: r.id, aliases: [...(r.aliases ?? [])].sort(aliasOrder), withdrawnAt: r.withdrawn });
@@ -229,7 +237,7 @@ export function buildAdvisoryIndex(records: OsvRecord[], ecosystem = 'Maven'): A
     const id = sorted.find((x) => x.startsWith('GHSA-') && recordIds.has(x)) ?? [...recordIds].sort()[0];
     const group: AdvisoryGroup = { id, aliases: sorted.filter((x) => x !== id).sort(aliasOrder), records: recs };
     const names = new Set<string>();
-    for (const r of recs) for (const a of r.affected ?? []) if (a.package.ecosystem === ecosystem) names.add(rules.normalizeName(a.package.name));
+    for (const r of recs) for (const a of r.affected ?? []) if (a.package?.ecosystem === ecosystem) names.add(rules.normalizeName(a.package.name));
     for (const n of names) {
       const list = byPackage.get(n) ?? [];
       list.push(group);
@@ -238,7 +246,7 @@ export function buildAdvisoryIndex(records: OsvRecord[], ecosystem = 'Maven'): A
   }
   for (const list of byPackage.values()) list.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  return { ecosystem, records: live.length, snapshotDate, withdrawn, byPackage };
+  return { ecosystem, records: live.length, ...(affectedWithoutPackage ? { affectedWithoutPackage } : {}), snapshotDate, withdrawn, byPackage };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +384,7 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
       let hitList = false;
       for (const r of g.records) {
         for (const a of r.affected ?? []) {
-          if (a.package.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
+          if (a.package?.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
           if (a.versions?.includes(d.version)) hitList = true;
           for (const range of a.ranges ?? []) {
             if (!rules.rangeTypes.includes(range.type)) continue;
@@ -393,7 +401,7 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
       // Later fixed bounds of the same package (other branches) are fix candidates too.
       for (const r of g.records) {
         for (const a of r.affected ?? []) {
-          if (a.package.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
+          if (a.package?.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
           for (const range of a.ranges ?? []) {
             if (!rules.rangeTypes.includes(range.type)) continue;
             for (const iv of rangeIntervals(range, c)) if (iv.fixed !== undefined && c(iv.fixed, d.version) > 0) fixed.add(iv.fixed);
