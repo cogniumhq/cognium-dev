@@ -9,8 +9,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer, analyze, analyzeProject } from '../../src/analyzer.js';
 
+// Sinks on the statement methods only: `prepare(sql)` itself is a sink since #1073 (its argument
+// is the SQL text), and these tests are about the bound-parameter methods.
+const STATEMENT_METHODS = new Set(['get', 'all', 'run', 'each', 'iterate', 'pluck']);
 const sqlSinks = async (code: string) =>
-  (await analyze(code, 's.ts', 'typescript')).taint.sinks.filter(s => s.type === 'sql_injection');
+  (await analyze(code, 's.ts', 'typescript')).taint.sinks.filter(s => s.type === 'sql_injection' && STATEMENT_METHODS.has(s.method ?? ''));
 
 const store = (body: string) => `import Database from 'better-sqlite3';
 export class Store {
