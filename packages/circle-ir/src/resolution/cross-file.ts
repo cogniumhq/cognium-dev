@@ -1059,8 +1059,11 @@ export class CrossFileResolver {
             // JS/TS: the carried parameter must reach the sink's own arguments, not just
             // any line of the callee (dogfood 2026-11-01: a route value bound as a `?`
             // parameter was credited to `db.prepare(<constant SQL>)` in the same method).
+            // Every parameter is tried, not only `term.positions`: the caller-side carried
+            // positions can miss the real carrier (juice-shop `downloadToFile(imageUrl, dest)`
+            // reported [1] only), and this check must not lose a flow on that.
             if ((targetIR.meta.language === 'javascript' || targetIR.meta.language === 'typescript')
-                && !this.jsParamReachesSinkArgs(targetIR, targetMethod, term.positions, sink, term.file)) continue;
+                && !this.jsParamReachesSinkArgs(targetIR, targetMethod, targetMethod.parameters.map((_, i) => i), sink, term.file)) continue;
             const key = `${filePath}:${source.line}→${term.file}:${sink.line}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -1086,8 +1089,8 @@ export class CrossFileResolver {
   }
 
   /**
-   * JS/TS: does a value carried in at `positions` of `method` reach the arguments of
-   * `sink`? Names derived from the carried parameters by def-use chains are matched
+   * JS/TS: does a value in one of the parameters at `positions` of `method` reach the
+   * arguments of `sink`? Names derived from those parameters by def-use chains are matched
    * against the sink call's dangerous arguments (`argPositions`, else all). Conservative:
    * true when the sink call or the parameter defs cannot be found, so it only drops a
    * flow whose sink call is present and mentions none of those names.
