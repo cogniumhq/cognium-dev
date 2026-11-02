@@ -145,6 +145,35 @@ public class Bench extends HttpServlet {
     expect(pt).toHaveLength(0);
   });
 
+  it('does not flag command_injection on getTheValue helper with os.name prefix exec (#914 S5, BenchmarkTest01791)', async () => {
+    const code = `import javax.servlet.http.*;
+import java.io.IOException;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    org.owasp.benchmark.helpers.SeparateClassRequest scr =
+        new org.owasp.benchmark.helpers.SeparateClassRequest(request);
+    String param = scr.getTheValue("BenchmarkTest01791");
+    String bar = new Test().doSomething(request, param);
+    String cmd = "";
+    String osName = System.getProperty("os.name");
+    if (osName.indexOf("Windows") != -1) {
+      cmd = org.owasp.benchmark.helpers.Utils.getOSCommandString("echo");
+    }
+    Runtime r = Runtime.getRuntime();
+    r.exec(cmd + bar);
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) throws IOException {
+      int num = 106;
+      return (7 * 42) - num > 200 ? "This should never happen" : param;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi).toHaveLength(0);
+  });
+
   it('does not flag when only a dead else would assign param (constant branch)', async () => {
     const code = `import javax.servlet.http.*;
 public class Bench extends HttpServlet {

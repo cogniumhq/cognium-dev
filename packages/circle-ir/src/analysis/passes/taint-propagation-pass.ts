@@ -4724,6 +4724,12 @@ function pickScopedSource(
     if (pick) return pick;
   }
 
+  // When the sink arg is a named tainted var, do not attribute it to an unrelated
+  // source (cognium-dev #914 — OWASP BenchmarkTest01791: `bar` at exec paired with
+  // `osName` from System.getProperty because it was the closest preceding source in doPost).
+  const matchesTaintedVar = (s: CircleIR['taint']['sources'][0]): boolean =>
+    !taintedVar || !s.variable || s.variable === taintedVar;
+
   // 2. Scope match — restrict to sources whose line is inside the same
   //    method as the sink.
   if (methodName && types && types.length > 0) {
@@ -4740,14 +4746,16 @@ function pickScopedSource(
       if (methodStart > 0) break;
     }
     if (methodStart > 0 && methodEnd >= methodStart) {
-      const inScope = sources.filter(s => s.line >= methodStart && s.line <= methodEnd);
+      const inScope = sources.filter(
+        s => s.line >= methodStart && s.line <= methodEnd && matchesTaintedVar(s),
+      );
       const pick = closestPreceding(inScope);
       if (pick) return pick;
     }
   }
 
   // 3. Closest preceding source globally.
-  const globalPick = closestPreceding(sources);
+  const globalPick = closestPreceding(sources.filter(matchesTaintedVar));
   if (globalPick) return globalPick;
 
   // 4. Last resort — preserve historical behaviour when there's nothing
