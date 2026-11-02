@@ -686,13 +686,17 @@ function appendCalleeSourceCallerSinkFlows(
       ) {
         continue;
       }
-      // cognium-dev#917 S4 / #913 S4 — pass-through helpers must not reach sinks when
+      // cognium-dev#917 S4 / #913 S4 / #914 S4 — pass-through helpers must not reach sinks when
       // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
-      // sql_injection: instance inner-class helpers only (#913); static helpers can still carry param (02625).
+      // sql_injection / command_injection / path_traversal: instance inner-class helpers only;
+      // static helpers can still carry param (e.g. #913 BenchmarkTest02625, #914 BenchmarkTest01929).
       if (
         fileCode &&
         (sink.type === 'trust_boundary' ||
-          (sink.type === 'sql_injection' && javaHelperCallHasInstanceReceiver(graph, edge))) &&
+          ((sink.type === 'sql_injection' ||
+            sink.type === 'command_injection' ||
+            sink.type === 'path_traversal') &&
+            javaHelperCallHasInstanceReceiver(graph, edge))) &&
         calleeSources.every(
           s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
         ) &&
