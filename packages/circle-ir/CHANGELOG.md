@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`buildAdvisoryIndex` / `matchAdvisories` no longer throw on an OSV `affected[]` entry without `package`** (#1067). The public OSV export has one: the third entry of EEF-CVE-2026-56812 carries only a `GIT` range. Such an entry names no package; it is now skipped and counted (`AdvisoryIndex.affectedWithoutPackage`), and the record's other entries index and match as before. `OsvAffected.package` is optional in the type.
+
 ## [4.19.0] - 2026-11-01
 
 ### Fixed
