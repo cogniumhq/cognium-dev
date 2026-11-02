@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 - **`scan` hands the nearest `package.json` and npm lockfile to circle-ir** (`dependencyContext.js`): the `package.json` at or above the target, and the `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm workspace's root lockfile). The walk stops at `.git`. With it, the js-yaml deserialization gate sees the installed version: `yaml.load(req.body)` under js-yaml 4 is no CWE-502 finding, and under js-yaml 3 it still is.
+- **The standalone binary starts as built.** `build:standalone` copied only the grammars from `packages/circle-ir/wasm/`, so `wasm/` lacked `web-tree-sitter.wasm` (it ships in the `web-tree-sitter` package) and the binary exited with "WASM files not found". `scripts/build.mjs --standalone` now stages the grammars and the runtime itself and fails the build if any of the 11 files is missing. CI builds the binary, moves it out of the checkout with its `wasm/`, and runs `--version` and a one-file scan.
 
 ## [4.19.0] - 2026-11-01
 
