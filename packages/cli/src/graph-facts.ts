@@ -15,7 +15,7 @@
  * only after stdout drains (#1001).
  */
 
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { homedir, tmpdir } from 'os';
@@ -36,6 +36,7 @@ import {
   type DeadCodeResult,
   type DependencyCallsResult,
   type EntryKind,
+  type FactsArrow,
   type PartialFile,
   type ReachInput,
   type RemovalReachResult,
@@ -120,6 +121,12 @@ export interface EntriesCliOptions {
   language?: GraphLanguage;
   format: 'text' | 'json';
   output?: string;
+  /**
+   * Directory for the `facts@1` relations (proposed; graph-store plan T2) as
+   * Arrow IPC files plus `manifest.json`, written after the graph is built.
+   * Java only. The report is the same with or without it.
+   */
+  factsArrow?: string;
 }
 
 export interface DepCallsCliOptions {
@@ -164,10 +171,16 @@ export function parseReachOptions(o: Raw): ReachCliOptions {
 }
 
 export function parseEntriesOptions(o: Raw): EntriesCliOptions {
+  const language = parseGraphLanguage(o.language ?? o.l);
+  const factsArrow = optionalString('facts-arrow', o['facts-arrow']);
+  if (factsArrow !== undefined && language !== undefined && language !== 'java') {
+    throw new UsageError('--facts-arrow is available for --language java only');
+  }
   return {
-    language: parseGraphLanguage(o.language ?? o.l),
+    language,
     format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
     output: optionalString('output', o.output ?? o.o),
+    ...(factsArrow !== undefined ? { factsArrow } : {}),
   };
 }
 
@@ -295,8 +308,13 @@ export function pickLanguage(roots: readonly string[], asked?: GraphLanguage): G
 }
 
 /** The engine's reach input for one tree: its call graph with the entry index. */
-export async function buildGraph(root: string, language: GraphLanguage): Promise<ReachInput> {
-  if (language === 'java') return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root) });
+export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow' } = {}): Promise<ReachInput & { facts?: FactsArrow }> {
+  if (language === 'java') {
+    const facts = graphOptions.emitFacts === 'arrow'
+      ? { emitFacts: 'arrow' as const, facts: { engine: `circle-ir@${engineIdentity().version}` } }
+      : {};
+    return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root), ...facts });
+  }
   if (language === 'python') return buildPythonGraph(sources(root, 'python'), { consoleScripts: consoleScripts(root) });
   if (language === 'go') {
     const modulePath = goModulePath(root);
@@ -460,10 +478,31 @@ export interface EntriesReport {
   summary: Record<string, number>;
 }
 
+/** `facts@1` as the files the store reads: `<dir>/<relation>.arrow` and `<dir>/manifest.json`. */
+export function writeFactsArrow(dir: string, facts: FactsArrow): string[] {
+  mkdirSync(dir, { recursive: true });
+  const written: string[] = [];
+  for (const [name, bytes] of Object.entries(facts.relations)) {
+    const file = join(dir, `${name}.arrow`);
+    writeFileSync(file, bytes);
+    written.push(file);
+  }
+  const manifest = join(dir, 'manifest.json');
+  writeFileSync(manifest, JSON.stringify(facts.manifest, null, 2) + '\n');
+  written.push(manifest);
+  return written;
+}
+
 export async function computeEntries(path: string, opts: EntriesCliOptions): Promise<EntriesReport> {
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
-  const graph = await buildGraph(root, language);
+  if (opts.factsArrow !== undefined && language !== 'java') throw new UsageError('--facts-arrow is available for Java trees only');
+  const graph = await buildGraph(root, language, opts.factsArrow !== undefined ? { emitFacts: 'arrow' } : {});
+  if (opts.factsArrow !== undefined) {
+    if (!graph.facts) throw new Error('facts@1: the engine returned no facts');
+    writeFactsArrow(opts.factsArrow, graph.facts);
+    console.error(`Wrote facts@1 (${Object.keys(graph.facts.relations).length} relations + manifest.json) to ${opts.factsArrow}`);
+  }
   const summary: Record<string, number> = {};
   for (const e of graph.entries) summary[e.kind] = (summary[e.kind] ?? 0) + 1;
   return {

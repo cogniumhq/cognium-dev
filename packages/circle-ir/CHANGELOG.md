@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`facts@1` (proposed, opt-in).** The fact relations circle-ir owes a graph store, as Arrow columns in canonical order keyed by `ids@0.1`: `schemas/facts@1.json` defines the eight relations (`files`, `decl`, `call`, `unresolved`, `flow`, `imports`, `entries`, `moved`) with column types, nullability, sort keys and chunking; `src/facts/` mirrors it in TypeScript with a total row comparator. `buildJavaGraph(files, { emitFacts: 'arrow' })` adds `graph.facts` — one Arrow IPC file per relation plus a manifest — as a post-pass over the finished `java-graph@0.1`; two runs give byte-identical files. Off by default: without the option the graph is exactly what it was. Needs the new optional dependency `apache-arrow` (pinned 21.1.0, loaded on first use, external to the browser and core bundles). `flow` and `moved` are empty from one snapshot. The schema is a proposal until the stable-ids plan is adopted; see the PR for its open questions.
+
 ## [4.19.0] - 2026-11-01
 
 ### Fixed

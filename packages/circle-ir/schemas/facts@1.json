@@ -1,0 +1,119 @@
+{
+  "$comment": "facts@1 — PROPOSED (graph-store plan 0.1, T1). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1. Adopted when the stable-ids plan (#20) is; until then every consumer treats this file as a draft. The TypeScript mirror is src/facts/schema.ts and tests/facts/schema.test.ts locks the two together.",
+  "scheme": "facts@1",
+  "ids": "ids@0.1",
+  "id_encoding": {
+    "$comment": "An ids@0.1 id is 128 bits printed as 26 lowercase base32 characters (RFC 4648, unpadded). In a column it is the 16 raw bytes, so every id column is FixedSizeBinary(16); the 2 trailing padding bits of the printed form are always zero.",
+    "arrow": "fixed_size_binary",
+    "width": 16
+  },
+  "types": {
+    "$comment": "The closed set of column types. `dict` is Dictionary<Int8 index, Utf8 value> over a fixed vocabulary listed on the column; the whole vocabulary is written as the dictionary, in the listed order, whether or not every value occurs.",
+    "fixed16": "FixedSizeBinary(16)",
+    "u32": "Uint32",
+    "utf8": "Utf8",
+    "bool": "Bool",
+    "dict": "Dictionary<Int8, Utf8>"
+  },
+  "canonical_order": {
+    "$comment": "Within a relation rows are sorted ascending by the key columns in key order, then by every remaining column in schema order, so the comparator is total and a relation with duplicate keys still has one byte form. Column orders: fixed16 by unsigned bytes; u32 numerically; utf8 and dict by Unicode code point (which equals UTF-8 byte order), never by UTF-16 code unit or dictionary index; bool false before true; null before every value.",
+    "key_then_remaining_columns": true,
+    "null_first": true,
+    "strings": "code-point"
+  },
+  "chunking": {
+    "$comment": "After the canonical sort a relation is cut into record batches of chunk_rows rows each (the last one shorter); a relation with no rows has no record batch. One Arrow IPC file per relation, so the batch boundaries are part of the bytes. Fixed row-count chunks were chosen over the design's file_id ranges because five of the eight relations are not keyed by file_id; see the plan's open questions.",
+    "chunk_rows": 65536,
+    "ipc": "file"
+  },
+  "metadata": {
+    "$comment": "Schema-level custom metadata, and nothing else (no timestamps, no host): facts and ids always; engine and parser when the caller names them.",
+    "facts": "facts@1",
+    "ids": "ids@0.1",
+    "engine": "optional, e.g. circle-ir@4.19.0",
+    "parser": "optional, e.g. tree-sitter-java@0.23.5"
+  },
+  "relations": {
+    "files": {
+      "key": ["file_id"],
+      "columns": [
+        { "name": "file_id", "type": "u32", "nullable": false, "doc": "0-based index of the file in the snapshot's path-sorted (code point order) file list; dense and per snapshot." },
+        { "name": "path", "type": "utf8", "nullable": false, "doc": "Repository-relative, /-separated." },
+        { "name": "content_hash", "type": "fixed16", "nullable": false, "doc": "blake3 of the file's UTF-8 bytes, first 16 bytes." },
+        { "name": "language", "type": "dict", "nullable": false, "values": ["java", "typescript", "javascript", "python", "go"] }
+      ]
+    },
+    "decl": {
+      "key": ["id"],
+      "columns": [
+        { "name": "id", "type": "fixed16", "nullable": false, "doc": "ids@0.1 declaration id." },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["module", "type", "method", "field", "function"] },
+        { "name": "qualified_name", "type": "utf8", "nullable": false },
+        { "name": "signature", "type": "utf8", "nullable": false, "doc": "The ids@0.1 canonical signature as written; empty for modules and types without type parameters." },
+        { "name": "file_id", "type": "u32", "nullable": false },
+        { "name": "line", "type": "u32", "nullable": false, "doc": "1-based start line." },
+        { "name": "body_hash", "type": "fixed16", "nullable": true, "doc": "ids@0.1 body hash; null when the engine derived none." }
+      ]
+    },
+    "call": {
+      "key": ["caller_id", "site_file", "site_line", "site_col", "callee_id"],
+      "columns": [
+        { "name": "caller_id", "type": "fixed16", "nullable": false, "doc": "The enclosing declaration (the module's id for top-level code)." },
+        { "name": "callee_id", "type": "fixed16", "nullable": false, "doc": "The declaration that can run; one row per candidate body on polymorphic." },
+        { "name": "tier", "type": "dict", "nullable": false, "values": ["exact", "polymorphic", "inferred"] },
+        { "name": "method_name", "type": "utf8", "nullable": false, "doc": "The name as written at the site. Not in the design's column list: a (file, line, col) site names more than one call in a chained expression, and the name is what tells them apart." },
+        { "name": "site_file", "type": "u32", "nullable": false },
+        { "name": "site_line", "type": "u32", "nullable": false, "doc": "1-based." },
+        { "name": "site_col", "type": "u32", "nullable": false, "doc": "0-based." }
+      ]
+    },
+    "unresolved": {
+      "key": ["site_file", "site_line", "site_col"],
+      "columns": [
+        { "name": "caller_id", "type": "fixed16", "nullable": false },
+        { "name": "reason", "type": "dict", "nullable": false, "values": ["external", "dynamic", "generated", "overload-ambiguous", "parse-error", "unsupported-language", "unknown"] },
+        { "name": "receiver", "type": "utf8", "nullable": true, "doc": "The library type the call lands on, when known." },
+        { "name": "method_name", "type": "utf8", "nullable": false },
+        { "name": "site_file", "type": "u32", "nullable": false },
+        { "name": "site_line", "type": "u32", "nullable": false },
+        { "name": "site_col", "type": "u32", "nullable": false }
+      ]
+    },
+    "flow": {
+      "key": ["from_id", "to_id", "kind"],
+      "columns": [
+        { "name": "from_id", "type": "fixed16", "nullable": false },
+        { "name": "to_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["def-use", "taint"] }
+      ],
+      "doc": "Def-use and taint edges. Empty from the java-graph@0.1 post-pass: these edges live on ids@0.1 node ids, which have no fixed-width form yet."
+    },
+    "imports": {
+      "key": ["file_id", "target"],
+      "columns": [
+        { "name": "file_id", "type": "u32", "nullable": false },
+        { "name": "target", "type": "utf8", "nullable": false, "doc": "The imported name as written, without a trailing `.*`; a static import's member path for `import static`." },
+        { "name": "wildcard", "type": "bool", "nullable": false }
+      ]
+    },
+    "entries": {
+      "key": ["decl_id", "kind", "source"],
+      "columns": [
+        { "name": "decl_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["main", "route", "listener", "scheduled", "export", "bean", "di", "reflection", "lifecycle", "test", "osgi-ds", "extension-point", "data-declared", "script"], "doc": "entry-index@0.1 kinds plus the design's data-declared kinds; `bean` is the engine's name for the design's `di`." },
+        { "name": "source", "type": "utf8", "nullable": false, "doc": "What declared the entry — the annotation, the supertype member, the manifest or file; the engine's evidence line." },
+        { "name": "certainty", "type": "dict", "nullable": false, "values": ["declared", "conventional", "inferred"] }
+      ]
+    },
+    "moved": {
+      "key": ["old_id", "new_id"],
+      "columns": [
+        { "name": "old_id", "type": "fixed16", "nullable": false },
+        { "name": "new_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["moved", "renamed"] },
+        { "name": "evidence", "type": "utf8", "nullable": false }
+      ],
+      "doc": "Moves and renames between two snapshots: facts, not delete + insert. Empty from a single-snapshot post-pass."
+    }
+  }
+}

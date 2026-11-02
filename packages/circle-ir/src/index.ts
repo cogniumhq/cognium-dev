@@ -388,6 +388,41 @@ export type {
   MoveDetection,
 } from './stable-ids/index.js';
 
+// `facts@1` (PROPOSED, graph-store plan T1/T2): the fact relations as columns
+// in canonical order keyed by `ids@0.1`, and their Arrow IPC wire form.
+// Opt-in through `buildJavaGraph(files, { emitFacts: 'arrow' })`; needs the
+// optional dependency `apache-arrow`, loaded on first use.
+export {
+  FACTS_SCHEME,
+  FACTS_ID_WIDTH,
+  FACTS_CHUNK_ROWS,
+  FACTS_RELATION_NAMES,
+  FACTS_RELATIONS,
+  sortColumns as factsSortColumns,
+  rowComparator as factsRowComparator,
+  canonicalRows as factsCanonicalRows,
+  compareCodePoints,
+  idBytes,
+  javaGraphFacts,
+  factsToArrow,
+} from './facts/index.js';
+export type {
+  FactsScheme,
+  FactsColumnType,
+  FactsColumn,
+  FactsRelation,
+  FactsRelationName,
+  FactValue,
+  FactRow,
+  FactRows,
+  JavaImportRow,
+  JavaFactsInput,
+  FactsArrow,
+  FactsArrowOptions,
+  FactsManifest,
+  FactsManifestRelation,
+} from './facts/index.js';
+
 // Remedy-class tables: reader and digest for caller-supplied
 // `safe-construct-table@0.1` inputs (the library ships no table).
 export {
