@@ -82,6 +82,69 @@ public class Bench extends HttpServlet {
     expect(cmdi).toHaveLength(0);
   });
 
+  it('does not flag command_injection on getTheValue-fed instance inner helper (#914 S4)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    org.owasp.benchmark.helpers.SeparateClassRequest scr =
+        new org.owasp.benchmark.helpers.SeparateClassRequest(request);
+    String param = scr.getTheValue("BenchmarkTest01778");
+    String bar = new Test().doSomething(request, param);
+    String a1 = "sh";
+    String a2 = "-c";
+    String[] args = {a1, a2, "echo " + bar};
+    new ProcessBuilder(args).start();
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      return param;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi).toHaveLength(0);
+  });
+
+  it('still flags command_injection on static helper with HTTP param (#914 S4 guard)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getHeader("x");
+    String bar = doSomething(request, param);
+    String[] args = {"sh", "-c", "echo " + bar};
+    new ProcessBuilder(args).start();
+  }
+  private static String doSomething(HttpServletRequest request, String param) {
+    return param;
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi.length).toBeGreaterThan(0);
+  });
+
+  it('does not flag path_traversal on getTheValue-fed instance inner helper (#914 S4)', async () => {
+    const code = `import javax.servlet.http.*;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    org.owasp.benchmark.helpers.SeparateClassRequest scr =
+        new org.owasp.benchmark.helpers.SeparateClassRequest(request);
+    String param = scr.getTheValue("BenchmarkTest01745");
+    String bar = new Test().doSomething(request, param);
+    new java.io.File(bar, "/Test.txt");
+  }
+  private class Test {
+    public String doSomething(HttpServletRequest request, String param) {
+      return param;
+    }
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const pt = (r.taint?.flows ?? []).filter(f => f.sink_type === 'path_traversal');
+    expect(pt).toHaveLength(0);
+  });
+
   it('does not flag when only a dead else would assign param (constant branch)', async () => {
     const code = `import javax.servlet.http.*;
 public class Bench extends HttpServlet {
