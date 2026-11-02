@@ -970,8 +970,23 @@ function isSafePythonSubprocessCall(call: CallInfo, pattern: SinkPattern, langua
     if (/^shell\s*=\s*True\b/.test(e)) return false;
   }
 
+  // #1072 — the list's argv[0] decides it, as in the JS/Go/Rust/C# gates: a shell, a
+  // program that runs its argv as a command (#1066), or an interpreter given code with
+  // `-c` / `-e` keeps the sink. A non-literal argv[0] keeps today's safe-shape skip.
+  const first = /^\[\s*(?:[rbuRBU]{0,2})(['"])([^'"]*)\1\s*(?:,|\])/.exec(expr0);
+  if (first) {
+    const program = (first[2]!.split(/[\\/]/).pop() ?? first[2]!).toLowerCase().replace(/\.exe$/, '');
+    if (PYTHON_LIST_SHELLS.has(program) || runsArgvAsCommand(program)) return false;
+    if (PYTHON_LIST_INTERPRETERS.test(program) && /,\s*(?:[rbuRBU]{0,2})(['"])-(?:c|e|-eval|-command)\1/.test(expr0)) return false;
+  }
+
   return true;
 }
+
+/** Shells for the Python list-form gate (#1072). */
+const PYTHON_LIST_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ash', 'ksh', 'csh', 'tcsh', 'fish', 'cmd', 'powershell', 'pwsh']);
+/** Interpreters that run code given with `-c` / `-e` (#1072). */
+const PYTHON_LIST_INTERPRETERS = /^(?:python[\d.]*|pypy[\d.]*|perl|ruby|node|nodejs|php|lua|osascript)$/;
 
 /**
  * Check if a Go `exec.Command(...)` / `exec.CommandContext(...)` call is
