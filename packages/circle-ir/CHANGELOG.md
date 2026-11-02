@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A fixed program that runs its own argv as a command keeps the `command_injection` sink** (#1066). The execve-style safe gates dropped the sink for any literal non-shell program: JS `spawn`/`execFile` (#187), its argv-form sanitizer, #1059's fixed-program filter, Go `exec.Command`, Rust `Command::new` and C# `Process.Start(exe, args)`. That is right for `git` or `convert`. It is wrong for `ssh host cmd`, `sudo`, `doas`, `docker`/`podman exec|run`, `kubectl exec`, `xargs`, `env`, and wrappers that exec what follows (`nohup`, `timeout`, `nice`, …). One shared list (`arg-executing-programs.ts`) now keeps the sink for them in every gate. **Answers change:** `spawn('ssh', [host, userCmd])` with tainted `userCmd` is a finding again (a flow from an Express request, for example). Python's list-form `subprocess` gate is not changed here.
+
 ## [4.19.0] - 2026-11-01
 
 ### Fixed

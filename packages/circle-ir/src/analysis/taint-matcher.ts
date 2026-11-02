@@ -4,6 +4,7 @@
  * Matches method calls and annotations against taint configurations.
  */
 
+import { runsArgvAsCommand } from './arg-executing-programs.js';
 import { jsHelperReturnsNoParam } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
@@ -1029,6 +1030,7 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   // cognium-dev #218 (CVE-2026-33634) — package-manager install/exec
   // subcommands fetch and execute code from user-controlled package
@@ -1160,6 +1162,7 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   return true;
 }
@@ -1186,7 +1189,7 @@ function isConstNonShellExe(raw: string | null | undefined): boolean {
   if (!/^@?"[^"]*"$/.test(t)) return false;
   const program = (t.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
     .toLowerCase().replace(/\.exe$/, '');
-  return !CSHARP_SHELL_PROGRAMS.has(program);
+  return !CSHARP_SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
 }
 
 // Extract the executable literal from a `new ProcessStartInfo("exe", …)`
@@ -1600,7 +1603,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
       const stripped = expr.slice(1, -1);
       program = stripped.split('/').pop() ?? stripped;
     }
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   if (
@@ -1615,7 +1618,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
     const receiverText = call.receiver ?? '';
     const program = extractProgram(receiverText);
     if (program === null) return false;
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   return false;
