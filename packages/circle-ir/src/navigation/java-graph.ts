@@ -54,7 +54,8 @@ export interface JavaGraphOptions {
    * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2) as
    * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
    * graph as a post-pass (relations are sets: exact duplicates of the graph's
-   * rows collapse, counted in the manifest). Off by default, and when off the graph is
+   * rows collapse, counted in the manifest); `flow` comes from each file's
+   * DFG on fixed-width `ids@0.1` node ids. Off by default, and when off the graph is
    * exactly what it was: no `facts` key, same JSON. Needs the optional
    * dependency `apache-arrow`.
    */
@@ -510,7 +511,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       sites: sites.filter(s => byPath.has(s.site.file)).length,
     };
     if (options.emitFacts === 'arrow') {
-      const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode) }));
+      const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode), dfg: irs[i].ir.dfg }));
       graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
     }
     return graph;

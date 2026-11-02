@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blake3, base32, digest128 } from '../../src/stable-ids/hash.js';
+import { blake3, blake3Short128Into, base32, digest128, digest128Bytes } from '../../src/stable-ids/hash.js';
 
 const hex = (b: Uint8Array): string => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 
@@ -44,6 +44,25 @@ describe('blake3', () => {
   });
 });
 
+describe('blake3Short128Into', () => {
+  it('equals the first 16 bytes of blake3 for every input up to one chunk, at any offset, and refuses more', () => {
+    const out = new Uint8Array(40);
+    for (const len of [0, 1, 3, 63, 64, 65, 80, 127, 128, 129, 500, 1023, 1024]) {
+      const input = vectorInput(len);
+      out.fill(0xee);
+      blake3Short128Into(input, out, 7);
+      expect(hex(out.subarray(7, 23)), String(len)).toBe(hex(blake3(input).subarray(0, 16)));
+      expect(out[6]).toBe(0xee);
+      expect(out[23]).toBe(0xee);
+    }
+    expect(() => blake3Short128Into(vectorInput(1025), out, 0)).toThrow(RangeError);
+    // A subarray view hashes its own bytes, not the buffer's.
+    const buf = vectorInput(300);
+    blake3Short128Into(buf.subarray(10, 90), out, 0);
+    expect(hex(out.subarray(0, 16))).toBe(hex(blake3(vectorInput(300).slice(10, 90)).subarray(0, 16)));
+  });
+});
+
 describe('base32', () => {
   it('follows RFC 4648 (lowercase, unpadded)', () => {
     const enc = (s: string) => base32(new TextEncoder().encode(s));
@@ -56,6 +75,11 @@ describe('base32', () => {
 });
 
 describe('digest128', () => {
+  it('prints digest128Bytes', () => {
+    expect(digest128(['ids@0.1', 'x'])).toBe(base32(digest128Bytes(['ids@0.1', 'x'])));
+    expect(digest128Bytes(['a']).length).toBe(16);
+  });
+
   it('is 26 base32 characters and separates parts', () => {
     const d = digest128(['ab', 'c']);
     expect(d).toMatch(/^[a-z2-7]{26}$/);

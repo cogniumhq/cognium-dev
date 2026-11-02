@@ -4,9 +4,14 @@
  * same facts, so every count here equals one of the graph's *before* the set
  * dedupe: `decl` rows = declarations over `files`, `call` = `edges`,
  * `unresolved` = `unresolved`, `entries` = `entries`, `files` = `files`,
- * `imports` = the files' import declarations; the manifest's
- * `duplicates_dropped` is the difference. `flow` and `moved` are empty from
- * one snapshot (see `schemas/facts@1.json`).
+ * `imports` = the files' import declarations, `flow` = the DFG uses with a
+ * reaching definition; the manifest's `duplicates_dropped` is the
+ * difference. `moved` is empty from one snapshot (see `schemas/facts@1.json`).
+ *
+ * `flow` rows are keyed by `ids@0.1` node ids in their fixed-width form
+ * (`nodeIdBytes`): each DFG def and use is placed in the innermost
+ * declaration body enclosing it and numbered there (`locateNodes`), so an
+ * edit to one method leaves every other method's flow rows unchanged.
  *
  * Built as columns, never as row objects: each relation's typed arrays are
  * filled straight from the graph, then `canonicalTable` sorts one index
@@ -15,7 +20,9 @@
 
 import type { JavaGraph } from '../navigation/java-graph.js';
 import { blake3, digest128 } from '../stable-ids/hash.js';
-import { STABLE_ID_SCHEME } from '../stable-ids/types.js';
+import { NodeIdWriter, locateNodes } from '../stable-ids/nodes.js';
+import { STABLE_ID_SCHEME, type StableIdFile } from '../stable-ids/types.js';
+import type { DFG } from '../types/index.js';
 import { compareCodePoints } from './order.js';
 import {
   FACTS_ID_WIDTH,
@@ -38,6 +45,8 @@ export interface JavaFactsInput {
   path: string;
   code: string;
   imports: readonly JavaImportRow[];
+  /** The file's DFG (`analyze(...).dfg`); its def-use pairs become `flow` rows. Absent: the file adds no `flow` row. */
+  dfg?: Pick<DFG, 'defs' | 'uses'>;
 }
 
 /** The eight relations in canonical form (sorted sets) with what the dedupe dropped from each. */
@@ -147,6 +156,53 @@ export function javaGraphFactSet(graph: JavaGraph, inputs: readonly JavaFactsInp
   }
   const callerId = (file: string, id: string): string => (rekey.size > 0 ? rekey.get(file)?.get(id)?.id ?? id : id);
 
+  // flow — def-use edges on fixed-width node ids, one row per DFG use with a
+  // reaching definition the same file holds.
+  const flowCapacity = orderedFiles.reduce((n, f) => n + ((byPath.get(f.file) as JavaFactsInput).dfg?.uses.length ?? 0), 0);
+  const flow = allocTable(R.flow, flowCapacity);
+  let flowCount = 0;
+  if (flowCapacity > 0) {
+    const defUse = code(dict(R.flow, 'kind'), 'def-use', 'kind');
+    const writer = new NodeIdWriter();
+    const from = flow[0] as Uint8Array;
+    const to = flow[1] as Uint8Array;
+    const kinds = flow[2] as Int8Array;
+    for (const f of orderedFiles) {
+      const dfg = (byPath.get(f.file) as JavaFactsInput).dfg;
+      if (!dfg || dfg.uses.length === 0) continue;
+      const rekeyed = rekey.get(f.file);
+      const bodyId = (d: StableIdFile['decls'][number]): string => {
+        const r = rekeyed?.get(d.id);
+        return r ? `${r.id}.${d.body_hash}` : d.body_id;
+      };
+      // Every def's node id, once; `defAt[def.id]` is its offset in `defIds`, −1 when the def has no body.
+      const defs = locateNodes(f, dfg.defs, (d, at) => at(d.line, d.column));
+      const defIds = new Uint8Array(defs.length * FACTS_ID_WIDTH);
+      const defAt = new Map<number, number>();
+      for (let i = 0; i < defs.length; i++) {
+        const n = defs[i];
+        if (n === null) continue;
+        writer.forBody(bodyId(n.decl), 'def');
+        writer.write(n.ordinal, defIds, i * FACTS_ID_WIDTH);
+        defAt.set(dfg.defs[i].id, i * FACTS_ID_WIDTH);
+      }
+      const uses = locateNodes(f, dfg.uses, (u, at) => at(u.line, u.column));
+      for (let i = 0; i < uses.length; i++) {
+        const n = uses[i];
+        const u = dfg.uses[i];
+        if (n === null || u.def_id === null) continue;
+        const d = defAt.get(u.def_id);
+        if (d === undefined) continue;
+        const o = flowCount * FACTS_ID_WIDTH;
+        for (let k = 0; k < FACTS_ID_WIDTH; k++) from[o + k] = defIds[d + k];
+        writer.forBody(bodyId(n.decl), 'use');
+        writer.write(n.ordinal, to, o);
+        kinds[flowCount] = defUse;
+        flowCount++;
+      }
+    }
+  }
+
   // call
   const call = allocTable(R.call, graph.edges.length);
   {
@@ -215,7 +271,7 @@ export function javaGraphFactSet(graph: JavaGraph, inputs: readonly JavaFactsInp
     decl: { columns: decl, length: declCount },
     call: { columns: call, length: graph.edges.length },
     unresolved: { columns: unresolved, length: graph.unresolved.length },
-    flow: { columns: allocTable(R.flow, 0), length: 0 },
+    flow: { columns: flow, length: flowCount },
     imports: { columns: imports, length: importCount },
     entries: { columns: entries, length: graph.entries.length },
     moved: { columns: allocTable(R.moved, 0), length: 0 },

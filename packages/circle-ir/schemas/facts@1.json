@@ -1,11 +1,24 @@
 {
-  "$comment": "facts@1 (graph-store plan 0.1, T1). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1 (stable-ids plan adopted 2026-11-01). The contract follows the 2026-11-01 reconciliation record (decisions 1-11): 128-bit ids, sets with no nulls, the producer's metadata keys, hex digests. This file is the schema the store reads; the TypeScript mirror is src/facts/schema.ts and tests/facts/schema.test.ts locks the two together.",
+  "$comment": "facts@1 (graph-store plan 0.1, T1). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1 (stable-ids plan adopted 2026-11-01). The contract follows the 2026-11-01 reconciliation record (decisions 1-11) and the stable-ids decision 1a of the same evening (fixed-width node ids, so flow fills): 128-bit ids, sets with no nulls, the producer's metadata keys, hex digests. This file is the schema the store reads; the TypeScript mirror is src/facts/schema.ts and tests/facts/schema.test.ts locks the two together.",
   "scheme": "facts@1",
   "ids": "ids@0.1",
   "id_encoding": {
-    "$comment": "An ids@0.1 id is 128 bits printed as 26 lowercase base32 characters (RFC 4648, unpadded). In a column it is the 16 raw bytes, so every id column is FixedSizeBinary(16); the 2 trailing padding bits of the printed form are always zero.",
+    "$comment": "An ids@0.1 id is 128 bits printed as 26 lowercase base32 characters (RFC 4648, unpadded). In a column it is the 16 raw bytes, so every id column is FixedSizeBinary(16); the 2 trailing padding bits of the printed form are always zero. Node ids (the flow endpoints) have the same width: see node_id.",
     "arrow": "fixed_size_binary",
     "width": 16
+  },
+  "node_id": {
+    "$comment": "The fixed-width form of an ids@0.1 node id (stable-ids design decision 1a, adopted 2026-11-01): digest128 over the parts listed, i.e. BLAKE3 of the UTF-8 parts each followed by NUL, first 16 bytes - the same construction as every other ids@0.1 id, printed as 26 base32 characters where a printed form is needed. body_id is the printed body id of the innermost declaration whose body encloses the node (<decl id>.<body_hash>, 53 characters; after the snapshot's #n re-key where decl applied one); kind is the IR array the node comes from; ordinal counts the nodes of that kind inside that body in IR array order, from 0, in decimal without leading zeros. It is a function of the printed node id <body_id>/<tag><ordinal> (tags b, d, u, c) and nothing else: an edit to one body re-keys only that body's nodes. The example is a test vector (tests/facts/schema.test.ts recomputes it).",
+    "parts": ["ids@0.1", "node", "<body_id>", "<kind>", "<ordinal>"],
+    "kinds": ["block", "def", "use", "call"],
+    "example": {
+      "printed": "aaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbb/u7",
+      "body_id": "aaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": "use",
+      "ordinal": 7,
+      "hex": "cd071ce8a3b6d97cc2dd1264742bb62d",
+      "base32": "zudrz2fdw3mxzqw5cjshik5wfu"
+    }
   },
   "types": {
     "$comment": "The closed set of column types. `dict` is Dictionary<Int8 index, Utf8 value> over a fixed vocabulary listed on the column; the whole vocabulary is written as the dictionary, in the listed order, whether or not every value occurs.",
@@ -88,7 +101,7 @@
         { "name": "to_id", "type": "fixed16", "nullable": false },
         { "name": "kind", "type": "dict", "nullable": false, "values": ["def-use", "taint"] }
       ],
-      "doc": "Def-use and taint edges. Empty from the java-graph@0.1 post-pass: these edges live on ids@0.1 node ids, which have no fixed-width form yet."
+      "doc": "Def-use and taint edges on ids@0.1 node ids in their fixed-width form (node_id). The java-graph@0.1 post-pass writes one def-use row per DFG use with a reaching definition in the same file: from_id = the definition's node id (kind def), to_id = the use's node id (kind use); data flows from from_id to to_id. taint rows are not written by the post-pass yet (the engine's taint flows are line-keyed, not node-keyed); the kind stays in the vocabulary for them."
     },
     "imports": {
       "key": ["file_id", "target", "wildcard"],

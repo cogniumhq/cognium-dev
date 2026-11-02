@@ -60,7 +60,7 @@ beforeAll(() => {
 
   java = join(dir, 'java');
   write(java, 'src/main/java/app/Main.java', 'package app;\n\nimport java.util.List;\nimport java.util.*;\n\npublic class Main {\n  public static void main(String[] args) { new Svc().run(); List.of(1); }\n}\n');
-  write(java, 'src/main/java/app/Svc.java', 'package app;\n\npublic class Svc {\n  void run() { helper(); }\n  void helper() {}\n  void orphan() {}\n}\n');
+  write(java, 'src/main/java/app/Svc.java', 'package app;\n\npublic class Svc {\n  void run() { String s = name(); helper(s); }\n  String name() { return "x"; }\n  void helper(String s) {}\n  void orphan() {}\n}\n');
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -310,6 +310,9 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
     expect(manifest.relations.imports.rows).toBe(2);
     expect(manifest.relations.entries.rows).toBe(JSON.parse(plain.stdout).entries.length);
     expect(manifest.relations.call.rows).toBeGreaterThan(0);
+    // `flow` fills from the DFG on fixed-width node ids; `moved` stays empty from one snapshot.
+    expect(manifest.relations.flow.rows).toBeGreaterThan(0);
+    expect(manifest.relations.moved.rows).toBe(0);
 
     // A second run is byte-identical.
     const out2 = join(dir, 'facts2');

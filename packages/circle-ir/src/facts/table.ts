@@ -8,7 +8,7 @@
  * for the comparator and for tests; `tableFromRows` / `tableRow` convert.
  */
 
-import { FACTS_ID_WIDTH, type FactRow, type FactValue, type FactsColumn, type FactsRelation, sortColumns } from './schema.js';
+import { FACTS_ID_WIDTH, type FactRow, type FactValue, type FactsColumn, type FactsColumnType, type FactsRelation, sortColumns } from './schema.js';
 import { compareCodePoints } from './order.js';
 
 /**
@@ -208,26 +208,122 @@ function gather(relation: FactsRelation, columns: readonly FactColumnData[], idx
 const INDEX_BITS = 24;
 const INDEX_RANGE = 2 ** INDEX_BITS;
 const KEY_BITS = 29;
+const KEY_RANGE = 2 ** KEY_BITS;
 
 /**
- * Up to 29 bits per row that agree with the leading sort column(s): the top
- * 29 bits of a leading `fixed16`, or a leading `u32` with the next `u32` key
+ * The sort key of a row as a byte string, for the native sort: the key
+ * columns then the remaining columns in schema order, each column's bytes in
+ * an order that agrees with the comparator — a `fixed16` as its 16 bytes,
+ * a `u32` big-endian, a `dict` as its code-point rank, a `bool` as 0/1 — up
+ * to the first `utf8` column, which has no fixed width and ends the string.
+ * `bitsAt(level)` reads 29-bit slices of it, so a relation whose leading
+ * column is an id (`flow`, `call`, `decl`, …) sorts natively level after
+ * level instead of falling back to the comparator for every tie on the first
+ * 29 bits — and on real data the ties are the rule: one `call` caller has
+ * many edges, one `flow` definition many uses.
+ */
+function copyFixed16(d: Uint8Array, buf: Uint8Array, at: number, stride: number, rows: number): void {
+  for (let row = 0, o = at, f = 0; row < rows; row++, o += stride, f += FACTS_ID_WIDTH) {
+    for (let k = 0; k < FACTS_ID_WIDTH; k++) buf[o + k] = d[f + k];
+  }
+}
+
+function copyU32(d: Uint32Array, buf: Uint8Array, at: number, stride: number, rows: number): void {
+  for (let row = 0, o = at; row < rows; row++, o += stride) {
+    const v = d[row];
+    buf[o] = v >>> 24;
+    buf[o + 1] = (v >>> 16) & 0xff;
+    buf[o + 2] = (v >>> 8) & 0xff;
+    buf[o + 3] = v & 0xff;
+  }
+}
+
+function copyRanks(d: Int8Array, ranks: Int8Array, buf: Uint8Array, at: number, stride: number, rows: number): void {
+  for (let row = 0, o = at; row < rows; row++, o += stride) buf[o] = ranks[d[row]];
+}
+
+function copyBytes(d: Uint8Array, buf: Uint8Array, at: number, stride: number, rows: number): void {
+  for (let row = 0, o = at; row < rows; row++, o += stride) buf[o] = d[row];
+}
+
+class KeyBytes {
+  /** Total key bytes before the first `utf8` column. */
+  readonly length: number;
+  /** Row-major key strings, `length` bytes per row. */
+  private readonly buf: Uint8Array;
+  private readonly cache = new Map<number, Uint32Array>();
+
+  constructor(relation: FactsRelation, columns: readonly FactColumnData[], private readonly rows: number) {
+    const parts: { i: number; type: FactsColumnType; width: number }[] = [];
+    let length = 0;
+    for (const i of sortColumns(relation)) {
+      const c = relation.columns[i];
+      if (c.type === 'utf8') break;
+      const width = c.type === 'fixed16' ? FACTS_ID_WIDTH : c.type === 'u32' ? 4 : 1;
+      parts.push({ i, type: c.type, width });
+      length += width;
+    }
+    this.length = length;
+    this.complete = parts.length === relation.columns.length;
+    const buf = new Uint8Array(rows * length);
+    let at = 0;
+    for (const { i, type, width } of parts) {
+      const c = relation.columns[i];
+      if (type === 'fixed16') copyFixed16(columns[i] as Uint8Array, buf, at, length, rows);
+      else if (type === 'u32') copyU32(columns[i] as Uint32Array, buf, at, length, rows);
+      else if (type === 'dict') copyRanks(columns[i] as Int8Array, dictRanks(c), buf, at, length, rows);
+      else copyBytes(columns[i] as Uint8Array, buf, at, length, rows);
+      at += width;
+    }
+    this.buf = buf;
+  }
+
+  /** True when the key string covers every column (no `utf8`), so equal key strings are equal rows. */
+  readonly complete: boolean;
+
+  /** Rows `a` and `b` have the same key string. */
+  equal(a: number, b: number): boolean {
+    const { buf, length } = this;
+    for (let x = a * length, y = b * length, end = x + length; x < end; x++, y++) if (buf[x] !== buf[y]) return false;
+    return true;
+  }
+
+  /** Number of 29-bit levels the key string holds. */
+  get levels(): number {
+    return Math.ceil((this.length * 8) / KEY_BITS);
+  }
+
+  /** Bits `[29·level, 29·level + 29)` of every row's key string (zero past its end), or `undefined` when the level is past the end. */
+  bitsAt(level: number): Uint32Array | undefined {
+    if (level >= this.levels) return undefined;
+    let bits = this.cache.get(level);
+    if (bits) return bits;
+    bits = new Uint32Array(this.rows);
+    const bitStart = level * KEY_BITS;
+    const q = bitStart >> 3;
+    const r = bitStart & 7;
+    // Five bytes hold any 29-bit window at any bit offset; exact as a double (< 2^40).
+    const shift = 2 ** (40 - r - KEY_BITS);
+    const { buf, length } = this;
+    const b = (o: number, k: number): number => (k < length ? buf[o + k] : 0);
+    for (let row = 0, o = 0; row < this.rows; row++, o += length) {
+      const v = b(o, q) * 2 ** 32 + b(o, q + 1) * 2 ** 24 + b(o, q + 2) * 2 ** 16 + b(o, q + 3) * 2 ** 8 + b(o, q + 4);
+      bits[row] = Math.floor(v / shift) % KEY_RANGE;
+    }
+    this.cache.set(level, bits);
+    return bits;
+  }
+}
+
+/**
+ * Up to 29 bits per row that agree with the leading sort column(s) when the
+ * leading column is a `u32`: the leading `u32` with the next `u32` key
  * packed below it when both are small enough (`file_id` < 2^13 and the line
  * < 2^16), else the leading `u32` alone when it is under 2^29. `undefined`
- * when the leading column is none of those or a value does not fit.
+ * when a value does not fit. (An id-led relation reads `KeyBytes` instead.)
  */
-function keyBits(relation: FactsRelation, columns: readonly FactColumnData[], length: number): Uint32Array | undefined {
+function u32KeyBits(relation: FactsRelation, columns: readonly FactColumnData[], length: number): Uint32Array | undefined {
   const order = sortColumns(relation);
-  const first = relation.columns[order[0]];
-  const keys = new Uint32Array(length);
-  if (first.type === 'fixed16') {
-    const d = columns[order[0]] as Uint8Array;
-    for (let i = 0, o = 0; i < length; i++, o += FACTS_ID_WIDTH) {
-      keys[i] = ((d[o] << 21) | (d[o + 1] << 13) | (d[o + 2] << 5) | (d[o + 3] >>> 3)) >>> 0;
-    }
-    return keys;
-  }
-  if (first.type !== 'u32') return undefined;
   const a = columns[order[0]] as Uint32Array;
   const second = order.length > 1 && relation.columns[order[1]].type === 'u32' ? (columns[order[1]] as Uint32Array) : undefined;
   let maxA = 0;
@@ -236,46 +332,103 @@ function keyBits(relation: FactsRelation, columns: readonly FactColumnData[], le
     if (a[i] > maxA) maxA = a[i];
     if (second && second[i] > maxB) maxB = second[i];
   }
+  const keys = new Uint32Array(length);
   if (second && maxA < 0x2000 && maxB < 0x10000) {
     for (let i = 0; i < length; i++) keys[i] = (a[i] << 16) | second[i];
     return keys;
   }
-  if (maxA < 2 ** KEY_BITS) {
+  if (maxA < KEY_RANGE) {
     keys.set(a);
     return keys;
   }
   return undefined;
 }
 
+/** Sort `idx[start, end)` with the comparator, in place: insertion for a short run, a native sort of a copy otherwise. */
+function sortRun(idx: number[], start: number, end: number, cmp: IndexComparator): void {
+  const n = end - start;
+  if (n === 2) {
+    if (cmp(idx[start], idx[start + 1]) > 0) {
+      const t = idx[start];
+      idx[start] = idx[start + 1];
+      idx[start + 1] = t;
+    }
+  } else if (n <= 16) {
+    for (let a = start + 1; a < end; a++) {
+      const v = idx[a];
+      let b = a - 1;
+      while (b >= start && cmp(idx[b], v) > 0) { idx[b + 1] = idx[b]; b--; }
+      idx[b + 1] = v;
+    }
+  } else {
+    const sorted = idx.slice(start, end).sort(cmp);
+    for (let k = 0; k < n; k++) idx[start + k] = sorted[k];
+  }
+}
+
 /**
  * The canonical permutation of the rows: sorted by the total order. Rows are
  * packed as `keyBits · 2^24 + index` into a `Float64Array` (53 bits, exact)
- * and sorted natively — no comparator call per comparison — then only the
- * runs that tie on the key bits are sorted with the full comparator. Falls
- * back to a comparator sort when the rows do not fit the packing.
+ * and sorted natively — no comparator call per comparison. Rows that tie on
+ * those bits are sorted the same way on the next 29 bits of the key string
+ * (`KeyBytes`), level after level, in place on a scratch array; only runs
+ * that are still tied when the key string ends (a `utf8` column, or equal
+ * rows) go to the comparator. Falls back to a comparator sort when the rows
+ * do not fit the packing.
  */
-function canonicalPermutation(relation: FactsRelation, columns: readonly FactColumnData[], length: number, cmp: IndexComparator): number[] {
+function canonicalPermutation(relation: FactsRelation, columns: readonly FactColumnData[], length: number, cmp: IndexComparator): { idx: number[]; keys?: KeyBytes } {
   const idx: number[] = new Array<number>(length);
-  const bits = length < INDEX_RANGE ? keyBits(relation, columns, length) : undefined;
-  if (!bits) {
+  const first = relation.columns[sortColumns(relation)[0]];
+  const keys = first.type === 'fixed16' || first.type === 'dict' || first.type === 'bool' ? new KeyBytes(relation, columns, length) : undefined;
+  const bits0 = length < INDEX_RANGE ? (keys ? keys.bitsAt(0) : first.type === 'u32' ? u32KeyBits(relation, columns, length) : undefined) : undefined;
+  if (!bits0) {
     for (let i = 0; i < length; i++) idx[i] = i;
     idx.sort(cmp);
-    return idx;
+    return { idx, keys };
   }
   const packed = new Float64Array(length);
-  for (let i = 0; i < length; i++) packed[i] = bits[i] * INDEX_RANGE + i;
+  for (let i = 0; i < length; i++) packed[i] = bits0[i] * INDEX_RANGE + i;
   packed.sort();
   for (let i = 0; i < length; i++) idx[i] = packed[i] % INDEX_RANGE;
+
+  // Refine `idx[start, end)` — rows equal on levels < `level` — by the bits at `level`.
+  const refine = (start: number, end: number, level: number): void => {
+    const bits = keys?.bitsAt(level);
+    if (!bits) {
+      sortRun(idx, start, end, cmp);
+      return;
+    }
+    const n = end - start;
+    if (n <= 16) {
+      // Insertion sort on the bits, in place: most runs are one id used a few times.
+      for (let a = start + 1; a < end; a++) {
+        const v = idx[a];
+        const bv = bits[v];
+        let b = a - 1;
+        while (b >= start && bits[idx[b]] > bv) { idx[b + 1] = idx[b]; b--; }
+        idx[b + 1] = v;
+      }
+    } else {
+      const scratch = packed.subarray(0, n);
+      for (let k = 0; k < n; k++) scratch[k] = bits[idx[start + k]] * INDEX_RANGE + idx[start + k];
+      scratch.sort();
+      for (let k = 0; k < n; k++) idx[start + k] = scratch[k] % INDEX_RANGE;
+    }
+    let runStart = start;
+    for (let i = start + 1; i <= end; i++) {
+      if (i < end && bits[idx[i]] === bits[idx[runStart]]) continue;
+      if (i - runStart > 1) refine(runStart, i, level + 1);
+      runStart = i;
+    }
+  };
+  // `packed` is reused as the scratch below: the sorted order is in `idx` by now.
   let runStart = 0;
   for (let i = 1; i <= length; i++) {
-    if (i < length && bits[idx[i]] === bits[idx[runStart]]) continue;
-    if (i - runStart > 1) {
-      const run = idx.slice(runStart, i).sort(cmp);
-      for (let k = 0; k < run.length; k++) idx[runStart + k] = run[k];
-    }
+    if (i < length && bits0[idx[i]] === bits0[idx[runStart]]) continue;
+    if (i - runStart > 1) refine(runStart, i, 1);
     runStart = i;
   }
-  return idx;
+  return { idx, keys };
 }
 
 /**
@@ -286,10 +439,16 @@ function canonicalPermutation(relation: FactsRelation, columns: readonly FactCol
 export function canonicalTable(relation: FactsRelation, columns: readonly FactColumnData[], length: number): { table: FactTable; duplicatesDropped: number } {
   if (columns.length !== relation.columns.length) throw new Error(`facts@1: ${columns.length} columns for a relation of ${relation.columns.length}`);
   const cmp = tableComparator(relation, columns);
-  const idx = canonicalPermutation(relation, columns, length, cmp);
+  const { idx, keys } = canonicalPermutation(relation, columns, length, cmp);
+  // Adjacent equal rows: same key string (and, when a utf8 column lies past it, equal under the comparator too).
+  const same = keys
+    ? keys.complete
+      ? (a: number, b: number): boolean => keys.equal(a, b)
+      : (a: number, b: number): boolean => keys.equal(a, b) && cmp(a, b) === 0
+    : (a: number, b: number): boolean => cmp(a, b) === 0;
   let kept = 0;
   for (let i = 0; i < length; i++) {
-    if (kept > 0 && cmp(idx[kept - 1], idx[i]) === 0) continue;
+    if (kept > 0 && same(idx[kept - 1], idx[i])) continue;
     idx[kept++] = idx[i];
   }
   idx.length = kept;

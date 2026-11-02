@@ -1,7 +1,8 @@
 /**
  * `facts@1` — the fact relations circle-ir owes a graph store, as columns in
  * canonical order keyed by `ids@0.1` (graph-store plan 0.1, T1; contract per
- * the 2026-11-01 reconciliation record, decisions 1–11).
+ * the 2026-11-01 reconciliation record, decisions 1–11, and the stable-ids
+ * decision 1a: `flow` endpoints are node ids in their fixed-width form).
  *
  * Relations are **sets** with **no nulls**: the producer deduplicates after
  * the canonical sort and reports what it dropped; "none" is a sentinel
@@ -102,6 +103,7 @@ export const FACTS_RELATIONS: Readonly<Record<FactsRelationName, FactsRelation>>
       col('site_col', 'u32'),
     ],
   },
+  // Endpoints are ids@0.1 node ids in their fixed-width form (`nodeIdBytes`; the schema file's `node_id`).
   flow: {
     key: ['from_id', 'to_id', 'kind'],
     columns: [

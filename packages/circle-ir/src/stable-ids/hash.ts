@@ -224,6 +224,44 @@ function parentOutput(stack: Uint32Array, leftOffset: number, right: Uint32Array
   return { cv: IV_CV, block, counter: 0, blockLen: BLOCK_LEN, flags: PARENT };
 }
 
+// Scratch state of `blake3Short128Into`, shared like `M` (synchronous, not re-entrant).
+const SHORT_CV = new Uint32Array(8);
+const SHORT_OUT = new Uint32Array(16);
+
+/**
+ * The first 16 bytes of BLAKE3 over an input of at most one chunk (1024
+ * bytes), written to `out[offset..]` with no allocation: one chunk is also
+ * the root, so the chaining-value stack never comes into it. This is the
+ * node-id path (`ids@0.1` node ids hash ~80 bytes each, a million times on a
+ * large snapshot), where `blake3`'s per-call allocations were the cost.
+ * Equal to `blake3(input).subarray(0, 16)` (tested).
+ */
+export function blake3Short128Into(input: Uint8Array, out: Uint8Array, offset: number): void {
+  const n = input.length;
+  if (n > CHUNK_LEN) throw new RangeError(`blake3Short128Into: ${n} bytes is more than one chunk`);
+  const cv = SHORT_CV;
+  cv.set(IV);
+  let at = 0;
+  let blocksDone = 0;
+  while (n - at > BLOCK_LEN) {
+    loadBlock(input, at, BLOCK_LEN);
+    compress(cv, 0, 0, BLOCK_LEN, blocksDone === 0 ? CHUNK_START : 0, cv, 0);
+    at += BLOCK_LEN;
+    blocksDone++;
+  }
+  const len = n - at;
+  loadBlock(input, at, len);
+  const words = SHORT_OUT;
+  compress(cv, 0, 0, len, (blocksDone === 0 ? CHUNK_START : 0) | CHUNK_END | ROOT, words, 0);
+  for (let i = 0; i < 4; i++) {
+    const w = words[i];
+    out[offset + i * 4] = w & 0xff;
+    out[offset + i * 4 + 1] = (w >>> 8) & 0xff;
+    out[offset + i * 4 + 2] = (w >>> 16) & 0xff;
+    out[offset + i * 4 + 3] = (w >>> 24) & 0xff;
+  }
+}
+
 /** BLAKE3 of `input`, the default 32-byte output. */
 export function blake3(input: Uint8Array): Uint8Array {
   const chunkCount = Math.max(1, Math.ceil(input.length / CHUNK_LEN));
@@ -296,7 +334,12 @@ const encoder = new TextEncoder();
  * to 128 bits, printed as 26 base32 characters.
  */
 export function digest128(parts: readonly string[]): string {
+  return base32(digest128Bytes(parts));
+}
+
+/** `digest128` before printing: the 16 raw bytes (what a `FixedSizeBinary(16)` column holds). */
+export function digest128Bytes(parts: readonly string[]): Uint8Array {
   let s = '';
   for (const p of parts) s += p + '\u0000';
-  return base32(blake3(encoder.encode(s)).subarray(0, 16));
+  return blake3(encoder.encode(s)).subarray(0, 16);
 }

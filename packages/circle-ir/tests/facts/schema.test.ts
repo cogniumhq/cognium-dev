@@ -19,7 +19,8 @@ import {
   type FactValue,
 } from '../../src/facts/schema.js';
 import { canonicalRows, canonicalSet, compareBytes, compareCodePoints, compareValues, idBytes, rowComparator } from '../../src/facts/order.js';
-import { base32, digest128 } from '../../src/stable-ids/hash.js';
+import { base32, digest128, digest128Bytes } from '../../src/stable-ids/hash.js';
+import { nodeIdBytes, nodeIdBytesOfPrinted, type StableNodeKind } from '../../src/stable-ids/nodes.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -27,10 +28,11 @@ interface SchemaFile {
   scheme: string;
   ids: string;
   id_encoding: { arrow: string; width: number };
+  node_id: { parts: string[]; kinds: string[]; example: { printed: string; body_id: string; kind: string; ordinal: number; hex: string; base32: string } };
   types: Record<string, string>;
   canonical_order: { key_then_remaining_columns: boolean; null_first: boolean; strings: string; sets: boolean };
   chunking: { chunk_rows: number; ipc: string };
-  relations: Record<string, { key: string[]; columns: { name: string; type: string; nullable: boolean; values?: string[] }[] }>;
+  relations: Record<string, { key: string[]; columns: { name: string; type: string; nullable: boolean; values?: string[] }[]; doc: string }>;
 }
 
 const schema = JSON.parse(readFileSync(join(here, '..', '..', 'schemas', 'facts@1.json'), 'utf8')) as SchemaFile;
@@ -47,6 +49,19 @@ describe('facts@1 schema file', () => {
     expect(schema.canonical_order.null_first).toBe(true);
     expect(schema.canonical_order.strings).toBe('code-point');
     expect(schema.canonical_order.sets).toBe(true);
+  });
+
+  it('states the fixed-width node id (stable-ids decision 1a) and its vector recomputes', () => {
+    expect(schema.node_id.parts).toEqual(['ids@0.1', 'node', '<body_id>', '<kind>', '<ordinal>']);
+    expect(schema.node_id.kinds).toEqual(['block', 'def', 'use', 'call']);
+    const ex = schema.node_id.example;
+    const bytes = nodeIdBytes(ex.body_id, ex.kind as StableNodeKind, ex.ordinal);
+    expect(bytes.length).toBe(FACTS_ID_WIDTH);
+    expect(Buffer.from(bytes).toString('hex')).toBe(ex.hex);
+    expect(base32(bytes)).toBe(ex.base32);
+    expect(nodeIdBytesOfPrinted(ex.printed)).toEqual(bytes);
+    expect(digest128Bytes(['ids@0.1', 'node', ex.body_id, ex.kind, String(ex.ordinal)])).toEqual(bytes);
+    expect(schema.relations.flow.doc).toMatch(/node_id/);
   });
 
   it('has no nullable column (reconciliation decision 4) and no `bean` (decision 6)', () => {
