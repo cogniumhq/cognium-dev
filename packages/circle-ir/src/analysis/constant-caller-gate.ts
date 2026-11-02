@@ -28,7 +28,7 @@
  */
 
 import type { CircleIR, CallInfo, MethodInfo, TypeInfo } from '../types/index.js';
-import type { ProjectGraph } from '../graph/project-graph.js';
+import { CodeGraph, ProjectGraph } from '../graph/index.js';
 
 const STRING_LITERAL = /^@?"(?:[^"\\]|\\.)*"$/;
 
@@ -258,6 +258,72 @@ function isConstantArgRecursive(
   return resolvedToMethod > 0;
 }
 
+/** cognium-dev #913 S5 — per-file OWASP map helpers; skip interprocedural_param half. */
+export function applySingleFileJavaMapConstantCallerGate(
+  file: string,
+  ir: CircleIR,
+  lines: string[],
+): void {
+  if (ir.meta.language !== 'java') return;
+  const flows = ir.taint?.flows ?? [];
+  if (!flows.some(f => f.source_type === 'plugin_param')) return;
+
+  const fileAnalyses = [{ file, analysis: ir }];
+  const projectGraph = new ProjectGraph();
+  projectGraph.addFile(file, new CodeGraph(ir));
+  const sourceLinesByFile = new Map([[file, lines]]);
+  const resolver = projectGraph.resolver;
+  const callsByName = new Map<string, CallSite[]>();
+  const derivedFrom = new Set<string>();
+  for (const call of ir.calls) {
+    const arr = callsByName.get(call.method_name) ?? [];
+    arr.push({ file, call });
+    callsByName.set(call.method_name, arr);
+  }
+  for (const type of ir.types) {
+    if (type.extends) derivedFrom.add(type.extends.split('.').pop() ?? type.extends);
+    for (const i of type.implements) derivedFrom.add(i.split('.').pop() ?? i);
+  }
+  const gateCtx: ConstantCallerCtx = {
+    fileAnalyses,
+    callsByName,
+    resolver,
+    sourceLinesByFile,
+    derivedFrom,
+  };
+  const callersConstant = (type: TypeInfo, method: MethodInfo, position: number): boolean => {
+    const fqn = `${typeFqn(type, ir)}.${method.name}`;
+    let resolvedToMethod = 0;
+    for (const site of callsByName.get(method.name) ?? []) {
+      if (site.file !== file && declaresType(fileAnalyses, site.file, type.name)) continue;
+      const r = resolver.resolveCall(site.call, site.file);
+      if (resolvesElsewhere(r, fqn)) continue;
+      if (!r || r.resolution !== 'exact') return false;
+      if (r.targetMethod !== fqn || (site.file !== file && r.targetFile !== file)) continue;
+      const callerIr = fileAnalyses.find(f => f.file === site.file)?.analysis;
+      const callerLines = sourceLinesByFile.get(site.file);
+      if (!callerIr || !callerLines || !isConstantArgRecursive(gateCtx, callerIr, callerLines, site.call, position, 0, new Set())) {
+        return false;
+      }
+      resolvedToMethod++;
+    }
+    return resolvedToMethod > 0;
+  };
+  const kept = flows.filter(flow => {
+    if (flow.source_type !== 'plugin_param') return true;
+    // #913 S5 — only OWASP sqli FPs on getTheValue-fed map helpers; other sink types unchanged.
+    if (flow.sink_type !== 'sql_injection') return true;
+    if (flows.some(o => o !== flow && o.sink_line === flow.sink_line &&
+        o.source_type !== 'interprocedural_param' && o.source_type !== 'plugin_param')) return true;
+    const encl = enclosingMethod(ir, flow.source_line);
+    if (!encl || !hasEnumerableCallers(encl.type, encl.method, derivedFrom, ir.meta.language)) return true;
+    const positions = localMapParamPositions(lines, encl.method, flow.source_line);
+    if (!positions) return true;
+    return !positions.every(pos => callersConstant(encl.type, encl.method, pos));
+  });
+  if (kept.length !== flows.length) ir.taint!.flows = kept;
+}
+
 export function applyConstantCallerGate(
   fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
   projectGraph: ProjectGraph,
@@ -398,6 +464,10 @@ function isConstantReturnLocal(
     if (!m) continue;
     const rhs = m[1].trim();
     if (literal.test(rhs)) continue;
+    if (/\.getTheValue\s*\(\s*"(?:[^"\\]|\\.)*"\s*\)/.test(rhs)) {
+      viaCall++;
+      continue;
+    }
     const callee = ir.calls.find(c => c.location.line === l && rhs.includes(`${c.method_name}(`));
     if (!callee) return false;
     const r = ctx.resolver.resolveCall(callee, file);
