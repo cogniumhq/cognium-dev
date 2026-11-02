@@ -2202,7 +2202,7 @@ function detectArrayElementFlows(
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
               const source = pickScopedSource(
-                sources, sink.line, call.in_method ?? null, types, base, code, 'java',
+                sources, sink.line, call.in_method ?? null, types, base,
               );
               if (source) {
                 flows.push({
