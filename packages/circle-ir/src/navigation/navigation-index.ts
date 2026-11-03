@@ -1080,7 +1080,7 @@ export class NavigationIndex {
       if (P.length === 0) continue;
       const C = P.filter(c => fit.get(c)![phase - 1] === 'yes');
       if (C.length === 0) return { kind: 'ambiguous', candidates: possible };
-      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase, self)));
+      const best = C.find(m => P.every(o => o === m || this.moreSpecific(m, o, phase, self, args)));
       if (best) {
         return {
           kind: 'one',
@@ -1113,13 +1113,29 @@ export class NavigationIndex {
     return worst;
   }
 
-  /** `m` is more specific than `o`: each of its parameter types fits the other's. */
-  private moreSpecific(m: Candidate, o: Candidate, phase: number, self?: TypeRecord): boolean {
+  /**
+   * `m` is more specific than `o`: each of its parameter types fits the other's.
+   *
+   * A reference parameter type of `m` that is the argument's own type also
+   * counts where it only possibly fits `o`'s: whenever `o` applies, the
+   * argument's type, which is `m`'s, is a subtype of `o`'s there, so in every
+   * case where `o` competes `m` is the more specific. That settles
+   * `this(ctx, copy, (String) null)` against a `ResultSet` overload when
+   * `copy`'s class has a supertype outside the tree. An argument of a
+   * narrower type than `m`'s parameter is not the same question and stays
+   * undecided.
+   */
+  private moreSpecific(m: Candidate, o: Candidate, phase: number, self?: TypeRecord, args?: ReadonlyArray<TypeRef | null>): boolean {
     if (phase === 3) return false;
     const mp = this.paramRefsFrom(m, self);
     const op = this.paramRefsFrom(o, self);
     if (mp.length !== op.length) return false;
-    return mp.every((t, i) => this.fits(t, op[i], 1) === 'yes');
+    return mp.every((t, i) => {
+      const f = this.fits(t, op[i], 1);
+      if (f === 'yes') return true;
+      const a = args?.[i];
+      return f === 'maybe' && !!a && isArgumentsOwnType(a, t);
+    });
   }
 
   /**
@@ -2190,6 +2206,15 @@ export class NavigationIndex {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/**
+ * `p` is exactly the argument's type `a`: the same resolved reference type,
+ * array depth included, with no type variable on either side.
+ */
+function isArgumentsOwnType(a: TypeRef, p: TypeRef): boolean {
+  return !a.prim && !p.prim && !a.typeVar && !p.typeVar && !p.opaque && !a.inferred
+    && a.fqn !== null && a.fqn === p.fqn && a.dims === p.dims;
+}
 
 /** `super(…)` / `this(…)` as the extractor writes it: a constructor call named by the keyword. */
 function isExplicitConstructorInvocation(call: CallInfo): boolean {
