@@ -103,8 +103,6 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   --facts-arrow <dir>        entries, Java only: also write the facts@1 relations (proposed)
                                as Arrow IPC files plus manifest.json into <dir>; the
                                report itself is unchanged
-  --facts-scheme <scheme>    entries, with --facts-arrow: the fact schema to write
-                               (facts@1|facts@2) [default: facts@1]
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
@@ -204,7 +202,6 @@ EXAMPLES:
   cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
   cognium-dev entries . -f json
   cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
-  cognium-dev entries . --language java --facts-arrow ./facts --facts-scheme facts@2
   cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
   cognium-dev list-passes
   cognium-dev list-passes reliability

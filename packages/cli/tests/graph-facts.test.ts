@@ -161,10 +161,6 @@ describe('option parsing', () => {
     expect('factsArrow' in parseEntriesOptions({})).toBe(false);
     expect(() => parseEntriesOptions({ 'facts-arrow': true })).toThrow(/--facts-arrow/);
     expect(() => parseEntriesOptions({ 'facts-arrow': 'out', language: 'ts' })).toThrow(/java only/);
-    expect(parseEntriesOptions({ 'facts-arrow': 'out', 'facts-scheme': 'facts@2' })).toMatchObject({ factsArrow: 'out', factsScheme: 'facts@2' });
-    expect('factsScheme' in parseEntriesOptions({ 'facts-arrow': 'out' })).toBe(false);
-    expect(() => parseEntriesOptions({ 'facts-arrow': 'out', 'facts-scheme': 'facts@3' })).toThrow(/facts@1\|facts@2/);
-    expect(() => parseEntriesOptions({ 'facts-scheme': 'facts@2' })).toThrow(/--facts-arrow/);
     expect(() => parseReachOptions({})).toThrow(/--base/);
     expect(() => parseReachOptions({ base: true })).toThrow(/--base/);
     expect(parseReachOptions({ base: 'main', format: 'json' })).toMatchObject({ base: 'main', format: 'json' });
@@ -327,31 +323,6 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
     const out2 = join(dir, 'facts2');
     await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2]);
     for (const name of names) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(out2, `${name}.arrow`)))).toBe(0);
-    expect(readFileSync(join(out2, 'manifest.json'), 'utf8')).toBe(readFileSync(join(out, 'manifest.json'), 'utf8'));
-  }, 120_000);
-
-  test('--facts-scheme facts@2 writes the twelve facts@2 relations; the report is unchanged', async () => {
-    const plain = await runCli(['entries', java, '-f', 'json']);
-    const out = join(dir, 'facts-v2');
-    const r = await runCli(['entries', java, '-f', 'json', '--facts-arrow', out, '--facts-scheme', 'facts@2']);
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe(plain.stdout);
-    expect(r.stderr).toContain('Wrote facts@2 (12 relations');
-    const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'));
-    expect(manifest.facts).toBe('facts@2');
-    expect(Object.keys(manifest.relations)).toEqual(['files', 'decl', 'decl_pos', 'call', 'unresolved', 'ref', 'registration', 'parse_error', 'flow', 'imports', 'entries', 'moved']);
-    for (const name of Object.keys(manifest.relations)) {
-      const file = join(out, `${name}.arrow`);
-      expect(readFileSync(file).subarray(0, 6).toString()).toBe('ARROW1');
-      expect(readFileSync(file).length).toBe(manifest.relations[name].bytes);
-    }
-    expect(manifest.relations.files.rows).toBe(2);
-    expect(manifest.relations.decl_pos.rows).toBe(manifest.relations.decl.rows);
-    expect(manifest.relations.parse_error.rows).toBe(0);
-    // A second run is byte-identical.
-    const out2 = join(dir, 'facts-v2b');
-    await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2, '--facts-scheme', 'facts@2']);
-    for (const name of Object.keys(manifest.relations)) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(out2, `${name}.arrow`)))).toBe(0);
     expect(readFileSync(join(out2, 'manifest.json'), 'utf8')).toBe(readFileSync(join(out, 'manifest.json'), 'utf8'));
   }, 120_000);
 

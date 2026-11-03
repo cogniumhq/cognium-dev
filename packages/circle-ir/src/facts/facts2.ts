@@ -1,7 +1,6 @@
 /**
  * `facts@2` rows from a call graph: a post-pass over the graph the engine
- * already builds (`java-graph@0.1`, or `ts-call-edges@0.1` for TypeScript and
- * JavaScript), the counterpart of `javaGraphFactSet` for the `facts@2`
+ * already builds (`java-graph@0.1`), the counterpart of `javaGraphFactSet` for the `facts@2`
  * schema. Opt-in: `facts@1` stays the default (`JavaGraphOptions.factsScheme`).
  *
  * Against the `facts@1` post-pass:
@@ -28,7 +27,7 @@
 
 import { containedIn } from '../graph-facts/reach.js';
 import type { JavaGraph } from '../navigation/java-graph.js';
-import type { CallEdge, CallEdgeSite, ReferenceEdge, TsCallGraph, TsEntry, UnresolvedCall, UnresolvedRegistration } from '../navigation/ts-call-edges.js';
+import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from '../navigation/ts-call-edges.js';
 import { digest128 } from '../stable-ids/hash.js';
 import { NodeIdWriter, declLocator, locateNodes } from '../stable-ids/nodes.js';
 import { STABLE_ID_SCHEME, type StableDecl, type StableIdFile } from '../stable-ids/types.js';
@@ -47,7 +46,7 @@ export interface Fact2Set {
   duplicatesDropped: Readonly<Record<Facts2RelationName, number>>;
 }
 
-/** What the post-pass reads from a graph; `JavaGraph` and `TsCallGraph` both have it. */
+/** What the post-pass reads from a graph (`JavaGraph` has it). */
 export interface Facts2Graph {
   ids: 'ids@0.1';
   files: readonly StableIdFile[];
@@ -69,9 +68,7 @@ interface Facts2Extras {
 /**
  * Polymorphic call edges that are the declaring row of their site. The Java
  * graph sets `via` on the other rows only, so `buildJavaGraph` marks the
- * declaring one here; the TypeScript graph sets `via` on every row of the
- * site, the declaring one included (`via === to`). A mark, not a field, so
- * the graph's JSON is unchanged.
+ * declaring one here. A mark, not a field, so the graph's JSON is unchanged.
  */
 const declaringEdges = new WeakSet<object>();
 
@@ -81,7 +78,7 @@ export function markDeclaringEdge(edge: CallEdge): void {
 }
 
 function isDeclaring(e: CallEdge): boolean {
-  return e.tier === 'polymorphic' && (e.via === e.to || declaringEdges.has(e));
+  return e.tier === 'polymorphic' && declaringEdges.has(e);
 }
 
 function dict(relation: FactsRelation, column: string): Map<string, number> {
@@ -398,13 +395,3 @@ export function javaGraphFact2Set(graph: JavaGraph, inputs: readonly Facts2Input
   return graphFact2Set(graph, inputs, { loads: graph.loads, language: 'java' });
 }
 
-/**
- * The `facts@2` relations of a `ts-call-edges@0.1` graph (TypeScript and
- * JavaScript). Every file the graph holds must be in `inputs`, and every
- * input must be a file of the graph. The TypeScript-only edges (field uses,
- * module imports and loads) have no relation in `facts@2`; `imports` holds
- * whatever the inputs list.
- */
-export function tsGraphFact2Set(graph: TsCallGraph, inputs: readonly Facts2Input[]): Fact2Set {
-  return graphFact2Set(graph, inputs, {});
-}

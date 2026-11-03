@@ -19,7 +19,7 @@
  * a caller asks for it (`JavaGraphOptions.factsScheme`).
  */
 
-import { digest128Bytes } from '../stable-ids/hash.js';
+import { STABLE_FILE_KIND, fileIdBytes } from '../stable-ids/files.js';
 import { STABLE_ID_SCHEME } from '../stable-ids/types.js';
 import {
   FACTS_DECL_KINDS,
@@ -65,16 +65,17 @@ export type Facts2RelationName = (typeof FACTS2_RELATION_NAMES)[number];
 export const FACTS_REGISTRATION_REASONS = ['handler-unresolved', 'manifest-unresolved', 'mount-unresolved'] as const;
 
 /** The parts of a stable file key, `<path>` standing for `files.path`. */
-export const FACTS_FILE_KEY_PARTS = [STABLE_ID_SCHEME, 'file', '<path>'] as const;
+export const FACTS_FILE_KEY_PARTS = [STABLE_ID_SCHEME, STABLE_FILE_KIND, '<path>'] as const;
 
 /**
  * The stable file key of a repository-relative, `/`-separated path:
  * `digest128(["ids@0.1", "file", path])` as 16 bytes. A function of the path
  * and nothing else, so adding, removing or moving one file re-keys only that
- * file's rows.
+ * file's rows. The `file` kind of `ids@0.1` (stable-ids decision 6,
+ * `stable-ids/files.ts`).
  */
 export function fileKey(path: string): Uint8Array {
-  return digest128Bytes([STABLE_ID_SCHEME, 'file', path]);
+  return fileIdBytes(path);
 }
 
 const col = (name: string, type: FactsColumnType, values?: readonly string[]): FactsColumn =>

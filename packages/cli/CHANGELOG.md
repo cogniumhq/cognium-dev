@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **`entries --facts-arrow <dir> --facts-scheme facts@2`** (Java only): writes the twelve `facts@2` relations (stable file keys, site lines relative to their declaration, `decl_pos`, `ref`, `registration`, `parse_error`) instead of the eight `facts@1` ones. `--facts-scheme` defaults to `facts@1`, so `--facts-arrow` alone writes what it wrote before. The report on stdout and `-o` is unchanged.
-
 ### Changes
 - **`sbom` reads Eclipse/Tycho `*.target` files** and pom `<artifactItem>`s (#1077), through circle-ir's new parsers.
 

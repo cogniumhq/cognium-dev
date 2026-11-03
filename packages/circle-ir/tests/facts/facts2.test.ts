@@ -9,10 +9,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { tableFromIPC } from 'apache-arrow';
 import { analyze } from '../../src/analyzer.js';
-import { buildJavaGraph, buildTsCallGraph, type JavaGraph, type TsCallGraph } from '../../src/navigation/index.js';
+import { buildJavaGraph, type JavaGraph } from '../../src/navigation/index.js';
 import { FACTS_RELATIONS, type FactsArrow } from '../../src/facts/index.js';
 import { FACTS2_RELATION_NAMES, FACTS2_RELATIONS, fileKey, type Facts2RelationName } from '../../src/facts/schema2.js';
-import { javaGraphFact2Set, tsGraphFact2Set, type Fact2Set, type Facts2Input } from '../../src/facts/facts2.js';
+import { javaGraphFact2Set, type Fact2Set, type Facts2Input } from '../../src/facts/facts2.js';
 import { facts2ToArrow, relation2ToArrowIpc, type Facts2Arrow } from '../../src/facts/arrow.js';
 import { contentHash, javaGraphFactSet } from '../../src/facts/java-facts.js';
 import { compareCodePoints, idBytes, rowComparator } from '../../src/facts/order.js';
@@ -99,29 +99,6 @@ public class App {
 }
 `;
 
-// One TypeScript file.
-const TS_PATH = 'src/shapes.ts';
-const TS_CODE = [
-  "import express from 'express';",
-  'interface Shape { area(): number; }',
-  'export class Square implements Shape {',
-  '  constructor() {}',
-  '  area() { return 4; }',
-  '}',
-  'export class Circle extends Square {',
-  '  area() { return 3; }',
-  '}',
-  'export const handlers = { measure };',
-  'export function measure(s: Square) {',
-  '  return s.area();',
-  '}',
-  'export function later(cb: () => void) { setTimeout(cb, 1); }',
-  'later(() => measure(new Square()));',
-  'const app = express();',
-  "app.get('/x', pick('h'));",
-  'function pick(n: string) { return (req: any, res: any) => res.send(n); }',
-].join('\n');
-
 let appPlain: JavaGraph;
 let appGraph: JavaGraph;
 let appFacts: Facts2Arrow;
@@ -130,8 +107,6 @@ let fixtureFacts: Facts2Arrow;
 let fixtureAgain: Facts2Arrow;
 let fixtureV1: FactsArrow;
 let fixtureIrs: Record<string, CircleIR>;
-let tsGraph: TsCallGraph;
-let tsFacts: Facts2Arrow;
 
 beforeAll(async () => {
   appPlain = await buildJavaGraph([{ path: APP_PATH, code: APP_JAVA }]);
@@ -143,8 +118,6 @@ beforeAll(async () => {
   fixtureAgain = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, ...OPTS })).facts as Facts2Arrow;
   fixtureV1 = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', facts: OPTS.facts })).facts as FactsArrow;
   fixtureIrs = Object.fromEntries(await Promise.all(Object.entries(JAVA_APP).map(async ([path, code]) => [path, await analyze(code, path, 'java', { navigationTypes: true })] as const)));
-  tsGraph = await buildTsCallGraph([{ path: TS_PATH, code: TS_CODE }]);
-  tsFacts = await facts2ToArrow(tsGraphFact2Set(tsGraph, [{ path: TS_PATH, code: TS_CODE, imports: [] }]), { source: 'ts-call-edges@0.1', engine: 'circle-ir@test' });
 }, 180_000);
 
 describe('opt-in: facts@1 stays the default', () => {
@@ -203,12 +176,6 @@ describe('facts@2 Arrow emission', () => {
       expect(hex(fixtureAgain.relations[name]), name).toBe(hex(fixtureFacts.relations[name]));
     }
     expect(JSON.stringify(fixtureAgain.manifest)).toBe(JSON.stringify(fixtureFacts.manifest));
-  });
-
-  it('two TypeScript runs give byte-identical IPC files too', async () => {
-    const again = await facts2ToArrow(tsGraphFact2Set(await buildTsCallGraph([{ path: TS_PATH, code: TS_CODE }]), [{ path: TS_PATH, code: TS_CODE, imports: [] }]), { source: 'ts-call-edges@0.1', engine: 'circle-ir@test' });
-    for (const name of FACTS2_RELATION_NAMES) expect(hex(again.relations[name]), name).toBe(hex(tsFacts.relations[name]));
-    expect(JSON.stringify(again.manifest)).toBe(JSON.stringify(tsFacts.manifest));
   });
 
   it('row counts equal the graph\'s counts less the duplicates a set collapses', () => {
@@ -341,63 +308,6 @@ describe('one Java file, end to end', () => {
       'org.example:App.load handler-unresolved Class.forName with a computed name +1:11',
     ]);
     expect(rowsOf(appFacts, 'entries').map(r => `${q(r.decl_id)} ${r.kind as string} ${r.certainty as string}`)).toEqual(['org.example:App.main main declared']);
-  });
-});
-
-describe('one TypeScript file, end to end', () => {
-  const ids = (): Map<string, string> => new Map(tsGraph.files[0].decls.map(d => [d.id, d.qualified_name] as const));
-  const q = (b: unknown): string => ids().get(base32(b as Uint8Array)) ?? (hex(b as Uint8Array) === ZERO ? '-' : base32(b as Uint8Array));
-
-  it('files and decl: the file key, the language, and the TypeScript structural bits', () => {
-    const fileRows = rowsOf(tsFacts, 'files');
-    expect(fileRows).toHaveLength(1);
-    expect(hex(fileRows[0].file as Uint8Array)).toBe(hex(fileKey(TS_PATH)));
-    expect(fileRows[0]).toMatchObject({ path: TS_PATH, language: 'typescript', partial: false });
-    expect(tsFacts.manifest).toMatchObject({ facts: 'facts@2', source: 'ts-call-edges@0.1' });
-    const decl = new Map(rowsOf(tsFacts, 'decl').map(r => [q(r.id), r] as const));
-    const bits = (name: string): string => {
-      const r = decl.get(name) as Row;
-      return ['type_only', 'anonymous', 'duplicate', 'contained', 'loads_parent'].filter(k => r[k] === true).join(',');
-    };
-    expect(decl.size).toBe(tsGraph.files[0].decls.length);
-    expect(bits('src/shapes:Shape')).toBe('type_only');
-    // Outside Java a constructor is contained (a class used as a value may be constructed); top-level values are contained by the module.
-    expect(bits('src/shapes:Square.constructor')).toBe('contained');
-    expect(bits('src/shapes:Square.area')).toBe('');
-    expect(bits('src/shapes:handlers')).toBe('contained');
-    expect(bits('src/shapes:app')).toBe('contained');
-    expect(bits('src/shapes:pick/<anonymous>@2.0.0')).toBe('anonymous,contained');
-    expect(q((decl.get('src/shapes:pick/<anonymous>@2.0.0') as Row).parent_id)).toBe('src/shapes:pick');
-    expect([...decl.values()].some(r => r.loads_parent === true)).toBe(false);
-  });
-
-  it('call: the declaring row of a polymorphic site is the one whose via is itself', () => {
-    const calls = rowsOf(tsFacts, 'call').filter(r => r.tier === 'polymorphic').map(r => `${q(r.caller_id)} -> ${q(r.callee_id)} +${r.rel_line as number}:${r.col as number}${r.declaring ? ' declaring' : ''}`);
-    expect(calls.sort()).toEqual([
-      'src/shapes:measure -> src/shapes:Circle.area +1:9',
-      'src/shapes:measure -> src/shapes:Square.area +1:9 declaring',
-    ]);
-    expect(rowsOf(tsFacts, 'call').filter(r => r.tier !== 'polymorphic').every(r => r.declaring === false)).toBe(true);
-    expect(rowsOf(tsFacts, 'call').length + tsFacts.manifest.relations.call.duplicates_dropped).toBe(tsGraph.edges.length);
-  });
-
-  it('ref, unresolved and registration: a registration with no engine owner belongs to the declaration enclosing it (here the module)', () => {
-    expect(rowsOf(tsFacts, 'ref').map(r => `${q(r.from_id)} -> ${q(r.to_id)} +${r.rel_line as number}:${r.col as number}`)).toEqual(['src/shapes:handlers -> src/shapes:measure +0:26']);
-    const reg = rowsOf(tsFacts, 'registration');
-    expect(tsGraph.unresolvedRegistrations).toHaveLength(1);
-    expect(tsGraph.unresolvedRegistrations[0].from).toBeUndefined();
-    expect(reg.map(r => `${q(r.from_id)} ${r.reason as string} +${r.rel_line as number}:${r.col as number}`)).toEqual(['src/shapes handler-unresolved +16:14']);
-    expect(reg[0].evidence).toBe(tsGraph.unresolvedRegistrations[0].evidence);
-    const unresolved = rowsOf(tsFacts, 'unresolved');
-    expect(unresolved.length + tsFacts.manifest.relations.unresolved.duplicates_dropped).toBe(tsGraph.unresolved.length);
-    expect(unresolved.every(r => r.receiver === '')).toBe(true);
-    expect(rowsOf(tsFacts, 'imports')).toEqual([]);
-    expect(rowsOf(tsFacts, 'flow')).toEqual([]);
-  });
-
-  it('refuses inputs that do not match the graph', () => {
-    expect(() => tsGraphFact2Set(tsGraph, [])).toThrow(/not in the inputs/);
-    expect(() => tsGraphFact2Set(tsGraph, [{ path: TS_PATH, code: TS_CODE, imports: [] }, { path: 'src/other.ts', code: '', imports: [] }])).toThrow(/not in the graph/);
   });
 });
 
