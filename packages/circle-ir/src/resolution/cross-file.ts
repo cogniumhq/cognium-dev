@@ -1365,7 +1365,7 @@ export class CrossFileResolver {
                 for (const arg of sinkCall.arguments ?? []) {
                   if (isJs && sink.argPositions && sink.argPositions.length > 0
                       && !sink.argPositions.includes(arg.position)) continue;
-                  const matched = this.matchTaintedArg(arg, tainted);
+                  const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
                   if (seen.has(key)) continue;
@@ -1895,6 +1895,8 @@ export class CrossFileResolver {
   private matchTaintedArg(
     arg: { variable?: string | null; expression?: string },
     tainted: Map<string, { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> }>,
+    /** JS/TS: a name after a single `.` is a property (`args.output`), not the tainted local `output` (a spread `...output` still is). */
+    jsMember = false,
   ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> } } | null {
     if (tainted.size === 0) return null;
 
@@ -1906,7 +1908,9 @@ export class CrossFileResolver {
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
     if (arg.expression) {
       for (const [tv, origin] of tainted) {
-        const re = new RegExp(`\\b${escapeRegExp(tv)}\\b`);
+        const re = jsMember
+          ? new RegExp(`(?<![\\w$])(?<!(?:^|[^.])\\.)${escapeRegExp(tv)}(?![\\w$])`)
+          : new RegExp(`\\b${escapeRegExp(tv)}\\b`);
         if (re.test(arg.expression)) return { var: tv, origin };
       }
     }
