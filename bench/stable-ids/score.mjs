@@ -15,7 +15,8 @@
  * The provider's declaration for a labelled one: a file's root module for the
  * file itself; otherwise the innermost declaration with the same name whose
  * line range holds the label's name line; failing that, the innermost one that
- * starts on the label's first line or name line.
+ * starts on the label's first line or name line. Declarations flagged
+ * `unstable:anonymous` are considered only when the provider has no others.
  */
 export function joinDecl(engineDecls, at) {
   if (!engineDecls || engineDecls.length === 0) return null;
@@ -26,7 +27,11 @@ export function joinDecl(engineDecls, at) {
     const sorted = [...list].sort((a, b) => span(a) - span(b) || (a.kind === at.kind ? 0 : 1) - (b.kind === at.kind ? 0 : 1) || a.start_line - b.start_line);
     return sorted[0];
   };
-  const inner = engineDecls.filter(d => d.parent !== null && d.parent !== undefined);
+  // Labels never cover functions nested in a body; prefer the provider's
+  // declarations that are not flagged as such.
+  const all = engineDecls.filter(d => d.parent !== null && d.parent !== undefined);
+  const named = all.filter(d => !(d.flags ?? []).includes('unstable:anonymous'));
+  const inner = named.length > 0 ? named : all;
   const byName = inner.filter(d => d.name === at.name && d.start_line <= at.line && at.line <= d.end_line);
   if (byName.length > 0) return pick(byName);
   return pick(inner.filter(d => d.start_line === at.start || d.start_line === at.line));
