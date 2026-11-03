@@ -1253,8 +1253,10 @@ export class CrossFileResolver {
 
             // 2a. If callee returns a source and is NOT a sanitizer, mark every
             //     local def on this caller line as tainted (the assignment LHS).
-            if (callee.returnsSource && !callee.sanitizes && callee.sourceType) {
-              const calleeNode = methodIndex.get(resolved.targetMethod);
+            const calleeNode0 = methodIndex.get(resolved.targetMethod);
+            if (callee.returnsSource && !callee.sanitizes && callee.sourceType &&
+                !(calleeNode0 && this.sourcesOnlySteerBranches(callee.file, calleeNode0.ir, calleeNode0.method))) {
+              const calleeNode = calleeNode0;
               const calleeSourceLine = calleeNode
                 ? this.findRealSourceLineInMethod(calleeNode.ir, calleeNode.method)
                 : undefined;
@@ -2057,6 +2059,41 @@ export class CrossFileResolver {
     return !taintDefIds.has(use.def_id);
   }
 
+  /**
+   * True when every real source inside `method` lands in a local that is only
+   * ever read in a branch condition (`if (...)`, `while (...)`) after it is
+   * assigned, so no source value can reach what the method returns (#914).
+   *
+   * OWASP `Utils.getOSCommandString(append)` reads
+   * `String osName = System.getProperty("os.name");` only to choose between
+   * `"cmd.exe /c " + append` and `append`. Without this, `returnsSource`
+   * marks the method's return as `env_input` and every caller's
+   * `exec(... getOSCommandString("ls ") ...)` became a command_injection path.
+   *
+   * Java only, and only when the source text is available; otherwise false
+   * (the method keeps `returnsSource`).
+   */
+  private sourcesOnlySteerBranches(file: string, ir: CircleIR, method: MethodInfo): boolean {
+    if (ir.meta.language !== 'java') return false;
+    const lines = this.sourceLines?.get(file);
+    if (!lines) return false;
+    const real = ir.taint.sources.filter(s =>
+      s.type !== 'interprocedural_param' && s.line >= method.start_line && s.line <= method.end_line);
+    if (real.length === 0) return false;
+    for (const src of real) {
+      const v = src.variable;
+      if (!v || !/^[A-Za-z_$][\w$]*$/.test(v)) return false;
+      const decl = new RegExp(`^\\s*(?:final\\s+)?[\\w<>\\[\\].]+\\s+${v}\\s*=[^;]*;\\s*$`);
+      if (!decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) return false;
+      const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
+      for (let l = src.line + 1; l <= method.end_line; l++) {
+        const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
+        if (mention.test(text)) return false;
+      }
+    }
+    return true;
+  }
+
   private findRealSourceLineInMethod(ir: CircleIR, method: MethodInfo): number | undefined {
     for (const src of ir.taint.sources) {
       if (src.type === 'interprocedural_param') continue;
@@ -2137,6 +2174,37 @@ export class CrossFileResolver {
   /** Expose field-taint summary (for tests + diagnostics). */
   getFieldTaintInfo(typeFqn: string, fieldName: string): FieldTaintInfo | undefined {
     return this.fieldTaintInfo.get(`${typeFqn}.${fieldName}`);
+  }
+}
+
+/** A Java line with comments and string / char literals blanked. */
+function stripJavaLiterals(text: string): string {
+  return text
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)'/g, "''")
+    .replace(/\/\/.*$/, '');
+}
+
+/**
+ * The line with the parenthesised condition of every `if` / `else if` /
+ * `while` it opens removed, so what remains is what the line does with
+ * data. An unbalanced condition (it wraps to the next line) is left in
+ * place, which only makes the caller more conservative.
+ */
+function withoutLeadingConditions(text: string): string {
+  let out = text;
+  for (;;) {
+    const m = /\b(?:if|while)\s*\(/.exec(out);
+    if (!m) return out;
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < out.length; i++) {
+      if (out[i] === '(') depth++;
+      else if (out[i] === ')' && --depth === 0) { close = i; break; }
+    }
+    if (close < 0) return out;
+    out = out.slice(0, m.index) + out.slice(close + 1);
   }
 }
 
