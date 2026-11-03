@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **java-graph: entries from registering files passed in as text** (`buildJavaGraph(files, { registrationFiles })`). Classes a runtime instantiates, and methods it calls, because a file outside Java source names them had no entry, so reach and dead code saw them as unreached. The library reads no files: the caller passes them, and `registrationFileKind(path)` says which paths count.
+  - **OSGi Declarative Services** (`OSGI-INF/*.xml`): each component's `implementation` class is an `osgi-ds` entry. The methods the runtime calls by name are entries too: `activate` / `deactivate` / `modified` on the component and `bind` / `unbind` / `updated` on its references (`declared`), and the default `activate` / `deactivate` when the class has them (`conventional`). A member is looked up in the class, then its in-tree superclasses. `provide` interfaces are contracts, not entries.
+  - **`META-INF/MANIFEST.MF`**: `Bundle-Activator` is a `lifecycle` entry. With the new `exportedPackages` option (off by default; a library's surface) the public top-level types of each `Export-Package` package are `export` entries.
+  - **Eclipse `plugin.xml` / `fragment.xml`**: every `class` attribute inside an `<extension>` (any `:data` suffix dropped) is an `extension-point` entry; the evidence names the point.
+  - **Servlet `web.xml` / `web-fragment.xml`**: `servlet-class` is a `route` (method `ANY`, its `servlet-mapping` URL patterns as paths), `filter-class` a middleware `route` (`USE`), `listener-class` a `lifecycle` entry.
+  - A class entry is on the type, a member entry on the method. The evidence is the registration form (`OSGI-INF implementation`, `Bundle-Activator`, `plugin.xml <point>`, `web.xml servlet-class` …), never a path or line, so it is the `facts@1` `source` and a moved registration keeps its key. The rows fit `facts@1` `entries` with no schema change (`osgi-ds` and `extension-point` were already in its vocabulary).
+  - A name the tree does not declare is a `manifest-unresolved` registration with the file and line, never dropped; reach does not attach these to declarations.
+  - `EntryKind` gains `osgi-ds` and `extension-point`; both are roots by default. New exports: `registrationFileKind`, `scanRegistrations` and their types. A small tolerant XML reader (`src/navigation/xml-scan.ts`) does the parsing, with no new dependency.
+
+### Changed
+- **Reach: an entry on a Java type also roots the type's declared constructors** (one `contains` step from the type). Whatever registered the class instantiates it. A type the graph only loads, with no entry of a root kind, still runs no constructor. This applies to every type-level Java entry, `reflection` included (`META-INF/services` classes and `Class.forName` literals). **Answers change:** the constructors of such types are now `live` instead of `dead` or `may-be-live`. `walkFrom` roots take an optional `from` (and the function an optional `rootIndex`) for this.
+
 ### Fixed
 - **Java: OWASP xss false positives through an inner-class helper (#915 slice).** 15 safe OWASP xss cases still fired. Three changes:
   - **Helper-return gate covers `xss`.** The #1010 gate (drop a callee-parameter → caller-sink flow when no live `return` of the helper can carry its parameters) now includes `xss`. Constant propagation already drops these flows when it sees tainted data enter the call. It does not see `scr.getTheParameter(…)` from `SeparateClassRequest`, so the inner-class `new Test().doSomething(request, param)` cases with a safe map key, a constant ternary, `if` or switch reached the sink (BenchmarkTest01508, 01513–01515, 01767, 01769, 01774, 01776, 01777).

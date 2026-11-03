@@ -144,7 +144,7 @@ export function partialFileDetails(partial: readonly string[], files: readonly S
 }
 
 export const ALL_ENTRY_KINDS: readonly EntryKind[] = [
-  'route', 'listener', 'scheduled', 'main', 'export', 'bean', 'reflection', 'lifecycle', 'test',
+  'route', 'listener', 'scheduled', 'main', 'export', 'bean', 'reflection', 'lifecycle', 'test', 'osgi-ds', 'extension-point',
 ];
 
 interface Edge {
@@ -207,20 +207,32 @@ interface Visit {
   root: number;
 }
 
+/** A walk root; `from` makes it one `contains` step from an earlier root (a Java type entry's constructor). */
+export interface WalkRoot {
+  id: string;
+  weak: boolean;
+  from?: string;
+}
+
 /**
  * Breadth-first over (declaration, weak-so-far) states from the given roots.
  * A state's first visit is its shortest path.
  */
 export function walkFrom(
   g: ReachGraph,
-  roots: readonly { id: string; weak: boolean }[],
+  roots: readonly WalkRoot[],
+  rootIndex: (i: number) => number = i => i,
 ): Map<string, Visit> {
   const seen = new Map<string, Visit>();
   const queue: string[] = [];
   roots.forEach((r, i) => {
     const key = `${r.weak ? 1 : 0}${r.id}`;
     if (!g.decls.has(r.id) || seen.has(key)) return;
-    seen.set(key, { prev: null, edge: null, root: i });
+    const prev = r.from !== undefined ? `${r.weak ? 1 : 0}${r.from}` : null;
+    if (prev !== null && !seen.has(prev)) return;
+    seen.set(key, prev !== null
+      ? { prev, edge: { to: r.id, relation: 'contains', strong: true }, root: rootIndex(i) }
+      : { prev: null, edge: null, root: rootIndex(i) });
     queue.push(key);
   });
   for (let head = 0; head < queue.length; head++) {
@@ -323,12 +335,46 @@ export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: S
   return out.sort(bySite);
 }
 
+/**
+ * Walk roots for entries. An entry on a Java type also roots the type's
+ * declared constructors, one `contains` step from it: a registered class is
+ * instantiated by whatever registered it (a type the graph only loads, with
+ * no entry, still runs no constructor). `rootIndex` maps each walk root back
+ * to its entry.
+ */
+function entryRoots(g: ReachGraph, entries: readonly ReachInput['entries'][number][]): { roots: WalkRoot[]; rootIndex: (i: number) => number } {
+  const ctors = new Map<string, string[]>();
+  for (const f of g.input.files) {
+    if (f.language !== 'java') continue;
+    for (const d of f.decls) {
+      if (d.kind !== 'method' || d.name !== 'constructor' || d.parent === null) continue;
+      const list = ctors.get(d.parent) ?? [];
+      list.push(d.id);
+      ctors.set(d.parent, list);
+    }
+  }
+  const roots: WalkRoot[] = [];
+  const index: number[] = [];
+  entries.forEach((e, i) => {
+    const weak = e.certainty === 'inferred';
+    roots.push({ id: e.id, weak });
+    index.push(i);
+    if (g.decls.get(e.id)?.decl.kind !== 'type') return;
+    for (const c of ctors.get(e.id) ?? []) {
+      roots.push({ id: c, weak, from: e.id });
+      index.push(i);
+    }
+  });
+  return { roots, rootIndex: i => index[i] };
+}
+
 export function reach(input: ReachInput, options: ReachOptions = {}): ReachResult {
   const rootKinds = [...(options.rootKinds ?? ALL_ENTRY_KINDS.filter(k => k !== 'test'))];
   const max = options.maxUnresolved ?? 5;
   const g = new ReachGraph(input);
   const roots = input.entries.filter(e => rootKinds.includes(e.kind));
-  const visits = walkFrom(g, roots.map(e => ({ id: e.id, weak: e.certainty === 'inferred' })));
+  const seeds = entryRoots(g, roots);
+  const visits = walkFrom(g, seeds.roots, seeds.rootIndex);
   const reached = reachedIds(visits);
   const wanted = options.targets ? new Set(options.targets) : null;
   const facts: ReachFact[] = [];
