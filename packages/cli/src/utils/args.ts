@@ -89,13 +89,17 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   -f, --format <format>      text|json; deadcode and reach also take sarif [default: text]
   --root-kinds <kinds>       Entry kinds that count as roots (comma-separated): route,
                                listener, scheduled, main, export, bean, reflection,
-                               lifecycle, test [default: all but test]
+                               lifecycle, test, osgi-ds, extension-point
+                               [default: all but test]
   --verdicts <list>          deadcode: facts to list (live,may-be-live,dead)
                                [default: dead,may-be-live]; the summary counts all
   --bound-registrations      deadcode, reach: narrow a Class.forName site to the types its
                                result is cast or checked against [default: off; a name
                                outside the bound is still initialised, so this can drop
                                a live path]
+  --exported-packages        deadcode, reach, entries, Java only: the public types of the
+                               MANIFEST.MF Export-Package packages are export entries
+                               (a library's surface) [default: off]
   -o, --output <file>        Write to a file instead of stdout
   --jar <file>               depcalls: the resolved jar to read packages from
   --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,

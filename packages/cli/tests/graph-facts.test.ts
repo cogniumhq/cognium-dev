@@ -14,6 +14,7 @@ import {
   parseReachOptions,
   parseRootKinds,
   parseVerdicts,
+  registrationFiles,
 } from '../src/graph-facts';
 import { UsageError } from '../src/utils/options';
 
@@ -37,6 +38,7 @@ let py: string;
 let go: string;
 let mixed: string;
 let java: string;
+let osgi: string;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'graph-facts-'));
@@ -61,6 +63,15 @@ beforeAll(() => {
   java = join(dir, 'java');
   write(java, 'src/main/java/app/Main.java', 'package app;\n\nimport java.util.List;\nimport java.util.*;\n\npublic class Main {\n  public static void main(String[] args) { new Svc().run(); List.of(1); }\n}\n');
   write(java, 'src/main/java/app/Svc.java', 'package app;\n\npublic class Svc {\n  void run() { String s = name(); helper(s); }\n  String name() { return "x"; }\n  void helper(String s) {}\n  void orphan() {}\n}\n');
+
+  osgi = join(dir, 'osgi');
+  write(osgi, 'src/org/x/Comp.java', 'package org.x;\n\npublic class Comp {\n  public Comp() {}\n  void setLog(Object l) {}\n  void orphan() {}\n}\n');
+  write(osgi, 'src/org/x/Act.java', 'package org.x;\n\npublic class Act {\n  public Act() {}\n}\n');
+  write(osgi, 'src/org/x/api/Api.java', 'package org.x.api;\n\npublic class Api {\n  public Api() {}\n}\n');
+  write(osgi, 'OSGI-INF/comp.xml', '<scr:component xmlns:scr="http://www.osgi.org/xmlns/scr/v1.1.0" name="c">\n  <implementation class="org.x.Comp"/>\n  <reference name="log" interface="L" bind="setLog"/>\n</scr:component>\n<!-- and one the tree lacks -->\n');
+  write(osgi, 'OSGI-INF/gone.xml', '<component name="g"><implementation class="org.x.Gone"/></component>\n');
+  write(osgi, 'META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\nBundle-Activator: org.x.Act\nExport-Package: org.x.api\n');
+  write(osgi, 'target/classes/OSGI-INF/comp.xml', '<component name="copy"><implementation class="org.x.Comp"/></component>\n');
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -174,6 +185,11 @@ describe('option parsing', () => {
     expect(parseDeadCodeOptions({ 'bound-registrations': true }).boundRegistrations).toBe(true);
     expect(parseReachOptions({ base: 'main' }).boundRegistrations).toBe(false);
     expect(parseReachOptions({ base: 'main', 'bound-registrations': true }).boundRegistrations).toBe(true);
+    // Exported packages are a library's surface: Java only, off unless asked
+    expect(parseDeadCodeOptions({}).exportedPackages).toBe(false);
+    expect(parseEntriesOptions({ 'exported-packages': true }).exportedPackages).toBe(true);
+    expect(parseReachOptions({ base: 'main', 'exported-packages': true, language: 'java' }).exportedPackages).toBe(true);
+    expect(() => parseDeadCodeOptions({ 'exported-packages': true, language: 'go' })).toThrow(/java only/);
   });
 });
 
@@ -357,6 +373,45 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
 
   test('is refused on a non-Java tree', async () => {
     const r = await runCli(['entries', ts, '--facts-arrow', join(dir, 'nope')]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('Java');
+  });
+});
+
+describe('Java registering files', () => {
+  test('are read by the library\'s rule, skipped directories left out', () => {
+    expect(registrationFiles(osgi).map((f) => f.path)).toEqual(['META-INF/MANIFEST.MF', 'OSGI-INF/comp.xml', 'OSGI-INF/gone.xml']);
+  });
+
+  test('entries: DS components and the activator, with unresolved names listed', async () => {
+    const r = await runCli(['entries', osgi, '-f', 'json']);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.summary['osgi-ds']).toBe(2);
+    expect(out.summary.lifecycle).toBe(1);
+    expect(out.summary.export).toBeUndefined();
+    expect(out.unresolvedRegistrations).toEqual([
+      expect.objectContaining({ reason: 'manifest-unresolved', site: { file: 'OSGI-INF/gone.xml', line: 1, col: 20 } }),
+    ]);
+    const lib = JSON.parse((await runCli(['entries', osgi, '-f', 'json', '--exported-packages'])).stdout);
+    expect(lib.summary.export).toBe(1);
+  });
+
+  test('deadcode: a registered class\'s constructor and bind method are live', async () => {
+    const out = JSON.parse((await runCli(['deadcode', osgi, '-f', 'json', '--verdicts', 'live,dead'])).stdout);
+    const v = Object.fromEntries(out.facts.map((f: { qualified_name: string; verdict: string }) => [f.qualified_name, f.verdict]));
+    expect(v['org.x:Comp.constructor']).toBe('live');
+    expect(v['org.x:Comp.setLog']).toBe('live');
+    expect(v['org.x:Act.constructor']).toBe('live');
+    expect(v['org.x:Comp.orphan']).toBe('dead');
+    expect(v['org.x.api:Api.constructor']).toBe('dead');
+    const routes = JSON.parse((await runCli(['deadcode', osgi, '-f', 'json', '--verdicts', 'dead', '--root-kinds', 'route'])).stdout);
+    expect(routes.facts.map((f: { qualified_name: string }) => f.qualified_name)).toContain('org.x:Comp.constructor');
+  });
+
+  test('--exported-packages is refused on a non-Java tree', async () => {
+    const r = await runCli(['entries', ts, '--exported-packages']);
     expect(r.code).toBe(1);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('Java');

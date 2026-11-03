@@ -7,7 +7,9 @@
  */
 
 export type EntryKind =
-  | 'route' | 'listener' | 'scheduled' | 'main' | 'export' | 'bean' | 'reflection' | 'lifecycle' | 'test';
+  | 'route' | 'listener' | 'scheduled' | 'main' | 'export' | 'bean' | 'reflection' | 'lifecycle' | 'test'
+  // Java registering files (`buildJavaGraph`'s `registrationFiles`): an OSGi DS component, an Eclipse extension.
+  | 'osgi-ds' | 'extension-point';
 
 /** `declared` and `conventional` can close a path; `inferred` only keeps code alive. */
 export type EntryCertainty = 'declared' | 'conventional' | 'inferred';
