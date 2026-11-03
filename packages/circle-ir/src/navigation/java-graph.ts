@@ -31,8 +31,9 @@ import { DEFAULT_JAVA_ENTRY_TABLES, type JavaEntryTables } from './java-entry-ta
 import type { EntryCertainty, EntryKind } from './ts-entry-tables.js';
 import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from './ts-call-edges.js';
 import { joinRoutePath } from './ts-call-edges.js';
-import { factsToArrow, type FactsArrow, type FactsArrowOptions } from '../facts/arrow.js';
+import { facts2ToArrow, factsToArrow, type Facts2Arrow, type FactsArrow, type FactsArrowOptions } from '../facts/arrow.js';
 import { javaGraphFactSet, type JavaImportRow } from '../facts/java-facts.js';
+import { javaGraphFact2Set, markDeclaringEdge } from '../facts/facts2.js';
 
 export const JAVA_GRAPH_SCHEME = 'java-graph@0.1' as const;
 
@@ -51,7 +52,8 @@ export interface JavaGraphOptions {
   mainFiles?: readonly string[];
   entryTables?: JavaEntryTables;
   /**
-   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2) as
+   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2; or
+   * `facts@2` under `factsScheme`) as
    * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
    * graph as a post-pass (relations are sets: exact duplicates of the graph's
    * rows collapse, counted in the manifest); `flow` comes from each file's
@@ -60,6 +62,13 @@ export interface JavaGraphOptions {
    * dependency `apache-arrow`.
    */
   emitFacts?: 'arrow';
+  /**
+   * The fact schema `emitFacts` writes: `facts@1` (the default) or `facts@2`
+   * (stable file keys, site lines relative to their declaration, `decl_pos`,
+   * `ref`, `registration`, `parse_error`; see `schemas/facts@2.json`). Only
+   * read with `emitFacts`.
+   */
+  factsScheme?: 'facts@1' | 'facts@2';
   /** Metadata written with the facts (`engine`, `parser`); only read with `emitFacts`. */
   facts?: FactsArrowOptions;
 }
@@ -79,11 +88,11 @@ export interface JavaGraph {
   typeOnly: string[];
   /** Call sites from the navigation index; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
-  /** The `facts@1` relations as Arrow IPC bytes; present only under `emitFacts: 'arrow'`. */
-  facts?: FactsArrow;
+  /** The fact relations as Arrow IPC bytes (`facts@1`, or `facts@2` under `factsScheme`); present only under `emitFacts: 'arrow'`. */
+  facts?: FactsArrow | Facts2Arrow;
 }
 
-/** Every `import` of a file, as the `facts@1` `imports` relation records it (static imports included). */
+/** Every `import` of a file, as the `imports` relation records it (static imports included). */
 function importRows(root: Node): JavaImportRow[] {
   const out: JavaImportRow[] = [];
   for (const c of namedChildren(root)) {
@@ -527,7 +536,10 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       }
       for (const t of targets) {
         const e: CallEdge = { from, to: t.id, tier: s.tier, methodName: s.methodName, site, evidence: 'navigation index' };
-        if (s.tier === 'polymorphic' && declaring && t.id !== declaring.id) e.via = declaring.id;
+        if (s.tier === 'polymorphic' && declaring) {
+          if (t.id !== declaring.id) e.via = declaring.id;
+          else markDeclaringEdge(e);
+        }
         edges.push(e);
       }
     }
@@ -568,7 +580,11 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     };
     if (options.emitFacts === 'arrow') {
       const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode), dfg: irs[i].ir.dfg }));
-      graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
+      const scheme = options.factsScheme ?? 'facts@1';
+      const factsOptions = { source: JAVA_GRAPH_SCHEME, ...options.facts };
+      if (scheme === 'facts@2') graph.facts = await facts2ToArrow(javaGraphFact2Set(graph, inputs), factsOptions);
+      else if (scheme === 'facts@1') graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), factsOptions);
+      else throw new Error(`unknown fact scheme ${JSON.stringify(scheme)} (expected facts@1 or facts@2)`);
     }
     return graph;
   } finally {

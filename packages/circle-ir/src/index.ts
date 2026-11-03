@@ -362,6 +362,9 @@ export {
   nodeIdBytes,
   nodeIdBytesOfPrinted,
   printedNodeId,
+  STABLE_FILE_KIND,
+  fileId,
+  fileIdBytes,
   diffStableIds,
   deriveJavaIds,
   eraseJavaType,
@@ -416,6 +419,32 @@ export {
   javaGraphFacts,
   javaGraphFactSet,
   factsToArrow,
+} from './facts/index.js';
+
+// `facts@2`: the successor schema (stable file keys, site lines relative to
+// their declaration, decl_pos, ref, registration, parse_error). Opt-in through
+// `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or
+// `javaGraphFact2Set` and `facts2ToArrow`; facts@1 stays the default.
+export {
+  FACTS2_SCHEME,
+  FACTS2_RELATION_NAMES,
+  FACTS2_RELATIONS,
+  FACTS2_STORE_ONLY,
+  FACTS_REGISTRATION_REASONS,
+  fileKey as factsFileKey,
+  javaGraphFact2Set,
+  facts2ToArrow,
+} from './facts/index.js';
+export type {
+  Facts2Scheme,
+  Facts2Relation,
+  Facts2RelationName,
+  Fact2Rows,
+  Fact2Set,
+  Facts2Graph,
+  Facts2Input,
+  Facts2Arrow,
+  Facts2Manifest,
 } from './facts/index.js';
 export type {
   FactsScheme,

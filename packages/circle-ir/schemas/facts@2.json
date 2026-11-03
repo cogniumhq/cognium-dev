@@ -1,0 +1,216 @@
+{
+  "$comment": "facts@2 (graph-store plan 0.1, T5a.1; design §2a, GS15). The fact relations circle-ir owes the store, as Arrow columns in canonical order keyed by ids@0.1. The successor of facts@1, published as a major in one step (P1 of the facts@2 decision of 2026-11-02, P1-P7): site positions relative to the enclosing declaration's start line, no site_file, declaration positions in decl_pos (P2, layout V3); a stable file key in every relation that names a file, superseding the dense file_id of reconciliation decision 2 (P3); the relations and columns the T6 rules read (P4); decl_pos and parse_error store-only (P5). Deferred and not in this file (P6): registration_bound, the TypeScript-only relations, imports.is_static, the entries route method and path. Everything facts@1 fixed and P1-P7 do not change stays: 128-bit ids, sets with no nulls, the total canonical order, fixed-size chunks, the producer's metadata keys, hex digests. This file is the schema the store reads; the TypeScript mirror is src/facts/schema2.ts and tests/facts/schema2.test.ts locks the two together. facts@1 (schemas/facts@1.json) stays the producer's default until the store has adopted facts@2.",
+  "scheme": "facts@2",
+  "ids": "ids@0.1",
+  "id_encoding": {
+    "$comment": "An ids@0.1 id is 128 bits printed as 26 lowercase base32 characters (RFC 4648, unpadded). In a column it is the 16 raw bytes, so every id column is FixedSizeBinary(16); the 2 trailing padding bits of the printed form are always zero. Node ids (the flow endpoints) and file keys have the same width: see node_id and file_key.",
+    "arrow": "fixed_size_binary",
+    "width": 16
+  },
+  "node_id": {
+    "$comment": "The fixed-width form of an ids@0.1 node id (stable-ids design decision 1a, adopted 2026-11-01): digest128 over the parts listed, i.e. BLAKE3 of the UTF-8 parts each followed by NUL, first 16 bytes - the same construction as every other ids@0.1 id, printed as 26 base32 characters where a printed form is needed. body_id is the printed body id of the innermost declaration whose body encloses the node (<decl id>.<body_hash>, 53 characters; after the snapshot's #n re-key where decl applied one); kind is the IR array the node comes from; ordinal counts the nodes of that kind inside that body in IR array order, from 0, in decimal without leading zeros. It is a function of the printed node id <body_id>/<tag><ordinal> (tags b, d, u, c) and nothing else: an edit to one body re-keys only that body's nodes. The example is a test vector (tests/facts/schema2.test.ts recomputes it).",
+    "parts": ["ids@0.1", "node", "<body_id>", "<kind>", "<ordinal>"],
+    "kinds": ["block", "def", "use", "call"],
+    "example": {
+      "printed": "aaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbb/u7",
+      "body_id": "aaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": "use",
+      "ordinal": 7,
+      "hex": "cd071ce8a3b6d97cc2dd1264742bb62d",
+      "base32": "zudrz2fdw3mxzqw5cjshik5wfu"
+    }
+  },
+  "file_key": {
+    "$comment": "The stable file key (P3; the ids@0.1 file kind of the stable-ids plan): digest128 over the parts listed - BLAKE3 of the UTF-8 parts each followed by NUL, first 16 bytes, the construction of every other ids@0.1 id. path is the file's files.path exactly as written (repository-relative, /-separated). The key is a function of the path and nothing else: adding or removing a file adds or removes only that file's rows, and moving one re-keys only that file's rows. It replaces facts@1's dense, snapshot-local file_id, and no delta re-maps through files.path. Every relation that names a file carries it as the column file (fixed16): files, decl, imports, parse_error. files is keyed by file, so two paths with one key (a 128-bit collision) fail the producer's key check rather than merge. The example is a test vector (tests/facts/schema2.test.ts recomputes it).",
+    "parts": ["ids@0.1", "file", "<path>"],
+    "example": {
+      "path": "src/main/java/org/example/App.java",
+      "hex": "d26d79b82b9a2df38e9b9ccd3946a3e8",
+      "base32": "2jwxtobltiw7hdu3ttgtsrvd5a"
+    }
+  },
+  "positions": {
+    "$comment": "Layout V3 (P2). A site (call, unresolved, ref, registration) carries rel_line = the site's line minus the start line (decl_pos.line) of the declaration whose body holds it (caller_id or from_id), and col; it carries no file, since its file is that declaration's file. A site never lies above its declaration's start, so rel_line fits u32. Declaration positions live only in decl_pos. No rule needs an absolute line: rendering one is decl_pos.line + rel_line, a single join. A blast radius seeds from decl changes only (a body added, removed or changed), never from site rows: an edit that adds or removes comment or blank lines inside a body moves rel_line below it while body_hash stays the same.",
+    "line": "1-based (rel_line: 0 on the declaration's first line)",
+    "col": "0-based"
+  },
+  "types": {
+    "$comment": "The closed set of column types. `dict` is Dictionary<Int8 index, Utf8 value> over a fixed vocabulary listed on the column; the whole vocabulary is written as the dictionary, in the listed order, whether or not every value occurs.",
+    "fixed16": "FixedSizeBinary(16)",
+    "u32": "Uint32",
+    "utf8": "Utf8",
+    "bool": "Bool",
+    "dict": "Dictionary<Int8, Utf8>"
+  },
+  "canonical_order": {
+    "$comment": "Within a relation rows are sorted ascending by the key columns in key order, then by every remaining column in schema order, so the comparator is total and a relation has one byte form. Column orders: fixed16 by unsigned bytes; u32 numerically; utf8 and dict by Unicode code point (which equals UTF-8 byte order), never by UTF-16 code unit or dictionary index; bool false before true; null before every value (a dead branch: no column is nullable). Relations are sets: after the sort exact duplicate rows are dropped and counted (manifest duplicates_dropped per relation), so rows are strictly increasing and a store may refuse equal rows.",
+    "key_then_remaining_columns": true,
+    "null_first": true,
+    "strings": "code-point",
+    "sets": true
+  },
+  "chunking": {
+    "$comment": "After the canonical sort a relation is cut into record batches of chunk_rows rows each (the last one shorter); a relation with no rows has no record batch. One Arrow IPC file per relation, so the batch boundaries are part of the bytes. Fixed row-count chunks, not file ranges: nine of the twelve relations are not keyed by a file.",
+    "chunk_rows": 65536,
+    "ipc": "file"
+  },
+  "loading": {
+    "$comment": "Every relation states store_only (P5). A store_only relation is written to the snapshot, digested into the snapshot digest and read back for rendering like any other, but a store does not load it into the engine unless a rule names it (decl_pos has one row per declaration and no rule reads it). Every other relation is loaded.",
+    "store_only": "written, digested and read; loaded into the engine only when a rule names it",
+    "engine": "every relation whose store_only is false"
+  },
+  "metadata": {
+    "$comment": "Schema-level custom metadata, and nothing else (no timestamps, no host): facts (the value facts@2, never a -draft) and ids always; engine and parser when the caller names them. The producer's manifest.json beside the files repeats them and adds source, chunk_rows and per relation file, rows, batches, bytes, blake3 (file-byte digest, hex) and duplicates_dropped.",
+    "facts": "facts@2",
+    "ids": "ids@0.1",
+    "engine": "optional, e.g. circle-ir@4.19.0",
+    "parser": "optional, e.g. tree-sitter-java@0.23.5"
+  },
+  "relations": {
+    "files": {
+      "key": ["file"],
+      "store_only": false,
+      "columns": [
+        { "name": "file", "type": "fixed16", "nullable": false, "doc": "The stable file key: digest128([\"ids@0.1\", \"file\", path]) (file_key)." },
+        { "name": "path", "type": "utf8", "nullable": false, "doc": "Repository-relative, /-separated." },
+        { "name": "content_hash", "type": "fixed16", "nullable": false, "doc": "blake3 of the file's UTF-8 bytes, first 16 bytes." },
+        { "name": "language", "type": "dict", "nullable": false, "values": ["java", "typescript", "javascript", "python", "go"] },
+        { "name": "partial", "type": "bool", "nullable": false, "doc": "The file did not parse cleanly (the engine's partial): its call sites may be missing, so its declarations and what they reach are may-be-live and an answer that relies on absence is not final. A partial file has exactly one parse_error row." }
+      ]
+    },
+    "decl": {
+      "key": ["id"],
+      "store_only": false,
+      "doc": "One row per declaration, with no position (declaration positions are in decl_pos). That every declaration loads its module is not a column: it follows from file and the module row of that file (kind module).",
+      "columns": [
+        { "name": "id", "type": "fixed16", "nullable": false, "doc": "ids@0.1 declaration id. Unique per snapshot: when two files derive the same id (two package-info.java of one package in different bundles), the later one in file order takes the stable-ids #n suffix on its qualified_name and the id derived from it, as the ids@0.1 duplicate rule does within one scope." },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["module", "type", "method", "field", "function"] },
+        { "name": "name", "type": "utf8", "nullable": false, "doc": "The declaration's own name as ids@0.1 records it (e.g. <clinit>; default for an anonymous default export). An unresolved site in a reached body can bind to a declaration of the same name." },
+        { "name": "qualified_name", "type": "utf8", "nullable": false },
+        { "name": "signature", "type": "utf8", "nullable": false, "doc": "The ids@0.1 canonical signature as written; empty for modules and types without type parameters." },
+        { "name": "file", "type": "fixed16", "nullable": false, "doc": "The declaring file's key (file_key)." },
+        { "name": "parent_id", "type": "fixed16", "nullable": false, "doc": "The enclosing declaration's id (ids@0.1 parent), rewritten by the snapshot's #n re-key as caller_id is; all-zero bytes for a module, which has none (no nulls in facts@2)." },
+        { "name": "body_hash", "type": "fixed16", "nullable": false, "doc": "ids@0.1 body hash; all-zero bytes when the engine derived none (no nulls in facts@2; Java always derives one)." },
+        { "name": "type_only", "type": "bool", "nullable": false, "doc": "Used only as a type (the engine's typeOnly): left out of reach and dead-code answers." },
+        { "name": "anonymous", "type": "bool", "nullable": false, "doc": "The ids@0.1 flag unstable:anonymous: an anonymous or nested body keyed by its enclosing declaration plus its structural position there; an edit to the enclosing body may re-key it." },
+        { "name": "duplicate", "type": "bool", "nullable": false, "doc": "The ids@0.1 flag unstable:duplicate: the id carries a #n suffix, so inserting a same-named declaration before it re-keys it." },
+        { "name": "contained", "type": "bool", "nullable": false, "doc": "A strong contains edge from parent_id to this declaration, computed by the producer: whenever the parent runs, this declaration is in use (a nested or anonymous body, a module's top-level value, a type's field or <clinit>, a constructor outside Java; a Java constructor runs only when called). False for a module." },
+        { "name": "loads_parent", "type": "bool", "nullable": false, "doc": "A strong loads edge from this declaration to parent_id, computed by the producer: running this declaration initializes its parent (Java: true for every declaration that is not a type and whose parent is a type; the rows java-graph's loads holds)." }
+      ]
+    },
+    "decl_pos": {
+      "key": ["id"],
+      "store_only": true,
+      "doc": "Declaration positions, out of decl so that a line shift changes no row a rule reads (P2). One row per decl row. Store-only (P5): read for rendering, SARIF, and mapping a diff hunk or a finding's line to its declaration; site lines are relative to line.",
+      "columns": [
+        { "name": "id", "type": "fixed16", "nullable": false, "doc": "The decl id." },
+        { "name": "line", "type": "u32", "nullable": false, "doc": "1-based start line." },
+        { "name": "end_line", "type": "u32", "nullable": false, "doc": "1-based end line, inclusive." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "0-based start column." },
+        { "name": "end_col", "type": "u32", "nullable": false, "doc": "0-based end column." }
+      ]
+    },
+    "call": {
+      "key": ["caller_id", "rel_line", "col", "callee_id"],
+      "store_only": false,
+      "doc": "Key: the site as (caller, relative line, column) maps one-to-one onto facts@1's (site_file, site_line, site_col), since the site's file is the caller's file; every row facts@1's key told apart stays apart.",
+      "columns": [
+        { "name": "caller_id", "type": "fixed16", "nullable": false, "doc": "The enclosing declaration (the module's id for top-level code)." },
+        { "name": "callee_id", "type": "fixed16", "nullable": false, "doc": "The declaration that can run; one row per candidate body on polymorphic." },
+        { "name": "tier", "type": "dict", "nullable": false, "values": ["exact", "polymorphic", "inferred"] },
+        { "name": "method_name", "type": "utf8", "nullable": false, "doc": "The name as written at the site (new sites: the class name). A site names more than one call in a chained expression, and the name is what tells them apart." },
+        { "name": "rel_line", "type": "u32", "nullable": false, "doc": "The site's line minus the caller's decl_pos.line (positions)." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "The site's column, 0-based." },
+        { "name": "declaring", "type": "bool", "nullable": false, "doc": "True on a polymorphic row whose callee is the member the receiver's static type declares (java-graph's declaring target); the navigation index's via for the other rows of that call (same caller_id, rel_line, col and method_name) is that row's callee_id. False on every other row, every exact and inferred row included." }
+      ]
+    },
+    "unresolved": {
+      "key": ["caller_id", "rel_line", "col", "method_name", "receiver", "reason"],
+      "store_only": false,
+      "doc": "Key: the site and the name as written, plus receiver and reason, because one site and name can carry several rows that differ only in those (T4, 2026-11-01). caller_id takes site_file's place in the key: the site's file is the caller's file.",
+      "columns": [
+        { "name": "caller_id", "type": "fixed16", "nullable": false },
+        { "name": "reason", "type": "dict", "nullable": false, "values": ["external", "dynamic", "generated", "overload-ambiguous", "parse-error", "unsupported-language", "unknown"] },
+        { "name": "receiver", "type": "utf8", "nullable": false, "doc": "The library type the call lands on; empty when unknown (no nulls in facts@2)." },
+        { "name": "method_name", "type": "utf8", "nullable": false },
+        { "name": "rel_line", "type": "u32", "nullable": false, "doc": "The site's line minus the caller's decl_pos.line (positions)." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "The site's column, 0-based." }
+      ]
+    },
+    "ref": {
+      "key": ["from_id", "rel_line", "col", "to_id"],
+      "store_only": false,
+      "doc": "A declaration used as a value - passed, stored, returned (the engine's references; Java method references): it may run, nothing proves it does. A weak edge for reach. Key: the site first (from_id, rel_line, col), then to_id, as call, unresolved and registration key their sites.",
+      "columns": [
+        { "name": "from_id", "type": "fixed16", "nullable": false, "doc": "The declaration whose body holds the reference." },
+        { "name": "to_id", "type": "fixed16", "nullable": false, "doc": "The declaration referenced." },
+        { "name": "rel_line", "type": "u32", "nullable": false, "doc": "The site's line minus from_id's decl_pos.line (positions)." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "The site's column, 0-based." }
+      ]
+    },
+    "registration": {
+      "key": ["from_id", "rel_line", "col", "reason"],
+      "store_only": false,
+      "doc": "A registration the recognizers saw but could not tie to a declaration (the engine's unresolvedRegistrations, #1092). Reach counts it only when from_id's body is reached.",
+      "columns": [
+        { "name": "from_id", "type": "fixed16", "nullable": false, "doc": "The declaration whose body holds the site (Java: the engine's from, always known since #1092; otherwise the innermost declaration enclosing the site, the module's id for top-level code)." },
+        { "name": "reason", "type": "dict", "nullable": false, "values": ["handler-unresolved", "manifest-unresolved", "mount-unresolved"] },
+        { "name": "evidence", "type": "utf8", "nullable": false, "doc": "The engine's evidence line." },
+        { "name": "rel_line", "type": "u32", "nullable": false, "doc": "The site's line minus from_id's decl_pos.line (positions)." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "The site's column, 0-based." }
+      ]
+    },
+    "parse_error": {
+      "key": ["file"],
+      "store_only": true,
+      "doc": "Where a partial file stopped parsing: its first blocking error in source order (the engine's parseError). Exactly one row per files row with partial true, and none for any other. Store-only (P5).",
+      "columns": [
+        { "name": "file", "type": "fixed16", "nullable": false, "doc": "The partial file's key (file_key)." },
+        { "name": "line", "type": "u32", "nullable": false, "doc": "1-based." },
+        { "name": "col", "type": "u32", "nullable": false, "doc": "0-based (the engine's 1-based parse-error column minus one)." },
+        { "name": "node_kind", "type": "utf8", "nullable": false, "doc": "ERROR for a region the grammar could not read, or MISSING <token> for a token the parser had to insert." },
+        { "name": "parent_kind", "type": "utf8", "nullable": false, "doc": "The syntax node the error sits in." }
+      ]
+    },
+    "flow": {
+      "key": ["from_id", "to_id", "kind"],
+      "store_only": false,
+      "columns": [
+        { "name": "from_id", "type": "fixed16", "nullable": false },
+        { "name": "to_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["def-use", "taint"] }
+      ],
+      "doc": "Def-use and taint edges on ids@0.1 node ids in their fixed-width form (node_id). The java-graph@0.1 post-pass writes one def-use row per DFG use with a reaching definition in the same file: from_id = the definition's node id (kind def), to_id = the use's node id (kind use); data flows from from_id to to_id. taint rows are not written by the post-pass yet (the engine's taint flows are line-keyed, not node-keyed); the kind stays in the vocabulary for them."
+    },
+    "imports": {
+      "key": ["file", "target", "wildcard"],
+      "store_only": false,
+      "columns": [
+        { "name": "file", "type": "fixed16", "nullable": false, "doc": "The importing file's key (file_key)." },
+        { "name": "target", "type": "utf8", "nullable": false, "doc": "The imported name as written, without a trailing `.*`; a static import's member path for `import static`." },
+        { "name": "wildcard", "type": "bool", "nullable": false, "doc": "In the key: one file may import both X and X.*, which share target." }
+      ]
+    },
+    "entries": {
+      "key": ["decl_id", "kind", "source"],
+      "store_only": false,
+      "columns": [
+        { "name": "decl_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["main", "route", "listener", "scheduled", "export", "di", "reflection", "lifecycle", "test", "osgi-ds", "extension-point", "data-declared", "script"], "doc": "entry-index@0.1 kinds plus the design's data-declared kinds; the engine's `bean` is written as `di` (one meaning, one word)." },
+        { "name": "source", "type": "utf8", "nullable": false, "doc": "What declared the entry — the annotation, the supertype member, the manifest or file; the engine's evidence line." },
+        { "name": "certainty", "type": "dict", "nullable": false, "values": ["declared", "conventional", "inferred"] }
+      ]
+    },
+    "moved": {
+      "key": ["old_id", "new_id"],
+      "store_only": false,
+      "columns": [
+        { "name": "old_id", "type": "fixed16", "nullable": false },
+        { "name": "new_id", "type": "fixed16", "nullable": false },
+        { "name": "kind", "type": "dict", "nullable": false, "values": ["moved", "renamed"] },
+        { "name": "evidence", "type": "utf8", "nullable": false }
+      ],
+      "doc": "Moves and renames between two snapshots: facts, not delete + insert. Empty from a single-snapshot post-pass."
+    }
+  }
+}

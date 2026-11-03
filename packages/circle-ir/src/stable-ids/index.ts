@@ -44,6 +44,7 @@ export {
   type MoveDetection,
 } from './moves.js';
 export { blake3, blake3Short128Into, base32, digest128, digest128Bytes } from './hash.js';
+export { STABLE_FILE_KIND, fileId, fileIdBytes } from './files.js';
 
 /** True when `ids@0.1` covers the language. */
 export function stableIdsSupport(language: SupportedLanguage): boolean {

@@ -155,6 +155,23 @@ interface Edge {
   site?: ReachSite;
 }
 
+/**
+ * The strong `contains` rule: whenever `parent` runs, `d` is in use. An
+ * anonymous or nested body, a module's top-level value, and a type's fields
+ * and static initializer; a constructor too outside Java, where a class used
+ * as a value may be constructed, while a Java constructor runs only when
+ * called (the call graph has it). `module` is the first declaration of `d`'s
+ * file. The walk adds a `contains` edge for each, and `facts@2` writes it as
+ * `decl.contained`.
+ */
+export function containedIn(d: StableDecl, parent: StableDecl, module: StableDecl, language: StableIdFile['language']): boolean {
+  const nested = d.flags.includes('unstable:anonymous');
+  const topValue = parent === module && d.kind === 'field';
+  const ctor = d.kind === 'method' && (d.name === '<clinit>' || (d.name === 'constructor' && language !== 'java'));
+  const classPart = parent.kind === 'type' && (d.kind === 'field' || ctor);
+  return nested || topValue || classPart;
+}
+
 /** The adjacency the walk uses: call graph edges plus the structural ones. */
 export class ReachGraph {
   readonly decls = new Map<string, { decl: StableDecl; file: string }>();
@@ -180,14 +197,7 @@ export class ReachGraph {
         add(d.id, { to: module.id, relation: 'loads', strong: true });
         const parent = d.parent === null ? undefined : this.decls.get(d.parent)?.decl;
         if (!parent) continue;
-        const nested = d.flags.includes('unstable:anonymous');
-        const topValue = parent === module && d.kind === 'field';
-        // A class creates its fields and runs its static initializer; in
-        // TypeScript a class used as a value may also be constructed, while
-        // a Java constructor runs only when called (the call graph has it).
-        const ctor = d.kind === 'method' && (d.name === '<clinit>' || (d.name === 'constructor' && f.language !== 'java'));
-        const classPart = parent.kind === 'type' && (d.kind === 'field' || ctor);
-        if (nested || topValue || classPart) add(parent.id, { to: d.id, relation: 'contains', strong: true });
+        if (containedIn(d, parent, module, f.language)) add(parent.id, { to: d.id, relation: 'contains', strong: true });
       }
     }
     const order = (a: Edge, b: Edge): number =>

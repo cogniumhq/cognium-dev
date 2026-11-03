@@ -37,6 +37,7 @@ import {
   type DependencyCallsResult,
   type EntryKind,
   type FactsArrow,
+  type Facts2Arrow,
   type PartialFile,
   type ReachInput,
   type RemovalReachResult,
@@ -312,7 +313,7 @@ export function pickLanguage(roots: readonly string[], asked?: GraphLanguage): G
 }
 
 /** The engine's reach input for one tree: its call graph with the entry index. */
-export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow' } = {}): Promise<ReachInput & { facts?: FactsArrow }> {
+export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow' } = {}): Promise<ReachInput & { facts?: FactsArrow | Facts2Arrow }> {
   if (language === 'java') {
     const facts = graphOptions.emitFacts === 'arrow'
       ? { emitFacts: 'arrow' as const, facts: { engine: `circle-ir@${engineIdentity().version}` } }
@@ -483,7 +484,7 @@ export interface EntriesReport {
 }
 
 /** `facts@1` as the files the store reads: `<dir>/<relation>.arrow` and `<dir>/manifest.json`. */
-export function writeFactsArrow(dir: string, facts: FactsArrow): string[] {
+export function writeFactsArrow(dir: string, facts: FactsArrow | Facts2Arrow): string[] {
   mkdirSync(dir, { recursive: true });
   const written: string[] = [];
   for (const [name, bytes] of Object.entries(facts.relations)) {
