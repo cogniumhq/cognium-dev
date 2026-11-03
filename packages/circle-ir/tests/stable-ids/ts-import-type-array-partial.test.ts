@@ -29,6 +29,11 @@ describe('import-type arrays do not make a TypeScript file partial', () => {
     ['local const', `function f(c: boolean) {\n  const xs: import('./t').T[] = c ? [] : [];\n  return xs;\n}\nfunction after() {}`, ['f', 'after']],
     ['exported const', `export const xs: import('./t').T[] = [];\nexport function after() {}`, ['xs', 'after']],
     ['type alias', `export type A = import('./t').T[];\nfunction after() {}`, ['A', 'after']],
+    // cognium-dev#1004: circle-ir-ai src/mcp/tools/find-excessive-permissions.ts:134
+    ['local let in a union', `function f() {\n  let r: import('./t').T[] | undefined;\n  return r;\n}\nfunction after() {}`, ['f', 'after']],
+    ['union with an initializer', `function f() {\n  let r: import('./t').T[] | undefined = undefined;\n  return r;\n}\nfunction after() {}`, ['f', 'after']],
+    ['type alias union', `export type A = import('./t').T[] | null;\nfunction after() {}`, ['A', 'after']],
+    ['intersection', `export const q: import('./t').T[] & { n: number } = Object.assign([], { n: 1 });\nexport function after() {}`, ['q', 'after']],
   ];
 
   for (const [label, code, expected] of cases) {
@@ -41,6 +46,22 @@ describe('import-type arrays do not make a TypeScript file partial', () => {
 
   it('still marks a genuinely broken file partial', async () => {
     const f = await ts(`function f(xs: import('./t').T[]) {}\nfunction broken( {`);
+    expect(f.partial).toBe(true);
+  });
+
+  it('does not mark the vitest importOriginal<typeof import()> idiom partial', async () => {
+    const f = await ts(`async function f() {\n  const actual = await importOriginal<typeof import('./t')>();\n  return actual;\n}\nfunction after() {}`, 'tests/a.test.ts');
+    expect(f.partial).toBe(false);
+    for (const n of ['f', 'after']) expect(names(f)).toContain(n);
+  });
+
+  it('still marks the idiom partial when the recovery swallows the next class', async () => {
+    const f = await ts(`vi.doMock('w', async (importOriginal) => {\n  const actual = await importOriginal<typeof import('w')>();\n  class Parser extends actual.Parser {}\n  return { ...actual, Parser };\n});`, 'tests/b.test.ts');
+    expect(f.partial).toBe(true);
+  });
+
+  it('still marks a union whose rest is broken partial', async () => {
+    const f = await ts(`let r: import('./t').T[] | ;\nfunction after() {}`);
     expect(f.partial).toBe(true);
   });
 
