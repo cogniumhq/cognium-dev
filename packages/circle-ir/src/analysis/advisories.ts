@@ -37,6 +37,17 @@ export interface AdvisoryEcosystem {
   rangeTypes: readonly string[];
   /** A version the matcher may place in that order. */
   isVersion: (version: string) => boolean;
+  /**
+   * Whether a dependency's version is one concrete token the matcher may use.
+   * Absent: {@link isConcreteVersion}. PyPI also allows the epoch's `!`.
+   */
+  isConcrete?: (version: string) => boolean;
+  /**
+   * Whether two versions are the same, for an advisory's `versions` list.
+   * Absent: exact string equality (OSV's definition). PyPI compares by
+   * PEP 440 equality, so `2.0` = `2.0.0` and `1.0c1` = `1.0rc1`.
+   */
+  sameVersion?: (a: string, b: string) => boolean;
   /** Canonical package name, applied to OSV names and dependency names alike. */
   normalizeName: (name: string) => string;
 }
@@ -67,6 +78,8 @@ export const ADVISORY_ECOSYSTEMS: Readonly<Record<string, AdvisoryEcosystem>> = 
     compare: comparePep440,
     rangeTypes: ['ECOSYSTEM'],
     isVersion: (v) => parsePep440(v) !== null,
+    isConcrete: (v) => /^[0-9A-Za-z][\w.+!-]*$/.test(v),
+    sameVersion: (a, b) => comparePep440(a, b) === 0,
     normalizeName: normalizePypiName,
   },
 };
@@ -380,10 +393,12 @@ function advisoryRef(g: AdvisoryGroup): AdvisoryRef {
 export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): AdvisoryMatch[] {
   const rules = rulesFor(index.ecosystem);
   const c = rules.compare;
+  const concrete = rules.isConcrete ?? isConcreteVersion;
+  const same = rules.sameVersion ?? ((x: string, y: string) => x === y);
   const out: AdvisoryMatch[] = [];
   for (const d of deps) {
     if (rules.filterDependencies && d.ecosystem !== rules.dependency) continue;
-    if (!isConcreteVersion(d.version) || !rules.isVersion(d.version)) continue;
+    if (d.version === 'unknown' || !concrete(d.version) || !rules.isVersion(d.version)) continue;
     const name = rules.normalizeName(d.name);
     const groups = index.byPackage.get(name);
     if (!groups) continue;
@@ -395,7 +410,7 @@ export function matchAdvisories(deps: Dependency[], index: AdvisoryIndex): Advis
       for (const r of g.records) {
         for (const a of r.affected ?? []) {
           if (a.package?.ecosystem !== index.ecosystem || rules.normalizeName(a.package.name) !== name) continue;
-          if (a.versions?.includes(d.version)) hitList = true;
+          if (a.versions?.some((v) => same(v, d.version))) hitList = true;
           for (const range of a.ranges ?? []) {
             if (!rules.rangeTypes.includes(range.type)) continue;
             for (const iv of rangeIntervals(range, c)) {
