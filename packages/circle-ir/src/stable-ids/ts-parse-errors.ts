@@ -9,7 +9,11 @@
  *   `ERROR` node inside the `type_annotation`;
  * - in a `const x: import('m').T[]` / `type A = import('m').T[]` declaration
  *   the parser inserts a `MISSING ";"` after the import type and reads the
- *   `[]` (plus any initializer) as the next expression statement.
+ *   `[]` (plus any initializer) as the next expression statement; with a
+ *   union or intersection (`import('m').T[] | undefined`) that statement is
+ *   `[] | undefined`;
+ * - `importOriginal<typeof import('m')>()` as a declarator's value leaves an
+ *   `ERROR` of `>()` after the declarator.
  *
  * Either way every declaration is still in the tree, so the file is not
  * "partial" for stable ids or dead code. Any other error still is.
@@ -39,7 +43,13 @@ function insideTypeContext(n: Node): boolean {
 /** The `[]` the parser split off: `[]` or `[] = <initializer>` as an expression statement. */
 function isSplitArraySuffix(n: Node | null): boolean {
   if (!n || n.type !== 'expression_statement') return false;
-  const e = n.namedChild(0);
+  let e = n.namedChild(0);
+  // `import('m').T[] | undefined` / `… & B`: the rest of a union or
+  // intersection type is read as `[] | undefined`, a bitwise expression whose
+  // leftmost operand is the split-off `[]` (cognium-dev#1004).
+  while (e && e.type === 'binary_expression' && /^[|&]$/.test(e.child(1)?.type ?? '')) {
+    e = e.childForFieldName('left');
+  }
   if (!e) return false;
   if (e.type === 'array') return e.namedChildCount === 0;
   if (e.type === 'assignment_expression') {
@@ -67,8 +77,31 @@ function isSplitImportArrayDeclaration(missing: Node): boolean {
   return isSplitArraySuffix(holder.nextNamedSibling);
 }
 
+/**
+ * `const actual = await importOriginal<typeof import('m')>();` (the vitest
+ * mock idiom): the grammar reads `<` as a comparison against
+ * `typeof import('m')`, and the leftover `>()` becomes an `ERROR` holding `>`
+ * and an empty parameter list, right after the declarator. The declaration is
+ * still in the tree and nothing follows inside the error (cognium-dev#1004).
+ * When the recovery instead swallows the next statement (a `class` read as an
+ * expression), the error sits elsewhere and still counts.
+ */
+function isSplitTypeofImportCall(n: Node): boolean {
+  if (n.parent?.type !== 'lexical_declaration' || n.childCount !== 2) return false;
+  const [gt, params] = [n.child(0), n.child(1)];
+  if (gt?.type !== '>' || params?.type !== 'formal_parameters' || params.namedChildCount !== 0) return false;
+  const declarator = n.previousNamedSibling;
+  if (declarator?.type !== 'variable_declarator') return false;
+  const value = declarator.childForFieldName('value');
+  if (value?.type !== 'binary_expression' || value.child(1)?.type !== '<') return false;
+  const right = value.childForFieldName('right');
+  if (right?.type !== 'unary_expression' || right.child(0)?.type !== 'typeof') return false;
+  const arg = right.namedChild(0);
+  return arg?.type === 'call_expression' && arg.childForFieldName('function')?.type === 'import';
+}
+
 function isBenign(n: Node): boolean {
-  if (n.type === 'ERROR') return insideTypeContext(n);
+  if (n.type === 'ERROR') return insideTypeContext(n) || isSplitTypeofImportCall(n);
   if (n.isMissing) return n.type === ';' && isSplitImportArrayDeclaration(n);
   return false;
 }
