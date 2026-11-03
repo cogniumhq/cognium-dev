@@ -115,11 +115,20 @@ the project size ceiling (#615) and two timeouts (#616).
     export CIRCLE_IR=$PWD/packages/circle-ir/dist/index.js
     node bench/sast/score-juliet-csharp.mjs <juliet-csharp root>            # _01, method level
     node bench/sast/score-juliet-csharp.mjs <juliet-csharp root> 45 --files # field-carried variant
+    node bench/sast/score-juliet-csharp.mjs <juliet-csharp root> 51         # multi-file, _51a/_51b
 
-Scored on `analyze()` taint flows per file (C# has no project-level harness
-yet). Method level for `_01`: `Bad()` is a TP when an on-family flow's sink is
+Single-file variants are scored on `analyze()` taint flows per file (grouped
+mode below). Method level for `_01`: `Bad()` is a TP when an on-family flow's sink is
 inside it, and each `Good*()` method is an FP when one is. `xLeak` counts flows
 whose source and sink sit in different methods; on `_01` each one is a name
 collision (#548). `--files` scores variants whose sink lives in a helper
 (`_21`, `_41`, `_42` return-carried, `_45` field-carried): a file is a TP when
 a flow lands in any `Bad*` method and an FP when one lands in any `Good*`.
+
+Variants `_51`–`_54` spread a case over two to five files (`_<N>a.cs` …
+`_<N>e.cs`) and are scored in grouped mode: each case is one
+`analyzeProject()` call, so the cross-file phase and the project gates see
+the caller in the `a` file (#636). A hit is an on-family sink in the per-file
+flows after the project phase or in `taint_paths`. One TP per case when a hit
+is inside any `Bad*` method; each `Good<x>` method (forwarders included) is an
+FP when one is inside it. `files` counts cases there.
