@@ -123,3 +123,16 @@ whose source and sink sit in different methods; on `_01` each one is a name
 collision (#548). `--files` scores variants whose sink lives in a helper
 (`_21`, `_41`, `_42` return-carried, `_45` field-carried): a file is a TP when
 a flow lands in any `Bad*` method and an FP when one lands in any `Good*`.
+
+## Stable ids (`bench/stable-ids/`)
+
+A sealed set of 30 consecutive commit pairs from public TypeScript
+repositories, with an expected `stable` / `changed` label for every
+declaration of each earlier commit, and a harness that scores a provider's
+`ids@0.1` ids against them (precision and recall of "stable"). The labelling
+rule, the pins and licences, and the commands are in
+[`stable-ids/README.md`](./stable-ids/README.md).
+
+    node bench/stable-ids/run.mjs verify
+    CORPUS_ROOT=<dir> node bench/stable-ids/run.mjs fetch
+    CORPUS_ROOT=<dir> node bench/stable-ids/run.mjs score

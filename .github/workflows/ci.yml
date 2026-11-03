@@ -52,7 +52,8 @@ jobs:
 
       # Repo tooling under scripts/ is not part of any workspace, so no package
       # suite covers it. Node's built-in runner keeps this dependency-free.
-      # It guards the pack dry-run checker and the Rollouts release reporter.
+      # It guards the pack dry-run checker, the Rollouts release reporter and
+      # the stable-ids conformance harness (including the sealed set's digests).
       - name: test — repo scripts
         run: npm run test:scripts
 
