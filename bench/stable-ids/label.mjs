@@ -166,7 +166,29 @@ class Tokenizer {
   /** One string for a type or other signature part (the formatting-free view). */
   text(node) {
     if (!node) return '_';
+    if (this.canonical) return this.canon(node);
     return joinTokens(this.tokens([node]).f);
+  }
+
+  /**
+   * Like `text`, with the operands of every union and intersection and the
+   * members of every type literal in sorted order. Used only to tell a
+   * reordered type (a judgement) from a changed one.
+   */
+  canon(node) {
+    const K = this.K;
+    if (node.kind === K.UnionType || node.kind === K.IntersectionType) {
+      return '(' + node.types.map(t => this.canon(t)).sort().join(node.kind === K.UnionType ? '|' : '&') + ')';
+    }
+    if (node.kind === K.TypeLiteral) return '{' + node.members.map(m => this.canon(m)).sort().join(';') + '}';
+    if (this.isJSDoc(node)) return '';
+    const kids = node.getChildren(this.sf);
+    if (kids.length === 0) {
+      const out = [];
+      this.leaf(node, out);
+      return joinTokens(out.map(t => t.f).filter(t => t !== null));
+    }
+    return joinTokens(kids.map(k => this.canon(k)).filter(t => t !== ''));
   }
 }
 
@@ -389,9 +411,16 @@ export function declarationsOf(path, text) {
   const ts = loadTypeScript();
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, scriptKind(ts, path));
   const tk = new Tokenizer(ts, sf);
+  // The same walk twice: with signatures as written (the identity), and with
+  // reorderable type parts sorted (only to recognise a reordered signature).
+  tk.canonical = true;
+  const cc = new Collector(tk, path);
+  cc.scope(cc.add(null, { kind: 'module-file', name: '', signature: '', span: sf, nameNode: null, inner: [sf], container: true }), sf.statements);
+  tk.canonical = false;
   const c = new Collector(tk, path);
   const mod = c.add(null, { kind: 'module-file', name: '', signature: '', span: sf, nameNode: null, inner: [sf], container: true });
   c.scope(mod, sf.statements);
+  c.decls.forEach((d, i) => { d.canonSignature = cc.decls[i].signature; });
   for (const d of c.decls) {
     const replace = new Map();
     for (const m of d.members) replace.set(m.span, placeholder(m));
@@ -407,7 +436,7 @@ export function declarationsOf(path, text) {
   // Drop syntax-tree references: callers get plain data.
   const decls = c.decls.map(d => ({
     file: d.file, module: c.module, kind: d.kind === 'module-file' ? 'module' : d.kind, isFile: d.kind === 'module-file',
-    name: d.name, signature: d.signature, chain: d.chain, key: d.key, line: d.line, start: d.start, end: d.end,
+    name: d.name, signature: d.signature, canonSignature: d.canonSignature, chain: d.chain, key: d.key, line: d.line, start: d.start, end: d.end,
     container: !!d.container, full: d.full, inner: d.innerTokens, innerNoMembers: d.innerNoMembers, memberOrder: d.memberOrder,
     parentKey: d.parent ? d.parent.key : null, index: 0,
   }));
@@ -441,10 +470,7 @@ function identityReason(b, added) {
   const same = (x, k) => x.module === b.module && x.chain.join('.') === b.chain.join('.') && x.kind === b.kind && x.name === b.name && k(x);
   const sig = added.filter(x => same(x, y => y.signature !== b.signature));
   if (sig.length > 0) {
-    const tokens = s => s.split(/(?=[(),:<>|&[\]{}])|(?<=[(),:<>|&[\]{}])|\s+/).filter(Boolean);
-    if (sig.length === 1 && sig[0].signature.length === b.signature.length && sortedEq(tokens(sig[0].signature), tokens(b.signature))) {
-      return { judgement: 'signature-order' };
-    }
+    if (sig.length === 1 && sig[0].canonSignature === b.canonSignature) return { judgement: 'signature-order' };
     return { reason: 'signature' };
   }
   if (added.some(x => x.module !== b.module && x.kind === b.kind && x.name === b.name && x.signature === b.signature && x.chain.join('.') === b.chain.join('.'))) {
