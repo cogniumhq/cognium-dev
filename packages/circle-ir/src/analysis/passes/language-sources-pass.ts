@@ -4352,11 +4352,12 @@ export function buildJavaTaintedVars(
   const derived = new Map<string, number>();
   const knownTainted = new Set(seedVars);
   const trackSlots = options?.trackSlots === true;
-  // Slot mode also reads `x = list.get(0); // note` as the statement it is: the
-  // assignment patterns below are anchored at `;`.
-  const lines = trackSlots
-    ? sourceCode.split('\n').map(stripJavaTrailingLineComment)
-    : sourceCode.split('\n');
+  // Read `x = list.get(0); // note` as the statement it is: the assignment
+  // patterns below are anchored at `;`. Every mode strips, not only slot mode
+  // (#1105): a trailing comment hid the list read in OWASP BenchmarkTest00575.
+  // Precision for safe slots (`get(1)` after `remove(0)`) still comes from
+  // const-prop's list model, which vetoes the derived alias downstream.
+  const lines = sourceCode.split('\n').map(stripJavaTrailingLineComment);
   const dead = deadBranchLines ?? new Set<number>();
   /** list var → element slots: the added identifier, or `null` for a literal. */
   const listElems = new Map<string, (string | null)[]>();
