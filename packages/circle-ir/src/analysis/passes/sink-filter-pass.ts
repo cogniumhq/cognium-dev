@@ -1366,9 +1366,40 @@ function rustSsrfRequestUsesFixedHostFormat(code: string, sinkLine: number): boo
   const assignRe = new RegExp(`\\blet\\s+${escapeRegex(varName)}\\s*=\\s*format!`);
   for (let i = sinkLine - 2; i >= Math.max(0, sinkLine - 20); i--) {
     const line = lines[i] ?? '';
-    if (assignRe.test(line) && RUST_FIXED_HOST_FORMAT_RE.test(line)) return true;
+    if (!assignRe.test(line)) continue;
+    if (RUST_FIXED_HOST_FORMAT_RE.test(line)) return true;
+    if (rustFormatLeadsWithFixedHostConst(code, line)) return true;
   }
   return false;
+}
+
+/**
+ * `format!("{}/path/{}", BASE, x)` where `BASE` is a file-level
+ * `const`/`static` string holding a literal origin (cognium-dev#922).
+ * The origin is fixed when the const is `scheme://host[:port]` and the
+ * format string continues with `/` right after the first `{}` (or the
+ * const itself already ends in a path), so the remaining slots can only
+ * reach path segments of that host.
+ */
+const RUST_FORMAT_CONST_LEAD_RE = /format!\(\s*"\{\}([^"]*)"\s*,\s*([A-Z_][A-Z0-9_]*)\s*[,)]/;
+const RUST_ORIGIN_RE = /^https?:\/\/[A-Za-z0-9.-]+(?::\d+)?(\/[^"]*)?$/;
+
+function rustFormatLeadsWithFixedHostConst(code: string, line: string): boolean {
+  const m = line.match(RUST_FORMAT_CONST_LEAD_RE);
+  if (!m) return false;
+  const rest = m[1] ?? '';
+  const constName = m[2] ?? '';
+  const declRe = new RegExp(
+    `^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:const|static)\\s+${escapeRegex(constName)}\\s*:\\s*&(?:'static\\s+)?str\\s*=\\s*"([^"\\\\]*)"\\s*;`,
+    'm',
+  );
+  const decl = code.match(declRe);
+  if (!decl) return false;
+  const origin = RUST_ORIGIN_RE.exec(decl[1] ?? '');
+  if (!origin) return false;
+  // `"http://host"` + `"{}{}"` could still be extended into another host
+  // (`.evil.example`); require the path separator to be fixed too.
+  return rest.startsWith('/') || origin[1] !== undefined;
 }
 /**
  * True when the string literal that ended at `end` is the WHOLE initializer:
