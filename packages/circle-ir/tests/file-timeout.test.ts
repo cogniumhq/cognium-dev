@@ -1,7 +1,7 @@
 /**
  * cognium-dev#1007 — opt-in per-file analysis time limit.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { initAnalyzer, analyze, analyzeProject, AnalysisTimeoutError } from '../src/analyzer.js';
 import * as publicApi from '../src/index.js';
 
@@ -49,6 +49,24 @@ describe('fileTimeoutMs', () => {
     expect(t.file).toBe('big.sh');
     expect(t.elapsedMs).toBeGreaterThan(0);
     expect(typeof t.phase).toBe('string');
+  });
+
+  it('checks the limit between extraction phases, not only after parse and between passes', async () => {
+    // The clock reads 0 for the deadline and for the post-parse check, then
+    // jumps past the limit: the first extraction phase must stop the file,
+    // before any pipeline pass runs.
+    let calls = 0;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => (calls++ < 2 ? 0 : 10_000_000));
+    let err: unknown;
+    try {
+      await analyze('echo "$1"\n', 'small.sh', 'bash', { fileTimeoutMs: 60_000 });
+    } catch (e) {
+      err = e;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(err).toBeInstanceOf(AnalysisTimeoutError);
+    expect((err as AnalysisTimeoutError).phase).toBe('extractParseStatus');
   });
 
   it('analyzeProject skips a timed-out file, lists it, and keeps the rest', async () => {

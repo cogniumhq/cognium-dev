@@ -1046,6 +1046,16 @@ export async function analyze(
   // Parse the code. The Tree holds tree-sitter WASM memory; we MUST dispose
   // it before returning, otherwise the WASM heap grows unboundedly across
   // many analyze() calls in the same process (issue #16).
+  // #1007: the per-file limit is also checked after each extraction phase
+  // below. On Bash those phases (types, DFG, node collection, imports) are
+  // about half the time, and before this the first check after parsing was
+  // the first pipeline pass, so a file could overrun its limit by that much.
+  const checkDeadline = (phase: string): void => {
+    if (fileDeadline > 0 && Date.now() > fileDeadline) {
+      throw new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), phase);
+    }
+  };
+
   const tParse = phaseStart();
   const tree = await parse(code, parseGrammar);
   phaseEnd('parse', tParse);
@@ -1064,6 +1074,7 @@ export async function analyze(
   const tParseStatus = phaseStart();
   const parseStatus = extractParseStatus(tree);
   phaseEnd('extractParseStatus', tParseStatus);
+  checkDeadline('extractParseStatus');
   if (parseStatus.has_errors) {
     logger.warn('Partial parse — IR may be incomplete', {
       filePath,
@@ -1077,6 +1088,7 @@ export async function analyze(
   const tCollect = phaseStart();
   const nodeCache = collectAllNodes(tree.rootNode, getNodeTypesForLanguage(language));
   phaseEnd('collectAllNodes', tCollect);
+  checkDeadline('collectAllNodes');
 
   // Extract all IR components
   const tMeta = phaseStart();
@@ -1089,6 +1101,7 @@ export async function analyze(
     meta.projectProfile = makeProfileResolver(options.projectProfile)(filePath);
   }
   phaseEnd('extractMeta', tMeta);
+  checkDeadline('extractMeta');
 
   // cognium-dev#460 — residual backstop. Over-long lines are already blanked
   // above; this still returns a minimal IR if one remains, so a minified
@@ -1111,26 +1124,33 @@ export async function analyze(
   const tTypes = phaseStart();
   const types   = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   phaseEnd('extractTypes', tTypes);
+  checkDeadline('extractTypes');
   const tCalls = phaseStart();
   const calls   = extractCalls(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   phaseEnd('extractCalls', tCalls);
+  checkDeadline('extractCalls');
   const tImports = phaseStart();
   const imports = extractImports(tree, language, nodeCache);
   phaseEnd('extractImports', tImports);
+  checkDeadline('extractImports');
   const tExports = phaseStart();
   if (options.declarationDetail && (language === 'typescript' || language === 'javascript')) enrichTsDeclarations(tree, types);
   const exports = (options.declarationDetail && (language === 'typescript' || language === 'javascript') ? extractTsExports(types) : null)
     ?? extractExports(types);
   phaseEnd('extractExports', tExports);
+  checkDeadline('extractExports');
   const tCFG = phaseStart();
   const cfg     = buildCFG(tree, language, nodeCache);
   phaseEnd('buildCFG', tCFG);
+  checkDeadline('buildCFG');
   const tDFG = phaseStart();
   const dfg     = buildDFG(tree, nodeCache, language);
   phaseEnd('buildDFG', tDFG);
+  checkDeadline('buildDFG');
   const tRuntime = phaseStart();
   const runtimeRegistrations = extractRuntimeRegistrations(tree, nodeCache, language, imports);
   phaseEnd('extractRuntimeRegistrations', tRuntime);
+  checkDeadline('extractRuntimeRegistrations');
 
   // Build CodeGraph once — shared across all passes.
   // Taint is empty at construction time; sources/sinks/sanitizers are populated by passes.
@@ -1146,6 +1166,7 @@ export async function analyze(
     ...constTableLookupDefIds(dfg.defs, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
+  checkDeadline('buildCodeGraph');
 
   const config = options.taintConfig ?? getDefaultConfig();
 
