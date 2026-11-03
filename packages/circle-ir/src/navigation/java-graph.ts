@@ -408,7 +408,7 @@ class JavaGraphBuilder {
     // is the literal case: each name is a reflection entry, a name outside the tree nothing.
     const method = enclosingBody(node);
     if (first?.type === 'identifier' && method) {
-      const names = constantStrings(method, first.text);
+      const names = constantStrings(method, first.text, node);
       if (names) {
         for (const n of names) this.reflect(n, ctx.path, 'Class.forName (local constant)');
         return;
@@ -583,17 +583,33 @@ function enclosingBody(node: Node): Node | null {
   return n && n.type !== 'class_body' ? n : null;
 }
 
+/** Whether `n` directly declares the local `name` (a `local_variable_declaration` child). */
+function declaresLocal(n: Node, name: string): boolean {
+  return namedChildren(n).some(c => c.type === 'local_variable_declaration'
+    && namedChildren(c).some(d => d.type === 'variable_declarator' && d.childForFieldName('name')?.text === name));
+}
+
+/** The innermost node between `at` and `body` that declares the local `name`, if any. */
+function declaringBlock(at: Node, body: Node, name: string): Node | null {
+  for (let n: Node | null = at.parent; n && n !== body; n = n.parent) if (declaresLocal(n, name)) return n;
+  return null;
+}
+
 /**
  * The string literals `name` can hold at a `Class.forName(name)` in `body` (#1092): every
  * local declaration and assignment of it in the body is a string literal, or it is a
  * `static final String` field of the enclosing class with a literal value. A `null`
  * value names no class (`Class.forName(null)` throws) and adds nothing. Null when any
- * assignment is not a literal, or nothing assigns it.
+ * assignment is not a literal, or nothing assigns it. Only the local in scope at `at` is
+ * read: a same-named local declared in a sibling block is another variable.
  */
-function constantStrings(body: Node, name: string): string[] | null {
+function constantStrings(body: Node, name: string, at: Node): string[] | null {
   const values: string[] = [];
+  const scope = declaringBlock(at, body, name) ?? body;
   let other = false;
   const visit = (n: Node): void => {
+    // another block declaring `name` holds a different variable (a sibling scope)
+    if (n !== scope && declaresLocal(n, name)) return;
     if (n.type === 'variable_declarator' && n.childForFieldName('name')?.text === name) {
       const v = n.childForFieldName('value');
       if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v && v.type !== 'null_literal') other = true;
@@ -605,7 +621,7 @@ function constantStrings(body: Node, name: string): string[] | null {
     }
     for (const c of namedChildren(n)) visit(c);
   };
-  visit(body);
+  visit(scope);
   if (other) return null;
   if (values.length > 0) return values;
   // a static final String field of the enclosing class

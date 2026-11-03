@@ -77,6 +77,12 @@ describe('#1092 Class.forName registrations', () => {
     expect(new Set(g.entries.filter(e => e.kind === 'reflection').map(e => e.id)).size).toBe(2);
   });
 
+  it('a same-named local in a sibling block is another variable (iDempiere Adempiere.java)', async () => {
+    const { g } = await run('  public void load(String x) { if (x != null) { String n = x.trim(); System.out.println(n); }\n    String n = null; try { n = "p.B"; Class.forName(n); } catch (Exception e) { } }');
+    expect(g.unresolvedRegistrations).toHaveLength(0);
+    expect(g.entries.filter(e => e.kind === 'reflection')).toHaveLength(1);
+  });
+
   it('a static final String field constant resolves too', async () => {
     const { g } = await run('  private static final String IMPL = "p.C";\n  public Object load(String x) throws Exception { return Class.forName(IMPL).newInstance(); }');
     expect(g.unresolvedRegistrations).toHaveLength(0);
