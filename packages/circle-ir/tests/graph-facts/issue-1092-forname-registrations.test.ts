@@ -3,7 +3,8 @@
  * without a strong path (iDempiere: 26 sites holding 25,707 may-be-live declarations).
  * They now carry `from` (counted only when the site's body is reached), resolve a local
  * string constant like a literal, and carry a type bound when the method casts / checks
- * the loaded class, naming only that type and its subtypes.
+ * the loaded class; with `boundRegistrations` on (off by default) they then name only
+ * that type and its subtypes.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initAnalyzer } from '../../src/analyzer.js';
@@ -21,12 +22,12 @@ const lib = [
   f('src/p/C.java', 'package p;\npublic class C { public void c() {} }\n'),
 ];
 
-async function run(loader: string, opts: { reachLoader?: boolean } = {}) {
+async function run(loader: string, opts: { reachLoader?: boolean; bound?: boolean } = {}) {
   const main = opts.reachLoader === false
     ? 'package p;\npublic class Main { public static void main(String[] a) {} }\n'
     : 'package p;\npublic class Main { public static void main(String[] a) throws Exception { new Loader().load(a[0]); } }\n';
   const g = await buildJavaGraph([...lib, f('src/p/Main.java', main), f('src/p/Loader.java', `package p;\nimport java.security.Provider;\npublic class Loader {\n${loader}\n}\n`)]);
-  const facts = reach(g).facts;
+  const facts = reach(g, { boundRegistrations: opts.bound ?? true }).facts;
   const named = (qname: string) => {
     const fact = facts.find(x => x.qualified_name === qname);
     return fact ? fact.unresolved.filter(u => u.kind === 'registration').length : -1;
@@ -101,6 +102,16 @@ describe('#1092 Class.forName registrations', () => {
     const eq = await run('  public Object load(String n) throws Exception { Class<?> c = Class.forName(n); if (c.getSuperclass() == PluginImpl.class) return c.newInstance(); return null; }');
     expect(eq.named('p:SubImpl')).toBe(1);
     expect(eq.named('p:Unrelated')).toBe(0);
+  });
+
+  it('with boundRegistrations off (the default) the bound is kept as evidence but does not narrow', async () => {
+    const code = '  public Plugin load(String n) throws Exception { return (Plugin) Class.forName(n).getDeclaredConstructor().newInstance(); }';
+    const { g, named } = await run(code, { bound: false });
+    expect(g.unresolvedRegistrations[0].bound).toEqual(['Plugin']);
+    expect(g.unresolvedRegistrations[0].boundTypes?.length).toBeGreaterThan(0);
+    expect(named('p:PluginImpl')).toBe(1);
+    expect(named('p:Unrelated')).toBe(1);
+    expect(named('p:B')).toBe(1);
   });
 
   it('an external bound (java.security.Provider) names no in-tree declaration', async () => {

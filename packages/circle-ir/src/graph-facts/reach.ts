@@ -107,6 +107,12 @@ export interface ReachOptions {
   targets?: readonly string[];
   /** Most unresolved sites listed per declaration. Default 5. */
   maxUnresolved?: number;
+  /**
+   * Narrow a `Class.forName` registration to its `boundTypes` (#1092). Off by default: a
+   * name outside the bound is still loaded and initialised before the cast fails, so the
+   * bound is evidence, not proof, and narrowing by it can drop a live path.
+   */
+  boundRegistrations?: boolean;
 }
 
 export interface ReachResult {
@@ -296,7 +302,7 @@ function declIndex(input: ReachInput): Map<string, StableDecl> {
   return m;
 }
 
-export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl): CouldReachSite[] {
+export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl, boundRegistrations = false): CouldReachSite[] {
   if (d.kind === 'field') return [];
   const isModule = d.kind === 'module';
   const out: CouldReachSite[] = [];
@@ -311,7 +317,7 @@ export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: S
   for (const r of input.unresolvedRegistrations ?? []) {
     if (r.reason !== 'handler-unresolved') continue;
     if (r.from !== undefined && !reached.has(r.from)) continue;
-    if (r.boundTypes !== undefined && !inBound(input, d, r.boundTypes)) continue;
+    if (boundRegistrations && r.boundTypes !== undefined && !inBound(input, d, r.boundTypes)) continue;
     out.push({ kind: 'registration', reason: r.reason, site: r.site });
   }
   return out.sort(bySite);
@@ -331,7 +337,7 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
       if (wanted && !wanted.has(d.id)) continue;
       const strong = pathTo(visits, `0${d.id}`, roots);
       const weak = pathTo(visits, `1${d.id}`, roots);
-      const sites = strong ? [] : couldReach(input, reached, d);
+      const sites = strong ? [] : couldReach(input, reached, d, options.boundRegistrations);
       facts.push({
         id: d.id,
         qualified_name: d.qualified_name,
