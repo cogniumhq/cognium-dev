@@ -1352,10 +1352,19 @@ export class CrossFileResolver {
           //     caller's file rather than in a cross-file callee.
           if (tainted.size > 0) {
             const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
+            const isJs = callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript';
             for (const sink of sinksInCaller) {
               const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
               for (const sinkCall of callsAtSink) {
+                // JS/TS (dogfood 2026-11-03): only the sink call's own dangerous
+                // arguments reach the sink. `fs.writeFileSync(out, report)` takes
+                // its path at [0], so a tainted `report` is data, not a path; and
+                // in `diff(fs.readFileSync(p), report)` the `diff` call's
+                // arguments are not the `readFileSync` sink's.
+                if (isJs && !this.isSinkCall(sinkCall, sink)) continue;
                 for (const arg of sinkCall.arguments ?? []) {
+                  if (isJs && sink.argPositions && sink.argPositions.length > 0
+                      && !sink.argPositions.includes(arg.position)) continue;
                   const matched = this.matchTaintedArg(arg, tainted);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
@@ -1869,6 +1878,18 @@ export class CrossFileResolver {
         tainted.set(derived, { ...origin, defIds: reachable.defIds });
       }
     }
+  }
+
+  /**
+   * True when `call` is the call `sink` was matched on: same method name, and
+   * the same column when both carry one. A sink without a method name matches
+   * any call on its line (the behaviour before this check).
+   */
+  private isSinkCall(call: CallInfo, sink: TaintSink): boolean {
+    if (!sink.method) return true;
+    if (call.method_name !== sink.method) return false;
+    return sink.callColumn === undefined || call.location.column === undefined
+      || call.location.column === sink.callColumn;
   }
 
   private matchTaintedArg(
