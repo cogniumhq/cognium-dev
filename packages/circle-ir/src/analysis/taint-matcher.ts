@@ -2878,6 +2878,12 @@ function matchesSourcePattern(
       // Prefer IR-resolved receiver type when available (Java/TS plugins).
       if (call.receiver_type && call.receiver_type === pattern.class) {
         // resolved type matches — accept
+      } else if (
+        call.receiver_type &&
+        call.receiver_type.includes('.') &&
+        call.receiver_type.endsWith('.' + pattern.class)
+      ) {
+        // FQN receiver (e.g. org.owasp…SeparateClassRequest) matches short pattern class
       } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
         // FQN tail matches
       } else if (!call.receiver) {

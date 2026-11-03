@@ -160,6 +160,12 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getContentType', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
   { method: 'getCharacterEncoding', class: 'HttpServletRequest', type: 'http_header', severity: 'low', return_tainted: true },
 
+  // OWASP Benchmark helpers — wrap HttpServletRequest accessors (configs/sources/http_sources.yaml).
+  // Omit getTheValue: OWASP returns a constant (#914 S4); interprocedural gates handle it.
+  { method: 'getTheParameter', class: 'SeparateClassRequest', type: 'http_param', severity: 'high', return_tainted: true, languages: ['java'] },
+  { method: 'getTheHeaders', class: 'SeparateClassRequest', type: 'http_header', severity: 'high', return_tainted: true, languages: ['java'] },
+  { method: 'getTheCookies', class: 'SeparateClassRequest', type: 'http_cookie', severity: 'high', return_tainted: true, languages: ['java'] },
+
   // Enumeration/Iterator sources (from request.getHeaders(), etc.)
   { method: 'nextElement', class: 'Enumeration', type: 'http_header', severity: 'high', return_tainted: true },
   { method: 'nextElement', type: 'http_header', severity: 'high', return_tainted: true },

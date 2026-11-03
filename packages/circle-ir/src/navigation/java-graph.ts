@@ -649,7 +649,8 @@ const INSTANCEOF = new RegExp(String.raw`\binstanceof\s+(${TYPE})`, 'g');
  * The type a reflectively loaded class must be, from how the method uses it (#1092): a cast
  * of `newInstance()` (directly or through `getDeclaredConstructor` / `getConstructor`),
  * `asSubclass(T.class)`, `instanceof T` (also with a pattern variable), `T.class.isAssignableFrom(…)`,
- * or a `getSuperclass() == T.class` walk. Names as written, simple or package-qualified,
+ * or a `getSuperclass()` walk compared with `== T.class`, directly or through a variable the
+ * walk assigns (`s = c.getSuperclass(); … if (s == T.class)`). Names as written, simple or package-qualified,
  * generics stripped.
  */
 function boundTypeNames(text: string): string[] {
@@ -661,6 +662,11 @@ function boundTypeNames(text: string): string[] {
   for (const m of text.matchAll(INSTANCEOF)) add(m[1]);
   for (const m of text.matchAll(/\b([\w$.]+)\s*\.\s*class\s*\.\s*isAssignableFrom\s*\(/g)) add(m[1]);
   for (const m of text.matchAll(/getSuperclass\s*\(\s*\)\s*==\s*([\w$.]+)\s*\.\s*class/g)) add(m[1]);
+  // a walk through a variable: `s = c.getSuperclass(); while (s != null) { if (s == T.class) … }`
+  for (const w of text.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*[\w$.]+\s*\.\s*getSuperclass\s*\(\s*\)/g)) {
+    const v = w[1].replace(/[$]/g, '\\$&');
+    for (const m of text.matchAll(new RegExp(String.raw`\b${v}\s*==\s*([\w$.]+)\s*\.\s*class\b`, 'g'))) add(m[1]);
+  }
   return [...out].sort();
 }
 
