@@ -42,6 +42,8 @@ export interface DeadCodeOptions {
   typeOnly?: readonly string[];
   /** Most unresolved sites listed per declaration. Default 5. */
   maxUnresolved?: number;
+  /** See `ReachOptions.boundRegistrations`. Default off. */
+  boundRegistrations?: boolean;
 }
 
 export interface DeadCodeResult {
@@ -56,7 +58,7 @@ export interface DeadCodeResult {
 }
 
 export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, options: DeadCodeOptions = {}): DeadCodeResult {
-  const product = reach(input, { rootKinds: options.rootKinds ?? ALL_ENTRY_KINDS.filter(k => k !== 'test'), maxUnresolved: options.maxUnresolved });
+  const product = reach(input, { rootKinds: options.rootKinds ?? ALL_ENTRY_KINDS.filter(k => k !== 'test'), maxUnresolved: options.maxUnresolved, boundRegistrations: options.boundRegistrations });
   // Test reach: every path class counts — a test that reaches it only through an inferred call still exercises it.
   const g = new ReachGraph(input);
   const testRoots = input.entries.filter(e => e.kind === 'test');

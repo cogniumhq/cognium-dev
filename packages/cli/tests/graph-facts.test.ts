@@ -165,6 +165,11 @@ describe('option parsing', () => {
     expect(() => parseReachOptions({ base: true })).toThrow(/--base/);
     expect(parseReachOptions({ base: 'main', format: 'json' })).toMatchObject({ base: 'main', format: 'json' });
     expect(() => parseDeadCodeOptions({ output: true })).toThrow(/--output/);
+    // #1092: the forName type bound narrows only when asked
+    expect(parseDeadCodeOptions({}).boundRegistrations).toBe(false);
+    expect(parseDeadCodeOptions({ 'bound-registrations': true }).boundRegistrations).toBe(true);
+    expect(parseReachOptions({ base: 'main' }).boundRegistrations).toBe(false);
+    expect(parseReachOptions({ base: 'main', 'bound-registrations': true }).boundRegistrations).toBe(true);
   });
 });
 

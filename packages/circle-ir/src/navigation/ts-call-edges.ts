@@ -104,6 +104,15 @@ export interface UnresolvedRegistration {
   site: CallEdgeSite;
   reason: 'handler-unresolved' | 'manifest-unresolved' | 'mount-unresolved';
   evidence: string;
+  /** The declaration whose body holds the site (Java, #1092); reach counts the site only when it is reached. */
+  from?: string;
+  /** The type the loaded class must be, as written or imported (Java, #1092), when the site's method says so. */
+  bound?: string[];
+  /**
+   * The in-tree types that satisfy `bound` (the type and its subtypes). When present, the
+   * site can only name declarations of these types; empty means it names nothing in the tree.
+   */
+  boundTypes?: string[];
 }
 
 /** A function or class used as a value (passed, stored, returned, rendered): it may run. */

@@ -650,6 +650,32 @@ export class NavigationIndex {
    * has one). Anything else is `unresolved` with the same reason a query
    * would give.
    */
+  /**
+   * Every type in the tree that extends or implements `fqn`, directly or through other
+   * types in the tree (cognium-dev#1092: the bound of a reflective load). `fqn` may be
+   * outside the tree (`java.security.Provider`); a supertype the declaring file could not
+   * resolve is keyed by its simple name, so that is tried too.
+   */
+  subtypesOf(fqn: string): string[] {
+    const out = new Set<string>();
+    const simple = fqn.slice(fqn.lastIndexOf('.') + 1);
+    const frontier = [fqn, simple];
+    while (frontier.length > 0) {
+      const cur = frontier.pop()!;
+      for (const sub of this.subtypes.get(cur) ?? []) {
+        if (out.has(sub)) continue;
+        out.add(sub);
+        frontier.push(sub);
+      }
+    }
+    return [...out].sort();
+  }
+
+  /** Whether `fqn` is a type declared in the tree. */
+  hasType(fqn: string): boolean {
+    return this.typesByFqn.has(fqn);
+  }
+
   callSites(): IndexedCallSite[] {
     const out: IndexedCallSite[] = [];
     const files = [...this.files.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
