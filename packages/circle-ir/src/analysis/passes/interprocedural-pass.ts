@@ -695,7 +695,7 @@ function appendCalleeSourceCallerSinkFlows(
       }
       // cognium-dev#917 S4 / #913 S4 / #914 S4 — pass-through helpers must not reach sinks when
       // the matching caller argument has no request-derived source (SeparateClassRequest.getTheValue).
-      // sql_injection / command_injection / path_traversal / xss (#915): instance inner-class helpers only;
+      // sql_injection / command_injection / path_traversal / xss / format_string (#915): instance inner-class helpers only;
       // static helpers can still carry param (e.g. #913 BenchmarkTest02625, #914 BenchmarkTest01929).
       if (
         fileCode &&
@@ -703,7 +703,8 @@ function appendCalleeSourceCallerSinkFlows(
           ((sink.type === 'sql_injection' ||
             sink.type === 'command_injection' ||
             sink.type === 'path_traversal' ||
-            sink.type === 'xss') &&
+            sink.type === 'xss' ||
+            sink.type === 'format_string') &&
             javaHelperCallHasInstanceReceiver(graph, edge))) &&
         calleeSources.every(
           s => (s.type === 'interprocedural_param' || s.type === 'plugin_param') && !!s.variable,
@@ -768,8 +769,10 @@ const HELPER_RETURN_GATED_SINKS = new Set([
   // #976: the same helper shapes feed LDAP and XPath sinks (OWASP ldapi/xpathi).
   'ldap_injection',
   'xpath_injection',
-  // #915: the same helper shapes feed XSS sinks (OWASP xss inner-class `Test`).
+  // #915: the same helper shapes feed XSS sinks (OWASP xss inner-class `Test`), and a
+  // `getWriter().format(locale, bar, …)` sink is both xss and format_string on one line.
   'xss',
+  'format_string',
 ]);
 
 /**

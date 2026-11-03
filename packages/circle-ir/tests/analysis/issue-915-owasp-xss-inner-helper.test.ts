@@ -117,6 +117,17 @@ describe('#915 OWASP xss: inner-class helper', () => {
     ).toEqual([]);
   });
 
+  // BenchmarkTest01767/01769/01770: `getWriter().format(locale, bar, obj)` is an xss and a
+  // format_string sink on one line; gating only xss left the same helper flow as format_string.
+  it('safe: getTheValue through a pass-through helper into format(...) fires neither xss nor format_string', async () => {
+    const r = await analyze(
+      servlet(SCR('getTheValue'), SPLIT, 'Object[] obj = {"a", "b"}; response.getWriter().format(java.util.Locale.US, bar, obj);'),
+      'BenchmarkTest.java',
+      'java',
+    );
+    expect((r.taint?.flows ?? []).filter(f => f.sink_type === 'xss' || f.sink_type === 'format_string')).toEqual([]);
+  });
+
   // BenchmarkTest01509 (TP): same helper as 01768, but getTheParameter.
   it('keeps: getTheParameter through a pass-through helper still fires', async () => {
     expect((await xss(servlet(SCR('getTheParameter'), SPLIT, 'response.getWriter().print(bar);'))).length).toBeGreaterThan(0);
