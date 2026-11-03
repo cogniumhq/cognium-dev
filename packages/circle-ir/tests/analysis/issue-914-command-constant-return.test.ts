@@ -208,4 +208,41 @@ public class Bench extends HttpServlet {
     const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
     expect(cmdi).toHaveLength(0);
   });
+
+  it('does not flag command_injection when ThingFactory helper is fed a static constant (#914 S7)', async () => {
+    const code = `import javax.servlet.http.*;
+import java.io.IOException;
+public class Bench extends HttpServlet {
+  public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+    String param = request.getHeader("BenchmarkTest00305");
+    param = java.net.URLDecoder.decode(param, "UTF-8");
+    org.owasp.benchmark.helpers.ThingInterface thing =
+        org.owasp.benchmark.helpers.ThingFactory.createThing();
+    String g99928 = "barbarians_at_the_gate";
+    String bar = thing.doSomething(g99928);
+    String osName = System.getProperty("os.name");
+    String[] args;
+    if (osName.indexOf("Windows") != -1) {
+      args = new String[] {"cmd.exe", "/c", "echo ", bar};
+    } else {
+      args = new String[] {"sh", "-c", org.owasp.benchmark.helpers.Utils.getOSCommandString("ls ") + bar};
+    }
+    Runtime.getRuntime().exec(args, new String[] {"foo=bar"}, new java.io.File(System.getProperty("user.dir")));
+  }
+}`;
+    const r = await analyze(code, 'Bench.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi).toHaveLength(0);
+  });
+
+  it('OWASP BenchmarkTest00305 corpus stays clean when CORPUS_ROOT is set (#914 S7)', async () => {
+    const root = process.env.CORPUS_ROOT;
+    if (!root) return;
+    const path = `${root}/.owasp-benchmark-java/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00305.java`;
+    if (!existsSync(path)) return;
+    const code = readFileSync(path, 'utf8');
+    const r = await analyze(code, 'BenchmarkTest00305.java', 'java');
+    const cmdi = (r.taint?.flows ?? []).filter(f => f.sink_type === 'command_injection');
+    expect(cmdi).toHaveLength(0);
+  });
 });
