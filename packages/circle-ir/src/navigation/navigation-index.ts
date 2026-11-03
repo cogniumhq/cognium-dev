@@ -18,7 +18,10 @@
  *     the receiver as an expression string. The chain is walked left to right,
  *     typing each step from the previous step's declared return type.
  *   - **A constructor.** `new Widget()` arrives as a call named `Widget` with
- *     no receiver. It is bound to `app.Widget.<init>`.
+ *     no receiver. It is bound to `app.Widget.<init>`. An explicit
+ *     `super(…)` or `this(…)` arrives as a constructor call named `super` or
+ *     `this`, naming the superclass or the enclosing type, and binds the same
+ *     way.
  *   - **A nested type's static import.** `import static app.Outer.Inner.make`
  *     names `app.Outer.Inner.make`, which only matches a symbol table that
  *     kept the nesting — hence `TypeInfo.enclosing_type`.
@@ -945,8 +948,13 @@ export class NavigationIndex {
     };
   }
 
-  /** `new Widget()` → `app.Widget.<init>`, with the constructor chosen like any overload. */
+  /**
+   * `new Widget()` → `app.Widget.<init>`, with the constructor chosen like any
+   * overload. An explicit constructor invocation (`super(…)` / `this(…)`)
+   * binds the same way, to the class the extractor names for it.
+   */
   private bindConstructor(call: CallInfo, rec: FileRecord, depth: number): Binding | undefined {
+    const explicit = isExplicitConstructorInvocation(call);
     const looksCtor =
       call.is_constructor === true ||
       (call.receiver === null &&
@@ -954,12 +962,14 @@ export class NavigationIndex {
         call.receiver_type === call.method_name &&
         /^[A-Z]/.test(call.method_name));
     if (!looksCtor) return undefined;
-    const t = this.resolveTypeRecord(call.receiver_type ?? call.method_name, rec);
+    const t = explicit ? this.invokedConstructorType(call, rec) : this.resolveTypeRecord(call.receiver_type ?? call.method_name, rec);
     if (!t) return undefined;
     const result: BoundTarget = {
       target: `${t.fqn}.<init>`,
       tier: 'exact',
-      evidence: `object creation of ${t.fqn}, declared at ${t.file}:${t.startLine}`,
+      evidence: explicit
+        ? `${call.method_name}(…) runs a constructor of ${t.fqn}, declared at ${t.file}:${t.startLine}`
+        : `object creation of ${t.fqn}, declared at ${t.file}:${t.startLine}`,
     };
     const ctors = this.declaredOverloads(t, '<init>').map(overload => ({ owner: t, overload }));
     // A type with no declared constructor has the implicit one; a call that
@@ -1948,7 +1958,27 @@ export class NavigationIndex {
     return fqn ? this.typesByFqn.get(fqn) : undefined;
   }
 
-  private resolveTypeName(name: string, rec: FileRecord): string | undefined {
+  /**
+   * The class an explicit constructor invocation constructs, from the name the
+   * extractor gives it (the superclass as written, or the enclosing type's
+   * path). Java's scoping first (an exact name, an import, the same package,
+   * a type nested in this file); then the extractor's qualified name, which
+   * for an implicitly imported `java.lang` type is outside the tree; only
+   * then a simple name unique in the tree (a wildcard import). So
+   * `extends Exception` stays `java.lang.Exception` even when some other
+   * package in the tree declares an `Exception`.
+   */
+  private invokedConstructorType(call: CallInfo, rec: FileRecord): TypeRecord | undefined {
+    const name = call.receiver_type;
+    if (!name) return undefined;
+    const scoped = this.resolveTypeName(name, rec, false);
+    if (scoped) return this.typesByFqn.get(scoped);
+    if (call.receiver_type_fqn) return this.typesByFqn.get(call.receiver_type_fqn);
+    return this.resolveTypeRecord(name, rec);
+  }
+
+  /** `anywhere`: fall back to a simple name declared once in the whole tree. */
+  private resolveTypeName(name: string, rec: FileRecord, anywhere = true): string | undefined {
     const bare = name.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
     if (!bare) return undefined;
     if (this.typesByFqn.has(bare)) return bare;
@@ -1963,6 +1993,7 @@ export class NavigationIndex {
     }
     // A unique simple name anywhere in the tree. Ambiguity resolves to nothing
     // rather than to a guess.
+    if (!anywhere) return undefined;
     const byName = this.typesBySimpleName.get(bare);
     if (byName && byName.length === 1) return byName[0].fqn;
     return undefined;
@@ -2159,6 +2190,11 @@ export class NavigationIndex {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** `super(…)` / `this(…)` as the extractor writes it: a constructor call named by the keyword. */
+function isExplicitConstructorInvocation(call: CallInfo): boolean {
+  return call.is_constructor === true && (call.method_name === 'super' || call.method_name === 'this');
+}
 
 function buildFileRecord(f: NavigationFile): FileRecord {
   const pkg = f.ir.meta?.package ?? '';
