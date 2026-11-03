@@ -8,7 +8,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changes
+- **`sbom` reads Eclipse/Tycho `*.target` files** and pom `<artifactItem>`s (#1077), through circle-ir's new parsers.
 
+### Fixed
+- **`deadcode` / `reach` / `depcalls` / `entries` JSON reports are written in pieces** (#1079). Each report was one `JSON.stringify(report, null, 2)`. On iDempiere, a `depcalls` run against the 7 ZK jars made a 1.2 GB report, past V8's maximum string length, so it exited 2 with `Invalid string length` after 347 s at 6.47 GB RSS and wrote nothing. `writeJson` now yields the same text, byte for byte, and writes it in ~1 MB pieces: synchronously to `-o <file>`, or to stdout. The same run now exits 0 in 427 s at 3.34 GiB and writes the full 1.2 GB report (37,811 call sites). Text and SARIF output are unchanged.
+
+### Added
+- **`entries --facts-arrow <dir>`** (Java only; `facts@1`): after the graph is built, also writes the eight fact relations as Arrow IPC files (`<relation>.arrow`) plus `manifest.json` into `<dir>`. The relations are sets (the manifest records `duplicates_dropped` per relation) with no nulls; the manifest's file digests are hex; `flow` carries the def-use edges of every file's DFG on fixed-width `ids@0.1` node ids (stable-ids decision 1a). The report on stdout and `-o` is unchanged. Off unless asked for.
+
+### Changes
+- **`scan` hands the nearest `package.json` and npm lockfile to circle-ir** (`dependencyContext.js`): the `package.json` at or above the target, and the `package-lock.json` / `npm-shrinkwrap.json` at or above that (an npm workspace's root lockfile). The walk stops at `.git`. With it, the js-yaml deserialization gate sees the installed version: `yaml.load(req.body)` under js-yaml 4 is no CWE-502 finding, and under js-yaml 3 it still is.
+- **The standalone binary starts as built.** `build:standalone` copied only the grammars from `packages/circle-ir/wasm/`, so `wasm/` lacked `web-tree-sitter.wasm` (it ships in the `web-tree-sitter` package) and the binary exited with "WASM files not found". `scripts/build.mjs --standalone` now stages the grammars and the runtime itself and fails the build if any of the 11 files is missing. CI builds the binary, moves it out of the checkout with its `wasm/`, and runs `--version` and a one-file scan.
+- **Scans are deterministic under Bun and the standalone binary** (#1032). The default source ceiling (#424) came from `node:v8`'s `heap_size_limit`, which under Bun is JavaScriptCore's *current* heap size (~190 MB, different each run). So a directory scan stopped at a different file every run (205–212 of 234 files on `packages/circle-ir/src`, flagged only as `project_size_budget_exceeded`). Under Bun the default is now a fixed 32M chars, and directory walks run in name order. Ten runs on that tree now give the same JSON (apart from `timestamp`) on Node and on Bun.
+
+## [4.19.0] - 2026-11-01
+
+### Added
+- **`recheck`** (E20/engine): the deterministic re-check of a code-fix change. `cognium-dev recheck <path> --changed <file[,file…]|@list.txt> [--baseline <before.json>] [-o file]` analyses only the changed files and keys every security finding by CWE × enclosing declaration × rule. The declaration is the method's stable id (`ids@0.1`) where the language has one (Java, TypeScript, JavaScript, Python, Go), so the key survives edits that only move lines.
+  - With `--baseline` (the report from the same files before the change), each key gets a verdict: `gone`, `still-present`, `new-high` (high or critical) or `new-other`, plus a summary.
+  - The no-new-high rule (`noNewHigh: pass|fail`) passes when there's no `new-high`. Exit code 0 on pass, 1 on fail, 2 on a usage error.
+  - Always JSON (`cognium-recheck@0.1`). No model, no network: the same files give the same report.
+
+### Changes
+
+- Built on circle-ir 4.19.0: JavaScript/TypeScript `try`/`catch`/`finally` locals get DFG defs (#992, #1055), destructured Express request parameters are sources (#1054), and twelve false-positive classes found by dogfooding are fixed (#1043–#1063).
+
+## [4.18.1] - 2026-10-31
+
+### Changes
+
+- Built on circle-ir 4.18.1: Java `try`/`catch`/`finally` locals get DFG defs, and OWASP Benchmark 1.2 false positives fall from 163 to 87 (score 85.4 → 91.9) with no new one in any category (#976).
+
+## [4.18.0] - 2026-10-30
+
+### Added
+- **`depcalls`** (E02): `cognium-dev depcalls --artifact <groupId:artifactId[:version]> [path]` lists every call in a Java tree into one Maven artifact, covered or not by a test (circle-ir `dependency-calls@0.1`), and the external sites that can't be attributed. Packages come from `--jar`, the local Maven repository (`--maven-repo`, `$MAVEN_REPO_LOCAL`, else `~/.m2/repository`) for a versioned coordinate, else circle-ir's table for the demo dependencies; an artifact nothing resolves exits 1. `-f text|json`, `-o`.
+
+### Changes
+
+- Built on circle-ir 4.18.0.
+- **`deadcode`, `reach` and `entries` say which files did not parse, and where** (cognium-dev#1004). Text lists each partial file as `file:line:column  ERROR in <parent>` (or `MISSING <token>`) instead of the first five paths. JSON gains `partialFiles` beside `partial`. `deadcode -f sarif` adds a note-level `graph-facts/partial-parse` result per file, located at its first blocking error, and `partialFiles` in the run properties.
+- **`reach -f sarif`.** One result per removed declaration, located at the base (`BASEROOT` for a directory base): `removal-reach/reached` (a warning) when a product entry point reached it strongly at the base, `removal-reach/removed` (a note) otherwise; plus the `graph-facts/partial-parse` notes.
+- **One stdout path for large output.** `scan`, `metrics` and `sbom` now write their payload (and `scan`'s summary) through `writeStdout()`, like `deadcode`, `reach` and `entries`, and exit only after a slow pipe has drained. A reader that stops early (`| head`) now ends every one of these commands quietly with status 141 instead of a Bun `EPIPE` stack trace.
+- **Directory scans skip coverage reports** (#1025). `scan` and `metrics` read `coverage/` and `lcov-report/` (Istanbul / Jest / nyc HTML and its bundled scripts) as source and reported findings in them. All directory walkers now share one list (`src/utils/skip-dirs.ts`): dependencies (`node_modules`, `vendor`, `Pods`, `venv`, `.venv`, `__pycache__`) and coverage reports (`coverage`, `.nyc_output`, `lcov-report`, `htmlcov`) are skipped by every command; build output (`dist`, `build`, `out`, `target`, `bin`, `obj`) is skipped by `sbom`, `deadcode`, `reach` and `entries` as before. A skipped directory is still read when it is the path given on the command line, or, for `scan` and `metrics`, when a config `include` pattern names it. `sbom` now also skips `Pods`, `venv`, `__pycache__`, `bin`, `obj`, `.nyc_output`, `lcov-report` and `htmlcov`.
+- **New `deadcode`, `reach` and `entries` commands.** The engine's graph facts, until now reachable only through the MCP server, are on the CLI for CI and scripts. Each builds the call graph with its entry-point index for one language (`--language ts|java|python|go`; auto-detected when the tree holds one, refused when it mixes several):
+  - `deadcode [path]` prints the `dead-code@0.1` facts. `-f json` is the engine payload plus `root`, `engine` and `language`; `-f sarif` gives SARIF 2.1.0 with `dead` as a warning and `may-be-live` as a note, located at the declaration; `--verdicts` picks the facts listed (default `dead,may-be-live`) while `summary` counts all of them; `--root-kinds` picks the entry kinds that count as roots (default: all but `test`).
+  - `reach --base <ref-or-dir> [path]` prints `removal-reach@0.1`: what the head tree removes from the base and what still reached it. A directory is read as it is; anything else is a git commit, exported with `git archive` into a temporary directory, so the working tree is never touched.
+  - `entries [path]` prints the entry-point index with its digest and the registrations that could not be tied to a declaration.
+  - Options are checked before any file is read (bad value: exit 1), output drains before exit (also under Bun, where a write callback can fire before a slow pipe takes the data; these commands wait for `'drain'`), `-o` writes to a file, and the commands exit 0 whatever they find: a verdict is a fact, not a removal decision.
+- **`sbom` gives npm licences offline.** For each npm dependency without a licence it reads the installed package's `package.json`: pnpm's store (`node_modules/.pnpm/<name>@<version>/node_modules/<name>`) first, then a hoisted `node_modules/<name>` only when its version matches exactly. `--license-map <file>` (a JSON object of `"name@version"` or `"name"` → licence) fills the rest; installed packages win over the map. The status line reports `licences: N known, M unknown`, and unknown licences stay absent in CycloneDX and `NOASSERTION` in SPDX. A map that isn't a JSON object of strings exits 1.
+- **`sbom` reads `pnpm-lock.yaml` and `yarn.lock`.** Both supersede `package.json` (DT4: resolved > lockfile > declared); `pnpm-lock.yaml` wins over `package-lock.json` and `yarn.lock` in the same directory, and a pnpm workspace lockfile supersedes the `package.json` of every importer it lists. `yarn.lock` reads its sibling `package.json` for the roots, so `--prod-only` drops dev-only packages.
+- **Piped output is no longer cut off** (#1001). `scan`, `metrics` and `sbom` exited with `process.exit()` right after writing, which truncated stdout when it was a pipe: `scan -f json | …` stopped at exactly 65,536 bytes. They now exit only after stdout and stderr have drained.
+- **Options are checked before any file is read** (#1006). An unknown `-f/--format` (for example `xml`) is refused instead of silently printing text; a bad `--severity` (flag or config) fails at once instead of after the whole scan; `--threads` must be a whole number ≥ 1 (`0` was accepted). A bad option exits 1 with a usage message.
+- **New `--file-timeout-ms <n>`** (#1007, default 0 = off). A file whose analysis passes `n` ms is skipped and reported as an error (`analysis timed out after …; file skipped`), so one pathological file can't hold a scan indefinitely or pass as clean. Uses circle-ir's `fileTimeoutMs`.
 - `cognium-dev sbom` reads resolved Java dependency sets when a build has written them, with the precedence resolved > lockfile > declared, and never runs Maven or Gradle itself:
   - `gradle.lockfile` and `gradle/dependency-locks/*.lockfile` replace `build.gradle` / `build.gradle.kts` in their project, giving exact and transitive versions; test-only configurations are `dev`, so `--prod-only` drops them;
   - Maven `dependency-tree.txt` (`mvn dependency:tree -DoutputFile=…`) or `dependency-list.txt` replace the `pom.xml` beside them; a tree wins over a list; a file of that name with no `pom.xml` beside it is ignored.

@@ -66,6 +66,7 @@ describe('removalReach', () => {
     const head = await build({ ...BASE, 'src/broken.ts': 'function x( {' });
     const r = removalReach(base, head.files, { rootKinds: ['export'] });
     expect(r.partial).toEqual(['src/broken.ts']);
+    expect(r.partialFiles.map(p => [p.file, p.line])).toEqual([['src/broken.ts', 1]]);
     expect(r.rootKinds).toEqual(['export']);
   });
 

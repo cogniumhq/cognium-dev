@@ -60,6 +60,39 @@ public class XmlSerializer {
     expect(countXxeFindings(r.findings)).toBe(0);
   });
 
+  it('Recall #1035 — getDocumentBuilder().parse with newDocument only in comment: xxe finding fires', async () => {
+    const code = `import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Document;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+
+public class AbstractDOMDocumentParser {
+  private DocumentBuilderFactory factory;
+
+  protected DocumentBuilder getDocumentBuilder() throws Exception {
+    if (factory == null) {
+      factory = DocumentBuilderFactory.newInstance();
+      factory.setValidating(false);
+      factory.setNamespaceAware(true);
+    }
+    return factory.newDocumentBuilder();
+  }
+
+  public Document parse(InputStream in) throws Exception {
+    return getDocumentBuilder().parse(in);
+  }
+
+  public Document emptyOnly() throws Exception {
+    // Document d = getDocumentBuilder().newDocument();
+    return null;
+  }
+}
+`;
+    const r = await analyze(code, 'AbstractDOMDocumentParser.java', 'java');
+    expect(countXxeFindings(r.findings)).toBeGreaterThanOrEqual(1);
+  });
+
   it('FP #173 — DocumentBuilder.newDocument() empty-tree only: no xxe finding', async () => {
     const code = `import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;

@@ -160,6 +160,12 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getContentType', class: 'HttpServletRequest', type: 'http_header', severity: 'medium', return_tainted: true },
   { method: 'getCharacterEncoding', class: 'HttpServletRequest', type: 'http_header', severity: 'low', return_tainted: true },
 
+  // OWASP Benchmark helpers — wrap HttpServletRequest accessors (configs/sources/http_sources.yaml).
+  // Omit getTheValue: OWASP returns a constant (#914 S4); interprocedural gates handle it.
+  { method: 'getTheParameter', class: 'SeparateClassRequest', type: 'http_param', severity: 'high', return_tainted: true, languages: ['java'] },
+  { method: 'getTheHeaders', class: 'SeparateClassRequest', type: 'http_header', severity: 'high', return_tainted: true, languages: ['java'] },
+  { method: 'getTheCookies', class: 'SeparateClassRequest', type: 'http_cookie', severity: 'high', return_tainted: true, languages: ['java'] },
+
   // Enumeration/Iterator sources (from request.getHeaders(), etc.)
   { method: 'nextElement', class: 'Enumeration', type: 'http_header', severity: 'high', return_tainted: true },
   { method: 'nextElement', type: 'http_header', severity: 'high', return_tainted: true },
@@ -1582,7 +1588,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'renderHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'parseHTML', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // HTML sanitizer/validator sinks (AntiSamy, OWASP HTML Sanitizer, etc.)
-  { method: 'scan', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scan', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'isValid', class: 'SafeHtmlValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'sanitize', class: 'PolicyFactory', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'validate', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
@@ -1598,8 +1604,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'writeAttribute', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
   // AntiSamy specific (SAX filters)
   { method: 'startElement', class: 'MagicSAXFilter', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1, 2] },
-  { method: 'scan', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
-  { method: 'scan', class: 'AntiSamySAXScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scan', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'scan', class: 'AntiSamySAXScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   // Hibernate Validator
   { method: 'getFragmentAsDocument', class: 'SafeHtmlValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   // JSPWiki specific
@@ -1649,15 +1655,15 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'getValidListItem', class: 'DefaultValidator', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0, 1] },
   { method: 'isValidURI', class: 'DefaultValidator', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0, 1] },
   // AntiSamy test/processing methods
-  { method: 'scriptAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'imgAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'hrefAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'cssAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'IllegalXML', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'testIssue2', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'issue41', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'testGithubIssue151', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
-  { method: 'processStyleTag', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
+  { method: 'scriptAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'imgAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'hrefAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'cssAttacks', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'IllegalXML', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'testIssue2', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'issue41', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'testGithubIssue151', class: 'AntiSamyTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [], languages: ['java'] },
+  { method: 'processStyleTag', class: 'AntiSamyDOMScanner', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0], languages: ['java'] },
   // JSON Sanitizer
   { method: 'sanitizeString', class: 'JsonSanitizer', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [0] },
   { method: 'testIssue13', class: 'JsonSanitizerTest', type: 'xss', cwe: 'CWE-79', severity: 'high', arg_positions: [] },
@@ -1822,7 +1828,9 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'addParametersToContext', class: 'StaticParametersInterceptor', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   { method: 'build', class: 'HttpParameters', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   // Cron expression parsing (DoS/ReDoS)
-  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — Java cron-utils `CronParser`; scoped to Java so a JS/TS
+  // `parser.parse(...)` (tree-sitter, a lockfile parser) never matches it by name.
+  { method: 'parse', class: 'CronParser', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'isValid', class: 'CronValidator', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   // ff4j feature flags
   { method: 'check', class: 'FF4j', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
@@ -1922,9 +1930,13 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'selectSingleNode', class: 'Node', type: 'xpath_injection', cwe: 'CWE-643', severity: 'high', arg_positions: [0] },
 
   // XXE - XML External Entity (CWE-611)
-  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
-  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
+  // cognium-dev#998 — JAXP parsers are JVM classes. Scoped to Java so the
+  // receiver-name heuristic (`parser` → SAXParser) cannot turn a JS/TS
+  // `parser.parse(text)` into an XXE sink. JS/TS XML parsers (sax, xml2js,
+  // libxmljs, DOMParser) have their own entries.
+  { method: 'parse', class: 'DocumentBuilder', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'SAXParser', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
+  { method: 'parse', class: 'XMLReader', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0], languages: ['java'] },
   { method: 'unmarshal', class: 'Unmarshaller', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'newTransformer', class: 'TransformerFactory', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
   { method: 'transform', class: 'Transformer', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
@@ -2191,6 +2203,51 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'each', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   { method: 'get',  class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
   { method: 'exec', class: 'Connection', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], allow_unresolved_receiver: true },
+
+  // DuckDB from JS/TS: `@duckdb/node-api` (DuckDBConnection), the classic
+  // `duckdb` / `duckdb-async` bindings (Database / Connection) and
+  // `react-native-duckdb` (Database / Transaction). The method names are
+  // generic and the receivers come from factories (`await instance.connect()`,
+  // `open({...})`), so the receiver cannot be typed: the import is the gate
+  // (`requires_import`). Only the SQL text (arg 0) is a sink — values passed
+  // as bound parameters (`run(sql, [v])`, `execute(sql, params)`,
+  // `executeNamed(sql, {k: v})`, `stmt.bind(...)`) are parameterised and do
+  // not reach it.
+  { method: 'run', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async'] },
+  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
+  // #1073 — better-sqlite3 / sqlite3: `db.prepare(sql)` takes the SQL text (arg 0); the statement's
+  // `get` / `all` / `run` take bound parameters (sink-filter Stage 15f3). Without this row a tainted
+  // query built into `prepare` was no sink in either library.
+  { method: 'prepare', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['better-sqlite3', 'sqlite3'] },
+  { method: 'stream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api', 'duckdb', 'duckdb-async', 'react-native-duckdb'] },
+  { method: 'runAndRead', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'runAndReadAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'runAndReadUntil', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndRead', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndReadAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'streamAndReadUntil', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'start', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'startStream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'extractStatements', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['@duckdb/node-api'] },
+  { method: 'all', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'each', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'exec', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'arrowIPCAll', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'arrowIPCStream', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['duckdb', 'duckdb-async'] },
+  { method: 'execute', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeSync', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'executeSyncNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  { method: 'streamNamed', type: 'sql_injection', cwe: 'CWE-89', severity: 'critical', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['react-native-duckdb'] },
+  // RxDB (Mango queries, any storage incl. SQLite): a selector or query
+  // object, a field name passed to the query builder, or a `$regex` pattern
+  // under caller control is NoSQL operator injection (CWE-943). Gated on the
+  // `rxdb` import for the same reason as DuckDB above. `find` is already a
+  // classless JS NoSQL sink in the JavaScript plugin.
+  { method: 'findOne', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'count', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'where', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
+  { method: 'regex', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'], requires_import: ['rxdb'] },
 
   // TypeORM QueryBuilder raw fragments (CWE-89). TypeORM's raw `.query(sql)`
   // escape hatch is already covered by the classless `query` sink in the JS
@@ -2486,16 +2543,16 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'XMLParser', class: 'lxml', type: 'xxe', cwe: 'CWE-611', severity: 'high', arg_positions: [0] },
 
   // Python LDAP Injection
-  { method: 'search', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_ext', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
-  { method: 'search_ext_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2] },
+  { method: 'search', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_ext', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
+  { method: 'search_ext_s', class: 'ldap', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 2], languages: ['python'] },
   // ldap3 library (different API from python-ldap)
-  { method: 'search', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1] },
-  { method: 'extend', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'modify', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'add', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
-  { method: 'delete', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0] },
+  { method: 'search', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0, 1], languages: ['python'] },
+  { method: 'extend', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'modify', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'add', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
+  { method: 'delete', class: 'Connection', type: 'ldap_injection', cwe: 'CWE-90', severity: 'high', arg_positions: [0], languages: ['python'] },
 
   // Python Trust Boundary (CWE-501)
   // The vulnerability is storing untrusted data in session that gets trusted later
@@ -2598,7 +2655,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'setVariable', class: 'Context', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [1] },
 
   // HTML sanitizer bypass markers (known CVE patterns)
-  { method: 'clean', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
+  { method: 'clean', class: 'AntiSamy', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0], languages: ['java'] },
   { method: 'getValidSafeHTML', class: 'ESAPI', type: 'xss', cwe: 'CWE-79', severity: 'medium', arg_positions: [0] },
 
   // NOTE (cognium-dev#270): `HttpServletRequest`/`HttpSession.getAttribute()`

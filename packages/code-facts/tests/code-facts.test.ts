@@ -105,7 +105,7 @@ describe('identity', () => {
   it('declares its driver, schema and capabilities', () => {
     expect(DRIVER).toEqual({ id: 'code-facts', family: 'static', version: '0.1.0' });
     expect(SCHEMA_VERSION).toBe('0.1');
-    expect(capabilities()).toEqual(['path-set-diff', 'remedy-class']);
+    expect(capabilities()).toEqual(['path-set-diff', 'remedy-class', 'dependency-calls']);
   });
 });
 

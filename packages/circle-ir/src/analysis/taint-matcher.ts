@@ -4,6 +4,8 @@
  * Matches method calls and annotations against taint configurations.
  */
 
+import { runsArgvAsCommand } from './arg-executing-programs.js';
+import { jsHelperReturnsNoParam } from './js-helper-return.js';
 import type { ArgumentInfo, CallInfo, TypeInfo, ImportInfo, TaintSource, TaintSink, TaintSanitizer, Taint, SourceType, SinkType, SupportedLanguage } from '../types/index.js';
 import { javaWikiTagInheritedContextReceiver } from './passes/language-sources-pass.js';
 import { DOM_ASSIGNMENT_SINK_METHODS, isProvablyLiteralExpression } from './literal-expression.js';
@@ -110,7 +112,8 @@ export function analyzeTaint(
 ): Taint {
   const sourceLines = code !== undefined ? code.split('\n') : undefined;
   const sources = findSources(calls, types, config.sources, sourceLines, language, imports);
-  let sinkPatterns = expandPromisifyAliases(config.sinks, sourceLines, language);
+  let sinkPatterns = config.sinks.filter((p) => sinkPatternImportApplies(p, imports));
+  sinkPatterns = expandPromisifyAliases(sinkPatterns, sourceLines, language);
   sinkPatterns = expandIndirectEvalAliases(sinkPatterns, sourceLines, language);
   const sinks = findSinks(calls, sinkPatterns, typeHierarchy, language, sourceLines, types);
   const gatedSinks =
@@ -118,6 +121,43 @@ export function analyzeTaint(
   const sanitizers = findSanitizers(calls, types, config.sanitizers, sourceLines, language);
 
   return { sources, sinks: gatedSinks, sanitizers };
+}
+
+/**
+ * Bound-parameter call on an import-gated SQL sink (see `findSinks`).
+ */
+function isBoundParameterCall(
+  call: CallInfo,
+  pattern: SinkPattern,
+  sourceLines: string[] | undefined,
+): boolean {
+  if (!pattern.requires_import || pattern.type !== 'sql_injection') return false;
+  const first = call.arguments[0]?.expression?.trim() ?? '';
+  if (first.startsWith('[') || first.startsWith('{')) return true;
+  const receiver = call.receiver;
+  if (!receiver || !sourceLines || !/^[A-Za-z_$][\w$]*$/.test(receiver)) return false;
+  const assignedFromPrepare = new RegExp(
+    `\\b${receiver.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*(?:await\\s+)?[\\w$.]+\\.prepare\\s*\\(`,
+  );
+  return sourceLines.some((line) => assignedFromPrepare.test(line));
+}
+
+/**
+ * `SinkPattern.requires_import`: the file imports one of the listed modules
+ * (exact name, or a subpath of it). Patterns without the field always apply.
+ */
+export function sinkPatternImportApplies(
+  pattern: SinkPattern,
+  imports: ReadonlyArray<ImportInfo> | undefined,
+): boolean {
+  const required = pattern.requires_import;
+  if (!required || required.length === 0) return true;
+  if (!imports || imports.length === 0) return false;
+  return imports.some((imp) => {
+    const from = imp.from_package;
+    if (!from) return false;
+    return required.some((m) => from === m || from.startsWith(m + '/'));
+  });
 }
 
 /**
@@ -326,7 +366,18 @@ function findSources(
 
   // Check method calls
   for (const call of calls) {
+    // cognium-dev#985 — the source twin of #997/#1061: `this.memoryCache.get(k)`
+    // with `memoryCache = new Map()` matched the JS/TS `cache.get` db_input
+    // source through the receiver-name heuristic, then paired with an unrelated
+    // `.get()` SQL sink on the next line. A receiver this file declares as a
+    // Map/WeakMap is an in-memory lookup, not a cache or database read. An
+    // untyped or injected receiver (`this.redisCache = c`) keeps the source.
+    const inMemoryMapGet =
+      call.method_name === 'get' &&
+      (language === 'javascript' || language === 'typescript') &&
+      isInMemoryMapGetReceiver(call.receiver, sourceLines);
     for (const pattern of patternsForLanguage) {
+      if (inMemoryMapGet && pattern.type === 'db_input') continue;
       if (matchesSourcePattern(call, pattern, language, types, imports)) {
         sources.push({
           type: pattern.type,
@@ -520,7 +571,17 @@ function findSources(
   const propertyPatterns = patterns.filter(p => p.property && p.object && p.property_tainted);
   const hasPropertyPatterns = propertyPatterns.length > 0;
 
+  const jsCode = (language === 'javascript' || language === 'typescript') && sourceLines ? sourceLines.join('\n') : undefined;
+  const noParamHelper = new Map<string, boolean>();
   for (const call of calls) {
+    // #992: a request value passed to a same-file helper that returns none of
+    // its parameters (`pick(req.query.x)` → `return ['safe', x][0]`) is not a
+    // source at this call.
+    if (jsCode !== undefined && !call.receiver) {
+      let drop = noParamHelper.get(call.method_name);
+      if (drop === undefined) noParamHelper.set(call.method_name, drop = jsHelperReturnsNoParam(jsCode, call.method_name));
+      if (drop) continue;
+    }
     for (const arg of call.arguments) {
       if (arg.expression) {
         const taintCheck = isJavaScriptTaintedArgument(arg.expression, hasPropertyPatterns ? patterns : undefined);
@@ -920,8 +981,23 @@ function isSafePythonSubprocessCall(call: CallInfo, pattern: SinkPattern, langua
     if (/^shell\s*=\s*True\b/.test(e)) return false;
   }
 
+  // #1072 — the list's argv[0] decides it, as in the JS/Go/Rust/C# gates: a shell, a
+  // program that runs its argv as a command (#1066), or an interpreter given code with
+  // `-c` / `-e` keeps the sink. A non-literal argv[0] keeps today's safe-shape skip.
+  const first = /^\[\s*(?:[rbuRBU]{0,2})(['"])([^'"]*)\1\s*(?:,|\])/.exec(expr0);
+  if (first) {
+    const program = (first[2]!.split(/[\\/]/).pop() ?? first[2]!).toLowerCase().replace(/\.exe$/, '');
+    if (PYTHON_LIST_SHELLS.has(program) || runsArgvAsCommand(program)) return false;
+    if (PYTHON_LIST_INTERPRETERS.test(program) && /,\s*(?:[rbuRBU]{0,2})(['"])-(?:c|e|-eval|-command)\1/.test(expr0)) return false;
+  }
+
   return true;
 }
+
+/** Shells for the Python list-form gate (#1072). */
+const PYTHON_LIST_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ash', 'ksh', 'csh', 'tcsh', 'fish', 'cmd', 'powershell', 'pwsh']);
+/** Interpreters that run code given with `-c` / `-e` (#1072). */
+const PYTHON_LIST_INTERPRETERS = /^(?:python[\d.]*|pypy[\d.]*|perl|ruby|node|nodejs|php|lua|osascript)$/;
 
 /**
  * Check if a Go `exec.Command(...)` / `exec.CommandContext(...)` call is
@@ -980,6 +1056,7 @@ function isSafeGoExecCommandCall(call: CallInfo, pattern: SinkPattern, language:
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   // cognium-dev #218 (CVE-2026-33634) — package-manager install/exec
   // subcommands fetch and execute code from user-controlled package
@@ -1111,6 +1188,7 @@ function isSafeJSChildProcessCall(call: CallInfo, pattern: SinkPattern, language
     'powershell.exe', 'pwsh.exe',
   ]);
   if (SHELL_PROGRAMS.has(program)) return false;
+  if (runsArgvAsCommand(program)) return false;  // #1066
 
   return true;
 }
@@ -1137,7 +1215,7 @@ function isConstNonShellExe(raw: string | null | undefined): boolean {
   if (!/^@?"[^"]*"$/.test(t)) return false;
   const program = (t.replace(/^@?"|"$/g, '').split(/[\\/]/).pop() ?? '')
     .toLowerCase().replace(/\.exe$/, '');
-  return !CSHARP_SHELL_PROGRAMS.has(program);
+  return !CSHARP_SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
 }
 
 // Extract the executable literal from a `new ProcessStartInfo("exe", …)`
@@ -1551,7 +1629,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
       const stripped = expr.slice(1, -1);
       program = stripped.split('/').pop() ?? stripped;
     }
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   if (
@@ -1566,7 +1644,7 @@ function isSafeRustCommandCall(call: CallInfo, pattern: SinkPattern, language: S
     const receiverText = call.receiver ?? '';
     const program = extractProgram(receiverText);
     if (program === null) return false;
-    return !SHELL_PROGRAMS.has(program);
+    return !SHELL_PROGRAMS.has(program) && !runsArgvAsCommand(program);  // #1066
   }
 
   return false;
@@ -1794,8 +1872,97 @@ function isRegexReceiver(receiver: string | null | undefined, sourceLines?: stri
   if (r.startsWith('/') && /\/[a-z]*$/.test(r)) return true;
   if (/^(?:new\s+)?RegExp\s*\(/.test(r)) return true;
   if (!/^[A-Za-z_$][\w$]*$/.test(r) || !sourceLines) return false;
-  const decl = new RegExp(`(?:const|let|var)\\s+${escapeRe(r)}\\s*=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
-  return sourceLines.some(l => decl.test(l));
+  const n = escapeRe(r);
+  const decl = new RegExp(`(?:const|let|var)\\s+${n}\\s*(?::\\s*RegExp\\s*)?=\\s*(?:/|(?:new\\s+)?RegExp\\s*\\()`);
+  if (sourceLines.some(l => decl.test(l))) return true;
+  // The literal on the next line (`const METHOD_DECL =\n  /…/;`, dogfood
+  // 2026-10-31: cognium-ai juliet-method-scope.ts `METHOD_DECL.exec(line)` was
+  // a command_injection), or a `: RegExp` annotation with no initializer here.
+  const wrapped = new RegExp(`(?:const|let|var)\\s+${n}\\s*(?::\\s*RegExp\\s*)?=\\s*$`);
+  const typed = new RegExp(`\\b${n}\\s*[?!]?\\s*:\\s*RegExp\\b`);
+  return sourceLines.some((l, i) =>
+    typed.test(l) ||
+    (wrapped.test(l) && /^\s*(?:\/|(?:new\s+)?RegExp\s*\()/.test(sourceLines[i + 1] ?? '')));
+}
+
+/**
+ * cognium-dev#985 follow-up (dogfood 2026-10-31) — the receiver's last property
+ * is declared in this file with an explicit type that names no database
+ * (`private backend: CacheBackend` → `this.backend.get(key)`). That is positive
+ * evidence the `.get` is not sqlite's `db.get(sql)`; an untyped or DB-looking
+ * declaration (`db: Database`, `pool: Pool`, `conn: Connection`) keeps the sink.
+ */
+const DB_TYPE_NAME = /(?:connection|database|\bdb\b|db$|^db|pool|client|knex|sql|statement|prisma|sequelize|repository|transaction|query|store)/i;
+function isTypedNonDbReceiver(receiver: string | null | undefined, sourceLines?: string[]): boolean {
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  const lastDot = raw.lastIndexOf('.');
+  const name = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(name) || DB_TYPE_NAME.test(name)) return false;
+  // A `this.x` receiver is the class field: read only field declarations
+  // (`private backend: CacheBackend;`), not same-named parameters or literals.
+  const decl = raw.startsWith('this.')
+    ? new RegExp(`^\\s*(?:(?:private|protected|public|readonly|static|declare)\\s+)+${escapeRe(name)}\\s*[?!]?\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[;=]`)
+    : new RegExp(`\\b${escapeRe(name)}\\s*\\??\\s*:\\s*([A-Za-z_$][\\w$]*)\\s*[;,)=]`);
+  let typed: string | undefined;
+  for (const l of sourceLines) {
+    const m = decl.exec(l);
+    if (!m) continue;
+    if (typed !== undefined && typed !== m[1]) return false; // two declarations disagree
+    typed = m[1];
+  }
+  return typed !== undefined && !DB_TYPE_NAME.test(typed) && !/^(?:any|unknown|object)$/.test(typed);
+}
+
+/**
+ * cognium-dev#1000 — is this receiver named like a navigation object
+ * (`router`, `this.router`, `history`, `navigation`, `navigator`, `nav`)?
+ * Used to keep `Array.prototype.push` off the `router.push` open-redirect sink
+ * when the receiver's type is unresolved.
+ */
+function isNavigationReceiverName(receiver: string | null | undefined): boolean {
+  const r = (receiver ?? '').trim();
+  if (!r) return false;
+  const last = r.slice(r.lastIndexOf('.') + 1).replace(/\(\)$/, '');
+  return /router|history|navigat|^nav$/i.test(last);
+}
+
+/**
+ * cognium-dev#985 — JS/TS `Connection.get` carries `allow_unresolved_receiver`,
+ * so in-memory `Map` / property-bag `.get()` calls (e.g. `properties.get(prop)`,
+ * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
+ * bug as #358's `/re/.exec` → sql_injection pairing.
+ */
+function isInMemoryMapGetReceiver(
+  receiver: string | null | undefined,
+  sourceLines?: string[],
+): boolean {
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  if (/\.properties$/i.test(raw)) return true;
+  // cognium-dev#997 — a member read (`this.memoryCache`, `ctx.imports`,
+  // `fileImport.resolved`, `state().perFileCounters`) is resolved against the
+  // declaration of its LAST property name in this file — a class field, an
+  // interface/type member or a local — exactly like a bare local. Only a
+  // declaration that positively says Map/WeakMap suppresses the sink, so a
+  // real `req.db.get(sql)` (no Map-typed `db`) keeps firing.
+  const lastDot = raw.lastIndexOf('.');
+  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (/^(properties|memoryCache)$/i.test(r)) return true;
+  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const n = escapeRe(r);
+  // `x = new Map(...)` / `new WeakMap(...)`, with or without (nested) type
+  // arguments, as a local (`const x = …`), a class field (`private x = …`) or
+  // a constructor assignment (`this.x = new Map()`).
+  const mapCtor = new RegExp(
+    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
+  );
+  // `x: Map<K, V>` / `x: ReadonlyMap<…>` / `x?: WeakMap<…>` — a typed field,
+  // parameter or local whose declared type is a Map.
+  const mapType = new RegExp(
+    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+  );
+  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
 }
 
 /**
@@ -1848,6 +2015,9 @@ function isDeclaredFunctionReference(
     new RegExp(
       `\\b(?:const|let|var)\\s+${n}\\s*=\\s*(?:async\\s+)?(?:function\\b|\\(|[A-Za-z_$][\\w$]*\\s*=>)`,
     ),
+    // A Promise executor's resolve / reject: `new Promise((r) => setTimeout(r, ms))`,
+    // the sleep idiom (dogfood 2026-10-31, controldeck harness).
+    new RegExp(`\\bnew\\s+Promise\\s*(?:<[^>]*>)?\\s*\\(\\s*(?:async\\s+)?(?:\\(\\s*(?:[A-Za-z_$][\\w$]*\\s*,\\s*)?${n}\\s*[,)]|${n}\\s*=>|function\\s*\\(\\s*(?:[A-Za-z_$][\\w$]*\\s*,\\s*)?${n}\\s*[,)])`),
   ];
   return sourceLines.some(l => decls.some(re => re.test(l)));
 }
@@ -2347,6 +2517,28 @@ function findSinks(
           continue;
         }
 
+        // JS/TS: a query sink called with no arguments has no query text to
+        // carry (`collection.find().exec()`, an RxDB / Mongoose query being
+        // run). Its query was built earlier, where the builder call is the
+        // sink.
+        if (
+          (language === 'javascript' || language === 'typescript') &&
+          (pattern.type === 'sql_injection' || pattern.type === 'nosql_injection') &&
+          call.arguments.length === 0 &&
+          pattern.arg_positions.every((p) => p >= 0)
+        ) {
+          continue;
+        }
+
+        // Skip a bound-parameter call on an import-gated SQL API: arg 0 is
+        // an array/object literal (`stmt.execute([v])`, `executeNamed({…})`
+        // on a prepared statement) or the receiver was assigned from
+        // `.prepare(...)` in this file. Values bound to a prepared statement
+        // are parameters, not SQL text.
+        if (isBoundParameterCall(call, pattern, sourceLines)) {
+          continue;
+        }
+
         // Skip Python subprocess.* calls in safe shape: list arg[0] without
         // shell=True. Python invokes execve() directly with no shell
         // interpolation, so tainted list elements can never escape into
@@ -2509,6 +2701,25 @@ function findSinks(
           continue;
         }
 
+        // cognium-dev#1000 — the Next.js `router.push` / `router.replace`
+        // CWE-601 entries (class `router`) were reached through the
+        // receiver-name heuristic, which accepts any short receiver that is a
+        // substring of `router` (`out`, `rout…`). `out.push(x)` on an array is
+        // the common case. With no resolved receiver type, require the
+        // receiver's last name to actually be a router / history / navigation
+        // object; a resolved type (`useRouter()`) is matched before this point.
+        if (
+          pattern.type === 'open_redirect' &&
+          (language === 'javascript' || language === 'typescript') &&
+          (call.method_name === 'push' || call.method_name === 'replace') &&
+          (pattern.class ?? '').toLowerCase() === 'router' &&
+          !call.receiver_type &&
+          !call.receiver_type_fqn &&
+          !isNavigationReceiverName(call.receiver)
+        ) {
+          continue;
+        }
+
         // cognium-dev#358 extends this to `sql_injection`: the JS/TS
         // `Connection.exec` CWE-89 entry carries `allow_unresolved_receiver`,
         // and a regex literal IS an unresolved receiver, so `/re/.exec(url)`
@@ -2521,6 +2732,27 @@ function findSinks(
           call.method_name === 'exec' &&
           (language === 'javascript' || language === 'typescript') &&
           isRegexReceiver(call.receiver, sourceLines)
+        ) {
+          continue;
+        }
+
+        if (
+          pattern.type === 'sql_injection' &&
+          call.method_name === 'get' &&
+          pattern.class === 'Connection' &&
+          (language === 'javascript' || language === 'typescript') &&
+          (isInMemoryMapGetReceiver(call.receiver, sourceLines) ||
+            isTypedNonDbReceiver(call.receiver, sourceLines))
+        ) {
+          continue;
+        }
+        // Dogfood 2026-10-31: the same Map evidence holds for every `.get`
+        // sink, not just SQL — `tps.get(path)` with `tps: ReadonlyMap<…>`
+        // matched `https.get` (SSRF) through the receiver-name heuristic.
+        if (
+          call.method_name === 'get' &&
+          (language === 'javascript' || language === 'typescript') &&
+          isInMemoryMapGetReceiver(call.receiver, sourceLines)
         ) {
           continue;
         }
@@ -2646,6 +2878,12 @@ function matchesSourcePattern(
       // Prefer IR-resolved receiver type when available (Java/TS plugins).
       if (call.receiver_type && call.receiver_type === pattern.class) {
         // resolved type matches — accept
+      } else if (
+        call.receiver_type &&
+        call.receiver_type.includes('.') &&
+        call.receiver_type.endsWith('.' + pattern.class)
+      ) {
+        // FQN receiver (e.g. org.owasp…SeparateClassRequest) matches short pattern class
       } else if (call.receiver_type_fqn && call.receiver_type_fqn.endsWith('.' + pattern.class)) {
         // FQN tail matches
       } else if (!call.receiver) {
@@ -2835,7 +3073,7 @@ const SAFE_RECEIVERS_BY_METHOD: Record<string, Set<string>> = {
   exec: new Set([
     'regex', 'regexp', 'pattern', 're', 'rx', 'match', 'matcher',
     // Database APIs — db.exec() is SQL, not command injection
-    'db', 'database', 'sqlite', 'conn', 'connection', 'client',
+    'db', 'database', 'sqlite', 'conn', 'con', 'connection', 'client',
     'pool', 'knex', 'prisma', 'sequelize', 'transaction', 'tx',
     'stmt', 'statement', 'cursor',
   ]),
@@ -3229,7 +3467,10 @@ function matchesSinkPattern(
   // is not a known non-dangerous API.  Without this guard, classless patterns
   // such as the generic "exec()" command-injection entry (intended for
   // Runtime.getRuntime().exec()) match unrelated methods like RegExp.exec().
-  if (!pattern.class && call.receiver) {
+  // Import-gated patterns (`requires_import`) carry their own evidence: the
+  // safe lists below exist for classless command sinks (`db.exec()` is SQL),
+  // not for the library's own `con.exec(sql)`.
+  if (!pattern.class && call.receiver && !pattern.requires_import) {
     if (isKnownSafeReceiverForMethod(call.receiver, call.method_name, pattern.type)) {
       return false;
     }

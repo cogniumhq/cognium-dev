@@ -86,6 +86,12 @@ export interface InterproceduralResult {
 export interface InterproceduralOptions {
   /** Variables marked as tainted by constant propagation (e.g., collections with tainted elements) */
   taintedVariables?: Set<string>;
+  /**
+   * Source text of the file. JS/TS only: lets call resolution see that a
+   * receiver is declared as a built-in collection (see
+   * `isBuiltinCollectionReceiver`).
+   */
+  sourceCode?: string;
 }
 
 /**
@@ -460,7 +466,11 @@ export function analyzeInterprocedural(
   const methodNodes = buildMethodNodes(types);
 
   // Build call graph edges with receiver type resolution
-  const callEdges = buildCallEdges(calls, methodNodes, types);
+  const lang = graph.ir.meta.language;
+  const collectionReceiver = (lang === 'typescript' || lang === 'javascript') && typeof options.sourceCode === 'string'
+    ? makeBuiltinCollectionReceiverTest(options.sourceCode)
+    : null;
+  const callEdges = buildCallEdges(calls, methodNodes, types, collectionReceiver);
 
   // Identify initially tainted parameters (from sources)
   const taintedMethods = new Set<string>();
@@ -589,6 +599,17 @@ export function analyzeInterprocedural(
     }
   }
 
+  // Bash: functions defined in this script (their positional defs carry
+  // `bash-fn:<name>`).
+  const bashScriptFunctions = new Set<string>();
+  if (graph.ir.meta.language === 'bash') {
+    for (const d of graph.ir.dfg.defs) {
+      if (d.kind === 'param' && d.expression?.startsWith('bash-fn:')) {
+        bashScriptFunctions.add(d.expression.slice('bash-fn:'.length));
+      }
+    }
+  }
+
   for (const call of calls) {
     // Check if any arguments are tainted
     const taintedArgPositions: number[] = [];
@@ -625,10 +646,15 @@ export function analyzeInterprocedural(
     }
 
     // Resolve callee by receiver type when available (nested / inner classes).
-    const resolvedCalleeFqn = resolveMethodCall(call, methodNodes, types);
-    const targetMethod = resolvedCalleeFqn
-      ? methodNodes.byFqn.get(resolvedCalleeFqn)
-      : getMethodNode(methodNodes, call.method_name);
+    // A method of a built-in Map/Set receiver (`this.cache.set(k, v)`) is
+    // never a method of a class in this file, whatever its name.
+    const builtinReceiver = collectionReceiver !== null && collectionReceiver(call.receiver);
+    const resolvedCalleeFqn = builtinReceiver ? null : resolveMethodCall(call, methodNodes, types);
+    const targetMethod = builtinReceiver
+      ? undefined
+      : resolvedCalleeFqn
+        ? methodNodes.byFqn.get(resolvedCalleeFqn)
+        : getMethodNode(methodNodes, call.method_name);
 
     if (!targetMethod) {
       // External method call - check if tainted data is escaping
@@ -672,6 +698,12 @@ export function analyzeInterprocedural(
           'declare', 'local', 'export', 'readonly', 'typeset',
         ]);
         if (isBash && bashSafeBuiltins.has(call.method_name)) {
+          continue;
+        }
+        // Bash: a function defined in this script is not an external utility.
+        // Its arguments reach its own positional parameters through the DFG
+        // (call-argument chains), so a real sink inside its body still fires.
+        if (isBash && bashScriptFunctions.has(call.method_name)) {
           continue;
         }
 
@@ -945,17 +977,56 @@ function resolveMethodCall(
 }
 
 /**
+ * Dogfood 2026-10-31 (cognium-ai circle-ir-ai/src/cache/file-cache.ts) —
+ * method resolution is by NAME on any receiver, so in a class with its own
+ * `get` / `set`, `this.memoryCache.set(hash, entry)` on a
+ * `Map<string, CacheEntry<T>>` field resolved to the class's `set` method and
+ * produced a path_traversal flow into that method's `fs.writeFileSync`.
+ *
+ * Returns a test for "this receiver is declared in this file as a built-in
+ * Map / WeakMap / Set / WeakSet". The receiver must be a plain identifier or a
+ * `this.x` member (resolved against its last property name), and only a
+ * declaration that positively says so counts: `x: Map<…>` / `ReadonlyMap` /
+ * `Set<…>` / `ReadonlySet`, or `x = new Map(…)` / `new Set(…)`. Any other
+ * receiver keeps the name-based resolution, so a `this.helper.run(x)` into a
+ * project class is unaffected.
+ */
+function makeBuiltinCollectionReceiverTest(
+  sourceCode: string,
+): (receiver: string | null | undefined) => boolean {
+  const memo = new Map<string, boolean>();
+  return (receiver) => {
+    const raw = (receiver ?? '').trim();
+    const m = /^(?:this\.)?([A-Za-z_$][\w$]*)$/.exec(raw);
+    if (!m || raw === 'this') return false;
+    const name = m[1];
+    const hit = memo.get(name);
+    if (hit !== undefined) return hit;
+    const n = name.replace(/[$]/g, '\\$&');
+    const coll = '(?:Readonly)?(?:Weak)?(?:Map|Set)';
+    const ctor = new RegExp(`(?<![\\w$.])${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?(?:Map|Set)\\s*(?:<[^;]*>)?\\s*\\(`);
+    const typed = new RegExp(`(?<![\\w$.])${n}\\s*[?!]?\\s*:\\s*${coll}\\s*<`);
+    const thisCtor = new RegExp(`\\bthis\\.${n}\\s*=\\s*new\\s+(?:Weak)?(?:Map|Set)\\s*(?:<[^;]*>)?\\s*\\(`);
+    const result = ctor.test(sourceCode) || typed.test(sourceCode) || thisCtor.test(sourceCode);
+    memo.set(name, result);
+    return result;
+  };
+}
+
+/**
  * Build call edges from call information.
  * Uses receiver type information for precise method resolution.
  */
 function buildCallEdges(
   calls: CallInfo[],
   methodNodes: MethodNodeMaps,
-  types: TypeInfo[]
+  types: TypeInfo[],
+  collectionReceiver: ((receiver: string | null | undefined) => boolean) | null = null,
 ): CallEdge[] {
   const edges: CallEdge[] = [];
 
   for (const call of calls) {
+    if (collectionReceiver !== null && collectionReceiver(call.receiver)) continue;
     // Resolve the call target using receiver type
     const resolvedFqn = resolveMethodCall(call, methodNodes, types);
     if (!resolvedFqn) continue;

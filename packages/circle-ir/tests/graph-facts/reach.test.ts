@@ -147,9 +147,18 @@ describe('deadCode (R-EN2)', () => {
     const v = Object.fromEntries(d.facts.map(f => [f.qualified_name, f]));
     expect(v['svc/repo:Repo.legacy'].verdict).toBe('may-be-live');
     expect(v['svc/repo:Repo.legacy'].reasons).toEqual(['unresolved-sites']);
-    const p = deadCode(await build({ 'src/broken.ts': 'function x( {' }));
+    // A file that did not parse holds back only what it could reach (#1004).
+    const p = deadCode(await build({ 'src/broken.ts': "import { Repo } from './repo';\nfunction x( {" }));
     const pv = Object.fromEntries(p.facts.map(f => [f.qualified_name, f]));
     expect(pv['svc/repo:Repo.legacy'].reasons).toEqual(['partial-files']);
+    const q = deadCode(await build({ 'src/broken.ts': 'function x( {' }));
+    const qv = Object.fromEntries(q.facts.map(f => [f.qualified_name, f]));
+    expect(qv['svc/repo:Repo.legacy'].verdict).toBe('dead');
+    expect(q.summary.dead).toBeGreaterThan(0);
+    expect(q.partial).toEqual(['src/broken.ts']);
+    // Each partial file comes with its first blocking error.
+    expect(q.partialFiles).toEqual([{ file: 'src/broken.ts', line: 1, column: expect.any(Number), nodeKind: expect.any(String), parent: expect.any(String) }]);
+    expect(d.partialFiles).toEqual([]);
   });
 
   it('is deterministic and on the entry point', async () => {

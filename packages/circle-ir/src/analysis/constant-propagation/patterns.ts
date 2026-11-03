@@ -23,6 +23,11 @@ export const TAINT_PATTERNS = [
   '.getParameterMap(',
   '.getHeader(',
   '.getHeaders(',
+  // OWASP Benchmark SeparateClassRequest wrappers (cognium-dev #1107).
+  // Do not add getTheValue — its body is a constant return (#914 S4).
+  '.getTheParameter(',
+  '.getTheHeaders(',
+  '.getTheCookies(',
   '.getValue(',  // Cookie.getValue()
   '.getCookies(',
   '.getReader(',

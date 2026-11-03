@@ -21,6 +21,7 @@
 import type { Node, Tree } from '../core/parser.js';
 import { Builder, placeholder } from './builder.js';
 import { bodyTokens, canonicalType, joinTokens, namedChildren } from './normalize.js';
+import { firstDeclarationHidingError } from './ts-parse-errors.js';
 import {
   STABLE_ID_SCHEME,
   type StableDecl,
@@ -370,12 +371,14 @@ export function deriveTypeScriptIds(
   const root = tree.rootNode;
   const moduleDecl = builder.add('module', module, module, '', root, null);
   new Extractor(builder).module(root, moduleDecl);
+  const parseError = firstDeclarationHidingError(root);
   return {
     scheme: STABLE_ID_SCHEME,
     file: filePath,
     language,
     module,
     decls: builder.decls,
-    partial: root.hasError,
+    partial: parseError !== undefined,
+    ...(parseError ? { parseError } : {}),
   };
 }

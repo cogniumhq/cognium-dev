@@ -699,3 +699,72 @@ export function fileConfiguresSnakeYamlSafely(source: string): boolean {
   if (/\bSafeConstructor\s+\w+\s*=/.test(source)) return true;
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// JS/TS — js-yaml (deserialization gate E)
+// ---------------------------------------------------------------------------
+
+/**
+ * The effective js-yaml major version: the installed version from a
+ * `package-lock.json` / `npm-shrinkwrap.json` when present (the hoisted
+ * `node_modules/js-yaml` entry, lockfile v2/v3; `dependencies["js-yaml"]`
+ * for v1), else the declared range in `package.json` when it names one major
+ * (`^4.1.0`, `~3.14.1`, `4.x`, `5.4.2`). Null when neither says (a range such
+ * as `>=3`, `*`, a git source, or no js-yaml at all): the gate then keeps the
+ * sink.
+ *
+ * Why the major matters: js-yaml 3's `load` used `DEFAULT_FULL_SCHEMA`, whose
+ * `!!js/function` and `!!js/regexp` tags build code. js-yaml 4 removed those
+ * types from the package (`load` is what `safeLoad` was), and 5 keeps that.
+ */
+export function resolveJsYamlMajor(js: { packageJson?: string; packageLock?: string } | undefined): { major: number; from: 'lockfile' | 'package.json' } | null {
+  if (!js) return null;
+  if (js.packageLock) {
+    try {
+      const lock = JSON.parse(js.packageLock) as {
+        packages?: Record<string, { version?: string }>;
+        dependencies?: Record<string, { version?: string }>;
+      };
+      const v = lock.packages?.['node_modules/js-yaml']?.version ?? lock.dependencies?.['js-yaml']?.version;
+      const m = v ? /^(\d+)\./.exec(v) : null;
+      if (m) return { major: Number(m[1]), from: 'lockfile' };
+    } catch { /* fall through to package.json */ }
+  }
+  if (js.packageJson) {
+    const dep = resolveDepFromPackageJson(js.packageJson, 'js-yaml');
+    const m = dep ? /^\s*[\^~=v]?\s*(\d+)(?:\.(?:\d+|x|\*))*\s*$/i.exec(dep.version) : null;
+    if (m) return { major: Number(m[1]), from: 'package.json' };
+  }
+  return null;
+}
+
+/**
+ * The local names bound to js-yaml in a file: default / namespace imports and
+ * `require` (`yaml.load`), plus named `load` / `loadAll` imports (bare `load(…)`).
+ * `full` is true when the file loads the full schema's code path explicitly
+ * (`js-yaml/lib/js-yaml`, `DEFAULT_FULL_SCHEMA`); the gate never drops then.
+ */
+export function jsYamlBindings(source: string): { namespaces: Set<string>; functions: Set<string>; full: boolean } {
+  const namespaces = new Set<string>();
+  const functions = new Set<string>();
+  const from = String.raw`['"]js-yaml(?:/index(?:\.js)?)?['"]`;
+  for (const m of source.matchAll(new RegExp(String.raw`import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\}\s*)?from\s*` + from, 'g'))) namespaces.add(m[1]!);
+  for (const m of source.matchAll(new RegExp(String.raw`(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*` + from + String.raw`\s*\)`, 'g'))) namespaces.add(m[1]!);
+  for (const m of source.matchAll(new RegExp(String.raw`import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*` + from, 'g'))) {
+    for (const part of m[1]!.split(',')) {
+      const [name, alias] = part.trim().split(/\s+as\s+/);
+      if (name === 'load' || name === 'loadAll') functions.add((alias ?? name)!.trim());
+    }
+  }
+  for (const m of source.matchAll(new RegExp(String.raw`(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*` + from + String.raw`\s*\)`, 'g'))) {
+    for (const part of m[1]!.split(',')) {
+      const [name, alias] = part.trim().split(/\s*:\s*/);
+      if (name === 'load' || name === 'loadAll') functions.add((alias ?? name)!.trim());
+    }
+  }
+  const full = /['"]js-yaml\/lib\/js-yaml(?:\.js)?['"]/.test(source) || /\bDEFAULT_FULL_SCHEMA\b/.test(source);
+  return { namespaces, functions, full };
+}
+
+/** A schema that builds no code, passed in the call's options (`{ schema: yaml.CORE_SCHEMA }`). */
+export const JS_YAML_SAFE_SCHEMA_RE = /\bschema\s*:\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?(?:FAILSAFE_SCHEMA|JSON_SCHEMA|CORE_SCHEMA|DEFAULT_SCHEMA|DEFAULT_SAFE_SCHEMA)\b/;

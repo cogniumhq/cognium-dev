@@ -130,6 +130,15 @@ export interface SinkPattern {
    * Use sparingly: each opt-in entry widens the FP surface. (cognium-dev #95)
    */
   allow_unresolved_receiver?: boolean;
+  /**
+   * Apply the pattern only to files that import one of these modules (ES
+   * `import … from`, `require(…)`; a subpath such as `rxdb/plugins/x` counts
+   * for `rxdb`). For library APIs whose method names are generic (`run`,
+   * `execute`, `prepare`) and whose receivers cannot be typed from the call
+   * site: the import is the evidence that `x.run(sql)` is that library's
+   * call. A file with no import information never matches.
+   */
+  requires_import?: string[];
   note?: string;
 }
 

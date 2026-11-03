@@ -89,7 +89,7 @@ import { applyConfidenceFilter } from './analysis/confidence-filter.js';
 import { applyLibraryApiSurfaceDowngrade } from './analysis/library-api-surface-downgrade.js';
 import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
-import { applyConstantCallerGate } from './analysis/constant-caller-gate.js';
+import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
@@ -207,6 +207,7 @@ import { boundedMakeDefIds, scalarDerivedDefIds } from './analysis/scalar-deriva
 import { constTableLookupDefIds } from './analysis/const-table-lookup.js';
 import type { SinkFilterResult } from './analysis/passes/sink-filter-pass.js';
 import type { InterproceduralPassResult } from './analysis/passes/interprocedural-pass.js';
+import { makeCommentOnlyLineTest } from './analysis/comment-lines.js';
 
 export interface AnalyzerOptions {
   /**
@@ -322,6 +323,19 @@ export interface AnalyzerOptions {
    * clean scan.
    */
   perFileBudgetMs?: number;
+
+  /**
+   * Wall-clock limit (ms) for analysing ONE file (cognium-dev#1007). `0` or
+   * omitted disables it, so existing callers see no change.
+   *
+   * Checked after parsing and between pipeline passes; a single phase that is
+   * already running is not interrupted (the work is synchronous). When the
+   * limit is passed, `analyze()` throws an {@link AnalysisTimeoutError}.
+   * `analyzeProject` catches it, skips that file and lists it in
+   * `ProjectAnalysis.timed_out_files`, so a slow file is reported, never
+   * mistaken for a clean one.
+   */
+  fileTimeoutMs?: number;
 
   /**
    * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
@@ -550,6 +564,12 @@ export interface DependencyContext {
      * where it supersedes `pomXml`.
      */
     mavenResolved?: string;
+    /**
+     * Raw Eclipse PDE / Tycho target-platform files (`*.target`), whose
+     * `<location type="Maven">` entries carry third-party versions on an
+     * Eclipse-based build. Read by SBOM collection (cognium-dev#1077).
+     */
+    targetPlatforms?: string[];
   };
   /**
    * Python project manifests (added cognium-dev #261 Python slice). Both
@@ -582,6 +602,21 @@ export interface DependencyContext {
   js?: {
     /** Raw `package.json` content (npm / pnpm / yarn). */
     packageJson?: string;
+    /**
+     * Raw `package-lock.json` / `npm-shrinkwrap.json`. Read by SBOM
+     * collection only, where it supersedes `packageJson` (DT4).
+     */
+    packageLock?: string;
+    /**
+     * Raw `pnpm-lock.yaml` (formats 5.x, 6.0, 9.0). Read by SBOM collection
+     * only, where it supersedes `packageLock`, `yarnLock` and `packageJson`.
+     */
+    pnpmLock?: string;
+    /**
+     * Raw Yarn classic (v1) `yarn.lock`. Read by SBOM collection only, where
+     * it supersedes `packageJson` (which still supplies the roots).
+     */
+    yarnLock?: string;
   };
   /**
    * Rust project manifest (added cognium-dev #261 Rust slice).
@@ -913,6 +948,23 @@ function neutralizeOverlongLines(code: string): { code: string; dropped: number 
   return { code: out, dropped };
 }
 
+/**
+ * Thrown by `analyze()` when `AnalyzerOptions.fileTimeoutMs` is set and the
+ * file's analysis passes it (cognium-dev#1007).
+ */
+export class AnalysisTimeoutError extends Error {
+  readonly file: string;
+  readonly elapsedMs: number;
+  readonly phase: string;
+  constructor(file: string, elapsedMs: number, phase: string) {
+    super(`analysis of ${file} timed out after ${elapsedMs}ms (at ${phase})`);
+    this.name = 'AnalysisTimeoutError';
+    this.file = file;
+    this.elapsedMs = elapsedMs;
+    this.phase = phase;
+  }
+}
+
 export async function analyze(
   code: string,
   filePath: string,
@@ -922,6 +974,9 @@ export async function analyze(
   if (!initialized) {
     await initAnalyzer(options);
   }
+
+  const fileTimeoutMs = options.fileTimeoutMs ?? 0;
+  const fileDeadline = fileTimeoutMs > 0 ? Date.now() + fileTimeoutMs : 0;
 
   // Markup preprocessor path (HTML + Vue SFC) — extract scripts and
   // delegate to the JS/TS analyzer. Vue SFCs are HTML-syntax-wrapped, so
@@ -991,10 +1046,23 @@ export async function analyze(
   // Parse the code. The Tree holds tree-sitter WASM memory; we MUST dispose
   // it before returning, otherwise the WASM heap grows unboundedly across
   // many analyze() calls in the same process (issue #16).
+  // #1007: the per-file limit is also checked after each extraction phase
+  // below. On Bash those phases (types, DFG, node collection, imports) are
+  // about half the time, and before this the first check after parsing was
+  // the first pipeline pass, so a file could overrun its limit by that much.
+  const checkDeadline = (phase: string): void => {
+    if (fileDeadline > 0 && Date.now() > fileDeadline) {
+      throw new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), phase);
+    }
+  };
+
   const tParse = phaseStart();
   const tree = await parse(code, parseGrammar);
   phaseEnd('parse', tParse);
   try {
+  if (fileDeadline > 0 && Date.now() > fileDeadline) {
+    throw new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), 'parse');
+  }
   logger.trace('Parsed AST', { rootNodeType: tree.rootNode.type });
 
   // Issue #27: surface parse health to the caller. Tree-sitter happily
@@ -1006,6 +1074,7 @@ export async function analyze(
   const tParseStatus = phaseStart();
   const parseStatus = extractParseStatus(tree);
   phaseEnd('extractParseStatus', tParseStatus);
+  checkDeadline('extractParseStatus');
   if (parseStatus.has_errors) {
     logger.warn('Partial parse — IR may be incomplete', {
       filePath,
@@ -1019,6 +1088,7 @@ export async function analyze(
   const tCollect = phaseStart();
   const nodeCache = collectAllNodes(tree.rootNode, getNodeTypesForLanguage(language));
   phaseEnd('collectAllNodes', tCollect);
+  checkDeadline('collectAllNodes');
 
   // Extract all IR components
   const tMeta = phaseStart();
@@ -1031,6 +1101,7 @@ export async function analyze(
     meta.projectProfile = makeProfileResolver(options.projectProfile)(filePath);
   }
   phaseEnd('extractMeta', tMeta);
+  checkDeadline('extractMeta');
 
   // cognium-dev#460 — residual backstop. Over-long lines are already blanked
   // above; this still returns a minimal IR if one remains, so a minified
@@ -1053,26 +1124,33 @@ export async function analyze(
   const tTypes = phaseStart();
   const types   = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   phaseEnd('extractTypes', tTypes);
+  checkDeadline('extractTypes');
   const tCalls = phaseStart();
   const calls   = extractCalls(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
   phaseEnd('extractCalls', tCalls);
+  checkDeadline('extractCalls');
   const tImports = phaseStart();
   const imports = extractImports(tree, language, nodeCache);
   phaseEnd('extractImports', tImports);
+  checkDeadline('extractImports');
   const tExports = phaseStart();
   if (options.declarationDetail && (language === 'typescript' || language === 'javascript')) enrichTsDeclarations(tree, types);
   const exports = (options.declarationDetail && (language === 'typescript' || language === 'javascript') ? extractTsExports(types) : null)
     ?? extractExports(types);
   phaseEnd('extractExports', tExports);
+  checkDeadline('extractExports');
   const tCFG = phaseStart();
   const cfg     = buildCFG(tree, language, nodeCache);
   phaseEnd('buildCFG', tCFG);
+  checkDeadline('buildCFG');
   const tDFG = phaseStart();
   const dfg     = buildDFG(tree, nodeCache, language);
   phaseEnd('buildDFG', tDFG);
+  checkDeadline('buildDFG');
   const tRuntime = phaseStart();
   const runtimeRegistrations = extractRuntimeRegistrations(tree, nodeCache, language, imports);
   phaseEnd('extractRuntimeRegistrations', tRuntime);
+  checkDeadline('extractRuntimeRegistrations');
 
   // Build CodeGraph once — shared across all passes.
   // Taint is empty at construction time; sources/sinks/sanitizers are populated by passes.
@@ -1088,6 +1166,7 @@ export async function analyze(
     ...constTableLookupDefIds(dfg.defs, code, language),
   ]);
   phaseEnd('buildCodeGraph', tGraph);
+  checkDeadline('buildCodeGraph');
 
   const config = options.taintConfig ?? getDefaultConfig();
 
@@ -1292,7 +1371,8 @@ export async function analyze(
   if (!disabledPasses.has('insecure-deserialization-config')) pipeline.add(new InsecureDeserializationConfigPass());
 
   // Run the pipeline
-  const { results, findings } = pipeline.run(graph, code, language, config, options.resources);
+  const { results, findings } = pipeline.run(graph, code, language, config, options.resources,
+    fileDeadline > 0 ? { deadline: fileDeadline, onExpired: (phase) => new AnalysisTimeoutError(filePath, Date.now() - (fileDeadline - fileTimeoutMs), phase) } : undefined);
 
   const sinkFilter = results.get('sink-filter')    as SinkFilterResult;
   const interProc  = results.get('interprocedural') as InterproceduralPassResult;
@@ -1322,6 +1402,17 @@ export async function analyze(
     if (constructionFlows.length > 0) {
       taint.flows = [...(taint.flows ?? []), ...constructionFlows];
     }
+  }
+
+  // cognium-dev#999 — drop taint sinks, sources and flows that sit on a line
+  // holding only a comment (doc comments quoting `JSON.parse(req.body)` and
+  // the like). Line-scanning passes match raw text; the syntax tree knows the
+  // line is a comment.
+  const isCommentOnlyLine = makeCommentOnlyLineTest(tree.rootNode, code);
+  taint.sinks = taint.sinks.filter(s => !isCommentOnlyLine(s.line));
+  taint.sources = taint.sources.filter(s => !isCommentOnlyLine(s.line));
+  if (taint.flows) {
+    taint.flows = taint.flows.filter(f => !isCommentOnlyLine(f.sink_line) && !isCommentOnlyLine(f.source_line));
   }
 
   // 3.105.0 — propagate tags from `TaintSink.tags` onto every emitted
@@ -1371,7 +1462,14 @@ export async function analyze(
   // `options.includeSpeculative === true`, preserve the full stream for
   // downstream adjudication. Existing passes (which do not set `confidence`)
   // are treated as `'high'` and pass through unchanged.
-  const verifiedFindings = applyConfidenceFilter(findings, options.includeSpeculative === true);
+  // cognium-dev#999 — a security finding whose line is only a comment is a
+  // text match inside documentation, not code. Line 1 is exempt: file-level
+  // findings (`missing-x-frame-options`, header checks) anchor there, and a
+  // file often opens with a doc comment.
+  const codeFindings = findings.filter(
+    f => f.category !== 'security' || f.line <= 1 || !isCommentOnlyLine(f.line),
+  );
+  const verifiedFindings = applyConfidenceFilter(codeFindings, options.includeSpeculative === true);
 
   // #161/#165/#168 (3.105.0) — central library-API-surface downgrade. Findings
   // carrying the `library-api-surface:caller-responsibility` tag (emitted by
@@ -1408,6 +1506,13 @@ export async function analyze(
     coalescedFindings,
     options.perFileFindingCap ?? DEFAULT_PER_FILE_FINDING_CAP,
   );
+
+  // cognium-dev #913 S5 — per-file OWASP map helpers (getTheValue + map shuffle).
+  if (language === 'java' && (taint.flows ?? []).some(f => f.source_type === 'plugin_param')) {
+    applySingleFileJavaMapConstantCallerGate(filePath, {
+      meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
+    }, code.split('\n'));
+  }
 
   return {
     meta, types, calls, cfg, dfg, taint, imports, exports, unresolved, enriched,
@@ -1823,6 +1928,7 @@ export async function analyzeProject(
   options: AnalyzerOptions = {},
 ): Promise<ProjectAnalysis> {
   const fileAnalyses: Array<{ file: string; analysis: CircleIR }> = [];
+  const timedOutFiles: Array<{ file: string; elapsed_ms: number; phase: string }> = [];
   const projectGraph = new ProjectGraph();
   const sourceLinesByFile = new Map<string, string[]>();
 
@@ -1871,7 +1977,19 @@ export async function analyzeProject(
       });
       break;
     }
-    const ir = await analyze(code, filePath, language, options);
+    let ir: CircleIR;
+    try {
+      ir = await analyze(code, filePath, language, options);
+    } catch (err) {
+      if (err instanceof AnalysisTimeoutError) {
+        timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });
+        logger.warn('analyzeProject: file analysis timed out, skipping it', {
+          file: filePath, elapsedMs: err.elapsedMs, phase: err.phase,
+        });
+        continue;
+      }
+      throw err;
+    }
     fileAnalyses.push({ file: filePath, analysis: ir });
     projectGraph.addFile(filePath, new CodeGraph(ir));
     sourceLinesByFile.set(filePath, code.split('\n'));
@@ -1985,6 +2103,9 @@ export async function analyzeProject(
   }
   if (perFileBudgetExceeded) {
     projectAnalysis.per_file_budget_exceeded = true;
+  }
+  if (timedOutFiles.length > 0) {
+    projectAnalysis.timed_out_files = timedOutFiles;
   }
   if (projectSizeBudgetExceeded) {
     projectAnalysis.project_size_budget_exceeded = true;

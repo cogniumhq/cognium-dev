@@ -1,0 +1,11 @@
+{
+  "format": "osv-snapshot/1",
+  "source": "hand-written fixture (tests/fixtures/osv-npm/README.md)",
+  "ecosystem": "npm",
+  "fetchedAt": null,
+  "zipSha256": null,
+  "excludedPrefixes": [],
+  "digest": "sha256:a40ba60054861ba902162dc50103db767d125f534669e0f41846bff5d6713419",
+  "snapshotDate": "2024-04-04T00:00:00Z",
+  "records": 7
+}

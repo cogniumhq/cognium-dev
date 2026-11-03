@@ -11,6 +11,7 @@ export {
   analyzeForAPI,
   analyzeProject,
   isAnalyzerInitialized,
+  AnalysisTimeoutError,
   resetAnalyzer,
   type AnalyzerOptions,
 } from './analyzer.js';
@@ -19,9 +20,13 @@ export {
 export {
   parseNpmDependencies,
   parseNpmLockDependencies,
+  parsePnpmLockDependencies,
+  parseYarnLockDependencies,
+  pnpmLockImporters,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
+  parseTychoTargetDependencies,
   parseGradleDependencies,
   parseGradleLockfile,
   parseMavenResolvedDependencies,
@@ -30,6 +35,8 @@ export {
   parsePoetryLockDependencies,
   parseGoDependencies,
   collectDependencies,
+  licenseFromPackageJson,
+  applyLicenses,
   toCycloneDx,
   toSpdx,
 } from './analysis/sbom.js';
@@ -38,6 +45,7 @@ export type {
   Ecosystem,
   DependencyScope,
   SbomMetadata,
+  LicenseMap,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
@@ -258,10 +266,15 @@ export {
   NavigationIndex,
   buildTsCallGraph,
   TS_CALL_EDGES_SCHEME,
+  COMPUTED_MODULE_LOAD,
   DEFAULT_ENTRY_TABLES,
   buildJavaGraph,
   JAVA_GRAPH_SCHEME,
   DEFAULT_JAVA_ENTRY_TABLES,
+  buildPythonGraph,
+  PYTHON_GRAPH_SCHEME,
+  buildGoGraph,
+  GO_GRAPH_SCHEME,
 } from './navigation/index.js';
 export type {
   NavigationFile,
@@ -287,21 +300,39 @@ export type {
   TsEntry,
   UnresolvedRegistration,
   ReferenceEdge,
+  FieldUseEdge,
   ImportEdge,
+  LoadEdge,
   EntryKind,
   EntryCertainty,
   EntryTables,
+  ScriptTable,
+  ToolFileRow,
+  ExpoTable,
   JavaSourceFile,
   JavaGraphOptions,
   JavaGraph,
   JavaEntryTables,
+  PythonSourceFile,
+  PythonGraphOptions,
+  PythonGraph,
+  GoSourceFile,
+  GoGraphOptions,
+  GoGraph,
   IndexedCallSite,
   IndexedTarget,
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
 export type {
+  DependencyCallsOptions,
+  DependencyCall,
+  DependencyCallTest,
+  DependencyCallsResult,
+  DependencyUnattributedSite,
+  MavenPackages,
+  MavenPackageSource,
   ReachInput,
   ReachOptions,
   ReachResult,
@@ -317,6 +348,7 @@ export type {
   MoveCandidateRef,
   RemovalReachOptions,
   RemovalReachResult,
+  PartialFile,
 } from './graph-facts/index.js';
 
 // Stable code ids (ids@0.1, experimental and opt-in): declaration ids from
@@ -329,9 +361,16 @@ export {
   stableIdsSupport,
   moduleNameFor,
   assignNodeIds,
+  nodeIdBytes,
+  nodeIdBytesOfPrinted,
+  printedNodeId,
   diffStableIds,
   deriveJavaIds,
   eraseJavaType,
+  derivePythonIds,
+  pythonModuleName,
+  deriveGoIds,
+  goPackageDir,
   detectMoves,
   bodySimilarity,
 } from './stable-ids/index.js';
@@ -343,6 +382,8 @@ export type {
   StableIdFile,
   StableIdOptions,
   StableNodeIds,
+  StableNodeKind,
+  ParseErrorSite,
   NodeIdSource,
   StableIdDiff,
   MoveRelation,
@@ -353,6 +394,50 @@ export type {
   MoveOptions,
   MoveDetection,
 } from './stable-ids/index.js';
+
+// `facts@1` (graph-store plan T1/T2): the fact relations as columns in
+// canonical order (sets, no nulls) keyed by `ids@0.1`, and their Arrow IPC wire form.
+// Opt-in through `buildJavaGraph(files, { emitFacts: 'arrow' })`; needs the
+// optional dependency `apache-arrow`, loaded on first use.
+export {
+  FACTS_SCHEME,
+  FACTS_ID_WIDTH,
+  FACTS_CHUNK_ROWS,
+  FACTS_RELATION_NAMES,
+  FACTS_RELATIONS,
+  sortColumns as factsSortColumns,
+  rowComparator as factsRowComparator,
+  canonicalRows as factsCanonicalRows,
+  canonicalSet as factsCanonicalSet,
+  canonicalTable as factsCanonicalTable,
+  tableFromRows as factsTableFromRows,
+  tableRows as factsTableRows,
+  keyCollisions as factsKeyCollisions,
+  compareCodePoints,
+  idBytes,
+  javaGraphFacts,
+  javaGraphFactSet,
+  factsToArrow,
+} from './facts/index.js';
+export type {
+  FactsScheme,
+  FactsColumnType,
+  FactsColumn,
+  FactsRelation,
+  FactsRelationName,
+  FactValue,
+  FactRow,
+  FactRows,
+  FactTable,
+  FactColumnData,
+  FactSet,
+  JavaImportRow,
+  JavaFactsInput,
+  FactsArrow,
+  FactsArrowOptions,
+  FactsManifest,
+  FactsManifestRelation,
+} from './facts/index.js';
 
 // Remedy-class tables: reader and digest for caller-supplied
 // `safe-construct-table@0.1` inputs (the library ships no table).
@@ -412,8 +497,16 @@ export {
   templateEngineOf,
   expressionNames,
   handedNames,
+  findingDiff,
+  diffLines,
+  splitLines,
 } from './path-set/index.js';
 export type {
+  FindingDiff,
+  FindingDiffSide,
+  NewFinding,
+  MatchedBy,
+  LineDiff,
   PathSetInput,
   PathSetOptions,
   DeclKeyScheme,
@@ -423,6 +516,8 @@ export type {
   PathSource,
   PathSink,
   PathGuard,
+  PathUnresolved,
+  UnresolvedSite,
   PathState,
   PathEntry,
   BranchFact,

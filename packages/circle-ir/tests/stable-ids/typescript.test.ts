@@ -254,10 +254,10 @@ describe('languages and grammars', () => {
   });
 
   it('refuses languages outside ids@0.1', async () => {
-    expect(stableIdsSupport('python')).toBe(false);
+    expect(stableIdsSupport('rust')).toBe(false);
     expect(stableIdsSupport('java')).toBe(true);
     expect(stableIdsSupport('tsx')).toBe(true);
-    await expect(deriveStableIds('class A: pass', 'a.py', 'python')).rejects.toThrow(/not covered/);
+    await expect(deriveStableIds('fn main() {}', 'a.rs', 'rust')).rejects.toThrow(/not covered/);
   });
 });
 

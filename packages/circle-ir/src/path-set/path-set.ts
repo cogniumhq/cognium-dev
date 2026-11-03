@@ -47,12 +47,14 @@ import {
   type PathSink,
   type PathSource,
   type PathState,
+  type PathUnresolved,
+  type UnresolvedSite,
   type TemplateUse,
   type PinFacts,
 } from './types.js';
 
 /** What `pathSetOf` reads: the per-file IR and, when present, cross-file paths. */
-export type PathSetInput = Pick<ProjectAnalysis, 'files'> & Partial<Pick<ProjectAnalysis, 'taint_paths'>>;
+export type PathSetInput = Pick<ProjectAnalysis, 'files'> & Partial<Pick<ProjectAnalysis, 'taint_paths' | 'cross_file_calls'>>;
 
 export interface PathSetOptions {
   /** The weakness class, `CWE-89` or `89`. */
@@ -436,6 +438,83 @@ export function pathKey(cwe: string, sourceAnchor: string, sinkAnchor: string): 
 }
 
 // ---------------------------------------------------------------------------
+// Unresolved edges on a path
+// ---------------------------------------------------------------------------
+
+function methodSpan(ir: CircleIR, line: number): { start: number; end: number } | undefined {
+  let best: { start: number; end: number } | undefined;
+  for (const t of ir.types) {
+    for (const m of t.methods) {
+      if (line < m.start_line || line > m.end_line) continue;
+      if (!best || m.end_line - m.start_line < best.end - best.start) best = { start: m.start_line, end: m.end_line };
+    }
+  }
+  return best;
+}
+
+/**
+ * The lines a path occupies, per file: source, sink (and intermediate sink)
+ * and hop lines, plus the lines in the source's and sink's declarations that
+ * use one of the path's variables.
+ */
+function pathLines(ctxByFile: Map<string, FileCtx>, v: { source: PathSource; sink: PathSink; hops: PathHop[] }): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  const add = (file: string, line: number): void => {
+    let s = out.get(file);
+    if (!s) out.set(file, (s = new Set()));
+    s.add(line);
+  };
+  add(v.source.file, v.source.line);
+  add(v.sink.file, v.sink.line);
+  if (v.sink.intermediate) add(v.sink.file, v.sink.intermediate.line);
+  for (const h of v.hops) add(h.file, h.line);
+  const vars = new Set(v.hops.map(h => h.variable).filter((x): x is string => !!x));
+  for (const end of [v.source, v.sink]) {
+    const ctx = ctxByFile.get(end.file);
+    if (!ctx || vars.size === 0) continue;
+    const span = methodSpan(ctx.ir, end.line);
+    if (!span) continue;
+    for (const u of ctx.ir.dfg.uses) {
+      if (u.line >= span.start && u.line <= span.end && vars.has(u.variable)) add(end.file, u.line);
+    }
+  }
+  return out;
+}
+
+function unresolvedOn(
+  ctxByFile: Map<string, FileCtx>,
+  projectTypes: Set<string>,
+  crossFile: PathSetInput['cross_file_calls'],
+  lines: Map<string, Set<number>>,
+  sink: PathSink,
+): PathUnresolved {
+  const sites: UnresolvedSite[] = [];
+  const inProject = (cands: string[] | undefined): boolean =>
+    (cands ?? []).some(c => projectTypes.has(c.split('.').slice(0, -1).pop() ?? c));
+  for (const [file, set] of lines) {
+    const ctx = ctxByFile.get(file);
+    if (!ctx) continue;
+    for (const u of ctx.ir.unresolved) {
+      if (!set.has(u.context.line)) continue;
+      // the unresolved call is the sink call itself: same line, and its candidate (or its text) names the sink's method
+      const methods = (u.context.candidates ?? []).map(c => c.split('.').pop() ?? c);
+      const atSink = file === sink.file && u.context.line === sink.line && !!sink.call.method &&
+        (methods.length > 0 ? methods.includes(sink.call.method) : u.context.code.includes(`${sink.call.method}(`));
+      sites.push({ file, line: u.context.line, type: u.type, reason: u.reason, code: u.context.code, atSink, inProject: inProject(u.context.candidates) });
+    }
+  }
+  for (const c of crossFile ?? []) {
+    if (c.resolved || !lines.get(c.from.file)?.has(c.from.line)) continue;
+    sites.push({
+      file: c.from.file, line: c.from.line, type: 'cross_file_call', reason: 'unresolved_cross_file_call',
+      code: `${c.from.method} -> ${c.to.file}#${c.to.method}`, atSink: false, inProject: true,
+    });
+  }
+  sites.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || a.type.localeCompare(b.type) || a.code.localeCompare(b.code)));
+  return { count: sites.length, sites };
+}
+
+// ---------------------------------------------------------------------------
 // One tree
 // ---------------------------------------------------------------------------
 
@@ -528,6 +607,7 @@ export function pathSetOf(project: PathSetInput, options: PathSetOptions): PathS
     else group.set(id, [v]);
   }
 
+  const projectTypes = new Set(project.files.flatMap(f => f.analysis.types.map(t => t.name)));
   const paths: PathEntry[] = [];
   const files = new Set<string>();
   const schemes = new Set<DeclKeyScheme>();
@@ -548,8 +628,19 @@ export function pathSetOf(project: PathSetInput, options: PathSetOptions): PathS
       variants: ids.length,
       hops: first.hops,
       confidence: Math.max(...all.map(v => v.confidence)),
+      unresolved: { count: 0, sites: [] },
     };
     if (state === 'guarded' && guard) entry.guard = guard;
+    // unresolved edges over the lines of every variant of this path
+    const lines = new Map<string, Set<number>>();
+    for (const v of all) {
+      for (const [f, set] of pathLines(ctxByFile, v)) {
+        const acc = lines.get(f);
+        if (acc) for (const l of set) acc.add(l);
+        else lines.set(f, new Set(set));
+      }
+    }
+    entry.unresolved = unresolvedOn(ctxByFile, projectTypes, project.cross_file_calls, lines, first.sink);
     paths.push(entry);
     for (const v of all) {
       files.add(v.source.file);

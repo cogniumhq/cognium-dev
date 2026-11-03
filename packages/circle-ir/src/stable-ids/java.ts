@@ -20,6 +20,7 @@
  * method changes only the method's body id.
  */
 
+import { partialOf } from './parse-errors.js';
 import type { Node, Tree } from '../core/parser.js';
 import { Builder, placeholder } from './builder.js';
 import { bodyTokens, namedChildren } from './normalize.js';
@@ -215,5 +216,5 @@ export function deriveJavaIds(tree: Tree, filePath: string, options: StableIdOpt
     else if (c.type === 'package_declaration') skip.add(c.id);
   }
   builder.setBody(moduleDecl, bodyTokens([root], { replace, skip }));
-  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'java', module, decls: builder.decls, partial: root.hasError };
+  return { scheme: STABLE_ID_SCHEME, file: filePath, language: 'java', module, decls: builder.decls, ...partialOf(root) };
 }

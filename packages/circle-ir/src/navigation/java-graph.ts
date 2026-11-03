@@ -31,6 +31,8 @@ import { DEFAULT_JAVA_ENTRY_TABLES, type JavaEntryTables } from './java-entry-ta
 import type { EntryCertainty, EntryKind } from './ts-entry-tables.js';
 import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from './ts-call-edges.js';
 import { joinRoutePath } from './ts-call-edges.js';
+import { factsToArrow, type FactsArrow, type FactsArrowOptions } from '../facts/arrow.js';
+import { javaGraphFactSet, type JavaImportRow } from '../facts/java-facts.js';
 
 export const JAVA_GRAPH_SCHEME = 'java-graph@0.1' as const;
 
@@ -48,6 +50,18 @@ export interface JavaGraphOptions {
   /** Files run as programs, in addition to `main` methods. */
   mainFiles?: readonly string[];
   entryTables?: JavaEntryTables;
+  /**
+   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2) as
+   * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
+   * graph as a post-pass (relations are sets: exact duplicates of the graph's
+   * rows collapse, counted in the manifest); `flow` comes from each file's
+   * DFG on fixed-width `ids@0.1` node ids. Off by default, and when off the graph is
+   * exactly what it was: no `facts` key, same JSON. Needs the optional
+   * dependency `apache-arrow`.
+   */
+  emitFacts?: 'arrow';
+  /** Metadata written with the facts (`engine`, `parser`); only read with `emitFacts`. */
+  facts?: FactsArrowOptions;
 }
 
 export interface JavaGraph {
@@ -65,6 +79,20 @@ export interface JavaGraph {
   typeOnly: string[];
   /** Call sites from the navigation index; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
+  /** The `facts@1` relations as Arrow IPC bytes; present only under `emitFacts: 'arrow'`. */
+  facts?: FactsArrow;
+}
+
+/** Every `import` of a file, as the `facts@1` `imports` relation records it (static imports included). */
+function importRows(root: Node): JavaImportRow[] {
+  const out: JavaImportRow[] = [];
+  for (const c of namedChildren(root)) {
+    if (c.type !== 'import_declaration') continue;
+    const text = c.text.replace(/^import\s+/, '').replace(/;\s*$/, '').replace(/^static\s+/, '').replace(/\s+/g, '');
+    if (text.endsWith('.*')) out.push({ target: text.slice(0, -2), wildcard: true });
+    else out.push({ target: text, wildcard: false });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +203,8 @@ class JavaGraphBuilder {
   readonly references: ReferenceEdge[] = [];
   readonly unresolved: UnresolvedCall[] = [];
   readonly unresolvedRegistrations: UnresolvedRegistration[] = [];
+  /** Registrations with a `bound`, filled with `boundTypes` once the type hierarchy is known (#1092). */
+  readonly pendingBounds: UnresolvedRegistration[] = [];
   readonly typeOnly = new Set<string>();
   private readonly typesBySimple = new Map<string, StableDecl[]>();
   private readonly typesByQname = new Map<string, StableDecl>();
@@ -327,18 +357,25 @@ class JavaGraphBuilder {
     const target = parts[0];
     const last = parts[parts.length - 1];
     const isNew = node.text.trimEnd().endsWith('::new');
+    // #1093: `T[]::new` creates an array; it calls no declared constructor.
+    if (isNew && target?.type === 'array_type') return;
     const name = isNew ? 'constructor' : last?.text ?? '';
     const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
     const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
     let types: StableDecl[] = [];
+    let typeName: string | null = null;
     if (target?.type === 'this' || target?.type === 'super') {
       // The enclosing class's own methods (an inherited one is reached through the call graph's types).
       let enclosing = ctx.locate(site.line, site.col);
       while (enclosing && enclosing.kind !== 'type') enclosing = ctx.ids.decls.find(d => d.id === enclosing?.parent) ?? null;
       if (enclosing) types = [enclosing];
-    } else if (target && (target.type === 'identifier' || target.type === 'type_identifier' || target.type === 'scoped_type_identifier' || target.type === 'generic_type')) {
-      const simple = target.text.replace(/<.*$/s, '').split('.').pop() ?? '';
+    } else if (target && (target.type === 'identifier' || target.type === 'type_identifier' || target.type === 'scoped_type_identifier' || target.type === 'generic_type'
+      // #1093: a qualified type before `::new` (`java.util.LinkedList::new`) parses as an expression
+      || (isNew && (target.type === 'field_access' || target.type === 'scoped_identifier')))) {
+      const written = target.text.replace(/<.*$/s, '');
+      const simple = written.split('.').pop() ?? '';
       const fqnPkg = ctx.imports.explicit.get(simple);
+      typeName = written.includes('.') ? written : fqnPkg ? `${fqnPkg}.${simple}` : simple;
       const all = this.typesBySimple.get(simple) ?? [];
       const exact = fqnPkg ? all.filter(t => t.qualified_name === `${fqnPkg}:${simple}`) : all.filter(t => t.qualified_name.startsWith(`${ctx.imports.pkg || '<default>'}:`));
       types = exact.length > 0 ? exact : all;
@@ -346,6 +383,12 @@ class JavaGraphBuilder {
     const targets = types.flatMap(t => this.files.flatMap(f => f.ids.decls.filter(d => d.parent === t.id && d.kind === 'method' && d.name === name)));
     if (isNew && targets.length === 0) targets.push(...types);
     if (targets.length === 0) {
+      // #1093: `Ext::new` on a type that is not declared in the tree is a call into a
+      // library, like `new Ext()`: external, naming its receiver, not every constructor.
+      if (isNew && types.length === 0 && typeName) {
+        this.unresolved.push({ from, methodName: name, site, reason: 'external', evidence: 'constructor reference to a type outside the tree', receiver: typeName });
+        return;
+      }
       this.unresolved.push({ from, methodName: name, site, reason: 'dynamic', evidence: 'method reference not tied to a declaration' });
       return;
     }
@@ -357,11 +400,28 @@ class JavaGraphBuilder {
     const args = node.childForFieldName('arguments');
     const first = args ? namedChildren(args)[0] : undefined;
     const site: CallEdgeSite = { file: ctx.path, line: node.startPosition.row + 1, col: node.startPosition.column };
-    if (first?.type !== 'string_literal') {
-      this.unresolvedRegistrations.push({ site, reason: 'handler-unresolved', evidence: 'Class.forName with a computed name' });
+    if (first?.type === 'string_literal') {
+      this.reflect(stringsOf(first)[0] ?? '', ctx.path, 'Class.forName');
       return;
     }
-    this.reflect(stringsOf(first)[0] ?? '', ctx.path, 'Class.forName');
+    // #1092: a local (or static final field) whose every assignment is a string literal
+    // is the literal case: each name is a reflection entry, a name outside the tree nothing.
+    const method = enclosingBody(node);
+    if (first?.type === 'identifier' && method) {
+      const names = constantStrings(method, first.text, node);
+      if (names) {
+        for (const n of names) this.reflect(n, ctx.path, 'Class.forName (local constant)');
+        return;
+      }
+    }
+    const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
+    const bound = method ? boundTypeNames(method.text) : [];
+    const reg: UnresolvedRegistration = { site, reason: 'handler-unresolved', evidence: 'Class.forName with a computed name', from };
+    if (bound.length > 0) {
+      reg.bound = bound.map(b => resolveTypeName(b, ctx));
+      this.pendingBounds.push(reg);
+    }
+    this.unresolvedRegistrations.push(reg);
   }
 
   reflect(fqn: string, file: string, evidence: string): void {
@@ -414,6 +474,30 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
 
     // Call edges from the navigation index, keyed to declaration ids.
     const index = buildNavigationIndex(irs.map(f => ({ path: f.path, language: 'java' as const, ir: f.ir, source: f.code })));
+    // #1092: a bound names the in-tree types that are it or extend / implement it.
+    if (b.pendingBounds.length > 0) {
+      const typeIdByFqn = new Map<string, string>();
+      for (const c of ctxs) for (const d of c.ids.decls) {
+        if (d.kind !== 'type') continue;
+        const [pkg, path] = d.qualified_name.split(':');
+        typeIdByFqn.set(pkg && pkg !== '<default>' ? `${pkg}.${path}` : path, d.id);
+      }
+      const pkgByFile = new Map(ctxs.map(c => [c.path, c.imports.pkg]));
+      for (const reg of b.pendingBounds) {
+        const ids = new Set<string>();
+        for (const name of reg.bound ?? []) {
+          const pkg = pkgByFile.get(reg.site.file) ?? '';
+          const cands = name.includes('.') ? [name] : [pkg ? `${pkg}.${name}` : name, `java.lang.${name}`, name];
+          for (const c of cands) {
+            for (const fqn of [c, ...index.subtypesOf(c)]) {
+              const id = typeIdByFqn.get(fqn) ?? typeIdByFqn.get(fqn.replace(/\$/g, '.'));
+              if (id) ids.add(id);
+            }
+          }
+        }
+        reg.boundTypes = [...ids].sort();
+      }
+    }
     const byPath = new Map(ctxs.map(c => [c.path, c]));
     const keyOf = (t: IndexedTarget): StableDecl | undefined => {
       const ctx = byPath.get(t.file);
@@ -430,7 +514,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       const site: CallEdgeSite = s.site;
       const from = (ctx.locate(site.line, site.col) ?? ctx.ids.decls[0]).id;
       if (s.kind === 'unresolved') {
-        b.unresolved.push({ from, methodName: s.methodName, site, reason: s.reason, evidence: 'navigation index' });
+        b.unresolved.push({ from, methodName: s.methodName, site, reason: s.reason, evidence: 'navigation index', ...(s.receiver ? { receiver: s.receiver } : {}) });
         continue;
       }
       const declaring = keyOf(s.declaring);
@@ -467,7 +551,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
         seen.add(k);
         return true;
       });
-    return {
+    const graph: JavaGraph = {
       scheme: JAVA_GRAPH_SCHEME,
       ids: 'ids@0.1',
       files: ctxs.map(c => c.ids),
@@ -482,7 +566,113 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
       typeOnly: [...b.typeOnly].sort(),
       sites: sites.filter(s => byPath.has(s.site.file)).length,
     };
+    if (options.emitFacts === 'arrow') {
+      const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode), dfg: irs[i].ir.dfg }));
+      graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), { source: JAVA_GRAPH_SCHEME, ...options.facts });
+    }
+    return graph;
   } finally {
     for (const t of trees) disposeTree(t);
   }
 }
+
+/** The method, constructor, initializer or lambda body enclosing `node` (#1092). */
+function enclosingBody(node: Node): Node | null {
+  let n: Node | null = node.parent;
+  while (n && !['method_declaration', 'constructor_declaration', 'static_initializer', 'lambda_expression', 'class_body'].includes(n.type)) n = n.parent;
+  return n && n.type !== 'class_body' ? n : null;
+}
+
+/** Whether `n` directly declares the local `name` (a `local_variable_declaration` child). */
+function declaresLocal(n: Node, name: string): boolean {
+  return namedChildren(n).some(c => c.type === 'local_variable_declaration'
+    && namedChildren(c).some(d => d.type === 'variable_declarator' && d.childForFieldName('name')?.text === name));
+}
+
+/** The innermost node between `at` and `body` that declares the local `name`, if any. */
+function declaringBlock(at: Node, body: Node, name: string): Node | null {
+  for (let n: Node | null = at.parent; n && n !== body; n = n.parent) if (declaresLocal(n, name)) return n;
+  return null;
+}
+
+/**
+ * The string literals `name` can hold at a `Class.forName(name)` in `body` (#1092): every
+ * local declaration and assignment of it in the body is a string literal, or it is a
+ * `static final String` field of the enclosing class with a literal value. A `null`
+ * value names no class (`Class.forName(null)` throws) and adds nothing. Null when any
+ * assignment is not a literal, or nothing assigns it. Only the local in scope at `at` is
+ * read: a same-named local declared in a sibling block is another variable.
+ */
+function constantStrings(body: Node, name: string, at: Node): string[] | null {
+  const values: string[] = [];
+  const scope = declaringBlock(at, body, name) ?? body;
+  let other = false;
+  const visit = (n: Node): void => {
+    // another block declaring `name` holds a different variable (a sibling scope)
+    if (n !== scope && declaresLocal(n, name)) return;
+    if (n.type === 'variable_declarator' && n.childForFieldName('name')?.text === name) {
+      const v = n.childForFieldName('value');
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v && v.type !== 'null_literal') other = true;
+    } else if (n.type === 'assignment_expression' && n.childForFieldName('left')?.text === name) {
+      const v = n.childForFieldName('right');
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v?.type !== 'null_literal') other = true;
+    } else if ((n.type === 'formal_parameter' || n.type === 'catch_formal_parameter') && n.childForFieldName('name')?.text === name) {
+      other = true;
+    }
+    for (const c of namedChildren(n)) visit(c);
+  };
+  visit(scope);
+  if (other) return null;
+  if (values.length > 0) return values;
+  // a static final String field of the enclosing class
+  let cls: Node | null = body.parent;
+  while (cls && cls.type !== 'class_body') cls = cls.parent;
+  for (const f of cls ? namedChildren(cls).filter(m => m.type === 'field_declaration') : []) {
+    const mods = f.children.find(ch => ch.type === 'modifiers')?.text ?? '';
+    if (!/\bstatic\b/.test(mods) || !/\bfinal\b/.test(mods)) continue;
+    for (const d of namedChildren(f).filter(x => x.type === 'variable_declarator')) {
+      if (d.childForFieldName('name')?.text !== name) continue;
+      const v = d.childForFieldName('value');
+      return v?.type === 'string_literal' ? stringsOf(v) : null;
+    }
+  }
+  return null;
+}
+
+/** A type as written: a capitalised simple name, optionally package-qualified (`java.security.Provider`). */
+const TYPE = String.raw`(?:[a-z_$][\w$]*\.)*[A-Z][\w$.]*`;
+const CAST_NEW_INSTANCE = new RegExp(String.raw`\(\s*(${TYPE}(?:<[^()]*>)?)\s*\)\s*[\w$.\s]*?(?:\.\s*getDeclaredConstructor\s*\([^)]*\)|\.\s*getConstructor\s*\([^)]*\))?\s*\.\s*newInstance\s*\(`, 'g');
+const CAST_FORNAME_NEW_INSTANCE = new RegExp(String.raw`\(\s*(${TYPE}(?:<[^()]*>)?)\s*\)\s*Class\s*\.\s*forName\s*\([^)]*\)\s*\.\s*(?:getDeclaredConstructor|getConstructor)\s*\([^)]*\)\s*\.\s*newInstance\s*\(`, 'g');
+const INSTANCEOF = new RegExp(String.raw`\binstanceof\s+(${TYPE})`, 'g');
+
+/**
+ * The type a reflectively loaded class must be, from how the method uses it (#1092): a cast
+ * of `newInstance()` (directly or through `getDeclaredConstructor` / `getConstructor`),
+ * `asSubclass(T.class)`, `instanceof T` (also with a pattern variable), `T.class.isAssignableFrom(…)`,
+ * or a `getSuperclass()` walk compared with `== T.class`, directly or through a variable the
+ * walk assigns (`s = c.getSuperclass(); … if (s == T.class)`). Names as written, simple or package-qualified,
+ * generics stripped.
+ */
+function boundTypeNames(text: string): string[] {
+  const out = new Set<string>();
+  const add = (t: string | undefined) => { const c = (t ?? '').replace(/<.*$/s, '').trim(); if (/^[A-Za-z_$][\w$.]*$/.test(c) && c !== 'Object' && !c.endsWith('.class')) out.add(c); };
+  for (const m of text.matchAll(CAST_NEW_INSTANCE)) add(m[1]);
+  for (const m of text.matchAll(CAST_FORNAME_NEW_INSTANCE)) add(m[1]);
+  for (const m of text.matchAll(/\.\s*asSubclass\s*\(\s*([\w$.]+)\s*\.\s*class\s*\)/g)) add(m[1]);
+  for (const m of text.matchAll(INSTANCEOF)) add(m[1]);
+  for (const m of text.matchAll(/\b([\w$.]+)\s*\.\s*class\s*\.\s*isAssignableFrom\s*\(/g)) add(m[1]);
+  for (const m of text.matchAll(/getSuperclass\s*\(\s*\)\s*==\s*([\w$.]+)\s*\.\s*class/g)) add(m[1]);
+  // a walk through a variable: `s = c.getSuperclass(); while (s != null) { if (s == T.class) … }`
+  for (const w of text.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*[\w$.]+\s*\.\s*getSuperclass\s*\(\s*\)/g)) {
+    const v = w[1].replace(/[$]/g, '\\$&');
+    for (const m of text.matchAll(new RegExp(String.raw`\b${v}\s*==\s*([\w$.]+)\s*\.\s*class\b`, 'g'))) add(m[1]);
+  }
+  return [...out].sort();
+}
+
+/** A type name as written, qualified through the file's explicit imports when it is simple. */
+function resolveTypeName(name: string, ctx: FileCtx): string {
+  if (name.includes('.')) return name;
+  return ctx.imports.explicit.get(name) ? `${ctx.imports.explicit.get(name)}.${name}` : name;
+}
+
