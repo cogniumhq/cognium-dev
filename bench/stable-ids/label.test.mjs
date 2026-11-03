@@ -108,6 +108,14 @@ test('reordered signature tokens are set aside', () => {
   const r = one('function f(a: A | B) {}\n', 'function f(a: B | A) {}\n');
   assert.equal(outcome(r.by.f), 'judgement:signature-order');
   assert.equal(outcome(r.by['<file>']), 'judgement:member-header');
+  const t = one('function f(a: { x: number; y: string }) {}\n', 'function f(a: { y: string, x: number }) {}\n');
+  assert.equal(outcome(t.by.f), 'judgement:signature-order');
+});
+
+test('swapped parameter types are a signature change, not a reorder', () => {
+  const r = one('function f(a: string, b: number) {}\n', 'function f(a: number, b: string) {}\n');
+  assert.equal(outcome(r.by.f), 'changed:identity');
+  assert.equal(r.by.f.reason, 'signature');
 });
 
 test('a rename is an identity change with reason renamed', () => {
