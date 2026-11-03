@@ -38,6 +38,18 @@ cognium-dev/
 - **No cross-repo modifications (CRITICAL)** — Claude tooling operating in the cognium-dev workspace **must not** create, edit, delete, `npm install`, `bun install`, `git`-touch, or otherwise modify any file outside `/Users/eyal/work/cogniumhq/cognium-dev/` (i.e. outside `packages/circle-ir/` and `packages/cli/`). Sibling repositories (`cognium-ai`, `circle-ir-ai`, `testharness`, `techspec`, etc.) are owned by their own teams and their own Claude sessions. When cognium-dev work has cross-repo implications (dep bumps, breaking API changes, harness reruns, npm publishing), **do not touch the other repo**: surface a handoff spec here in chat (versions, exact commands, expected diffs, comparison baselines) so the human can hand it off to the owning team. Read-only inspection of sibling repos (e.g. `Read`, `Grep`) is allowed for context gathering; any mutating operation is not.
 - **Public repository** — Do not copy text, code, or notes from any other checkout into this repo. Do not add scan output, customer findings, tokens, private keys, or unpublished internal design. See `.cursor/rules/public-repo.mdc`.
 
+## Running a Cognium track here
+
+Whoever runs a Cognium track in this repository starts at techspec `tracks/<track>/START.md` and follows techspec `skills/track-runner/SKILL.md`. The five rules, one line each:
+
+1. **Claim before you work:** set the "Running now / claimed by" line in techspec `tracks/<track>/STATUS.md` (name, story, time), push it first, clear it when you stop; if someone else claimed that story and pushed in the last 2 hours, pick another.
+2. **Write only in your track's repos** (techspec, your code repos, your customer repo); never write `cogniumhq/context`: what belongs there is a "For control tower:" line in your session note.
+3. **Checkpoint at every milestone and at least hourly:** `STATUS.md` and the day's `tracks/<track>/sessions/YYYY-MM-DD.md`; commit and push every branch, even unfinished ones.
+4. **PRs only:** branch from main, open PRs ready; never push to main, force-push or rebase a pushed branch; merge inside your own track only with CI green and an approver who isn't the author; anything that publishes, deploys, spends, changes canon or a contract, changes ownership, or goes to a customer waits for Eyal.
+5. **Customer material stays in its customer repo:** nothing goes to a customer without Eyal's yes; never print secrets.
+
+This repository's guardrails above win where they are stricter. It is public: no customer names, internal hostnames or track records go here. The claim, checkpoints and session notes live in techspec; write them from a separate techspec checkout, never from a session working in this repository (its "No cross-repo modifications" rule stands).
+
 ## Build Commands
 
 ```bash
