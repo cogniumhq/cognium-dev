@@ -31,6 +31,7 @@ import {
   mavenArtifact,
   entryIndexDigest,
   partialFileDetails,
+  registrationFileKind,
   removalReach,
   type DeadCodeFact,
   type DeadCodeResult,
@@ -40,6 +41,7 @@ import {
   type Facts2Arrow,
   type PartialFile,
   type ReachInput,
+  type RegistrationFile,
   type RemovalReachResult,
   type StableIdFile,
   type TsPackageManifest,
@@ -53,7 +55,7 @@ import { STRUCTURE_SKIPPED_DIRECTORIES } from './utils/skip-dirs.js';
 export type GraphLanguage = 'typescript' | 'java' | 'python' | 'go';
 
 export const ENTRY_KINDS = [
-  'route', 'listener', 'scheduled', 'main', 'export', 'bean', 'reflection', 'lifecycle', 'test',
+  'route', 'listener', 'scheduled', 'main', 'export', 'bean', 'reflection', 'lifecycle', 'test', 'osgi-ds', 'extension-point',
 ] as const satisfies readonly EntryKind[];
 
 export const VERDICTS = ['live', 'may-be-live', 'dead'] as const satisfies readonly DeadCodeFact['verdict'][];
@@ -108,6 +110,8 @@ export interface DeadCodeCliOptions {
   rootKinds?: EntryKind[];
   verdicts: DeadCodeFact['verdict'][];
   boundRegistrations: boolean;
+  /** Java: the public types of `Export-Package` packages are `export` entries (a library's surface). */
+  exportedPackages: boolean;
   output?: string;
 }
 
@@ -117,6 +121,7 @@ export interface ReachCliOptions {
   rootKinds?: EntryKind[];
   base: string;
   boundRegistrations: boolean;
+  exportedPackages: boolean;
   output?: string;
 }
 
@@ -124,6 +129,7 @@ export interface EntriesCliOptions {
   language?: GraphLanguage;
   format: 'text' | 'json';
   output?: string;
+  exportedPackages: boolean;
   /**
    * Directory for the `facts@1` relations (proposed; graph-store plan T2) as
    * Arrow IPC files plus `manifest.json`, written after the graph is built.
@@ -149,6 +155,13 @@ export interface DepCallsCliOptions {
 
 type Raw = Record<string, string | boolean | undefined>;
 
+/** `--exported-packages`: Java only. */
+function parseExportedPackages(o: Raw, language: GraphLanguage | undefined): boolean {
+  const on = o['exported-packages'] === true;
+  if (on && language !== undefined && language !== 'java') throw new UsageError('--exported-packages is available for --language java only');
+  return on;
+}
+
 function optionalString(name: string, raw: unknown): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || raw.trim() === '') throw new UsageError(`--${name} requires a value`);
@@ -156,12 +169,14 @@ function optionalString(name: string, raw: unknown): string | undefined {
 }
 
 export function parseDeadCodeOptions(o: Raw): DeadCodeCliOptions {
+  const language = parseGraphLanguage(o.language ?? o.l);
   return {
-    language: parseGraphLanguage(o.language ?? o.l),
+    language,
     format: parseFormat(o.format ?? o.f, ['text', 'json', 'sarif'] as const, 'text'),
     rootKinds: parseRootKinds(o['root-kinds']),
     verdicts: parseVerdicts(o.verdicts) ?? ['dead', 'may-be-live'],
     boundRegistrations: o['bound-registrations'] === true,
+    exportedPackages: parseExportedPackages(o, language),
     output: optionalString('output', o.output ?? o.o),
   };
 }
@@ -171,12 +186,14 @@ export function parseReachOptions(o: Raw): ReachCliOptions {
   if (base === undefined || typeof base !== 'string' || base.trim() === '') {
     throw new UsageError('reach requires --base <git-ref-or-directory>');
   }
+  const language = parseGraphLanguage(o.language ?? o.l);
   return {
-    language: parseGraphLanguage(o.language ?? o.l),
+    language,
     format: parseFormat(o.format ?? o.f, ['text', 'json', 'sarif'] as const, 'text'),
     rootKinds: parseRootKinds(o['root-kinds']),
     base,
     boundRegistrations: o['bound-registrations'] === true,
+    exportedPackages: parseExportedPackages(o, language),
     output: optionalString('output', o.output ?? o.o),
   };
 }
@@ -196,6 +213,7 @@ export function parseEntriesOptions(o: Raw): EntriesCliOptions {
     language,
     format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
     output: optionalString('output', o.output ?? o.o),
+    exportedPackages: parseExportedPackages(o, language),
     ...(factsArrow !== undefined ? { factsArrow } : {}),
     ...(scheme !== undefined ? { factsScheme: scheme as FactsSchemeName } : {}),
   };
@@ -303,6 +321,16 @@ function serviceFiles(root: string): { path: string; text: string }[] {
     .map((path) => ({ path, text: readFileSync(join(root, path), 'utf-8') }));
 }
 
+/**
+ * The registering files circle-ir reads Java entries from (OSGi DS
+ * `OSGI-INF/*.xml`, `META-INF/MANIFEST.MF`, `plugin.xml`, `web.xml`, …),
+ * chosen by the library's own rule; it reads no files itself.
+ */
+export function registrationFiles(root: string): RegistrationFile[] {
+  return walk(root, (rel) => registrationFileKind(rel) !== null)
+    .map((path) => ({ path, text: readFileSync(join(root, path), 'utf-8') }));
+}
+
 const FAMILY_NAMES: Record<GraphLanguage, string> = {
   typescript: 'TypeScript/JavaScript', java: 'Java', python: 'Python', go: 'Go',
 };
@@ -325,7 +353,8 @@ export function pickLanguage(roots: readonly string[], asked?: GraphLanguage): G
 }
 
 /** The engine's reach input for one tree: its call graph with the entry index. */
-export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow'; factsScheme?: FactsSchemeName } = {}): Promise<ReachInput & { facts?: FactsArrow | Facts2Arrow }> {
+export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow'; factsScheme?: FactsSchemeName; exportedPackages?: boolean } = {}): Promise<ReachInput & { facts?: FactsArrow | Facts2Arrow }> {
+  if (graphOptions.exportedPackages && language !== 'java') throw new UsageError('--exported-packages is available for Java trees only');
   if (language === 'java') {
     const facts = graphOptions.emitFacts === 'arrow'
       ? {
@@ -334,7 +363,12 @@ export async function buildGraph(root: string, language: GraphLanguage, graphOpt
         facts: { engine: `circle-ir@${engineIdentity().version}` },
       }
       : {};
-    return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root), ...facts });
+    return buildJavaGraph(sources(root, 'java'), {
+      serviceFiles: serviceFiles(root),
+      registrationFiles: registrationFiles(root),
+      ...(graphOptions.exportedPackages ? { exportedPackages: true } : {}),
+      ...facts,
+    });
   }
   if (language === 'python') return buildPythonGraph(sources(root, 'python'), { consoleScripts: consoleScripts(root) });
   if (language === 'go') {
@@ -433,7 +467,7 @@ function declLocations(files: readonly StableIdFile[]): Record<string, [number, 
 export async function computeDeadCode(path: string, opts: DeadCodeCliOptions): Promise<DeadCodeReport> {
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
-  const graph = await buildGraph(root, language);
+  const graph = await buildGraph(root, language, { exportedPackages: opts.exportedPackages });
   const result = deadCode(graph, { ...(opts.rootKinds ? { rootKinds: opts.rootKinds } : {}), boundRegistrations: opts.boundRegistrations });
   const wanted = new Set(opts.verdicts);
   const facts = result.facts.filter((f) => wanted.has(f.verdict));
@@ -470,7 +504,7 @@ export async function computeReach(path: string, opts: ReachCliOptions): Promise
   const base = materializeBase(head, opts.base);
   try {
     const language = pickLanguage([base.dir, head], opts.language);
-    const baseGraph = await buildGraph(base.dir, language);
+    const baseGraph = await buildGraph(base.dir, language, { exportedPackages: opts.exportedPackages });
     const result = removalReach(baseGraph, await headIds(head, language), { ...(opts.rootKinds ? { rootKinds: opts.rootKinds } : {}), boundRegistrations: opts.boundRegistrations });
     return {
       root: head,
@@ -519,7 +553,7 @@ export async function computeEntries(path: string, opts: EntriesCliOptions): Pro
   const language = pickLanguage([root], opts.language);
   if (opts.factsArrow !== undefined && language !== 'java') throw new UsageError('--facts-arrow is available for Java trees only');
   const scheme = opts.factsScheme ?? 'facts@1';
-  const graph = await buildGraph(root, language, opts.factsArrow !== undefined ? { emitFacts: 'arrow', factsScheme: scheme } : {});
+  const graph = await buildGraph(root, language, { exportedPackages: opts.exportedPackages, ...(opts.factsArrow !== undefined ? { emitFacts: 'arrow' as const, factsScheme: scheme } : {}) });
   if (opts.factsArrow !== undefined) {
     if (!graph.facts) throw new Error(`${scheme}: the engine returned no facts`);
     writeFactsArrow(opts.factsArrow, graph.facts);
@@ -589,7 +623,7 @@ export async function computeDepCalls(path: string, opts: DepCallsCliOptions): P
   const found = opts.jar ?? mavenJarPath(opts.artifact, repo) ?? undefined;
   if (opts.jar && !existsSync(opts.jar)) throw new UsageError(`--jar '${opts.jar}' does not exist`);
   const jarPath = found && existsSync(found) ? found : undefined;
-  const graph = await buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root) });
+  const graph = await buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root), registrationFiles: registrationFiles(root) });
   let result: DependencyCallsResult;
   try {
     result = dependencyCalls(graph, jarPath ? { artifact: opts.artifact, jar: readFileSync(jarPath) } : { artifact: opts.artifact });

@@ -9,6 +9,7 @@ export {
   ReachGraph,
   reach,
   walkFrom,
+  type WalkRoot,
   reachedIds,
   couldReach,
   COMPUTED_LOAD,

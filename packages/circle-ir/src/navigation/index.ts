@@ -72,6 +72,15 @@ export {
   type PythonGraph,
 } from './python-graph.js';
 export {
+  registrationFileKind,
+  scanRegistrations,
+  type RegistrationFile,
+  type RegistrationFileKind,
+  type Registration,
+  type RegistrationScan,
+  type ExportedPackage,
+} from './java-registrations.js';
+export {
   DEFAULT_JAVA_ENTRY_TABLES,
   type JavaEntryTables,
   type JavaAnnotationRow,

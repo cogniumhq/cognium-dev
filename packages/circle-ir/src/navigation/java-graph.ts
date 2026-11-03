@@ -12,11 +12,15 @@
  * - **Entries** (`entry-index@0.1`): Spring and JAX-RS routes with class
  *   prefixes, servlets and filters, Spring beans, lifecycle, scheduled and
  *   listener methods, `main`, JUnit/TestNG tests and test files,
- *   `Class.forName` literals and `META-INF/services` files.
+ *   `Class.forName` literals and `META-INF/services` files; and the classes
+ *   and methods registering files name (OSGi DS component descriptions,
+ *   `MANIFEST.MF`, Eclipse `plugin.xml`, servlet `web.xml`; see
+ *   `java-registrations.ts`).
  * - **typeOnly**: interfaces, annotation types and body-less methods.
  *
  * Library code: no file access; the caller passes the sources (and may pass
- * each file's IR, which must come from `analyze` with `navigationTypes`).
+ * each file's IR, which must come from `analyze` with `navigationTypes`) and
+ * any registering files as text.
  */
 
 import { analyze } from '../analyzer.js';
@@ -28,6 +32,7 @@ import type { StableDecl, StableIdFile } from '../stable-ids/types.js';
 import type { CircleIR } from '../types/index.js';
 import { buildNavigationIndex, type IndexedTarget } from './navigation-index.js';
 import { DEFAULT_JAVA_ENTRY_TABLES, type JavaEntryTables } from './java-entry-tables.js';
+import { scanRegistrations, type RegistrationFile, type RegistrationScan } from './java-registrations.js';
 import type { EntryCertainty, EntryKind } from './ts-entry-tables.js';
 import type { CallEdge, CallEdgeSite, ReferenceEdge, TsEntry, UnresolvedCall, UnresolvedRegistration } from './ts-call-edges.js';
 import { joinRoutePath } from './ts-call-edges.js';
@@ -50,6 +55,23 @@ export interface JavaGraphOptions {
   serviceFiles?: readonly { path: string; text: string }[];
   /** Files run as programs, in addition to `main` methods. */
   mainFiles?: readonly string[];
+  /**
+   * Registering files, as text: OSGi DS component descriptions
+   * (`OSGI-INF/*.xml`), `META-INF/MANIFEST.MF`, Eclipse `plugin.xml` /
+   * `fragment.xml` and servlet `web.xml` / `web-fragment.xml`, recognised by
+   * path (`registrationFileKind`); other files are ignored. Each class they
+   * name is an entry on its type (`osgi-ds`, `lifecycle`, `extension-point`,
+   * `route`), each method on that method (found in the class or an in-tree
+   * superclass); a name the tree does not declare is a `manifest-unresolved`
+   * registration.
+   */
+  registrationFiles?: readonly RegistrationFile[];
+  /**
+   * The public top-level types of every `Export-Package` package in the
+   * registering files' manifests are `export` entries: a library's surface,
+   * so roots only in a library's reach. Off by default.
+   */
+  exportedPackages?: boolean;
   entryTables?: JavaEntryTables;
   /**
    * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2; or
@@ -217,6 +239,11 @@ class JavaGraphBuilder {
   readonly typeOnly = new Set<string>();
   private readonly typesBySimple = new Map<string, StableDecl[]>();
   private readonly typesByQname = new Map<string, StableDecl>();
+  /** A class's superclass as written, with the file that wrote it (registered members may be inherited). */
+  private readonly superclassOf = new Map<string, { written: string; ctx: FileCtx }>();
+  /** Public top-level types by package (`Export-Package`). */
+  private readonly publicTypesByPkg = new Map<string, StableDecl[]>();
+  private childrenByParent: Map<string, StableDecl[]> | null = null;
 
   constructor(private readonly files: FileCtx[], private readonly tables: JavaEntryTables) {
     for (const f of files) {
@@ -259,6 +286,17 @@ class JavaGraphBuilder {
     const type = declAt(ctx, node, 'type');
     if (!type) return;
     if (node.type === 'interface_declaration' || node.type === 'annotation_type_declaration') this.typeOnly.add(type.id);
+    const superclass = node.childForFieldName('superclass');
+    if (superclass) {
+      const written = superclass.text.replace(/^extends\s+/, '').replace(/<.*$/s, '').replace(/\s+/g, '');
+      if (written) this.superclassOf.set(type.id, { written, ctx });
+    }
+    if (node.parent?.type === 'program' && namedChildren(node).find(c => c.type === 'modifiers')?.children.some(c => c.type === 'public')) {
+      const pkg = ctx.imports.pkg;
+      const list = this.publicTypesByPkg.get(pkg) ?? [];
+      list.push(type);
+      this.publicTypesByPkg.set(pkg, list);
+    }
     const classAnns = annotationsOf(node, ctx.imports);
     // Class-level entries (beans).
     for (const row of this.tables.annotations) {
@@ -434,15 +472,105 @@ class JavaGraphBuilder {
   }
 
   reflect(fqn: string, file: string, evidence: string): void {
+    const t = this.typeByName(fqn);
+    if (t) this.entry(t, 'reflection', 'declared', file, evidence);
+  }
+
+  /** The tree's type for a binary (`a.B$C`) or canonical (`a.B.C`) name. */
+  private typeByName(fqn: string): StableDecl | undefined {
     const clean = fqn.trim().replace(/\$/g, '.');
     // `a.b.Outer.Inner`: try each split point between package and type path.
     const segs = clean.split('.');
     for (let i = segs.length - 1; i >= 0; i--) {
       const t = this.typesByQname.get(`${segs.slice(0, i).join('.') || '<default>'}:${segs.slice(i).join('.')}`);
-      if (t) {
-        this.entry(t, 'reflection', 'declared', file, evidence);
-        return;
+      if (t) return t;
+    }
+    return undefined;
+  }
+
+  private childrenOf(id: string): StableDecl[] {
+    if (!this.childrenByParent) {
+      this.childrenByParent = new Map();
+      for (const f of this.files) {
+        for (const d of f.ids.decls) {
+          if (d.parent === null) continue;
+          const list = this.childrenByParent.get(d.parent) ?? [];
+          list.push(d);
+          this.childrenByParent.set(d.parent, list);
+        }
       }
+    }
+    return this.childrenByParent.get(id) ?? [];
+  }
+
+  /** The in-tree superclass of a class, from its `extends` clause, the file's imports and its package. */
+  private superclass(type: StableDecl): StableDecl | undefined {
+    const s = this.superclassOf.get(type.id);
+    if (!s) return undefined;
+    const { written, ctx } = s;
+    const pkg = ctx.imports.pkg || '<default>';
+    const first = written.split('.')[0];
+    const imported = ctx.imports.explicit.get(first);
+    if (imported) return this.typesByQname.get(`${imported}:${written}`);
+    // A type nested in an enclosing type or the package, nearest first.
+    const path = type.qualified_name.slice(type.qualified_name.indexOf(':') + 1).split('.');
+    for (let i = path.length - 1; i >= 0; i--) {
+      const t = this.typesByQname.get(`${pkg}:${[...path.slice(0, i), written].join('.')}`);
+      if (t) return t;
+    }
+    if (written.includes('.')) {
+      const t = this.typeByName(written);
+      if (t) return t;
+    }
+    for (const w of ctx.imports.wildcards) {
+      const t = this.typesByQname.get(`${w}:${written}`);
+      if (t) return t;
+    }
+    return undefined;
+  }
+
+  /** The methods named `name` the type declares, else those of its nearest in-tree superclass that does. */
+  private methodsNamed(type: StableDecl, name: string): StableDecl[] {
+    const seen = new Set<string>();
+    for (let t: StableDecl | undefined = type; t && !seen.has(t.id); t = this.superclass(t)) {
+      seen.add(t.id);
+      const ms = this.childrenOf(t.id).filter(d => d.kind === 'method' && d.name === name);
+      if (ms.length > 0) return ms;
+    }
+    return [];
+  }
+
+  /**
+   * Entries for what registering files name: a class's type, a member's
+   * method. A name the tree does not declare is a `manifest-unresolved`
+   * registration (an optional member, the DS default lifecycle names, is
+   * nothing). Exported packages' public types only with `exportedPackages`.
+   */
+  register(scan: RegistrationScan, exportedPackages: boolean): void {
+    for (const r of scan.registrations) {
+      const site: CallEdgeSite = { file: r.file, line: r.line, col: r.col };
+      const type = this.typeByName(r.className);
+      const targets = !type ? [] : r.member ? this.methodsNamed(type, r.member) : [type];
+      if (targets.length === 0) {
+        if (!r.optional) {
+          const what = type ? `${r.className}#${r.member ?? ''} is not a method of the class or an in-tree superclass` : `${r.className} is not a type in the tree`;
+          this.unresolvedRegistrations.push({ site, reason: 'manifest-unresolved', evidence: `${r.source}: ${what}` });
+        }
+        continue;
+      }
+      const extra: Partial<TsEntry> = { framework: r.framework };
+      if (r.method) extra.method = r.method;
+      if (r.path !== undefined) extra.path = r.path;
+      if (r.surface) extra.surface = r.surface;
+      for (const d of targets) this.entries.push({ id: d.id, kind: r.kind, certainty: r.certainty, file: r.file, line: r.line, evidence: r.source, ...extra });
+    }
+    if (!exportedPackages) return;
+    for (const p of scan.exportedPackages) {
+      const types = this.publicTypesByPkg.get(p.name) ?? [];
+      if (types.length === 0) {
+        this.unresolvedRegistrations.push({ site: { file: p.file, line: p.line, col: 0 }, reason: 'manifest-unresolved', evidence: `Export-Package: ${p.name} has no public type in the tree` });
+      }
+      for (const t of types) this.entries.push({ id: t.id, kind: 'export', certainty: 'declared', file: p.file, line: p.line, evidence: 'Export-Package', framework: 'osgi' });
     }
   }
 }
@@ -479,6 +607,10 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     for (const m of options.mainFiles ?? []) {
       const ctx = ctxs.find(c => c.path === m);
       if (ctx) b.entries.push({ id: ctx.ids.decls[0].id, kind: 'main', certainty: 'declared', file: ctx.path, line: 1, evidence: 'program file given by the caller' });
+    }
+    if (options.registrationFiles && options.registrationFiles.length > 0) {
+      const regs = [...options.registrationFiles].sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+      b.register(scanRegistrations(regs), options.exportedPackages === true);
     }
 
     // Call edges from the navigation index, keyed to declaration ids.
