@@ -144,7 +144,8 @@ ids that are exposed some other way, copy it and change `derive`.
 For each labelled declaration the harness finds the provider's declaration:
 the file's root for the file; otherwise the innermost declaration with the
 same name whose lines hold the label's name line; failing that, the innermost
-one starting on the label's first line or name line. It then looks for the
+one starting on the label's first line or name line (declarations the provider
+flags `unstable:anonymous` only when it has no others). It then looks for the
 same `id` among the later commit's declarations and predicts **stable** (same
 `id` and `body_id`), **body** (same `id`, other `body_id`), **identity** (no
 such `id`) or **none** (no provider declaration). A stable prediction is

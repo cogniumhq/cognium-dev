@@ -18,6 +18,9 @@ test('joinDecl: the file, then name and line, then start line', () => {
   assert.equal(joinDecl(decls, { name: 'other', line: 9, start: 12, kind: 'function' }).id, 'f');
   assert.equal(joinDecl(decls, { name: 'zzz', line: 30, start: 30 }), null);
   assert.equal(joinDecl(undefined, { isFile: true }), null);
+  // a nested function named after the field it is assigned to does not win
+  const nested = { ...d('n', 'x', 'h', 3, 3, 'fld'), flags: ['unstable:anonymous'] };
+  assert.equal(joinDecl([d('m', 'x', 'mod', 1, 9, null, 'module'), d('fld', 'x', 'h', 3, 4, 'm', 'field'), nested], { name: 'h', line: 3, start: 3 }).id, 'fld');
 });
 
 test('scorePair: true and false stable, misses, judgements, unjoined', () => {
