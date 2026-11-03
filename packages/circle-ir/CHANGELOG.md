@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **TS/JS: `.get()` on a Map/WeakMap receiver is no longer a `db_input` source (#985 S3).** `this.memoryCache.get(digest)` with `memoryCache = new Map()` matched the `cache.get` source by receiver name and paired with an unrelated `.get()` SQL sink on the next line, reported as a critical sql_injection. The #997/#1061 Map evidence (a `new Map()`/`new WeakMap()` initialiser or a `Map<…>`-typed declaration in the file) now gates `db_input` sources too; an untyped or injected receiver (`this.redisCache = c`) keeps the source.
 - **java-graph: `Class.forName(<computed>)` registrations no longer name every declaration** (#1092). Removal reach and dead code attached each `handler-unresolved` registration to every declaration without a strong path; on iDempiere, 26 sites held 25,707 of 39,869 may-be-live declarations. Three changes:
   - **Scope:** a registration carries `from`, the body that holds the site, and counts only when that body is reached, the rule unresolved calls already follow.
   - **Local constant:** a local, or a `static final String` field, whose every assignment is a string literal (a `null` value names no class and adds nothing) is the literal case. Each name becomes a `reflection` entry, and a name outside the tree gives nothing.

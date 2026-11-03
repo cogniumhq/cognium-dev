@@ -366,7 +366,18 @@ function findSources(
 
   // Check method calls
   for (const call of calls) {
+    // cognium-dev#985 — the source twin of #997/#1061: `this.memoryCache.get(k)`
+    // with `memoryCache = new Map()` matched the JS/TS `cache.get` db_input
+    // source through the receiver-name heuristic, then paired with an unrelated
+    // `.get()` SQL sink on the next line. A receiver this file declares as a
+    // Map/WeakMap is an in-memory lookup, not a cache or database read. An
+    // untyped or injected receiver (`this.redisCache = c`) keeps the source.
+    const inMemoryMapGet =
+      call.method_name === 'get' &&
+      (language === 'javascript' || language === 'typescript') &&
+      isInMemoryMapGetReceiver(call.receiver, sourceLines);
     for (const pattern of patternsForLanguage) {
+      if (inMemoryMapGet && pattern.type === 'db_input') continue;
       if (matchesSourcePattern(call, pattern, language, types, imports)) {
         sources.push({
           type: pattern.type,
