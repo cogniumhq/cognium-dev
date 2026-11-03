@@ -422,6 +422,18 @@ describe('partial files', () => {
     const graph = { ...appPlain, files: [{ ...appPlain.files[0], partial: true, parseError: undefined }] };
     expect(() => javaGraphFact2Set(graph, [{ path: APP_PATH, code: APP_JAVA, imports: [] }])).toThrow(/no parse error/);
   });
+
+  it('refuses a site above its declaration, a site owner the file does not hold, and a registration outside the graph', () => {
+    const input = [{ path: APP_PATH, code: APP_JAVA, imports: [] }];
+    const edge = appPlain.edges.find(e => e.methodName === 'area') as JavaGraph['edges'][number];
+    const above = { ...appPlain, edges: [{ ...edge, site: { ...edge.site, line: 1 } }] };
+    expect(() => javaGraphFact2Set(above, input)).toThrow(/lies above/);
+    const stranger = { ...appPlain, references: [{ ...appPlain.references[0], from: 'a'.repeat(26) }] };
+    expect(() => javaGraphFact2Set(stranger, input)).toThrow(/is not in/);
+    const outside = { ...appPlain, unresolvedRegistrations: [{ site: { file: 'src/Nope.java', line: 1, col: 0 }, reason: 'handler-unresolved' as const, evidence: 'x' }] };
+    expect(() => javaGraphFact2Set(outside, input)).toThrow(/not in the graph/);
+    expect(() => javaGraphFact2Set({ ...appPlain, ids: 'ids@0.2' as 'ids@0.1' }, input)).toThrow(/ids@0.2/);
+  });
 });
 
 describe('the #n re-key', () => {
