@@ -95,7 +95,9 @@ function detectLanguageFromTree(tree: Tree, cache?: NodeCache): 'javascript' | '
 export interface CallExtractionOptions {
   /**
    * Java only: give each argument its static type and start position
-   * (`ArgumentInfo.type` / `.location`), which overload selection needs.
+   * (`ArgumentInfo.type` / `.location`), which overload selection needs, and
+   * extract explicit constructor invocations (`super(…)`, `this(…)`) as
+   * constructor calls named `super` / `this`.
    */
   navigationTypes?: boolean;
 }
@@ -154,6 +156,15 @@ export function extractCalls(
     const callInfo = extractObjectCreation(creation, context, typed);
     if (callInfo) {
       calls.push(callInfo);
+    }
+  }
+
+  // Explicit constructor invocations (`super(…)`, `this(…)`): navigation
+  // only, so the default IR the SAST passes read is unchanged.
+  if (typed) {
+    for (const inv of getNodesFromCache(tree.rootNode, 'explicit_constructor_invocation', cache)) {
+      const callInfo = extractExplicitConstructorInvocation(inv, context);
+      if (callInfo) calls.push(callInfo);
     }
   }
 
@@ -1760,6 +1771,94 @@ function extractObjectCreation(node: Node, context: ResolutionContext, typed = f
     resolved: true,
     resolution,
   };
+}
+
+/** The Java declarations that name a type; the nesting path counts each one, as the type extractor's does. */
+const JAVA_TYPE_DECLARATIONS = new Set(['class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration']);
+
+/**
+ * An explicit constructor invocation (`super(…)`, `this(…)`, `outer.super(…)`)
+ * as a constructor call named as written, `super` or `this`, so the
+ * navigation index binds it like `new T(…)`, choosing the overload from the
+ * arguments. `receiver_type` is the class whose constructor runs: for
+ * `super`, the enclosing class's superclass as written (`Object` when it names
+ * none); for `this`, the enclosing type's nesting path (`Outer.Inner`), which
+ * with the package is its `receiver_type_fqn`. Null outside a constructor of
+ * a named type, and for `super(…)` in an enum or a record, which cannot
+ * have one.
+ *
+ * An implicit `super()` is not extracted: it is written nowhere, so it has no
+ * site and no name.
+ */
+function extractExplicitConstructorInvocation(node: Node, context: ResolutionContext): CallInfo | null {
+  const kind = node.childForFieldName('constructor')?.type;
+  if (kind !== 'super' && kind !== 'this') return null;
+  const ctor = findAncestor(node, 'constructor_declaration');
+  let decl: Node | null = ctor?.parent ?? null;
+  while (decl && !JAVA_TYPE_DECLARATIONS.has(decl.type)) decl = decl.parent;
+  if (!decl) return null;
+
+  const path: string[] = [];
+  for (let p: Node | null = decl; p; p = p.parent) {
+    if (!JAVA_TYPE_DECLARATIONS.has(p.type)) continue;
+    const n = p.childForFieldName('name');
+    if (n) path.unshift(getNodeText(n));
+  }
+  if (path.length === 0) return null;
+
+  let simpleName: string;
+  let fqn: string | null;
+  if (kind === 'this') {
+    simpleName = path.join('.');
+    fqn = context.packageName ? `${context.packageName}.${simpleName}` : simpleName;
+  } else {
+    if (decl.type !== 'class_declaration') return null;
+    const written = decl.childForFieldName('superclass')?.namedChildren.find(c => c !== null && c.type !== 'annotation' && c.type !== 'marker_annotation');
+    simpleName = written ? writtenTypeName(getNodeText(written)) : 'Object';
+    fqn = writtenTypeFqn(simpleName, context);
+  }
+
+  const argsNode = node.childForFieldName('arguments');
+  return {
+    method_name: kind,
+    receiver: null,
+    receiver_type: simpleName,
+    receiver_type_fqn: fqn,
+    arguments: argsNode ? extractArguments(argsNode, true) : [],
+    location: {
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    },
+    in_method: findEnclosingMethod(node),
+    is_constructor: true,
+    resolved: true,
+    resolution: { status: 'resolved', target: `${simpleName}.<init>` },
+  };
+}
+
+/** A type as written, without type arguments, annotations or spaces: `a.Outer<T>.Inner<U>` → `a.Outer.Inner`. */
+function writtenTypeName(text: string): string {
+  let out = text.replace(/@[\w$.]+(?:\([^()]*\))?/g, '');
+  for (let prev = ''; prev !== out;) {
+    prev = out;
+    out = out.replace(/<[^<>]*>/g, '');
+  }
+  return out.replace(/\s+/g, '');
+}
+
+/**
+ * The qualified name of a type as written, when the file says it: a simple
+ * name through `resolveFqn`; a dotted name whose first part is lower case as
+ * written (a package); a dotted name whose first part `resolveFqn` qualifies
+ * (`Map.Entry` with `import java.util.Map`). Null otherwise.
+ */
+function writtenTypeFqn(name: string, context: ResolutionContext): string | null {
+  const dot = name.indexOf('.');
+  if (dot < 0) return resolveFqn(name, context).fqn;
+  const head = name.slice(0, dot);
+  if (/^[a-z_]/.test(head)) return name;
+  const outer = resolveFqn(head, context).fqn;
+  return outer ? `${outer}${name.slice(dot)}` : null;
 }
 
 /**
