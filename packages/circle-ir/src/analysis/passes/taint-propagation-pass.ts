@@ -3155,7 +3155,7 @@ function pythonSiblingBranchAssignsNonLiteral(
  * literal text before identifier tokenisation is sound (cognium-dev#353).
  * See `maskStringLiteralsForTokenScan` for why the others are excluded.
  */
-const MASKABLE_STRING_LANGUAGES = new Set(['python', 'javascript', 'typescript']);
+const MASKABLE_STRING_LANGUAGES = new Set(['python', 'javascript', 'typescript', 'java']);
 
 /**
  * Blank the *text* of string literals in a sink-argument expression before it
@@ -3186,9 +3186,13 @@ const MASKABLE_STRING_LANGUAGES = new Set(['python', 'javascript', 'typescript']
  * Interpolation bodies are masked recursively, so a quoted subscript inside
  * one (`f"{d['actor']}"`) does not smuggle the literal back in.
  *
- * LANGUAGE SCOPE — this is applied to Python and JS/TS only, and the caller
- * gates it (`MASKABLE_STRING_LANGUAGES`). In those three, a plain quoted
- * string cannot interpolate, so blanking its text is sound. Elsewhere it is
+ * LANGUAGE SCOPE — this is applied to Python, JS/TS and Java, and the caller
+ * gates it (`MASKABLE_STRING_LANGUAGES`). In those, a plain quoted string
+ * cannot interpolate, so blanking its text is sound. Java was added for
+ * cognium-dev#915: `write("Parameter value: " + bar)` tokenised `value` and
+ * linked an unrelated tainted loop local of that name to the sink (OWASP
+ * BenchmarkTest01439). Java `"…"`, text blocks and char literals never
+ * interpolate. Elsewhere it is
  * not, and the suite proved it: Bash double quotes DO interpolate, so
  *
  *   mapfile -t lines
