@@ -311,6 +311,7 @@ interface CFGBlock {
   type: "entry" | "exit" | "normal" | "conditional" | "loop";
   start_line: number;
   end_line: number;
+  start_column?: number;     // 0-based; see below
 }
 
 interface CFGEdge {
@@ -342,6 +343,8 @@ interface CFGEdge {
 }
 ```
 
+`start_column` is optional: the 0-based column of the block's first character, or, for a block placed on a statement's end (an exit block, a do-while condition), of that statement's last character. Every block built from a statement or a function body carries it; the synthetic blocks (a Bash script's entry and exit, Go's block of top-level declarations) leave it out.
+
 **Implementation**: `cpg_extractor.py:181-395`
 
 ---
@@ -361,6 +364,7 @@ interface DFGDef {
   id: number;
   variable: string;
   line: number;
+  column?: number;           // 0-based; always set for JavaScript/TypeScript
   kind: "param" | "local" | "field" | "return";
 }
 
@@ -368,9 +372,12 @@ interface DFGUse {
   id: number;
   variable: string;
   line: number;
+  column?: number;           // 0-based; always set for JavaScript/TypeScript
   def_id: number | null;     // Reaching definition
 }
 ```
+
+`column` is optional. JavaScript and TypeScript defs and uses always carry it. Java sets it only on a few sites (try-with-resources and catch parameters); the other languages set it where their builders have it.
 
 **Example:**
 ```json
