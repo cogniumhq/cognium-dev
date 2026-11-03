@@ -180,6 +180,52 @@ describe('explicit this(…) calls', () => {
   });
 });
 
+describe('an overload whose parameter types are the arguments\' own', () => {
+  // `copy`'s class extends a type outside the tree, so it might be a `ResultSet`:
+  // the `ResultSet` overload possibly applies. Wherever it does, `Rec` is a
+  // `ResultSet` and the `Rec` overload is the more specific one, so that one runs.
+  const REC = {
+    'src/app/Rec.java': [
+      'package app;',
+      'import java.sql.ResultSet;',
+      'import java.util.Properties;',
+      'import lib.Persistent;',
+      'public class Rec extends Persistent {',
+      '  public Rec(Properties ctx, int id, String trx) {}',
+      '  public Rec(Properties ctx, ResultSet rs, String trx) {}',
+      '  public Rec(Properties ctx, Rec copy, String trx) {}',
+      '  public Rec(Properties ctx, Rec copy) { this(ctx, copy, (String) null); }',
+      '  static Rec of(Properties ctx, Rec copy) { return new Rec(ctx, copy, (String) null); }',
+      '  void load(ResultSet rs) {}',
+      '  void load(Rec r) {}',
+      '  void reload(Rec r) { load(r); }',
+      '  void loose(Sub s) { load(s); }',
+      '}',
+      'class Sub extends Rec { Sub() { super(null, 0, null); } }',
+      '',
+    ].join('\n'),
+  };
+  let r: JavaGraph;
+  let rq: Map<string, string>;
+  beforeAll(async () => {
+    r = await buildJavaGraph(Object.entries(REC).map(([p, c]) => file(p, c)));
+    rq = new Map(r.files.flatMap(f => f.decls.map(d => [d.id, `${d.qualified_name}${d.kind === 'method' ? d.signature : ''}`] as const)));
+  });
+  const edgesAt = (line: number) => r.edges.filter(e => e.site.line === line).map(e => `${e.methodName} -> ${rq.get(e.to)}`);
+  const unresolvedAt2 = (line: number) => r.unresolved.filter(u => u.site.line === line).map(u => `${u.methodName}: ${u.reason}`);
+
+  it('this(…), new and a method call bind to it', () => {
+    expect(edgesAt(9)).toEqual(['this -> app:Rec.constructor(Properties,Rec,String)']);
+    expect(edgesAt(10)).toEqual(['Rec -> app:Rec.constructor(Properties,Rec,String)']);
+    expect(edgesAt(13)).toEqual(['load -> app:Rec.load(Rec)']);
+  });
+
+  it('an argument of a subtype is not its own type: still ambiguous', () => {
+    expect(edgesAt(14)).toEqual([]);
+    expect(unresolvedAt2(14)).toEqual(['load: overload-ambiguous']);
+  });
+});
+
 describe('what adds no row', () => {
   it('an implicit super(): no written site, no call or unresolved row', () => {
     expect(g.edges.filter(e => e.site.file === 'src/app/Quiet.java')).toEqual([]);
