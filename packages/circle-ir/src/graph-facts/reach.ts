@@ -53,7 +53,12 @@ export interface ReachInput {
   loads?: readonly { from: string; to: string; site?: ReachSite }[];
   unresolved: readonly { from: string; methodName: string; site: ReachSite; reason: UnresolvedReason }[];
   entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number }[];
-  unresolvedRegistrations?: readonly { site: ReachSite; reason: string; evidence: string }[];
+  /**
+   * Registrations that could load any declaration. Java (#1092): `from` is the body that
+   * holds the site (counted only when reached); `boundTypes` the in-tree types the loaded
+   * class must be (it then names only declarations of those types).
+   */
+  unresolvedRegistrations?: readonly { site: ReachSite; reason: string; evidence: string; from?: string; boundTypes?: readonly string[] }[];
   partial: readonly string[];
 }
 
@@ -102,6 +107,12 @@ export interface ReachOptions {
   targets?: readonly string[];
   /** Most unresolved sites listed per declaration. Default 5. */
   maxUnresolved?: number;
+  /**
+   * Narrow a `Class.forName` registration to its `boundTypes` (#1092). Off by default: a
+   * name outside the bound is still loaded and initialised before the cast fails, so the
+   * bound is evidence, not proof, and narrowing by it can drop a live path.
+   */
+  boundRegistrations?: boolean;
 }
 
 export interface ReachResult {
@@ -267,7 +278,31 @@ export const COMPUTED_LOAD = '<module>';
  * site with `d`'s name, a computed callee, or an unresolved registration.
  * For a module: a module load with a computed specifier.
  */
-export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl): CouldReachSite[] {
+/** Whether `d` is, or is declared in, one of `types` (a bound registration's types, #1092). */
+function inBound(input: ReachInput, d: StableDecl, types: readonly string[]): boolean {
+  if (types.length === 0) return false;
+  const set = new Set(types);
+  const byId = declIndex(input);
+  let cur: StableDecl | undefined = d;
+  while (cur) {
+    if (cur.kind === 'type' && set.has(cur.id)) return true;
+    cur = cur.parent ? byId.get(cur.parent) : undefined;
+  }
+  return false;
+}
+
+const declIndexes = new WeakMap<ReachInput, Map<string, StableDecl>>();
+function declIndex(input: ReachInput): Map<string, StableDecl> {
+  let m = declIndexes.get(input);
+  if (!m) {
+    m = new Map();
+    for (const f of input.files) for (const d of f.decls) m.set(d.id, d);
+    declIndexes.set(input, m);
+  }
+  return m;
+}
+
+export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: StableDecl, boundRegistrations = false): CouldReachSite[] {
   if (d.kind === 'field') return [];
   const isModule = d.kind === 'module';
   const out: CouldReachSite[] = [];
@@ -280,7 +315,10 @@ export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: S
   }
   if (isModule) return out.sort(bySite);
   for (const r of input.unresolvedRegistrations ?? []) {
-    if (r.reason === 'handler-unresolved') out.push({ kind: 'registration', reason: r.reason, site: r.site });
+    if (r.reason !== 'handler-unresolved') continue;
+    if (r.from !== undefined && !reached.has(r.from)) continue;
+    if (boundRegistrations && r.boundTypes !== undefined && !inBound(input, d, r.boundTypes)) continue;
+    out.push({ kind: 'registration', reason: r.reason, site: r.site });
   }
   return out.sort(bySite);
 }
@@ -299,7 +337,7 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
       if (wanted && !wanted.has(d.id)) continue;
       const strong = pathTo(visits, `0${d.id}`, roots);
       const weak = pathTo(visits, `1${d.id}`, roots);
-      const sites = strong ? [] : couldReach(input, reached, d);
+      const sites = strong ? [] : couldReach(input, reached, d, options.boundRegistrations);
       facts.push({
         id: d.id,
         qualified_name: d.qualified_name,

@@ -92,6 +92,10 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
                                lifecycle, test [default: all but test]
   --verdicts <list>          deadcode: facts to list (live,may-be-live,dead)
                                [default: dead,may-be-live]; the summary counts all
+  --bound-registrations      deadcode, reach: narrow a Class.forName site to the types its
+                               result is cast or checked against [default: off; a name
+                               outside the bound is still initialised, so this can drop
+                               a live path]
   -o, --output <file>        Write to a file instead of stdout
   --jar <file>               depcalls: the resolved jar to read packages from
   --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,

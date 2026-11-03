@@ -49,6 +49,8 @@ export interface RemovalReachOptions {
   moves?: MoveOptions;
   /** Most unresolved sites listed per declaration. Default 5. */
   maxUnresolved?: number;
+  /** See `ReachOptions.boundRegistrations`. Default off. */
+  boundRegistrations?: boolean;
 }
 
 export interface RemovalReachResult {
@@ -86,7 +88,7 @@ export function removalReach(
   const rootKinds = [...(options.rootKinds ?? ALL_ENTRY_KINDS.filter(k => k !== 'test'))];
   const moves = detectMoves(base.files, head, options.moves);
   const removedIds = moves.diff.removed.map(d => d.id);
-  const facts = reach(base, { rootKinds, targets: removedIds, maxUnresolved: options.maxUnresolved });
+  const facts = reach(base, { rootKinds, targets: removedIds, maxUnresolved: options.maxUnresolved, boundRegistrations: options.boundRegistrations });
   const candidates = new Map<string, MoveCandidateRef[]>();
   for (const c of moves.candidates) {
     const list = candidates.get(c.from.id) ?? [];

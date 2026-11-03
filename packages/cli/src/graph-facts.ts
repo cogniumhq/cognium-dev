@@ -106,6 +106,7 @@ export interface DeadCodeCliOptions {
   format: 'text' | 'json' | 'sarif';
   rootKinds?: EntryKind[];
   verdicts: DeadCodeFact['verdict'][];
+  boundRegistrations: boolean;
   output?: string;
 }
 
@@ -114,6 +115,7 @@ export interface ReachCliOptions {
   format: 'text' | 'json' | 'sarif';
   rootKinds?: EntryKind[];
   base: string;
+  boundRegistrations: boolean;
   output?: string;
 }
 
@@ -152,6 +154,7 @@ export function parseDeadCodeOptions(o: Raw): DeadCodeCliOptions {
     format: parseFormat(o.format ?? o.f, ['text', 'json', 'sarif'] as const, 'text'),
     rootKinds: parseRootKinds(o['root-kinds']),
     verdicts: parseVerdicts(o.verdicts) ?? ['dead', 'may-be-live'],
+    boundRegistrations: o['bound-registrations'] === true,
     output: optionalString('output', o.output ?? o.o),
   };
 }
@@ -166,6 +169,7 @@ export function parseReachOptions(o: Raw): ReachCliOptions {
     format: parseFormat(o.format ?? o.f, ['text', 'json', 'sarif'] as const, 'text'),
     rootKinds: parseRootKinds(o['root-kinds']),
     base,
+    boundRegistrations: o['bound-registrations'] === true,
     output: optionalString('output', o.output ?? o.o),
   };
 }
@@ -413,7 +417,7 @@ export async function computeDeadCode(path: string, opts: DeadCodeCliOptions): P
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
   const graph = await buildGraph(root, language);
-  const result = deadCode(graph, opts.rootKinds ? { rootKinds: opts.rootKinds } : {});
+  const result = deadCode(graph, { ...(opts.rootKinds ? { rootKinds: opts.rootKinds } : {}), boundRegistrations: opts.boundRegistrations });
   const wanted = new Set(opts.verdicts);
   const facts = result.facts.filter((f) => wanted.has(f.verdict));
   return {
@@ -450,7 +454,7 @@ export async function computeReach(path: string, opts: ReachCliOptions): Promise
   try {
     const language = pickLanguage([base.dir, head], opts.language);
     const baseGraph = await buildGraph(base.dir, language);
-    const result = removalReach(baseGraph, await headIds(head, language), opts.rootKinds ? { rootKinds: opts.rootKinds } : {});
+    const result = removalReach(baseGraph, await headIds(head, language), { ...(opts.rootKinds ? { rootKinds: opts.rootKinds } : {}), boundRegistrations: opts.boundRegistrations });
     return {
       root: head,
       base: base.ref ? base.ref : base.dir,
