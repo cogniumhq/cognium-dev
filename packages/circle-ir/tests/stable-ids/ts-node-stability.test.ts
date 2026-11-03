@@ -228,6 +228,33 @@ export class K {
   });
 });
 
+describe('block placement', () => {
+  const d = (id: string, start_line: number, start_column: number, end_line: number, end_column: number, parent: string | null): StableDecl => ({
+    id, body_id: `${id}.h`, body_hash: 'h', kind: 'function', name: id, qualified_name: `m:${id}`, signature: '()',
+    parent, start_line, end_line, start_column, end_column, flags: [], token_count: 1,
+  });
+  // `outer` spans lines 1-5; `inner` starts at column 20 of line 2 and ends on line 4.
+  const ids: StableIdFile = {
+    scheme: 'ids@0.1', file: 'a.ts', language: 'typescript', module: 'm', partial: false,
+    decls: [d('outer', 1, 0, 5, 1, null), d('inner', 2, 20, 4, 3, 'outer')],
+  };
+
+  it('a block with a column is placed by its start; one without by the lines it spans', () => {
+    const n = assignNodeIds(ids, {
+      cfg: {
+        blocks: [
+          { id: 0, type: 'normal', start_line: 2, end_line: 4, start_column: 2 },
+          { id: 1, type: 'normal', start_line: 3, end_line: 3, start_column: 4 },
+          { id: 2, type: 'normal', start_line: 2, end_line: 4 },
+          { id: 3, type: 'normal', start_line: 2, end_line: 2, start_column: 25 },
+          { id: 4, type: 'normal', start_line: 1, end_line: 5 },
+        ],
+      },
+    });
+    expect(n.cfg_blocks).toEqual(['outer.h/b0', 'inner.h/b0', 'inner.h/b1', 'inner.h/b2', 'outer.h/b1']);
+  });
+});
+
 describe('determinism', () => {
   it('two runs give the same ids, node ids and fixed-width node bytes', async () => {
     const a = await run(SPREAD);
