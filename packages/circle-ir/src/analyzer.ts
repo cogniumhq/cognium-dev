@@ -237,9 +237,10 @@ export interface AnalyzerOptions {
    * declarations, which the default extraction omits entirely,
    * `TypeInfo.enclosing_type` for a nested type, whose nesting the default
    * extraction flattens, an enum's methods and fields, a varargs parameter's
-   * type, and each call argument's static type and position
-   * (`ArgumentInfo.type` / `.location`). See `TypeExtractionOptions` and
-   * `CallExtractionOptions`.
+   * type, each call argument's static type and position
+   * (`ArgumentInfo.type` / `.location`), and explicit constructor
+   * invocations (`super(…)`, `this(…)`) as calls. See `TypeExtractionOptions`
+   * and `CallExtractionOptions`.
    *
    * **Off by default, and the default output is unchanged.** `ir.types` is
    * read by the SAST passes and by the method-scoping gate, so adding a type
@@ -827,11 +828,14 @@ function getNodeTypesForLanguage(language: SupportedLanguage): Set<string> {
       // 3.173.0 (T2-D) — `buildResolutionContext` in extractors/calls.ts
       // queries both at tree-root scope; without cache membership each
       // query fell back to a full-tree `findNodes` walk per file.
+      // `explicit_constructor_invocation` (`super(…)` / `this(…)`) is read by
+      // `extractCalls` under `navigationTypes`.
       return new Set([
         'method_invocation', 'object_creation_expression', 'class_declaration',
         'method_declaration', 'constructor_declaration', 'field_declaration',
         'import_declaration', 'interface_declaration', 'enum_declaration',
         'package_declaration', 'local_variable_declaration',
+        'explicit_constructor_invocation',
       ]);
   }
 }
