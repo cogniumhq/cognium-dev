@@ -586,7 +586,8 @@ function enclosingBody(node: Node): Node | null {
 /**
  * The string literals `name` can hold at a `Class.forName(name)` in `body` (#1092): every
  * local declaration and assignment of it in the body is a string literal, or it is a
- * `static final String` field of the enclosing class with a literal value. Null when any
+ * `static final String` field of the enclosing class with a literal value. A `null`
+ * value names no class (`Class.forName(null)` throws) and adds nothing. Null when any
  * assignment is not a literal, or nothing assigns it.
  */
 function constantStrings(body: Node, name: string): string[] | null {
@@ -595,10 +596,10 @@ function constantStrings(body: Node, name: string): string[] | null {
   const visit = (n: Node): void => {
     if (n.type === 'variable_declarator' && n.childForFieldName('name')?.text === name) {
       const v = n.childForFieldName('value');
-      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v) other = true;
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v && v.type !== 'null_literal') other = true;
     } else if (n.type === 'assignment_expression' && n.childForFieldName('left')?.text === name) {
       const v = n.childForFieldName('right');
-      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else other = true;
+      if (v?.type === 'string_literal') values.push(...stringsOf(v)); else if (v?.type !== 'null_literal') other = true;
     } else if ((n.type === 'formal_parameter' || n.type === 'catch_formal_parameter') && n.childForFieldName('name')?.text === name) {
       other = true;
     }
@@ -622,19 +623,26 @@ function constantStrings(body: Node, name: string): string[] | null {
   return null;
 }
 
+/** A type as written: a capitalised simple name, optionally package-qualified (`java.security.Provider`). */
+const TYPE = String.raw`(?:[a-z_$][\w$]*\.)*[A-Z][\w$.]*`;
+const CAST_NEW_INSTANCE = new RegExp(String.raw`\(\s*(${TYPE}(?:<[^()]*>)?)\s*\)\s*[\w$.\s]*?(?:\.\s*getDeclaredConstructor\s*\([^)]*\)|\.\s*getConstructor\s*\([^)]*\))?\s*\.\s*newInstance\s*\(`, 'g');
+const CAST_FORNAME_NEW_INSTANCE = new RegExp(String.raw`\(\s*(${TYPE}(?:<[^()]*>)?)\s*\)\s*Class\s*\.\s*forName\s*\([^)]*\)\s*\.\s*(?:getDeclaredConstructor|getConstructor)\s*\([^)]*\)\s*\.\s*newInstance\s*\(`, 'g');
+const INSTANCEOF = new RegExp(String.raw`\binstanceof\s+(${TYPE})`, 'g');
+
 /**
  * The type a reflectively loaded class must be, from how the method uses it (#1092): a cast
  * of `newInstance()` (directly or through `getDeclaredConstructor` / `getConstructor`),
- * `asSubclass(T.class)`, `instanceof T`, `T.class.isAssignableFrom(…)`, or a
- * `getSuperclass() == T.class` walk. Names as written, generics stripped.
+ * `asSubclass(T.class)`, `instanceof T` (also with a pattern variable), `T.class.isAssignableFrom(…)`,
+ * or a `getSuperclass() == T.class` walk. Names as written, simple or package-qualified,
+ * generics stripped.
  */
 function boundTypeNames(text: string): string[] {
   const out = new Set<string>();
   const add = (t: string | undefined) => { const c = (t ?? '').replace(/<.*$/s, '').trim(); if (/^[A-Za-z_$][\w$.]*$/.test(c) && c !== 'Object' && !c.endsWith('.class')) out.add(c); };
-  for (const m of text.matchAll(/\(\s*([A-Z][\w$.]*(?:<[^()]*>)?)\s*\)\s*[\w$.\s]*?(?:\.\s*getDeclaredConstructor\s*\([^)]*\)|\.\s*getConstructor\s*\([^)]*\))?\s*\.\s*newInstance\s*\(/g)) add(m[1]);
-  for (const m of text.matchAll(/\(\s*([A-Z][\w$.]*(?:<[^()]*>)?)\s*\)\s*Class\s*\.\s*forName\s*\([^)]*\)\s*\.\s*(?:getDeclaredConstructor|getConstructor)\s*\([^)]*\)\s*\.\s*newInstance\s*\(/g)) add(m[1]);
+  for (const m of text.matchAll(CAST_NEW_INSTANCE)) add(m[1]);
+  for (const m of text.matchAll(CAST_FORNAME_NEW_INSTANCE)) add(m[1]);
   for (const m of text.matchAll(/\.\s*asSubclass\s*\(\s*([\w$.]+)\s*\.\s*class\s*\)/g)) add(m[1]);
-  for (const m of text.matchAll(/\binstanceof\s+([A-Z][\w$.]*)/g)) add(m[1]);
+  for (const m of text.matchAll(INSTANCEOF)) add(m[1]);
   for (const m of text.matchAll(/\b([\w$.]+)\s*\.\s*class\s*\.\s*isAssignableFrom\s*\(/g)) add(m[1]);
   for (const m of text.matchAll(/getSuperclass\s*\(\s*\)\s*==\s*([\w$.]+)\s*\.\s*class/g)) add(m[1]);
   return [...out].sort();

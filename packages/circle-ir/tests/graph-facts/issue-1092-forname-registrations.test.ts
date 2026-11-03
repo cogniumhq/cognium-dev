@@ -71,6 +71,12 @@ describe('#1092 Class.forName registrations', () => {
     expect(mixed.g.unresolvedRegistrations).toHaveLength(1);
   });
 
+  it('a null initializer names no class: null then literal reassignments resolve (iDempiere Adempiere.java)', async () => {
+    const { g } = await run('  public void load(String x) { String n = null; try { n = "p.B"; Class.forName(n); n = "p.C"; Class.forName(n); } catch (Exception e) { System.out.println(n); } }');
+    expect(g.unresolvedRegistrations).toHaveLength(0);
+    expect(new Set(g.entries.filter(e => e.kind === 'reflection').map(e => e.id)).size).toBe(2);
+  });
+
   it('a static final String field constant resolves too', async () => {
     const { g } = await run('  private static final String IMPL = "p.C";\n  public Object load(String x) throws Exception { return Class.forName(IMPL).newInstance(); }');
     expect(g.unresolvedRegistrations).toHaveLength(0);
@@ -112,6 +118,13 @@ describe('#1092 Class.forName registrations', () => {
     expect(named('p:PluginImpl')).toBe(1);
     expect(named('p:Unrelated')).toBe(1);
     expect(named('p:B')).toBe(1);
+  });
+
+  it('a package-qualified pattern instanceof bounds too (iDempiere DefaultKeyStore.java)', async () => {
+    const { g, named } = await run('  public void load(String n) throws Exception { Class<?> c = Class.forName(n); Object o = c.getDeclaredConstructor().newInstance(); if (o != null && o instanceof java.security.Provider sp) java.security.Security.addProvider(sp); }');
+    expect(g.unresolvedRegistrations[0].bound).toEqual(['java.security.Provider']);
+    expect(g.unresolvedRegistrations[0].boundTypes).toEqual([]);
+    expect(named('p:Unrelated')).toBe(0);
   });
 
   it('an external bound (java.security.Provider) names no in-tree declaration', async () => {
