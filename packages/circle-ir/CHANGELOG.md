@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `JavaGraph.facts` is now typed `FactsArrow | Facts2Arrow`; without `factsScheme` it holds the `FactsArrow` it held before.
 
 ### Fixed
+- **C#: `open_redirect` behind a host-equality guard (#946).** A redirect whose target's host is compared against a constant now earns the same credit as the `ssrf` host guard: `var host = new Uri(input, UriKind.RelativeOrAbsolute).Host; return host == "app.example.com" ? Redirect(input) : Redirect("/home");`. Three changes in `csharp-sanitizer-credit.ts`:
+  - `open_redirect` takes the `host` guard kind;
+  - `new Uri(x, UriKind.…).Host` is recognised (the `UriKind` argument was not);
+  - a guard that is the condition of a ternary on the sink line credits a value used only on the true side.
+  The tainted value on the false side, or on both sides, still fires, as does a host compared against a non-literal. On the csharp-vuln-demo `open_redirect` fixtures (36 files) the only change is `flow/tier1/open_redirect/V01BaselineSafe.cs` (FP → clean), the file behind the flow-combo, flow-quartet and language-pack rows.
 - **Java: OWASP xss false positives through an inner-class helper (#915 slice).** 15 safe OWASP xss cases still fired. Three changes:
   - **Helper-return gate covers `xss`.** The #1010 gate (drop a callee-parameter → caller-sink flow when no live `return` of the helper can carry its parameters) now includes `xss`. Constant propagation already drops these flows when it sees tainted data enter the call. It does not see `scr.getTheParameter(…)` from `SeparateClassRequest`, so the inner-class `new Test().doSomething(request, param)` cases with a safe map key, a constant ternary, `if` or switch reached the sink (BenchmarkTest01508, 01513–01515, 01767, 01769, 01774, 01776, 01777).
   - **Pass-through gate covers `xss`.** The #1080 gate (an instance helper whose matching caller argument comes only from `SeparateClassRequest.getTheValue`, which returns a constant) now includes `xss` (BenchmarkTest01768, 01770–01772, 01775).
