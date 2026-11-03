@@ -820,13 +820,20 @@ export class CrossFileResolver {
       if (name) paramNameToIndex.set(name, i);
     }
 
+    const isJs = ir.meta.language === 'javascript' || ir.meta.language === 'typescript';
     for (const sink of ir.taint.sinks) {
       if (sink.line < method.start_line || sink.line > method.end_line) continue;
 
       // Find the call(s) at the sink line — match by line number.
-      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line);
+      // JS/TS (#1120): only the sink call itself, at its dangerous positions —
+      // in `fs.writeFileSync(file, JSON.stringify(data))` the parameter `data`
+      // is written, not used as a path.
+      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line
+        && (!isJs || this.isSinkCall(c, sink)));
       for (const call of callsAtSink) {
         for (const arg of call.arguments) {
+          if (isJs && sink.argPositions && sink.argPositions.length > 0
+              && !sink.argPositions.includes(arg.position)) continue;
           // Argument that's a direct variable reference.
           const candidates: string[] = [];
           if (arg.variable) candidates.push(arg.variable);

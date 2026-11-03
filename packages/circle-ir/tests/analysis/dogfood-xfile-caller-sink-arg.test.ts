@@ -74,4 +74,24 @@ describe('cross-file caller-body sink: only the sink call\'s dangerous arguments
     const { src, lines } = await sinkLines(`  const d = diff(fs.readFileSync(report, 'utf8'), other);\n  console.log(d.length);`);
     expect(lines).toContain(lineOf(src, `fs.readFileSync(report`));
   });
+
+  it('a callee parameter written as data is not a path parameter', async () => {
+    const store = `import * as fs from 'fs';
+export function save(name: string, data: object): void {
+  fs.writeFileSync('/var/app/' + name + '.json', JSON.stringify(data));
+}`;
+    const run = (arg: string) => `import { loadSpec } from './reader';
+import { save } from './store';
+export function run(input: string): void {
+  const text = loadSpec(input);
+  save(${arg});
+}`;
+    const pathsFor = async (arg: string) => (await analyzeProject([
+      { code: reader, filePath: 'reader.ts', language: 'typescript' },
+      { code: store, filePath: 'store.ts', language: 'typescript' },
+      { code: run(arg), filePath: 'run.ts', language: 'typescript' },
+    ])).taint_paths.filter(t => t.sink.file === 'store.ts' && t.sink.type === 'path_traversal');
+    expect(await pathsFor(`'fixed', { text }`)).toHaveLength(0);
+    expect((await pathsFor(`text, {}`)).length).toBeGreaterThan(0);
+  });
 });
