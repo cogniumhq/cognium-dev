@@ -9,6 +9,17 @@ import type { DFG, DFGDef, DFGUse, DFGChain, SupportedLanguage } from '../../typ
 import { findNodes, walkTree, getNodeText, findAncestor, getNodesFromCache, type NodeCache } from '../parser.js';
 
 /**
+ * The 0-based column of `node` as a def/use property on the
+ * JavaScript/TypeScript path, and nothing on the Java and C# paths that share
+ * these helpers (their defs and uses keep their shape). With the column, a
+ * def or use on a line it shares with a nested function can be placed in the
+ * right body.
+ */
+function jsColumn(node: Node, isJavaScript: boolean): { column?: number } {
+  return isJavaScript ? { column: node.startPosition.column } : {};
+}
+
+/**
  * Detect language from tree structure.
  */
 function detectLanguage(tree: Tree): 'javascript' | 'java' {
@@ -323,6 +334,7 @@ function buildJavaScriptDFG(tree: Tree, cache?: NodeCache): DFG {
           id: defIdCounter++,
           variable: name,
           line: declarator.startPosition.row + 1,
+          column: declarator.startPosition.column,
           kind: 'local',
         };
         defs.push(def);
@@ -485,6 +497,7 @@ function processStatement(
               id: defId++,
               variable: name,
               line: decl.startPosition.row + 1,
+              ...jsColumn(decl, isJavaScript),
               kind: 'local',
             };
             defs.push(def);
@@ -617,6 +630,7 @@ function processStatement(
               id: defId++,
               variable: getNodeText(left),
               line: left.startPosition.row + 1,
+              column: left.startPosition.column,
               kind: 'local',
             };
             defs.push(def);
@@ -631,6 +645,7 @@ function processStatement(
                   id: defId++,
                   variable: getNodeText(nameNode),
                   line: nameNode.startPosition.row + 1,
+                  column: nameNode.startPosition.column,
                   kind: 'local',
                 };
                 defs.push(def);
@@ -908,6 +923,7 @@ function processExpression(
         id: defId++,
         variable: name,
         line: left.startPosition.row + 1,
+        ...jsColumn(left, isJavaScript),
         kind: 'local',
       };
       defs.push(def);
@@ -933,6 +949,7 @@ function processExpression(
         id: useId++,
         variable: name,
         line: operand.startPosition.row + 1,
+        ...jsColumn(operand, isJavaScript),
         def_id: reachingDef,
       };
       uses.push(use);
@@ -942,6 +959,7 @@ function processExpression(
         id: defId++,
         variable: name,
         line: operand.startPosition.row + 1,
+        ...jsColumn(operand, isJavaScript),
         kind: 'local',
       };
       defs.push(def);
@@ -1027,12 +1045,13 @@ function extractUses(
         id: id++,
         variable: name,
         line: n.startPosition.row + 1,
+        ...jsColumn(n, isJavaScript),
         def_id: reachingDef,
       });
       // A def made inside a nested block may also reach this use (#596).
       for (const alt of findAlternateDefs(name, scopeStack)) {
         if (alt === reachingDef) continue;
-        uses.push({ id: id++, variable: name, line: n.startPosition.row + 1, def_id: alt });
+        uses.push({ id: id++, variable: name, line: n.startPosition.row + 1, ...jsColumn(n, isJavaScript), def_id: alt });
       }
     }
   });
@@ -1107,16 +1126,32 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
   const defs: DFGDef[] = [];
   let id = startId;
 
+  // A lone arrow parameter written without parentheses (`x => …`, the
+  // arrow's `parameter` field) is the identifier itself, not a list: the
+  // same param def as `(x) => …`.
+  if (params.type === 'identifier') {
+    defs.push({
+      id: id++,
+      variable: getNodeText(params),
+      line: params.startPosition.row + 1,
+      column: params.startPosition.column,
+      kind: 'param',
+    });
+    return defs;
+  }
+
   // TypeScript wraps every parameter in required_parameter / optional_parameter.
   // The pattern may be an identifier or a destructuring pattern (`{ id }`,
   // `{ a: { b } }`, `{ id } = default`). Bound names are param defs, matching
   // the JavaScript object_pattern / array_pattern branches. (cognium-dev#664)
-  const addPatternDefs = (patternNode: Node, line: number): void => {
+  // `at` is the parameter node: every def it binds takes the parameter's position.
+  const addPatternDefs = (patternNode: Node, at: Node): void => {
     if (patternNode.type === 'identifier' || patternNode.type === 'shorthand_property_identifier_pattern') {
       defs.push({
         id: id++,
         variable: getNodeText(patternNode),
-        line,
+        line: at.startPosition.row + 1,
+        column: at.startPosition.column,
         kind: 'param',
       });
       return;
@@ -1124,12 +1159,12 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
     if (patternNode.type === 'rest_pattern' || patternNode.type === 'rest_element') {
       const nameNode = patternNode.namedChildCount > 0 ? patternNode.namedChild(0) : null;
       if (!nameNode) return;
-      addPatternDefs(nameNode, line);
+      addPatternDefs(nameNode, at);
       return;
     }
     if (isDestructuringDefaultPattern(patternNode.type)) {
       const leftNode = patternNode.childForFieldName('left');
-      if (leftNode) addPatternDefs(leftNode, line);
+      if (leftNode) addPatternDefs(leftNode, at);
       return;
     }
     if (patternNode.type === 'object_pattern' || patternNode.type === 'array_pattern') {
@@ -1155,6 +1190,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
         id: id++,
         variable: getNodeText(param),
         line: param.startPosition.row + 1,
+        column: param.startPosition.column,
         kind: 'param',
       });
     }
@@ -1166,6 +1202,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(nameNode),
           line: param.startPosition.row + 1,
+          column: param.startPosition.column,
           kind: 'param',
         });
       }
@@ -1178,6 +1215,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(leftNode),
           line: param.startPosition.row + 1,
+          column: param.startPosition.column,
           kind: 'param',
         });
       } else if (leftNode) {
@@ -1202,7 +1240,7 @@ function extractJSParameterDefs(params: Node, startId: number): DFGDef[] {
     // TypeScript formal parameters
     else if (param.type === 'required_parameter' || param.type === 'optional_parameter') {
       const patternNode = param.childForFieldName('pattern');
-      if (patternNode) addPatternDefs(patternNode, param.startPosition.row + 1);
+      if (patternNode) addPatternDefs(patternNode, param);
     }
   }
 
@@ -1228,6 +1266,7 @@ function extractJSFieldDefs(body: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(nameNode),
           line: child.startPosition.row + 1,
+          column: child.startPosition.column,
           kind: 'field',
         });
       }
@@ -1260,6 +1299,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(child),
           line: child.startPosition.row + 1,
+          column: child.startPosition.column,
           kind: 'local',
         });
       } else if (child.type === 'pair_pattern') {
@@ -1270,6 +1310,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(valueNode),
             line: valueNode.startPosition.row + 1,
+            column: valueNode.startPosition.column,
             kind: 'local',
           });
         } else if (valueNode) {
@@ -1286,6 +1327,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(nameNode),
             line: child.startPosition.row + 1,
+            column: child.startPosition.column,
             kind: 'local',
           });
         }
@@ -1297,6 +1339,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(leftNode),
             line: leftNode.startPosition.row + 1,
+            column: leftNode.startPosition.column,
             kind: 'local',
           });
         } else if (leftNode && leftNode.type === 'identifier') {
@@ -1304,6 +1347,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(leftNode),
             line: leftNode.startPosition.row + 1,
+            column: leftNode.startPosition.column,
             kind: 'local',
           });
         }
@@ -1319,6 +1363,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(child),
           line: child.startPosition.row + 1,
+          column: child.startPosition.column,
           kind: 'local',
         });
       } else if (child.type === 'rest_pattern') {
@@ -1328,6 +1373,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(nameNode),
             line: child.startPosition.row + 1,
+            column: child.startPosition.column,
             kind: 'local',
           });
         }
@@ -1339,6 +1385,7 @@ function extractDestructuringDefs(node: Node, startId: number): DFGDef[] {
             id: id++,
             variable: getNodeText(leftNode),
             line: leftNode.startPosition.row + 1,
+            column: leftNode.startPosition.column,
             kind: 'local',
           });
         }
