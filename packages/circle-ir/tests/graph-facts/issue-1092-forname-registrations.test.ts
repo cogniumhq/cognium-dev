@@ -126,6 +126,13 @@ describe('#1092 Class.forName registrations', () => {
     expect(named('p:B')).toBe(1);
   });
 
+  it('a getSuperclass() walk through a variable bounds by T (iDempiere DefaultModelFactory.getPOclass)', async () => {
+    const { g, named } = await run('  public Class<?> load(String n) { try { Class<?> c = Class.forName(n); Class<?> s = c.getSuperclass(); while (s != null) { if (s == PluginImpl.class) return c; s = s.getSuperclass(); } } catch (Exception e) { } return null; }');
+    expect(g.unresolvedRegistrations[0].bound).toEqual(['PluginImpl']);
+    expect(named('p:SubImpl')).toBe(1);
+    expect(named('p:Unrelated')).toBe(0);
+  });
+
   it('a package-qualified pattern instanceof bounds too (iDempiere DefaultKeyStore.java)', async () => {
     const { g, named } = await run('  public void load(String n) throws Exception { Class<?> c = Class.forName(n); Object o = c.getDeclaredConstructor().newInstance(); if (o != null && o instanceof java.security.Provider sp) java.security.Security.addProvider(sp); }');
     expect(g.unresolvedRegistrations[0].bound).toEqual(['java.security.Provider']);
