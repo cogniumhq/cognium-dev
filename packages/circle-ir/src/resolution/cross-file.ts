@@ -2115,28 +2115,88 @@ export class CrossFileResolver {
    * marks the method's return as `env_input` and every caller's
    * `exec(... getOSCommandString("ls ") ...)` became a command_injection path.
    *
-   * Java only, and only when the source text is available; otherwise false
+   * Java / JS / TS when the source text is available; otherwise false
    * (the method keeps `returnsSource`).
    */
   private sourcesOnlySteerBranches(file: string, ir: CircleIR, method: MethodInfo): boolean {
-    if (ir.meta.language !== 'java') return false;
+    const lang = ir.meta.language;
+    if (lang !== 'java' && lang !== 'javascript' && lang !== 'typescript') return false;
     const lines = this.sourceLines?.get(file);
     if (!lines) return false;
     const real = ir.taint.sources.filter(s =>
       s.type !== 'interprocedural_param' && s.line >= method.start_line && s.line <= method.end_line);
     if (real.length === 0) return false;
     for (const src of real) {
-      const v = src.variable;
-      if (!v || !/^[A-Za-z_$][\w$]*$/.test(v)) return false;
-      const decl = new RegExp(`^\\s*(?:final\\s+)?[\\w<>\\[\\].]+\\s+${v}\\s*=[^;]*;\\s*$`);
-      if (!decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) return false;
-      const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
-      for (let l = src.line + 1; l <= method.end_line; l++) {
-        const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
-        if (mention.test(text)) return false;
+      if (lang === 'java') {
+        if (!this.javaSourceOnlySteersBranches(lines, method, src)) return false;
+      } else if (!this.jsTsSourceOnlySteersBranches(lines, method, src)) {
+        return false;
       }
     }
     return true;
+  }
+
+  /** #914 — local assigned from a source, then only read in branch conditions. */
+  private javaSourceOnlySteersBranches(
+    lines: string[],
+    method: MethodInfo,
+    src: TaintSource,
+  ): boolean {
+    const v = src.variable;
+    if (!v || !/^[A-Za-z_$][\w$]*$/.test(v)) return false;
+    const decl = new RegExp(`^\\s*(?:final\\s+)?[\\w<>\\[\\].]+\\s+${v}\\s*=[^;]*;\\s*$`);
+    if (!decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) return false;
+    const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
+    for (let l = src.line + 1; l <= method.end_line; l++) {
+      const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
+      if (mention.test(text)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * #1136 — JS/TS counterpart of #914: a read used only to steer a branch
+   * (including inline `if (guard(read(...))) push(path)`) does not taint the
+   * helper's return for cross-file chaining.
+   */
+  private jsTsSourceOnlySteersBranches(
+    lines: string[],
+    method: MethodInfo,
+    src: TaintSource,
+  ): boolean {
+    const v = src.variable;
+    if (v && /^[A-Za-z_$][\w$]*$/.test(v)) {
+      const decl = new RegExp(`^\\s*(?:const|let|var)\\s+${v.replace(/\$/g, '\\$')}\\s*=`);
+      if (decl.test(stripJavaLiterals(lines[src.line - 1] ?? ''))) {
+        const mention = new RegExp(`(?<![\\w$.])${v.replace(/\$/g, '\\$')}(?![\\w$])`);
+        for (let l = src.line + 1; l <= method.end_line; l++) {
+          const text = withoutLeadingConditions(stripJavaLiterals(lines[l - 1] ?? ''));
+          if (mention.test(text)) return false;
+        }
+        return true;
+      }
+    }
+    const anchor = this.jsTsBranchOnlyAnchor(lines, src);
+    if (!anchor) return false;
+    for (let l = method.start_line; l <= method.end_line; l++) {
+      const text = stripJavaLiterals(lines[l - 1] ?? '');
+      if (!text.includes(anchor)) continue;
+      const outsideCond = withoutLeadingConditions(text);
+      if (outsideCond.includes(anchor)) return false;
+    }
+    return true;
+  }
+
+  /** Stable substring for an inline read (e.g. `readFileSync`) on the source line. */
+  private jsTsBranchOnlyAnchor(lines: string[], src: TaintSource): string | undefined {
+    const line = stripJavaLiterals(lines[src.line - 1] ?? '');
+    const readCall = line.match(/\b(readFileSync|readFile|readSync)\s*\(/);
+    if (readCall) return readCall[1];
+    if (src.location) {
+      const m = src.location.match(/\b(readFileSync|readFile|readSync)\b/);
+      if (m) return m[1];
+    }
+    return undefined;
   }
 
   private findRealSourceLineInMethod(ir: CircleIR, method: MethodInfo): number | undefined {
