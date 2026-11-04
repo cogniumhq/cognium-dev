@@ -341,3 +341,115 @@ public class Page
     });
   });
 });
+
+// Juliet CWE89 `_51`–`_54`: the SQL text is written to `CommandText`, then the
+// command runs with no argument, so the per-file flow starts at the property
+// write on `cmd` instead of at the parameter.
+describe('C# constant-only callers: CommandText then Execute*() (#636)', () => {
+  beforeAll(async () => {
+    await initAnalyzer();
+  });
+
+  const sinkFile = (exec: string) => `using System.Data.SqlClient;
+using System.Web;
+public class Sinks
+{
+    public static void BadSink(string data, HttpRequest req, HttpResponse resp)
+    {
+        using (SqlCommand badSqlCommand = new SqlCommand(null, Db.Conn()))
+        {
+            badSqlCommand.CommandText = "select * from users where name='" + data + "'";
+            object r = badSqlCommand.${exec}();
+        }
+    }
+    public static void GoodG2BSink(string data, HttpRequest req, HttpResponse resp)
+    {
+        using (SqlCommand badSqlCommand = new SqlCommand(null, Db.Conn()))
+        {
+            badSqlCommand.CommandText = "select * from users where name='" + data + "'";
+            object r = badSqlCommand.${exec}();
+        }
+    }
+}
+`;
+  const callerFile = (good: string) => `using System;
+using System.Web;
+public class Cases
+{
+    public void Bad(HttpRequest req, HttpResponse resp)
+    {
+        string data = Console.ReadLine();
+        Sinks.BadSink(data, req, resp);
+    }
+    public void GoodG2B(HttpRequest req, HttpResponse resp)
+    {
+${good}
+        Sinks.GoodG2BSink(data, req, resp);
+    }
+}
+`;
+  const sqlLines = (flows: Map<string, Array<{ sink_type: string; sink_line: number }>>) =>
+    new Set((flows.get('Sinks.cs') ?? []).filter(f => f.sink_type === 'sql_injection').map(f => f.sink_line));
+
+  for (const exec of ['ExecuteScalar', 'ExecuteNonQuery']) {
+    it(`drops GoodG2BSink and keeps BadSink for CommandText + ${exec}()`, async () => {
+      const sinks = sinkFile(exec);
+      const { flows } = await project([
+        { filePath: 'Cases.cs', code: callerFile('        string data = "foo";') },
+        { filePath: 'Sinks.cs', code: sinks },
+      ]);
+      const lines = sqlLines(flows);
+      expect(lines.has(lineOf(sinks, `badSqlCommand.${exec}`, 0))).toBe(true);
+      expect(lines.has(lineOf(sinks, `badSqlCommand.${exec}`, 1))).toBe(false);
+      expect(lines.has(lineOf(sinks, 'CommandText =', 1))).toBe(false);
+    });
+  }
+
+  it('keeps GoodG2BSink when its caller passes tainted data', async () => {
+    const sinks = sinkFile('ExecuteScalar');
+    const { flows } = await project([
+      { filePath: 'Cases.cs', code: callerFile('        string data = req.QueryString["q"];') },
+      { filePath: 'Sinks.cs', code: sinks },
+    ]);
+    expect(sqlLines(flows).has(lineOf(sinks, 'badSqlCommand.ExecuteScalar', 1))).toBe(true);
+  });
+
+  it('keeps the CommandText flow when the method has no in-project caller', async () => {
+    const sinks = sinkFile('ExecuteScalar');
+    const { flows } = await project([
+      { filePath: 'Sinks.cs', code: sinks },
+      { filePath: 'Other.cs', code: 'public class Other { }\n' },
+    ]);
+    const lines = sqlLines(flows);
+    expect(lines.has(lineOf(sinks, 'badSqlCommand.ExecuteScalar', 0))).toBe(true);
+    expect(lines.has(lineOf(sinks, 'badSqlCommand.ExecuteScalar', 1))).toBe(true);
+  });
+
+  it('keeps it when a second seeded parameter gets tainted data', async () => {
+    const sinks = `using System.Data.SqlClient;
+public class Sinks
+{
+    public static void Run(string a, string b)
+    {
+        using (SqlCommand cmd = new SqlCommand(null, Db.Conn()))
+        {
+            cmd.CommandText = "select * from t where x='" + a + "' and y='" + b + "'";
+            cmd.ExecuteNonQuery();
+        }
+    }
+}
+`;
+    const callers = `using System.Web;
+public class Cases
+{
+    public void M(HttpRequest req)
+    {
+        string y = req.QueryString["y"];
+        Sinks.Run("const", y);
+    }
+}
+`;
+    const { flows } = await project([{ filePath: 'Cases.cs', code: callers }, { filePath: 'Sinks.cs', code: sinks }]);
+    expect(sqlLines(flows).has(lineOf(sinks, 'cmd.ExecuteNonQuery'))).toBe(true);
+  });
+});
