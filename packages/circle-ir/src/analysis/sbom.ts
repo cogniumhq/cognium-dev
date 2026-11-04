@@ -163,18 +163,29 @@ export function parseNpmDependencies(packageJson: string): Dependency[] {
  * Parse a single PEP 508 requirement string (`name[extras] (>=|==|~=…)ver ; marker`)
  * into `{ name, version }`, or `null` when no name can be read. Shared by the
  * `requirements.txt` and `pyproject.toml` parsers.
+ *
+ * The version is the declared spec verbatim (whitespace removed), as for npm
+ * and Poetry: `>=2.0` stays `>=2.0`, `>=2.28,<3` stays `>=2.28,<3`. Only one
+ * exact pin (`==2.0` or `===2.0`, no wildcard) becomes the bare version
+ * `2.0`. So a lower bound is never taken for the installed version (#1127).
  */
 function parsePep508(spec: string): { name: string; version: string } | null {
   let s = spec.trim();
-  s = s.split(';')[0].trim(); // strip environment marker
+  // The requirement ends at an environment marker (`;`), or at whitespace
+  // followed by pip's line continuation (`\`), a per-requirement option
+  // (`--hash=…`, `--global-option=…`) or a comment (`#`). This runs before
+  // whitespace is removed below, so `a==1.0 \` and `a==1.0 --hash=…` read as
+  // `1.0` (#1131 review). A `\` at the very end is a continuation too.
+  s = s.split(/;|\s+(?:\\|-{1,2}[A-Za-z]|#)/)[0].replace(/\\$/, '').trim();
   if (!s) return null;
   const m = s.match(/^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(.*)$/);
   if (!m) return null;
-  const rest = m[2].trim();
-  // First comparator clause's version (drop `,` compound ranges and `(` groups).
-  const verMatch = rest.replace(/^\(/, '').match(/^(?:==|>=|<=|~=|!=|>|<|===)?\s*([^,\s)]+)/);
-  const version = verMatch && verMatch[1] ? verMatch[1] : 'unknown';
-  return { name: m[1], version };
+  // `name (>=1.0)` is the older parenthesised form of `name>=1.0`.
+  const rest = m[2].trim().replace(/^\((.*)\)$/, '$1').replace(/\s+/g, '');
+  // No spec, or a direct reference (`name @ https://…`): no version.
+  if (!rest || rest.startsWith('@')) return { name: m[1], version: 'unknown' };
+  const pin = rest.match(/^={2,3}([^,*=<>~]+)$/);
+  return { name: m[1], version: pin ? pin[1] : rest };
 }
 
 /**
@@ -619,6 +630,7 @@ export function parsePoetryLockDependencies(poetryLock: string): Dependency[] {
 /**
  * Parse a pip `requirements.txt`. Handles `name==1.2`, `name>=1.2`, `name~=1`,
  * bare `name`, extras (`name[x]`), and environment markers (`; marker`).
+ * An exact pin's version is bare (`1.2`); any other spec is kept verbatim.
  * Skips comments, blank lines, and option lines (`-r`, `-e`, `--hash`, URLs).
  */
 export function parsePypiDependencies(requirementsTxt: string): Dependency[] {
