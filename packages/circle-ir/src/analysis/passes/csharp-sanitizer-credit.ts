@@ -149,6 +149,8 @@ export interface CsMethodRange {
 }
 
 const IDENT = '[A-Za-z_]\\w*';
+/** An optional `UriKind` second argument: `new Uri(x, UriKind.RelativeOrAbsolute)` (#946). */
+const URI_KIND_ARG = String.raw`(?:,\s*(?:System\s*\.\s*)?UriKind\s*\.\s*\w+\s*)?`;
 const ASSIGN_RE = new RegExp(`^\\s*(?:var\\s+|[A-Za-z_][\\w.<>\\[\\]?]*\\s+)?(${IDENT})\\s*=(?!=)\\s*(.+?);?\\s*$`);
 const INNER_ASSIGN_RE = new RegExp(`\\b(${IDENT})\\s*=(?!=)\\s*([^;{}]+)`, 'g');
 const APPEND_RE = new RegExp(`^\\s*(${IDENT})\\s*\\+=\\s*(.+?);?\\s*$`);
@@ -222,6 +224,29 @@ function leadingIf(text: string): { cond: string; rest: string } | null {
   const cond = insideParens(text, open);
   if (cond === null) return null;
   return { cond: cond.trim(), rest: text.slice(open + cond.length + 2).trim() };
+}
+
+/**
+ * `[return | x =] COND ? A : B;` split at its top-level `?` and `:`, outside
+ * parentheses and string literals. Null when the statement is not one ternary.
+ */
+function splitTernary(text: string): { cond: string; whenTrue: string; whenFalse: string } | null {
+  const body = text.trim().replace(/;\s*(?:\/\/.*)?$/, '')
+    .replace(new RegExp(`^(?:return\\s+|(?:var\\s+|[A-Za-z_][\\w.<>\\[\\]?]*\\s+)?${IDENT}\\s*=(?!=)\\s*)`), '');
+  let depth = 0; let q = -1; let c = -1; let inStr = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) { if (ch === '\\') i++; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (depth === 0 && ch === '?' && body[i + 1] !== '?' && body[i + 1] !== '.' && body[i - 1] !== '?') {
+      if (q !== -1) return null;
+      q = i;
+    } else if (depth === 0 && ch === ':' && q !== -1 && c === -1) c = i;
+  }
+  if (q === -1 || c === -1) return null;
+  return { cond: body.slice(0, q).trim(), whenTrue: body.slice(q + 1, c).trim(), whenFalse: body.slice(c + 1).trim() };
 }
 
 const EXITS_RE = /^(?:\{\s*)?(?:return\b|throw\b|continue\b|break\b)/;
@@ -625,7 +650,7 @@ export class CSharpCredit {
         new RegExp(`\\bIndexOf\\s*\\([^()]*,\\s*${e}\\s*\\)\\s*>=\\s*0`).test(cond)
       );
     };
-    const direct = new RegExp(`new\\s+(?:System\\s*\\.\\s*)?Uri\\s*\\(\\s*(${IDENT})\\s*\\)\\s*\\.\\s*Host\\b`, 'g');
+    const direct = new RegExp(`new\\s+(?:System\\s*\\.\\s*)?Uri\\s*\\(\\s*(${IDENT})\\s*${URI_KIND_ARG}\\)\\s*\\.\\s*Host\\b`, 'g');
     for (const m of cond.matchAll(direct)) {
       if (compares(m[0])) out.push(m[1]);
     }
@@ -702,7 +727,9 @@ export class CSharpCredit {
     const kinds: GuardKind[] = [];
     if (INERT_WHEN_ALPHANUMERIC.has(type)) kinds.push('allowlist', 'numeric');
     if (type === 'ssrf') kinds.push('host');
-    if (type === 'open_redirect') kinds.push('localUrl');
+    // A redirect target whose host equals a constant (or an allowlisted host)
+    // can only go to that host (#946), the same proof as for ssrf.
+    if (type === 'open_redirect') kinds.push('localUrl', 'host');
     const proven = new Set<string>();
     if (kinds.length === 0) return proven;
 
@@ -721,7 +748,7 @@ export class CSharpCredit {
       const [, lhs, rhs] = m;
       const parse = new RegExp(`^(?:\\([^)]*\\)\\s*)?(?:int|long|short|byte|uint|ulong|decimal|double|float|Int32|Int64)\\s*\\.\\s*Parse\\s*\\(\\s*(${IDENT})\\s*[,)]`).exec(rhs);
       if (parse) parsedFrom.set(lhs, parse[1]);
-      const host = new RegExp(`^new\\s+(?:System\\s*\\.\\s*)?Uri\\s*\\(\\s*(${IDENT})\\s*\\)\\s*\\.\\s*Host$`).exec(rhs.trim());
+      const host = new RegExp(`^new\\s+(?:System\\s*\\.\\s*)?Uri\\s*\\(\\s*(${IDENT})\\s*${URI_KIND_ARG}\\)\\s*\\.\\s*Host$`).exec(rhs.trim());
       if (host) hostOf.set(lhs, host[1]);
       boolOf.set(lhs, rhs);
     }
@@ -768,6 +795,20 @@ export class CSharpCredit {
         credit(wrapped ? inner.slice(1, -1) : inner);
       }
       else if (/!=/.test(guard.cond) && !/[|&]/.test(guard.cond)) credit(guard.cond.replace('!=', '=='));
+    }
+
+    // (iv) the sink sits on the true side of a ternary on its own line,
+    // `return host == "app.example.com" ? Redirect(input) : Redirect("/home");`
+    // (#946). A value is credited only when the false side does not use it.
+    const ternary = splitTernary(this.sinkText(sinkLine));
+    if (ternary && !ternary.cond.startsWith('!')) {
+      const before = new Set(proven);
+      proven.clear();
+      credit(ternary.cond);
+      const fromTernary = [...proven].filter(v => !before.has(v) && mentions(ternary.whenTrue, v) && !mentions(ternary.whenFalse, v));
+      proven.clear();
+      for (const v of before) proven.add(v);
+      for (const v of fromTernary) proven.add(v);
     }
     return proven;
   }

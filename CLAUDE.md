@@ -38,6 +38,10 @@ cognium-dev/
 - **No cross-repo modifications (CRITICAL)** — Claude tooling operating in the cognium-dev workspace **must not** create, edit, delete, `npm install`, `bun install`, `git`-touch, or otherwise modify any file outside `/Users/eyal/work/cogniumhq/cognium-dev/` (i.e. outside `packages/circle-ir/` and `packages/cli/`). Sibling repositories (`cognium-ai`, `circle-ir-ai`, `testharness`, `techspec`, etc.) are owned by their own teams and their own Claude sessions. When cognium-dev work has cross-repo implications (dep bumps, breaking API changes, harness reruns, npm publishing), **do not touch the other repo**: surface a handoff spec here in chat (versions, exact commands, expected diffs, comparison baselines) so the human can hand it off to the owning team. Read-only inspection of sibling repos (e.g. `Read`, `Grep`) is allowed for context gathering; any mutating operation is not.
 - **Public repository** — Do not copy text, code, or notes from any other checkout into this repo. Do not add scan output, customer findings, tokens, private keys, or unpublished internal design. See `.cursor/rules/public-repo.mdc`.
 
+## Running a Cognium track here
+
+If you run a Cognium track here, start from your track's START.md and follow its rules; this repository's own rules (above and below) still apply and win where they are stricter. This repository is public: keep track records and notes out of it.
+
 ## Build Commands
 
 ```bash
