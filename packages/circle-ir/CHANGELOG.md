@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Cross-file caller-body sinks honor `argPositions` and the sink call only (#1120).** Step 2c of `findInterproceduralTaintPaths` (and field-binding caller-body sinks) no longer credits every argument on the sink line; only dangerous arguments on the matching sink call are matched, aligning with `jsParamReachesSinkArgs`.
+
 ### Added
 - **`facts@2`: the successor fact schema, opt-in** (`schemas/facts@2.json`, mirror `src/facts/schema2.ts`, locked by `tests/facts/schema2.test.ts`). `facts@1` stays the default and is unchanged, byte for byte; `facts@2` is written only under `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or through `javaGraphFact2Set` and `facts2ToArrow` (Java only; graph-store plan T5a.1). Against `facts@1`:
   - **Stable file key.** Every relation that names a file carries `file` = `digest128(["ids@0.1", "file", path])` (fixed16, `factsFileKey`) instead of the dense `file_id`. This is the new `file` kind of `ids@0.1` (`fileId` / `fileIdBytes` in `stable-ids`, printed as 26 base32 characters like every other id), so adding, removing or moving a file re-keys only that file's rows.

@@ -1138,6 +1138,27 @@ export class CrossFileResolver {
       .some(a => (a.variable && names.has(a.variable)) || res.some(re => re.test(a.expression ?? ''))));
   }
 
+  /** Sink call on this line (method + optional column), same filter as `jsParamReachesSinkArgs`. */
+  private callMatchesSink(
+    sink: TaintSink,
+    call: { method_name?: string; location?: { column?: number } },
+  ): boolean {
+    return call.method_name === sink.method
+      && (sink.callColumn === undefined
+        || call.location?.column === undefined
+        || call.location.column === sink.callColumn);
+  }
+
+  /** Arguments the sink marks dangerous (`argPositions`, else all). */
+  private dangerousSinkArguments(
+    sink: TaintSink,
+    call: { arguments?: Array<{ position: number }> },
+  ): Array<{ position: number; variable?: string; expression?: string }> {
+    const args = call.arguments ?? [];
+    if (!sink.argPositions || sink.argPositions.length === 0) return args;
+    return args.filter(a => sink.argPositions!.includes(a.position));
+  }
+
   /**
    * C# (cognium-dev#637): the methods a value ends in after a chain of pure
    * forwarders. A callee that holds a sink is its own terminal. One that holds no
@@ -1353,9 +1374,10 @@ export class CrossFileResolver {
           if (tainted.size > 0) {
             const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
             for (const sink of sinksInCaller) {
-              const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+              const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+                .filter(c => this.callMatchesSink(sink, c));
               for (const sinkCall of callsAtSink) {
-                for (const arg of sinkCall.arguments ?? []) {
+                for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                   const matched = this.matchTaintedArg(arg, tainted);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
@@ -1569,9 +1591,10 @@ export class CrossFileResolver {
           // 3a. Caller-body sinks consuming a tainted local.
           const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
           for (const sink of sinksInCaller) {
-            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+            const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+              .filter(c => this.callMatchesSink(sink, c));
             for (const sinkCall of callsAtSink) {
-              for (const arg of sinkCall.arguments ?? []) {
+              for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                 const matched = this.matchTaintedArg(arg, tainted);
                 if (!matched) continue;
                 const key = `fb:${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
