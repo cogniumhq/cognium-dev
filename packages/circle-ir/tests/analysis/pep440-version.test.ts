@@ -13,6 +13,11 @@ describe('parsePep440', () => {
     expect(parsePep440('1.0dev')).toMatchObject({ dev: 0 });
     expect(parsePep440('2!1.0+Ubuntu.1')).toMatchObject({ epoch: 2, local: ['ubuntu', 1] });
   });
+  it('accepts surrounding whitespace and an upper-case V prefix', () => {
+    expect(parsePep440('  1.0  ')).toMatchObject({ release: [1] });
+    expect(parsePep440('V1.2')).toMatchObject({ release: [1, 2] });
+    expect(parsePep440('v1!2.0')).toMatchObject({ epoch: 1, release: [2] });
+  });
   it('rejects specifiers and non-versions', () => {
     for (const v of ['>=1.0', '==1.0', '~=2.2', 'latest', '1.0.x', '', 'git+https://x/y']) expect(parsePep440(v)).toBeNull();
   });
@@ -61,6 +66,22 @@ describe('comparePep440', () => {
     expect(comparePep440('0.0.1', 'latest')).toBeGreaterThan(0);
     expect(comparePep440('a', 'b')).toBeLessThan(0);
     expect(comparePep440('b', 'b')).toBe(0);
+  });
+  it('orders numbers above 2^53 exactly', () => {
+    expect(comparePep440('99999999999999999999.1', '99999999999999999998.1')).toBe(1);
+    expect(comparePep440('9007199254740993', '9007199254740992')).toBe(1);
+    expect(comparePep440('9007199254740993', '09007199254740993')).toBe(0);
+    expect(comparePep440('1.0.post9007199254740993', '1.0.post9007199254740992')).toBe(1);
+    expect(comparePep440('1.0.dev9007199254740993', '1.0.dev9007199254740992')).toBe(1);
+    expect(comparePep440('1.0rc9007199254740993', '1.0rc9007199254740992')).toBe(1);
+    expect(comparePep440('9007199254740993!1.0', '9007199254740992!1.0')).toBe(1);
+    expect(comparePep440('1.0+9007199254740993', '1.0+9007199254740992')).toBe(1);
+  });
+  it('orders epochs before everything else, under any spelling', () => {
+    expect(comparePep440('1!0.5', '1!1.0')).toBeLessThan(0);
+    expect(comparePep440('0!2.0', '2.0')).toBe(0);
+    expect(comparePep440('0!2.0', '1!0.0')).toBeLessThan(0);
+    expect(comparePep440('01!1.0', '1!1.0.0')).toBe(0);
   });
   it('orders local segments', () => {
     expect(comparePep440('1.0+1', '1.0+1.1')).toBeLessThan(0);
