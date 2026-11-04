@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: no `redos` when `new RegExp` is built only from string literals plus `escapeRegExp` (or `escapeRe` / `escapeRegex`) on tainted input (#1145).** Concatenation and template forms whose only dynamic segment is a metacharacter escaper produce a literal pattern, not catastrophic backtracking from tainted regex structure.
 - **Cross-file: JS/TS helpers whose file read only steers a branch (#1136).** Extends the #914 branch-only source rule to JavaScript/TypeScript (including inline `readFileSync` in an `if` condition) so cross-file chaining no longer treats the read as tainting the helper's return.
 - **Severity: `env_input` → SSRF / open-redirect capped at medium (#1138, decision A).** Operator-controlled `process.env` / getenv values into `fetch` or redirect sinks stay reported but no longer gate at `--severity high`.
 - **Cross-file caller-body sinks honor `argPositions` and the sink call only (#1120).** Step 2c of `findInterproceduralTaintPaths` (and field-binding caller-body sinks) no longer credits every argument on the sink line; only dangerous arguments on the matching sink call are matched, aligning with `jsParamReachesSinkArgs`.

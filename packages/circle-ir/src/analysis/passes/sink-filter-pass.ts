@@ -1493,6 +1493,64 @@ function regExpTemplateArgument(code: string, lines: string[], line: number): st
 /** A group that holds an unbounded quantifier and is itself quantified: `(a+)+`, `(x*)*`, `(\w{2,})+`, `(a+){2,}`. */
 const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+,\d*\})[^()]*\)\s*[+*{]/;
 
+/** Named helpers that escape regex metacharacters before `new RegExp` (cognium-dev#1145). */
+const JS_REGEXP_ESCAPE_CALL_RE =
+  /^escape(?:RegExp|Re|Regex)\s*\(\s*[A-Za-z_$][\w$]*\s*\)$/;
+
+function jsRegexpFirstArgument(text: string): string | null {
+  const start = text.search(/new\s+RegExp\s*\(/);
+  if (start < 0) return null;
+  const open = text.indexOf('(', start);
+  if (open < 0) return null;
+  let depth = 0;
+  const argStart = open + 1;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) return text.slice(argStart, i).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the `new RegExp(` on `sinkLine` builds its pattern only from string
+ * literals plus `escapeRegExp`-style calls — the interpolated part cannot carry
+ * regex structure, so ReDoS from a tainted subject alone does not apply.
+ */
+function jsRegexpPatternOnlyViaEscapeHelper(code: string, lines: string[], sinkLine: number): boolean {
+  const text = lines[sinkLine - 1] ?? '';
+  if (!/new\s+RegExp\s*\(/.test(text)) return false;
+
+  const tpl = regExpTemplateArgument(code, lines, sinkLine);
+  if (tpl !== null) {
+    let sawInterpolation = false;
+    for (const m of tpl.matchAll(/\$\{([^}]*)\}/g)) {
+      sawInterpolation = true;
+      if (!JS_REGEXP_ESCAPE_CALL_RE.test(m[1].trim())) return false;
+    }
+    return sawInterpolation;
+  }
+
+  const arg = jsRegexpFirstArgument(text);
+  if (!arg) return false;
+  if (!/escape(?:RegExp|Re|Regex)\s*\(/.test(arg)) return false;
+  const segments = arg.split(/\s*\+\s*/);
+  let sawEscape = false;
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (/^(['"`])(?:\\.|(?!\1)[^\\])*\1$/.test(s)) continue;
+    if (JS_REGEXP_ESCAPE_CALL_RE.test(s)) {
+      sawEscape = true;
+      continue;
+    }
+    return false;
+  }
+  return sawEscape;
+}
+
 /** A template literal that starts with `${IDENT}/` (cognium-dev#680). */
 const CONST_BASE_TEMPLATE_RE = /`\$\{\s*([A-Za-z_$][\w$]*)\s*\}\//g;
 
@@ -3472,6 +3530,10 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         if (interpolations === 0 || !allConst) return true;
         // A constant pattern can still backtrack on a tainted subject.
         return NESTED_QUANTIFIER_RE.test(pattern);
+      });
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'redos') return true;
+        return !jsRegexpPatternOnlyViaEscapeHelper(ctx.code, sourceLines, sink.line);
       });
     }
 
