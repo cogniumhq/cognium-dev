@@ -829,7 +829,7 @@ export class CrossFileResolver {
       // in `fs.writeFileSync(file, JSON.stringify(data))` the parameter `data`
       // is written, not used as a path.
       const callsAtSink = ir.calls.filter(c => c.location.line === sink.line
-        && (!isJs || this.isSinkCall(c, sink)));
+        && (!isJs || !sink.method || this.callMatchesSink(sink, c)));
       for (const call of callsAtSink) {
         for (const arg of call.arguments) {
           if (isJs && sink.argPositions && sink.argPositions.length > 0
@@ -1145,6 +1145,27 @@ export class CrossFileResolver {
       .some(a => (a.variable && names.has(a.variable)) || res.some(re => re.test(a.expression ?? ''))));
   }
 
+  /** Sink call on this line (method + optional column), same filter as `jsParamReachesSinkArgs`. */
+  private callMatchesSink(
+    sink: TaintSink,
+    call: { method_name?: string; location?: { column?: number } },
+  ): boolean {
+    return call.method_name === sink.method
+      && (sink.callColumn === undefined
+        || call.location?.column === undefined
+        || call.location.column === sink.callColumn);
+  }
+
+  /** Arguments the sink marks dangerous (`argPositions`, else all). */
+  private dangerousSinkArguments(
+    sink: TaintSink,
+    call: { arguments?: Array<{ position: number }> },
+  ): Array<{ position: number; variable?: string; expression?: string }> {
+    const args = call.arguments ?? [];
+    if (!sink.argPositions || sink.argPositions.length === 0) return args;
+    return args.filter(a => sink.argPositions!.includes(a.position));
+  }
+
   /**
    * C# (cognium-dev#637): the methods a value ends in after a chain of pure
    * forwarders. A callee that holds a sink is its own terminal. One that holds no
@@ -1361,17 +1382,10 @@ export class CrossFileResolver {
             const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
             const isJs = callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript';
             for (const sink of sinksInCaller) {
-              const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+              const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+                .filter(c => this.callMatchesSink(sink, c));
               for (const sinkCall of callsAtSink) {
-                // JS/TS (dogfood 2026-11-03): only the sink call's own dangerous
-                // arguments reach the sink. `fs.writeFileSync(out, report)` takes
-                // its path at [0], so a tainted `report` is data, not a path; and
-                // in `diff(fs.readFileSync(p), report)` the `diff` call's
-                // arguments are not the `readFileSync` sink's.
-                if (isJs && !this.isSinkCall(sinkCall, sink)) continue;
-                for (const arg of sinkCall.arguments ?? []) {
-                  if (isJs && sink.argPositions && sink.argPositions.length > 0
-                      && !sink.argPositions.includes(arg.position)) continue;
+                for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                   const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
@@ -1585,9 +1599,10 @@ export class CrossFileResolver {
           // 3a. Caller-body sinks consuming a tainted local.
           const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
           for (const sink of sinksInCaller) {
-            const callsAtSink = callerIdx.callsByLine.get(sink.line) ?? [];
+            const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
+              .filter(c => this.callMatchesSink(sink, c));
             for (const sinkCall of callsAtSink) {
-              for (const arg of sinkCall.arguments ?? []) {
+              for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
                 const matched = this.matchTaintedArg(arg, tainted);
                 if (!matched) continue;
                 const key = `fb:${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
@@ -1885,18 +1900,6 @@ export class CrossFileResolver {
         tainted.set(derived, { ...origin, defIds: reachable.defIds });
       }
     }
-  }
-
-  /**
-   * True when `call` is the call `sink` was matched on: same method name, and
-   * the same column when both carry one. A sink without a method name matches
-   * any call on its line (the behaviour before this check).
-   */
-  private isSinkCall(call: CallInfo, sink: TaintSink): boolean {
-    if (!sink.method) return true;
-    if (call.method_name !== sink.method) return false;
-    return sink.callColumn === undefined || call.location.column === undefined
-      || call.location.column === sink.callColumn;
   }
 
   private matchTaintedArg(
