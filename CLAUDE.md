@@ -43,7 +43,7 @@ cognium-dev/
 Whoever runs a Cognium track in this repository starts at techspec `tracks/<track>/START.md` and follows techspec `skills/track-runner/SKILL.md`. The five rules, one line each:
 
 1. **Claim before you work:** set the "Running now / claimed by" line in techspec `tracks/<track>/STATUS.md` (name, story, time), push it first, clear it when you stop; if someone else claimed that story and pushed in the last 2 hours, pick another.
-2. **Write only in your track's repos** (techspec, your code repos, your customer repo); never write `cogniumhq/context`: what belongs there is a "For control tower:" line in your session note.
+2. **Work from techspec and your track's repos only** (techspec, your code repos, your customer repo): rules in techspec `tracks/RULES.md`, words in techspec `glossary.md`; put For control tower items, Blocked lines and decisions needed in your track's techspec `STATUS.md`.
 3. **Checkpoint at every milestone and at least hourly:** `STATUS.md` and the day's `tracks/<track>/sessions/YYYY-MM-DD.md`; commit and push every branch, even unfinished ones.
 4. **PRs only:** branch from main, open PRs ready; never push to main, force-push or rebase a pushed branch; merge inside your own track only with CI green and an approver who isn't the author; anything that publishes, deploys, spends, changes canon or a contract, changes ownership, or goes to a customer waits for Eyal.
 5. **Customer material stays in its customer repo:** nothing goes to a customer without Eyal's yes; never print secrets.
