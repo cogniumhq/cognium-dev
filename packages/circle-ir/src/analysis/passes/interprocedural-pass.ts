@@ -132,6 +132,11 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
           }
         }
 
+        const isJs = language === 'javascript' || language === 'typescript';
+        const sourceReachesCaller = isJs
+          ? makeSourceReachesCaller(graph.ir, interProc.callEdges)
+          : () => true;
+
         for (const sink of interProc.propagatedSinks) {
           if (sink.type === 'external_taint_escape') continue;
 
@@ -160,6 +165,12 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
             for (const source of sources) {
               if (source.line > edge.callLine) continue;
               if (source.type === 'interprocedural_param' && source.confidence < 0.6) continue;
+              // JS/TS (dogfood 2026-11-03): the source must be able to reach this
+              // call — in the calling function, or in a function that calls it
+              // (directly or through others). A read in an unrelated function
+              // above the call (`loadRules()` while `scan()` calls
+              // `this.saveReport(report, outputDir)`) passes nothing to it.
+              if (isJs && !sourceReachesCaller(source.line, edge.callerMethod)) continue;
               // cognium-dev #128 — drop `interprocedural_param` sources whose
               // enclosing method is a TIER_3_LIBRARY_API surface (utility/helper
               // classes, template/engine packages, JDK facade implementers, or
@@ -1249,4 +1260,53 @@ export function csharpParamReachesSink(
   if (!credit) return true;
   const safe = new Set([...credit.sanitizedVarsAt(sink.type, sink.line), ...credit.guardedVarsAt(sink.type, sink.line)]);
   return reaching.some(v => !safe.has(v));
+}
+
+/**
+ * JS/TS: a test of whether a source on a given line can reach a call made in a
+ * given function, judged on the call graph: the source sits in that function,
+ * in one that calls it directly or through others, or outside every function
+ * (module scope). Function names are matched by simple name, so two methods of
+ * the same name in different classes both count (the looser answer).
+ */
+function makeSourceReachesCaller(
+  ir: CircleIR,
+  edges: InterproceduralResult['callEdges'],
+): (sourceLine: number, callerMethod: string) => boolean {
+  const callersOf = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const callee = e.calleeMethod.split('.').pop() ?? e.calleeMethod;
+    let set = callersOf.get(callee);
+    if (!set) { set = new Set(); callersOf.set(callee, set); }
+    set.add(e.callerMethod);
+  }
+  const ancestors = new Map<string, Set<string>>();
+  const ancestorsOf = (fn: string): Set<string> => {
+    const cached = ancestors.get(fn);
+    if (cached) return cached;
+    const seen = new Set<string>([fn]);
+    const queue = [fn];
+    while (queue.length > 0) {
+      for (const c of callersOf.get(queue.shift()!) ?? []) {
+        if (!seen.has(c)) { seen.add(c); queue.push(c); }
+      }
+    }
+    ancestors.set(fn, seen);
+    return seen;
+  };
+  const methodOfLine = (line: number): string | null => {
+    let best: MethodInfo | null = null;
+    for (const t of ir.types ?? []) {
+      for (const m of t.methods ?? []) {
+        if (line < m.start_line || line > m.end_line) continue;
+        if (!best || m.end_line - m.start_line < best.end_line - best.start_line) best = m;
+      }
+    }
+    return best?.name ?? null;
+  };
+  return (sourceLine, callerMethod) => {
+    const fn = methodOfLine(sourceLine);
+    if (fn === null) return true;
+    return ancestorsOf(callerMethod.split('.').pop() ?? callerMethod).has(fn);
+  };
 }
