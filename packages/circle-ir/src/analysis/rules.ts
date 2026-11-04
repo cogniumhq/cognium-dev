@@ -445,6 +445,15 @@ export interface SeverityContext {
 export function calculateSeverity(context: SeverityContext): Severity {
   const { sourceType, sinkType, pathExists, confidence = 0.5 } = context;
 
+  // cognium-dev#1138 (decision A): operator-controlled env vars into SSRF /
+  // open-redirect sinks stay visible but must not gate at --severity high.
+  if (
+    sourceType === 'env_input' &&
+    (sinkType === 'ssrf' || sinkType === 'open_redirect')
+  ) {
+    return 'medium';
+  }
+
   const isCritical = isCriticalSink(sinkType);
   const isHigh = isHighSink(sinkType);
   const isHttpSource = sourceType ? HIGH_SEVERITY_SOURCES.includes(sourceType) : false;
