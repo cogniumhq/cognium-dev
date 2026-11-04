@@ -67,6 +67,15 @@ const CLOSE_METHODS: ReadonlySet<string> = new Set([
   'shutdownNow', 'terminate',
 ]);
 
+/** JS/TS: further methods that release a Node.js stream (`Writable.end()`). */
+const JS_STREAM_CLOSE_METHODS: ReadonlySet<string> = new Set(['end']);
+
+/** JS/TS receiver text without a trailing `!` / `?` marker: `ws!` → `ws`. */
+function jsBareReceiver(receiver: string | null | undefined): string | null {
+  if (!receiver) return null;
+  return receiver.replace(/[!?]+$/, '');
+}
+
 /**
  * #226 — Closeable wrapper constructors that document ownership transfer
  * of their underlying stream/reader. When the underlying resource is passed
@@ -193,11 +202,15 @@ export class ResourceLeakPass implements AnalysisPass<ResourceLeakResult> {
         continue;
       }
 
-      // Look for a close() call on this resource within the method
+      // Look for a close() call on this resource within the method.
+      // JS/TS (dogfood 2026-11-03): a Node stream is also released by `end()`
+      // (a Writable closes its descriptor once flushed), and the receiver may
+      // carry a non-null or optional-chain marker (`ws!.end()`, `ws?.end()`).
+      const isJs = graph.ir.meta.language === 'javascript' || graph.ir.meta.language === 'typescript';
       const closeCall = graph.ir.calls.find(
         c =>
-          CLOSE_METHODS.has(c.method_name) &&
-          c.receiver === resourceVar &&
+          (CLOSE_METHODS.has(c.method_name) || (isJs && JS_STREAM_CLOSE_METHODS.has(c.method_name))) &&
+          (c.receiver === resourceVar || (isJs && jsBareReceiver(c.receiver) === resourceVar)) &&
           c.location.line > openLine &&
           c.location.line <= methodEnd,
       );
