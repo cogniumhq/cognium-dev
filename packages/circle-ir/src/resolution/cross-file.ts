@@ -1318,7 +1318,8 @@ export class CrossFileResolver {
               if (!callee.taintedParams.includes(argIdx)) continue;
 
               const arg = call.arguments[argIdx];
-              const matched = this.matchTaintedArg(arg, tainted);
+              const matched = this.matchTaintedArg(arg, tainted,
+                callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript');
               if (!matched) continue;
 
               // #266: skip when the matched var's value was reassigned away
@@ -1912,9 +1913,18 @@ export class CrossFileResolver {
   ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> } } | null {
     if (tainted.size === 0) return null;
 
+    // JS/TS (#1137): `name.length` is a number, so an argument that uses the
+    // tainted name only as `name.length` carries no taint across the call.
+    const lengthOnly = (tv: string): string | undefined => arg.expression?.replace(
+      new RegExp(`(?<![\\w$.])${escapeRegExp(tv)}\\s*\\??\\.\\s*length(?![\\w$(\\[])`, 'g'), '0');
+
     // Direct variable reference
     if (arg.variable && tainted.has(arg.variable)) {
-      return { var: arg.variable, origin: tainted.get(arg.variable)! };
+      const rest = jsMember ? lengthOnly(arg.variable) : undefined;
+      if (rest === undefined || rest === arg.expression
+          || new RegExp(`(?<![\\w$])${escapeRegExp(arg.variable)}(?![\\w$])`).test(rest)) {
+        return { var: arg.variable, origin: tainted.get(arg.variable)! };
+      }
     }
 
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
@@ -1923,7 +1933,7 @@ export class CrossFileResolver {
         const re = jsMember
           ? new RegExp(`(?<![\\w$])(?<!(?:^|[^.])\\.)${escapeRegExp(tv)}(?![\\w$])`)
           : new RegExp(`\\b${escapeRegExp(tv)}\\b`);
-        if (re.test(arg.expression)) return { var: tv, origin };
+        if (re.test(jsMember ? lengthOnly(tv)! : arg.expression)) return { var: tv, origin };
       }
     }
 
