@@ -383,6 +383,30 @@ export function applyConstantCallerGate(
       }
       return resolvedToMethod > 0;
     };
+    /**
+     * The flow was re-seeded on a variable that is not a parameter: C#
+     * `cmd.CommandText = "…" + data;` then `cmd.ExecuteScalar();` starts the
+     * flow at the property write, on `cmd` (#636). Its taint can only have
+     * come from a seeded parameter of the enclosing method, so drop it only
+     * when that method has at least one seeded parameter and every one of them
+     * is constant at every in-project caller.
+     */
+    const everySeededParamConstant = (line: number): boolean => {
+      if (ir.meta.language !== 'csharp') return false;
+      const encl = enclosingMethod(ir, line);
+      if (!encl) return false;
+      const { type, method } = encl;
+      const seeded = (ir.taint.sources ?? []).filter(s =>
+        s.type === 'interprocedural_param' && s.in_method === method.name
+        && s.line >= method.start_line && s.line <= method.end_line);
+      if (seeded.length === 0) return false;
+      if (!hasEnumerableCallers(type, method, derivedFrom, ir.meta.language)) return false;
+      for (const s of seeded) {
+        const position = method.parameters.findIndex(p => p.name === s.variable);
+        if (position < 0 || !callersConstant(type, method, position)) return false;
+      }
+      return true;
+    };
     const kept = flows.filter(flow => {
       if (flow.source_type === 'plugin_param' && ir.meta.language === 'java') {
         if (flows.some(o => o !== flow && o.sink_line === flow.sink_line &&
@@ -403,7 +427,7 @@ export function applyConstantCallerGate(
 
       const src = (ir.taint.sources ?? []).find(s =>
         s.type === 'interprocedural_param' && s.line === flow.source_line && s.variable === variable);
-      if (!src?.in_method) return true;
+      if (!src?.in_method) return !everySeededParamConstant(flow.source_line);
       const encl = enclosingMethod(ir, flow.source_line);
       if (!encl || encl.method.name !== src.in_method) return true;
       const { type, method } = encl;
