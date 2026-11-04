@@ -1,0 +1,1 @@
+{"id":"TEST-NPM-0002","modified":"2024-04-03T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"requests"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"}]}]}]}

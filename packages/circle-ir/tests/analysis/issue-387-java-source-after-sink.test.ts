@@ -128,9 +128,9 @@ public class Reader {
         String param = new org.example.helpers.RequestWrapper(request).getTheParameter("n");
         String fileName = "/srv/files/" + param;
         InputStream is = new FileInputStream(fileName);
-        byte[] b = new byte[100];
-        int size = is.read(b);
-        return size;
+        java.util.zip.ZipEntry entry = new java.util.zip.ZipInputStream(is).getNextEntry();
+        String name = entry.getName();
+        return name.length();
     }
 }
 `;
