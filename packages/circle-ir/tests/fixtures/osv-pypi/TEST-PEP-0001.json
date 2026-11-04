@@ -1,0 +1,1 @@
+{"id":"TEST-PEP-0001","modified":"2024-04-01T00:00:00Z","affected":[{"package":{"ecosystem":"PyPI","name":"Zope.Interface"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"5.0rc1"},{"fixed":"5.0.post1"}]}]}]}

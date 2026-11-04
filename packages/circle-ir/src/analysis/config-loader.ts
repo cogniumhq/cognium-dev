@@ -566,7 +566,7 @@ export const DEFAULT_SOURCES: SourcePattern[] = [
   { method: 'getenv', class: 'os', type: 'env_input', severity: 'medium', return_tainted: true },
   { method: 'get', class: 'environ', type: 'env_input', severity: 'medium', return_tainted: true },
   { method: 'input', type: 'io_input', severity: 'high', return_tainted: true },
-  { method: 'read', type: 'file_input', severity: 'medium', return_tainted: true },
+  { method: 'read', type: 'file_input', severity: 'medium', return_tainted: true, languages: ['python'] },
   { method: 'readline', type: 'file_input', severity: 'medium', return_tainted: true },
   { method: 'readlines', type: 'file_input', severity: 'medium', return_tainted: true },
 
