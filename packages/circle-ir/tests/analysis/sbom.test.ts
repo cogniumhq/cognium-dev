@@ -125,6 +125,36 @@ describe('SBOM manifest parsing', () => {
     });
   });
 
+  it('ends a requirement at a line continuation, an option, a marker or a comment (#1131 review)', () => {
+    // What `pip-compile --generate-hashes` writes, plus option, marker and comment shapes.
+    const req = [
+      'a==1.0',
+      'b==1.0 \\',
+      '    --hash=sha256:abc \\',
+      '    --hash=sha256:def',
+      'c == 1.0 \\',
+      'd==1.0 --hash=sha256:abc',
+      'e==1.0 --global-option="x"',
+      'f==1.0 ; python_version >= "3.8"  # pinned',
+      'g==1.0;python_version>="3.8"',
+      'h>=1.0, <2 \\',
+      'i==1.0\\',
+    ].join('\n');
+    const deps = parsePypiDependencies(req);
+    const v = Object.fromEntries(deps.map((d) => [d.name, [d.version, d.purl]]));
+    expect(v).toEqual({
+      a: ['1.0', 'pkg:pypi/a@1.0'],
+      b: ['1.0', 'pkg:pypi/b@1.0'],
+      c: ['1.0', 'pkg:pypi/c@1.0'],
+      d: ['1.0', 'pkg:pypi/d@1.0'],
+      e: ['1.0', 'pkg:pypi/e@1.0'],
+      f: ['1.0', 'pkg:pypi/f@1.0'],
+      g: ['1.0', 'pkg:pypi/g@1.0'],
+      h: ['>=1.0,<2', 'pkg:pypi/h'],
+      i: ['1.0', 'pkg:pypi/i@1.0'],
+    });
+  });
+
   it('parses pom.xml with groupId:artifactId names and scope mapping', () => {
     const pom = `
       <project><dependencies>

@@ -171,7 +171,12 @@ export function parseNpmDependencies(packageJson: string): Dependency[] {
  */
 function parsePep508(spec: string): { name: string; version: string } | null {
   let s = spec.trim();
-  s = s.split(';')[0].trim(); // strip environment marker
+  // The requirement ends at an environment marker (`;`), or at whitespace
+  // followed by pip's line continuation (`\`), a per-requirement option
+  // (`--hash=…`, `--global-option=…`) or a comment (`#`). This runs before
+  // whitespace is removed below, so `a==1.0 \` and `a==1.0 --hash=…` read as
+  // `1.0` (#1131 review). A `\` at the very end is a continuation too.
+  s = s.split(/;|\s+(?:\\|-{1,2}[A-Za-z]|#)/)[0].replace(/\\$/, '').trim();
   if (!s) return null;
   const m = s.match(/^([A-Za-z0-9._-]+)\s*(?:\[[^\]]*\])?\s*(.*)$/);
   if (!m) return null;

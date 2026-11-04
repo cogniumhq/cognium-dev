@@ -78,6 +78,20 @@ describe('matchAdvisories (PyPI)', () => {
     const pyproject = ['[project]', 'dependencies = [', '  "flask>=2.0",', '  "requests (>=2.0)",', ']'].join('\n');
     expect(ids(parsePyprojectDependencies(pyproject))).toEqual([]);
   });
+  it('matches pins in a hashed requirements file (#1131 review)', () => {
+    const req = [
+      'requests==2.28.1 \\',
+      '    --hash=sha256:abc \\',
+      '    --hash=sha256:def',
+      'requests == 2.28.1 --hash=sha256:abc',
+      'requests==2.28.1 ; python_version >= "3.8"  # pinned',
+    ].join('\n');
+    expect(ids(parsePypiDependencies(req))).toEqual([
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+      'requests@2.28.1 GHSA-j8r2-6x86-q33q',
+    ]);
+  });
   it('matches the exact versions of a poetry.lock', () => {
     const lock = ['[[package]]', 'name = "requests"', 'version = "2.25.1"', '', '[[package]]', 'name = "Flask"', 'version = "2.3.3"'].join('\n');
     expect(ids(parsePoetryLockDependencies(lock))).toEqual(['requests@2.25.1 GHSA-j8r2-6x86-q33q']);
