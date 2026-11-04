@@ -820,13 +820,20 @@ export class CrossFileResolver {
       if (name) paramNameToIndex.set(name, i);
     }
 
+    const isJs = ir.meta.language === 'javascript' || ir.meta.language === 'typescript';
     for (const sink of ir.taint.sinks) {
       if (sink.line < method.start_line || sink.line > method.end_line) continue;
 
       // Find the call(s) at the sink line — match by line number.
-      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line);
+      // JS/TS (#1120): only the sink call itself, at its dangerous positions —
+      // in `fs.writeFileSync(file, JSON.stringify(data))` the parameter `data`
+      // is written, not used as a path.
+      const callsAtSink = ir.calls.filter(c => c.location.line === sink.line
+        && (!isJs || !sink.method || this.callMatchesSink(sink, c)));
       for (const call of callsAtSink) {
         for (const arg of call.arguments) {
+          if (isJs && sink.argPositions && sink.argPositions.length > 0
+              && !sink.argPositions.includes(arg.position)) continue;
           // Argument that's a direct variable reference.
           const candidates: string[] = [];
           if (arg.variable) candidates.push(arg.variable);
@@ -1375,12 +1382,13 @@ export class CrossFileResolver {
           //     caller's file rather than in a cross-file callee.
           if (tainted.size > 0) {
             const sinksInCaller = callerIdx.sinksByMethod.get(method) ?? [];
+            const isJs = callerIR.meta.language === 'javascript' || callerIR.meta.language === 'typescript';
             for (const sink of sinksInCaller) {
               const callsAtSink = (callerIdx.callsByLine.get(sink.line) ?? [])
                 .filter(c => this.callMatchesSink(sink, c));
               for (const sinkCall of callsAtSink) {
                 for (const arg of this.dangerousSinkArguments(sink, sinkCall)) {
-                  const matched = this.matchTaintedArg(arg, tainted);
+                  const matched = this.matchTaintedArg(arg, tainted, isJs);
                   if (!matched) continue;
                   const key = `${matched.origin.file}:${matched.origin.line}→${callerFile}:${sink.line}`;
                   if (seen.has(key)) continue;
@@ -1899,6 +1907,8 @@ export class CrossFileResolver {
   private matchTaintedArg(
     arg: { variable?: string | null; expression?: string },
     tainted: Map<string, { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> }>,
+    /** JS/TS: a name after a single `.` is a property (`args.output`), not the tainted local `output` (a spread `...output` still is). */
+    jsMember = false,
   ): { var: string; origin: { file: string; line: number; type: string; hopChain: InterproceduralTaintPath['hops']; defIds?: Set<number> } } | null {
     if (tainted.size === 0) return null;
 
@@ -1910,7 +1920,9 @@ export class CrossFileResolver {
     // Whole-word scan inside the expression (handles `prefix + url`, `url.trim()`, etc.)
     if (arg.expression) {
       for (const [tv, origin] of tainted) {
-        const re = new RegExp(`\\b${escapeRegExp(tv)}\\b`);
+        const re = jsMember
+          ? new RegExp(`(?<![\\w$])(?<!(?:^|[^.])\\.)${escapeRegExp(tv)}(?![\\w$])`)
+          : new RegExp(`\\b${escapeRegExp(tv)}\\b`);
         if (re.test(arg.expression)) return { var: tv, origin };
       }
     }

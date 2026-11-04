@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `JavaGraph.facts` is now typed `FactsArrow | Facts2Arrow`; without `factsScheme` it holds the `FactsArrow` it held before.
 
 ### Fixed
+- **JS/TS: a callee's parameter summary counts only the sink call's dangerous arguments, and a property is not the tainted local (#1120 follow-up to #1134).** In `fs.writeFileSync(file, JSON.stringify(data))` inside a callee, the parameter `data` is written, not used as a path, so it no longer marks the parameter as reaching a `path_traversal` sink. In caller-body sinks, `args.output` is no longer taken for the tainted local `output`; a spread `...output` still is.
 - **PyPI advisory matching: epochs, `versions` lists and declared ranges (#1127).** Three silent mistakes in the PyPI matcher added in #1119:
   - **An epoch version now matches.** The concrete-version check ran before the PyPI rule and rejected the `!`, so `1!0.5` never matched an advisory `introduced: 0, fixed: 1!1.0`, and `0!2.0` never matched where `2.0` did. `AdvisoryEcosystem` gains an optional `isConcrete`; PyPI allows the `!`.
   - **A `versions` list is compared by PEP 440 equality** (new optional `AdvisoryEcosystem.sameVersion`). A list holding `1.0rc1` now matches `1.0c1` and `1.0.0rc1`, and one holding `2.0` matches `2.0.0` and `2`. This is the equality the supply-chain pack's own re-match uses. Maven and npm keep OSV's exact string equality.
