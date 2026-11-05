@@ -612,6 +612,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJsPathResolveStartsWithGuardSanitizers(code),
       );
+      // cognium-dev#1146: same-file helper returns path.resolve after allow-list guard.
+      additionalSanitizers.push(
+        ...findJsPathAllowlistHelperSanitizers(code),
+      );
       // #223 REG-144-17/18/19: JS/TS command allowlist guard
       // (Set.has / Array.includes / indexOf) before execFile/spawn.
       additionalSanitizers.push(
@@ -7680,6 +7684,108 @@ function findJsPathResolveStartsWithGuardSanitizers(
         line: l + 1,
         sanitizes: ['path_traversal', 'external_taint_escape'],
       });
+    }
+  }
+
+  return sanitizers;
+}
+
+/** Lines of one `{ ... }` block starting at `startLineIdx` (inclusive). */
+function jsBracedBlockLines(lines: string[], startLineIdx: number): string[] | null {
+  let depth = 0;
+  let started = false;
+  const out: string[] = [];
+  for (let i = startLineIdx; i < lines.length; i++) {
+    const l = lines[i];
+    for (const c of l) {
+      if (c === '{') {
+        depth++;
+        started = true;
+      } else if (c === '}') {
+        depth--;
+      }
+    }
+    out.push(l);
+    if (started && depth === 0) return out;
+  }
+  return null;
+}
+
+/**
+ * True when `bodyLines` contains a rejecting allow-list guard on canonical path
+ * variable `canon` (single-root startsWith or multi-root `.some` equality/prefix).
+ */
+function jsPathCanonicalAllowlistGuardRejects(
+  bodyLines: string[],
+  canon: string,
+  terminatorRe: RegExp,
+): boolean {
+  const esc = canon.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const singleRoot = new RegExp(
+    `if\\s*\\(\\s*!\\s*${esc}\\s*\\.\\s*startsWith\\s*\\(`,
+  );
+  const multiRootLine = (line: string): boolean =>
+    /if\s*\(\s*!\s*[A-Za-z_\w]*\.some\s*\(/.test(line) &&
+    new RegExp(`\\b${esc}\\b\\s*===\\s*\\w+\\s*\\|\\|\\s*\\b${esc}\\b\\.startsWith\\s*\\(`).test(line);
+  for (let j = 0; j < bodyLines.length; j++) {
+    const line = bodyLines[j];
+    if (!singleRoot.test(line) && !multiRootLine(line)) continue;
+    if (guardRejects(bodyLines, j, terminatorRe, 2)) return true;
+  }
+  return false;
+}
+
+/**
+ * JS/TS: a helper returns `path.resolve(param)` only after a constant-root
+ * allow-list guard (startsWith or ROOTS.some equality/prefix) with throw/return
+ * on failure (cognium-dev#1146).
+ */
+function findJsPathAllowlistHelperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+  const terminatorRe = /\b(?:throw|return)\b/;
+  const qualified = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const fnStart = lines[i].match(
+      /\bfunction\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\{/,
+    );
+    if (!fnStart) continue;
+    const fnName = fnStart[1];
+    const param = fnStart[2];
+    const bodyLines = jsBracedBlockLines(lines, i);
+    if (!bodyLines) continue;
+    const bodyText = bodyLines.join('\n');
+    const resolveRe = new RegExp(
+      `\\b(?:const|let|var)\\s+([A-Za-z_\\w]*)\\s*=\\s*(?:(?:node:)?path|nodePath|Path)\\s*\\.\\s*(?:resolve|normalize)\\s*\\(\\s*${param}\\s*\\)`,
+    );
+    const resolveM = resolveRe.exec(bodyText);
+    if (!resolveM) continue;
+    const canon = resolveM[1];
+    if (!jsPathCanonicalAllowlistGuardRejects(bodyLines, canon, terminatorRe)) continue;
+    if (!new RegExp(`\\breturn\\s+${canon}\\b`).test(bodyText)) continue;
+    qualified.add(fnName);
+  }
+
+  for (const fnName of qualified) {
+    const escFn = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callAssign = new RegExp(
+      `\\b(?:const|let|var)\\s+([A-Za-z_\\w]*)\\s*=\\s*${escFn}\\s*\\(`,
+    );
+    for (let i = 0; i < lines.length; i++) {
+      const m = callAssign.exec(lines[i]);
+      if (!m) continue;
+      const outVar = m[1];
+      const varRef = new RegExp(`\\b${outVar}\\b`);
+      for (let l = i; l < lines.length; l++) {
+        if (!varRef.test(lines[l])) continue;
+        sanitizers.push({
+          type: 'js_path_allowlist_helper',
+          method: fnName,
+          line: l + 1,
+          sanitizes: ['path_traversal', 'external_taint_escape'],
+        });
+      }
     }
   }
 

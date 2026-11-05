@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: no `path_traversal` when a helper returns `path.resolve(input)` after a multi-root or single-root allow-list guard with throw/return on failure (#1146).** Credits same-file helpers that canonicalize then check `startsWith(root)` or `ROOTS.some((root) => r === root || r.startsWith(root + path.sep))` before returning the path used at `readFileSync`.
 - **JS/TS: no `redos` when `new RegExp` is built only from string literals plus `escapeRegExp` (or `escapeRe` / `escapeRegex`) on tainted input (#1145).** Concatenation and template forms whose only dynamic segment is a metacharacter escaper produce a literal pattern, not catastrophic backtracking from tainted regex structure.
 - **Cross-file: JS/TS helpers whose file read only steers a branch (#1136).** Extends the #914 branch-only source rule to JavaScript/TypeScript (including inline `readFileSync` in an `if` condition) so cross-file chaining no longer treats the read as tainting the helper's return.
 - **Severity: `env_input` → SSRF / open-redirect capped at medium (#1138, decision A).** Operator-controlled `process.env` / getenv values into `fetch` or redirect sinks stay reported but no longer gate at `--severity high`.
