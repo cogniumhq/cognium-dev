@@ -48,13 +48,14 @@ export interface Dependency {
   license?: string;
   /**
    * Whether the project declares this dependency itself. Set only by inputs
-   * that carry the graph (`mvn dependency:tree`); absent when unknown.
+   * that carry the graph (`mvn dependency:tree`, lockfiles); absent when unknown.
    */
   direct?: boolean;
   /**
-   * The path from a direct dependency down to this one's parent, as
-   * `groupId:artifactId` names: `[]` for a direct dependency. Set only by
-   * inputs that carry the graph (`mvn dependency:tree`); absent when unknown.
+   * The path from a direct dependency down to this one's parent, as package
+   * names (`groupId:artifactId` for Maven): `[]` for a direct dependency. Set
+   * only by inputs that carry the graph (`mvn dependency:tree`,
+   * `parsePnpmLockImporterDependencies`); absent when unknown.
    */
   via?: string[];
 }
@@ -380,6 +381,33 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 }
 
+/** The package graph of a parsed `pnpm-lock.yaml`, keyed `name@version` (peer variants collapsed). */
+function pnpmLockNodes(root: Record<string, unknown>): Map<string, LockNode> {
+  const nodes = new Map<string, LockNode>();
+  const addNode = (rawKey: string, info: Record<string, unknown> | undefined): void => {
+    const id = parsePnpmKey(rawKey);
+    if (!id) return;
+    const key = `${id.name}@${id.version}`;
+    const node = nodes.get(key) ?? { name: id.name, version: id.version, deps: [] };
+    if (info) {
+      for (const section of ['dependencies', 'optionalDependencies']) {
+        for (const [n, ref] of Object.entries(asRecord(info[section]) ?? {})) {
+          const k = pnpmRef(n, ref);
+          if (k && !node.deps.includes(k)) node.deps.push(k);
+        }
+      }
+      if (info.dev === true) node.flagDev = true;
+      if (info.optional === true) node.flagOptional = true;
+    }
+    nodes.set(key, node);
+  };
+  for (const [k, v] of Object.entries(asRecord(root.packages) ?? {})) addNode(k, asRecord(v));
+  // v9 keeps the graph in `snapshots`, identities in `packages`.
+  for (const [k, v] of Object.entries(asRecord(root.snapshots) ?? {})) addNode(k, asRecord(v));
+
+  return nodes;
+}
+
 /**
  * Parse a `pnpm-lock.yaml` (lockfile formats 5.x, 6.0 and 9.0) into exact
  * resolved npm dependencies, direct and transitive.
@@ -407,28 +435,7 @@ export function parsePnpmLockDependencies(pnpmLock: string): Dependency[] {
   }
   if (!root) return [];
 
-  const nodes = new Map<string, LockNode>();
-  const addNode = (rawKey: string, info: Record<string, unknown> | undefined): void => {
-    const id = parsePnpmKey(rawKey);
-    if (!id) return;
-    const key = `${id.name}@${id.version}`;
-    const node = nodes.get(key) ?? { name: id.name, version: id.version, deps: [] };
-    if (info) {
-      for (const section of ['dependencies', 'optionalDependencies']) {
-        for (const [n, ref] of Object.entries(asRecord(info[section]) ?? {})) {
-          const k = pnpmRef(n, ref);
-          if (k && !node.deps.includes(k)) node.deps.push(k);
-        }
-      }
-      if (info.dev === true) node.flagDev = true;
-      if (info.optional === true) node.flagOptional = true;
-    }
-    nodes.set(key, node);
-  };
-  for (const [k, v] of Object.entries(asRecord(root.packages) ?? {})) addNode(k, asRecord(v));
-  // v9 keeps the graph in `snapshots`, identities in `packages`.
-  for (const [k, v] of Object.entries(asRecord(root.snapshots) ?? {})) addNode(k, asRecord(v));
-
+  const nodes = pnpmLockNodes(root);
   const roots: LockRoots = { required: [], optional: [], dev: [] };
   const importers = asRecord(root.importers);
   const projects: Record<string, unknown>[] = importers
@@ -466,6 +473,148 @@ export function pnpmLockImporters(pnpmLock: string): string[] {
   if (!root) return [];
   const importers = asRecord(root.importers);
   return importers ? Object.keys(importers).sort() : ['.'];
+}
+
+/** One workspace project of a `pnpm-lock.yaml` and the packages it reaches. */
+export interface PnpmImporterDependencies {
+  /** The importer's directory relative to the lockfile (`.` for the root). */
+  importer: string;
+  /**
+   * The npm packages this importer reaches, in `name` then `version` order.
+   * `scope` is the strongest way the importer reaches the package
+   * (`required` > `optional` > `dev`); `direct` is `true` when the importer
+   * declares it; `via` is a shortest path of package names from a declared
+   * dependency down to the package's parent (`[]` when direct). A workspace
+   * package the importer links to (`link:`) is followed: its `dependencies`
+   * and `optionalDependencies` are reached through it and its name heads `via`.
+   */
+  dependencies: Dependency[];
+}
+
+/** Resolve `rel` against importer `base` (both `/`-separated, `.` = lockfile directory). */
+function joinImporterPath(base: string, rel: string): string {
+  const out: string[] = [];
+  for (const seg of [...base.split('/'), ...rel.split('/')]) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length === 0) return '';
+      out.pop();
+    } else out.push(seg);
+  }
+  return out.length === 0 ? '.' : out.join('/');
+}
+
+const SCOPE_RANK: Record<DependencyScope, number> = { required: 0, optional: 1, dev: 2 };
+const weaker = (a: DependencyScope, b: DependencyScope): DependencyScope => (SCOPE_RANK[a] >= SCOPE_RANK[b] ? a : b);
+
+/**
+ * Parse a `pnpm-lock.yaml` (5.x / 6.0 / 9.0) into one dependency set per
+ * importer: what each workspace project reaches on its own, so an advisory
+ * match can name the projects it affects (`matchAdvisories` per set).
+ *
+ * Unlike `parsePnpmLockDependencies`, which merges every importer, a package
+ * appears in an importer's set only if that importer reaches it — through its
+ * own declarations or through a linked workspace package's production and
+ * optional dependencies (a linked package's `devDependencies` are not
+ * installed for its consumers). A single-project lockfile yields one set for
+ * `.`. Importers are in path order; malformed YAML yields `[]`.
+ */
+export function parsePnpmLockImporterDependencies(pnpmLock: string): PnpmImporterDependencies[] {
+  if (!pnpmLock) return [];
+  let root: Record<string, unknown> | undefined;
+  try {
+    root = asRecord(parseYaml(pnpmLock, { uniqueKeys: false }));
+  } catch {
+    return [];
+  }
+  if (!root) return [];
+  const nodes = pnpmLockNodes(root);
+  const importerMap = asRecord(root.importers);
+  const projects = new Map<string, Record<string, unknown>>();
+  if (importerMap) {
+    for (const [k, v] of Object.entries(importerMap)) {
+      const rec = asRecord(v);
+      if (rec) projects.set(k, rec);
+    }
+  } else {
+    projects.set('.', root);
+  }
+
+  type Start = { key: string; scope: DependencyScope; via: string[]; direct: boolean };
+  const SECTIONS = [
+    ['dependencies', 'required'],
+    ['optionalDependencies', 'optional'],
+    ['devDependencies', 'dev'],
+  ] as const;
+
+  const out: PnpmImporterDependencies[] = [];
+  for (const importer of [...projects.keys()].sort()) {
+    // Declared roots, following workspace links breadth-first (shortest `via`).
+    const starts: Start[] = [];
+    const queue: Array<{ dir: string; scope: DependencyScope | null; via: string[] }> = [{ dir: importer, scope: null, via: [] }];
+    const visited = new Set<string>([importer]);
+    while (queue.length > 0) {
+      const { dir, scope: linkScope, via } = queue.shift() as { dir: string; scope: DependencyScope | null; via: string[] };
+      const project = projects.get(dir);
+      if (!project) continue;
+      for (const [section, sectionScope] of SECTIONS) {
+        // A linked package's own dev dependencies are not installed for its consumers.
+        if (linkScope !== null && section === 'devDependencies') continue;
+        const scope = linkScope === null ? sectionScope : weaker(linkScope, sectionScope);
+        for (const [n, entry] of Object.entries(asRecord(project[section]) ?? {})) {
+          const ref = importerVersion(entry);
+          if (typeof ref === 'string' && ref.startsWith('link:')) {
+            const target = joinImporterPath(dir, ref.slice('link:'.length));
+            if (projects.has(target) && !visited.has(target)) {
+              visited.add(target);
+              queue.push({ dir: target, scope, via: [...via, n] });
+            }
+            continue;
+          }
+          const k = pnpmRef(n, ref);
+          if (k) starts.push({ key: k, scope, via, direct: linkScope === null });
+        }
+      }
+    }
+
+    // Reach the graph once per scope, strongest first, so a package keeps its
+    // strongest scope and the shortest path within it.
+    const reached = new Map<string, { scope: DependencyScope; via: string[]; direct: boolean }>();
+    for (const scope of ['required', 'optional', 'dev'] as const) {
+      const bfs: Array<{ key: string; via: string[]; direct: boolean }> = starts
+        .filter((s) => s.scope === scope)
+        .sort((a, b) => Number(b.direct) - Number(a.direct) || a.via.length - b.via.length)
+        .map((s) => ({ key: s.key, via: s.via, direct: s.direct }));
+      while (bfs.length > 0) {
+        const cur = bfs.shift() as { key: string; via: string[]; direct: boolean };
+        const node = nodes.get(cur.key);
+        if (!node) continue;
+        // First reach wins: strongest scope, then shortest path.
+        if (reached.has(cur.key)) continue;
+        reached.set(cur.key, { scope, via: cur.via, direct: cur.direct && cur.via.length === 0 });
+        for (const next of node.deps) {
+          if (!reached.has(next)) bfs.push({ key: next, via: [...cur.via, node.name], direct: false });
+        }
+      }
+    }
+    // A package declared directly but first reached transitively is still direct.
+    for (const s of starts) {
+      const r = reached.get(s.key);
+      if (r && s.direct && s.via.length === 0) r.direct = true;
+    }
+
+    const deps: Dependency[] = [];
+    for (const [key, r] of reached) {
+      const n = nodes.get(key) as LockNode;
+      const d = dep('npm', n.name, n.version, r.scope);
+      d.direct = r.direct;
+      d.via = r.direct ? [] : r.via;
+      deps.push(d);
+    }
+    deps.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : a.version > b.version ? 1 : 0));
+    out.push({ importer, dependencies: deps });
+  }
+  return out;
 }
 
 /** Unquote a yarn v1 token: `"@babel/core@^7.0.0"` → `@babel/core@^7.0.0`. */

@@ -1,0 +1,95 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tooling:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+  packages/api:
+    dependencies:
+      '@acme/core':
+        specifier: workspace:*
+        version: link:../core
+      express-lite:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+  packages/core:
+    dependencies:
+      semver:
+        specifier: ^7.5.0
+        version: 7.5.1
+    devDependencies:
+      la-pkg:
+        specifier: ^1.0.0
+        version: 1.2.0
+    optionalDependencies:
+      fsevents:
+        specifier: ^2.3.0
+        version: 2.3.3
+
+  packages/web:
+    dependencies:
+      lodash:
+        specifier: ^4.17.21
+        version: 4.17.21
+    devDependencies:
+      '@acme/core':
+        specifier: workspace:*
+        version: link:../core
+
+packages:
+
+  debug@2.6.8:
+    resolution: {integrity: sha512-a}
+
+  express-lite@1.0.0:
+    resolution: {integrity: sha512-b}
+
+  fsevents@2.3.3:
+    resolution: {integrity: sha512-c}
+
+  la-pkg@1.2.0:
+    resolution: {integrity: sha512-d}
+
+  lodash@4.17.15:
+    resolution: {integrity: sha512-e}
+
+  lodash@4.17.21:
+    resolution: {integrity: sha512-f}
+
+  semver@7.5.1:
+    resolution: {integrity: sha512-g}
+
+  tooling@1.0.0:
+    resolution: {integrity: sha512-h}
+
+snapshots:
+
+  debug@2.6.8: {}
+
+  express-lite@1.0.0:
+    dependencies:
+      debug: 2.6.8
+
+  fsevents@2.3.3:
+    optional: true
+
+  la-pkg@1.2.0: {}
+
+  lodash@4.17.15: {}
+
+  lodash@4.17.21: {}
+
+  semver@7.5.1: {}
+
+  tooling@1.0.0:
+    dependencies:
+      lodash: 4.17.15
