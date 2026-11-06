@@ -182,8 +182,19 @@ describe('parsePnpmLockImporterDependencies', () => {
     expect(sets.flatMap((s) => s.dependencies).some((d) => d.name === '@acme/core')).toBe(false);
   });
 
+  it('keeps the strongest scope when workspace links form a diamond', () => {
+    const app = parsePnpmLockImporterDependencies(read('pnpm-v9-diamond.yaml')).find((s) => s.importer === 'apps/app');
+    // dev-linked directly, but also reached through the production link foo > core.
+    expect(app?.dependencies.map(reachRow)).toEqual(['semver@7.5.1 required via foo>core']);
+  });
+
+  it('takes a shortest path, whether links or packages lead there', () => {
+    const short = parsePnpmLockImporterDependencies(read('pnpm-v9-diamond.yaml')).find((s) => s.importer === 'apps/short');
+    expect(short?.dependencies.map(reachRow)).toEqual(['x@1.0.0 required direct', 'y@1.0.0 required via x']);
+  });
+
   it('covers the same packages as the merged parse', () => {
-    for (const f of ['pnpm-v9.yaml', 'pnpm-v9-reach.yaml']) {
+    for (const f of ['pnpm-v9.yaml', 'pnpm-v9-reach.yaml', 'pnpm-v9-diamond.yaml']) {
       const merged = new Set(parsePnpmLockDependencies(read(f)).map((d) => `${d.name}@${d.version}`));
       const perImporter = new Set(
         parsePnpmLockImporterDependencies(read(f)).flatMap((s) => s.dependencies.map((d) => `${d.name}@${d.version}`)),

@@ -155,4 +155,39 @@ describe('osv-snapshot', () => {
       }
     });
   });
+
+  describe('match arguments (fail closed)', () => {
+    const D = 'sha256:' + 'a'.repeat(64);
+    it('accepts --pin <digest> and --pin=<digest> anywhere, and no pin', () => {
+      expect(snap.parseMatchArgs(['snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock' });
+      expect(snap.parseMatchArgs(['snap', 'lock', '--pin', D])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs(['--pin', D, 'snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs([`--pin=${D}`, 'snap', 'lock'])).toEqual({ dir: 'snap', lockPath: 'lock', pin: D });
+      expect(snap.parseMatchArgs(['--', '-snap', 'lock'])).toEqual({ dir: '-snap', lockPath: 'lock' });
+    });
+
+    it('refuses a --pin without a well-formed digest', () => {
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin='])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['--pin', 'snap', 'lock'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin=sha256:abc'])).toThrow(/--pin needs/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pin', D, '--pin', D])).toThrow(/more than once/);
+    });
+
+    it('refuses unknown options and a wrong number of paths', () => {
+      expect(() => snap.parseMatchArgs(['snap', 'lock', '--pinned', D])).toThrow(/unknown option/);
+      expect(() => snap.parseMatchArgs(['snap'])).toThrow(/needs <snapshot dir>/);
+      expect(() => snap.parseMatchArgs(['snap', 'lock', 'extra'])).toThrow(/needs <snapshot dir>/);
+    });
+
+    it('the command line refuses a missing pin value without matching', () => {
+      let err = '';
+      try {
+        execFileSync('node', [SCRIPT, 'match', FIXTURE, 'nope.yaml', '--pin'], { stdio: 'pipe' });
+      } catch (e) {
+        err = String((e as { stderr?: Buffer }).stderr ?? '');
+      }
+      expect(err).toMatch(/--pin needs/);
+    });
+  });
 });
