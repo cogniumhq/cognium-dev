@@ -1430,6 +1430,19 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #1156: `parser.parse(fs.readFileSync(abs))`. When every sink
+    // of the flow's type on the line is a call nested inside the arguments of a
+    // source call of the flow's source type, the sink runs first and the
+    // source's result never reaches it. Applied to the flows of every emitter;
+    // JavaScript and TypeScript only for now.
+    if (ctx.language === 'javascript' || ctx.language === 'typescript') finalFlows = finalFlows.filter(f => {
+      if (f.source_line !== f.sink_line) return true;
+      const lineSinks = sinks.filter(k => k.line === f.sink_line && k.type === f.sink_type);
+      const lineSources = sources.filter(x => x.line === f.source_line && x.type === f.source_type);
+      if (lineSinks.length === 0 || lineSources.length === 0) return true;
+      return !lineSinks.every(k => lineSources.some(x => sinkNestedInSourceCall(x, k)));
+    });
+
     return { flows: finalFlows };
   }
 }
@@ -4915,4 +4928,41 @@ function pickScopedSource(
   //    preceding the sink (e.g. synthetic same-line sources).
   if (guardUnrelatedSources && taintedVar) return undefined;
   return sources[0];
+}
+
+/**
+ * cognium-dev #1156: true when every call to the sink's method on the sink line
+ * sits inside the argument list of a call to the source's method on that line,
+ * as in `parser.parse(fs.readFileSync(abs))`. The inner call runs first and the
+ * outer call consumes its result, so the source's value cannot reach the sink.
+ * When the source text or a sink call outside every source call can't be
+ * found, it returns false and the flow is kept.
+ */
+function sinkNestedInSourceCall(
+  source: { location?: string; line: number },
+  sink: { method?: string; code?: string; line: number },
+): boolean {
+  if (source.line !== sink.line || !sink.method || !sink.code) return false;
+  const srcMethod = /([A-Za-z_$][\w$]*)\s*\(\)\s+in\b/.exec(source.location ?? '')?.[1];
+  if (!srcMethod || srcMethod === sink.method) return false;
+  // Blank string literals so parentheses inside them don't count.
+  const text = sink.code.replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, m => m[0] + ' '.repeat(m.length - 2) + m[0]);
+  const callStarts = (name: string): number[] => {
+    const re = new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}\\s*\\(`, 'g');
+    const out: number[] = [];
+    for (let m = re.exec(text); m; m = re.exec(text)) out.push(m.index + m[0].length - 1);
+    return out;
+  };
+  const ranges: Array<[number, number]> = [];
+  for (const open of callStarts(srcMethod)) {
+    let depth = 0;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')' && --depth === 0) { ranges.push([open, i]); break; }
+    }
+  }
+  if (ranges.length === 0) return false;
+  const sinks = callStarts(sink.method);
+  if (sinks.length === 0) return false;
+  return sinks.every(pos => ranges.some(([a, b]) => pos > a && pos < b));
 }
