@@ -215,10 +215,10 @@ export class ConstantPropagator {
     // on Python ASTs.
     this.seedPythonModuleConstants(tree.rootNode);
 
-    const methodParamNames = this.buildJavaMethodParameterNames(prePassMethods);
+    const javaMethodParamIndex = this.buildJavaMethodParameterIndex(prePassMethods);
     const javaCalleeOverlay = new Map<string, Set<string>>();
 
-    if (omitJavaUnscopedTaintAliases && methodParamNames.size > 0) {
+    if (omitJavaUnscopedTaintAliases && javaMethodParamIndex.arityKeyToParams.size > 0) {
       // Fixpoint: same-file calls pass taint into callees; const-prop order
       // follows declaration order, so seed params from call sites iteratively.
       let prevSig = '';
@@ -229,7 +229,7 @@ export class ConstantPropagator {
         this.refineTaintFromConstants();
         this.javaCalleeParameterOverlay = undefined;
 
-        const discovered = this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, methodParamNames);
+        const discovered = this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, javaMethodParamIndex);
         let sig = '';
         for (const [m, ps] of [...discovered.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
           sig += `${m}:[${[...ps].sort().join(',')}];`;
@@ -365,17 +365,47 @@ export class ConstantPropagator {
     this.isTaintedExpressionCache = null;
   }
 
-  private buildJavaMethodParameterNames(methods: Node[]): Map<string, string[]> {
-    const map = new Map<string, string[]>();
+  /**
+   * Index same-file Java callables by `simpleName#argCount` with arity-only
+   * keys. If two overloads share the same simple name and parameter count,
+   * that key is marked ambiguous and callee-param seeding skips it (avoids
+   * wiring the wrong formal list).
+   */
+  private buildJavaMethodParameterIndex(methods: Node[]): {
+    arityKeyToParams: Map<string, string[]>;
+    ambiguousArityKeys: Set<string>;
+  } {
+    const byKey = new Map<string, string[][]>();
     for (const m of methods) {
       const nameNode = m.childForFieldName('name');
       const methodName = nameNode ? getNodeText(nameNode, this.source) : null;
       if (!methodName) continue;
       const params = this.getMethodParameters(m);
       if (params.length === 0) continue;
-      map.set(methodName, params);
+      const key = `${methodName}#${params.length}`;
+      let list = byKey.get(key);
+      if (!list) {
+        list = [];
+        byKey.set(key, list);
+      }
+      list.push(params);
     }
-    return map;
+    const arityKeyToParams = new Map<string, string[]>();
+    const ambiguousArityKeys = new Set<string>();
+    for (const [key, lists] of byKey) {
+      if (lists.length > 1) {
+        const first = lists[0]!;
+        const namesMatch = lists.every(
+          (p) => p.length === first.length && p.every((name, i) => name === first[i]),
+        );
+        if (!namesMatch) {
+          ambiguousArityKeys.add(key);
+          continue;
+        }
+      }
+      arityKeyToParams.set(key, lists[0]!);
+    }
+    return { arityKeyToParams, ambiguousArityKeys };
   }
 
   /**
@@ -385,7 +415,7 @@ export class ConstantPropagator {
    */
   private collectJavaCalleeParameterSeedsFromCalls(
     root: Node,
-    methodParamNames: Map<string, string[]>,
+    index: { arityKeyToParams: Map<string, string[]>; ambiguousArityKeys: Set<string> },
   ): Map<string, Set<string>> {
     const out = new Map<string, Set<string>>();
     const walk = (node: Node): void => {
@@ -405,25 +435,29 @@ export class ConstantPropagator {
         return;
       }
       if (node.type === 'method_invocation') {
-        const nameNode = node.childForFieldName('name');
-        const calleeName = nameNode ? getNodeText(nameNode, this.source) : null;
-        const formalList = calleeName ? methodParamNames.get(calleeName) : undefined;
-        if (calleeName && formalList && formalList.length > 0) {
+        const calleeName = this.extractJavaCalleeSimpleName(node);
+        if (calleeName) {
           const argsNode = node.childForFieldName('arguments');
           if (argsNode) {
             const args = argsNode.children.filter(
               (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
             );
-            for (let i = 0; i < args.length && i < formalList.length; i++) {
-              const formal = formalList[i];
-              if (!formal) continue;
-              if (!this.isTaintedExpression(args[i]!)) continue;
-              let acc = out.get(calleeName);
-              if (!acc) {
-                acc = new Set();
-                out.set(calleeName, acc);
+            const arityKey = `${calleeName}#${args.length}`;
+            if (!index.ambiguousArityKeys.has(arityKey)) {
+              const formalList = index.arityKeyToParams.get(arityKey);
+              if (formalList && formalList.length > 0) {
+                for (let i = 0; i < args.length && i < formalList.length; i++) {
+                  const formal = formalList[i];
+                  if (!formal) continue;
+                  if (!this.isTaintedExpression(args[i]!)) continue;
+                  let acc = out.get(calleeName);
+                  if (!acc) {
+                    acc = new Set();
+                    out.set(calleeName, acc);
+                  }
+                  acc.add(formal);
+                }
               }
-              acc.add(formal);
             }
           }
         }
@@ -771,12 +805,9 @@ export class ConstantPropagator {
 
   private isSanitizerCall(node: Node, methodBody?: Node): boolean {
     if (node.type === 'method_invocation') {
-      const nameNode = node.childForFieldName('name');
-      if (nameNode) {
-        const methodName = getNodeText(nameNode, this.source);
-        if (SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
-          return true;
-        }
+      const methodName = this.extractJavaCalleeSimpleName(node);
+      if (methodName && SANITIZER_METHODS.has(methodName) && !this.localNonSanitizing.has(methodName)) {
+        return true;
       }
     }
 
@@ -1331,7 +1362,8 @@ export class ConstantPropagator {
                 }
               }
               // #814 S2: callee formals that received tainted actuals at a same-file
-              // call site (fixpoint overlay; non-overloaded callee names only).
+              // call site (fixpoint overlay; arity-resolved; same-name+arity overload
+              // conflicts skip seeding).
               const overlay = this.javaCalleeParameterOverlay?.get(methodName);
               if (overlay?.has(paramName)) {
                 const scopedName = this.getScopedName(paramName);
@@ -2577,16 +2609,34 @@ export class ConstantPropagator {
   }
 
   /**
+   * Trailing simple name for a Java `method_invocation` (`sink`, `this.sink`, …).
+   */
+  private extractJavaCalleeSimpleName(node: Node): string | null {
+    if (node.type !== 'method_invocation') return null;
+    const nameNode = node.childForFieldName('name');
+    if (!nameNode) return null;
+    if (nameNode.type === 'identifier') {
+      return getNodeText(nameNode, this.source);
+    }
+    if (nameNode.type === 'field_access') {
+      const field = nameNode.childForFieldName('name') ?? nameNode.childForFieldName('field');
+      return field ? getNodeText(field, this.source) : null;
+    }
+    return null;
+  }
+
+  /**
    * Extract the trailing method/function name from any call node shape:
-   *   Java   `method_invocation`        — name field
+   *   Java   `method_invocation`        — name field (identifier or field_access)
    *   Go/JS  `call_expression`          — function field (identifier or selector/member)
    *   Python `call`                     — function field (identifier or attribute)
    */
   private extractCallName(node: Node): string | null {
-    let fnNode: Node | null = null;
     if (node.type === 'method_invocation') {
-      fnNode = node.childForFieldName('name');
-    } else if (node.type === 'call_expression' || node.type === 'call') {
+      return this.extractJavaCalleeSimpleName(node);
+    }
+    let fnNode: Node | null = null;
+    if (node.type === 'call_expression' || node.type === 'call') {
       fnNode = node.childForFieldName('function');
     }
     if (!fnNode) return null;
@@ -2617,12 +2667,11 @@ export class ConstantPropagator {
       return false;
     }
 
-    const nameNode = node.childForFieldName('name');
-    if (!nameNode) {
+    const methodName = this.extractJavaCalleeSimpleName(node);
+    if (!methodName) {
       return false;
     }
 
-    const methodName = getNodeText(nameNode, this.source);
     return ANTI_SANITIZER_METHODS.has(methodName);
   }
 
