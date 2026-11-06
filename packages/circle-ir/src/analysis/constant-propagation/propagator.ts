@@ -123,6 +123,14 @@ export class ConstantPropagator {
   private isTaintedExpressionCache: Map<number, boolean> | null = null;
 
   /**
+   * cognium-dev#814 S2: per-iteration overlay of callee parameter names that
+   * received tainted actuals at same-file call sites. Filled by a fixpoint
+   * loop so callee bodies are analyzed with correct param taint regardless of
+   * method declaration order.
+   */
+  private javaCalleeParameterOverlay: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+
+  /**
    * Analyze source code and build constant propagation state.
    */
   analyze(
@@ -175,6 +183,7 @@ export class ConstantPropagator {
     this.constructorParamPositions.clear();
     this.safePatternFieldsCache = null;
     this.isTaintedExpressionCache = null;
+    this.javaCalleeParameterOverlay = undefined;
 
     // Pre-pass: single tree walk that collects class fields (previously
     // `collectClassFields`) AND method nodes (previously `findAllMethods`,
@@ -206,11 +215,44 @@ export class ConstantPropagator {
     // on Python ASTs.
     this.seedPythonModuleConstants(tree.rootNode);
 
-    // First pass: collect symbols, taint, and unreachable lines
-    this.visit(tree.rootNode);
+    const methodParamNames = this.buildJavaMethodParameterNames(prePassMethods);
+    const javaCalleeOverlay = new Map<string, Set<string>>();
 
-    // Second pass: refine taint for variables derived from constants
-    this.refineTaintFromConstants();
+    if (omitJavaUnscopedTaintAliases && methodParamNames.size > 0) {
+      // Fixpoint: same-file calls pass taint into callees; const-prop order
+      // follows declaration order, so seed params from call sites iteratively.
+      let prevSig = '';
+      for (let round = 0; round < 16; round++) {
+        this.resetStateForJavaFixpointRound();
+        this.javaCalleeParameterOverlay = javaCalleeOverlay;
+        this.visit(tree.rootNode);
+        this.refineTaintFromConstants();
+        this.javaCalleeParameterOverlay = undefined;
+
+        const discovered = this.collectJavaCalleeParameterSeedsFromCalls(tree.rootNode, methodParamNames);
+        let sig = '';
+        for (const [m, ps] of [...discovered.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+          sig += `${m}:[${[...ps].sort().join(',')}];`;
+        }
+        if (sig === prevSig) {
+          break;
+        }
+        prevSig = sig;
+        for (const [m, ps] of discovered) {
+          let acc = javaCalleeOverlay.get(m);
+          if (!acc) {
+            acc = new Set();
+            javaCalleeOverlay.set(m, acc);
+          }
+          for (const p of ps) {
+            acc.add(p);
+          }
+        }
+      }
+    } else {
+      this.visit(tree.rootNode);
+      this.refineTaintFromConstants();
+    }
 
     // Build result with both scoped and unscoped names for backward compatibility
     // Unscoped names are needed for legacy code and tests
@@ -285,6 +327,113 @@ export class ConstantPropagator {
       instanceFieldTaint: new Map(this.instanceFieldTaint),
       constantReturningMethods: new Set(this.methodReturnsConstant),
     };
+  }
+
+  /**
+   * Clear per-visit const-prop state between Java fixpoint rounds. Keeps
+   * `classFields` from the one-time collection pass.
+   */
+  private resetStateForJavaFixpointRound(): void {
+    this.symbols.clear();
+    this.tainted.clear();
+    this.unreachableLines.clear();
+    this.taintedCollections.clear();
+    this.definitionNodes.clear();
+    this.inConditionalBranch = false;
+    this.goUnknownVars.clear();
+    this.goScopedNames.clear();
+    this.listElements.clear();
+    this.loopVariables.clear();
+    this.taintedArrayElements.clear();
+    this.sanitizedVars.clear();
+    this.sanitizedVarUncovered.clear();
+    this.currentMethod = null;
+    this.blockScopeStack = [];
+    this.lineBlockScopes.clear();
+    this.skipMethodBodyBlockScope = false;
+    this.conditionalTaints.clear();
+    this.conditionStack = [];
+    this.lineConditions.clear();
+    this.synchronizedLines.clear();
+    this.inSynchronizedBlock = false;
+    this.iteratorSources.clear();
+    this.taintedFromIteratorNext.clear();
+    this.instanceFieldTaint.clear();
+    this.currentClassName = null;
+    this.inConstructor = false;
+    this.constructorParamPositions.clear();
+    this.isTaintedExpressionCache = null;
+  }
+
+  private buildJavaMethodParameterNames(methods: Node[]): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    for (const m of methods) {
+      const nameNode = m.childForFieldName('name');
+      const methodName = nameNode ? getNodeText(nameNode, this.source) : null;
+      if (!methodName) continue;
+      const params = this.getMethodParameters(m);
+      if (params.length === 0) continue;
+      map.set(methodName, params);
+    }
+    return map;
+  }
+
+  /**
+   * After a fixpoint round, find simple same-file `foo(arg)` calls where the
+   * callee `foo` is declared in this compilation unit and an argument is
+   * tainted; record those formal parameter names for the next overlay.
+   */
+  private collectJavaCalleeParameterSeedsFromCalls(
+    root: Node,
+    methodParamNames: Map<string, string[]>,
+  ): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
+    const walk = (node: Node): void => {
+      if (
+        node.type === 'method_declaration' ||
+        node.type === 'function_declaration' ||
+        node.type === 'constructor_declaration'
+      ) {
+        const nameNode = node.childForFieldName('name');
+        const mName = nameNode ? getNodeText(nameNode, this.source) : null;
+        const prev = this.currentMethod;
+        this.currentMethod = mName;
+        for (const c of node.children) {
+          walk(c);
+        }
+        this.currentMethod = prev;
+        return;
+      }
+      if (node.type === 'method_invocation') {
+        const nameNode = node.childForFieldName('name');
+        const calleeName = nameNode ? getNodeText(nameNode, this.source) : null;
+        const formalList = calleeName ? methodParamNames.get(calleeName) : undefined;
+        if (calleeName && formalList && formalList.length > 0) {
+          const argsNode = node.childForFieldName('arguments');
+          if (argsNode) {
+            const args = argsNode.children.filter(
+              (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+            );
+            for (let i = 0; i < args.length && i < formalList.length; i++) {
+              const formal = formalList[i];
+              if (!formal) continue;
+              if (!this.isTaintedExpression(args[i]!)) continue;
+              let acc = out.get(calleeName);
+              if (!acc) {
+                acc = new Set();
+                out.set(calleeName, acc);
+              }
+              acc.add(formal);
+            }
+          }
+        }
+      }
+      for (const c of node.children) {
+        walk(c);
+      }
+    };
+    walk(root);
+    return out;
   }
 
   /**
@@ -1180,6 +1329,14 @@ export class ConstantPropagator {
                   this.tainted.add(scopedName);
                   this.tainted.add(paramName); // Also add unscoped for flexibility
                 }
+              }
+              // #814 S2: callee formals that received tainted actuals at a same-file
+              // call site (fixpoint overlay; non-overloaded callee names only).
+              const overlay = this.javaCalleeParameterOverlay?.get(methodName);
+              if (overlay?.has(paramName)) {
+                const scopedName = this.getScopedName(paramName);
+                this.tainted.add(scopedName);
+                this.tainted.add(paramName);
               }
             }
             paramPosition++;
