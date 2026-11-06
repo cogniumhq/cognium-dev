@@ -484,7 +484,8 @@ export interface PnpmImporterDependencies {
    * `scope` is the strongest way the importer reaches the package
    * (`required` > `optional` > `dev`); `direct` is `true` when the importer
    * declares it; `via` is a shortest path of package names from a declared
-   * dependency down to the package's parent (`[]` when direct). A workspace
+   * dependency (or a linked workspace package) down to the package's parent,
+   * among the paths of that strongest scope (`[]` when direct). A workspace
    * package the importer links to (`link:`) is followed: its `dependencies`
    * and `optionalDependencies` are reached through it and its name heads `via`.
    */
@@ -540,67 +541,77 @@ export function parsePnpmLockImporterDependencies(pnpmLock: string): PnpmImporte
     projects.set('.', root);
   }
 
-  type Start = { key: string; scope: DependencyScope; via: string[]; direct: boolean };
   const SECTIONS = [
     ['dependencies', 'required'],
     ['optionalDependencies', 'optional'],
     ['devDependencies', 'dev'],
   ] as const;
+  const SCOPES = ['required', 'optional', 'dev'] as const;
 
   const out: PnpmImporterDependencies[] = [];
   for (const importer of [...projects.keys()].sort()) {
-    // Declared roots, following workspace links breadth-first (shortest `via`).
-    const starts: Start[] = [];
-    const queue: Array<{ dir: string; scope: DependencyScope | null; via: string[] }> = [{ dir: importer, scope: null, via: [] }];
-    const visited = new Set<string>([importer]);
-    while (queue.length > 0) {
-      const { dir, scope: linkScope, via } = queue.shift() as { dir: string; scope: DependencyScope | null; via: string[] };
-      const project = projects.get(dir);
-      if (!project) continue;
-      for (const [section, sectionScope] of SECTIONS) {
-        // A linked package's own dev dependencies are not installed for its consumers.
-        if (linkScope !== null && section === 'devDependencies') continue;
-        const scope = linkScope === null ? sectionScope : weaker(linkScope, sectionScope);
-        for (const [n, entry] of Object.entries(asRecord(project[section]) ?? {})) {
-          const ref = importerVersion(entry);
-          if (typeof ref === 'string' && ref.startsWith('link:')) {
-            const target = joinImporterPath(dir, ref.slice('link:'.length));
-            if (projects.has(target) && !visited.has(target)) {
-              visited.add(target);
-              queue.push({ dir: target, scope, via: [...via, n] });
+    // One search over workspace projects ("p:<dir>") and packages ("n:<name@version>"),
+    // taking labels in (scope strength, path length) order. Scope only weakens and
+    // paths only grow along an edge, so the first time a node is taken it has its
+    // strongest scope and, within that scope, a shortest path — also when workspace
+    // links form a diamond.
+    type Item = { node: string; scope: DependencyScope; via: string[] };
+    const buckets: Item[][][] = [[], [], []];
+    const push = (it: Item): void => {
+      const byLen = buckets[SCOPE_RANK[it.scope]];
+      (byLen[it.via.length] ??= []).push(it);
+    };
+    const settled = new Map<string, { scope: DependencyScope; via: string[] }>();
+    const declared = new Set<string>();
+    push({ node: `p:${importer}`, scope: 'required', via: [] });
+
+    for (const scope of SCOPES) {
+      const byLen = buckets[SCOPE_RANK[scope]];
+      for (let len = 0; len < byLen.length; len++) {
+        const bucket = byLen[len];
+        if (!bucket) continue;
+        // Items pushed into this bucket while it is read are taken in this pass.
+        for (let i = 0; i < bucket.length; i++) {
+          const { node, via } = bucket[i];
+          if (settled.has(node)) continue;
+          settled.set(node, { scope, via });
+          if (node.startsWith('p:')) {
+            const dir = node.slice(2);
+            const project = projects.get(dir);
+            if (!project) continue;
+            const isImporter = dir === importer;
+            for (const [section, sectionScope] of SECTIONS) {
+              // A linked package's own dev dependencies are not installed for its consumers.
+              if (!isImporter && section === 'devDependencies') continue;
+              const next = weaker(scope, sectionScope);
+              for (const [n, entry] of Object.entries(asRecord(project[section]) ?? {})) {
+                const ref = importerVersion(entry);
+                if (typeof ref === 'string' && ref.startsWith('link:')) {
+                  const target = joinImporterPath(dir, ref.slice('link:'.length));
+                  if (projects.has(target)) push({ node: `p:${target}`, scope: next, via: [...via, n] });
+                  continue;
+                }
+                const k = pnpmRef(n, ref);
+                if (!k || !nodes.has(k)) continue;
+                if (isImporter) declared.add(k);
+                push({ node: `n:${k}`, scope: next, via });
+              }
             }
-            continue;
+          } else {
+            const pkg = nodes.get(node.slice(2)) as LockNode;
+            for (const k of pkg.deps) {
+              if (nodes.has(k)) push({ node: `n:${k}`, scope, via: [...via, pkg.name] });
+            }
           }
-          const k = pnpmRef(n, ref);
-          if (k) starts.push({ key: k, scope, via, direct: linkScope === null });
         }
       }
     }
 
-    // Reach the graph once per scope, strongest first, so a package keeps its
-    // strongest scope and the shortest path within it.
     const reached = new Map<string, { scope: DependencyScope; via: string[]; direct: boolean }>();
-    for (const scope of ['required', 'optional', 'dev'] as const) {
-      const bfs: Array<{ key: string; via: string[]; direct: boolean }> = starts
-        .filter((s) => s.scope === scope)
-        .sort((a, b) => Number(b.direct) - Number(a.direct) || a.via.length - b.via.length)
-        .map((s) => ({ key: s.key, via: s.via, direct: s.direct }));
-      while (bfs.length > 0) {
-        const cur = bfs.shift() as { key: string; via: string[]; direct: boolean };
-        const node = nodes.get(cur.key);
-        if (!node) continue;
-        // First reach wins: strongest scope, then shortest path.
-        if (reached.has(cur.key)) continue;
-        reached.set(cur.key, { scope, via: cur.via, direct: cur.direct && cur.via.length === 0 });
-        for (const next of node.deps) {
-          if (!reached.has(next)) bfs.push({ key: next, via: [...cur.via, node.name], direct: false });
-        }
-      }
-    }
-    // A package declared directly but first reached transitively is still direct.
-    for (const s of starts) {
-      const r = reached.get(s.key);
-      if (r && s.direct && s.via.length === 0) r.direct = true;
+    for (const [node, r] of settled) {
+      if (!node.startsWith('n:')) continue;
+      const key = node.slice(2);
+      reached.set(key, { scope: r.scope, via: r.via, direct: declared.has(key) });
     }
 
     const deps: Dependency[] = [];

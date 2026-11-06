@@ -1,0 +1,73 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  # Diamond: core is dev-linked directly, and production-linked through foo.
+  apps/app:
+    devDependencies:
+      core:
+        specifier: workspace:*
+        version: link:../../packages/core
+    dependencies:
+      foo:
+        specifier: workspace:*
+        version: link:../../packages/foo
+
+  packages/foo:
+    dependencies:
+      core:
+        specifier: workspace:*
+        version: link:../core
+
+  packages/core:
+    dependencies:
+      semver:
+        specifier: ^7
+        version: 7.5.1
+
+  # Shortest path: y is two links deep (a > b) and one package deep (x).
+  apps/short:
+    dependencies:
+      a:
+        specifier: workspace:*
+        version: link:../../packages/a
+      x:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+  packages/a:
+    dependencies:
+      b:
+        specifier: workspace:*
+        version: link:../b
+
+  packages/b:
+    dependencies:
+      y:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  semver@7.5.1:
+    resolution: {integrity: sha512-a}
+
+  x@1.0.0:
+    resolution: {integrity: sha512-b}
+
+  y@1.0.0:
+    resolution: {integrity: sha512-c}
+
+snapshots:
+
+  semver@7.5.1: {}
+
+  x@1.0.0:
+    dependencies:
+      y: 1.0.0
+
+  y@1.0.0: {}
