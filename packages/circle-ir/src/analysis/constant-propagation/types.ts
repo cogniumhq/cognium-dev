@@ -77,4 +77,6 @@ export interface ConstantPropagationOptions {
   sanitizerMethods?: string[];
   /** Method parameters to treat as initially tainted (for inter-procedural analysis) */
   taintedParameters?: TaintedParameter[];
+  /** When `java`, method-scoped locals omit bare-name taint aliases (#814). */
+  language?: string;
 }
