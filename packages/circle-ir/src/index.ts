@@ -23,6 +23,7 @@ export {
   parsePnpmLockDependencies,
   parseYarnLockDependencies,
   pnpmLockImporters,
+  parsePnpmLockImporterDependencies,
   parsePypiDependencies,
   parsePyprojectDependencies,
   parseMavenDependencies,
@@ -46,6 +47,7 @@ export type {
   DependencyScope,
   SbomMetadata,
   LicenseMap,
+  PnpmImporterDependencies,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)

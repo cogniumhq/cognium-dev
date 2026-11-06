@@ -10,6 +10,7 @@ import {
   parsePnpmLockDependencies,
   parseYarnLockDependencies,
   pnpmLockImporters,
+  parsePnpmLockImporterDependencies,
   collectDependencies,
   type Dependency,
 } from '../../src/analysis/sbom.js';
@@ -142,15 +143,89 @@ describe('collectDependencies (js precedence, DT4)', () => {
   });
 });
 
+const npmFixtureIndex = () => {
+  const osvDir = fileURLToPath(new URL('../fixtures/osv-npm/', import.meta.url));
+  const records: OsvRecord[] = readdirSync(osvDir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => parseOsvRecord(readFileSync(osvDir + f, 'utf-8')))
+    .filter((r): r is OsvRecord => r !== null);
+  return buildAdvisoryIndex(records, 'npm');
+};
+
 describe('advisory matching over a pnpm lockfile', () => {
   it('matches exact pnpm versions against the npm fixture snapshot', () => {
-    const osvDir = fileURLToPath(new URL('../fixtures/osv-npm/', import.meta.url));
-    const records: OsvRecord[] = readdirSync(osvDir)
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => parseOsvRecord(readFileSync(osvDir + f, 'utf-8')))
-      .filter((r): r is OsvRecord => r !== null);
-    const index = buildAdvisoryIndex(records, 'npm');
+    const index = npmFixtureIndex();
     const hits = matchAdvisories(parsePnpmLockDependencies(read('pnpm-v9.yaml')), index);
     expect(hits.some((h) => h.dependency.name === 'lodash' && h.dependency.version === '4.17.15')).toBe(true);
+  });
+});
+
+const reachRow = (d: Dependency): string =>
+  `${d.name}@${d.version} ${d.scope}${d.direct ? ' direct' : ` via ${(d.via ?? []).join('>')}`}`;
+
+describe('parsePnpmLockImporterDependencies', () => {
+  it('gives each importer only what it reaches, following workspace links', () => {
+    const sets = parsePnpmLockImporterDependencies(read('pnpm-v9-reach.yaml'));
+    expect(Object.fromEntries(sets.map((s) => [s.importer, s.dependencies.map(reachRow)]))).toEqual({
+      '.': ['lodash@4.17.15 dev via tooling', 'tooling@1.0.0 dev direct'],
+      // core's dev dependency (la-pkg) is not installed for api; core's own deps arrive through the link.
+      'packages/api': [
+        'debug@2.6.8 required via express-lite',
+        'express-lite@1.0.0 required direct',
+        'fsevents@2.3.3 optional via @acme/core',
+        'semver@7.5.1 required via @acme/core',
+      ],
+      'packages/core': ['fsevents@2.3.3 optional direct', 'la-pkg@1.2.0 dev direct', 'semver@7.5.1 required direct'],
+      // A dev link makes everything behind it dev.
+      'packages/web': ['fsevents@2.3.3 dev via @acme/core', 'lodash@4.17.21 required direct', 'semver@7.5.1 dev via @acme/core'],
+    });
+    expect(sets.flatMap((s) => s.dependencies).some((d) => d.name === '@acme/core')).toBe(false);
+  });
+
+  it('covers the same packages as the merged parse', () => {
+    for (const f of ['pnpm-v9.yaml', 'pnpm-v9-reach.yaml']) {
+      const merged = new Set(parsePnpmLockDependencies(read(f)).map((d) => `${d.name}@${d.version}`));
+      const perImporter = new Set(
+        parsePnpmLockImporterDependencies(read(f)).flatMap((s) => s.dependencies.map((d) => `${d.name}@${d.version}`)),
+      );
+      for (const k of perImporter) expect(merged.has(k)).toBe(true);
+    }
+  });
+
+  it('reads the v9 workspace fixture: links carry a workspace package\'s dependencies to its consumer', () => {
+    const sets = parsePnpmLockImporterDependencies(read('pnpm-v9.yaml'));
+    expect(sets.map((s) => s.importer)).toEqual(['.', 'packages/app', 'packages/lib']);
+    expect(sets.find((s) => s.importer === 'packages/app')?.dependencies.map(reachRow)).toEqual([
+      'semver@7.5.1 required direct',
+      'string-width@4.2.3 required via @acme/lib',
+    ]);
+  });
+
+  it('yields one set for a single-project lockfile (v6, v5) and [] for bad input', () => {
+    for (const f of ['pnpm-v6.yaml', 'pnpm-v5.yaml']) {
+      const sets = parsePnpmLockImporterDependencies(read(f));
+      expect(sets.map((s) => s.importer)).toEqual(['.']);
+      expect(sets[0].dependencies.length).toBeGreaterThan(0);
+    }
+    expect(parsePnpmLockImporterDependencies('')).toEqual([]);
+    expect(parsePnpmLockImporterDependencies('importers: [')).toEqual([]);
+    expect(parsePnpmLockImporterDependencies('- a\n- b\n')).toEqual([]);
+  });
+
+  it('names the importers an advisory reaches, with scope and path', () => {
+    const index = npmFixtureIndex();
+    const hits = parsePnpmLockImporterDependencies(read('pnpm-v9-reach.yaml')).flatMap((s) =>
+      matchAdvisories(s.dependencies, index).map(
+        (m) => `${s.importer} ${m.advisory.id} ${m.dependency.name}@${m.dependency.version} ${m.dependency.scope}`,
+      ),
+    );
+    expect(hits.sort()).toEqual([
+      '. GHSA-35jh-r3h4-6jhm lodash@4.17.15 dev',
+      '. GHSA-p6mc-m468-83gw lodash@4.17.15 dev',
+      'packages/api GHSA-c2qf-rxjj-qqgw semver@7.5.1 required',
+      'packages/core GHSA-c2qf-rxjj-qqgw semver@7.5.1 required',
+      'packages/core TEST-LA-0002 la-pkg@1.2.0 dev',
+      'packages/web GHSA-c2qf-rxjj-qqgw semver@7.5.1 dev',
+    ]);
   });
 });

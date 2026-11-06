@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`parsePnpmLockImporterDependencies(pnpmLock)`: one dependency set per pnpm workspace importer (#1005, dependency tool T-DT3.8 library half).** Each set holds only what that importer reaches, following `link:` workspace packages (their production and optional dependencies; a dev link makes everything behind it `dev`), with `scope`, `direct` and a shortest `via` path. Pass each set to `matchAdvisories` to name the projects an advisory reaches. Additive: `parsePnpmLockDependencies` and `collectDependencies` are unchanged.
+- **`scripts/osv-snapshot.mjs match <snapshot> <pnpm-lock.yaml> [--pin sha256:…]`** (not published): verifies the offline snapshot against its `PROVENANCE` and the pin, then reports advisory matches per importer. Reads two local inputs; no network.
+
 ### Fixed
 - **JS/TS: no `path_traversal` when a helper returns `path.resolve(input)` after a multi-root or single-root allow-list guard with throw/return on failure (#1146).** Credits same-file helpers that canonicalize then check `startsWith(root)` or `ROOTS.some((root) => r === root || r.startsWith(root + path.sep))` before returning the path used at `readFileSync`.
 - **JS/TS: no `redos` when `new RegExp` is built only from string literals plus `escapeRegExp` (or `escapeRe` / `escapeRegex`) on tainted input (#1145).** Concatenation and template forms whose only dynamic segment is a metacharacter escaper produce a literal pattern, not catastrophic backtracking from tainted regex structure.
