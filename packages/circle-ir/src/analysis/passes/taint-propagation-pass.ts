@@ -3334,6 +3334,67 @@ function argsReferenceTaintedVar(
   );
 }
 
+/** Index of the `)` that closes the `(` at `openParenIndex`, or -1. Respects strings. */
+function matchingCloseParen(lineText: string, openParenIndex: number): number {
+  let depth = 0;
+  let inStr: '"' | '\'' | '`' | null = null;
+  let esc = false;
+  for (let i = openParenIndex; i < lineText.length; i++) {
+    const ch = lineText[i]!;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && (inStr === '"' || inStr === '\'')) { esc = true; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === '\'' || ch === '`') { inStr = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * cognium-dev#1156 — `io_input` at `*.parse(...)` has no `method` tag; `location` is
+ * like `parser.parse() in m`. When `path_traversal` (`readFileSync`, …) appears only
+ * inside that `.parse(` argument list on the same line, inline colocation must not
+ * pair them — the nested sink runs before the parse returns.
+ */
+function sinkNestedInJsTsParseArgs(lineText: string, sinkMethod: string | undefined): boolean {
+  if (!lineText || !sinkMethod?.length) return false;
+  const needle = `${sinkMethod}(`;
+  let i = 0;
+  while (i < lineText.length) {
+    const k = lineText.indexOf('parse', i);
+    if (k === -1) return false;
+    if (k > 0 && /[\w$]/.test(lineText[k - 1]!)) {
+      i = k + 5;
+      continue;
+    }
+    if (lineText.slice(k, k + 5) !== 'parse') {
+      i = k + 1;
+      continue;
+    }
+    const openParen = k + 5;
+    if (lineText[openParen] !== '(') {
+      i = k + 5;
+      continue;
+    }
+    const closeIdx = matchingCloseParen(lineText, openParen);
+    if (closeIdx === -1) {
+      i = k + 5;
+      continue;
+    }
+    const argSpan = lineText.slice(openParen + 1, closeIdx);
+    if (argSpan.includes(needle)) return true;
+    i = closeIdx + 1;
+  }
+  return false;
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -4605,6 +4666,18 @@ function detectExpressionScanFlows(
       // Drop flows tagged constant / SPI (see sourceSemanticsAllowed
       // JSDoc for the per-sink policy).
       if (!sourceSemanticsAllowed(source, sink.type)) continue;
+      // cognium-dev#1156 — sink nested only inside `.parse(` args (same line).
+      const colocLineText = (sink as { code?: string }).code ?? '';
+      if (
+        colocLineText &&
+        (language === 'javascript' || language === 'typescript') &&
+        source.type === 'io_input' &&
+        typeof (source as { location?: string }).location === 'string' &&
+        (source as { location: string }).location.includes('.parse()') &&
+        sinkNestedInJsTsParseArgs(colocLineText, sink.method)
+      ) {
+        continue;
+      }
       // Variable-scan handoff — if the source carries an LHS-bound
       // variable AND that identifier is textually present in the RHS of
       // the sink's own source-line code, the variable-scan path is
