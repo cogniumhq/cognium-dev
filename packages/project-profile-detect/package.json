@@ -61,7 +61,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "bun-types": "^1.4.4",
-    "circle-ir": "^4.18.0",
+    "circle-ir": "^4.20.0",
     "typescript": "^7.0.2"
   }
 }

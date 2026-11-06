@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.0] - 2026-11-06
+
+### Changes
+
+- feat(circle-ir): facts@2 schema file, ids@0.1 file kind and opt-in Java emission (graph-store T5a.1) (#1111)
+- fix(graph-facts): Class.forName registrations: scope by from, resolve local constants, bound by use (#1092) (#1096)
+- fix(cli): write graph-fact JSON reports in pieces, not one string (#1079) (#1091)
+- fix(cli): same scan on every run under Bun (#1032) (#1033)
+- fix(circle-ir): SBOM reads maven-dependency-plugin artifactItems and Tycho *.target Maven locations (#1077) (#1089)
+- fix(cli): standalone binary ships web-tree-sitter.wasm; CI smoke-runs it (#1034)
+- chore(deps-dev): Bump @types/node (#1083)
+- facts@1: flow filled on fixed-width ids@0.1 node ids (stable-ids 1a); multi-level native key sort
+- facts@1: reconciled contract (sets, no nulls, hex, di), unique keys, columnar emitter
+- facts@1 schema (proposed) and Arrow emission behind emitFacts / --facts-arrow
+- fix(circle-ir): js-yaml load on js-yaml >= 4 or with a safe schema is not a deserialization sink (#1068)
+
 ## [Unreleased]
 
 ### Changes
