@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.0] - 2026-11-06
+
+### Changes
+
+- fix(circle-ir): settle linked workspace packages once per scope for a shortest via (#1158 review)
+- fix(circle-ir): skip inline parse-args path_traversal FP (#1156) (#1160)
+- fix(circle-ir): scope Java method-local CP taint to declaring method (#814 S1) (#1155)
+- fix(circle-ir): strongest scope through link diamonds, shortest via, fail-closed --pin (#1157 review) (#1158)
+- feat(circle-ir): per-importer pnpm reach and offline snapshot match (#1005) (#1157)
+- fix(circle-ir): credit JS path allow-list helper before readFileSync (#1146) (#1153)
+- fix(circle-ir): drop redos when RegExp uses escapeRegExp on tainted input (#1147)
+- fix(circle-ir): JS/TS .length of a tainted value carries no taint across a cross-file call (#1137) (#1142)
+- fix(circle-ir): JS/TS branch-only file read does not taint helper return (#1136) (#1144)
+- fix(circle-ir): cap env_input SSRF severity at medium (#1138) (#1143)
+- fix(circle-ir): JS/TS callee summary and property-vs-local for cross-file sinks (#1120 follow-up) (#1135)
+- fix(java): an encoder inside a same-file static helper sanitizes the cross-file path (#915) (#1126)
+- fix(java): a property read only in a branch condition does not taint a helper's return (#914) (#1125)
+- fix(circle-ir): JS/TS Node stream closed with end() is not a resource leak (#1122) (#1123)
+- fix(circle-ir): PEP 508 spec ends at line continuation, options and comments (#1127)
+- fix(circle-ir): caller-body cross-file sinks respect argPositions (#1120) (#1134)
+- fix(circle-ir): Nest decoratorPath undefined for non-literal args (#1129) (#1140)
+- fix(csharp): constant-caller gate covers CommandText then Execute*() (#636) (#1117)
+- fix(csharp): credit a Uri(...).Host == literal guard for open_redirect (#946) (#1116)
+- fix(circle-ir): PyPI matcher: epochs, PEP 440 versions-list equality, declared ranges (#1127)
+- fix(rust): SSRF on a fixed host passed through a const (#922) (#1115)
+- feat(circle-ir): PyPI advisory matching (PEP 440 order, PEP 503 names) (#1119)
+- fix(circle-ir): Java InputStream.read(buf) is not a file_input source (#1113) (#1118)
+- feat(circle-ir): facts@2 schema file, ids@0.1 file kind and opt-in Java emission (graph-store T5a.1) (#1111)
+- fix(circle-ir): OWASP xss FPs through an inner-class helper (#915 slice) (#1104)
+- fix(circle-ir): OWASP getTheParameter cmdi through static helper (#1107 S1) (#1109)
+- fix(circle-ir): check fileTimeoutMs after each extraction phase (#1007) (#1103)
+- fix(java-graph): getSuperclass() walk through a variable bounds forName (#1092 follow-up) (#1108)
+- fix(java): List-carried taint survives a trailing line comment (#1105) (#1106)
+- fix(circle-ir): two more benign TS parse recoveries are not partial (#1004)
+- fix(circle-ir): a Map receiver .get() is not a db_input source (#985) (#1101)
+- #1092: read only the local in scope at the Class.forName (#1100)
+- fix(graph-facts): Class.forName registrations: scope by from, resolve local constants, bound by use (#1092) (#1096)
+- test(java): #914 S7 ThingFactory constant cmdi regression (#914) (#1099)
+- fix(ts): literal-only local Map reads not plugin_param sources (#985 S2) (#1098)
+- fix(circle-ir): JS/TS callee sink built from literals is not reached by a tainted argument (dogfood 2026-11-02) (#1097)
+- fix(circle-ir): X[]::new / Ext::new method references no longer name every constructor (#1093) (#1095)
+- fix(java): stop env_input mis-tag on derived locals before getProperty (#914 S6) (#1094)
+- fix(java): #1035 XXE pass — comment-safe #173 and chained DocumentBuilder.parse (#1090)
+- fix(circle-ir): SBOM reads maven-dependency-plugin artifactItems and Tycho *.target Maven locations (#1077) (#1089)
+- fix(java): pickScopedSource matches sink tainted var (#914 S5) (#1088)
+- fix(java): getTheValue pass-through gate for cmdi/path on instance helpers (#914 S4) (#1087)
+- fix(java): getTheValue map-helper sqli FPs on per-file analyze (#913 S5) (#1086)
+- chore(deps-dev): Bump @types/node (#1083)
+- fix(java): getTheValue pass-through gate for sql_injection (#913 S4) (#1082)
+- fix(java): stop exec cwd getProperty pairing as command_injection (#914 S3) (#1081)
+- agent: trust_boundary pass-through gate for getTheValue-only callers (#917 S4) (#1080)
+- fix(circle-ir): Python list-form subprocess keeps the sink when argv[0] is a shell or runs its argv (#1072) (#1078)
+- fix(circle-ir): better-sqlite3 / sqlite3 db.prepare(sql) is a sql_injection sink (#1073) (#1075)
+- fix(circle-ir): JS cross-file flow needs the carried value to reach the sink's arguments (#1076)
+- facts@1: flow filled on fixed-width ids@0.1 node ids (stable-ids 1a); multi-level native key sort
+- fix(circle-ir): an OSV affected[] entry without package is skipped, not a crash (#1067) (#1069)
+- fix(circle-ir): prepared-statement .get/.all/.run take bound parameters, not SQL (#1074)
+- facts@1: reconciled contract (sets, no nulls, hex, di), unique keys, columnar emitter
+- fix(circle-ir): a fixed program that runs its argv as a command keeps the command_injection sink (#1066) (#1071)
+- facts@1 schema (proposed) and Arrow emission behind emitFacts / --facts-arrow
+- fix(circle-ir): js-yaml load on js-yaml >= 4 or with a safe schema is not a deserialization sink (#1068)
+
 ## [Unreleased]
 
 ### Added
