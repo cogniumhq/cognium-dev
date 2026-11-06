@@ -125,10 +125,18 @@ export class ConstantPropagator {
   /**
    * Analyze source code and build constant propagation state.
    */
-  analyze(tree: Tree, sourceCode: string, additionalTaintPatterns: string[] = [], sanitizerMethods: string[] = [], taintedParameters: TaintedParameter[] = []): ConstantPropagatorResult {
+  analyze(
+    tree: Tree,
+    sourceCode: string,
+    additionalTaintPatterns: string[] = [],
+    sanitizerMethods: string[] = [],
+    taintedParameters: TaintedParameter[] = [],
+    language?: string,
+  ): ConstantPropagatorResult {
     this.source = sourceCode;
     this.additionalTaintPatterns = additionalTaintPatterns;
     this.taintedParametersList = taintedParameters;
+    const omitJavaUnscopedTaintAliases = language === 'java';
     this.symbols.clear();
     this.tainted.clear();
     this.unreachableLines.clear();
@@ -216,8 +224,20 @@ export class ConstantPropagator {
         if (/^[^:]+:b\d+:/.test(name)) {
           continue;
         }
+        if (omitJavaUnscopedTaintAliases) {
+          continue;
+        }
         const unscoped = name.substring(name.indexOf(':') + 1);
         resultTainted.add(unscoped);
+      }
+    }
+    if (omitJavaUnscopedTaintAliases) {
+      for (const name of this.tainted) {
+        if (!name.includes(':') || /^[^:]+:b\d+:/.test(name)) continue;
+        const local = name.substring(name.indexOf(':') + 1);
+        if (this.classFields.has(local)) {
+          resultTainted.add(local);
+        }
       }
     }
     // #589 review: do NOT copy sanitizedVarUncovered onto the bare name.
