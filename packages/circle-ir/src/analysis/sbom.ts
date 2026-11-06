@@ -552,9 +552,13 @@ export function parsePnpmLockImporterDependencies(pnpmLock: string): PnpmImporte
   for (const importer of [...projects.keys()].sort()) {
     // One search over workspace projects ("p:<dir>") and packages ("n:<name@version>"),
     // taking labels in (scope strength, path length) order. Scope only weakens and
-    // paths only grow along an edge, so the first time a node is taken it has its
+    // paths only grow along an edge, so the first time a package is taken it has its
     // strongest scope and, within that scope, a shortest path — also when workspace
-    // links form a diamond.
+    // links form a diamond. A linked project is settled once per scope
+    // ("p:<dir>@<scope>", at most three times): a project reached as required on a
+    // long path and as optional on a short one passes the short path on to what it
+    // reaches only through its optionalDependencies. The importer itself is settled
+    // once, at required with an empty path, which no later route improves on.
     type Item = { node: string; scope: DependencyScope; via: string[] };
     const buckets: Item[][][] = [[], [], []];
     const push = (it: Item): void => {
@@ -573,13 +577,15 @@ export function parsePnpmLockImporterDependencies(pnpmLock: string): PnpmImporte
         // Items pushed into this bucket while it is read are taken in this pass.
         for (let i = 0; i < bucket.length; i++) {
           const { node, via } = bucket[i];
-          if (settled.has(node)) continue;
-          settled.set(node, { scope, via });
-          if (node.startsWith('p:')) {
+          const isProject = node.startsWith('p:');
+          const isImporter = isProject && node.slice(2) === importer;
+          const key = isProject && !isImporter ? `${node}@${scope}` : node;
+          if (settled.has(key)) continue;
+          settled.set(key, { scope, via });
+          if (isProject) {
             const dir = node.slice(2);
             const project = projects.get(dir);
             if (!project) continue;
-            const isImporter = dir === importer;
             for (const [section, sectionScope] of SECTIONS) {
               // A linked package's own dev dependencies are not installed for its consumers.
               if (!isImporter && section === 'devDependencies') continue;

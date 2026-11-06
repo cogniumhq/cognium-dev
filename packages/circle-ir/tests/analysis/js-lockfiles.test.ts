@@ -193,8 +193,15 @@ describe('parsePnpmLockImporterDependencies', () => {
     expect(short?.dependencies.map(reachRow)).toEqual(['x@1.0.0 required direct', 'y@1.0.0 required via x']);
   });
 
+  it('takes a shortest path within the strongest scope when a link is reached in two scopes', () => {
+    // core is required through foo>bar>baz>core and optional directly; x comes only through
+    // core's optionalDependencies, so it is optional and its shortest optional path is core.
+    const app = parsePnpmLockImporterDependencies(read('pnpm-v9-via-scope.yaml')).find((s) => s.importer === 'app');
+    expect(app?.dependencies.map(reachRow)).toEqual(['x@1.0.0 optional via core']);
+  });
+
   it('covers the same packages as the merged parse', () => {
-    for (const f of ['pnpm-v9.yaml', 'pnpm-v9-reach.yaml', 'pnpm-v9-diamond.yaml']) {
+    for (const f of ['pnpm-v9.yaml', 'pnpm-v9-reach.yaml', 'pnpm-v9-diamond.yaml', 'pnpm-v9-via-scope.yaml']) {
       const merged = new Set(parsePnpmLockDependencies(read(f)).map((d) => `${d.name}@${d.version}`));
       const perImporter = new Set(
         parsePnpmLockImporterDependencies(read(f)).flatMap((s) => s.dependencies.map((d) => `${d.name}@${d.version}`)),
