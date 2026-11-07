@@ -1933,6 +1933,37 @@ function isNavigationReceiverName(receiver: string | null | undefined): boolean 
  * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
  * bug as #358's `/re/.exec` → sql_injection pairing.
  */
+/** cognium-dev#584 / #985 — local Map receiver never passed as a call argument. */
+function localMapReceiverDoesNotEscape(lines: string[], recv: string): boolean {
+  const escapeRe = new RegExp(`\\w\\s*\\([^)]*(?<![\\w.])${recv}(?![\\w.])[^)]*\\)`);
+  for (const l of lines) {
+    if (!escapeRe.test(l)) continue;
+    const stripped = l.replace(new RegExp(`\\b(?:this\\.)?${recv}\\s*\\.\\s*\\w+\\s*\\(`, 'g'), 'X(');
+    if (escapeRe.test(stripped)) return false;
+  }
+  return true;
+}
+
+/** True when `receiver` is declared as `new Map()` / typed Map in this file (#985, #900). */
+function isJsMapTypedReceiver(
+  receiver: string | null | undefined,
+  sourceLines?: string[],
+): boolean {
+  const raw = (receiver ?? '').trim();
+  if (!raw || !sourceLines) return false;
+  const lastDot = raw.lastIndexOf('.');
+  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
+  const n = escapeRe(r);
+  const mapCtor = new RegExp(
+    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
+  );
+  const mapType = new RegExp(
+    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+  );
+  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
+}
+
 function isInMemoryMapGetReceiver(
   receiver: string | null | undefined,
   sourceLines?: string[],
@@ -1949,20 +1980,8 @@ function isInMemoryMapGetReceiver(
   const lastDot = raw.lastIndexOf('.');
   const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
   if (/^(properties|memoryCache)$/i.test(r)) return true;
-  if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
-  const n = escapeRe(r);
-  // `x = new Map(...)` / `new WeakMap(...)`, with or without (nested) type
-  // arguments, as a local (`const x = …`), a class field (`private x = …`) or
-  // a constructor assignment (`this.x = new Map()`).
-  const mapCtor = new RegExp(
-    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
-  );
-  // `x: Map<K, V>` / `x: ReadonlyMap<…>` / `x?: WeakMap<…>` — a typed field,
-  // parameter or local whose declared type is a Map.
-  const mapType = new RegExp(
-    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
-  );
-  return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
+  if (!isJsMapTypedReceiver(receiver, sourceLines)) return false;
+  return !localMapReceiverDoesNotEscape(sourceLines, r);
 }
 
 /**
@@ -2511,7 +2530,32 @@ function findSinks(
 
   for (const call of calls) {
     for (const pattern of patternsForLanguage) {
-      if (matchesSinkPattern(call, pattern, typeHierarchy, language)) {
+      const patternMatches =
+        matchesSinkPattern(call, pattern, typeHierarchy, language) ||
+        (pattern.type === 'cache_poisoning' &&
+          pattern.class === 'Map' &&
+          pattern.method === 'set' &&
+          isJsMapTypedReceiver(call.receiver, sourceLines));
+      if (patternMatches) {
+        // Shared-cache writes only — drop function-local Maps that never escape (#900 S1).
+        if (
+          pattern.type === 'cache_poisoning' &&
+          pattern.class === 'Map' &&
+          call.receiver &&
+          sourceLines &&
+          isJsMapTypedReceiver(call.receiver, sourceLines)
+        ) {
+          const raw = call.receiver.trim();
+          const lastDot = raw.lastIndexOf('.');
+          const recv = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+          const moduleScope = sourceLines.some((l) =>
+            new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${recv}\\s*=`).test(l),
+          );
+          if (!moduleScope && localMapReceiverDoesNotEscape(sourceLines, recv)) {
+            continue;
+          }
+        }
+
         // Skip parameterized queries (safe pattern for SQL injection)
         if (isParameterizedQueryCall(call, pattern)) {
           continue;
