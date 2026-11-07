@@ -586,12 +586,16 @@ function findSources(
       if (arg.expression) {
         const taintCheck = isJavaScriptTaintedArgument(arg.expression, hasPropertyPatterns ? patterns : undefined);
         if (taintCheck.isTainted && taintCheck.sourceType) {
-          // Check if we already have a source at this line
-          const alreadyExists = sources.some(s => s.line === call.location.line && s.type === taintCheck.sourceType);
+          const location = `${arg.expression} in ${call.in_method || 'anonymous'}`;
+          // cognium-dev #900 S2 — multiple `req.query.*` / `req.params.*` on one
+          // line must each register (dedup was line+type only, dropping the 2nd arg).
+          const alreadyExists = sources.some(
+            s => s.line === call.location.line && s.type === taintCheck.sourceType && s.location === location,
+          );
           if (!alreadyExists) {
             sources.push({
               type: taintCheck.sourceType,
-              location: `${arg.expression} in ${call.in_method || 'anonymous'}`,
+              location,
               severity: 'high',
               line: call.location.line,
               confidence: 1.0,
@@ -646,7 +650,7 @@ function findSources(
     const key =
       source.type === 'interprocedural_param' && source.variable
         ? `${source.line}:${source.type}:${source.variable}`
-        : `${source.line}:${source.type}`;
+        : `${source.line}:${source.type}:${source.location}`;
     const existing = sourceMap.get(key);
     if (!existing || source.confidence > existing.confidence) {
       sourceMap.set(key, source);
