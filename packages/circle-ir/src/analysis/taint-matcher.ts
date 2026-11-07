@@ -1980,8 +1980,7 @@ function isInMemoryMapGetReceiver(
   const lastDot = raw.lastIndexOf('.');
   const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
   if (/^(properties|memoryCache)$/i.test(r)) return true;
-  if (!isJsMapTypedReceiver(receiver, sourceLines)) return false;
-  return !localMapReceiverDoesNotEscape(sourceLines, r);
+  return isJsMapTypedReceiver(receiver, sourceLines);
 }
 
 /**
