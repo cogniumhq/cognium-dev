@@ -254,6 +254,21 @@ function isJavaLoggerCall(call: CallInfo): boolean {
   return JAVA_LOGGER_METHODS.has(call.method_name);
 }
 
+/**
+ * #468 S2: drop duplicate `log_injection` on gated loggers for SLF4J/Log4j-style
+ * calls, but keep `java.util.logging.Logger` flows for flow-sanitize recall (#947).
+ */
+export function isJavaLoggerLogInjectionDuplicate(call: CallInfo): boolean {
+  if (!isJavaLoggerCall(call)) return false;
+  const fqn = call.receiver_type_fqn ?? '';
+  if (fqn.startsWith('java.util.logging.')) return false;
+  const recv = call.receiver ?? '';
+  if (/^Logger\.getLogger\b/.test(recv)) return false;
+  const target = call.resolution?.target ?? '';
+  if (target.startsWith('java.util.logging.')) return false;
+  return true;
+}
+
 // Java (#468, slice 3): `java.util.Objects` null checks. They validate or return
 // the reference and do not send the value outside the program.
 const JAVA_OBJECTS_CLASS: ReadonlyMap<string, string> = new Map([['Objects', 'java.util']]);
