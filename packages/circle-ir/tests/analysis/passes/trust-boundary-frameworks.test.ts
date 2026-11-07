@@ -5,7 +5,7 @@
  * coverage is limited to Java HttpSession/ServletContext/HttpServletRequest
  * setAttribute (issue #117) plus Python session.__setitem__. This suite pins
  * the newly added framework sinks: Django cache, JS Storage.setItem, Express
- * res.cookie, Java Cookie / SecurityContext.setAuthentication /
+ * res.cookie, Java SecurityContext.setAuthentication /
  * System.setProperty, Go http.SetCookie / gin.SetCookie. Runtime sink table
  * lives at `TRUST_BOUNDARY_FRAMEWORK_SINKS` in
  * `src/analysis/config-loader.ts`.
@@ -65,7 +65,7 @@ describe('#240 ship 1 — trust_boundary framework sinks (CWE-501)', () => {
   // Java — Cookie constructor + setValue + SecurityContext + System.setProperty
   // -----------------------------------------------------------------
 
-  it('TP — Java new Cookie(name, user_value) fires', async () => {
+  it('TN — Java new Cookie(name, user_value) is not trust_boundary (#1152)', async () => {
     const code = [
       'import javax.servlet.http.*;',
       'public class Ctrl {',
@@ -77,10 +77,10 @@ describe('#240 ship 1 — trust_boundary framework sinks (CWE-501)', () => {
       '}',
     ].join('\n');
     const r = await analyze(code, 'Ctrl.java', 'java');
-    expect(hasTrustBoundarySignal(r)).toBe(true);
+    expect(hasTrustBoundarySignal(r)).toBe(false);
   });
 
-  it('TP — Java Cookie.setValue(user_value) fires', async () => {
+  it('TN — Java Cookie.setValue(user_value) is not trust_boundary (#1152)', async () => {
     const code = [
       'import javax.servlet.http.*;',
       'public class Ctrl {',
@@ -93,7 +93,7 @@ describe('#240 ship 1 — trust_boundary framework sinks (CWE-501)', () => {
       '}',
     ].join('\n');
     const r = await analyze(code, 'Ctrl.java', 'java');
-    expect(hasTrustBoundarySignal(r)).toBe(true);
+    expect(hasTrustBoundarySignal(r)).toBe(false);
   });
 
   it('TP — Java SecurityContext.setAuthentication(user_value) fires', async () => {
