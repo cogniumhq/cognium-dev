@@ -130,6 +130,7 @@ export const SINK_SEVERITY: Record<SinkType, string> = {
   weak_crypto: 'low',
   insecure_cookie: 'low',
   trust_boundary: 'medium',
+  cache_poisoning: 'high',
   external_taint_escape: 'medium',
   mybatis_mapper_call: 'medium',
   redos: 'medium',
@@ -162,6 +163,7 @@ export const SINK_CWE: Record<SinkType, string> = {
   weak_crypto: 'CWE-327',  // Use of Broken/Risky Cryptographic Algorithm
   insecure_cookie: 'CWE-614',
   trust_boundary: 'CWE-501',
+  cache_poisoning: 'CWE-524',
   external_taint_escape: 'CWE-20',
   mybatis_mapper_call: 'CWE-89',
   redos: 'CWE-1333',
@@ -248,6 +250,10 @@ const VULNERABILITY_HELP: Record<string, { description: string; fix: string }> =
   trust_boundary: {
     description: 'Data crosses trust boundary without validation',
     fix: 'Validate and sanitize data when crossing trust boundaries'
+  },
+  cache_poisoning: {
+    description: 'Untrusted data is stored in a shared in-memory cache keyed by attacker-influenced input',
+    fix: 'Do not use request-derived host or path as cache keys for security-sensitive entries; validate issuer URLs and isolate per-tenant caches'
   },
   external_taint_escape: {
     description: 'External input reaches a sensitive sink without proper validation',
