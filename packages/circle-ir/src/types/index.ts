@@ -380,6 +380,7 @@ export const SINK_TYPES = [
   "weak_crypto",
   "insecure_cookie",
   "trust_boundary",
+  "cache_poisoning",
   "prompt_injection",
   "insecure_storage",
   "prototype_pollution",

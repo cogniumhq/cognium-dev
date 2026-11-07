@@ -223,6 +223,17 @@ export const RULE_DEFINITIONS: Record<SinkType, RuleInfo> = {
     severityLevel: 'medium',
     cwe: 'CWE-501',
   },
+  cache_poisoning: {
+    name: 'Shared Cache Poisoning',
+    shortDescription: 'User-controlled data stored in a cross-request shared cache',
+    fullDescription:
+      'The application writes request-derived data into an in-memory cache keyed only by URL or resource id, without varying the cache entry by user or host. Later requests can read attacker-controlled content from the shared cache (CWE-524).',
+    remediation:
+      'Do not cache responses or discovery documents that incorporate Host or other request-derived fields unless the cache key includes every input that affects the payload. Prefer per-request caches or config-backed issuer URLs.',
+    cvssScore: '6.5',
+    severityLevel: 'high',
+    cwe: 'CWE-524',
+  },
   external_taint_escape: {
     name: 'Tainted Data Passed to External Method',
     shortDescription: 'User-controlled data passed to external method call',

@@ -1113,6 +1113,13 @@ const NOSQL_FRAMEWORK_SINKS: SinkPattern[] = [
 // Severity `medium` unless the sink pollutes a process-wide store
 // (System.setProperty → high).
 // =========================================================================
+// cognium-dev #900 — shared in-memory cache writes of request-derived content
+// (OIDC discovery / fragment cache shapes). Distinct from cache-no-vary (#96).
+const CACHE_POISONING_SINKS: SinkPattern[] = [
+  { method: 'set', class: 'Map', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  { method: 'set', class: 'cache', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+];
+
 const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
   // --- Python: Django cache write -----------------------------------------
   { method: 'set',      class: 'cache', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['python'] },
@@ -3430,6 +3437,7 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   // inference complexity limit (TS2590). See ~lines 661-752.
   ...OPEN_REDIRECT_FRAMEWORK_SINKS,
   ...TRUST_BOUNDARY_FRAMEWORK_SINKS,
+  ...CACHE_POISONING_SINKS,
   // cognium-dev #240 ship 2 — extended framework sinks for
   // deserialization (CWE-502) and nosql_injection (CWE-943). Same
   // pattern: constants defined near the ship-1 blocks and spread here.
