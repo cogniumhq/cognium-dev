@@ -20,7 +20,12 @@ import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
 import type { SinkFilterResult } from './sink-filter-pass.js';
 import type { TaintMatcherResult } from './taint-matcher-pass.js';
 import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
-import { analyzeInterprocedural, findTaintBridges, type InterproceduralResult } from '../interprocedural.js';
+import {
+  analyzeInterprocedural,
+  findTaintBridges,
+  isJavaLoggerLogInjectionDuplicate,
+  type InterproceduralResult,
+} from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
 import { shouldGateInterproceduralParam } from '../entry-point-detection.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
@@ -410,6 +415,22 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       filteredAdditionalSinks = filteredAdditionalSinks.filter(
         s => !(s.type === 'external_taint_escape' && credited.has(s.line)),
       );
+    }
+
+    // cognium-dev#468 S2 (Decision 468-1 A): gated SLF4J/Log4j loggers should not
+    // also emit log_injection (Go #455 duplicate). java.util.logging is kept for
+    // flow-sanitize recall (#947).
+    if (language === 'java') {
+      const duplicateLoggerLines = new Set(
+        graph.ir.calls
+          .filter(c => isJavaLoggerLogInjectionDuplicate(c))
+          .map(c => c.location.line),
+      );
+      if (duplicateLoggerLines.size > 0) {
+        filteredAdditionalFlows = filteredAdditionalFlows.filter(
+          f => !(f.sink_type === 'log_injection' && duplicateLoggerLines.has(f.sink_line)),
+        );
+      }
     }
 
     return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };
