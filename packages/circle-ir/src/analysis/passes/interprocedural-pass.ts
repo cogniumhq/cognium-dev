@@ -23,7 +23,7 @@ import type { TaintPropagationPassResult } from './taint-propagation-pass.js';
 import {
   analyzeInterprocedural,
   findTaintBridges,
-  isJavaLoggerLogInjectionDuplicate,
+  shouldSuppressGatedLoggerLogInjection,
   type InterproceduralResult,
 } from '../interprocedural.js';
 import { attachSourceLineCode } from '../taint-matcher.js';
@@ -421,16 +421,10 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
     // also emit log_injection (Go #455 duplicate). java.util.logging is kept for
     // flow-sanitize recall (#947).
     if (language === 'java') {
-      const duplicateLoggerLines = new Set(
-        graph.ir.calls
-          .filter(c => isJavaLoggerLogInjectionDuplicate(c))
-          .map(c => c.location.line),
-      );
-      if (duplicateLoggerLines.size > 0) {
-        filteredAdditionalFlows = filteredAdditionalFlows.filter(
-          f => !(f.sink_type === 'log_injection' && duplicateLoggerLines.has(f.sink_line)),
-        );
-      }
+      filteredAdditionalFlows = filteredAdditionalFlows.filter(f => {
+        const callsAtSink = graph.callsByLine.get(f.sink_line) ?? [];
+        return !shouldSuppressGatedLoggerLogInjection(f, callsAtSink);
+      });
     }
 
     return { additionalSinks: filteredAdditionalSinks, additionalFlows: filteredAdditionalFlows, interprocedural };

@@ -261,11 +261,43 @@ function isJavaLoggerCall(call: CallInfo): boolean {
 export function isJavaLoggerLogInjectionDuplicate(call: CallInfo): boolean {
   if (!isJavaLoggerCall(call)) return false;
   const fqn = call.receiver_type_fqn ?? '';
-  if (fqn.startsWith('java.util.logging.')) return false;
   const recv = call.receiver ?? '';
-  if (/^Logger\.getLogger\b/.test(recv)) return false;
   const target = call.resolution?.target ?? '';
-  if (target.startsWith('java.util.logging.')) return false;
+  if (fqn.startsWith('java.util.logging.') || target.startsWith('java.util.logging.')) {
+    return false;
+  }
+  if (recv.includes('java.util.logging.') || /\bjava\.util\.logging\.Logger\b/.test(recv)) {
+    return false;
+  }
+  if (/^Logger\.getLogger\b/.test(recv) || /^java\.util\.logging\.Logger\.getLogger\b/.test(recv)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * #468 S2: suppress `log_injection` only when it duplicates a gated SLF4J/Log4j
+ * escape — not when a bare tainted argument still reaches the logger (issue-216).
+ */
+export function shouldSuppressGatedLoggerLogInjection(
+  flow: { sink_type: string; sink_line: number; path: Array<{ variable?: string }> },
+  callsAtSink: readonly CallInfo[],
+): boolean {
+  if (flow.sink_type !== 'log_injection') return false;
+  const duplicateCalls = callsAtSink.filter(c => isJavaLoggerLogInjectionDuplicate(c));
+  if (duplicateCalls.length === 0) return false;
+  const sinkVar = flow.path.length > 0 ? flow.path[flow.path.length - 1]?.variable : undefined;
+  if (sinkVar && /^[A-Za-z_$][\w$]*$/.test(sinkVar)) {
+    const escaped = sinkVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:^|[^A-Za-z0-9_$])${escaped}(?:[^A-Za-z0-9_$]|$)`);
+    for (const call of duplicateCalls) {
+      for (const arg of call.arguments) {
+        const expr = (arg.expression ?? '').trim();
+        if (expr === sinkVar) return false;
+        if (re.test(expr) && expr.length <= sinkVar.length + 2) return false;
+      }
+    }
+  }
   return true;
 }
 
