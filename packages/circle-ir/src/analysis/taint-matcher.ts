@@ -2547,8 +2547,9 @@ function findSinks(
           const raw = call.receiver.trim();
           const lastDot = raw.lastIndexOf('.');
           const recv = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+          // Top-level binding only — indented `const x = new Map()` inside a function is local.
           const moduleScope = sourceLines.some((l) =>
-            new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${recv}\\s*=`).test(l),
+            new RegExp(`^(?:export\\s+)?(?:const|let|var)\\s+${recv}\\s*=`).test(l),
           );
           if (!moduleScope && localMapReceiverDoesNotEscape(sourceLines, recv)) {
             continue;
