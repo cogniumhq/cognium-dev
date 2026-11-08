@@ -4119,7 +4119,11 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     const line = lines[i];
     const trimmed = line.trimStart();
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    const assignMatch = line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
+    // #1173: a TS annotation (`let q: string = …`) sits between the name and
+    // `=`; without this the type (`string`) was tracked instead of `q`. Same
+    // annotation shape as the assignment scan above.
+    const annotated = line.match(/(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])\s*(.+)/);
+    const assignMatch = annotated ?? line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
     if (!assignMatch) continue;
     const [, lhs, rhs] = assignMatch;
     if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) continue;

@@ -730,6 +730,7 @@ trustbound each gain true positives from the switch fix. On Juliet Java 1.3
 ## [Unreleased]
 
 ### Fixed
+- **TS: a type-annotated tainted declaration keeps its xss sinks (#1173).** In `let q: string = <source>`, the JS/TS forward-taint scan tracked the type (`string`) instead of `q`, so sink-filter Stage 7 dropped every xss sink fed by an annotated declaration (e.g. Angular `this.route.snapshot.queryParams` into `innerHTML`). The scan now skips the annotation, the same shape the assignment scan already uses. An arrow-typed initializer is not mistaken for one.
 
 - **#541: the serde data formats that #484 silently uncovered are registered
   again.** 4.9.28 removed the classless `from_str` / `from_slice`
