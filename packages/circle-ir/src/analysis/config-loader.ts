@@ -2334,6 +2334,11 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'updateMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteOne', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
   { method: 'deleteMany', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0] },
+  // #1172: the legacy driver / MarsDB / NeDB forms. Class-scoped only: a bare
+  // `update` would hit crypto `hash.update(x)` and friends.
+  { method: 'update',        class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'remove',        class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
+  { method: 'findAndModify', class: 'Collection', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   // Mongoose Model/Query class entries — Model.find/findOne/etc.
   { method: 'find',                class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },
   { method: 'findOne',             class: 'Model', type: 'nosql_injection', cwe: 'CWE-943', severity: 'high', arg_positions: [0], languages: ['javascript', 'typescript'] },

@@ -733,6 +733,7 @@ trustbound each gain true positives from the switch fix. On Juliet Java 1.3
 
 ### Fixed
 - **JS/TS: Angular `DomSanitizer.bypassSecurityTrust*` fires as an `xss` sink again (#1171).** It is registered as the sink (#184), but it was also on the JS XSS sanitizer list, so sink-filter Stage 7 dropped every such sink on its own line. It is off the sanitizer list now. Real sanitizers on the line (DOMPurify, `escapeHtml`, …) still suppress, and a literal argument is still not a flow.
+- **JS/TS: legacy MongoDB collection `update` / `remove` / `findAndModify` are `nosql_injection` sinks (#1172).** `db.reviewsCollection.update({ _id: req.body.id }, …)` (the legacy driver, MarsDB or NeDB, e.g. Juice Shop's noSqlReviews challenge) was reported only as `external_taint_escape`. The new entries are scoped to the `Collection` class on the filter argument, so crypto `hash.update(x)` and other bare `update` calls are not sinks.
 
 - **#541: the serde data formats that #484 silently uncovered are registered
   again.** 4.9.28 removed the classless `from_str` / `from_slice`
