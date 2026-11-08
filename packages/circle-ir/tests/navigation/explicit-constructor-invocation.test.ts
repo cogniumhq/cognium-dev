@@ -293,6 +293,9 @@ describe('super(…) resolves its superclass from the class\'s scope', () => {
       '}',
       '',
     ].join('\n'),
+    'src/app/ui/Widget.java': 'package app.ui;\npublic class Widget {\n  public Widget() {}\n}\n',
+    'src/app/w/W.java': 'package app.w;\nimport org.lib.*;\npublic class W extends Widget {\n  W() { super(); }\n}\n',
+    'src/app/w/W2.java': 'package app.w;\nimport app.ui.*;\npublic class W2 extends Widget {\n  W2() { super(); }\n}\n',
     'src/app/Self.java': [
       'package app;',
       'public class Self extends Node {',
@@ -325,6 +328,16 @@ describe('super(…) resolves its superclass from the class\'s scope', () => {
 
   it('not the class\'s own member type: its `extends` clause is outside its body', () => {
     expect(superAt('src/app/Self.java', 4)).toEqual(['super -> app:Node.constructor(int)']);
+  });
+
+  it('not a same-named type in the tree that no import of the file names', () => {
+    // `Widget` comes from `org.lib.*`, outside the tree, not from `app.ui`.
+    expect(superAt('src/app/w/W.java', 4)).toEqual([]);
+    expect(sg.unresolved.filter(u => u.site.file === 'src/app/w/W.java' && u.methodName === 'super').map(u => `${u.reason} ${u.receiver ?? ''}`)).toEqual(['external Widget']);
+  });
+
+  it('a type a wildcard import of the file names', () => {
+    expect(superAt('src/app/w/W2.java', 4)).toEqual(['super -> app.ui:Widget.constructor()']);
   });
 });
 

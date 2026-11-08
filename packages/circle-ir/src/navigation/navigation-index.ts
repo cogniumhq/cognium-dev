@@ -1991,10 +1991,14 @@ export class NavigationIndex {
    *    type it is outside the tree, so `extends Exception` stays
    *    `java.lang.Exception` even when some package in the tree declares an
    *    `Exception`.
-   * 4. A top-level simple name unique in the tree (a wildcard import).
+   * 4. A type one of the file's wildcard imports names (`import a.b.*`, or
+   *    `import a.Outer.*` for its member types), when exactly one does.
    *
-   * A type nested somewhere else in the file is not in scope and is not
-   * tried.
+   * Anything else is left unbound. A type nested somewhere else in the file
+   * is not in scope. A type of the same simple name elsewhere in the tree
+   * that no import names may not be the one meant: the name can come from a
+   * wildcard package outside the tree, from `java.lang`, or from a supertype
+   * outside the tree.
    */
   private invokedConstructorType(call: CallInfo, rec: FileRecord): TypeRecord | undefined {
     const name = call.receiver_type?.replace(/<.*>$/, '').trim();
@@ -2007,8 +2011,8 @@ export class NavigationIndex {
     const scoped = this.resolveTypeName(name, rec, false);
     if (scoped) return this.typesByFqn.get(scoped);
     if (call.receiver_type_fqn) return this.typesByFqn.get(call.receiver_type_fqn);
-    const byName = (this.typesBySimpleName.get(name) ?? []).filter(t => !this.isNestedFqn(t.fqn));
-    return byName.length === 1 ? byName[0] : undefined;
+    const viaWildcard = [...new Set(rec.staticWildcards)].map(w => this.typesByFqn.get(`${w}.${name}`)).filter((t): t is TypeRecord => t !== undefined);
+    return viaWildcard.length === 1 ? viaWildcard[0] : undefined;
   }
 
   /**
@@ -2051,11 +2055,6 @@ export class NavigationIndex {
       }
     }
     return undefined;
-  }
-
-  /** A type declared inside another type in the tree. */
-  private isNestedFqn(fqn: string): boolean {
-    return this.typesByFqn.has(stripLast(fqn));
   }
 
   /**
