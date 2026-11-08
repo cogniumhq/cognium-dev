@@ -168,6 +168,13 @@ export interface CallInfo {
     column: number;
   };
   in_method?: string | null;
+  /**
+   * The nesting path (`Outer.Inner`) of the type whose constructor holds the
+   * call. Java only, present only under `AnalyzerOptions.navigationTypes`,
+   * and only on an explicit constructor invocation (`super(…)` /
+   * `this(…)`): the scope its superclass name is resolved in.
+   */
+  in_type?: string | null;
   is_constructor?: boolean;
   // PENDING: Call resolution
   resolved?: boolean;

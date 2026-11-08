@@ -1783,9 +1783,11 @@ const JAVA_TYPE_DECLARATIONS = new Set(['class_declaration', 'interface_declarat
  * arguments. `receiver_type` is the class whose constructor runs: for
  * `super`, the enclosing class's superclass as written (`Object` when it names
  * none); for `this`, the enclosing type's nesting path (`Outer.Inner`), which
- * with the package is its `receiver_type_fqn`. Null outside a constructor of
- * a named type, and for `super(…)` in an enum or a record, which cannot
- * have one.
+ * with the package is its `receiver_type_fqn`. `in_type` is that nesting path
+ * in both cases: the navigation index resolves a superclass name from that
+ * scope (a member type of an enclosing type comes first). Null outside a
+ * constructor of a named type, and for `super(…)` in an enum or a record,
+ * which cannot have one.
  *
  * An implicit `super()` is not extracted: it is written nowhere, so it has no
  * site and no name.
@@ -1830,6 +1832,7 @@ function extractExplicitConstructorInvocation(node: Node, context: ResolutionCon
       column: node.startPosition.column,
     },
     in_method: findEnclosingMethod(node),
+    in_type: path.join('.'),
     is_constructor: true,
     resolved: true,
     resolution: { status: 'resolved', target: `${simpleName}.<init>` },
