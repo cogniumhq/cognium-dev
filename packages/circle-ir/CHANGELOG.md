@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- feat(circle-ir): facts@2 for TypeScript/JavaScript graphs (`tsGraphFact2Set`) and `call.declaring` on TS polymorphic rows (`via === to`); opt-in, facts@1 unchanged (#1139)
 - test(circle-ir): lock static-parity py log_injection shape for gates #107 (#1151 S2)
 - fix(circle-ir): settle linked workspace packages once per scope for a shortest via (#1158 review)
 - fix(circle-ir): skip inline parse-args path_traversal FP (#1156) (#1160)

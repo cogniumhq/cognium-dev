@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changes
 
+- feat(cli): `entries --facts-arrow <dir> --facts-scheme facts@2` (Java only); default stays facts@1, so `--facts-arrow` alone writes what it wrote before (#1139)
 - feat(circle-ir): facts@2 schema file, ids@0.1 file kind and opt-in Java emission (graph-store T5a.1) (#1111)
 - fix(graph-facts): Class.forName registrations: scope by from, resolve local constants, bound by use (#1092) (#1096)
 - fix(cli): write graph-fact JSON reports in pieces, not one string (#1079) (#1091)

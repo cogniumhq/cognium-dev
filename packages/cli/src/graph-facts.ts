@@ -130,7 +130,13 @@ export interface EntriesCliOptions {
    * Java only. The report is the same with or without it.
    */
   factsArrow?: string;
+  /** The fact schema `factsArrow` writes: `facts@1` (the default) or `facts@2`. Needs `factsArrow`. */
+  factsScheme?: FactsSchemeName;
 }
+
+/** The fact schemas `entries --facts-arrow` can write. */
+export const FACTS_SCHEME_NAMES = ['facts@1', 'facts@2'] as const;
+export type FactsSchemeName = (typeof FACTS_SCHEME_NAMES)[number];
 
 export interface DepCallsCliOptions {
   /** `groupId:artifactId[:version]`. */
@@ -181,11 +187,17 @@ export function parseEntriesOptions(o: Raw): EntriesCliOptions {
   if (factsArrow !== undefined && language !== undefined && language !== 'java') {
     throw new UsageError('--facts-arrow is available for --language java only');
   }
+  const scheme = optionalString('facts-scheme', o['facts-scheme']);
+  if (scheme !== undefined && !(FACTS_SCHEME_NAMES as readonly string[]).includes(scheme)) {
+    throw new UsageError(`unsupported --facts-scheme '${scheme}' (expected ${FACTS_SCHEME_NAMES.join('|')})`);
+  }
+  if (scheme !== undefined && factsArrow === undefined) throw new UsageError('--facts-scheme needs --facts-arrow <dir>');
   return {
     language,
     format: parseFormat(o.format ?? o.f, ['text', 'json'] as const, 'text'),
     output: optionalString('output', o.output ?? o.o),
     ...(factsArrow !== undefined ? { factsArrow } : {}),
+    ...(scheme !== undefined ? { factsScheme: scheme as FactsSchemeName } : {}),
   };
 }
 
@@ -313,10 +325,14 @@ export function pickLanguage(roots: readonly string[], asked?: GraphLanguage): G
 }
 
 /** The engine's reach input for one tree: its call graph with the entry index. */
-export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow' } = {}): Promise<ReachInput & { facts?: FactsArrow | Facts2Arrow }> {
+export async function buildGraph(root: string, language: GraphLanguage, graphOptions: { emitFacts?: 'arrow'; factsScheme?: FactsSchemeName } = {}): Promise<ReachInput & { facts?: FactsArrow | Facts2Arrow }> {
   if (language === 'java') {
     const facts = graphOptions.emitFacts === 'arrow'
-      ? { emitFacts: 'arrow' as const, facts: { engine: `circle-ir@${engineIdentity().version}` } }
+      ? {
+        emitFacts: 'arrow' as const,
+        ...(graphOptions.factsScheme ? { factsScheme: graphOptions.factsScheme } : {}),
+        facts: { engine: `circle-ir@${engineIdentity().version}` },
+      }
       : {};
     return buildJavaGraph(sources(root, 'java'), { serviceFiles: serviceFiles(root), ...facts });
   }
@@ -483,7 +499,7 @@ export interface EntriesReport {
   summary: Record<string, number>;
 }
 
-/** `facts@1` as the files the store reads: `<dir>/<relation>.arrow` and `<dir>/manifest.json`. */
+/** The fact relations as the files the store reads: `<dir>/<relation>.arrow` and `<dir>/manifest.json`. */
 export function writeFactsArrow(dir: string, facts: FactsArrow | Facts2Arrow): string[] {
   mkdirSync(dir, { recursive: true });
   const written: string[] = [];
@@ -502,11 +518,12 @@ export async function computeEntries(path: string, opts: EntriesCliOptions): Pro
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
   if (opts.factsArrow !== undefined && language !== 'java') throw new UsageError('--facts-arrow is available for Java trees only');
-  const graph = await buildGraph(root, language, opts.factsArrow !== undefined ? { emitFacts: 'arrow' } : {});
+  const scheme = opts.factsScheme ?? 'facts@1';
+  const graph = await buildGraph(root, language, opts.factsArrow !== undefined ? { emitFacts: 'arrow', factsScheme: scheme } : {});
   if (opts.factsArrow !== undefined) {
-    if (!graph.facts) throw new Error('facts@1: the engine returned no facts');
+    if (!graph.facts) throw new Error(`${scheme}: the engine returned no facts`);
     writeFactsArrow(opts.factsArrow, graph.facts);
-    console.error(`Wrote facts@1 (${Object.keys(graph.facts.relations).length} relations + manifest.json) to ${opts.factsArrow}`);
+    console.error(`Wrote ${graph.facts.scheme} (${Object.keys(graph.facts.relations).length} relations + manifest.json) to ${opts.factsArrow}`);
   }
   const summary: Record<string, number> = {};
   for (const e of graph.entries) summary[e.kind] = (summary[e.kind] ?? 0) + 1;

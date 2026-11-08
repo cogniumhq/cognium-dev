@@ -428,7 +428,7 @@ export {
 // `facts@2`: the successor schema (stable file keys, site lines relative to
 // their declaration, decl_pos, ref, registration, parse_error). Opt-in through
 // `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or
-// `javaGraphFact2Set` and `facts2ToArrow`; facts@1 stays the default.
+// `javaGraphFact2Set` / `tsGraphFact2Set` and `facts2ToArrow`; facts@1 stays the default.
 export {
   FACTS2_SCHEME,
   FACTS2_RELATION_NAMES,
@@ -437,6 +437,7 @@ export {
   FACTS_REGISTRATION_REASONS,
   fileKey as factsFileKey,
   javaGraphFact2Set,
+  tsGraphFact2Set,
   facts2ToArrow,
 } from './facts/index.js';
 export type {
