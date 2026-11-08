@@ -3477,6 +3477,23 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       });
     }
 
+    // Stage 15h2 — JS/TS nosql: string type reject-guard. (cognium-dev#1172)
+    // `if (typeof req.body.id !== 'string') { …; return }` before
+    // `coll.update({ _id: req.body.id }, …)` rules out an operator object
+    // (`{ $ne: … }`), the NoSQL injection itself. Drop the sink only when every
+    // request-derived reference in the filter argument is guarded that way.
+    if (['javascript', 'typescript'].includes(language)) {
+      const sourceLines = ctx.code.split('\n');
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'nosql_injection' || !sink.method) return true;
+        const arg0 = jsCallFirstArgText(sourceLines, sink.line, sink.method);
+        if (arg0 === null) return true;
+        const refs = [...new Set([...arg0.matchAll(/\b(?:req|request)(?:\.[A-Za-z_$][\w$]*)+/g)].map(m => m[0]))];
+        if (refs.length === 0) return true;
+        return !refs.every(ref => jsTypeofStringRejectGuarded(sourceLines, sink.line, ref));
+      });
+    }
+
     // Stage 15j — JS/TS ssrf: client-component file. (cognium-ai#279 R-3)
     // A fetch/axios call in a browser-rendered client component is not SSRF.
     // Gated on ext + positive client signal + no server signal (zero-FN).
@@ -4581,4 +4598,56 @@ function isXPathQuoteEscapedOnLine(lineText: string, varName: string): boolean {
   }
 
   return seen > 0;
+}
+
+/**
+ * cognium-dev#1172 — text of the first argument of the call to `method` that
+ * starts on 1-based `line` (it may span lines), or null if it can't be read.
+ */
+function jsCallFirstArgText(lines: string[], line: number, method: string): string | null {
+  const text = lines.slice(line - 1, line + 11).join('\n');
+  const at = text.search(new RegExp(`\\b${method.replace(/\$/g, '\\$')}\\s*\\(`));
+  if (at < 0) return null;
+  let i = text.indexOf('(', at) + 1;
+  const start = i;
+  let depth = 0;
+  let str: string | null = null;
+  for (; i < text.length; i++) {
+    const ch = text[i]!;
+    if (str) { if (ch === '\\') i++; else if (ch === str) str = null; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { str = ch; continue; }
+    if (ch === '(' || ch === '{' || ch === '[') depth++;
+    else if (ch === ')' || ch === '}' || ch === ']') { if (depth === 0) return text.slice(start, i); depth--; }
+    else if (ch === ',' && depth === 0) return text.slice(start, i);
+  }
+  return null;
+}
+
+/**
+ * cognium-dev#1172 — true when, within the 40 lines before `sinkLine`, an
+ * `if (… typeof <ref> !== 'string' …)` whose condition is only that check or
+ * an `||` of checks rejects with return / throw / a `res.status(…)` reply.
+ */
+function jsTypeofStringRejectGuarded(lines: string[], sinkLine: number, ref: string): boolean {
+  const esc = ref.replace(/[.$]/g, m => '\\' + m);
+  const guardRe = new RegExp(`\\bif\\s*\\((?:[^()]*\\|\\|\\s*)?typeof\\s+${esc}\\s*!==?\\s*(['"])string\\1\\s*(?:\\|\\|[^()]*)?\\)`);
+  const terminator = /\b(?:return|throw)\b|\bres\s*\.\s*status\s*\(/;
+  for (let i = Math.max(0, sinkLine - 41); i < sinkLine - 1; i++) {
+    if (!guardRe.test(lines[i] ?? '')) continue;
+    const after = (lines[i] ?? '').slice((lines[i] ?? '').search(/\)\s*(?:\{|$|[^\s])/));
+    if (terminator.test(after)) return true;
+    // block body: scan to the closing brace for a terminator
+    let depth = 0;
+    let started = false;
+    for (let j = i; j < Math.min(lines.length, i + 15, sinkLine - 1); j++) {
+      const ln = j === i ? after : (lines[j] ?? '');
+      if (j > i && terminator.test(ln)) return true;
+      for (const ch of ln) {
+        if (ch === '{') { depth++; started = true; }
+        else if (ch === '}') depth--;
+      }
+      if (started && depth <= 0) break;
+    }
+  }
+  return false;
 }
