@@ -730,6 +730,7 @@ trustbound each gain true positives from the switch fix. On Juliet Java 1.3
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: legacy MongoDB collection `update` / `remove` / `findAndModify` are `nosql_injection` sinks (#1172).** `db.reviewsCollection.update({ _id: req.body.id }, …)` (the legacy driver, MarsDB or NeDB, e.g. Juice Shop's noSqlReviews challenge) was reported only as `external_taint_escape`. The new entries are scoped to the `Collection` class on the filter argument, so crypto `hash.update(x)` and other bare `update` calls are not sinks.
 
 - **#541: the serde data formats that #484 silently uncovered are registered
   again.** 4.9.28 removed the classless `from_str` / `from_slice`
