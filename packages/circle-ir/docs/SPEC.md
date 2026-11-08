@@ -311,7 +311,7 @@ interface CFGBlock {
   type: "entry" | "exit" | "normal" | "conditional" | "loop";
   start_line: number;
   end_line: number;
-  start_column?: number;     // 0-based; see below
+  start_column?: number;     // 0-based, in UTF-16 code units; see below
 }
 
 interface CFGEdge {
@@ -343,7 +343,9 @@ interface CFGEdge {
 }
 ```
 
-`start_column` is optional: the 0-based column of the block's first character, or, for a block placed on a statement's end (an exit block, a do-while condition), of that statement's last character. Every block built from a statement or a function body carries it; the synthetic blocks (a Bash script's entry and exit, Go's block of top-level declarations) leave it out.
+`start_column` is optional: the 0-based column, in UTF-16 code units, of the block's first character, or, for a block placed on a statement's end (an exit block, a do-while condition), of that statement's last character. Every block built from a statement or a function body carries it; the synthetic blocks (a Bash script's entry and exit, Go's block of top-level declarations) leave it out.
+
+Stable node ids (`assignNodeIds`) place each block in the innermost declaration that encloses its start (`start_line`, `start_column`); a block without `start_column` goes to the innermost declaration that encloses all of its lines.
 
 **Implementation**: `cpg_extractor.py:181-395`
 
@@ -364,7 +366,7 @@ interface DFGDef {
   id: number;
   variable: string;
   line: number;
-  column?: number;           // 0-based; always set for JavaScript/TypeScript
+  column?: number;           // 0-based, UTF-16 code units; always set for JS/TS
   kind: "param" | "local" | "field" | "return";
 }
 
@@ -372,7 +374,7 @@ interface DFGUse {
   id: number;
   variable: string;
   line: number;
-  column?: number;           // 0-based; always set for JavaScript/TypeScript
+  column?: number;           // 0-based, UTF-16 code units; always set for JS/TS
   def_id: number | null;     // Reaching definition
 }
 ```

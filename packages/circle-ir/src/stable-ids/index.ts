@@ -2,9 +2,9 @@
  * Stable code ids (`ids@0.1`) — experimental, opt-in.
  *
  * Nothing in `analyze()` calls this module; a consumer that wants ids calls
- * `deriveStableIds` (or `deriveTypeScriptIds` on a tree it already holds) and
- * `assignNodeIds` on the IR it already has. TypeScript and JavaScript only in
- * this version.
+ * `deriveStableIds` (or a language's own `derive…Ids` on a tree it already
+ * holds) and `assignNodeIds` on the IR it already has. Covers TypeScript,
+ * JavaScript, Java, Python and Go (`stableIdsSupport`).
  */
 
 import { disposeTree, parse, type SupportedLanguage } from '../core/parser.js';
