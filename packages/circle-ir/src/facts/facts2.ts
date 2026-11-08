@@ -266,7 +266,11 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
   }
 
   // registration — `from` as the engine gives it (Java), else the innermost declaration enclosing the site.
-  const registration = allocTable(R.registration, graph.unresolvedRegistrations.length);
+  // A name a registering file gives (`manifest-unresolved` at a site in a manifest or descriptor, not a
+  // source file of the graph) has no enclosing body to key it by: it stays in the graph's
+  // `unresolvedRegistrations` and is not a `registration` row.
+  const regs = graph.unresolvedRegistrations.filter(r => r.reason !== 'manifest-unresolved' || graphFiles.has(r.site.file));
+  const registration = allocTable(R.registration, regs.length);
   {
     const reasons = dict(R.registration, 'reason');
     const locators = new Map<string, (line: number, column?: number) => StableDecl | null>();
@@ -277,8 +281,8 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
       if (!at) locators.set(site.file, (at = declLocator(f)));
       return (at(site.line, site.col) ?? f.decls[0]).id;
     };
-    for (let i = 0; i < graph.unresolvedRegistrations.length; i++) {
-      const reg = graph.unresolvedRegistrations[i];
+    for (let i = 0; i < regs.length; i++) {
+      const reg = regs[i];
       const from = reg.from ?? owner(reg.site);
       ids.put(rekeyed(reg.site.file, from), registration[0] as Uint8Array, i * FACTS_ID_WIDTH);
       (registration[1] as Int8Array)[i] = code(reasons, reg.reason, 'reason');
@@ -370,7 +374,7 @@ function graphFact2Set(graph: Facts2Graph, inputs: readonly Facts2Input[], extra
     call: { columns: call, length: graph.edges.length },
     unresolved: { columns: unresolved, length: graph.unresolved.length },
     ref: { columns: ref, length: graph.references.length },
-    registration: { columns: registration, length: graph.unresolvedRegistrations.length },
+    registration: { columns: registration, length: regs.length },
     parse_error: { columns: parseError, length: partialCount },
     flow: { columns: flow, length: flowCount },
     imports: { columns: imports, length: importCount },
