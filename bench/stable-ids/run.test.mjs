@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, checkPair, fetchPairs, gitBlobId, licenceOf, loadManifest, pairDigest, setDigest, sha256 } from './pairs.mjs';
-import { main, parseSelection, scoreSet, sealPairs, verifyManifest } from './run.mjs';
+import { checkProviderOutput, main, parseSelection, scoreSet, sealPairs, verifyManifest } from './run.mjs';
 import * as reference from './providers/reference.mjs';
 
 const tmp = mkdtempSync(join(tmpdir(), 'stable-ids-test-'));
@@ -146,8 +146,10 @@ test('fetch writes the pinned files and deletes its clone; check catches edits',
 });
 
 test('score: the reference stub scores 100%; a positional stub does not', async () => {
-  const good = await scoreSet({ dir: setDir, root, provider: reference });
+  const good = await scoreSet({ dir: setDir, root, provider: reference, nodes: true });
   assert.equal(good.metrics.precision.value, 1);
+  assert.equal(good.totals.nodes.checked, 0, 'the reference stub gives no node ids, so none are compared');
+  assert.equal(good.totals.nodes.kept, 0);
   assert.equal(good.metrics.recall.value, 1);
   assert.equal(good.totals.unjoined, 0);
   assert.equal(good.metrics.body_keeps_decl.value, 1);
@@ -166,6 +168,12 @@ test('score: the reference stub scores 100%; a positional stub does not', async 
   assert.ok(bad.pairs[0].misses.length > 0);
 
   // A provider that throws on a file: no declarations for it, reported.
+  // A provider that answers with nothing to score: every file is a provider error.
+  const empty = { name: 'empty', async derive() { return { decls: [] }; } };
+  const e = await scoreSet({ dir: setDir, root, provider: empty });
+  assert.equal(e.provider_errors.length, 4);
+  assert.match(e.provider_errors[0], /no root declaration/);
+
   const broken = { name: 'broken', async derive() { throw new Error('boom'); } };
   const r = await scoreSet({ dir: setDir, root, provider: broken });
   assert.equal(r.provider_errors.length, 4);
@@ -173,6 +181,18 @@ test('score: the reference stub scores 100%; a positional stub does not', async 
 
   const missing = await scoreSet({ dir: setDir, root: join(tmp, 'nowhere'), provider: reference });
   assert.ok(missing.missing.length > 0);
+});
+
+test('checkProviderOutput rejects results that cannot be scored', () => {
+  const root = { id: 'm', body_id: 'm.b', name: '', kind: 'module', start_line: 1, end_line: 2, parent: null };
+  assert.equal(checkProviderOutput({ decls: [root] }), null);
+  assert.match(checkProviderOutput(undefined), /no result/);
+  assert.match(checkProviderOutput({}), /no decls array/);
+  assert.match(checkProviderOutput({ decls: 'x' }), /no decls array/);
+  assert.match(checkProviderOutput({ decls: [] }), /no root declaration/);
+  assert.match(checkProviderOutput({ decls: [{ ...root, parent: 'm' }] }), /no root declaration/);
+  assert.match(checkProviderOutput({ decls: [{ ...root, id: 7 }] }), /lacks a string id/);
+  assert.match(checkProviderOutput({ decls: [{ ...root, start_line: '1' }] }), /integer start_line/);
 });
 
 test('the command line: list, verify, check, score', async () => {
@@ -193,6 +213,9 @@ test('the command line: list, verify, check, score', async () => {
     const broken = join(tmp, 'broken-provider.mjs');
     writeFileSync(broken, "export async function derive() { throw new Error('boom'); }\n");
     assert.equal(await main(['score', '--dir', setDir, '--provider', broken]), 1, 'provider errors fail the run');
+    const empty = join(tmp, 'empty-provider.mjs');
+    writeFileSync(empty, 'export async function derive() { return { decls: [] }; }\n');
+    assert.equal(await main(['score', '--dir', setDir, '--provider', empty]), 1, 'an empty answer fails the run');
     assert.equal(await main(['check', '--dir', setDir, 'no-such-pair']).catch(e => e.message), "unknown pair 'no-such-pair'");
     assert.equal(await main(['bogus']), 2);
   } finally {

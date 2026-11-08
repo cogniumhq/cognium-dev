@@ -47,7 +47,12 @@ const LABELS = ['stable', 'body', 'identity'];
 function emptyCounts() {
   const confusion = {};
   for (const l of LABELS) confusion[l] = Object.fromEntries(PRED.map(p => [p, 0]));
-  return { scored: 0, tp: 0, fp: 0, fn: 0, wrong_partner: 0, judgement: {}, unjoined: 0, unjoined_partial: 0, confusion, nodes: { checked: 0, kept: 0 } };
+  return {
+    scored: 0, tp: 0, fp: 0, fn: 0, wrong_partner: 0, judgement: {}, unjoined: 0, unjoined_partial: 0, unjoined_partial_stable: 0,
+    confusion,
+    // Node ids under correctly stable bodies: compared only where the provider gave any; `without` had none on either side.
+    nodes: { checked: 0, kept: 0, without: 0 },
+  };
 }
 
 function labelClass(r) {
@@ -80,7 +85,10 @@ export function scorePair(records, engine) {
     if (!eb) {
       pred = 'none';
       counts.unjoined++;
-      if (engine.partial && engine.partial.before.has(r.file)) counts.unjoined_partial++;
+      if (engine.partial && engine.partial.before.has(r.file)) {
+        counts.unjoined_partial++;
+        if (r.label === 'stable') counts.unjoined_partial_stable++;
+      }
     } else {
       ea = afterById.get(eb.id) ?? null;
       if (!ea) pred = 'identity';
@@ -101,9 +109,13 @@ export function scorePair(records, engine) {
         if (engine.nodes) {
           const nb = [...(engine.nodes.before.get(r.file)?.get(eb.body_id) ?? [])].sort();
           const na = [...(engine.nodes.after.get(r.after.file)?.get(ea.body_id) ?? [])].sort();
-          counts.nodes.checked++;
-          if (nb.length === na.length && nb.every((x, i) => x === na[i])) counts.nodes.kept++;
-          else misses.push({ ...where(r), label, pred, note: 'node ids changed' });
+          if (nb.length === 0 && na.length === 0) {
+            counts.nodes.without++;
+          } else {
+            counts.nodes.checked++;
+            if (nb.length === na.length && nb.every((x, i) => x === na[i])) counts.nodes.kept++;
+            else misses.push({ ...where(r), label, pred, note: 'node ids changed' });
+          }
         }
       } else {
         // A stable claim matched to the wrong declaration is wrong twice: a miss and a false stable.
@@ -127,11 +139,12 @@ function where(r) {
 
 /** Add `b`'s counts into `a`. */
 export function addCounts(a, b) {
-  for (const k of ['scored', 'tp', 'fp', 'fn', 'wrong_partner', 'unjoined', 'unjoined_partial']) a[k] += b[k];
+  for (const k of ['scored', 'tp', 'fp', 'fn', 'wrong_partner', 'unjoined', 'unjoined_partial', 'unjoined_partial_stable']) a[k] += b[k];
   for (const [k, v] of Object.entries(b.judgement)) a.judgement[k] = (a.judgement[k] ?? 0) + v;
   for (const l of LABELS) for (const p of PRED) a.confusion[l][p] += b.confusion[l][p];
   a.nodes.checked += b.nodes.checked;
   a.nodes.kept += b.nodes.kept;
+  a.nodes.without += b.nodes.without;
   return a;
 }
 
@@ -153,8 +166,10 @@ export function metrics(c) {
     recall: ratio(c.tp, c.tp + c.fn),
     // A changed body gets a new body id and keeps its declaration id.
     body_keeps_decl: ratio(bodyRow.body, PRED.reduce((s, p) => s + bodyRow[p], 0)),
-    // A changed identity (signature, name, enclosing type, file) gets a new declaration id.
-    identity_new_decl: ratio(idRow.identity + idRow.none, PRED.reduce((s, p) => s + idRow[p], 0)),
+    // A changed identity (signature, name, enclosing type, file) gets a new declaration id;
+    // `identity_no_decl` is how often the provider had no declaration to judge at all.
+    identity_new_decl: ratio(idRow.identity, PRED.reduce((s, p) => s + idRow[p], 0)),
+    identity_no_decl: ratio(idRow.none, PRED.reduce((s, p) => s + idRow[p], 0)),
   };
 }
 

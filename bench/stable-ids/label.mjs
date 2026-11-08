@@ -16,7 +16,10 @@ export const LABEL_RULE = 'stable-labels@1';
 
 let tsCache = null;
 
-/** The TypeScript compiler (the classic JavaScript API) from the repo's dev dependencies. */
+/**
+ * The TypeScript compiler (the classic JavaScript API): the root `typescript`
+ * dev dependency, pinned to the version that sealed the labels.
+ */
 export function loadTypeScript() {
   if (tsCache) return tsCache;
   let ts;
