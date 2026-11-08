@@ -286,6 +286,20 @@ describe('IR positions the node ids rely on', () => {
     expect(lines[(exit?.start_line ?? 0) - 1][exit?.start_column ?? -1]).toBe('}');
   });
 
+  it('columns count UTF-16 code units, so a non-ASCII prefix does not move a node into the callback', async () => {
+    const code = 'export function f(xs: string[]) { const t = "😀é"; const ys = xs.map(x => x + t); return ys; }\n';
+    const r = await run(code);
+    const line = code.split('\n')[0];
+    const ys = r.ir.dfg.defs.find(d => d.variable === 'ys');
+    expect(ys?.column).toBe(line.indexOf('ys ='));
+    const map = r.ir.calls.find(c => c.method_name === 'map');
+    expect(map?.location.column).toBe(line.indexOf('xs.map'));
+    const callback = r.ids.decls.find(d => d.flags.includes('unstable:anonymous'));
+    expect(callback?.start_column).toBe(line.indexOf('x =>'));
+    const outer = decl(r, 'pkg/a:f');
+    expect(r.nodes.dfg_defs[r.ir.dfg.defs.indexOf(ys as NonNullable<typeof ys>)]?.startsWith(outer.body_id + '/')).toBe(true);
+  });
+
   it('a lone arrow parameter is a param def with or without parentheses', async () => {
     for (const lang of ['typescript', 'javascript'] as const) {
       const bare = (await run('const f = (xs) => xs.map(x => x + 1);\n', lang)).ir.dfg;
@@ -300,6 +314,28 @@ describe('IR positions the node ids rely on', () => {
       };
       expect(reach(bare), lang).toBe(true);
       expect(reach(parens), lang).toBe(true);
+    }
+  });
+
+  it('Java and Go: a method\'s blocks stay in the method when a lambda or func literal shares its line', async () => {
+    const cases = [
+      { lang: 'java' as const, file: 'src/main/java/app/A.java', code: 'package app;\nclass A {\n  void f(java.util.List<String> xs) { xs.forEach(x -> g(x)); }\n  void g(String s) {}\n}\n', method: 'f' },
+      { lang: 'go' as const, file: 'app/a.go', code: 'package app\n\nfunc f(xs []int) { apply(xs, func(x int) int { return x }) }\n\nfunc apply(xs []int, fn func(int) int) {}\n', method: 'f' },
+    ];
+    for (const c of cases) {
+      const ir = await analyze(c.code, c.file, c.lang);
+      const ids = await deriveStableIds(c.code, c.file, c.lang);
+      const n = assignNodeIds(ids, ir);
+      const method = ids.decls.find(d => d.name === c.method && !d.flags.includes('unstable:anonymous'));
+      const nested = ids.decls.find(d => d.flags.includes('unstable:anonymous'));
+      expect(method, c.lang).toBeDefined();
+      expect(nested, c.lang).toBeDefined();
+      const line = ir.cfg.blocks.filter(b => b.start_line === (method as StableDecl).start_line);
+      expect(line.length, c.lang).toBeGreaterThan(0);
+      for (const b of line) {
+        expect(b.start_column, c.lang).toEqual(expect.any(Number));
+        expect(n.cfg_blocks[ir.cfg.blocks.indexOf(b)]?.startsWith((method as StableDecl).body_id + '/'), `${c.lang} ${JSON.stringify(b)}`).toBe(true);
+      }
     }
   });
 

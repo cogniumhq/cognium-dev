@@ -224,7 +224,7 @@ export interface CFGBlock {
   start_line: number;
   end_line: number;
   /**
-   * 0-based column where the block starts on `start_line`: the statement's
+   * 0-based column (UTF-16 code units) where the block starts on `start_line`: the statement's
    * first character, or for a block placed on a statement's end (an exit
    * block, a do-while condition) its last character. Absent on synthetic
    * blocks no single statement gives (a Bash script's entry and exit, Go's
@@ -253,7 +253,7 @@ export interface DFGDef {
   id: number;
   variable: string;
   line: number;
-  /** 0-based column on `line`. Always set for JavaScript/TypeScript; other languages set it where noted in their builders. */
+  /** 0-based column on `line`, in UTF-16 code units. Always set for JavaScript/TypeScript; other languages set it where noted in their builders. */
   column?: number;
   kind: "param" | "local" | "field" | "return";
   expression?: string;
@@ -263,7 +263,7 @@ export interface DFGUse {
   id: number;
   variable: string;
   line: number;
-  /** 0-based column on `line`. Always set for JavaScript/TypeScript. */
+  /** 0-based column on `line`, in UTF-16 code units. Always set for JavaScript/TypeScript. */
   column?: number;
   def_id: number | null;  // Reaching definition
 }
