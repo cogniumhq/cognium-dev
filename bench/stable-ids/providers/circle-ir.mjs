@@ -14,13 +14,15 @@ export const name = 'circle-ir';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const entry = process.env.CIRCLE_IR ?? join(HERE, '..', '..', '..', 'packages', 'circle-ir', 'dist', 'index.js');
 let libPromise = null;
-let analyzerPromise = null;
 
+/** The library, with its parsers initialised (deriveStableIds parses, so it needs them too). */
 function load() {
   libPromise ??= (async () => {
     if (!existsSync(entry)) throw new Error(`circle-ir provider: ${entry} not found; run \`npm run build:all\` or set CIRCLE_IR`);
     const mod = await import(pathToFileURL(entry).href);
     if (typeof mod.deriveStableIds !== 'function') throw new Error(`circle-ir provider: ${entry} has no deriveStableIds`);
+    if (typeof mod.initAnalyzer === 'function') await mod.initAnalyzer();
+    else if (typeof mod.initParser === 'function') await mod.initParser();
     return mod;
   })();
   return libPromise;
@@ -45,8 +47,6 @@ export async function derive(code, file) {
 export async function nodes(code, file, ids) {
   const l = await load();
   if (typeof l.analyze !== 'function' || typeof l.assignNodeIds !== 'function') return null;
-  analyzerPromise ??= l.initAnalyzer();
-  await analyzerPromise;
   const ir = await l.analyze(code, file, language(file));
   const n = l.assignNodeIds(ids, ir);
   const byBody = new Map();
