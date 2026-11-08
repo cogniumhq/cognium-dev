@@ -15,7 +15,7 @@ import {
   scanRegistrations,
   type RegistrationFile,
 } from '../../src/navigation/java-registrations.js';
-import { childText, parseXml, xmlElements } from '../../src/navigation/xml-scan.js';
+import { XML_MAX_DEPTH, childText, parseXml, xmlElements, type XmlElement } from '../../src/navigation/xml-scan.js';
 import { deadCode, reach } from '../../src/graph-facts/index.js';
 import { javaGraphFactSet } from '../../src/facts/java-facts.js';
 import { javaGraphFact2Set } from '../../src/facts/facts2.js';
@@ -56,7 +56,42 @@ public class Outer {
 
 public class Activator {
   public Activator() {}
+  public Activator(int unused) {}
   public void start(Object context) {}
+}
+`,
+  // DS 1.4 constructor injection: no public no-arg constructor.
+  'bundle/src/org/example/ds/Injected.java': `package org.example.ds;
+
+public class Injected {
+  public Injected(Object log) { wire(); }
+  Injected(int unused) {}
+  void wire() {}
+}
+`,
+  'bundle/src/org/example/base/Bases.java': `package org.example.base;
+
+public class Bases {
+  public static abstract class Handler {
+    public void bindX(Object x) {}
+  }
+}
+`,
+  'bundle/src/org/example/ds/Nested.java': `package org.example.ds;
+
+import org.example.base.Bases.Handler;
+
+public class Nested extends Handler {
+  public Nested() {}
+}
+`,
+  // Loaded by a bare Class.forName: loaded, never constructed by the loader.
+  'bundle/src/r/R.java': `package r;
+
+public class R {
+  private R() { helper(); }
+  R(int unused) {}
+  void helper() {}
 }
 `,
   'bundle/src/org/example/ext/ExportHandler.java': 'package org.example.ext;\n\npublic class ExportHandler {\n  public ExportHandler() {}\n}\n',
@@ -75,7 +110,7 @@ public class Util {
 import org.example.util.Util;
 
 public class Main {
-  public static void main(String[] args) { Util.twice(2); }
+  public static void main(String[] args) throws Exception { Util.twice(2); Class.forName("r.R"); }
 }
 `,
   'web/src/org/example/web/MainServlet.java': 'package org.example.web;\n\npublic class MainServlet {\n  public MainServlet() {}\n}\n',
@@ -102,6 +137,12 @@ const DS_COMPONENTS = `<components xmlns:scr="http://www.osgi.org/xmlns/scr/v1.2
   <scr:component name="gone">
     <implementation class="org.example.missing.Gone"/>
   </scr:component>
+</components>
+`;
+
+const DS_MORE = `<components>
+  <component name="injected"><implementation class="org.example.ds.Injected"/></component>
+  <component name="nested"><implementation class="org.example.ds.Nested"/><reference name="x" interface="X" bind="bindX"/></component>
 </components>
 `;
 
@@ -161,6 +202,7 @@ const WEB = `<?xml version="1.0" encoding="UTF-8"?>
 const REGISTRATIONS: RegistrationFile[] = [
   { path: 'bundle/OSGI-INF/greeter.xml', text: DS_GREETER },
   { path: 'bundle/OSGI-INF/components.xml', text: DS_COMPONENTS },
+  { path: 'bundle/OSGI-INF/more.xml', text: DS_MORE },
   { path: 'bundle/OSGI-INF/metatype/settings.xml', text: '<metatype:MetaData xmlns:metatype="x"><OCD id="a"/></metatype:MetaData>' },
   { path: 'bundle/META-INF/MANIFEST.MF', text: MANIFEST },
   { path: 'bundle/plugin.xml', text: PLUGIN },
@@ -234,16 +276,52 @@ describe('parseXml', () => {
       expect(() => parseXml(bad)).not.toThrow();
     }
     expect(parseXml('< a>')).toEqual([]);
-    expect(parseXml('<a b=1>')).toEqual([]);
+  });
+
+  it('reads unquoted values, `/ >` and junk in a tag without dropping the rest', () => {
+    const [r] = parseXml('<r><a b=1 c=x&amp;y/><e / ><f #junk g="2"><h/></f><i k=></i></r>');
+    expect(r.children.map(c => c.name)).toEqual(['a', 'e', 'f', 'i']);
+    expect(r.children[0].attrs.get('b')).toBe('1');
+    expect(r.children[0].attrs.get('c')).toBe('x&y');
+    expect(r.children[2].children.map(c => c.name)).toEqual(['h']);
+    expect(r.children[3].attrs.get('k')).toBe('');
+  });
+
+  it('a quote inside a comment of the DOCTYPE subset does not swallow the file', () => {
+    const roots = parseXml('<!DOCTYPE w [ <!-- don\'t --> <?pi it\'s?> <!ENTITY e "x"> ]><w><v/></w>');
+    expect([...xmlElements(roots)].map(e => e.name)).toEqual(['w', 'v']);
+  });
+
+  it('stops at the depth cap', () => {
+    const [root] = parseXml('<a>'.repeat(XML_MAX_DEPTH + 50) + '<b/>');
+    let depth = 0;
+    for (let e: XmlElement | undefined = root; e; e = e.children[0]) depth++;
+    expect(depth).toBe(XML_MAX_DEPTH);
+  });
+
+  it('stays linear on unclosed elements followed by stray end tags', () => {
+    const shapes = [
+      '<a>'.repeat(XML_MAX_DEPTH - 6) + '</b>'.repeat(75_000),
+      Array.from({ length: XML_MAX_DEPTH - 6 }, (_, k) => `<t${k}>`).join('') + '</zz>'.repeat(60_000),
+      '<a>'.repeat(100_000) + '</b>'.repeat(100_000),
+      '<p>' + '<q></x>'.repeat(41_000) + '</p>',
+    ];
+    for (const text of shapes) {
+      expect(text.length).toBeGreaterThan(280_000);
+      const t0 = performance.now();
+      const roots = parseXml(text);
+      expect(performance.now() - t0).toBeLessThan(1000);
+      expect(roots).toHaveLength(1);
+    }
   });
 });
 
 describe('MANIFEST.MF', () => {
   it('joins continuation lines and stops at the main section', () => {
     const h = manifestHeaders(MANIFEST);
-    expect(h.get('Bundle-Activator')).toEqual({ value: 'org.example.Activator', line: 3 });
-    expect(h.get('Export-Package')?.value).toBe('org.example.api;version="1.0.0",org.example.empty;x-internal:=true');
-    expect(h.has('Name')).toBe(false);
+    expect(h.get('bundle-activator')).toEqual({ value: 'org.example.Activator', line: 3 });
+    expect(h.get('export-package')?.value).toBe('org.example.api;version="1.0.0",org.example.empty;x-internal:=true');
+    expect(h.has('name')).toBe(false);
   });
 
   it('reads every package name of Export-Package, quotes respected', () => {
@@ -271,6 +349,13 @@ describe('scanRegistrations', () => {
       'osgi-ds OSGI-INF implementation org.example.missing.Gone @bundle/OSGI-INF/components.xml:6',
       'osgi-ds OSGI-INF activate (default) org.example.missing.Gone#activate (optional) @bundle/OSGI-INF/components.xml:5',
       'osgi-ds OSGI-INF deactivate (default) org.example.missing.Gone#deactivate (optional) @bundle/OSGI-INF/components.xml:5',
+      'osgi-ds OSGI-INF implementation org.example.ds.Injected @bundle/OSGI-INF/more.xml:2',
+      'osgi-ds OSGI-INF activate (default) org.example.ds.Injected#activate (optional) @bundle/OSGI-INF/more.xml:2',
+      'osgi-ds OSGI-INF deactivate (default) org.example.ds.Injected#deactivate (optional) @bundle/OSGI-INF/more.xml:2',
+      'osgi-ds OSGI-INF implementation org.example.ds.Nested @bundle/OSGI-INF/more.xml:3',
+      'osgi-ds OSGI-INF activate (default) org.example.ds.Nested#activate (optional) @bundle/OSGI-INF/more.xml:3',
+      'osgi-ds OSGI-INF deactivate (default) org.example.ds.Nested#deactivate (optional) @bundle/OSGI-INF/more.xml:3',
+      'osgi-ds OSGI-INF bind org.example.ds.Nested#bindX @bundle/OSGI-INF/more.xml:3',
       'lifecycle Bundle-Activator org.example.Activator @bundle/META-INF/MANIFEST.MF:3',
       'extension-point plugin.xml org.example.handlers org.example.ext.ExportHandler @bundle/plugin.xml:6',
       'extension-point plugin.xml org.example.handlers org.example.ext.Missing @bundle/plugin.xml:7',
@@ -293,11 +378,14 @@ describe('scanRegistrations', () => {
       { path: 'w/META-INF/web-fragment.xml', text: '<web-fragment><servlet><servlet-name>s</servlet-name><servlet-class>a.S</servlet-class></servlet><servlet><servlet-class> </servlet-class></servlet><listener/></web-fragment>' },
       { path: 'd/OSGI-INF/x.xml', text: '<component name="n"><implementation/></component>' },
       { path: 'm/META-INF/MANIFEST.MF', text: 'Bundle-Activator: \nnot a header\n' },
+      // Header names are case-insensitive.
+      { path: 'l/META-INF/MANIFEST.MF', text: 'BUNDLE-activator: a.Act\n' },
     ]);
     expect(scan.registrations.map(r => `${r.source} ${r.className}${r.method ? ` ${r.method}` : ''}`)).toEqual([
       'fragment.xml p a.B',
       'fragment.xml a.C',
       'web-fragment.xml servlet-class a.S ANY',
+      'Bundle-Activator a.Act',
     ]);
     expect(scan.exportedPackages).toEqual([]);
   });
@@ -320,6 +408,10 @@ describe('buildJavaGraph registrationFiles', () => {
       'osgi-ds declared org.example.ds:GreeterImpl.setLog [OSGI-INF bind]',
       'osgi-ds declared org.example.ds:GreeterImpl.unsetLog [OSGI-INF unbind]',
       'osgi-ds declared org.example.ds:Outer.Inner [OSGI-INF implementation]',
+      'osgi-ds declared org.example.ds:Injected [OSGI-INF implementation]',
+      'osgi-ds declared org.example.ds:Nested [OSGI-INF implementation]',
+      // A bind method inherited from a nested type the file imports.
+      'osgi-ds declared org.example.base:Bases.Handler.bindX [OSGI-INF bind]',
       // The default lifecycle name, present in the class: conventional.
       'osgi-ds conventional org.example.ds:GreeterImpl.activate [OSGI-INF activate (default)]',
     ].sort());
@@ -397,41 +489,74 @@ describe('buildJavaGraph registrationFiles', () => {
   });
 });
 
+/** Dead-code verdicts keyed by qualified name plus signature (`a:B.constructor(int)`), so overloads stay apart. */
+function verdicts(graph: JavaGraph, options: Parameters<typeof deadCode>[1] = {}): Record<string, string> {
+  const sig = new Map(graph.files.flatMap(f => f.decls.map(d => [d.id, d.signature] as const)));
+  return Object.fromEntries(deadCode(graph, options).facts.map(f => [`${f.qualified_name}${sig.get(f.id) ?? ''}`, f.verdict]));
+}
+
 describe('reach from registered types', () => {
-  it('a registered type roots its constructors; its other members stay unreached', () => {
-    const before = Object.fromEntries(deadCode(plain).facts.map(f => [f.qualified_name, f.verdict]));
-    const d = deadCode(g);
-    const v = Object.fromEntries(d.facts.map(f => [f.qualified_name, f.verdict]));
-    expect(before['org.example.ds:GreeterImpl.constructor']).toBe('dead');
-    for (const n of ['org.example.ds:GreeterImpl.constructor', 'org.example.ds:Outer.Inner.constructor', 'org.example:Activator.constructor', 'org.example.ext:ExportHandler.constructor', 'org.example.web:MainServlet.constructor']) {
+  it('a registered class roots the constructor its runtime calls; its other members stay unreached', () => {
+    const before = verdicts(plain);
+    const v = verdicts(g);
+    expect(before['org.example.ds:GreeterImpl.constructor()']).toBe('dead');
+    for (const n of ['org.example.ds:GreeterImpl.constructor()', 'org.example.ds:Outer.Inner.constructor()', 'org.example:Activator.constructor()', 'org.example.ext:ExportHandler.constructor()', 'org.example.web:MainServlet.constructor()', 'org.example.ds:Nested.constructor()']) {
       expect(v[n], n).toBe('live');
     }
-    expect(v['org.example.ds:GreeterImpl.setLog']).toBe('live');
-    expect(v['org.example.ds:BaseHandler.bindEvents']).toBe('live');
-    expect(v['org.example.ds:GreeterImpl.activate']).toBe('live');
-    expect(v['org.example.ds:GreeterImpl.greet']).toBe('dead');
-    expect(v['org.example.ds:BaseHandler.neverCalled']).toBe('dead');
-    // Exported types are roots only when the caller asks for the library's surface.
-    expect(v['org.example.api:PublicApi.constructor']).toBe('dead');
-    const l = Object.fromEntries(deadCode(lib).facts.map(f => [f.qualified_name, f.verdict]));
-    expect(l['org.example.api:PublicApi.constructor']).toBe('live');
+    // The public no-arg constructor only: another public constructor stays unreached.
+    expect(v['org.example:Activator.constructor(int)']).toBe('dead');
+    expect(v['org.example.ds:GreeterImpl.setLog(Object)']).toBe('live');
+    expect(v['org.example.ds:BaseHandler.bindEvents(Object)']).toBe('live');
+    expect(v['org.example.base:Bases.Handler.bindX(Object)']).toBe('live');
+    expect(v['org.example.ds:GreeterImpl.activate()']).toBe('live');
+    expect(v['org.example.ds:GreeterImpl.greet()']).toBe('dead');
+    expect(v['org.example.ds:BaseHandler.neverCalled()']).toBe('dead');
     const path = reach(g, { targets: [id.get('org.example.ds:GreeterImpl.constructor') ?? ''] }).facts[0].strong;
     expect(path?.entry).toMatchObject({ kind: 'osgi-ds', id: id.get('org.example.ds:GreeterImpl') });
     expect(path?.steps.map(s => `${s.via} ${q.get(s.decl)}`)).toEqual(['entry org.example.ds:GreeterImpl', 'contains org.example.ds:GreeterImpl.constructor']);
+    // The entry names what it roots; a class with no declared constructor names none.
+    expect(g.entries.find(e => e.id === id.get('org.example.ds:GreeterImpl'))?.constructors).toEqual([id.get('org.example.ds:GreeterImpl.constructor')]);
+    expect(g.entries.find(e => e.id === id.get('org.example.ext:App'))?.constructors).toBeUndefined();
+  });
+
+  it('with no public no-arg constructor (constructor injection), its public constructors', () => {
+    const v = verdicts(g);
+    expect(v['org.example.ds:Injected.constructor(Object)']).toBe('live');
+    expect(v['org.example.ds:Injected.wire()']).toBe('live');
+    expect(v['org.example.ds:Injected.constructor(int)']).toBe('dead');
+  });
+
+  it('Class.forName loads a class but constructs nothing', () => {
+    for (const graph of [plain, g]) {
+      const v = verdicts(graph);
+      expect(graph.entries.some(e => e.kind === 'reflection' && e.id === id.get('r:R') && e.constructors === undefined)).toBe(true);
+      expect(v['r:R.constructor()']).toBe('dead');
+      expect(v['r:R.constructor(int)']).toBe('dead');
+      expect(v['r:R.helper()']).toBe('dead');
+    }
+  });
+
+  it('exported types root the type only, and only when asked for', () => {
+    expect(verdicts(g)['org.example.api:PublicApi']).toBe('dead');
+    const l = verdicts(lib);
+    expect(l['org.example.api:PublicApi']).toBe('live');
+    expect(lib.entries.find(e => e.kind === 'export')?.constructors).toBeUndefined();
   });
 
   it('a type only loaded (a static call, no entry) runs no constructor, and an unasked kind roots nothing', () => {
-    const v = Object.fromEntries(deadCode(g).facts.map(f => [f.qualified_name, f.verdict]));
-    expect(v['org.example.util:Util.twice']).toBe('live');
-    expect(v['org.example.util:Util.constructor']).toBe('dead');
-    const routesOnly = Object.fromEntries(deadCode(g, { rootKinds: ['route'] }).facts.map(f => [f.qualified_name, f.verdict]));
-    expect(routesOnly['org.example.web:MainServlet.constructor']).toBe('live');
-    expect(routesOnly['org.example.ds:GreeterImpl.constructor']).toBe('dead');
+    const v = verdicts(g);
+    expect(v['org.example.util:Util.twice(int)']).toBe('live');
+    expect(v['org.example.util:Util.constructor()']).toBe('dead');
+    const routesOnly = verdicts(g, { rootKinds: ['route'] });
+    expect(routesOnly['org.example.web:MainServlet.constructor()']).toBe('live');
+    expect(routesOnly['org.example.ds:GreeterImpl.constructor()']).toBe('dead');
   });
 
-  it('applies to service-file classes too', async () => {
-    const svc = await buildJavaGraph(files, { serviceFiles: [{ path: 'bundle/META-INF/services/org.example.ds.Greeter', text: 'org.example.ext.ExportHandler\n' }] });
-    const v = Object.fromEntries(deadCode(svc).facts.map(f => [f.qualified_name, f.verdict]));
-    expect(v['org.example.ext:ExportHandler.constructor']).toBe('live');
+  it('a service-file class is constructed by its loader: the same rule', async () => {
+    const svc = await buildJavaGraph(files, { serviceFiles: [{ path: 'bundle/META-INF/services/org.example.ds.Greeter', text: 'org.example.ext.ExportHandler\norg.example.ds.Injected\n' }] });
+    const v = verdicts(svc);
+    expect(v['org.example.ext:ExportHandler.constructor()']).toBe('live');
+    expect(v['org.example.ds:Injected.constructor(Object)']).toBe('live');
+    expect(v['org.example.ds:Injected.constructor(int)']).toBe('dead');
   });
 });

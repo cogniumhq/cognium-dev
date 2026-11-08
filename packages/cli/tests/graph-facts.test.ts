@@ -2,7 +2,7 @@
  * `deadcode`, `reach` and `entries`: option validation, then the real engine on
  * small fixtures (TypeScript, Python, Go, and a git base for `reach`).
  */
-import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
+import { test, expect, describe, beforeAll, afterAll, spyOn } from 'bun:test';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -382,6 +382,17 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
 describe('Java registering files', () => {
   test('are read by the library\'s rule, skipped directories left out', () => {
     expect(registrationFiles(osgi).map((f) => f.path)).toEqual(['META-INF/MANIFEST.MF', 'OSGI-INF/comp.xml', 'OSGI-INF/gone.xml']);
+  });
+
+  test('a registering file over the size limit is skipped with a warning', () => {
+    const warn = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(registrationFiles(osgi, 80).map((f) => f.path)).toEqual(['META-INF/MANIFEST.MF', 'OSGI-INF/gone.xml']);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('OSGI-INF/comp.xml');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('entries: DS components and the activator, with unresolved names listed', async () => {
