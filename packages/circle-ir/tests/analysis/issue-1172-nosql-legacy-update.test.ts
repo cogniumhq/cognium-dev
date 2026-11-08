@@ -39,4 +39,40 @@ describe('#1172: legacy collection update/remove/findAndModify', () => {
       expect(ir.taint.sinks.filter(s => s.type === 'nosql_injection')).toHaveLength(0);
     });
   }
+
+  // Juice Shop's publisher-correct fix (noSqlReviewsChallenge_3_correct):
+  // a string type reject-guard rules out an operator object in the filter.
+  describe('string type reject-guard (Stage 15h2)', () => {
+    const guarded = (guard: string) => `${guard}
+  db.reviewsCollection.update(
+    { _id: req.body.id },
+    { $set: { message: req.body.message } }
+  )`;
+    it('typeof !== string with a block return drops the sink', async () => {
+      expect(await nosql(guarded(`if (typeof req.body.id !== 'string') {
+    res.status(400).send()
+    return
+  }`))).toHaveLength(0);
+    });
+    it('one-line throw and an || of checks', async () => {
+      expect(await nosql(guarded(`if (!req.body.id || typeof req.body.id !== 'string') throw new Error('bad id')`))).toHaveLength(0);
+    });
+    it('the $ne-only check (a publisher-wrong fix) keeps the sink', async () => {
+      expect(await nosql(guarded(`if (req.body.id['$ne'] !== undefined) {
+    res.status(400).send()
+    return
+  }`))).not.toHaveLength(0);
+    });
+    it('&& does not guard the reference on its own', async () => {
+      expect(await nosql(guarded(`if (typeof req.body.id !== 'string' && req.body.strict) return`))).not.toHaveLength(0);
+    });
+    it('a guard on another field keeps the sink', async () => {
+      expect(await nosql(guarded(`if (typeof req.body.message !== 'string') return`))).not.toHaveLength(0);
+    });
+    it('a guard with no reject keeps the sink', async () => {
+      expect(await nosql(guarded(`if (typeof req.body.id !== 'string') {
+    console.warn('odd id')
+  }`))).not.toHaveLength(0);
+    });
+  });
 });
