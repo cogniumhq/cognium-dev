@@ -132,3 +132,16 @@ the caller in the `a` file (#636). A hit is an on-family sink in the per-file
 flows after the project phase or in `taint_paths`. One TP per case when a hit
 is inside any `Bad*` method; each `Good<x>` method (forwarders included) is an
 FP when one is inside it. `files` counts cases there.
+
+## Stable ids (`bench/stable-ids/`)
+
+A sealed set of 30 consecutive commit pairs from public TypeScript
+repositories, with an expected `stable` / `changed` label for every
+declaration of each earlier commit, and a harness that scores a provider's
+`ids@0.1` ids against them (precision and recall of "stable"). The labelling
+rule, the pins and licences, and the commands are in
+[`stable-ids/README.md`](./stable-ids/README.md).
+
+    node bench/stable-ids/run.mjs verify
+    CORPUS_ROOT=<dir> node bench/stable-ids/run.mjs fetch
+    CORPUS_ROOT=<dir> node bench/stable-ids/run.mjs score

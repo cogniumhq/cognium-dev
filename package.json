@@ -16,7 +16,7 @@
     "dogfood": "npm run dogfood -w packages/cli",
     "release": "bash release.sh",
     "lint": "eslint .",
-    "test:scripts": "node --test 'scripts/*.test.mjs'"
+    "test:scripts": "node --test 'scripts/*.test.mjs' 'bench/stable-ids/*.test.mjs'"
   },
   "author": {
     "name": "Cognium Labs",
@@ -36,6 +36,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.14.0",
+    "typescript": "6.0.3",
     "typescript-eslint": "^8.72.1"
   }
 }
