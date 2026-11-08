@@ -12,8 +12,11 @@ and every label file, and `verify` checks them.
 
 ## Commands
 
-From the repo root, after `npm ci` (the labeller uses the `typescript` dev
-dependency) and, for the default provider, `npm run build:all`:
+From the repo root, after `npm ci` and, for the default provider,
+`npm run build:all`. The labeller uses the root `typescript` dev dependency,
+pinned to 6.0.3, the version that sealed the labels (the workspaces build
+with their own TypeScript); `manifest.json` records it, and
+`verify --relabel` says so if another version re-derives them.
 
     node bench/stable-ids/run.mjs list                  # the pinned pairs
     node bench/stable-ids/run.mjs verify                # digests and label files (no network)
@@ -38,9 +41,12 @@ Each pair is pinned in `manifest.json` by repository URL and the two commit
 SHAs (the later commit and its only parent), with every touched file's git
 blob id on both sides. Only repositories whose root licence file is MIT,
 Apache-2.0 or BSD are admitted; each pair records its SPDX id and the licence
-file's path and blob id at the later commit. No source from these
-repositories is committed here: the label files carry file paths, declaration
-names, signatures and line numbers only.
+file's path and blob id at the later commit. No file from these
+repositories is committed here, and no function body or statement. The label
+files do carry, for each labelled declaration, its file path, name, line
+numbers and signature, and a signature is text from the repository: the
+declaration's type parameters, parameter types and return type, or a field's
+type, as written (about 91 KB of type text across the set).
 
 `fetch` follows the convention of bench's other corpora: everything lands
 under `$CORPUS_ROOT` (here `$CORPUS_ROOT/stable-ids/<pair-id>/{before,after}/`),
@@ -136,7 +142,10 @@ whose comments or whitespace changed, or a `formatting` judgement), `add`,
 
 A provider is an ES module exporting `derive(code, file)`, which returns
 `{ decls: [{ id, body_id, name, kind, start_line, end_line, parent }] }` for
-one file (`parent` is null for the file's own module declaration), and
+one file (`parent` is null for the file's own module declaration; a result
+without a `decls` array, with a declaration lacking a string `id` and
+`body_id` or integer lines, or without a root declaration is a provider
+error), and
 optionally `describe()` and `nodes(code, file, ids)` (node ids grouped by the
 body id they are keyed under). `providers/circle-ir.mjs` wraps
 `deriveStableIds` (and `analyze` + `assignNodeIds` for `--nodes`), loading
@@ -156,10 +165,14 @@ with.
 
 The report prints, with numerators and denominators: the precision and recall
 of stable; how often a changed body keeps its declaration id; how often a
-changed identity gets a new id; the declarations set aside, by reason; the
-declarations the provider has none for (and how many of those sit in files the
-provider reported as only partly parsed); a confusion table; with `--nodes`, how
-many stable declarations kept every node id; and the disagreements.
+changed identity gets a new id, and apart from that how often the provider has
+no declaration for it at all; the declarations set aside, by reason; the
+declarations the provider has none for (and how many of those, and of the
+stable ones, sit in files the provider reported as only partly parsed); a
+confusion table; with `--nodes`, among the correctly stable declarations whose
+body the provider gave node ids for, how many kept every node id (bodies with
+none on either side are counted apart and never as kept); and the
+disagreements.
 
 `providers/reference.mjs` implements the labelling rule itself as ids. It
 scores 100% by construction and checks the harness and the labels, not an

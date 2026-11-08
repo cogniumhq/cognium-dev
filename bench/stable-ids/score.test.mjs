@@ -39,6 +39,7 @@ test('scorePair: true and false stable, misses, judgements, unjoined', () => {
   const { counts, misses } = scorePair(records, { before, after, partial: { before: new Set(['a.ts']), after: new Set() } });
   assert.equal(counts.scored, 5);
   assert.equal(counts.unjoined_partial, 1, 'the unmatched declaration sits in a partly parsed file');
+  assert.equal(counts.unjoined_partial_stable, 1);
   assert.deepEqual([counts.tp, counts.fp, counts.fn, counts.unjoined], [1, 1, 2, 1]);
   assert.deepEqual(counts.judgement, { header: 1 });
   assert.deepEqual(counts.confusion.stable, { stable: 1, body: 0, identity: 1, none: 1 });
@@ -49,6 +50,7 @@ test('scorePair: true and false stable, misses, judgements, unjoined', () => {
   assert.deepEqual([m.precision.num, m.precision.den, m.recall.num, m.recall.den], [1, 2, 1, 3]);
   assert.deepEqual([m.body_keeps_decl.num, m.body_keeps_decl.den], [1, 1]);
   assert.deepEqual([m.identity_new_decl.num, m.identity_new_decl.den], [0, 1]);
+  assert.deepEqual([m.identity_no_decl.num, m.identity_no_decl.den], [0, 1]);
 });
 
 test('scorePair: a stable claim matched to the wrong declaration', () => {
@@ -61,20 +63,36 @@ test('scorePair: a stable claim matched to the wrong declaration', () => {
   assert.equal(misses[0].pred, 'stable (wrong partner)');
 });
 
-test('scorePair: node ids under a stable body', () => {
+test('scorePair: node ids under a stable body, compared only where there are any', () => {
   const records = [
     rec({ name: 'a', line: 1, label: 'stable', after: { file: 'a.ts', line: 1, start: 1, end: 1 } }),
     rec({ name: 'b', line: 2, start: 2, label: 'stable', after: { file: 'a.ts', line: 2, start: 2, end: 2 } }),
+    rec({ name: 'c', line: 3, start: 3, label: 'stable', after: { file: 'a.ts', line: 3, start: 3, end: 3 } }),
   ];
-  const before = map({ 'a.ts': [d('A', 'x', 'a', 1, 1), d('B', 'y', 'b', 2, 2)] });
-  const after = map({ 'a.ts': [d('A', 'x', 'a', 1, 1), d('B', 'y', 'b', 2, 2)] });
+  const before = map({ 'a.ts': [d('A', 'x', 'a', 1, 1), d('B', 'y', 'b', 2, 2), d('C', 'z', 'c', 3, 3)] });
+  const after = map({ 'a.ts': [d('A', 'x', 'a', 1, 1), d('B', 'y', 'b', 2, 2), d('C', 'z', 'c', 3, 3)] });
   const nodes = {
     before: map({ 'a.ts': new Map([['A.x', ['A.x/c0', 'A.x/b0']], ['B.y', ['B.y/b0']]]) }),
     after: map({ 'a.ts': new Map([['A.x', ['A.x/b0', 'A.x/c0']], ['B.y', ['B.y/b1']]]) }),
   };
   const { counts, misses } = scorePair(records, { before, after, nodes });
-  assert.deepEqual(counts.nodes, { checked: 2, kept: 1 });
+  assert.deepEqual(counts.nodes, { checked: 2, kept: 1, without: 1 }, '`c` has no node ids on either side');
   assert.equal(misses[0].note, 'node ids changed');
+  // A provider that gives no node ids at all: nothing is compared, nothing is "kept".
+  const none = scorePair(records, { before, after, nodes: { before: new Map(), after: new Map() } });
+  assert.deepEqual(none.counts.nodes, { checked: 0, kept: 0, without: 3 });
+});
+
+test('metrics: an identity change with no provider declaration is not a new id', () => {
+  const records = [
+    rec({ name: 'gone', line: 1, label: 'changed', change: 'identity', reason: 'removed' }),
+    rec({ name: 'sig', line: 2, start: 2, label: 'changed', change: 'identity', reason: 'signature' }),
+  ];
+  const before = map({ 'a.ts': [d('m', 'x', 'mod', 1, 9, null, 'module'), d('S', 's', 'sig', 2, 2)] });
+  const after = map({ 'a.ts': [d('m', 'x', 'mod', 1, 9, null, 'module')] });
+  const m = metrics(scorePair(records, { before, after }).counts);
+  assert.deepEqual([m.identity_new_decl.num, m.identity_new_decl.den], [1, 2]);
+  assert.deepEqual([m.identity_no_decl.num, m.identity_no_decl.den], [1, 2]);
 });
 
 test('totals, ratios and formatting', () => {

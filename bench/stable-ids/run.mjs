@@ -103,6 +103,17 @@ async function loadProvider(path) {
   return mod;
 }
 
+/** Why a provider's answer for one file cannot be scored, or null when it can. */
+export function checkProviderOutput(ids) {
+  if (!ids || typeof ids !== 'object') return 'the provider returned no result';
+  if (!Array.isArray(ids.decls)) return 'the provider result has no decls array';
+  const bad = ids.decls.find(d => !d || typeof d.id !== 'string' || typeof d.body_id !== 'string'
+    || !Number.isInteger(d.start_line) || !Number.isInteger(d.end_line));
+  if (bad) return 'a declaration lacks a string id and body_id or integer start_line and end_line';
+  if (!ids.decls.some(d => d.parent === null || d.parent === undefined)) return 'no root declaration (a declaration with parent null) for the file';
+  return null;
+}
+
 async function deriveSide(provider, root, pair, side, wantNodes, errors) {
   const decls = new Map();
   const nodes = new Map();
@@ -113,6 +124,12 @@ async function deriveSide(provider, root, pair, side, wantNodes, errors) {
     const code = readPairFile(root, pair, side, path);
     try {
       const ids = await provider.derive(code, path);
+      const problem = checkProviderOutput(ids);
+      if (problem) {
+        errors.push(`${pair.id}: ${side}/${path}: ${problem}`);
+        decls.set(path, []);
+        continue;
+      }
       decls.set(path, ids.decls);
       if (ids.partial) partial.add(path);
       if (wantNodes && typeof provider.nodes === 'function') {
@@ -167,12 +184,17 @@ function printReport(report, show, wantNodes) {
   console.log('');
   console.log(`declarations scored     ${t.scored} (labels: ${t.confusion.stable.stable + t.confusion.stable.body + t.confusion.stable.identity + t.confusion.stable.none} stable, ${Object.values(t.confusion.body).reduce((s, v) => s + v, 0)} body changed, ${Object.values(t.confusion.identity).reduce((s, v) => s + v, 0)} identity changed)`);
   console.log(`set aside (judgement)   ${Object.entries(t.judgement).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
-  console.log(`no provider declaration ${t.unjoined}${t.unjoined_partial ? ` (${t.unjoined_partial} in files the provider parsed only partly)` : ''}`);
+  const unjoinedStable = t.confusion.stable.none;
+  console.log(`no provider declaration ${t.unjoined} (labelled stable ${unjoinedStable}${t.unjoined_partial ? `; in files the provider parsed only partly: ${t.unjoined_partial}, of them stable ${t.unjoined_partial_stable}` : ''})`);
   console.log(`precision of stable     ${formatRatio(m.precision)}`);
   console.log(`recall of stable        ${formatRatio(m.recall)}`);
   console.log(`body change keeps decl  ${formatRatio(m.body_keeps_decl)}`);
   console.log(`identity change, new id ${formatRatio(m.identity_new_decl)}`);
-  if (wantNodes) console.log(`node ids kept (stable)  ${t.nodes.checked === 0 ? 'n/a (provider gives no node ids)' : `${t.nodes.kept}/${t.nodes.checked}`}`);
+  console.log(`identity change, no decl ${formatRatio(m.identity_no_decl)}`);
+  if (wantNodes) {
+    const n = t.nodes;
+    console.log(`node ids kept (stable)  ${n.checked === 0 ? 'n/a (the provider gave no node ids)' : `${n.kept}/${n.checked} correctly stable bodies with node ids`}; ${n.without} without node ids`);
+  }
   console.log('');
   console.log('confusion (rows: label, columns: provider)');
   console.log(`${pad('', 10)}${['stable', 'body', 'identity', 'none'].map(x => lpad(x, 10)).join('')}`);
