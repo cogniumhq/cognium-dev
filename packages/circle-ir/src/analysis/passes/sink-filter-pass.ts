@@ -68,8 +68,7 @@ const JS_XSS_SANITIZERS = [
   /\bencodeURIComponent\s*\(/,
   /\bencodeURI\s*\(/,
   /\bcreateSafeHTML\s*\(/,
-  /\btrustAsHtml\s*\(/,      // Angular
-  /\bbypassSecurityTrust/,   // Angular
+  /\btrustAsHtml\s*\(/,      // Angular — safe cast; bypassSecurityTrust* is an xss sink (#184, #1171)
 ];
 
 // ---------------------------------------------------------------------------

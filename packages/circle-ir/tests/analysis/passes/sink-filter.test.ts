@@ -565,7 +565,7 @@ describe('SinkFilterPass — Stage 6: XSS sanitizer and string literal filtering
     expect(result.sinks).toHaveLength(1);
   });
 
-  it('removes xss sink when Angular bypassSecurityTrust is used', () => {
+  it('keeps xss sink on bypassSecurityTrust line (#1171 — sink must not self-sanitize)', () => {
     const code = 'this.safeHtml = this.sanitizer.bypassSecurityTrustHtml(content);';
     const sink = makeSink(1, 'xss', 'CWE-79');
     const ctx  = makeCtx({
@@ -574,7 +574,7 @@ describe('SinkFilterPass — Stage 6: XSS sanitizer and string literal filtering
       sinks: [sink],
     });
     const result = new SinkFilterPass().run(ctx);
-    expect(result.sinks).toHaveLength(0);
+    expect(result.sinks).toHaveLength(1);
   });
 });
 
