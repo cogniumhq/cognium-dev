@@ -202,6 +202,27 @@ describe('an overload whose parameter types are the arguments\' own', () => {
       '  void load(Rec r) {}',
       '  void reload(Rec r) { load(r); }',
       '  void loose(Sub s) { load(s); }',
+      '  void nul() { load(null); }',
+      '  void lam(java.util.List raw) { raw.forEach(x -> load(x)); }',
+      '  void unr() { load(make()); }',
+      '  void w(ResultSet r) {}',
+      '  void w(Rec... rs) {}',
+      '  void vw(Rec r) { w(r); }',
+      '  void p(Rec a, ResultSet b) {}',
+      '  void p(ResultSet a, Rec b) {}',
+      '  void tie(Rec a, Rec b) { p(a, b); }',
+      '  void arr(Rec[] a) {}',
+      '  void arr(ResultSet[] a) {}',
+      '  void ua(Rec[] xs) { arr(xs); }',
+      '  void gen(Rec r) {}',
+      '  <T extends ResultSet> void gen(T t) {}',
+      '  void ug(Rec r) { gen(r); }',
+      '  void num(Number n) {}',
+      '  void num(Runnable r) {}',
+      '  void un(Number n) { num(n); }',
+      '  void obj(Object o) {}',
+      '  void obj(Runnable r) {}',
+      '  void uo(Object o) { obj(o); }',
       '}',
       'class Sub extends Rec { Sub() { super(null, 0, null); } }',
       '',
@@ -225,6 +246,85 @@ describe('an overload whose parameter types are the arguments\' own', () => {
   it('an argument of a subtype is not its own type: still ambiguous', () => {
     expect(edgesAt(14)).toEqual([]);
     expect(unresolvedAt2(14)).toEqual(['load: overload-ambiguous']);
+  });
+
+  it('stays ambiguous where no argument decides it', () => {
+    const ambiguous = (line: number, name: string) => {
+      expect(r.edges.filter(e => e.site.line === line && e.methodName === name), `line ${line}`).toEqual([]);
+      expect(unresolvedAt2(line).filter(u => u.startsWith(`${name}:`)), `line ${line}`).toEqual([`${name}: overload-ambiguous`]);
+    };
+    ambiguous(15, 'load'); // null fits both
+    ambiguous(16, 'load'); // an untyped lambda parameter
+    ambiguous(17, 'load'); // the result of an unresolved call
+    ambiguous(20, 'w'); // a plain parameter the argument only possibly fits, against varargs
+    ambiguous(23, 'p'); // each overload has the argument's own type at a different position
+  });
+
+  it('picks the own-type overload against one the argument only possibly fits', () => {
+    expect(edgesAt(26)).toEqual(['arr -> app:Rec.arr(Rec[])']);
+    expect(edgesAt(29)).toEqual(['gen -> app:Rec.gen(Rec)']);
+    expect(edgesAt(32)).toEqual(['num -> app:Rec.num(Number)']);
+    expect(edgesAt(35)).toEqual(['obj -> app:Rec.obj(Object)']);
+  });
+});
+
+describe('super(…) resolves its superclass from the class\'s scope', () => {
+  // A member type of an enclosing type hides a same-package or imported type
+  // with the same name; the class's own members are not in scope in its own
+  // `extends` clause.
+  const SCOPE = {
+    'src/app/Node.java': 'package app;\npublic class Node {\n  public Node(int x) {}\n}\n',
+    'src/app/Tree.java': [
+      'package app;',
+      'public class Tree {',
+      '  static class Node { Node(int x) {} }',
+      '  static class Leaf extends Node { Leaf() { super(1); } }',
+      '  static class Box {',
+      '    static class Inner extends Node { Inner() { super(2); } }',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'src/app/Base.java': 'package app;\npublic class Base {\n  public static class Node { public Node(int x) {} }\n}\n',
+    'src/app/Heir.java': [
+      'package app;',
+      'public class Heir extends Base {',
+      '  static class Leaf extends Node { Leaf() { super(4); } }',
+      '}',
+      '',
+    ].join('\n'),
+    'src/app/Self.java': [
+      'package app;',
+      'public class Self extends Node {',
+      '  static class Node { Node(int x) {} }',
+      '  Self() { super(5); }',
+      '}',
+      '',
+    ].join('\n'),
+  };
+  let sg: JavaGraph;
+  let sq: Map<string, string>;
+  beforeAll(async () => {
+    sg = await buildJavaGraph(Object.entries(SCOPE).map(([p, c]) => file(p, c)));
+    sq = new Map(sg.files.flatMap(f => f.decls.map(d => [d.id, `${d.qualified_name}${d.kind === 'method' ? d.signature : ''}`] as const)));
+  });
+  const superAt = (f: string, line: number) =>
+    sg.edges.filter(e => e.site.file === f && e.site.line === line && e.methodName === 'super').map(e => `super -> ${sq.get(e.to)}`);
+
+  it('a member type of the enclosing class, not the same-package type of that name', () => {
+    expect(superAt('src/app/Tree.java', 4)).toEqual(['super -> app:Tree.Node.constructor(int)']);
+  });
+
+  it('a member type of an outer enclosing class, from two levels in', () => {
+    expect(superAt('src/app/Tree.java', 6)).toEqual(['super -> app:Tree.Node.constructor(int)']);
+  });
+
+  it('a member type the enclosing class inherits from a supertype in the tree', () => {
+    expect(superAt('src/app/Heir.java', 3)).toEqual(['super -> app:Base.Node.constructor(int)']);
+  });
+
+  it('not the class\'s own member type: its `extends` clause is outside its body', () => {
+    expect(superAt('src/app/Self.java', 4)).toEqual(['super -> app:Node.constructor(int)']);
   });
 });
 

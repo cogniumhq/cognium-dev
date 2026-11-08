@@ -1975,41 +1975,110 @@ export class NavigationIndex {
   }
 
   /**
-   * The class an explicit constructor invocation constructs, from the name the
-   * extractor gives it (the superclass as written, or the enclosing type's
-   * path). Java's scoping first (an exact name, an import, the same package,
-   * a type nested in this file); then the extractor's qualified name, which
-   * for an implicitly imported `java.lang` type is outside the tree; only
-   * then a simple name unique in the tree (a wildcard import). So
-   * `extends Exception` stays `java.lang.Exception` even when some other
-   * package in the tree declares an `Exception`.
+   * The class an explicit constructor invocation constructs.
+   *
+   * `this(…)`: the enclosing type, which the extractor names exactly.
+   *
+   * `super(…)`: the superclass as written, resolved the way Java resolves a
+   * name in the class's `extends` clause.
+   *
+   * 1. A member type of an enclosing type, innermost first: declared there or
+   *    inherited from a supertype in the tree. The class's own members are
+   *    not in scope in its own `extends` clause. A member type hides an
+   *    imported or same-package type with the same name.
+   * 2. An exact name, an import, the same package.
+   * 3. The extractor's qualified name. For an implicitly imported `java.lang`
+   *    type it is outside the tree, so `extends Exception` stays
+   *    `java.lang.Exception` even when some package in the tree declares an
+   *    `Exception`.
+   * 4. A top-level simple name unique in the tree (a wildcard import).
+   *
+   * A type nested somewhere else in the file is not in scope and is not
+   * tried.
    */
   private invokedConstructorType(call: CallInfo, rec: FileRecord): TypeRecord | undefined {
-    const name = call.receiver_type;
+    const name = call.receiver_type?.replace(/<.*>$/, '').trim();
     if (!name) return undefined;
+    if (call.method_name === 'this') {
+      return call.receiver_type_fqn ? this.typesByFqn.get(call.receiver_type_fqn) : this.resolveTypeRecord(name, rec);
+    }
+    const member = this.memberTypeInScope(name, call.in_type, rec);
+    if (member) return member.type;
     const scoped = this.resolveTypeName(name, rec, false);
     if (scoped) return this.typesByFqn.get(scoped);
     if (call.receiver_type_fqn) return this.typesByFqn.get(call.receiver_type_fqn);
-    return this.resolveTypeRecord(name, rec);
+    const byName = (this.typesBySimpleName.get(name) ?? []).filter(t => !this.isNestedFqn(t.fqn));
+    return byName.length === 1 ? byName[0] : undefined;
   }
 
-  /** `anywhere`: fall back to a simple name declared once in the whole tree. */
+  /**
+   * `name` (`Node`, or `Node.Leaf`) as a member type in scope inside the type
+   * at nesting path `inType` (`Tree.Leaf`) of this file. The types enclosing
+   * it are searched innermost first, the type itself excluded. Each is
+   * searched with its supertypes in the tree, so an inherited member type
+   * counts. Present when the first part of `name` is such a member;
+   * `type` is then the declaration, or undefined when the rest of `name` is
+   * not in the tree. Absent when no enclosing type has that member.
+   */
+  private memberTypeInScope(name: string, inType: string | null | undefined, rec: FileRecord): { type: TypeRecord | undefined } | undefined {
+    if (!inType) return undefined;
+    const dot = name.indexOf('.');
+    const head = dot < 0 ? name : name.slice(0, dot);
+    const rest = dot < 0 ? '' : name.slice(dot);
+    const path = inType.split('.');
+    for (let k = path.length - 1; k >= 1; k--) {
+      const enclosing = [rec.pkg, ...path.slice(0, k)].filter(Boolean).join('.');
+      const owner = this.memberTypeOwner(enclosing, head);
+      if (owner) return { type: this.typesByFqn.get(`${owner}.${head}${rest}`) };
+    }
+    return undefined;
+  }
+
+  /** `fqn`, or the nearest of its supertypes in the tree, that has a member type `name`. */
+  private memberTypeOwner(fqn: string, name: string): string | undefined {
+    const seen = new Set<string>();
+    const queue = [fqn];
+    while (queue.length > 0) {
+      const f = queue.shift()!;
+      if (seen.has(f)) continue;
+      seen.add(f);
+      if (this.typesByFqn.has(`${f}.${name}`)) return f;
+      const t = this.typesByFqn.get(f);
+      const frec = t ? this.files.get(t.file) : undefined;
+      for (const sup of t?.superNames ?? []) {
+        const supFqn = frec ? this.resolveTypeName(sup, frec) : undefined;
+        if (supFqn) queue.push(supFqn);
+      }
+    }
+    return undefined;
+  }
+
+  /** A type declared inside another type in the tree. */
+  private isNestedFqn(fqn: string): boolean {
+    return this.typesByFqn.has(stripLast(fqn));
+  }
+
+  /**
+   * `anywhere`: also a type nested in a type of this file, then a simple name
+   * declared once in the whole tree. Off, only an exact name, an import and
+   * the same package.
+   */
   private resolveTypeName(name: string, rec: FileRecord, anywhere = true): string | undefined {
     const bare = name.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
     if (!bare) return undefined;
     if (this.typesByFqn.has(bare)) return bare;
     const imported = rec.imports.get(bare);
     if (imported && this.typesByFqn.has(imported)) return imported;
-    // Same package, including a nested type of a type in this file.
+    // Same package (a qualified `Outer.Inner` of the package included).
     const samePkg = rec.pkg ? `${rec.pkg}.${bare}` : bare;
     if (this.typesByFqn.has(samePkg)) return samePkg;
+    if (!anywhere) return undefined;
     for (const t of rec.types) {
       const nested = `${t.fqn}.${bare}`;
       if (this.typesByFqn.has(nested)) return nested;
     }
     // A unique simple name anywhere in the tree. Ambiguity resolves to nothing
     // rather than to a guess.
-    if (!anywhere) return undefined;
     const byName = this.typesBySimpleName.get(bare);
     if (byName && byName.length === 1) return byName[0].fqn;
     return undefined;
