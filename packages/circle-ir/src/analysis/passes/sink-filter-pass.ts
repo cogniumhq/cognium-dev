@@ -69,7 +69,9 @@ const JS_XSS_SANITIZERS = [
   /\bencodeURI\s*\(/,
   /\bcreateSafeHTML\s*\(/,
   /\btrustAsHtml\s*\(/,      // Angular
-  /\bbypassSecurityTrust/,   // Angular
+  // Not `bypassSecurityTrust*` (#1171): it switches Angular's sanitizer off and is
+  // registered as the xss sink itself (config-loader, #184), so listing it here
+  // filtered every such sink out on its own line.
 ];
 
 // ---------------------------------------------------------------------------

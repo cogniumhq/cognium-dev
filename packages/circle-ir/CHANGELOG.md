@@ -732,6 +732,7 @@ trustbound each gain true positives from the switch fix. On Juliet Java 1.3
 ## [Unreleased]
 
 ### Fixed
+- **JS/TS: Angular `DomSanitizer.bypassSecurityTrust*` fires as an `xss` sink again (#1171).** It is registered as the sink (#184), but it was also on the JS XSS sanitizer list, so sink-filter Stage 7 dropped every such sink on its own line. It is off the sanitizer list now. Real sanitizers on the line (DOMPurify, `escapeHtml`, …) still suppress, and a literal argument is still not a flow.
 
 - **#541: the serde data formats that #484 silently uncovered are registered
   again.** 4.9.28 removed the classless `from_str` / `from_slice`
