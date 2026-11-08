@@ -18,7 +18,9 @@ import {
 import { childText, parseXml, xmlElements } from '../../src/navigation/xml-scan.js';
 import { deadCode, reach } from '../../src/graph-facts/index.js';
 import { javaGraphFactSet } from '../../src/facts/java-facts.js';
+import { javaGraphFact2Set } from '../../src/facts/facts2.js';
 import { FACTS_RELATIONS } from '../../src/facts/schema.js';
+import { FACTS2_RELATIONS } from '../../src/facts/schema2.js';
 import { keyCollisions, tableRows } from '../../src/facts/table.js';
 import * as publicApi from '../../src/index.js';
 
@@ -378,6 +380,20 @@ describe('buildJavaGraph registrationFiles', () => {
     expect(set.duplicatesDropped.entries).toBe(1);
     expect(publicApi.registrationFileKind).toBe(registrationFileKind);
     expect(publicApi.scanRegistrations).toBe(scanRegistrations);
+  });
+
+  it('writes the same rows into facts@2 entries; names in registering files are not registration rows', () => {
+    const inputs = files.map(f => ({ ...f, imports: [] }));
+    const v1 = tableRows(FACTS_RELATIONS.entries, javaGraphFactSet(g, inputs).relations.entries);
+    const set = javaGraphFact2Set(g, inputs);
+    const v2 = tableRows(FACTS2_RELATIONS.entries, set.relations.entries);
+    expect(v2).toEqual(v1);
+    expect(keyCollisions(FACTS2_RELATIONS.entries, set.relations.entries)).toBe(0);
+    // Every unresolved name here sits in a manifest or descriptor, so none keys a registration row.
+    expect(g.unresolvedRegistrations.length).toBeGreaterThan(0);
+    expect(tableRows(FACTS2_RELATIONS.registration, set.relations.registration)).toEqual(
+      tableRows(FACTS2_RELATIONS.registration, javaGraphFact2Set(plain, inputs).relations.registration),
+    );
   });
 });
 
