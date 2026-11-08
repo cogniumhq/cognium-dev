@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`deadcode`, `reach`, `entries` and `depcalls` read Java registering files** and pass them to circle-ir: OSGi DS `OSGI-INF/*.xml`, `META-INF/MANIFEST.MF`, `plugin.xml` / `fragment.xml` and `web.xml` / `web-fragment.xml`, chosen by circle-ir's `registrationFileKind` (skipped directories such as `target/` are not read). DS components, bundle activators, extension classes and servlets, filters and listeners become entries, so their classes are no longer reported unreached. `--root-kinds` takes the new kinds `osgi-ds` and `extension-point`.
+- **`deadcode`, `reach`, `entries` and `depcalls` read Java registering files** and pass them to circle-ir: OSGi DS `OSGI-INF/*.xml`, `META-INF/MANIFEST.MF`, `plugin.xml` / `fragment.xml` and `web.xml` / `web-fragment.xml`, chosen by circle-ir's `registrationFileKind` (skipped directories such as `target/` are not read; a registering file over 32 MB is skipped with a warning). DS components, bundle activators, extension classes and servlets, filters and listeners become entries, so their classes are no longer reported unreached. `--root-kinds` takes the new kinds `osgi-ds` and `extension-point`.
 - **`--exported-packages`** (`deadcode`, `reach`, `entries`; Java only, off by default): the public top-level types of the `Export-Package` packages are `export` entries, for analysing a library's surface.
 
 ### Changes

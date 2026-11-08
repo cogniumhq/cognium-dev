@@ -7,8 +7,11 @@
  * instructions, `DOCTYPE` declarations (with an internal subset) and CDATA
  * sections are understood; the five predefined entities and character
  * references are decoded. Namespaces are not resolved: `name` is the local
- * part of a tag (`scr:component` → `component`). It never throws: malformed
- * input yields whatever was read up to the point it stops making sense.
+ * part of a tag (`scr:component` → `component`). It never throws and is
+ * linear in the input: malformed input yields whatever was read up to the
+ * point it stops making sense, and nesting past `XML_MAX_DEPTH` stops it.
+ * Tolerated beyond XML: unquoted attribute values, `/ >`, and junk inside a
+ * tag (the tag closes at the next `>`).
  */
 
 export interface XmlElement {
@@ -45,8 +48,16 @@ function localName(qname: string): string {
 
 const NAME = /[A-Za-z_:][\w.:-]*/y;
 const SPACE = /\s*/y;
+// An unquoted value runs to a space or `>`; a `/` right before `>` closes the tag instead.
+const UNQUOTED = /(?:[^\s>"'=<`/]|\/(?!\s*>))+/y;
 
-/** The top-level elements of `text` (normally one, the document element). */
+/**
+ * The deepest element kept. Registering files nest a handful of levels; past
+ * this the input is not one, and reading stops with what was built so far.
+ */
+export const XML_MAX_DEPTH = 256;
+
+/** The top-level elements of `text` (normally one, the document element). Linear in the input. */
 export function parseXml(text: string): XmlElement[] {
   const lineStarts = [0];
   for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lineStarts.push(i + 1);
@@ -62,6 +73,15 @@ export function parseXml(text: string): XmlElement[] {
 
   const top: XmlElement[] = [];
   const stack: XmlElement[] = [];
+  // How many elements of each name are open: an end tag naming none is skipped without a scan.
+  const open = new Map<string, number>();
+  const popTo = (k: number): void => {
+    for (let x = stack.length - 1; x >= k; x--) {
+      const name = stack[x].name;
+      open.set(name, (open.get(name) ?? 1) - 1);
+    }
+    stack.length = k;
+  };
   const addText = (s: string): void => {
     if (stack.length > 0) stack[stack.length - 1].text += s;
   };
@@ -88,11 +108,24 @@ export function parseXml(text: string): XmlElement[] {
       if (end < 0) break;
       i = end + 2;
     } else if (text.startsWith('<!', lt)) {
-      // DOCTYPE and other declarations; an internal subset `[ … ]` may hold `>`.
+      // DOCTYPE and other declarations. An internal subset `[ … ]` may hold `>`, quoted
+      // literals, comments and processing instructions; a quote inside a comment is text.
       let j = lt + 2;
       let depth = 0;
       while (j < n) {
         const c = text[j];
+        if (c === '<' && text.startsWith('<!--', j)) {
+          const end = text.indexOf('-->', j + 4);
+          if (end < 0) { j = n; break; }
+          j = end + 3;
+          continue;
+        }
+        if (c === '<' && text.startsWith('<?', j)) {
+          const end = text.indexOf('?>', j + 2);
+          if (end < 0) { j = n; break; }
+          j = end + 2;
+          continue;
+        }
         if (c === '[') depth++;
         else if (c === ']') depth--;
         else if (c === '>' && depth <= 0) break;
@@ -110,10 +143,12 @@ export function parseXml(text: string): XmlElement[] {
       if (close < 0) break;
       const name = localName(text.slice(lt + 2, close).trim());
       // Pop to the matching element; an end tag that matches nothing open is ignored.
-      for (let k = stack.length - 1; k >= 0; k--) {
-        if (stack[k].name === name) {
-          stack.length = k;
-          break;
+      if ((open.get(name) ?? 0) > 0) {
+        for (let k = stack.length - 1; k >= 0; k--) {
+          if (stack[k].name === name) {
+            popTo(k);
+            break;
+          }
         }
       }
       i = close + 1;
@@ -135,11 +170,24 @@ export function parseXml(text: string): XmlElement[] {
         SPACE.lastIndex = j;
         SPACE.exec(text);
         j = SPACE.lastIndex;
-        if (text.startsWith('/>', j)) { selfClosing = true; j += 2; ok = true; break; }
+        if (text[j] === '/') {
+          // `/>`, also written `/ >`
+          SPACE.lastIndex = j + 1;
+          SPACE.exec(text);
+          if (text[SPACE.lastIndex] === '>') { selfClosing = true; j = SPACE.lastIndex + 1; ok = true; break; }
+        }
         if (text[j] === '>') { j += 1; ok = true; break; }
         NAME.lastIndex = j;
         const a = NAME.exec(text);
-        if (!a) break;
+        if (!a) {
+          // Junk in the tag: close it at the next `>` with the attributes read so far.
+          const close = text.indexOf('>', j);
+          if (close < 0) break;
+          selfClosing = text[close - 1] === '/';
+          j = close + 1;
+          ok = true;
+          break;
+        }
         j = NAME.lastIndex;
         SPACE.lastIndex = j;
         SPACE.exec(text);
@@ -149,16 +197,27 @@ export function parseXml(text: string): XmlElement[] {
         SPACE.exec(text);
         j = SPACE.lastIndex;
         const q = text[j];
-        if (q !== '"' && q !== "'") break;
+        if (q !== '"' && q !== "'") {
+          // An unquoted value (not XML, but written): up to the next space or `>`.
+          UNQUOTED.lastIndex = j;
+          const u = UNQUOTED.exec(text);
+          attrs.set(a[0], u ? decode(u[0]) : '');
+          if (u) j = UNQUOTED.lastIndex;
+          continue;
+        }
         const end = text.indexOf(q, j + 1);
         if (end < 0) break;
         attrs.set(a[0], decode(text.slice(j + 1, end)));
         j = end + 1;
       }
       if (!ok) break;
+      if (!selfClosing && stack.length >= XML_MAX_DEPTH) break;
       if (stack.length > 0) stack[stack.length - 1].children.push(el);
       else top.push(el);
-      if (!selfClosing) stack.push(el);
+      if (!selfClosing) {
+        stack.push(el);
+        open.set(el.name, (open.get(el.name) ?? 0) + 1);
+      }
       i = j;
     }
   }

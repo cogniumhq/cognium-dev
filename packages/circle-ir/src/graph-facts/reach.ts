@@ -52,7 +52,8 @@ export interface ReachInput {
    */
   loads?: readonly { from: string; to: string; site?: ReachSite }[];
   unresolved: readonly { from: string; methodName: string; site: ReachSite; reason: UnresolvedReason }[];
-  entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number }[];
+  /** `constructors`: run with the entry's type when its runtime instantiates it (Java); rooted with it. */
+  entries: readonly { id: string; kind: EntryKind; certainty: EntryCertainty; method?: string; path?: string; file: string; line: number; constructors?: readonly string[] }[];
   /**
    * Registrations that could load any declaration. Java (#1092): `from` is the body that
    * holds the site (counted only when reached); `boundTypes` the in-tree types the loaded
@@ -346,31 +347,18 @@ export function couldReach(input: ReachInput, reached: ReadonlySet<string>, d: S
 }
 
 /**
- * Walk roots for entries. An entry on a Java type also roots the type's
- * declared constructors, one `contains` step from it: a registered class is
- * instantiated by whatever registered it (a type the graph only loads, with
- * no entry, still runs no constructor). `rootIndex` maps each walk root back
- * to its entry.
+ * Walk roots for entries. An entry's `constructors` (Java: what the runtime
+ * that instantiates a registered class runs) are rooted one `contains` step
+ * from it. `rootIndex` maps each walk root back to its entry.
  */
-function entryRoots(g: ReachGraph, entries: readonly ReachInput['entries'][number][]): { roots: WalkRoot[]; rootIndex: (i: number) => number } {
-  const ctors = new Map<string, string[]>();
-  for (const f of g.input.files) {
-    if (f.language !== 'java') continue;
-    for (const d of f.decls) {
-      if (d.kind !== 'method' || d.name !== 'constructor' || d.parent === null) continue;
-      const list = ctors.get(d.parent) ?? [];
-      list.push(d.id);
-      ctors.set(d.parent, list);
-    }
-  }
+export function entryRoots(entries: readonly ReachInput['entries'][number][]): { roots: WalkRoot[]; rootIndex: (i: number) => number } {
   const roots: WalkRoot[] = [];
   const index: number[] = [];
   entries.forEach((e, i) => {
     const weak = e.certainty === 'inferred';
     roots.push({ id: e.id, weak });
     index.push(i);
-    if (g.decls.get(e.id)?.decl.kind !== 'type') return;
-    for (const c of ctors.get(e.id) ?? []) {
+    for (const c of e.constructors ?? []) {
       roots.push({ id: c, weak, from: e.id });
       index.push(i);
     }
@@ -383,7 +371,7 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
   const max = options.maxUnresolved ?? 5;
   const g = new ReachGraph(input);
   const roots = input.entries.filter(e => rootKinds.includes(e.kind));
-  const seeds = entryRoots(g, roots);
+  const seeds = entryRoots(roots);
   const visits = walkFrom(g, seeds.roots, seeds.rootIndex);
   const reached = reachedIds(visits);
   const wanted = options.targets ? new Set(options.targets) : null;

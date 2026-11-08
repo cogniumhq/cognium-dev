@@ -151,7 +151,11 @@ interface Header {
   line: number;
 }
 
-/** Main-section headers; a line starting with one space continues the previous header. */
+/**
+ * Main-section headers, keyed by lower-cased name (header names are
+ * case-insensitive in a JAR manifest); a line starting with one space
+ * continues the previous header.
+ */
 export function manifestHeaders(text: string): Map<string, Header> {
   const heads = new Map<string, Header>();
   let cur: string | null = null;
@@ -168,7 +172,7 @@ export function manifestHeaders(text: string): Map<string, Header> {
     }
     const colon = line.indexOf(':');
     if (colon <= 0) { cur = null; continue; }
-    cur = line.slice(0, colon).trim();
+    cur = line.slice(0, colon).trim().toLowerCase();
     heads.set(cur, { value: line.slice(colon + 1).replace(/^ /, ''), line: i + 1 });
   }
   return heads;
@@ -204,12 +208,12 @@ export function exportedPackageNames(value: string): string[] {
 
 function manifest(f: RegistrationFile, out: RegistrationScan): void {
   const h = manifestHeaders(f.text);
-  const activator = h.get('Bundle-Activator');
+  const activator = h.get('bundle-activator');
   const cls = activator?.value.trim();
   if (activator && cls) {
     out.registrations.push({ kind: 'lifecycle', source: 'Bundle-Activator', certainty: 'declared', className: cls, framework: 'osgi', file: f.path, line: activator.line, col: 0 });
   }
-  const exp = h.get('Export-Package');
+  const exp = h.get('export-package');
   if (exp) for (const name of exportedPackageNames(exp.value)) out.exportedPackages.push({ name, file: f.path, line: exp.line });
 }
 
@@ -222,6 +226,8 @@ function pluginExtensions(f: RegistrationFile, out: Registration[]): void {
     for (const ext of root.children) {
       if (ext.name !== 'extension') continue;
       const point = ext.attrs.get('point')?.trim() ?? '';
+      // Only `class` attributes name an entry. Other class-valued attributes some points
+      // define (`contributorClass`, `defaultHandler`, `launcher` …) are not read.
       for (const el of xmlElements([ext])) {
         const raw = el.attrs.get('class');
         if (raw === undefined) continue;

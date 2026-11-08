@@ -236,8 +236,17 @@ const EXTENSIONS: Record<GraphLanguage, RegExp> = {
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-/** Repository-relative paths (forward slashes) of the tree's files, in path order. */
-export function walk(root: string, accept: (rel: string) => boolean, limit = Infinity): string[] {
+/**
+ * Repository-relative paths (forward slashes) of the tree's files, in path
+ * order. Files over `maxBytes` are left out (`tooLarge` hears of each one).
+ */
+export function walk(
+  root: string,
+  accept: (rel: string) => boolean,
+  limit = Infinity,
+  maxBytes = MAX_FILE_BYTES,
+  tooLarge?: (rel: string, bytes: number) => void,
+): string[] {
   const skipped = new Set(SKIPPED_DIRECTORIES);
   const out: string[] = [];
   const visit = (dir: string): void => {
@@ -262,7 +271,9 @@ export function walk(root: string, accept: (rel: string) => boolean, limit = Inf
       if (st.isDirectory()) visit(abs);
       else if (st.isFile()) {
         const rel = relative(root, abs).split(sep).join('/');
-        if (accept(rel) && st.size <= MAX_FILE_BYTES) out.push(rel);
+        if (!accept(rel)) continue;
+        if (st.size <= maxBytes) out.push(rel);
+        else tooLarge?.(rel, st.size);
       }
     }
   };
@@ -321,13 +332,19 @@ function serviceFiles(root: string): { path: string; text: string }[] {
     .map((path) => ({ path, text: readFileSync(join(root, path), 'utf-8') }));
 }
 
+/** Registering files can be large (a generated `plugin.xml`); past this one is skipped with a warning. */
+export const MAX_REGISTRATION_FILE_BYTES = 32 * 1024 * 1024;
+
 /**
  * The registering files circle-ir reads Java entries from (OSGi DS
  * `OSGI-INF/*.xml`, `META-INF/MANIFEST.MF`, `plugin.xml`, `web.xml`, …),
  * chosen by the library's own rule; it reads no files itself.
  */
-export function registrationFiles(root: string): RegistrationFile[] {
-  return walk(root, (rel) => registrationFileKind(rel) !== null)
+export function registrationFiles(root: string, maxBytes = MAX_REGISTRATION_FILE_BYTES): RegistrationFile[] {
+  const skip = (rel: string, bytes: number): void => {
+    console.error(`Warning: ${rel} is ${bytes} bytes, over the ${maxBytes}-byte limit for a registering file; not read`);
+  };
+  return walk(root, (rel) => registrationFileKind(rel) !== null, Infinity, maxBytes, skip)
     .map((path) => ({ path, text: readFileSync(join(root, path), 'utf-8') }));
 }
 

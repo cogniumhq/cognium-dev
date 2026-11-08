@@ -243,6 +243,8 @@ class JavaGraphBuilder {
   private readonly superclassOf = new Map<string, { written: string; ctx: FileCtx }>();
   /** Public top-level types by package (`Export-Package`). */
   private readonly publicTypesByPkg = new Map<string, StableDecl[]>();
+  /** Declared constructors with a `public` modifier. */
+  private readonly publicCtors = new Set<string>();
   private childrenByParent: Map<string, StableDecl[]> | null = null;
 
   constructor(private readonly files: FileCtx[], private readonly tables: JavaEntryTables) {
@@ -321,6 +323,12 @@ class JavaGraphBuilder {
       return pkg === null ? ctx.imports.wildcards.some(w => row.packages.includes(w)) : row.packages.includes(pkg);
     }));
     const body = node.childForFieldName('body');
+    for (const c of body ? namedChildren(body) : []) {
+      if (c.type !== 'constructor_declaration') continue;
+      if (!namedChildren(c).find(x => x.type === 'modifiers')?.children.some(x => x.type === 'public')) continue;
+      const d = declAt(ctx, c, 'method');
+      if (d) this.publicCtors.add(d.id);
+    }
     const methodNodes = body ? namedChildren(body).filter(m => m.type === 'method_declaration' || m.type === 'annotation_type_element_declaration') : [];
     for (const row of servlets) {
       const ann = classAnns.find(a => a.name === row.pathAnnotation);
@@ -471,9 +479,24 @@ class JavaGraphBuilder {
     this.unresolvedRegistrations.push(reg);
   }
 
-  reflect(fqn: string, file: string, evidence: string): void {
+  /** `instantiated`: the loader also constructs the class (`ServiceLoader`), not only loads it (`Class.forName`). */
+  reflect(fqn: string, file: string, evidence: string, instantiated = false): void {
     const t = this.typeByName(fqn);
-    if (t) this.entry(t, 'reflection', 'declared', file, evidence);
+    if (!t) return;
+    const constructors = instantiated ? this.instantiationConstructors(t) : [];
+    this.entry(t, 'reflection', 'declared', file, evidence, constructors.length > 0 ? { constructors } : {});
+  }
+
+  /**
+   * The constructors a runtime that instantiates the class by reflection runs:
+   * its public no-arg constructor; when it declares none, its public
+   * constructors (constructor injection). Empty when it declares no
+   * constructor at all (the implicit one has no declaration).
+   */
+  private instantiationConstructors(type: StableDecl): string[] {
+    const pub = this.childrenOf(type.id).filter(d => d.kind === 'method' && d.name === 'constructor' && this.publicCtors.has(d.id));
+    const noArg = pub.filter(d => d.signature === '()');
+    return (noArg.length > 0 ? noArg : pub).map(d => d.id);
   }
 
   /** The tree's type for a binary (`a.B$C`) or canonical (`a.B.C`) name. */
@@ -511,7 +534,8 @@ class JavaGraphBuilder {
     const pkg = ctx.imports.pkg || '<default>';
     const first = written.split('.')[0];
     const imported = ctx.imports.explicit.get(first);
-    if (imported) return this.typesByQname.get(`${imported}:${written}`);
+    // `import p.Outer;` + `extends Outer.Inner`, or `import p.Outer.Inner;` + `extends Inner`.
+    if (imported) return this.typeByName(`${imported}.${written}`);
     // A type nested in an enclosing type or the package, nearest first.
     const path = type.qualified_name.slice(type.qualified_name.indexOf(':') + 1).split('.');
     for (let i = path.length - 1; i >= 0; i--) {
@@ -562,6 +586,11 @@ class JavaGraphBuilder {
       if (r.method) extra.method = r.method;
       if (r.path !== undefined) extra.path = r.path;
       if (r.surface) extra.surface = r.surface;
+      // A class a registering file names is instantiated by its runtime: the entry carries the constructors that runs.
+      if (!r.member && type) {
+        const constructors = this.instantiationConstructors(type);
+        if (constructors.length > 0) extra.constructors = constructors;
+      }
       for (const d of targets) this.entries.push({ id: d.id, kind: r.kind, certainty: r.certainty, file: r.file, line: r.line, evidence: r.source, ...extra });
     }
     if (!exportedPackages) return;
@@ -601,7 +630,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     for (const s of options.serviceFiles ?? []) {
       for (const line of s.text.split('\n')) {
         const fqn = line.replace(/#.*$/, '').trim();
-        if (fqn) b.reflect(fqn, s.path, 'META-INF/services');
+        if (fqn) b.reflect(fqn, s.path, 'META-INF/services', true);
       }
     }
     for (const m of options.mainFiles ?? []) {
@@ -686,13 +715,18 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     const cmp = (a: string, c: string): number => (a < c ? -1 : a > c ? 1 : 0);
     const bySite = (x: { site: CallEdgeSite }, y: { site: CallEdgeSite }): number =>
       cmp(x.site.file, y.site.file) || x.site.line - y.site.line || x.site.col - y.site.col;
-    const seen = new Set<string>();
+    const seen = new Map<string, TsEntry>();
     const entries = [...b.entries]
       .sort((x, y) => cmp(x.file, y.file) || x.line - y.line || cmp(x.id, y.id) || cmp(x.kind, y.kind) || cmp(x.path ?? '', y.path ?? '') || cmp(x.method ?? '', y.method ?? ''))
       .filter(e => {
         const k = `${e.id}|${e.kind}|${e.method ?? ''}|${e.path ?? ''}`;
-        if (seen.has(k)) return false;
-        seen.add(k);
+        const kept = seen.get(k);
+        if (kept) {
+          // A duplicate that instantiates the class (a service file) keeps its constructors on the entry kept.
+          if (e.constructors && !kept.constructors) kept.constructors = e.constructors;
+          return false;
+        }
+        seen.set(k, e);
         return true;
       });
     const graph: JavaGraph = {

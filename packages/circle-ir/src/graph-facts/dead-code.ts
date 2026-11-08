@@ -17,7 +17,7 @@
  */
 
 import type { EntryKind } from '../navigation/ts-entry-tables.js';
-import { ALL_ENTRY_KINDS, ReachGraph, reach, reachedIds, walkFrom, type PartialFile, type ReachFact, type ReachInput } from './reach.js';
+import { ALL_ENTRY_KINDS, ReachGraph, entryRoots, reach, reachedIds, walkFrom, type PartialFile, type ReachFact, type ReachInput } from './reach.js';
 
 export const DEAD_CODE_SCHEME = 'dead-code@0.1' as const;
 
@@ -62,7 +62,8 @@ export function deadCode(input: ReachInput & { typeOnly?: readonly string[] }, o
   // Test reach: every path class counts — a test that reaches it only through an inferred call still exercises it.
   const g = new ReachGraph(input);
   const testRoots = input.entries.filter(e => e.kind === 'test');
-  const testVisits = walkFrom(g, testRoots.map(e => ({ id: e.id, weak: e.certainty === 'inferred' })));
+  const testSeeds = entryRoots(testRoots);
+  const testVisits = walkFrom(g, testSeeds.roots, testSeeds.rootIndex);
   const byTest = reachedIds(testVisits);
   const firstTest = (id: string): string | undefined => {
     const v = testVisits.get(`0${id}`) ?? testVisits.get(`1${id}`);

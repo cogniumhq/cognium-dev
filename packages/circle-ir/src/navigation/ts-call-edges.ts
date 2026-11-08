@@ -97,6 +97,12 @@ export interface TsEntry {
   file: string;
   line: number;
   evidence: string;
+  /**
+   * Java: the constructors the runtime that registered the class runs when it
+   * instantiates it (a registering file's class, a `META-INF/services` class;
+   * not `Class.forName`, which only loads). Reach roots them with the type.
+   */
+  constructors?: string[];
 }
 
 /** A registration the recognizers saw but could not tie to a declaration. */
