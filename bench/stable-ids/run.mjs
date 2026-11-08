@@ -106,6 +106,7 @@ async function loadProvider(path) {
 async function deriveSide(provider, root, pair, side, wantNodes, errors) {
   const decls = new Map();
   const nodes = new Map();
+  const partial = new Set();
   for (const f of pair.files) {
     const path = f[side];
     if (!path) continue;
@@ -113,6 +114,7 @@ async function deriveSide(provider, root, pair, side, wantNodes, errors) {
     try {
       const ids = await provider.derive(code, path);
       decls.set(path, ids.decls);
+      if (ids.partial) partial.add(path);
       if (wantNodes && typeof provider.nodes === 'function') {
         const n = await provider.nodes(code, path, ids);
         if (n) nodes.set(path, n);
@@ -122,7 +124,7 @@ async function deriveSide(provider, root, pair, side, wantNodes, errors) {
       decls.set(path, []);
     }
   }
-  return { decls, nodes };
+  return { decls, nodes, partial };
 }
 
 /** Score every selected pair; returns the report object (also what --json writes). */
@@ -139,11 +141,12 @@ export async function scoreSet({ dir = HERE, root, provider, pairs = null, nodes
     const records = readLabels(dir, p);
     const b = await deriveSide(provider, root, p, 'before', nodes, errors);
     const a = await deriveSide(provider, root, p, 'after', nodes, errors);
-    const engine = { before: b.decls, after: a.decls };
+    const engine = { before: b.decls, after: a.decls, partial: { before: b.partial, after: a.partial } };
     if (nodes) engine.nodes = { before: b.nodes, after: a.nodes };
     const { counts, misses } = scorePair(records, engine);
     addCounts(total, counts);
-    rows.push({ id: p.id, counts, metrics: metrics(counts), misses });
+    const partialFiles = [...[...b.partial].map(f => `before/${f}`), ...[...a.partial].map(f => `after/${f}`)];
+    rows.push({ id: p.id, counts, metrics: metrics(counts), provider_partial: partialFiles, misses });
   }
   return { set: manifest.set, digest: manifest.digest, label_rule: manifest.label_rule, provider: desc, totals: total, metrics: metrics(total), pairs: rows, provider_errors: errors };
 }
@@ -164,7 +167,7 @@ function printReport(report, show, wantNodes) {
   console.log('');
   console.log(`declarations scored     ${t.scored} (labels: ${t.confusion.stable.stable + t.confusion.stable.body + t.confusion.stable.identity + t.confusion.stable.none} stable, ${Object.values(t.confusion.body).reduce((s, v) => s + v, 0)} body changed, ${Object.values(t.confusion.identity).reduce((s, v) => s + v, 0)} identity changed)`);
   console.log(`set aside (judgement)   ${Object.entries(t.judgement).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
-  console.log(`no provider declaration ${t.unjoined}`);
+  console.log(`no provider declaration ${t.unjoined}${t.unjoined_partial ? ` (${t.unjoined_partial} in files the provider parsed only partly)` : ''}`);
   console.log(`precision of stable     ${formatRatio(m.precision)}`);
   console.log(`recall of stable        ${formatRatio(m.recall)}`);
   console.log(`body change keeps decl  ${formatRatio(m.body_keeps_decl)}`);
@@ -174,6 +177,12 @@ function printReport(report, show, wantNodes) {
   console.log('confusion (rows: label, columns: provider)');
   console.log(`${pad('', 10)}${['stable', 'body', 'identity', 'none'].map(x => lpad(x, 10)).join('')}`);
   for (const l of ['stable', 'body', 'identity']) console.log(`${pad(l, 10)}${['stable', 'body', 'identity', 'none'].map(x => lpad(t.confusion[l][x], 10)).join('')}`);
+  const partial = report.pairs.flatMap(r => r.provider_partial.map(f => `${r.id}: ${f}`));
+  if (partial.length > 0) {
+    console.log('');
+    console.log(`files the provider parsed only partly (${partial.length}):`);
+    for (const f of partial.slice(0, show)) console.log('  ' + f);
+  }
   if (report.provider_errors.length > 0) {
     console.log('');
     console.log(`provider errors (${report.provider_errors.length}):`);
@@ -341,6 +350,10 @@ export async function main(argv) {
       }
       printReport(report, opts.show, opts.nodes);
       if (opts.json) writeFileSync(opts.json, JSON.stringify(report, null, 2) + '\n');
+      if (report.provider_errors.length > 0) {
+        console.error(`stable-ids: the provider failed on ${report.provider_errors.length} file(s); these numbers do not measure it.`);
+        return 1;
+      }
       if (opts.strict && (report.metrics.precision.value !== 1 || report.metrics.recall.value !== 1)) return 1;
       return 0;
     }

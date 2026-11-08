@@ -28,7 +28,9 @@ dependency) and, for the default provider, `npm run build:all`:
     node bench/stable-ids/run.mjs score --json out.json --strict [pair-id...]
 
 `fetch`, `check` and `score` exit 1 when a pair is missing or differs from its
-pin; `score --strict` also exits 1 unless precision and recall are both 100%.
+pin, and `score` exits 1 when the provider fails on any file (the report then
+measures the failure, not the ids); `score --strict` also exits 1 unless
+precision and recall are both 100%.
 
 ## Pins, licences and the corpus
 
@@ -155,7 +157,8 @@ with.
 The report prints, with numerators and denominators: the precision and recall
 of stable; how often a changed body keeps its declaration id; how often a
 changed identity gets a new id; the declarations set aside, by reason; the
-declarations the provider has none for; a confusion table; with `--nodes`, how
+declarations the provider has none for (and how many of those sit in files the
+provider reported as only partly parsed); a confusion table; with `--nodes`, how
 many stable declarations kept every node id; and the disagreements.
 
 `providers/reference.mjs` implements the labelling rule itself as ids. It

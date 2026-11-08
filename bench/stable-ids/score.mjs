@@ -47,7 +47,7 @@ const LABELS = ['stable', 'body', 'identity'];
 function emptyCounts() {
   const confusion = {};
   for (const l of LABELS) confusion[l] = Object.fromEntries(PRED.map(p => [p, 0]));
-  return { scored: 0, tp: 0, fp: 0, fn: 0, wrong_partner: 0, judgement: {}, unjoined: 0, confusion, nodes: { checked: 0, kept: 0 } };
+  return { scored: 0, tp: 0, fp: 0, fn: 0, wrong_partner: 0, judgement: {}, unjoined: 0, unjoined_partial: 0, confusion, nodes: { checked: 0, kept: 0 } };
 }
 
 function labelClass(r) {
@@ -56,8 +56,9 @@ function labelClass(r) {
 
 /**
  * Score one pair. `engine.before` / `engine.after` map a file path to the
- * provider's declarations for it; `engine.nodes`, when present, maps
- * `before|after` → file → body_id → node ids.
+ * provider's declarations for it; `engine.partial`, when present, holds the
+ * `before` / `after` files the provider reported as only partly parsed;
+ * `engine.nodes`, when present, maps `before|after` → file → body_id → node ids.
  */
 export function scorePair(records, engine) {
   const counts = emptyCounts();
@@ -79,6 +80,7 @@ export function scorePair(records, engine) {
     if (!eb) {
       pred = 'none';
       counts.unjoined++;
+      if (engine.partial && engine.partial.before.has(r.file)) counts.unjoined_partial++;
     } else {
       ea = afterById.get(eb.id) ?? null;
       if (!ea) pred = 'identity';
@@ -125,7 +127,7 @@ function where(r) {
 
 /** Add `b`'s counts into `a`. */
 export function addCounts(a, b) {
-  for (const k of ['scored', 'tp', 'fp', 'fn', 'wrong_partner', 'unjoined']) a[k] += b[k];
+  for (const k of ['scored', 'tp', 'fp', 'fn', 'wrong_partner', 'unjoined', 'unjoined_partial']) a[k] += b[k];
   for (const [k, v] of Object.entries(b.judgement)) a.judgement[k] = (a.judgement[k] ?? 0) + v;
   for (const l of LABELS) for (const p of PRED) a.confusion[l][p] += b.confusion[l][p];
   a.nodes.checked += b.nodes.checked;

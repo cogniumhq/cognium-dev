@@ -190,6 +190,9 @@ test('the command line: list, verify, check, score', async () => {
     const json = join(tmp, 'report.json');
     assert.equal(await main(['score', '--dir', setDir, '--provider', join(import.meta.dirname, 'providers', 'reference.mjs'), '--json', json, '--strict']), 0);
     assert.equal(JSON.parse(readFileSync(json, 'utf8')).metrics.recall.value, 1);
+    const broken = join(tmp, 'broken-provider.mjs');
+    writeFileSync(broken, "export async function derive() { throw new Error('boom'); }\n");
+    assert.equal(await main(['score', '--dir', setDir, '--provider', broken]), 1, 'provider errors fail the run');
     assert.equal(await main(['check', '--dir', setDir, 'no-such-pair']).catch(e => e.message), "unknown pair 'no-such-pair'");
     assert.equal(await main(['bogus']), 2);
   } finally {

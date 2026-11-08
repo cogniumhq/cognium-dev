@@ -36,8 +36,9 @@ test('scorePair: true and false stable, misses, judgements, unjoined', () => {
   // `sig` keeps its id and body although its identity changed: a false stable.
   // `lost` gets a new id although it is stable: a miss.
   const after = map({ 'a.ts': [d('keep', 'k', 'keep', 3, 3), d('edit', 'e2', 'edit', 4, 4), d('sig', 's', 'sig', 5, 5), d('lost2', 'l', 'lost', 7, 7), d('odd', 'o2', 'odd', 8, 8)] });
-  const { counts, misses } = scorePair(records, { before, after });
+  const { counts, misses } = scorePair(records, { before, after, partial: { before: new Set(['a.ts']), after: new Set() } });
   assert.equal(counts.scored, 5);
+  assert.equal(counts.unjoined_partial, 1, 'the unmatched declaration sits in a partly parsed file');
   assert.deepEqual([counts.tp, counts.fp, counts.fn, counts.unjoined], [1, 1, 2, 1]);
   assert.deepEqual(counts.judgement, { header: 1 });
   assert.deepEqual(counts.confusion.stable, { stable: 1, body: 0, identity: 1, none: 1 });
