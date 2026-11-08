@@ -21,6 +21,8 @@ import { deadCode } from '../../src/graph-facts/index.js';
 import { javaGraphFactSet } from '../../src/facts/java-facts.js';
 import { tableRows } from '../../src/facts/table.js';
 import { FACTS_RELATIONS } from '../../src/facts/schema.js';
+import { javaGraphFact2Set } from '../../src/facts/facts2.js';
+import { FACTS2_RELATIONS } from '../../src/facts/schema2.js';
 import { base32 } from '../../src/stable-ids/hash.js';
 
 const file = (path: string, code: string) => ({ path, code });
@@ -251,7 +253,7 @@ describe('what adds no row', () => {
   });
 });
 
-describe('reach and facts@1', () => {
+describe('reach, facts@1 and facts@2', () => {
   it('a superclass constructor reached only through subclass constructors is live', () => {
     const d = deadCode(g);
     const v = new Map(d.facts.map(f => [q.get(f.id), f.verdict]));
@@ -280,6 +282,23 @@ describe('reach and facts@1', () => {
       ['external', 'java.lang.Exception', 'super'],
       ['external', 'java.lang.Object', 'super'],
       ['overload-ambiguous', '', 'super'],
+    ]));
+    expect(unresolved).toHaveLength(3);
+  });
+
+  it('writes the same rows in facts@2 (exact, not declaring; the name as written)', () => {
+    const inputs = Object.entries(APP).map(([path, code]) => ({ path, code, imports: [] }));
+    const set = javaGraphFact2Set(g, inputs);
+    const calls = tableRows(FACTS2_RELATIONS.call, set.relations.call).filter(r => r[3] === 'super' || r[3] === 'this');
+    expect(calls).toHaveLength(9);
+    expect(calls.every(r => r[2] === 'exact' && r[6] === false)).toBe(true);
+    const unresolved = tableRows(FACTS2_RELATIONS.unresolved, set.relations.unresolved)
+      .filter(r => r[3] === 'super' || r[3] === 'this')
+      .map(r => [r[1], r[2]]);
+    expect(unresolved).toEqual(expect.arrayContaining([
+      ['external', 'java.lang.Exception'],
+      ['external', 'java.lang.Object'],
+      ['overload-ambiguous', ''],
     ]));
     expect(unresolved).toHaveLength(3);
   });
