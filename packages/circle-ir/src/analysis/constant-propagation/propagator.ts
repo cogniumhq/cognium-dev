@@ -573,13 +573,8 @@ export class ConstantPropagator {
           continue;
         }
 
-        // #589: `return <Encoder>.<encode>(<the only parameter>)`.
-        const encoderArgs = valueNode.type === 'method_invocation'
-          ? valueNode.childForFieldName('arguments')?.children.filter((c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',')
-          : undefined;
-        if (!(valueNode.type === 'method_invocation' &&
-          HTML_CONTEXT_ENCODER_METHODS.has(getNodeText(valueNode.childForFieldName('name') ?? valueNode, this.source)) &&
-          params.length === 1 && encoderArgs?.length === 1 && getNodeText(encoderArgs[0]!, this.source) === params[0])) {
+        // #589: direct encoder return, or `String bar = escapeHtml(param); return bar;` (#589 S4).
+        if (!this.returnExpressionIsHtmlEncoderOnly(valueNode, body, params)) {
           allReturnsHtmlEncoder = false;
         }
 
@@ -819,6 +814,82 @@ export class ConstantPropagator {
     }
 
     return false;
+  }
+
+  /** #589 S4: `return escapeHtml(param)` or `bar = escapeHtml(param); return bar;`. */
+  private returnExpressionIsHtmlEncoderOnly(
+    valueNode: Node,
+    methodBody: Node,
+    params: string[],
+  ): boolean {
+    if (valueNode.type === 'method_invocation') {
+      return this.htmlEncoderCallUsesDeclaredParam(valueNode, params);
+    }
+    if (valueNode.type === 'identifier') {
+      const varName = getNodeText(valueNode, this.source);
+      return this.variableIsAssignedFromHtmlEncoderOnParam(varName, methodBody, params);
+    }
+    return false;
+  }
+
+  private htmlEncoderCallUsesDeclaredParam(node: Node, params: string[]): boolean {
+    if (node.type !== 'method_invocation') return false;
+    const methodName = this.extractJavaCalleeSimpleName(node);
+    if (!methodName || !HTML_CONTEXT_ENCODER_METHODS.has(methodName)) return false;
+    const argsNode = node.childForFieldName('arguments');
+    if (!argsNode) return false;
+    const args = argsNode.children.filter(
+      (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ',',
+    );
+    if (args.length !== 1) return false;
+    const argText = getNodeText(args[0]!, this.source);
+    return params.includes(argText);
+  }
+
+  private variableIsAssignedFromHtmlEncoderOnParam(
+    varName: string,
+    methodBody: Node,
+    params: string[],
+  ): boolean {
+    const findAssignments = (n: Node): boolean => {
+      if (n.type === 'local_variable_declaration') {
+        const declarator = n.children.find(c => c.type === 'variable_declarator');
+        if (declarator) {
+          const nameNode = declarator.childForFieldName('name');
+          const valueNode = declarator.childForFieldName('value');
+          if (nameNode && valueNode) {
+            const name = getNodeText(nameNode, this.source);
+            if (name === varName) {
+              return this.htmlEncoderCallUsesDeclaredParam(valueNode, params);
+            }
+          }
+        }
+      }
+      if (n.type === 'assignment_expression') {
+        const leftNode = n.childForFieldName('left');
+        const rightNode = n.childForFieldName('right');
+        if (leftNode && rightNode) {
+          const name = getNodeText(leftNode, this.source);
+          if (name === varName) {
+            return this.htmlEncoderCallUsesDeclaredParam(rightNode, params);
+          }
+        }
+      }
+      for (const child of n.children) {
+        if (findAssignments(child)) return true;
+      }
+      return false;
+    };
+    return findAssignments(methodBody);
+  }
+
+  private noteHtmlEncoderHelperAssignment(scopedName: string, valueNode: Node): boolean {
+    if (valueNode.type !== 'method_invocation') return false;
+    const callee = this.extractJavaCalleeSimpleName(valueNode);
+    if (!callee || !this.methodReturnsHtmlEncoderOnly.has(callee)) return false;
+    this.sanitizedVars.add(scopedName);
+    this.sanitizedVarUncovered.set(scopedName, HTML_CONTEXT_ENCODER_UNCOVERED_SINKS);
+    return true;
   }
 
   private variableIsAssignedFromSanitizer(varName: string, methodBody: Node): boolean {
@@ -1730,6 +1801,8 @@ export class ConstantPropagator {
               if (this.isSanitizerMethodCall(valueNode)) {
                 this.sanitizedVars.add(scopedName);
                 this.recordSanitizerScope(scopedName, valueNode);
+              } else if (this.noteHtmlEncoderHelperAssignment(scopedName, valueNode)) {
+                /* encoder-only helper return: uncovered trust_boundary */
               } else {
                 this.sanitizedVars.delete(scopedName);
                 this.sanitizedVarUncovered.delete(scopedName);
@@ -1994,6 +2067,8 @@ export class ConstantPropagator {
         if (this.isSanitizerMethodCall(right)) {
           this.sanitizedVars.add(scopedName);
           this.recordSanitizerScope(scopedName, right);
+        } else if (this.noteHtmlEncoderHelperAssignment(scopedName, right)) {
+          /* encoder-only helper return */
         } else {
           this.sanitizedVars.delete(scopedName);
           this.sanitizedVarUncovered.delete(scopedName);
