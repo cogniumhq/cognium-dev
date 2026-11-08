@@ -396,7 +396,14 @@ describe('Java registering files', () => {
     ]);
     const lib = JSON.parse((await runCli(['entries', osgi, '-f', 'json', '--exported-packages'])).stdout);
     expect(lib.summary.export).toBe(1);
-  });
+    // facts@2: the rows go into entries; the unresolved name in a descriptor is not a registration row.
+    const out2 = join(dir, 'osgi-facts2');
+    const f2 = await runCli(['entries', osgi, '-f', 'json', '--facts-arrow', out2, '--facts-scheme', 'facts@2']);
+    expect(f2.code).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(out2, 'manifest.json'), 'utf8'));
+    expect(manifest.relations.entries.rows).toBe(out.entries.length);
+    expect(manifest.relations.registration.rows).toBe(0);
+  }, 60_000);
 
   test('deadcode: a registered class\'s constructor and bind method are live', async () => {
     const out = JSON.parse((await runCli(['deadcode', osgi, '-f', 'json', '--verdicts', 'live,dead'])).stdout);
