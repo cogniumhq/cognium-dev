@@ -133,6 +133,7 @@ function jsTsExportBinding(exportName: string, lines: string[]): boolean {
 const CHANNEL_EXPORT_HANDLER_NAMES: ReadonlySet<string> = new Set([
   'handle',
   'getUser',
+  'onLogin',
   'onMessage',
   'onWebhook',
   'resolveUser',
