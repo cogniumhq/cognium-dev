@@ -126,6 +126,8 @@ function jsTsExportBinding(exportName: string, lines: string[]): boolean {
   if (new RegExp(`(?:^|\\n)\\s*export\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
   if (new RegExp(`(?:^|[^\\w$.])(?:module\\s*\\.\\s*)?exports\\s*\\.\\s*${esc}\\s*=`).test(text)) return true;
   if (new RegExp(`module\\s*\\.\\s*exports\\s*=\\s*\\{[^}]*\\b${esc}\\b`).test(text)) return true;
+  // `export default { resolveUser }` — taint-coverage channel-axis TS fixtures (cognium-dev #818).
+  if (new RegExp(`(?:^|\\n)\\s*export\\s+default\\s+\\{[^}]*\\b${esc}\\b`).test(text)) return true;
   return false;
 }
 
