@@ -100,7 +100,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "^5.0.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "esbuild": "^0.28.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-html": "^0.23.2",
