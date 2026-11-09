@@ -112,6 +112,6 @@
     "vitest": "^5.0.1"
   },
   "optionalDependencies": {
-    "apache-arrow": "21.1.0"
+    "apache-arrow": "21.2.0"
   }
 }
