@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- fix(circle-ir): Java DFG defs and uses carry column so same-line lambda node ids stay in the method body (#1196)
+
 ### Tests
 - test(circle-ir): lock non-helper OWASP trustbound session shapes for #589 S5 (#589)
 
