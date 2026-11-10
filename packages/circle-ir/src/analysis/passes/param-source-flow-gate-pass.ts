@@ -216,6 +216,25 @@ function isRustDieselSqlParamFlow(f: TaintFlowInfo, lines: string[]): boolean {
  * `serde_json::from_str` and later `serde_yaml::from_str` (JSON node →
  * optional string chain) is attacker-controlled in the fixture corpus.
  */
+/**
+ * cognium-dev#817 — cve-intake-b PAT fixtures: a module-exported handler whose
+ * parameter reaches child_process.exec* is attacker-controlled input (the gate
+ * runs one file per scan with no synthetic caller).
+ */
+function isExportedShellIntakeHandler(
+  method: MethodInfo,
+  f: TaintFlowInfo,
+  language: string,
+  lines: string[],
+): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'command_injection') return false;
+  if (language !== 'javascript' && language !== 'typescript') return false;
+  if (!isModuleLevelFunction(method, lines)) return false;
+  if (!jsTsExportBinding(method.name, lines)) return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  return /\b(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(/.test(sinkLine);
+}
+
 function isRustJsonYamlInteropDeserParam(
   f: TaintFlowInfo,
   lines: string[],
@@ -448,7 +467,8 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           // cognium-dev #900: library entry points that write caller-controlled
           // values into a shared cache (CWE-524) are real defects, not speculative
           // prompt/SSRF mirrors — keep the default path without speculativeParamSources.
-          f.sink_type === 'cache_poisoning'
+          f.sink_type === 'cache_poisoning' ||
+          (m !== undefined && isExportedShellIntakeHandler(m, f, ctx.language, lines))
         );
       }
       if (keep) flows[w++] = f;
