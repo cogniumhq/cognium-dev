@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rust: interop IL-57 parameter → `serde_json::from_str` → `serde_yaml::from_str` reports deserialization without `speculativeParamSources` (#1150).**
+
 ### Changed
 - **`facts@2` is the default fact schema (graph-store T5a.1b).** `buildJavaGraph(files, { emitFacts: 'arrow' })` now writes the twelve `facts@2` relations; `factsScheme: 'facts@1'` still writes the eight `facts@1` relations, byte for byte as before. The graph JSON is unchanged, and nothing is written without `emitFacts`. A caller that reads `facts@1` from `emitFacts` alone must now pass `factsScheme: 'facts@1'`.
 
