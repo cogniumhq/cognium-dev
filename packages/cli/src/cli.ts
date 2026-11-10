@@ -4,8 +4,8 @@
  */
 
 import { readFileSync, existsSync, writeFileSync } from 'fs';
-import { stat, readdir } from 'fs/promises';
-import { join, dirname, extname, resolve, relative, basename } from 'path';
+import { stat, readdir, realpath } from 'fs/promises';
+import { join, dirname, extname, resolve, relative, basename, sep } from 'path';
 import { createRequire } from 'module';
 import { getHeapStatistics } from 'v8';
 import {
@@ -589,6 +589,37 @@ interface CollectFilesOptions {
    * no longer applies.
    */
   optedIn?: boolean;
+  /**
+   * S4: paths the walk left out and why (a broken or looping symlink, a link
+   * out of the scan root, a link to a path the walk already covers, an
+   * unreadable directory). The walk appends; the caller reports them.
+   */
+  skipped?: SkippedPath[];
+  /** S4: the scan root's real path, set by the top-level call. */
+  rootReal?: string;
+}
+
+export interface SkippedPath {
+  path: string;
+  reason: 'broken symlink' | 'symlink loop' | 'symlink leaves the scan root' | 'symlink inside the scan root' | 'unreadable';
+}
+
+/**
+ * S4: what to do with a symlink found in the walk. It is never followed: a
+ * target inside the scan root is walked at its real path anyway (so a linked
+ * directory is counted once), a target outside it is not the scan's, and a
+ * broken or looping link is reported instead of aborting the scan.
+ */
+async function classifySymlink(fullPath: string, rootReal: string): Promise<SkippedPath['reason']> {
+  let target: string;
+  try {
+    target = await realpath(fullPath);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ELOOP' ? 'symlink loop' : 'broken symlink';
+  }
+  return target === rootReal || target.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep)
+    ? 'symlink inside the scan root'
+    : 'symlink leaves the scan root';
 }
 
 /**
@@ -654,10 +685,19 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
     // is read in full.
     const optedIn = options.optedIn
       || ((!basePath || basePath === targetPath) && SCAN_SKIPPED_DIRECTORIES.includes(basename(targetPath)));
+    const rootReal = options.rootReal ?? await realpath(targetPath);
     // #1032: name order, not the filesystem's, so the file set and the point
     // where a size ceiling stops reading are the same on every machine.
-    const entries = (await readdir(targetPath, { withFileTypes: true }))
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    let dirents;
+    try {
+      dirents = await readdir(targetPath, { withFileTypes: true });
+    } catch (e) {
+      // S4: an unreadable directory below the root is reported, not fatal.
+      if (options.rootReal === undefined) throw e;
+      options.skipped?.push({ path: targetPath, reason: 'unreadable' });
+      return files;
+    }
+    const entries = dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       // Skip test directories if excludeTests is enabled
       if (excludeTests && /^(test|tests|__tests__|spec|__mocks__)$/i.test(entry.name)) continue;
@@ -675,6 +715,11 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
         if (reach === 'none') continue;
         childOptedIn = reach === 'names';
       }
+      // S4: a symlink is never followed (see classifySymlink).
+      if (entry.isSymbolicLink()) {
+        if (!entry.name.startsWith('.')) options.skipped?.push({ path: fullPath, reason: await classifySymlink(fullPath, rootReal) });
+        continue;
+      }
 
       // Check if directory matches exclude patterns (e.g., dist/**)
       if (excludePatterns && entry.isDirectory()) {
@@ -685,7 +730,7 @@ export async function collectFiles(targetPath: string, options: CollectFilesOpti
         }
       }
 
-      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn }));
+      files.push(...await collectFiles(fullPath, { ...options, basePath: basePath || targetPath, optedIn: childOptedIn, rootReal }));
     }
   }
 
@@ -1216,13 +1261,18 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       process.exit(2);
     }
 
+    const skippedPaths: SkippedPath[] = [];
     const files = await collectFiles(absPath, {
       language: options.language,
       excludeTests: options.excludeTests,
       includePatterns: config?.include,
       excludePatterns: config?.exclude,
       basePath: absPath,
+      skipped: skippedPaths,
     });
+    for (const p of skippedPaths) {
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+    }
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
@@ -1296,6 +1346,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
+      if (skippedPaths.length > 0) crossFileData = { ...crossFileData, skippedPaths: skippedPaths.map(p => ({ path: relative(absPath, p.path) || p.path, reason: p.reason })) };
     } else {
       if (spin) spin.text = `Scanning ${files.length} file(s)...`;
 
@@ -1602,13 +1653,18 @@ async function runMetrics(targetPath: string, options: MetricsOptions): Promise<
       process.exit(2);
     }
 
+    const skippedPaths: SkippedPath[] = [];
     const files = await collectFiles(absPath, {
       language: options.language,
       excludeTests: options.excludeTests,
       includePatterns: config?.include,
       excludePatterns: config?.exclude,
       basePath: absPath,
+      skipped: skippedPaths,
     });
+    for (const p of skippedPaths) {
+      if (p.reason !== 'symlink inside the scan root') console.error(colors.yellow(`⚠ Not scanned: ${relative(absPath, p.path) || p.path} (${p.reason})`));
+    }
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
