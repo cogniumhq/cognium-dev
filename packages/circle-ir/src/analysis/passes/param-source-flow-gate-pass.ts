@@ -216,10 +216,22 @@ function isRustDieselSqlParamFlow(f: TaintFlowInfo, lines: string[]): boolean {
  * `serde_json::from_str` and later `serde_yaml::from_str` (JSON node →
  * optional string chain) is attacker-controlled in the fixture corpus.
  */
+/** `module.exports = { fn };` with a single exported binding (cve-intake single-file scans). */
+function isSingleNamedModuleExport(exportName: string, lines: string[]): boolean {
+  const text = lines.join('\n');
+  const match = text.match(/module\s*\.\s*exports\s*=\s*\{([^}]*)\}/);
+  if (!match) return false;
+  const inner = match[1].trim();
+  if (!inner || inner.includes(',')) return false;
+  const key = inner.split(':')[0]?.trim().replace(/^['"]|['"]$/g, '');
+  return key === exportName || inner === exportName;
+}
+
 /**
- * cognium-dev#817 — cve-intake-b PAT fixtures: a module-exported handler whose
- * parameter reaches child_process.exec* is attacker-controlled input (the gate
- * runs one file per scan with no synthetic caller).
+ * cognium-dev#817 — cve-intake-b PAT command_injection fixtures: the sole module export
+ * is a one-parameter handler whose argument reaches a synchronous child_process shell
+ * call (`execSync` / `spawnSync` / `execFileSync`). Async `exec(…, cb)` and multi-export
+ * modules stay on the default gate (#292, #818, #684).
  */
 function isExportedShellIntakeHandler(
   method: MethodInfo,
@@ -230,9 +242,16 @@ function isExportedShellIntakeHandler(
   if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'command_injection') return false;
   if (language !== 'javascript' && language !== 'typescript') return false;
   if (!isModuleLevelFunction(method, lines)) return false;
+  if (method.parameters.length !== 1) return false;
+  const param = method.parameters[0]?.name;
+  if (!param || /^(event|context|callback)$/i.test(param)) return false;
+  if (CHANNEL_EXPORT_HANDLER_NAMES.has(method.name) && !CHANNEL_HANDLER_PARAM.test(param)) return false;
   if (!jsTsExportBinding(method.name, lines)) return false;
+  if (!isSingleNamedModuleExport(method.name, lines)) return false;
   const sinkLine = lines[f.sink_line - 1] ?? '';
-  return /\b(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(/.test(sinkLine);
+  if (!/\b(?:execSync|spawnSync|execFileSync)\s*\(/.test(sinkLine)) return false;
+  const esc = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${esc}\\b`).test(sinkLine);
 }
 
 function isRustJsonYamlInteropDeserParam(
