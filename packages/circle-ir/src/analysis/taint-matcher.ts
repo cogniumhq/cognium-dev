@@ -1937,6 +1937,31 @@ function isNavigationReceiverName(receiver: string | null | undefined): boolean 
  * `memoryCache.get(digest)`) were misclassified as SQL executes. Same class of
  * bug as #358's `/re/.exec` → sql_injection pairing.
  */
+/**
+ * cognium-dev#900 S2 — the key of a cache write (argument 0) names the viewer
+ * (`'mr-title-' + mr.id + '-' + viewer.id`), so each viewer gets their own entry:
+ * what one caller wrote is not served to another. An identifier of the key, or
+ * its first member, is matched as a whole word against the viewer names below.
+ */
+const CACHE_VIEWER_KEY_NAMES = new Set([
+  'viewer', 'user', 'currentuser', 'userid', 'user_id', 'session', 'sessionid', 'principal', 'account', 'accountid', 'actor', 'actorid',
+]);
+function cacheKeyNamesViewer(call: CallInfo): boolean {
+  const raw = call.arguments.find((a) => a.position === 0)?.expression;
+  if (!raw) return false;
+  // string text is not a name: drop quoted strings, keep only the `${…}` parts of a template
+  const key = raw
+    .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/`(?:\\.|[^`\\])*`/g, (t) => [...t.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1]).join(' + '));
+  for (const m of key.matchAll(/(?<![\w$.'"`])([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$][\w$]*))?/g)) {
+    if (CACHE_VIEWER_KEY_NAMES.has(m[1].toLowerCase())) return true;
+    if (m[1] === 'req' || m[1] === 'request' || m[1] === 'ctx') {
+      if (m[2] && CACHE_VIEWER_KEY_NAMES.has(m[2].toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
 /** cognium-dev#584 / #985 — local Map receiver never passed as a call argument. */
 function localMapReceiverDoesNotEscape(lines: string[], recv: string): boolean {
   const escapeRe = new RegExp(`\\w\\s*\\([^)]*(?<![\\w.])${recv}(?![\\w.])[^)]*\\)`);
@@ -2558,6 +2583,11 @@ function findSinks(
           if (!moduleScope && localMapReceiverDoesNotEscape(sourceLines, recv)) {
             continue;
           }
+        }
+
+        // A cache entry keyed by the viewer is per viewer, not shared (#900 S2 key shape).
+        if (pattern.type === 'cache_poisoning' && cacheKeyNamesViewer(call)) {
+          continue;
         }
 
         // Skip parameterized queries (safe pattern for SQL injection)
