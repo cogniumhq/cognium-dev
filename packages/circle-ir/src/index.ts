@@ -31,6 +31,8 @@ export {
   parseGradleDependencies,
   parseGradleLockfile,
   parseMavenResolvedDependencies,
+  parseMavenModuleDependencies,
+  parseGradleProjectDependencies,
   parseCargoDependencies,
   parseCargoLockDependencies,
   parsePoetryLockDependencies,
@@ -48,6 +50,8 @@ export type {
   SbomMetadata,
   LicenseMap,
   PnpmImporterDependencies,
+  MavenModuleDependencies,
+  GradleProjectDependencies,
 } from './analysis/sbom.js';
 
 // Known-vulnerability matching against caller-supplied OSV records (deterministic)
