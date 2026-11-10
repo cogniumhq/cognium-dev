@@ -915,9 +915,14 @@ export function synthesizeCrossFileArgvWrapperFlows(
         ir.types,
         projectGraph,
       );
-      if (!isArgvContainerType(t)) continue;
+      const assembledLocal =
+        wrapperMethod != null
+        && javaAssembledArgvLocalFromInstanceFields(wrapperMethod, sinkLine, ir.types, lines);
+      const typedArgv = isArgvContainerType(t);
+      if (!typedArgv && !assembledLocal) continue;
       if (
-        sameFileCallerPassesShellArgv(varName, wrapperMethod, sinkLine, ir.types, ir.calls, lines)
+        typedArgv
+        && sameFileCallerPassesShellArgv(varName, wrapperMethod, sinkLine, ir.types, ir.calls, lines)
       ) {
         continue;
       }
@@ -933,7 +938,7 @@ export function synthesizeCrossFileArgvWrapperFlows(
         pos < 0
         && wrapperMethod
         && javaFieldArgvAtSink(projectGraph, ir.types, varName, wrapperMethod, sinkLine);
-      if (pos < 0 && !fieldArgv) continue;
+      if (!assembledLocal && pos < 0 && !fieldArgv) continue;
 
       const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
       const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
@@ -943,7 +948,22 @@ export function synthesizeCrossFileArgvWrapperFlows(
         if (!ctx) return;
         const setterName = `set${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
         let shellProof = false;
-        if (pos >= 0) {
+        if (assembledLocal && hostType) {
+          if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+          const callerMethod = ctx.types
+            .flatMap(ty => ty.methods)
+            .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+          if (!callerMethod) return;
+          shellProof = javaCallerReceiverConstructedWithShell(
+            call,
+            hostType,
+            callerMethod.start_line,
+            callerMethod.end_line,
+            ctx.lines,
+            ctx.types,
+            shellArgvCtx,
+          );
+        } else if (pos >= 0) {
           if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
           if (call.arguments.length <= pos) return;
           shellProof = callArgumentIsShellArgv(call, pos, ctx.types, ctx.lines, shellArgvCtx);
@@ -1052,6 +1072,99 @@ export function synthesizeCrossFileArgvWrapperFlows(
   }
 }
 
+/** cognium-dev#1199 — local `argv` list built from instance fields before ProcessBuilder. */
+function javaAssembledArgvLocalFromInstanceFields(
+  wrapperMethod: string,
+  sinkLine: number,
+  types: ReadonlyArray<TypeInfo>,
+  sourceLines: string[],
+): boolean {
+  const method = types
+    .flatMap(t => t.methods)
+    .find(mm => mm.name === wrapperMethod && sinkLine >= mm.start_line && sinkLine <= mm.end_line);
+  if (!method) return false;
+  let sawAddExec = false;
+  let sawAddAll = false;
+  const addExecRe = /\bargv\s*\.\s*add\s*\(\s*(?:this\.)?\w+\s*\)/;
+  const addAllRe = /\bargv\s*\.\s*addAll\s*\(\s*(?:this\.)?\w+\s*\)/;
+  for (let l = method.start_line; l < sinkLine && l <= method.end_line; l++) {
+    const line = sourceLines[l - 1] ?? '';
+    if (addExecRe.test(line)) sawAddExec = true;
+    if (addAllRe.test(line)) sawAddAll = true;
+  }
+  return sawAddExec && sawAddAll;
+}
+
+function javaIsConstructorCallToType(
+  targetMethod: string,
+  call: CallInfo,
+  hostTypeName: string,
+): boolean {
+  if (targetMethod.includes('<init>') && targetMethod.includes(hostTypeName)) return true;
+  return call.method_name === hostTypeName && (call.receiver === null || call.receiver === undefined);
+}
+
+/** cognium-dev#1199 — `recv.execute()` only counts when `recv` was `new HostType("sh", …)` above. */
+function javaCallerReceiverConstructedWithShell(
+  call: CallInfo,
+  hostTypeName: string,
+  methodStart: number,
+  methodEnd: number,
+  sourceLines: string[],
+  types: ReadonlyArray<TypeInfo>,
+  shellArgvCtx?: ShellArgvLookupContext,
+): boolean {
+  const recv = call.receiver?.trim();
+  if (!recv || recv === 'this') return false;
+  const ctorRe = new RegExp(
+    `\\b${escapeReSf(hostTypeName)}\\s+${escapeReSf(recv)}\\s*=\\s*new\\s+${escapeReSf(hostTypeName)}\\s*\\(\\s*([^)]+)\\)`,
+  );
+  for (let l = methodStart; l < call.location.line && l <= methodEnd; l++) {
+    const line = (sourceLines[l - 1] ?? '').trim();
+    const m = ctorRe.exec(line);
+    if (
+      m
+      && javaExpressionLooksLikeShellArgv(m[1]!.trim(), l, types, sourceLines, shellArgvCtx)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function projectCallerPassesShellForAssembledArgv(
+  hostTypeName: string,
+  wrapperMethod: string,
+  getCallerContext: (file: string) => { types: TypeInfo[]; calls: CallInfo[]; lines: string[] } | undefined,
+  forEachCrossFileCall: (cb: (callerFile: string, call: CallInfo, targetMethod: string) => void) => void,
+  shellArgvCtx: ShellArgvLookupContext,
+): boolean {
+  let found = false;
+  forEachCrossFileCall((callerFile, call, targetMethod) => {
+    if (!wrapperMethod || !wrapperMethodMatchesTarget(wrapperMethod, targetMethod)) return;
+    const ctx = getCallerContext(callerFile);
+    if (!ctx) return;
+    const callerMethod = ctx.types
+      .flatMap(t => t.methods)
+      .find(mm => call.location.line >= mm.start_line && call.location.line <= mm.end_line);
+    if (!callerMethod) return;
+    if (
+      javaCallerReceiverConstructedWithShell(
+        call,
+        hostTypeName,
+        callerMethod.start_line,
+        callerMethod.end_line,
+        ctx.lines,
+        ctx.types,
+        shellArgvCtx,
+      )
+    ) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 /** cognium-dev#626 — drop argv-wrapper flows with no shell-argv caller (incl. cross-file). */
 export function filterJavaArgvWrapperFlowsWithoutShellCaller(
   fileAnalyses: Array<{ file: string; analysis: { meta: { language: string }; calls: CallInfo[]; types: TypeInfo[]; taint: { flows?: CircleIR['taint']['flows'] } } }>,
@@ -1108,11 +1221,36 @@ export function filterJavaArgvWrapperFlowsWithoutShellCaller(
         ir.types,
         projectGraph,
       );
-      if (!isArgvContainerType(t)) return true;
       const hostType = ctorCall.in_method
         ? javaHostTypeAtSink(ir.types, ctorCall.in_method, flow.sink_line)
         : undefined;
       const relatedCalleeFiles = javaRelatedCalleeFiles(projectGraph, fa.file, hostType);
+      if (!isArgvContainerType(t)) {
+        if (
+          ctorCall.in_method
+          && hostType
+          && javaAssembledArgvLocalFromInstanceFields(
+            ctorCall.in_method,
+            flow.sink_line,
+            ir.types,
+            lines,
+          )
+        ) {
+          const shellArgvCtx: ShellArgvLookupContext = { projectGraph, sourceLinesByFile };
+          return projectCallerPassesShellForAssembledArgv(
+            hostType,
+            ctorCall.in_method ?? '',
+            getCallerContext,
+            cb => {
+              for (const calleeFile of relatedCalleeFiles) {
+                forEachCrossFileCall(calleeFile, cb);
+              }
+            },
+            shellArgvCtx,
+          );
+        }
+        return true;
+      }
       return projectCallerPassesShellArgvForWrapper(
         varName,
         ctorCall.in_method,

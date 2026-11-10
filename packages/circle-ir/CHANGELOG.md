@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`facts@2` is the default fact schema (graph-store T5a.1b).** `buildJavaGraph(files, { emitFacts: 'arrow' })` now writes the twelve `facts@2` relations; `factsScheme: 'facts@1'` still writes the eight `facts@1` relations, byte for byte as before. The graph JSON is unchanged, and nothing is written without `emitFacts`. A caller that reads `facts@1` from `emitFacts` alone must now pass `factsScheme: 'facts@1'`.
 
 ### Fixed
+- fix(java): field-carried command argv via constructor + addArgument reaches ProcessBuilder at execute (#1199)
 - fix(java): getTheValue pass-through gate for ldap_injection (#1197)
 - fix(circle-ir): Java DFG defs and uses carry column so same-line lambda node ids stay in the method body (#1196)
 
