@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: a same-named local in one handler no longer taints `req.query.*` (or `request.*` / `ctx.*`) in another via identifier matching (#1223).** Request-proxy property names are ignored for cross-function variable pairing; export-style handlers get function scopes from the source when `types[].methods` is empty.
 - **JS: libxmljs `parseXml` / `parseXmlString` with `noent: false` (or default-safe inline options) no longer emits flow-backed `xxe` (#1222).**
 - **S3: eight regexes backtracked exponentially, and a crafted Go line could hold `analyze()` for hours.** A line of an `if` with many `||` disjuncts and no `!map[key]` (the Go map allow-list guard) doubled the time with every disjunct: about 4 s at 112 bytes and 39 s at 124 bytes, past any `fileTimeoutMs` because the step is synchronous. Fixed by removing the overlap that let two quantifiers take the same characters:
   - the Go map allow-list guard: the whitespace after each `||` is taken by the next disjunct, not by a second quantifier (same matches);
