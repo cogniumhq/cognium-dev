@@ -2832,34 +2832,53 @@ export class ConstantPropagator {
     }
   }
 
+  /** Instance field list/collection names: `arguments` ↔ `this.arguments` (cognium-dev#1199). */
+  private javaCollectionLookupNames(collectionName: string): string[] {
+    const names = [collectionName];
+    if (collectionName.startsWith('this.')) {
+      const field = collectionName.slice(5);
+      if (this.classFields.has(field)) names.push(field);
+    } else if (this.classFields.has(collectionName)) {
+      names.push(`this.${collectionName}`);
+    }
+    return names;
+  }
+
+  private markJavaCollectionTainted(collectionName: string): void {
+    for (const name of this.javaCollectionLookupNames(collectionName)) {
+      const scopedCollection = this.currentMethod ? `${this.currentMethod}:${name}` : name;
+      this.tainted.add(name);
+      this.tainted.add(scopedCollection);
+    }
+  }
+
   /**
    * Check if a collection is tainted (has any tainted elements).
    */
   private isCollectionTainted(collectionName: string): boolean {
-    // Check if the collection has tainted elements via list tracking
-    const listElems = this.listElements.get(collectionName);
-    if (listElems) {
-      for (const elem of listElems) {
-        if (elem === '__TAINTED__') return true;
-        if (elem !== null) {
-          const scopedElem = this.currentMethod ? `${this.currentMethod}:${elem}` : elem;
-          if (this.tainted.has(elem) || this.tainted.has(scopedElem)) {
-            return true;
+    for (const lookup of this.javaCollectionLookupNames(collectionName)) {
+      const listElems = this.listElements.get(lookup);
+      if (listElems) {
+        for (const elem of listElems) {
+          if (elem === '__TAINTED__') return true;
+          if (elem !== null) {
+            const scopedElem = this.currentMethod ? `${this.currentMethod}:${elem}` : elem;
+            if (this.tainted.has(elem) || this.tainted.has(scopedElem)) {
+              return true;
+            }
           }
         }
       }
-    }
 
-    // Check if the collection has tainted keys (for maps)
-    const taintedKeys = this.taintedCollections.get(collectionName);
-    if (taintedKeys && taintedKeys.size > 0) {
-      return true;
-    }
+      const taintedKeys = this.taintedCollections.get(lookup);
+      if (taintedKeys && taintedKeys.size > 0) {
+        return true;
+      }
 
-    // Check if the collection variable itself is tainted
-    const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-    if (this.tainted.has(collectionName) || this.tainted.has(scopedCollection)) {
-      return true;
+      const scopedCollection = this.currentMethod ? `${this.currentMethod}:${lookup}` : lookup;
+      if (this.tainted.has(lookup) || this.tainted.has(scopedCollection)) {
+        return true;
+      }
     }
 
     return false;
@@ -3446,10 +3465,8 @@ export class ConstantPropagator {
           list.push(null);
         }
 
-        // Also mark the collection variable itself as tainted if it contains tainted elements
         if (isTainted) {
-          const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-          this.tainted.add(scopedCollection);
+          this.markJavaCollectionTainted(collectionName);
         }
       }
     }
@@ -3464,24 +3481,19 @@ export class ConstantPropagator {
         const sourceArg = args[0];
         if (sourceArg.type === 'identifier') {
           const sourceName = getNodeText(sourceArg, this.source);
-          // Check if the source collection is tainted
           if (this.isCollectionTainted(sourceName)) {
             if (!this.listElements.has(collectionName)) {
               this.listElements.set(collectionName, []);
             }
-            // Add a tainted marker to indicate the collection now has tainted elements
             this.listElements.get(collectionName)!.push('__TAINTED__');
-            // Also mark the target collection as tainted
-            const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-            this.tainted.add(scopedCollection);
+            this.markJavaCollectionTainted(collectionName);
           }
         } else if (this.isTaintedExpression(sourceArg)) {
           if (!this.listElements.has(collectionName)) {
             this.listElements.set(collectionName, []);
           }
           this.listElements.get(collectionName)!.push('__TAINTED__');
-          const scopedCollection = this.currentMethod ? `${this.currentMethod}:${collectionName}` : collectionName;
-          this.tainted.add(scopedCollection);
+          this.markJavaCollectionTainted(collectionName);
         }
       }
     }

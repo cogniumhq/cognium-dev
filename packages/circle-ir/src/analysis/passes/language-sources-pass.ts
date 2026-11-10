@@ -4464,6 +4464,43 @@ export function buildJavaTaintedVars(
         continue;
       }
 
+      const thisFieldListAddRe =
+        /^\s*this\.([A-Za-z_]\w*)\.add\s*\(/;
+      const thisListAdd = thisFieldListAddRe.exec(line);
+      if (thisListAdd) {
+        const field = thisListAdd[1];
+        const argMatch = /this\.\w+\.add\s*\(\s*([^)]+)\)/.exec(line);
+        if (argMatch) {
+          const argCode = argMatch[1]
+            .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+            .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+          const idents = argCode.match(/[\p{L}\p{N}_]+/gu);
+          const ref =
+            (idents !== null && idents.some(t => knownTainted.has(t))) ||
+            (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(argCode)));
+          if (ref) {
+            const aliases = [field, `this.${field}`];
+            for (const name of aliases) {
+              if (!knownTainted.has(name)) {
+                derived.set(name, i + 1);
+                knownTainted.add(name);
+                changed = true;
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+      const addAllRe = /^\s*([A-Za-z_]\w*)\.addAll\s*\(\s*([A-Za-z_]\w*)\s*\)\s*;?\s*$/;
+      const addAllMatch = addAllRe.exec(line.trimEnd());
+      if (addAllMatch && knownTainted.has(addAllMatch[2]) && !knownTainted.has(addAllMatch[1])) {
+        derived.set(addAllMatch[1], i + 1);
+        knownTainted.add(addAllMatch[1]);
+        changed = true;
+        continue;
+      }
+
       let statement = line;
       let declMatch = declRe.exec(statement);
       let assignMatch = !declMatch ? assignRe.exec(statement) : null;
