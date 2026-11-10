@@ -2192,6 +2192,15 @@ function detectCollectionFlows(
   return flows;
 }
 
+/** cognium-dev#476 — `array[n-n]` in SecuriBench stores index as `0` but sink arg is `n-n`. */
+function normalizeJavaArrayIndexKey(indexKey: string): string {
+  const trimmed = indexKey.trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  const sameVarDiff = trimmed.match(/^([A-Za-z_]\w*)\s*-\s*\1$/);
+  if (sameVarDiff) return '0';
+  return trimmed;
+}
+
 function detectArrayElementFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -2222,9 +2231,13 @@ function detectArrayElementFlows(
         const arrayAccess = parseJavaArrayAccessExpression(arg.expression);
         if (arrayAccess) {
           const { base, arrayName, indexKey, displayVar } = arrayAccess;
+          const resolvedIndex = normalizeJavaArrayIndexKey(indexKey);
           const taintedIndices = taintedArrayElements.get(arrayName);
           if (taintedIndices) {
-            const isTainted = taintedIndices.has(indexKey) || taintedIndices.has('*');
+            const isTainted =
+              taintedIndices.has(resolvedIndex) ||
+              taintedIndices.has(indexKey) ||
+              taintedIndices.has('*');
             if (isTainted) {
               // Sprint 13 #70 — method-scoped source picker (see detectCollectionFlows).
               const source = pickScopedSource(
