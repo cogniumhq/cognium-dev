@@ -145,7 +145,7 @@ public class Util {
     const app = {
       'src/a/Main.java': 'package a;\n\nimport org.compiere.util.DisplayType;\nimport org.compiere.util.DisplayType.*;\nimport java.util.List;\n\npublic class Main { void m() { List.of(1); } }\n',
     };
-    const graph = await buildJavaGraph(files(app), { emitFacts: 'arrow' });
+    const graph = await buildJavaGraph(files(app), { emitFacts: 'arrow', factsScheme: 'facts@1' });
     const t = tableFromIPC(graph.facts!.relations.imports);
     const rows = t.toArray().map(r => r.toJSON() as { file_id: number; target: string; wildcard: boolean });
     expect(rows).toEqual([

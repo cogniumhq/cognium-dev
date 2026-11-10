@@ -74,8 +74,8 @@ export interface JavaGraphOptions {
   exportedPackages?: boolean;
   entryTables?: JavaEntryTables;
   /**
-   * `'arrow'`: also emit the `facts@1` relations (graph-store plan T2; or
-   * `facts@2` under `factsScheme`) as
+   * `'arrow'`: also emit the `facts@2` relations (graph-store plan T2/T5a;
+   * `facts@1` under `factsScheme: 'facts@1'`) as
    * Arrow IPC file bytes in `JavaGraph.facts`, derived from the finished
    * graph as a post-pass (relations are sets: exact duplicates of the graph's
    * rows collapse, counted in the manifest); `flow` comes from each file's
@@ -85,10 +85,10 @@ export interface JavaGraphOptions {
    */
   emitFacts?: 'arrow';
   /**
-   * The fact schema `emitFacts` writes: `facts@1` (the default) or `facts@2`
-   * (stable file keys, site lines relative to their declaration, `decl_pos`,
-   * `ref`, `registration`, `parse_error`; see `schemas/facts@2.json`). Only
-   * read with `emitFacts`.
+   * The fact schema `emitFacts` writes: `facts@2` (the default since
+   * graph-store T5a.1b: stable file keys, site lines relative to their
+   * declaration, `decl_pos`, `ref`, `registration`, `parse_error`; see
+   * `schemas/facts@2.json`) or `facts@1`. Only read with `emitFacts`.
    */
   factsScheme?: 'facts@1' | 'facts@2';
   /** Metadata written with the facts (`engine`, `parser`); only read with `emitFacts`. */
@@ -110,7 +110,7 @@ export interface JavaGraph {
   typeOnly: string[];
   /** Call sites from the navigation index; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
-  /** The fact relations as Arrow IPC bytes (`facts@1`, or `facts@2` under `factsScheme`); present only under `emitFacts: 'arrow'`. */
+  /** The fact relations as Arrow IPC bytes (`facts@2`, or `facts@1` under `factsScheme`); present only under `emitFacts: 'arrow'`. */
   facts?: FactsArrow | Facts2Arrow;
 }
 
@@ -746,7 +746,7 @@ export async function buildJavaGraph(files: readonly JavaSourceFile[], options: 
     };
     if (options.emitFacts === 'arrow') {
       const inputs = sorted.map((f, i) => ({ path: f.path, code: f.code, imports: importRows(ctxs[i].tree.rootNode), dfg: irs[i].ir.dfg }));
-      const scheme = options.factsScheme ?? 'facts@1';
+      const scheme = options.factsScheme ?? 'facts@2';
       const factsOptions = { source: JAVA_GRAPH_SCHEME, ...options.facts };
       if (scheme === 'facts@2') graph.facts = await facts2ToArrow(javaGraphFact2Set(graph, inputs), factsOptions);
       else if (scheme === 'facts@1') graph.facts = await factsToArrow(javaGraphFactSet(graph, inputs), factsOptions);

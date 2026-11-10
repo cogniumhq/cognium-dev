@@ -104,11 +104,11 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
   --jar <file>               depcalls: the resolved jar to read packages from
   --maven-repo <dir>         depcalls: local Maven repository [default: $MAVEN_REPO_LOCAL,
                                else ~/.m2/repository]
-  --facts-arrow <dir>        entries, Java only: also write the facts@1 relations (proposed)
-                               as Arrow IPC files plus manifest.json into <dir>; the
-                               report itself is unchanged
+  --facts-arrow <dir>        entries, Java only: also write the fact relations (facts@2 by
+                               default) as Arrow IPC files plus manifest.json into <dir>;
+                               the report itself is unchanged
   --facts-scheme <scheme>    entries, with --facts-arrow: the fact schema to write
-                               (facts@1|facts@2) [default: facts@1]
+                               (facts@1|facts@2) [default: facts@2]
 
 RECHECK OPTIONS:
   --changed <files>          The changed files (comma-separated, or @list.txt)
@@ -224,7 +224,7 @@ EXAMPLES:
   cognium-dev reach --base origin/main . -f json     # removal reach of the working tree
   cognium-dev entries . -f json
   cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
-  cognium-dev entries . --language java --facts-arrow ./facts --facts-scheme facts@2
+  cognium-dev entries . --language java --facts-arrow ./facts --facts-scheme facts@1
   cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
   cognium-dev recheck . --changed-from origin/main --expect-gone 'CWE-89|src/App.java|<decl>|sql_injection'
   cognium-dev list-passes
