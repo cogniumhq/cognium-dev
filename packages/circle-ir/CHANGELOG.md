@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS: module-scope `let`/`var` on a shared top-level line (variant stored xss) links store-then-read flows across handlers (#1148).**
 - **Rust: interop IL-57 parameter → `serde_json::from_str` → `serde_yaml::from_str` reports deserialization without `speculativeParamSources` (#1150).**
 
 ### Changed
