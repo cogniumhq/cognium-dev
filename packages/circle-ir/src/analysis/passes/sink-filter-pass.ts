@@ -1847,14 +1847,33 @@ function jsLibxmljsNoentDisablesXxe(code: string, sinkLine: number): boolean {
   if (!/\blibxml(?:js)?\s*\.\s*parseXml(?:String)?\s*\(/.test(window)) return false;
   if (/\bnoent\s*:\s*true\b/.test(window)) return false;
 
-  const secondArg = window
-    .match(/\bparseXml(?:String)?\s*\([^,]+,\s*([\s\S]*?)\)\s*/)?.[1]
-    ?.trim() ?? '';
-  if (/^[A-Za-z_$][\w$]*$/.test(secondArg)) return false;
+  const callIdx = window.search(/\bparseXml(?:String)?\s*\(/);
+  if (callIdx < 0) return false;
+  const afterCall = window.slice(callIdx);
+  const openParen = afterCall.indexOf('(');
+  if (openParen < 0) return false;
 
-  const callMatch = window.match(/\bparseXml(?:String)?\s*\([\s\S]*?\)/);
-  const inner = callMatch?.[0]?.replace(/^[^\(]+\(/, '').replace(/\)\s*$/, '') ?? '';
-  if (inner.length > 0 && !/,/.test(inner)) return true;
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openParen; i < afterCall.length; i++) {
+    const ch = afterCall[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  if (closeIdx < 0) return false;
+
+  const inner = afterCall.slice(openParen + 1, closeIdx);
+  const commaIdx = inner.indexOf(',');
+  if (commaIdx < 0) return true;
+
+  const secondArg = inner.slice(commaIdx + 1).trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(secondArg)) return false;
 
   return secondArg.startsWith('{');
 }
