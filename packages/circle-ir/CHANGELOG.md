@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- fix(java): getTheValue pass-through gate for ldap_injection (#1197)
 - fix(circle-ir): Java DFG defs and uses carry column so same-line lambda node ids stay in the method body (#1196)
 
 ### Tests
