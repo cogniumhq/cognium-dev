@@ -2092,6 +2092,39 @@ export class ConstantPropagator {
     const { arrayName, indexKey } = this.arrayElementStorageKey(chain);
     const isTainted = this.isTaintedExpression(right);
     this.setArrayElementTaint(arrayName, indexKey, isTainted);
+    this.propagateJavaRowArrayInitializerElementTaint(chain, right);
+  }
+
+  /**
+   * cognium-dev#476 / SecuriBench Arrays10 — `matrix[0] = new String[] { tainted, "ok" }`
+   * stores taint in row cells (`matrix@0` index `0`), not only on the row slot.
+   */
+  private propagateJavaRowArrayInitializerElementTaint(
+    rowChain: { base: string; indices: string[] },
+    right: Node,
+  ): void {
+    if (rowChain.indices.length !== 1 || rowChain.indices[0] === '*') return;
+    const initializer = this.findJavaArrayLiteralInitializer(right);
+    if (!initializer) return;
+    const rowArrayName = `${rowChain.base}@${rowChain.indices[0]}`;
+    let position = 0;
+    for (const child of initializer.children) {
+      if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+      if (this.isTaintedExpression(child)) {
+        this.setArrayElementTaint(rowArrayName, String(position), true);
+      }
+      position++;
+    }
+  }
+
+  private findJavaArrayLiteralInitializer(node: Node): Node | null {
+    if (node.type === 'array_initializer') return node;
+    if (node.type === 'array_creation_expression') {
+      for (const child of node.children) {
+        if (child.type === 'array_initializer') return child;
+      }
+    }
+    return null;
   }
 
   /** cognium-dev#476: `grid[0][0]` and deeper element paths. */
