@@ -776,6 +776,20 @@ function interproceduralParamReachIsDeadBranchOnly(
   return ifDeadLinesCount.has(localName) && !onLivePaths.has(localName);
 }
 
+/**
+ * cognium-dev#915 — return expressions that are only a context HTML encoder call
+ * (no raw parameter passthrough), e.g. OWASP BenchmarkTest01048 inner-class `Test`.
+ */
+function javaCalleeReturnIsHtmlEncoderOnly(expr: string): boolean {
+  const t = expr.trim();
+  if (!t) return false;
+  const enc =
+    /^(?:(?:org\.springframework\.web\.util\.)?HtmlUtils\.htmlEscape(?:Decimal|Hex)?|StringEscapeUtils\.escapeHtml(?:3|4)?|org\.owasp\.esapi\.ESAPI\.encoder\(\)\.encodeForHTML|Encode\.forHtml(?:Content|Attribute)?|Escaper\.escapeHtml|HtmlEscapers\.escapeHtml)\s*\([^)]*\)\s*$/;
+  if (enc.test(t)) return true;
+  if (/^new\s+String\s*\([^)]*\)\s*$/.test(t)) return false;
+  return false;
+}
+
 /** Sink types whose caller-side flow is dropped when the helper cannot return the parameter. */
 const HELPER_RETURN_GATED_SINKS = new Set([
   'sql_injection',
@@ -863,6 +877,7 @@ export function calleeReturnMayCarryParam(
     if (!m) return true; // could not read this return
     sawReturn = true;
     const expr = m[1];
+    if (javaCalleeReturnIsHtmlEncoderOnly(expr)) continue;
     const bare = /^[A-Za-z_]\w*$/.test(expr) ? expr : null;
     if (bare && mutated.has(bare)) return true;
     if (bare && live.has(bare)) {
@@ -871,6 +886,7 @@ export function calleeReturnMayCarryParam(
       // assignment that actually reaches this return instead, when there is one.
       const def = mustReachingAssignment(slice, dead, i, bare, inlined);
       if (!def) return true;
+      if (javaCalleeReturnIsHtmlEncoderOnly(def.rhs)) continue;
       const upTo = slice.slice(0, def.line);
       upTo.push(`__helperReturn = ${def.rhs};`);
       const atDef = buildJavaTaintedVars(upTo.join('\n'), seeds, dead, { trackSlots: true });
