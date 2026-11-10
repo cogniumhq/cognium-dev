@@ -91,6 +91,7 @@ import { coalesceNoteLevelFindings } from './analysis/note-coalescer.js';
 import { applyRequireEntryPath } from './analysis/require-entry-path.js';
 import { applyConstantCallerGate, applySingleFileJavaMapConstantCallerGate } from './analysis/constant-caller-gate.js';
 import { promoteCrossFilePathsToSinkFlows } from './analysis/promote-cross-file-flows.js';
+import { dropJsTestToProductionTaintPaths } from './analysis/test-to-production-taint-gate.js';
 import { dropEscapesToProjectCallees } from './analysis/project-callee-escape-gate.js';
 import { applyProjectProfileTransform, type ProfileResolver } from './analysis/project-profile-transform.js';
 import { registerBuiltinPlugins } from './languages/index.js';
@@ -2024,6 +2025,9 @@ export async function analyzeProject(
     sourceLinesByFile,
     { budgetMs: crossFileBudgetMs },
   );
+
+  // 2.3.5 (#1187) — JS/TS test-only sources must not taint production sinks.
+  crossFileResult.taintPaths = dropJsTestToProductionTaintPaths(crossFileResult.taintPaths);
 
   // 2.4 (#684) — per-file flows on sink files for cross-file paths (gate parity).
   promoteCrossFilePathsToSinkFlows(fileAnalyses, crossFileResult.taintPaths);
