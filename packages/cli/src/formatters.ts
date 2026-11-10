@@ -109,6 +109,13 @@ export interface CrossFileData {
   filesAnalysed?: number;
   /** #424 — files the scan was asked to cover. */
   filesTotal?: number;
+  /**
+   * S4 — paths the file walk left out: a broken or looping symlink, a link out
+   * of the scan root, a link to a path the walk already covers (counted once,
+   * at its real path), an unreadable directory. Never fatal; reported in every
+   * format.
+   */
+  skippedPaths?: Array<{ path: string; reason: string }>;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -577,6 +584,11 @@ export function formatResults(
   // floor, not an exhaustive list.
   // #424: files were skipped outright — a stronger statement than the
   // cross-file budget warning below, so it goes first.
+  if (crossFileData?.skippedPaths?.length) {
+    lines.push('');
+    lines.push(colors.yellow(`⚠ ${crossFileData.skippedPaths.length} path(s) not scanned:`));
+    for (const p of crossFileData.skippedPaths) lines.push(colors.yellow(`  ${p.path} (${p.reason})`));
+  }
   if (crossFileData?.projectSizeBudgetExceeded) {
     lines.push('');
     lines.push(colors.yellow(
@@ -622,6 +634,8 @@ export function formatJSON(
     // budget exceeded mid-phase, paths above may be incomplete.
     cross_file_budget_exceeded: crossFileData?.budgetExceeded ?? false,
     project_size_budget_exceeded: crossFileData?.projectSizeBudgetExceeded ?? false,
+    // S4: paths the file walk left out (symlinks, unreadable directories).
+    ...(crossFileData?.skippedPaths?.length ? { skipped_paths: crossFileData.skippedPaths } : {}),
     // 3.106.0 (#169): project-profile detection summary. Omitted when
     // detection was disabled (`--no-project-profile`) or the scan target
     // was a single file (no module concept).
@@ -685,18 +699,27 @@ export function formatSARIF(
         // #615: a truncated scan must not look complete. Text output already
         // warns; SARIF consumers (code scanning) only see the run, so the
         // ceiling is a tool notification and the invocation is unsuccessful.
-        ...(crossFileData?.projectSizeBudgetExceeded
+        // S4: a path the walk left out (a broken or looping symlink, a link
+        // out of the root) is a notification; the run still succeeds.
+        ...(crossFileData?.projectSizeBudgetExceeded || crossFileData?.skippedPaths?.length
           ? {
               invocations: [
                 {
-                  executionSuccessful: false,
+                  executionSuccessful: !crossFileData.projectSizeBudgetExceeded,
                   toolExecutionNotifications: [
-                    {
-                      level: 'warning' as const,
-                      message: {
-                        text: `Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
-                      },
-                    },
+                    ...(crossFileData.projectSizeBudgetExceeded
+                      ? [{
+                          level: 'warning' as const,
+                          message: {
+                            text: `Project size ceiling reached — analysed ${crossFileData.filesAnalysed ?? '?'} of ${crossFileData.filesTotal ?? '?'} files.`,
+                          },
+                        }]
+                      : []),
+                    ...(crossFileData.skippedPaths ?? []).map(p => ({
+                      level: (p.reason === 'symlink inside the scan root' ? 'note' : 'warning') as 'note' | 'warning',
+                      message: { text: `Not scanned: ${p.path} (${p.reason}).` },
+                      locations: [{ physicalLocation: { artifactLocation: { uri: p.path } } }],
+                    })),
                   ],
                 },
               ],

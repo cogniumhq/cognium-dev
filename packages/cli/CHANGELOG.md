@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **S4: `scan` and `metrics` no longer follow symlinks, and a bad symlink no longer aborts the scan.** The file walk followed symlinked directories, out of the scan root too; one broken or looping link anywhere ended the scan with exit 2 ("Analysis failed ENOENT" / ELOOP) and no SARIF; a link to a directory inside the tree was scanned twice. Now a symlink is never followed. A target inside the scan root is walked at its real path, so it is counted once. A target outside the root, a broken link, a looping link and an unreadable directory are left out and reported: a warning on stderr, a SARIF `toolExecutionNotifications` entry (`warning`; `note` for a link inside the root; the run stays `executionSuccessful`) and a JSON `skipped_paths` list.
 - **S3: `scan --file-timeout-ms` now bounds a step it cannot interrupt.** The limit is checked between analysis phases, so one synchronous step (a regex that backtracks) could hold a scan for hours. With the limit set, a watchdog thread stops the scan when a file has been in flight for twice the limit (at least the limit plus one second) without the main thread running: it names the file on stderr and ends the process with SIGTERM (exit status 143). Without `--file-timeout-ms` nothing changes. The crafted Go line that hung now scans in about 0.3 s (circle-ir fix).
 
 ### Added
