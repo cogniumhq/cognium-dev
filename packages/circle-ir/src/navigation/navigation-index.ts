@@ -722,7 +722,14 @@ export class NavigationIndex {
     }
     const bare = name?.replace(/<.*>$/, '').replace(/\[\]$/, '').trim();
     if (!bare) return undefined;
-    return bare.includes('.') ? bare : rec.imports.get(bare) ?? bare;
+    if (bare.includes('.')) return bare;
+    const imported = rec.imports.get(bare);
+    if (imported) return imported;
+    const ownsSimple =
+      (rec.pkg ? this.typesByFqn.has(`${rec.pkg}.${bare}`) : false) ||
+      [...this.typesBySimpleName.get(bare) ?? []].some((t) => t.file === rec.path);
+    if (!ownsSimple && (JAVA_LANG.has(bare) || bare in JDK_SUPERS)) return `java.lang.${bare}`;
+    return bare;
   }
 
   private targetOf(owner: TypeRecord, name: string, overload: Overload | undefined): IndexedTarget {
