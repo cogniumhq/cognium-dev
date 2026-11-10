@@ -332,7 +332,7 @@ export type {
 } from './navigation/index.js';
 
 // Graph facts over stable ids (experimental): the reach core and dead code.
-export { REACH_SCHEME, reach, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
+export { REACH_SCHEME, reach, blastRadius, impactedTests, ReachGraph, DEAD_CODE_SCHEME, deadCode, REMOVAL_REACH_SCHEME, removalReach, entryIndexDigest, partialFileDetails, DEPENDENCY_CALLS_SCHEME, dependencyCalls, MAVEN_PACKAGE_FALLBACK, UnknownArtifact, jarPackages, mavenArtifact, mavenPackages, zipEntryNames } from './graph-facts/index.js';
 export type {
   DependencyCallsOptions,
   DependencyCall,
@@ -447,6 +447,10 @@ export {
   tsGraphFact2Set,
   facts2ToArrow,
 } from './facts/index.js';
+// Graph-store T6 walked by the producer over `facts@2`: blast radius, reach
+// from declared entries and impacted tests, as a store's rules must answer them.
+export { T6Graph, t6RowsFromArrow } from './facts/index.js';
+export type { T6Rows, T6Tier, T6EdgeCounts } from './facts/index.js';
 export type {
   Facts2Scheme,
   Facts2Relation,

@@ -41,3 +41,5 @@ export {
 export type { Facts2Scheme, Facts2Relation, Facts2RelationName, Fact2Rows } from './schema2.js';
 export { javaGraphFact2Set, tsGraphFact2Set } from './facts2.js';
 export type { Fact2Set, Facts2Graph, Facts2Input } from './facts2.js';
+export { T6Graph, t6RowsFromArrow } from './t6.js';
+export type { T6Rows, T6Tier, T6EdgeCounts } from './t6.js';

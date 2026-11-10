@@ -8,6 +8,8 @@ export {
   ALL_ENTRY_KINDS,
   ReachGraph,
   reach,
+  blastRadius,
+  impactedTests,
   walkFrom,
   type WalkRoot,
   reachedIds,
