@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Graph-store T6 on `facts@2`, walked by the producer: `T6Graph` and `t6RowsFromArrow`.** From the relations a store loads (`decl`, `call`, `ref`, `entries`), `T6Graph` answers blast radius, reach from declared entries and impacted tests, each with a `strong` / `weak` tier, with the semantics of the consumer's T6 rule program edge for edge (`call` strong unless `inferred`, `ref` weak, `contains`, `loads_parent`, module loads). It is the answer a store running those rules must give. `t6RowsFromArrow` reads the columns from `facts@2` Arrow IPC (optional `apache-arrow`). `facts@2` carries no `field` / `import` edges, entry `constructors` or unresolved sites, so each answer is a lower bound where those could add a path.
+- **`blastRadius(input, changed, graph?)` and `impactedTests(input, changed, graph?)`** on the reach core (`graph-facts`), and `ReachGraph` exported from the package root: the declarations that reach a changed one, and the `test` entries that are changed or reach one, over the reach core's edges walked backwards. Pass a `ReachGraph` to reuse it (and its reverse index) across changes.
 - **`AnalyzerOptions.onFileStart` / `onFileEnd`**: called when `analyze()` starts and ends a file (also when it throws; markup files call them again per extracted script, same path). A caller can bound a file's time from outside the analysing thread, which `fileTimeoutMs` cannot do for one synchronous step (S3). Omitted: no effect.
 
 ### Fixed

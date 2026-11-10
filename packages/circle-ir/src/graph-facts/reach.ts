@@ -396,3 +396,84 @@ export function reach(input: ReachInput, options: ReachOptions = {}): ReachResul
   }
   return { scheme: REACH_SCHEME, ids: 'ids@0.1', rootKinds, partial: [...input.partial], partialFiles: partialFileDetails(input.partial, input.files), facts };
 }
+
+/**
+ * Backward (declaration, weak-so-far) states from `changed`: every declaration
+ * with a path of one edge or more to a changed one, over the reach core's
+ * edges reversed. A state's weak flag is set once the path crosses a weak edge.
+ */
+const reverseIndex = new WeakMap<ReachGraph, Map<string, Edge[]>>();
+
+function edgesInto(g: ReachGraph): Map<string, Edge[]> {
+  let into = reverseIndex.get(g);
+  if (into) return into;
+  into = new Map<string, Edge[]>();
+  for (const from of g.decls.keys()) {
+    for (const e of g.edgesFrom(from)) {
+      const list = into.get(e.to);
+      const back: Edge = { ...e, to: from };
+      if (list) list.push(back); else into.set(e.to, [back]);
+    }
+  }
+  reverseIndex.set(g, into);
+  return into;
+}
+
+function walkBack(g: ReachGraph, changed: ReadonlySet<string>): Set<string> {
+  const into = edgesInto(g);
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const visit = (key: string): void => { if (!seen.has(key)) { seen.add(key); queue.push(key); } };
+  for (const c of changed) {
+    for (const e of into.get(c) ?? []) visit(`${e.strong ? 0 : 1}${e.to}`);
+  }
+  for (let head = 0; head < queue.length; head++) {
+    const key = queue[head];
+    const weak = key[0] === '1';
+    for (const e of into.get(key.slice(1)) ?? []) visit(`${weak || !e.strong ? 1 : 0}${e.to}`);
+  }
+  return seen;
+}
+
+/**
+ * Blast radius (graph-store T6): the declarations that reach a changed one,
+ * `strong` when an all-strong path does, else `weak`. The changed declarations
+ * are not in their own radius. Pass `graph` (built from `input`) to reuse it
+ * and its reverse index across many changes.
+ */
+export function blastRadius(input: ReachInput, changed: Iterable<string>, graph: ReachGraph = new ReachGraph(input)): Map<string, 'strong' | 'weak'> {
+  const seeds = new Set(changed);
+  const states = walkBack(graph, seeds);
+  const out = new Map<string, 'strong' | 'weak'>();
+  for (const key of states) {
+    const id = key.slice(1);
+    if (seeds.has(id)) continue;
+    if (key[0] === '0') out.set(id, 'strong');
+    else if (!states.has(`0${id}`)) out.set(id, 'weak');
+  }
+  return out;
+}
+
+/**
+ * Impacted tests (graph-store T6): the `test` entries that are changed or reach
+ * a changed declaration. `strong` when the entry is not `inferred` and an
+ * all-strong path joins them, else `weak`.
+ */
+export function impactedTests(input: ReachInput, changed: Iterable<string>, graph: ReachGraph = new ReachGraph(input)): Map<string, 'strong' | 'weak'> {
+  const seeds = new Set(changed);
+  const states = walkBack(graph, seeds);
+  const strongRoot = new Set<string>();
+  const anyRoot = new Set<string>();
+  for (const e of input.entries) {
+    if (e.kind !== 'test') continue;
+    anyRoot.add(e.id);
+    if (e.certainty !== 'inferred') strongRoot.add(e.id);
+  }
+  const out = new Map<string, 'strong' | 'weak'>();
+  for (const t of anyRoot) {
+    const hit = seeds.has(t) || states.has(`0${t}`) || states.has(`1${t}`);
+    if (!hit) continue;
+    out.set(t, strongRoot.has(t) && (seeds.has(t) || states.has(`0${t}`)) ? 'strong' : 'weak');
+  }
+  return out;
+}
