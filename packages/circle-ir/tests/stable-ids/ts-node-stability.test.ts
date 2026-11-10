@@ -339,12 +339,12 @@ describe('IR positions the node ids rely on', () => {
     }
   });
 
-  it('Java defs and uses keep their shape; Java CFG blocks gain the column', async () => {
+  it('Java defs and uses carry column; Java CFG blocks gain the column (#1196)', async () => {
     const ir = await analyze('class A {\n  int f(int n) {\n    int m = n + 1;\n    return m;\n  }\n}\n', 'A.java', 'java');
     const m = ir.dfg.defs.find(d => d.variable === 'm');
     expect(m).toBeDefined();
-    expect(m && 'column' in m).toBe(false);
-    for (const u of ir.dfg.uses) expect('column' in u).toBe(false);
+    expect(m?.column).toEqual(expect.any(Number));
+    for (const u of ir.dfg.uses) expect(u.column).toEqual(expect.any(Number));
     expect(ir.cfg.blocks.length).toBeGreaterThan(0);
     for (const b of ir.cfg.blocks) expect(b.start_column).toEqual(expect.any(Number));
   });

@@ -8,15 +8,17 @@ import type { Node, Tree } from 'web-tree-sitter';
 import type { DFG, DFGDef, DFGUse, DFGChain, SupportedLanguage } from '../../types/index.js';
 import { findNodes, walkTree, getNodeText, findAncestor, getNodesFromCache, type NodeCache } from '../parser.js';
 
+/** While `buildJavaDFG` runs, Java defs/uses gain a column like JS/TS (cognium-dev#1196). */
+let javaDefUseColumns = false;
+
 /**
  * The 0-based column of `node` as a def/use property on the
- * JavaScript/TypeScript path, and nothing on the Java and C# paths that share
- * these helpers (their defs and uses keep their shape). With the column, a
- * def or use on a line it shares with a nested function can be placed in the
- * right body.
+ * JavaScript/TypeScript path (and on Java while `buildJavaDFG` runs). C# defs
+ * created outside these helpers keep their shape. With the column, a def or use
+ * on a line it shares with a nested function can be placed in the right body.
  */
 function jsColumn(node: Node, isJavaScript: boolean): { column?: number } {
-  return isJavaScript ? { column: node.startPosition.column } : {};
+  return isJavaScript || javaDefUseColumns ? { column: node.startPosition.column } : {};
 }
 
 /**
@@ -197,6 +199,15 @@ function buildCSharpDFG(tree: Tree, cache?: NodeCache): DFG {
  */
 function buildJavaDFG(tree: Tree, cache?: NodeCache): DFG {
   multiLineValueLinks = [];
+  javaDefUseColumns = true;
+  try {
+    return buildJavaDFGBody(tree, cache);
+  } finally {
+    javaDefUseColumns = false;
+  }
+}
+
+function buildJavaDFGBody(tree: Tree, cache?: NodeCache): DFG {
   const defs: DFGDef[] = [];
   const uses: DFGUse[] = [];
   let defIdCounter = 1;
@@ -517,6 +528,15 @@ function processStatement(
           // Process initializer for uses
           const init = decl.childForFieldName('value');
           if (init) {
+            if (javaDefUseColumns) {
+              for (const lam of findNodes(init, 'lambda_expression')) {
+                const lamResult = processJavaLambdaExpression(lam, defId, useId, scopeStack);
+                defs.push(...lamResult.defs);
+                uses.push(...lamResult.uses);
+                defId = lamResult.nextDefId;
+                useId = lamResult.nextUseId;
+              }
+            }
             const initUses = extractUses(init, useId, scopeStack, isJavaScript);
             uses.push(...initUses.uses);
             useId = initUses.nextId;
@@ -978,6 +998,60 @@ function processExpression(
 /**
  * Extract uses from an expression.
  */
+function processJavaLambdaExpression(
+  lam: Node,
+  startDefId: number,
+  startUseId: number,
+  scopeStack: Map<string, number>[],
+): BlockResult {
+  const defs: DFGDef[] = [];
+  const uses: DFGUse[] = [];
+  let defId = startDefId;
+  let useId = startUseId;
+  scopeStack.push(new Map());
+  const params = lam.childForFieldName('parameters');
+  if (params) {
+    const paramDefs = extractParameterDefs(params, defId);
+    for (const p of paramDefs) {
+      defs.push(p);
+      currentScope(scopeStack).set(p.variable, p.id);
+    }
+    defId += paramDefs.length;
+  }
+  const body = lam.childForFieldName('body');
+  if (body) {
+    if (body.type === 'block') {
+      const r = processBlock(body, defId, useId, scopeStack, false);
+      defs.push(...r.defs);
+      uses.push(...r.uses);
+      defId = r.nextDefId;
+      useId = r.nextUseId;
+    } else {
+      const r = extractUses(body, useId, scopeStack, false);
+      uses.push(...r.uses);
+      useId = r.nextId;
+    }
+  }
+  scopeStack.pop();
+  return { defs, uses, nextDefId: defId, nextUseId: useId };
+}
+
+function walkTreeForUses(
+  node: Node,
+  visitor: (node: Node) => void,
+): void {
+  const stack: Node[] = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    visitor(current);
+    if (current.type === 'lambda_expression' && javaDefUseColumns) continue;
+    for (let i = current.childCount - 1; i >= 0; i--) {
+      const child = current.child(i);
+      if (child) stack.push(child);
+    }
+  }
+}
+
 function extractUses(
   node: Node,
   startId: number,
@@ -987,7 +1061,7 @@ function extractUses(
   const uses: DFGUse[] = [];
   let id = startId;
 
-  walkTree(node, (n) => {
+  walkTreeForUses(node, (n) => {
     if (n.type === 'identifier') {
       // Check if it's not a method name or type name
       const parent = n.parent;
@@ -1036,6 +1110,7 @@ function extractUses(
           const nameNode = parent.childForFieldName('name') ?? parent.childForFieldName('pattern');
           if (nameNode === n) return;
         }
+        if (parent.type === 'inferred_parameters') return;
       }
 
       const name = getNodeText(n);
@@ -1066,6 +1141,22 @@ function extractParameterDefs(params: Node, startId: number): DFGDef[] {
   const defs: DFGDef[] = [];
   let id = startId;
 
+  if (params.type === 'inferred_parameters') {
+    for (let j = 0; j < params.childCount; j++) {
+      const idNode = params.child(j);
+      if (idNode?.type === 'identifier') {
+        defs.push({
+          id: id++,
+          variable: getNodeText(idNode),
+          line: idNode.startPosition.row + 1,
+          ...jsColumn(idNode, false),
+          kind: 'param',
+        });
+      }
+    }
+    return defs;
+  }
+
   for (let i = 0; i < params.childCount; i++) {
     const param = params.child(i);
     if (!param) continue;
@@ -1079,6 +1170,7 @@ function extractParameterDefs(params: Node, startId: number): DFGDef[] {
           id: id++,
           variable: getNodeText(nameNode),
           line: param.startPosition.row + 1,
+          ...jsColumn(nameNode, false),
           kind: 'param',
         });
       }
