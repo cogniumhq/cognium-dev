@@ -1118,6 +1118,8 @@ const NOSQL_FRAMEWORK_SINKS: SinkPattern[] = [
 const CACHE_POISONING_SINKS: SinkPattern[] = [
   { method: 'set', class: 'Map', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
   { method: 'set', class: 'cache', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
+  // read-through cache: `cache.fetch(key, () => value)` stores what the callback returns
+  { method: 'fetch', class: 'cache', type: 'cache_poisoning', cwe: 'CWE-524', severity: 'high', arg_positions: [1], languages: ['javascript', 'typescript'] },
 ];
 
 const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [

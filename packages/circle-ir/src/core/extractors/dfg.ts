@@ -394,6 +394,7 @@ function buildJavaScriptDFG(tree: Tree, cache?: NodeCache): DFG {
 
   // Compute def-use chains
   const chains = computeChains(defs, uses);
+  linkMultiLineValues(chains, uses);
 
   return { defs, uses, chains };
 }
@@ -436,22 +437,26 @@ function processBlock(
 }
 
 /**
- * Java: a local whose initializer / assigned value wraps over several lines
- * (`label = new String(\n  Base64.decode(\n    picked.getBytes()));`) holds uses on
- * lines after the definition's own line, and `computeChains` links a use to a
- * definition only on the same line. Each such definition is recorded here with
- * the uses of its value, and `buildJavaDFG` links them once every use has its
- * final reaching definition (cognium-dev#597).
+ * A local whose initializer wraps over several lines holds uses on lines after
+ * the definition's own line, and `computeChains` links a use to a definition
+ * only on the same line. Java (`label = new String(\n  Base64.decode(\n
+ * picked.getBytes()));`, cognium-dev#597) and JavaScript / TypeScript (a
+ * multi-line object literal `const doc = {\n  issuer: 'https://' + host,\n};`,
+ * cognium-dev#900) record each such definition here with the uses of its value;
+ * `buildJavaDFG` and `buildJavaScriptDFG` link them once every use has its final
+ * reaching definition.
  */
 let multiLineValueLinks: Array<{ defId: number; useIds: number[] }> = [];
 
+/** Nodes inside a value that have their own statements: their uses do not feed the value itself. */
+const JAVA_OWN_BODY_NODES = ['lambda_expression', 'class_body', 'switch_expression'];
+const JS_OWN_BODY_NODES = ['arrow_function', 'function_expression', 'function', 'generator_function', 'class', 'class_body', 'method_definition'];
+
 function recordMultiLineValue(value: Node, defId: number, valueUses: DFGUse[], isJavaScript: boolean): void {
-  if (isJavaScript || value.endPosition.row <= value.startPosition.row) return;
-  // A lambda, anonymous class or switch expression inside the value has its own
+  if (value.endPosition.row <= value.startPosition.row) return;
+  // A lambda, function, class or switch expression inside the value has its own
   // statements; their uses do not feed the value itself. Leave those alone.
-  if (findNodes(value, 'lambda_expression').length > 0
-    || findNodes(value, 'class_body').length > 0
-    || findNodes(value, 'switch_expression').length > 0) return;
+  if ((isJavaScript ? JS_OWN_BODY_NODES : JAVA_OWN_BODY_NODES).some(t => findNodes(value, t).length > 0)) return;
   const useIds = valueUses.filter(u => u.line > value.startPosition.row + 1).map(u => u.id);
   if (useIds.length > 0) multiLineValueLinks.push({ defId, useIds });
 }
