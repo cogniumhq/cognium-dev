@@ -141,21 +141,27 @@ beforeAll(async () => {
   // Shuffled input order: nothing in the bytes may depend on it.
   fixtureFacts = (await buildJavaGraph([...files(JAVA_APP)].reverse(), { serviceFiles: SERVICES, ...OPTS })).facts as Facts2Arrow;
   fixtureAgain = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, ...OPTS })).facts as Facts2Arrow;
-  fixtureV1 = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', facts: OPTS.facts })).facts as FactsArrow;
+  fixtureV1 = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', factsScheme: 'facts@1', facts: OPTS.facts })).facts as FactsArrow;
   fixtureIrs = Object.fromEntries(await Promise.all(Object.entries(JAVA_APP).map(async ([path, code]) => [path, await analyze(code, path, 'java', { navigationTypes: true })] as const)));
   tsGraph = await buildTsCallGraph([{ path: TS_PATH, code: TS_CODE }]);
   tsFacts = await facts2ToArrow(tsGraphFact2Set(tsGraph, [{ path: TS_PATH, code: TS_CODE, imports: [] }]), { source: 'ts-call-edges@0.1', engine: 'circle-ir@test' });
 }, 180_000);
 
-describe('opt-in: facts@1 stays the default', () => {
-  it('emitFacts alone still writes facts@1, byte for byte the same as before', async () => {
+describe('default: facts@2 (graph-store T5a.1b); facts@1 on request', () => {
+  it('emitFacts alone writes facts@2, byte for byte the same as factsScheme facts@2', async () => {
+    const byDefault = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', facts: OPTS.facts })).facts as Facts2Arrow;
+    expect(byDefault.scheme).toBe('facts@2');
+    expect(byDefault.manifest.facts).toBe('facts@2');
+    expect(Object.keys(byDefault.relations)).toEqual([...FACTS2_RELATION_NAMES]);
+    for (const name of FACTS2_RELATION_NAMES) {
+      expect(hex(byDefault.relations[name]), name).toBe(hex(fixtureAgain.relations[name]));
+    }
+  });
+
+  it('factsScheme facts@1 still writes the eight facts@1 relations', () => {
     expect(fixtureV1.scheme).toBe('facts@1');
     expect(fixtureV1.manifest.facts).toBe('facts@1');
     expect(Object.keys(fixtureV1.relations)).toHaveLength(8);
-    const explicit = (await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', factsScheme: 'facts@1', facts: OPTS.facts })).facts as FactsArrow;
-    for (const name of Object.keys(fixtureV1.relations) as (keyof FactsArrow['relations'])[]) {
-      expect(hex(explicit.relations[name]), name).toBe(hex(fixtureV1.relations[name]));
-    }
   });
 
   it('factsScheme facts@2 writes the twelve relations; without emitFacts nothing is written; the graph JSON is unchanged', async () => {

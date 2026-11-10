@@ -131,12 +131,12 @@ export interface EntriesCliOptions {
   output?: string;
   exportedPackages: boolean;
   /**
-   * Directory for the `facts@1` relations (proposed; graph-store plan T2) as
+   * Directory for the `facts@2` relations (graph-store plan T2/T5a) as
    * Arrow IPC files plus `manifest.json`, written after the graph is built.
    * Java only. The report is the same with or without it.
    */
   factsArrow?: string;
-  /** The fact schema `factsArrow` writes: `facts@1` (the default) or `facts@2`. Needs `factsArrow`. */
+  /** The fact schema `factsArrow` writes: `facts@2` (the default) or `facts@1`. Needs `factsArrow`. */
   factsScheme?: FactsSchemeName;
 }
 
@@ -569,7 +569,7 @@ export async function computeEntries(path: string, opts: EntriesCliOptions): Pro
   const root = checkDirectory(path);
   const language = pickLanguage([root], opts.language);
   if (opts.factsArrow !== undefined && language !== 'java') throw new UsageError('--facts-arrow is available for Java trees only');
-  const scheme = opts.factsScheme ?? 'facts@1';
+  const scheme = opts.factsScheme ?? 'facts@2';
   const graph = await buildGraph(root, language, { exportedPackages: opts.exportedPackages, ...(opts.factsArrow !== undefined ? { emitFacts: 'arrow' as const, factsScheme: scheme } : {}) });
   if (opts.factsArrow !== undefined) {
     if (!graph.facts) throw new Error(`${scheme}: the engine returned no facts`);

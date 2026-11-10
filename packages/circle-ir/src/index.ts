@@ -432,9 +432,10 @@ export {
 } from './facts/index.js';
 
 // `facts@2`: the successor schema (stable file keys, site lines relative to
-// their declaration, decl_pos, ref, registration, parse_error). Opt-in through
-// `buildJavaGraph(files, { emitFacts: 'arrow', factsScheme: 'facts@2' })`, or
-// `javaGraphFact2Set` / `tsGraphFact2Set` and `facts2ToArrow`; facts@1 stays the default.
+// their declaration, decl_pos, ref, registration, parse_error). The default of
+// `buildJavaGraph(files, { emitFacts: 'arrow' })` since graph-store T5a.1b;
+// `factsScheme: 'facts@1'` still writes facts@1. Also `javaGraphFact2Set` /
+// `tsGraphFact2Set` and `facts2ToArrow`.
 export {
   FACTS2_SCHEME,
   FACTS2_RELATION_NAMES,

@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`entries --facts-arrow` writes `facts@2` by default** (graph-store T5a.1b): the twelve `facts@2` relations plus `manifest.json`. `--facts-scheme facts@1` still writes the eight `facts@1` relations. The report on stdout and `-o` is unchanged.
+
 ### Added
 - **`recheck` verifies a fix, not only a key diff** (report `cognium-recheck@0.2`; `@0.1` baselines are still read):
   - `--expect-gone <key[,…]|@list.txt>` names the findings the change is meant to fix. The report gets `targets[]` and `fixed: pass|fail`; the fix check fails, with exit 1, when a targeted key is `still-present`, `unknown`, not in the baseline, or `gone` only because a sanitizer for another sink class appeared (an HTML encoder before a SQL sink). A rename or a no-op helper no longer exits 0.

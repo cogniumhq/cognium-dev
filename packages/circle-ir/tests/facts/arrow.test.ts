@@ -32,8 +32,8 @@ let irs: Record<string, CircleIR>;
 beforeAll(async () => {
   plain = await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES });
   // Shuffled input order: file ids and row order must not depend on it.
-  withFacts = await buildJavaGraph([...files(JAVA_APP)].reverse(), { serviceFiles: SERVICES, emitFacts: 'arrow', facts: { engine: 'circle-ir@test', parser: 'tree-sitter-java@test' } });
-  again = await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', facts: { engine: 'circle-ir@test', parser: 'tree-sitter-java@test' } });
+  withFacts = await buildJavaGraph([...files(JAVA_APP)].reverse(), { serviceFiles: SERVICES, emitFacts: 'arrow', factsScheme: 'facts@1', facts: { engine: 'circle-ir@test', parser: 'tree-sitter-java@test' } });
+  again = await buildJavaGraph(files(JAVA_APP), { serviceFiles: SERVICES, emitFacts: 'arrow', factsScheme: 'facts@1', facts: { engine: 'circle-ir@test', parser: 'tree-sitter-java@test' } });
   facts = withFacts.facts as FactsArrow;
   tables = Object.fromEntries(FACTS_RELATION_NAMES.map(n => [n, tableFromIPC(facts.relations[n])]));
   irs = Object.fromEntries(await Promise.all(Object.entries(JAVA_APP).map(async ([path, code]) => [path, await analyze(code, path, 'java', { navigationTypes: true })] as const)));

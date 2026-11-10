@@ -306,12 +306,12 @@ describe('entries', () => {
   });
 });
 
-describe('entries --facts-arrow (facts@1, proposed)', () => {
-  test('writes the eight relations and a manifest; the report is unchanged', async () => {
+describe('entries --facts-arrow', () => {
+  test('--facts-scheme facts@1 writes the eight relations and a manifest; the report is unchanged', async () => {
     const plain = await runCli(['entries', java, '-f', 'json']);
     expect(plain.code).toBe(0);
     const out = join(dir, 'facts');
-    const withFacts = await runCli(['entries', java, '-f', 'json', '--facts-arrow', out]);
+    const withFacts = await runCli(['entries', java, '-f', 'json', '--facts-arrow', out, '--facts-scheme', 'facts@1']);
     expect(withFacts.code).toBe(0);
     expect(withFacts.stdout).toBe(plain.stdout);
     expect(withFacts.stderr).toContain('Wrote facts@1');
@@ -341,7 +341,7 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
 
     // A second run is byte-identical.
     const out2 = join(dir, 'facts2');
-    await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2]);
+    await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2, '--facts-scheme', 'facts@1']);
     for (const name of names) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(out2, `${name}.arrow`)))).toBe(0);
     expect(readFileSync(join(out2, 'manifest.json'), 'utf8')).toBe(readFileSync(join(out, 'manifest.json'), 'utf8'));
   }, 120_000);
@@ -369,6 +369,19 @@ describe('entries --facts-arrow (facts@1, proposed)', () => {
     await runCli(['entries', java, '-f', 'json', '--facts-arrow', out2, '--facts-scheme', 'facts@2']);
     for (const name of Object.keys(manifest.relations)) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(out2, `${name}.arrow`)))).toBe(0);
     expect(readFileSync(join(out2, 'manifest.json'), 'utf8')).toBe(readFileSync(join(out, 'manifest.json'), 'utf8'));
+  }, 120_000);
+
+  test('without --facts-scheme writes facts@2, byte for byte the same as --facts-scheme facts@2', async () => {
+    const out = join(dir, 'facts-default');
+    const explicit = join(dir, 'facts-explicit');
+    const r = await runCli(['entries', java, '-f', 'json', '--facts-arrow', out]);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('Wrote facts@2 (12 relations');
+    await runCli(['entries', java, '-f', 'json', '--facts-arrow', explicit, '--facts-scheme', 'facts@2']);
+    const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'));
+    expect(manifest.facts).toBe('facts@2');
+    for (const name of Object.keys(manifest.relations)) expect(Buffer.compare(readFileSync(join(out, `${name}.arrow`)), readFileSync(join(explicit, `${name}.arrow`)))).toBe(0);
+    expect(readFileSync(join(out, 'manifest.json'), 'utf8')).toBe(readFileSync(join(explicit, 'manifest.json'), 'utf8'));
   }, 120_000);
 
   test('is refused on a non-Java tree', async () => {
