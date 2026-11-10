@@ -444,7 +444,11 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           isReactHtmlComponent(m, f, lines) ||
           (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines)) ||
           (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines)) ||
-          (ctx.language === 'rust' && isRustJsonYamlInteropDeserParam(f, lines, m))
+          (ctx.language === 'rust' && isRustJsonYamlInteropDeserParam(f, lines, m)) ||
+          // cognium-dev #900: library entry points that write caller-controlled
+          // values into a shared cache (CWE-524) are real defects, not speculative
+          // prompt/SSRF mirrors — keep the default path without speculativeParamSources.
+          f.sink_type === 'cache_poisoning'
         );
       }
       if (keep) flows[w++] = f;
