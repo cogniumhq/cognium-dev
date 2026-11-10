@@ -3394,6 +3394,62 @@ function matchingCloseParen(lineText: string, openParenIndex: number): number {
  * inside that `.parse(` argument list on the same line, inline colocation must not
  * pair them — the nested sink runs before the parse returns.
  */
+/**
+ * cognium-dev#1223 — when `types[].methods` is empty (common for
+ * `module.exports.foo = function` handlers), derive function line ranges from
+ * the source so the #472-style same-function gate still applies.
+ */
+/**
+ * cognium-dev#1223 — `req.query.url` contains the token `query`, which must not
+ * pair with a tainted local named `query` in another function. True when every
+ * occurrence of `ident` in `expr` is only as `(req|request|ctx).ident`.
+ */
+function jsBareIdentOnlyAsRequestProxy(expr: string, ident: string): boolean {
+  const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\b`, 'gu');
+  let hits = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(expr)) !== null) {
+    hits++;
+    const before = expr.slice(0, m.index);
+    if (!/(?:\breq|\brequest|\bctx)\.\s*$/.test(before)) return false;
+  }
+  return hits > 0;
+}
+
+function buildJsTsFunctionRangesFromSource(code: string): Array<[number, number]> {
+  const lines = code.split('\n');
+  const ranges: Array<[number, number]> = [];
+  const startPatterns = [
+    /\bfunction\b/,
+    /(?:^|\s)(?:module\.)?exports\.\w+\s*=\s*(?:async\s+)?function\b/,
+    /(?:^|\s)(?:module\.)?exports\.\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/,
+    /(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?function\b/,
+    /(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/,
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trimStart().startsWith('//')) continue;
+    if (!startPatterns.some((re) => re.test(line))) continue;
+    const startLine = i + 1;
+    let depth = 0;
+    let started = false;
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]!) {
+        if (ch === '{') {
+          depth++;
+          started = true;
+        } else if (ch === '}') depth--;
+      }
+      if (started && depth === 0) {
+        ranges.push([startLine, j + 1]);
+        break;
+      }
+    }
+  }
+  return ranges;
+}
+
 function sinkNestedInJsTsParseArgs(lineText: string, sinkMethod: string | undefined): boolean {
   if (!lineText || !sinkMethod?.length) return false;
   const needle = `${sinkMethod}(`;
@@ -3466,7 +3522,14 @@ function detectExpressionScanFlows(
   const csFnRanges = methodRanges(['csharp']);
   const csFnStart = (line: number): number => enclosingStart(csFnRanges, line);
 
-  const jsFnRanges = methodRanges(['javascript', 'typescript']);
+  let jsFnRanges = methodRanges(['javascript', 'typescript']);
+  if (
+    jsFnRanges.length === 0 &&
+    typeof code === 'string' &&
+    (language === 'javascript' || language === 'typescript')
+  ) {
+    jsFnRanges = buildJsTsFunctionRangesFromSource(code);
+  }
   const jsFnStart = (line: number): number => enclosingStart(jsFnRanges, line);
   // cognium-dev#548 — names declared as class fields. A field is the one kind
   // of variable whose value legitimately crosses from one method to another, so
@@ -4547,6 +4610,25 @@ function detectExpressionScanFlows(
             const srcFn = goFnStart(source.line);
             const sinkFn = goFnStart(sink.line);
             if (srcFn !== -1 && sinkFn !== -1 && srcFn !== sinkFn) continue;
+          }
+
+          // cognium-dev#1223 — cross-function name collision on request proxies:
+          // `req.query` must not match a local `query` in another handler.
+          if (
+            jsFnRanges.length > 0 &&
+            source.variable &&
+            !complex
+          ) {
+            const srcFn = jsFnStart(source.line);
+            const sinkFn = jsFnStart(sink.line);
+            if (
+              srcFn !== -1 &&
+              sinkFn !== -1 &&
+              srcFn !== sinkFn &&
+              jsBareIdentOnlyAsRequestProxy(expr, source.variable)
+            ) {
+              continue;
+            }
           }
 
           // cognium-dev#752: GraphQL resolver args are seeded by name only; scope
