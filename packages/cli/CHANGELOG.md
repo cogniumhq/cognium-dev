@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **S3: `scan --file-timeout-ms` now bounds a step it cannot interrupt.** The limit is checked between analysis phases, so one synchronous step (a regex that backtracks) could hold a scan for hours. With the limit set, a watchdog thread stops the scan when a file has been in flight for twice the limit (at least the limit plus one second) without the main thread running: it names the file on stderr and ends the process with SIGTERM (exit status 143). Without `--file-timeout-ms` nothing changes. The crafted Go line that hung now scans in about 0.3 s (circle-ir fix).
+
+### Added
+- **`npm run lint:regex`** (repository CI, not the package): lints `packages/*/src` with `eslint-plugin-regexp` and fails on a regex certain to backtrack exponentially, or on a file with more super-linear regexes than `scripts/regex-lint-baseline.json` (686 reports in 64 files when it landed; the baseline may only go down).
+
 ### Changed
 - **`entries --facts-arrow` writes `facts@2` by default** (graph-store T5a.1b): the twelve `facts@2` relations plus `manifest.json`. `--facts-scheme facts@1` still writes the eight `facts@1` relations. The report on stdout and `-o` is unchanged.
 

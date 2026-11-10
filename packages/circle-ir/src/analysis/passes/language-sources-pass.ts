@@ -5524,7 +5524,7 @@ function findGoMapAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
   // disjunct holds, so falling past it proves the key is in the map. The key
   // may be a selector (`u.Host`). Captures the map identifier in group 1.
   const guardOpen =
-    /^\s*if\s+(?:[^{&|]+\|\|\s*)*!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\]\s*(?:\|\|[^{&]+)?\{/;
+    /^\s*if\s+(?:[^{&|]+\|\|)*\s*!\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\]\s*(?:\|\|[^{&]+)?\{/;
   // Allow-list naming heuristic.
   const allowlistName = /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
 

@@ -50,6 +50,11 @@ jobs:
       # update races, unreachable/unmodified loops, fallthrough, self-compare.
       - run: npm run lint
 
+      # S3: no regex that backtracks exponentially, and no file with more
+      # super-linear regexes than scripts/regex-lint-baseline.json allows.
+      - name: lint — regexes
+        run: npm run lint:regex
+
       # Repo tooling under scripts/ is not part of any workspace, so no package
       # suite covers it. Node's built-in runner keeps this dependency-free.
       # It guards the pack dry-run checker and the Rollouts release reporter.

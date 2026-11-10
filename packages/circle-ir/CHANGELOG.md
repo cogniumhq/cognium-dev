@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`AnalyzerOptions.onFileStart` / `onFileEnd`**: called when `analyze()` starts and ends a file (also when it throws; markup files call them again per extracted script, same path). A caller can bound a file's time from outside the analysing thread, which `fileTimeoutMs` cannot do for one synchronous step (S3). Omitted: no effect.
+
 ### Fixed
 
+- **S3: eight regexes backtracked exponentially, and a crafted Go line could hold `analyze()` for hours.** A line of an `if` with many `||` disjuncts and no `!map[key]` (the Go map allow-list guard) doubled the time with every disjunct: about 4 s at 112 bytes and 39 s at 124 bytes, past any `fileTimeoutMs` because the step is synchronous. Fixed by removing the overlap that let two quantifiers take the same characters:
+  - the Go map allow-list guard: the whitespace after each `||` is taken by the next disjunct, not by a second quantifier (same matches);
+  - the quoted-string matcher `(?:\\.|(?!\1).)*` (secret scanning, f-string detection, string stripping in taint propagation; 5 sites): a backslash is now only the start of an escape (`[^\\\n\r\u2028\u2029]` instead of `.`), so an unterminated literal that ends in a lone backslash before a quote no longer matches;
+  - the C# interpolated-string matcher (`project-callee-escape-gate`): a `{…}` hole cannot contain `{`, and a lone `{` is one that does not open such a hole;
+  - the leading-comment skip before a `new RegExp(` template argument: a block comment ends at its first `*/`.
 - **JS: module-scope `let`/`var` on a shared top-level line (variant stored xss) links store-then-read flows across handlers (#1148).**
 - **Rust: interop IL-57 parameter → `serde_json::from_str` → `serde_yaml::from_str` reports deserialization without `speculativeParamSources` (#1150).**
 

@@ -340,6 +340,18 @@ export interface AnalyzerOptions {
   fileTimeoutMs?: number;
 
   /**
+   * Called when `analyze()` starts a file and again when it ends (also when it
+   * throws). A caller that needs a hard bound on a file's time, which
+   * `fileTimeoutMs` cannot give for one synchronous step, can watch from
+   * outside the analysing thread which file is in flight (cognium-dev S3).
+   * Markup files call it again for each extracted script, with the same path.
+   * Omitted: no effect.
+   */
+  onFileStart?: (filePath: string) => void;
+  /** See {@link AnalyzerOptions.onFileStart}. */
+  onFileEnd?: (filePath: string) => void;
+
+  /**
    * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
    * characters summed across the files given (cognium-dev#424). `0` or
    * omitted disables it — no behaviour change for existing callers.
@@ -975,6 +987,20 @@ export async function analyze(
   filePath: string,
   language: SupportedLanguage,
   options: AnalyzerOptions = {}
+): Promise<CircleIR> {
+  options.onFileStart?.(filePath);
+  try {
+    return await analyzeFile(code, filePath, language, options);
+  } finally {
+    options.onFileEnd?.(filePath);
+  }
+}
+
+async function analyzeFile(
+  code: string,
+  filePath: string,
+  language: SupportedLanguage,
+  options: AnalyzerOptions
 ): Promise<CircleIR> {
   if (!initialized) {
     await initAnalyzer(options);
