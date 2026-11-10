@@ -211,6 +211,26 @@ function isRustDieselSqlParamFlow(f: TaintFlowInfo, lines: string[]): boolean {
   return /\b(?:sql_query|raw_sql)\s*\(/.test(sinkLine);
 }
 
+/**
+ * cognium-dev#1150 — interop IL-57: a function parameter fed to
+ * `serde_json::from_str` and later `serde_yaml::from_str` (JSON node →
+ * optional string chain) is attacker-controlled in the fixture corpus.
+ */
+function isRustJsonYamlInteropDeserParam(
+  f: TaintFlowInfo,
+  lines: string[],
+  method: MethodInfo,
+): boolean {
+  if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'deserialization') return false;
+  const param = method.parameters[0]?.name;
+  if (!param) return false;
+  const esc = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = lines.slice(method.start_line - 1, method.end_line).join('\n');
+  if (!new RegExp(`serde_json::from_str\\s*\\(\\s*${esc}\\b`).test(body)) return false;
+  const sinkLine = lines[f.sink_line - 1] ?? '';
+  return /\bserde_yaml::from_str\s*\(/.test(sinkLine);
+}
+
 /** cognium-dev#804 — SCA reachability: direct `yaml.load(param)` on a parameter. */
 function isPythonYamlLoadParamDeser(f: TaintFlowInfo, lines: string[]): boolean {
   if (f.source_type !== 'interprocedural_param' || f.sink_type !== 'deserialization') return false;
@@ -423,7 +443,8 @@ export class ParamSourceFlowGatePass implements AnalysisPass<ParamSourceFlowGate
           fedByRealSource(f, m) ||
           isReactHtmlComponent(m, f, lines) ||
           (ctx.language === 'python' && isPythonYamlLoadParamDeser(f, lines)) ||
-          (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines))
+          (ctx.language === 'rust' && isRustDieselSqlParamFlow(f, lines)) ||
+          (ctx.language === 'rust' && isRustJsonYamlInteropDeserParam(f, lines, m))
         );
       }
       if (keep) flows[w++] = f;
