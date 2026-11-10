@@ -40,7 +40,7 @@ import {
 import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
-import { computeRecheck, parseRecheckOptions } from './recheck.js';
+import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.js';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
@@ -2340,7 +2340,8 @@ async function main(): Promise<void> {
   }
 
   // E20/engine: the deterministic re-check of a code-fix change.
-  // Always JSON; exit 1 when the no-new-high rule fails (with --baseline).
+  // Always JSON; exit 1 when the no-new-high rule or --expect-gone fails,
+  // 3 when a verdict is unknown (partial parse, file not analysed).
   if (command === 'recheck') {
     const target = args[0] ?? '.';
     try {
@@ -2354,7 +2355,7 @@ async function main(): Promise<void> {
       } else {
         writeStdout(payload + '\n');
       }
-      await exitAfterFlush(report.noNewHigh === 'fail' ? 1 : 0);
+      await exitAfterFlush(recheckExitCode(report));
     } catch (e) {
       if (e instanceof UsageError) { console.error(colors.red(`Error: ${e.message}`)); process.exit(2); }
       throw e;

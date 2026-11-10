@@ -72,13 +72,13 @@ COMMANDS:
                          (removal-reach@0.1); --base is a git ref or a directory
   entries [path]       The entry-point index (routes, listeners, mains, exports, …)
   depcalls --artifact <g:a[:v]> [path]
-  recheck --changed <files> [--baseline <before.json>] [path]
-                             Re-check a code fix: findings on the changed files keyed by
-                             CWE × declaration; with --baseline, gone / still-present /
-                             new-high / new-other and the no-new-high rule (exit 1 on fail)
                        Java: calls into one Maven artifact, covered or not by tests
                          (dependency-calls@0.1); packages from --jar, the Maven
                          repository (with a version), else a built-in table
+  recheck (--changed <files> | --changed-from <ref>) [path]
+                       Re-check a code fix (cognium-recheck@0.2): findings keyed by
+                         CWE × declaration × rule, with evidence; against a baseline,
+                         gone / still-present / new-high / new-other / unknown
   list-passes [cat]    List all analysis passes (optionally filter by category)
   init                 Initialize a configuration file in your project
   version              Display version information
@@ -109,6 +109,22 @@ GRAPH FACT OPTIONS (deadcode, reach, entries, depcalls):
                                report itself is unchanged
   --facts-scheme <scheme>    entries, with --facts-arrow: the fact schema to write
                                (facts@1|facts@2) [default: facts@1]
+
+RECHECK OPTIONS:
+  --changed <files>          The changed files (comma-separated, or @list.txt)
+  --changed-from <ref>       Derive the changed files from git (diff against <ref>,
+                               deletions, both sides of a rename and untracked files)
+                               and take the baseline from <ref>; implies --scope closure
+  --baseline <before.json>   The report from the tree before the change
+  --scope <files|closure>    files: analyse only the changed files; closure: analyse the
+                               tree and report every finding whose sink, source or path
+                               touches a changed file [default: files; closure with
+                               --changed-from]
+  --expect-gone <keys>       Keys the change is meant to fix (comma-separated, or
+                               @list.txt); the fix check fails unless each is gone
+  -o, --output <file>        Write the report to a file instead of stdout
+  Exit codes: 0 pass; 1 a new high finding or a targeted key not gone; 2 usage error;
+  3 a verdict is unknown (a changed file did not parse fully, or was not analysed)
 
 SCAN OPTIONS:
   -l, --language <lang>      Scan only files for language (bash|csharp|go|html|java|javascript|typescript|python|rust)
@@ -210,6 +226,7 @@ EXAMPLES:
   cognium-dev entries . --language java -f json -o entries.json --facts-arrow ./facts
   cognium-dev entries . --language java --facts-arrow ./facts --facts-scheme facts@2
   cognium-dev depcalls --artifact org.apache.logging.log4j:log4j-core:2.17.1 . -f json
+  cognium-dev recheck . --changed-from origin/main --expect-gone 'CWE-89|src/App.java|<decl>|sql_injection'
   cognium-dev list-passes
   cognium-dev list-passes reliability
   cognium-dev init

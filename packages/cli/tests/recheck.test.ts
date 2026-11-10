@@ -2,13 +2,16 @@
  * `recheck` (E20/engine): the deterministic re-check of a code-fix change.
  * A Java servlet before and after: a fixed SQL injection reads `gone`, a version
  * that only moves lines keeps it `still-present`, and a new command injection is
- * `new-high` and fails the no-new-high rule (exit 1).
+ * `new-high` and fails the no-new-high rule (exit 1). R1–R4: a fake fix fails
+ * `--expect-gone`, a fix that does not parse is `unknown` (exit 3), findings and
+ * verdicts carry evidence, and `--changed-from` scopes by change closure.
  */
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { applyBaseline, parseRecheckOptions, RECHECK_SCHEMA, type RecheckReport } from '../src/recheck';
+import { execFileSync } from 'child_process';
+import { applyBaseline, applyTargets, parseRecheckOptions, recheckExitCode, RECHECK_SCHEMA, type RecheckReport } from '../src/recheck';
 import { UsageError } from '../src/utils/options';
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts');
@@ -129,12 +132,249 @@ describe('parseRecheckOptions / applyBaseline (pure)', () => {
 
   test('verdicts by key, severity decides new-high vs new-other', () => {
     const f = (key: string, severity: string) => ({ key, cwe: key.split('|')[0], rule: 'r', severity, file: 'F.java', line: 1, decl: { scheme: 'ids@0.1', id: 'x', name: 'x' }, kind: 'flow' as const });
-    const before: RecheckReport = { schema: RECHECK_SCHEMA, files: ['F.java'], skipped: [], findings: [f('CWE-89|F|m|sql', 'critical'), f('CWE-79|F|m|xss', 'high')] };
-    const after: RecheckReport = { schema: RECHECK_SCHEMA, files: ['F.java'], skipped: [], findings: [f('CWE-79|F|m|xss', 'high'), f('CWE-22|F|m|path', 'high'), f('CWE-117|F|m|log', 'medium')] };
+    const before: RecheckReport = { schema: RECHECK_SCHEMA, scope: 'files', files: ['F.java'], skipped: [], partialFiles: [], findings: [f('CWE-89|F|m|sql', 'critical'), f('CWE-79|F|m|xss', 'high')] };
+    const after: RecheckReport = { schema: RECHECK_SCHEMA, scope: 'files', files: ['F.java'], skipped: [], partialFiles: [], findings: [f('CWE-79|F|m|xss', 'high'), f('CWE-22|F|m|path', 'high'), f('CWE-117|F|m|log', 'medium')] };
     const r = applyBaseline(after, before);
     const by = Object.fromEntries(r.verdicts!.map(v => [v.cwe, v.verdict]));
     expect(by).toEqual({ 'CWE-89': 'gone', 'CWE-79': 'still-present', 'CWE-22': 'new-high', 'CWE-117': 'new-other' });
-    expect(r.summary).toEqual({ gone: 1, stillPresent: 1, newHigh: 1, newOther: 1 });
+    expect(r.summary).toEqual({ gone: 1, stillPresent: 1, newHigh: 1, newOther: 1, unknown: 0 });
     expect(r.noNewHigh).toBe('fail');
+  });
+});
+
+// ── R1–R4 (recheck-check §10): a fix verifier, not a key diff ────────────────
+
+const sqlKeyOf = (rep: RecheckReport) => rep.findings.find(f => f.cwe === 'CWE-89')!.key;
+
+describe('R1 --expect-gone: the targeted key must be gone', () => {
+  let baselinePath: string;
+  let target: string;
+  const RENAMED = `    String userValue = id;
+    Statement st = conn.createStatement();
+    String query = "SELECT * FROM t WHERE id = '" + userValue + "'";
+    st.executeQuery(query);`;
+  const HTML_ENCODED = `    id = org.owasp.esapi.ESAPI.encoder().encodeForHTML(id);
+${VULN}`;
+
+  beforeAll(async () => {
+    tree('fake-rename', servlet(RENAMED));
+    tree('fake-html', servlet(HTML_ENCODED));
+    baselinePath = join(work, 'r1-before.json');
+    await runCli(['recheck', trees.before, '--changed', FILE, '-o', baselinePath]);
+    target = sqlKeyOf(JSON.parse(readFileSync(baselinePath, 'utf8')));
+  }, 60_000);
+
+  test('a fake fix (rename) is still-present: fixed fails and the exit code is 1', async () => {
+    const r = await runCli(['recheck', trees['fake-rename'], '--changed', FILE, '--baseline', baselinePath, '--expect-gone', target]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.noNewHigh).toBe('pass');
+    expect(rep.fixed).toBe('fail');
+    expect(rep.targets).toEqual([{ key: target, verdict: 'still-present', fixed: false }]);
+  }, 60_000);
+
+  test('an HTML encoder before a SQL sink does not count as fixed', async () => {
+    const r = await runCli(['recheck', trees['fake-html'], '--changed', FILE, '--baseline', baselinePath, '--expect-gone', target]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    const t = rep.targets![0];
+    expect(t.fixed).toBe(false);
+    expect(rep.fixed).toBe('fail');
+    expect(r.code).toBe(1);
+    // The engine drops the SQL flow after an HTML encoder; the verdict says why, and the fix check refuses it.
+    expect(t).toEqual({ key: target, verdict: 'gone', reason: 'sanitized-by', fixed: false });
+    const v = rep.verdicts!.find(x => x.key === target)!;
+    expect(v.sanitizerCoversSink).toBe(false);
+    expect(v.sanitizers!.some(s => s.method.includes('encodeForHTML'))).toBe(true);
+  }, 60_000);
+
+  test('a real fix passes the fix check with exit 0', async () => {
+    const r = await runCli(['recheck', trees.fixed, '--changed', FILE, '--baseline', baselinePath, '--expect-gone', target]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.targets![0]).toMatchObject({ key: target, verdict: 'gone', fixed: true });
+  }, 60_000);
+
+  test('a key the baseline does not hold fails; --expect-gone without a baseline is a usage error', async () => {
+    const r = await runCli(['recheck', trees.fixed, '--changed', FILE, '--baseline', baselinePath, '--expect-gone', 'CWE-89|nope|x|sql_injection']);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toEqual({ key: 'CWE-89|nope|x|sql_injection', verdict: 'not-in-baseline', fixed: false });
+    expect((await runCli(['recheck', trees.fixed, '--changed', FILE, '--expect-gone', target])).code).toBe(2);
+  }, 60_000);
+});
+
+describe('R2 parse guard: never gone from a partially parsed file', () => {
+  const PY = 'app.py';
+  const app = (userBody: string) => `from flask import Flask, request
+import sqlite3, subprocess
+app = Flask(__name__)
+
+@app.route('/user')
+def user():
+    name = request.args.get('name')
+    cur = sqlite3.connect('x').cursor()
+${userBody}
+    return 'ok'
+
+@app.route('/ping')
+def ping():
+    host = request.args.get('host')
+    subprocess.call("ping " + host, shell=True)
+    return 'ok'
+`;
+  let before: string;
+  let broken: string;
+
+  beforeAll(() => {
+    before = join(work, 'py-before');
+    broken = join(work, 'py-broken');
+    mkdirSync(before, { recursive: true });
+    mkdirSync(broken, { recursive: true });
+    writeFileSync(join(before, PY), app(`    cur.execute("SELECT * FROM u WHERE n = '" + name + "'")`));
+    // The fix leaves `execute(` unclosed: a SyntaxError.
+    writeFileSync(join(broken, PY), app(`    cur.execute("SELECT * FROM u WHERE n = ?", (name,)`));
+  });
+
+  test('a syntax error in the fix: verdicts unknown (parse-error), file listed partial, exit 3', async () => {
+    const baselinePath = join(work, 'py-before.json');
+    expect((await runCli(['recheck', before, '--changed', PY, '-o', baselinePath])).code).toBe(0);
+    const base = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    const targets = base.findings.filter(f => f.cwe === 'CWE-89' || f.cwe === 'CWE-78').map(f => f.key);
+    expect(targets.length).toBe(2);
+
+    const r = await runCli(['recheck', broken, '--changed', PY, '--baseline', baselinePath, '--expect-gone', targets.join(',')]);
+    expect(r.code).toBe(3);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.partialFiles.map(p => p.file)).toEqual([PY]);
+    for (const key of targets) {
+      const v = rep.verdicts!.find(x => x.key === key)!;
+      expect(v.verdict).toBe('unknown');
+      expect(v.reason).toBe('parse-error');
+    }
+    expect(rep.summary!.gone).toBe(0);
+    expect(rep.fixed).toBe('fail');
+  }, 60_000);
+});
+
+describe('R3 evidence on every finding and verdict', () => {
+  test('flow findings carry source, sink, hops, sanitizers and a line-free fingerprint', async () => {
+    const a = JSON.parse((await runCli(['recheck', trees.before, '--changed', FILE])).stdout) as RecheckReport;
+    const b = JSON.parse((await runCli(['recheck', trees.moved, '--changed', FILE])).stdout) as RecheckReport;
+    const fa = a.findings.find(f => f.cwe === 'CWE-89')!;
+    const fb = b.findings.find(f => f.cwe === 'CWE-89')!;
+    expect(fa.evidence!.source).toMatchObject({ file: FILE, line: 7, type: 'http_param' });
+    expect(fa.evidence!.sink).toMatchObject({ file: FILE, line: 9, type: 'sql_injection' });
+    expect(fa.evidence!.hops.length).toBeGreaterThan(0);
+    expect(fa.evidence!.sanitizers_in_path).toEqual([]);
+    expect(fa.evidence!.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(fb.line).not.toBe(fa.line);
+    expect(fb.evidence!.fingerprint).toBe(fa.evidence!.fingerprint);
+  }, 60_000);
+
+  test('every gone has a reason and the baseline evidence; every verdict carries evidence', async () => {
+    const baselinePath = join(work, 'r3-before.json');
+    await runCli(['recheck', trees.before, '--changed', FILE, '-o', baselinePath]);
+    const rep = JSON.parse((await runCli(['recheck', trees['new-high'], '--changed', FILE, '--baseline', baselinePath])).stdout) as RecheckReport;
+    for (const v of rep.verdicts!) expect(v.evidence).toBeDefined();
+    const gone = rep.verdicts!.filter(v => v.verdict === 'gone');
+    expect(gone.length).toBeGreaterThan(0);
+    for (const v of gone) expect(v.reason).toBeDefined();
+    const deleted = JSON.parse((await runCli(['recheck', trees.fixed, '--changed', `${FILE},src/main/java/app/Removed.java`, '--baseline', baselinePath])).stdout) as RecheckReport;
+    expect(deleted.verdicts!.find(v => v.cwe === 'CWE-89')!.verdict).toBe('gone');
+  }, 60_000);
+
+  test('a baseline key whose file the after run did not analyse is unknown (not-analysed), exit 3', async () => {
+    const other = 'src/main/java/app/Other.java';
+    mkdirSync(join(trees.before, 'src/main/java/app'), { recursive: true });
+    writeFileSync(join(trees.before, other), 'package app;\npublic class Other {}\n');
+    const baselinePath = join(work, 'r3-x1.json');
+    await runCli(['recheck', trees.before, '--changed', FILE, '-o', baselinePath]);
+    const r = await runCli(['recheck', trees.before, '--changed', other, '--baseline', baselinePath]);
+    expect(r.code).toBe(3);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.verdicts!.every(v => v.verdict === 'unknown' && v.reason === 'not-analysed')).toBe(true);
+    rmSync(join(trees.before, other));
+  }, 60_000);
+});
+
+describe('R4 --changed-from: scope by change closure', () => {
+  let repo: string;
+  const CALLER = 'src/main/java/app/Caller.java';
+  const HELPER = 'src/main/java/app/Shell.java';
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, ...a], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+  const caller = (body: string) => `package app;
+import javax.servlet.http.*;
+public class Caller extends HttpServlet {
+  public void doGet(HttpServletRequest req, HttpServletResponse res) throws Exception {
+    String host = req.getParameter("host");
+${body}
+  }
+}
+`;
+
+  beforeAll(() => {
+    repo = join(work, 'repo');
+    mkdirSync(join(repo, 'src/main/java/app'), { recursive: true });
+    writeFileSync(join(repo, CALLER), caller('    res.getWriter().println("ok");'));
+    writeFileSync(join(repo, HELPER), `package app;
+public class Shell {
+  public static void runCmd(String arg) throws Exception {
+    Runtime.getRuntime().exec(new String[] {"sh", "-c", "ping " + arg});
+  }
+}
+`);
+    git('init', '-q');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'add', '-A');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'base');
+    // The change touches only the caller: it now passes the request value to the unchanged helper.
+    writeFileSync(join(repo, CALLER), caller('    Shell.runCmd(host);'));
+    writeFileSync(join(repo, 'src/main/java/app/Extra.java'), 'package app;\npublic class Extra {}\n');
+  });
+
+  test('the changed list comes from git, untracked files included', async () => {
+    const { changedFromGit } = await import('../src/recheck');
+    expect(changedFromGit(repo, 'HEAD')).toEqual([CALLER, 'src/main/java/app/Extra.java']);
+  }, 60_000);
+
+  test('a new command injection in an unchanged helper, reached from the changed caller, is new-high', async () => {
+    const r = await runCli(['recheck', repo, '--changed-from', 'HEAD']);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.scope).toBe('closure');
+    expect(rep.changedFrom).toBe('HEAD');
+    const v = rep.verdicts!.find(x => x.cwe === 'CWE-78' && x.verdict === 'new-high');
+    expect(v).toBeDefined();
+    expect(v!.evidence!.source!.file).toBe(CALLER);
+    expect(r.code).toBe(1);
+  }, 60_000);
+
+  test('a bad ref is a usage error; --changed and --changed-from together are a usage error', async () => {
+    expect((await runCli(['recheck', repo, '--changed-from', 'no-such-ref'])).code).toBe(2);
+    expect(() => parseRecheckOptions({ changed: 'a.java', 'changed-from': 'HEAD' })).toThrow(UsageError);
+    expect(parseRecheckOptions({ 'changed-from': 'HEAD' }).scope).toBe('closure');
+    expect(() => parseRecheckOptions({ 'changed-from': '--output=x' })).toThrow(UsageError);
+  }, 60_000);
+});
+
+describe('applyTargets / recheckExitCode (pure)', () => {
+  const v = (key: string, verdict: NonNullable<RecheckReport['verdicts']>[number]['verdict'], extra = {}) =>
+    ({ key, verdict, cwe: 'CWE-89', rule: 'sql_injection', severity: 'critical', file: 'F', line: 1, ...extra });
+  const rep = (verdicts: NonNullable<RecheckReport['verdicts']>): RecheckReport => ({
+    schema: RECHECK_SCHEMA, scope: 'files', files: ['F'], skipped: [], partialFiles: [], findings: [], verdicts,
+    summary: { gone: 0, stillPresent: 0, newHigh: 0, newOther: 0, unknown: verdicts.filter(x => x.verdict === 'unknown').length },
+    noNewHigh: 'pass',
+  });
+
+  test('gone passes; still-present, unknown and a non-covering sanitizer fail', () => {
+    expect(applyTargets(rep([v('a', 'gone', { reason: 'sink-removed' })]), ['a']).fixed).toBe('pass');
+    expect(applyTargets(rep([v('a', 'still-present')]), ['a']).fixed).toBe('fail');
+    expect(applyTargets(rep([v('a', 'unknown', { reason: 'parse-error' })]), ['a']).fixed).toBe('fail');
+    expect(applyTargets(rep([v('a', 'gone', { reason: 'sanitized-by', sanitizerCoversSink: false })]), ['a']).fixed).toBe('fail');
+    expect(applyTargets(rep([v('a', 'gone', { reason: 'sanitized-by', sanitizerCoversSink: true })]), ['a']).fixed).toBe('pass');
+  });
+
+  test('exit 3 on unknown before 1 on a failed check', () => {
+    expect(recheckExitCode(rep([v('a', 'gone')]))).toBe(0);
+    expect(recheckExitCode(applyTargets(rep([v('a', 'still-present')]), ['a']))).toBe(1);
+    expect(recheckExitCode(applyTargets(rep([v('a', 'unknown')]), ['a']))).toBe(3);
   });
 });
