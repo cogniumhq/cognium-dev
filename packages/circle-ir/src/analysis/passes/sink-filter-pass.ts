@@ -1833,6 +1833,33 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
 }
 
 /**
+ * True when a libxmljs `parseXml` / `parseXmlString` call at `sinkLine` has
+ * disabled external entities: `noent: false`, an inline options object without
+ * `noent: true`, or a single-argument call (default `noent: false`).
+ * Dynamic options (`parseXml(buf, opts)`) → false (unknown; keep the sink).
+ * (cognium-dev#1222)
+ */
+function jsLibxmljsNoentDisablesXxe(code: string, sinkLine: number): boolean {
+  const lines = code.split('\n');
+  const start = Math.max(0, sinkLine - 2);
+  const end = Math.min(lines.length, sinkLine + 4);
+  const window = lines.slice(start, end).join('\n');
+  if (!/\blibxml(?:js)?\s*\.\s*parseXml(?:String)?\s*\(/.test(window)) return false;
+  if (/\bnoent\s*:\s*true\b/.test(window)) return false;
+
+  const secondArg = window
+    .match(/\bparseXml(?:String)?\s*\([^,]+,\s*([\s\S]*?)\)\s*/)?.[1]
+    ?.trim() ?? '';
+  if (/^[A-Za-z_$][\w$]*$/.test(secondArg)) return false;
+
+  const callMatch = window.match(/\bparseXml(?:String)?\s*\([\s\S]*?\)/);
+  const inner = callMatch?.[0]?.replace(/^[^\(]+\(/, '').replace(/\)\s*$/, '') ?? '';
+  if (inner.length > 0 && !/,/.test(inner)) return true;
+
+  return secondArg.startsWith('{');
+}
+
+/**
  * Is this `plugin_param` source a map read that provably yields `null` or a
  * string literal — a key that was never written, or any key of a literal-only
  * map (#584) — on a map whose entire contents we can see? (cognium-dev#328
@@ -2766,6 +2793,12 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
 
         // Default: keep the sink (conservative when no taint info available)
         return true;
+      });
+
+      // Stage 7b — JS/TS libxmljs xxe: hardened `noent` drops the taint sink (#1222).
+      filtered = filtered.filter(sink => {
+        if (sink.type !== 'xxe') return true;
+        return !jsLibxmljsNoentDisablesXxe(ctx.code, sink.line);
       });
     }
 
