@@ -6,6 +6,7 @@
 
 import { Parser, Language, Tree, Node } from 'web-tree-sitter';
 import type { SupportedLanguage } from '../types/index.js';
+import { stabilizeTypeScriptConditionalDefaults } from './ts-grammar-workarounds.js';
 
 // Lazy-loaded Node.js modules for WASM path resolution
 // These are only used in Node.js environments, not in browsers
@@ -259,8 +260,9 @@ export async function parse(
   code: string,
   language: SupportedLanguage
 ): Promise<Tree> {
+  const src = language === 'typescript' ? stabilizeTypeScriptConditionalDefaults(code) : code;
   const parser = await createParser(language);
-  const tree = parser.parse(code);
+  const tree = parser.parse(src);
   if (!tree) {
     throw new Error('Failed to parse code');
   }

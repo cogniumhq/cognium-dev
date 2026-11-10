@@ -79,7 +79,21 @@ export async function deriveStableIds(
   const idLanguage: 'javascript' | 'typescript' = language === 'javascript' ? 'javascript' : 'typescript';
   const tree = await parse(code, jsx ? 'tsx' : idLanguage);
   try {
-    return deriveTypeScriptIds(tree, filePath, idLanguage, options);
+    let result = deriveTypeScriptIds(tree, filePath, idLanguage, options);
+    if (result.partial && idLanguage === 'typescript') {
+      const { hasExportTailProgramError } = await import('../core/ts-grammar-workarounds.js');
+      if (hasExportTailProgramError(tree.rootNode)) {
+        const { deriveTypeScriptIdsWithExportRecovery } = await import('./typescript.js');
+        const recovered = await deriveTypeScriptIdsWithExportRecovery(code, filePath, idLanguage, options);
+        if (
+          recovered.decls.length > result.decls.length
+          || (!recovered.partial && result.partial)
+        ) {
+          result = recovered;
+        }
+      }
+    }
+    return result;
   } finally {
     disposeTree(tree);
   }

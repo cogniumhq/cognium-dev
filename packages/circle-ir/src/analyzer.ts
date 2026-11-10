@@ -1126,7 +1126,18 @@ export async function analyze(
   }
 
   const tTypes = phaseStart();
-  const types   = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  let types: ReturnType<typeof extractTypes>;
+  if (parseGrammar === 'typescript') {
+    const { hasExportTailProgramError } = await import('./core/ts-grammar-workarounds.js');
+    const { extractTypeScriptTypesWithExportRecovery } = await import('./core/extractors/types.js');
+    if (hasExportTailProgramError(tree.rootNode)) {
+      types = await extractTypeScriptTypesWithExportRecovery(tree, nodeCache, code, 'typescript');
+    } else {
+      types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+    }
+  } else {
+    types = extractTypes(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  }
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
   const tCalls = phaseStart();

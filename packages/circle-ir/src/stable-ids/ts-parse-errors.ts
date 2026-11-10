@@ -86,6 +86,23 @@ function isSplitImportArrayDeclaration(missing: Node): boolean {
  * When the recovery instead swallows the next statement (a `class` read as an
  * expression), the error sits elsewhere and still counts.
  */
+/**
+ * Generic call signatures with conditional type-parameter defaults (zx `Shell`)
+ * leave an `ERROR` inside `interface_body` while the interface and the first
+ * call signature are still present (cognium-dev#1193).
+ */
+function isBenignInterfaceMemberRecoveryError(n: Node): boolean {
+  if (n.type !== 'ERROR') return false;
+  for (let p = n.parent; p; p = p.parent) {
+    if (p.type === 'interface_body') {
+      const iface = p.parent;
+      return iface?.type === 'interface_declaration' && iface.childForFieldName('name') != null;
+    }
+    if (p.type === 'program' || p.type === 'class_body' || p.type === 'statement_block') return false;
+  }
+  return false;
+}
+
 function isSplitTypeofImportCall(n: Node): boolean {
   if (n.parent?.type !== 'lexical_declaration' || n.childCount !== 2) return false;
   const [gt, params] = [n.child(0), n.child(1)];
@@ -101,7 +118,9 @@ function isSplitTypeofImportCall(n: Node): boolean {
 }
 
 function isBenign(n: Node): boolean {
-  if (n.type === 'ERROR') return insideTypeContext(n) || isSplitTypeofImportCall(n);
+  if (n.type === 'ERROR') {
+    return insideTypeContext(n) || isSplitTypeofImportCall(n) || isBenignInterfaceMemberRecoveryError(n);
+  }
   if (n.isMissing) return n.type === ';' && isSplitImportArrayDeclaration(n);
   return false;
 }

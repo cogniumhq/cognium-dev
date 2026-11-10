@@ -517,6 +517,37 @@ function enclosingTypePath(node: Node): string[] {
 /**
  * Extract JavaScript/TypeScript types.
  */
+function mergeTypeInfos(base: TypeInfo[], extra: TypeInfo[]): TypeInfo[] {
+  const byKey = new Map<string, TypeInfo>();
+  for (const t of base) byKey.set(`${t.kind}:${t.name}`, t);
+  for (const t of extra) {
+    const key = `${t.kind}:${t.name}`;
+    if (!byKey.has(key)) byKey.set(key, t);
+  }
+  let module = byKey.get('class:<module>');
+  for (const t of extra) {
+    if (t.name === '<module>' && t.kind === 'class') {
+      if (module) {
+        const seen = new Set(module.methods.map((m) => `${m.name}:${m.start_line}`));
+        for (const m of t.methods) {
+          const k = `${m.name}:${m.start_line}`;
+          if (!seen.has(k)) {
+            module.methods.push(m);
+            seen.add(k);
+          }
+        }
+      } else {
+        byKey.set('class:<module>', { ...t, methods: [...t.methods] });
+        module = byKey.get('class:<module>');
+      }
+      continue;
+    }
+    const key = `${t.kind}:${t.name}`;
+    if (!byKey.has(key)) byKey.set(key, t);
+  }
+  return [...byKey.values()];
+}
+
 function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   const types: TypeInfo[] = [];
 
@@ -582,6 +613,34 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   }
 
   return types;
+}
+
+/**
+ * When a full-file TypeScript parse leaves a program-level ERROR, re-extract types
+ * from each top-level export in isolation and merge (cognium-dev#1193).
+ */
+export async function extractTypeScriptTypesWithExportRecovery(
+  tree: Tree,
+  cache: NodeCache | undefined,
+  sourceCode: string,
+  language: 'typescript' | 'javascript',
+): Promise<TypeInfo[]> {
+  const { parseTypeScriptExportChunkTrees, hasExportTailProgramError } = await import('../ts-grammar-workarounds.js');
+  const { disposeTree } = await import('../parser.js');
+  const base = extractJavaScriptTypes(tree, cache);
+  if (!hasExportTailProgramError(tree.rootNode)) return base;
+  const chunkTrees = await parseTypeScriptExportChunkTrees(sourceCode, language);
+  let merged = base;
+  try {
+    for (const ct of chunkTrees) {
+      // Chunk trees are disjoint ASTs — the full-file node cache must not be reused here
+      // or getNodesFromCache returns nodes from the main tree only (cognium-dev#1193).
+      merged = mergeTypeInfos(merged, extractJavaScriptTypes(ct));
+    }
+  } finally {
+    for (const ct of chunkTrees) disposeTree(ct);
+  }
+  return merged;
 }
 
 /**
@@ -1023,13 +1082,17 @@ function extractTSInterfaceInfo(node: Node): TypeInfo {
       const member = body.child(i);
       if (!member) continue;
 
-      if (member.type === 'method_signature') {
-        const methodName = getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member);
+      if (member.type === 'method_signature' || member.type === 'call_signature') {
+        const methodName =
+          member.type === 'call_signature'
+            ? '(call)'
+            : (getIdentifier(member, 'name') ?? getNodeText(member.child(0) ?? member));
         const params = member.childForFieldName('parameters');
-        const returnType = member.childForFieldName('return_type');
+        const typeAnn =
+          member.childForFieldName('return_type') ?? member.childForFieldName('type');
         methods.push({
           name: methodName,
-          return_type: returnType ? getNodeText(returnType).replace(/^:\s*/, '') : null,
+          return_type: typeAnn ? getNodeText(typeAnn).replace(/^:\s*/, '') : null,
           parameters: params ? extractJSParameters(params) : [],
           annotations: [],
           // An interface member has no body and therefore no modifiers in the
