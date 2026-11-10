@@ -1761,11 +1761,16 @@ function detectJsModuleScopeFlows(
 
   const lines = code.split('\n');
   const moduleVars = new Set<string>();
+  const moduleDeclRe =
+    /(?:^|;)\s*(?:export\s+)?(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/g;
   for (const line of lines) {
     const stripped = line.replace(/\s+$/, '');
     if (!stripped || /^[ \t]/.test(line)) continue;
-    const m = stripped.match(/^(?:export\s+)?(?:let|var|const)\s+([A-Za-z_$][\w$]*)\b/);
-    if (m) moduleVars.add(m[1]);
+    let m: RegExpExecArray | null;
+    moduleDeclRe.lastIndex = 0;
+    while ((m = moduleDeclRe.exec(stripped)) !== null) {
+      moduleVars.add(m[1]);
+    }
   }
   if (moduleVars.size === 0) return flows;
 
