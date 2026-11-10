@@ -962,7 +962,29 @@ export class NavigationIndex {
         call.receiver_type === call.method_name &&
         /^[A-Z]/.test(call.method_name));
     if (!looksCtor) return undefined;
-    const t = explicit ? this.invokedConstructorType(call, rec) : this.resolveTypeRecord(call.receiver_type ?? call.method_name, rec);
+    const rawType = call.receiver_type ?? call.method_name;
+    const simpleCtorName = rawType?.replace(/<.*>$/, '').trim();
+    let t: TypeRecord | undefined;
+    if (explicit) {
+      t = this.invokedConstructorType(call, rec);
+    } else if (simpleCtorName) {
+      const member = this.memberTypeInScope(simpleCtorName, call.in_type, rec);
+      if (member?.type) {
+        t = member.type;
+      } else {
+        const enclFqn =
+          call.in_type != null && call.in_type !== ''
+            ? [rec.pkg, ...call.in_type.split('.')].filter(Boolean).join('.')
+            : this.enclosingTypeOf(call, rec)?.fqn;
+        if (enclFqn) {
+          const owner = this.memberTypeOwner(enclFqn, simpleCtorName);
+          if (owner) t = this.typesByFqn.get(`${owner}.${simpleCtorName}`);
+        }
+      }
+      if (!t) t = this.resolveTypeRecord(rawType, rec);
+    } else {
+      t = this.resolveTypeRecord(rawType, rec);
+    }
     if (!t) return undefined;
     const result: BoundTarget = {
       target: `${t.fqn}.<init>`,
