@@ -41,6 +41,7 @@ import { version } from './version.js';
 import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
 import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.js';
+import { startFileWatchdog, type FileWatchdog } from './file-watchdog.js';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
@@ -738,6 +739,8 @@ interface AnalyzeOptions {
   disabledPasses?: string[];
   /** Per-file analysis time limit (ms), circle-ir `fileTimeoutMs` (#1007). 0/absent = off. */
   fileTimeoutMs?: number;
+  /** S3: the hard bound behind `fileTimeoutMs`; its hooks go to circle-ir `onFileStart` / `onFileEnd`. */
+  watchdog?: FileWatchdog;
   /**
    * Per-file project profile resolved by the CLI's
    * `detectProjectProfiles()` (or a forced single profile from
@@ -788,6 +791,7 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       disabledPasses: analyzeOpts?.disabledPasses,
       ...(analyzeOpts?.projectProfile !== undefined ? { projectProfile: analyzeOpts.projectProfile } : {}),
       ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+      ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
       ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
     });
 
@@ -927,6 +931,7 @@ async function scanProject(
     // #591: `*.properties` from the scan set, for passes that resolve config-held values.
     ...(analyzeOpts?.resources !== undefined && analyzeOpts.resources.size > 0 ? { resources: analyzeOpts.resources } : {}),
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
+    ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
     ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
   });
 
@@ -1276,6 +1281,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     const isDir = (await stat(absPath)).isDirectory();
     const npm = nearestNpmManifests(isDir ? absPath : dirname(absPath));
     if (npm) analyzeOpts.dependencyContext = npm;
+    // S3: `--file-timeout-ms` is checked between phases; the watchdog bounds a
+    // step that never yields (see file-watchdog.ts).
+    const watchdog = startFileWatchdog(options.fileTimeoutMs ?? 0);
+    if (watchdog) analyzeOpts.watchdog = watchdog;
 
     if (isDir) {
       if (spin) spin.text = `Running project analysis on ${files.length} file(s)...`;
@@ -1320,6 +1329,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         if (spin) spin.text = `Scanning... (${processed}/${files.length})`;
       }
     }
+    watchdog?.stop();
 
     // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
     // overstating what was actually analysed.

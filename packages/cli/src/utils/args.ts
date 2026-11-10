@@ -131,7 +131,9 @@ SCAN OPTIONS:
   -f, --format <format>      Output format (text|json|sarif) [default: text]
   --threads <n>              Parallel analysis threads [default: 4]
   --file-timeout-ms <n>      Skip a file whose analysis takes longer than n ms and report it
-                               as an error [default: 0 = no limit]
+                               as an error [default: 0 = no limit]. A step that cannot be
+                               interrupted is stopped after 2n ms (at least n + 1000): the
+                               scan ends with the file named on stderr (exit status 143)
   --severity <level>         Filter by severity:
                                - Single level: minimum severity (e.g., "high" shows high+critical)
                                - Multiple levels: exact match (e.g., "critical,high" shows only those)

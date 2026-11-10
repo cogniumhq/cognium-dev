@@ -1516,7 +1516,7 @@ function isMongoValueBoundFilter(sinkCode: string, sinkMethod: string, sourceVar
   const body = firstArg.slice(1, -1).trim();
   if (!body) return false;
   // Strip string literals so `$` inside string values doesn't false-trip.
-  const stripped = body.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+  const stripped = body.replace(/(['"`])(?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*\1/g, '""');
   // Spread / rest disqualifies (opaque subset).
   if (/\.\.\./.test(stripped)) return false;
   // Any `$<word>:` key is an operator → not value-bound.
@@ -2307,7 +2307,7 @@ function shouldGateCSharpPatPermsLibraryParamFlow(
 
 /** Parameter names referenced as identifiers inside a compound sink argument (#685). */
 function compoundArgParamNames(expression: string, paramNames: Iterable<string>): string[] {
-  const stripped = expression.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, (m) => ' '.repeat(m.length));
+  const stripped = expression.replace(/(['"`])(?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*\1/g, (m) => ' '.repeat(m.length));
   const matched: string[] = [];
   for (const raw of paramNames) {
     const name = raw.startsWith('*') ? raw.slice(1) : raw;

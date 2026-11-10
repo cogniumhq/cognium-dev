@@ -398,7 +398,7 @@ function isLikelyCredentialAssignment(line: string): { name: string; value: stri
  * we want the literal-text content as the user wrote it, which is what
  * Shannon entropy needs to see.
  */
-const STRING_LITERAL_RE = /(["'`])((?:\\.|(?!\1).){8,200})\1/g;
+const STRING_LITERAL_RE = /(["'`])((?:\\.|(?!\1)[^\\\n\r\u2028\u2029]){8,200})\1/g;
 
 const BASE64ISH_RE = /^[A-Za-z0-9+/=_-]+$/;
 const HEXISH_RE = /^[a-fA-F0-9]+$/;
@@ -578,7 +578,7 @@ function findStringArrayLineRanges(code: string): Set<number> {
   const inArray = new Set<number>();
   // Match assignment opener to array/object literal: `= {`, `= [`.
   const OPEN_RE = /=\s*([{\[])/g;
-  const STR_LITERAL_COUNT_RE = /(["'`])(?:\\.|(?!\1).)*\1/g;
+  const STR_LITERAL_COUNT_RE = /(["'`])(?:\\.|(?!\1)[^\\\n\r\u2028\u2029])*\1/g;
   for (let i = 0; i < lines.length; i++) {
     OPEN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;

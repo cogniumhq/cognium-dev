@@ -1621,7 +1621,7 @@ function regExpTemplateArgument(code: string, lines: string[], line: number): st
   const text = lines[line - 1] ?? '';
   let offset = 0;
   for (let i = 0; i < line - 1; i++) offset += lines[i].length + 1;
-  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
+  const argument = /^(?:\s|\/\/[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`((?:\\.|[^`\\])*)`(?=\s*[,)])/;
   for (const start of text.matchAll(/new\s+RegExp\s*\(/g)) {
     // The literal must be the whole first argument: `` `…` + text `` is not constant.
     const m = argument.exec(code.slice(offset + start.index! + start[0].length));
