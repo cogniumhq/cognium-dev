@@ -564,6 +564,12 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
     types.push(extractTSInterfaceInfo(iface));
   }
 
+  const globalDecls = extractDeclareGlobalBlockTypes(tree, cache);
+  types.push(...globalDecls.types);
+  if (globalDecls.moduleMethods.length > 0) {
+    appendTopLevelModuleMethods(types, globalDecls.moduleMethods, tree.rootNode);
+  }
+
   // Extract standalone functions as a module-like type
   const functions = getNodesFromCache(tree.rootNode, 'function_declaration', cache);
   if (functions.length > 0) {
@@ -613,6 +619,88 @@ function extractJavaScriptTypes(tree: Tree, cache?: NodeCache): TypeInfo[] {
   }
 
   return types;
+}
+
+function ambientDeclarationIsGlobal(node: Node): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'global') return true;
+  }
+  return false;
+}
+
+function statementBlockOfAmbient(node: Node): Node | undefined {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child?.type === 'statement_block') return child;
+  }
+  return undefined;
+}
+
+/** Declarations inside `declare global { … }` (cognium-dev#1194). */
+function extractDeclareGlobalBlockTypes(
+  tree: Tree,
+  cache?: NodeCache,
+): { types: TypeInfo[]; moduleMethods: MethodInfo[] } {
+  const types: TypeInfo[] = [];
+  const moduleMethods: MethodInfo[] = [];
+  const ambients = getNodesFromCache(tree.rootNode, 'ambient_declaration', cache);
+  for (const amb of ambients) {
+    if (!ambientDeclarationIsGlobal(amb)) continue;
+    const body = statementBlockOfAmbient(amb);
+    if (!body) continue;
+    for (let i = 0; i < body.namedChildCount; i++) {
+      const member = body.namedChild(i);
+      if (!member) continue;
+      if (member.type === 'interface_declaration') {
+        types.push(extractTSInterfaceInfo(member));
+      } else if (member.type === 'function_signature') {
+        moduleMethods.push(extractTSFunctionSignatureInfo(member));
+      }
+    }
+  }
+  return { types, moduleMethods };
+}
+
+function extractTSFunctionSignatureInfo(node: Node): MethodInfo {
+  const nameNode = node.childForFieldName('name');
+  const name = nameNode ? getNodeText(nameNode) : 'anonymous';
+  const params =
+    node.childForFieldName('parameters') ??
+    node.children.find((c): c is Node => c?.type === 'formal_parameters');
+  const typeAnn =
+    node.childForFieldName('return_type') ??
+    node.children.find((c): c is Node => c?.type === 'type_annotation');
+  return {
+    name,
+    return_type: typeAnn ? getNodeText(typeAnn).replace(/^:\s*/, '') : null,
+    parameters: params ? extractJSParameters(params) : [],
+    annotations: [],
+    modifiers: [],
+    start_line: node.startPosition.row + 1,
+    end_line: node.endPosition.row + 1,
+  };
+}
+
+function appendTopLevelModuleMethods(types: TypeInfo[], methods: MethodInfo[], root: Node): void {
+  if (methods.length === 0) return;
+  const moduleType = types.find((t) => t.name === '<module>');
+  if (moduleType) {
+    moduleType.methods.push(...methods);
+    return;
+  }
+  types.push({
+    name: '<module>',
+    kind: 'class',
+    package: null,
+    extends: null,
+    implements: [],
+    annotations: [],
+    methods,
+    fields: [],
+    start_line: 1,
+    end_line: root.endPosition.row + 1,
+  });
 }
 
 /**
