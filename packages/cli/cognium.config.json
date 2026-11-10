@@ -7,7 +7,18 @@
     "dependency-fan-out": { "threshold": 35 }
   },
 
-  "suppressions": [],
+  "suppressions": [
+    {
+      "pass": "cache_poisoning",
+      "file": "src/cli.ts",
+      "reason": "Self-scan: in-process Map/collectResourceFiles caches keyed by scan paths, not shared OIDC or security-sensitive caches (#900 targets library entry points)"
+    },
+    {
+      "pass": "cache_poisoning",
+      "file": "src/recheck.ts",
+      "reason": "Self-scan: in-process profile/count caches for recheck CLI, not attacker-poisonable shared discovery caches"
+    }
+  ],
 
   "severity": "low",
   "categories": ["security", "reliability", "performance", "maintainability", "architecture"]
