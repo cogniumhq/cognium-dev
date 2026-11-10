@@ -1129,6 +1129,146 @@ export function parseMavenResolvedDependencies(output: string): Dependency[] {
   return out;
 }
 
+/** One module of a Maven reactor build and the dependency set Maven resolved for it. */
+export interface MavenModuleDependencies {
+  /**
+   * The module as its tree prints it, `groupId:artifactId`; from
+   * `dependency:list` output, where only the plugin header names it, the bare
+   * `artifactId`. `""` for output with no module boundary at all.
+   */
+  module: string;
+  /** The module's version and packaging, from a tree's root line. */
+  version?: string;
+  packaging?: string;
+  /** As `parseMavenResolvedDependencies` reads them, for this module only. */
+  dependencies: Dependency[];
+}
+
+/** A tree's root (project) line: `groupId:artifactId:packaging[:classifier]:version`, no scope. */
+const MAVEN_MODULE_ROOT = /^([\w.-]+):([\w.-]+):([\w.-]+)(?::[\w.-]+)?:([^:\s()]+)$/;
+/** The plugin header Maven prints before each module's goal: `--- …:tree (default-cli) @ module ---`. */
+const MAVEN_GOAL_HEADER = /^-{3,}\s.*?:(?:tree|list)\b.*@\s*([\w.-]+)\s+-{3,}$/;
+
+/**
+ * Parse `mvn dependency:tree` or `dependency:list` output of a reactor build
+ * (several modules in one file or console log) into one resolved set per
+ * module, in the order Maven printed them. A module boundary is a tree's root
+ * line, or the plugin header that names the module (`--- …:tree … @ module ---`).
+ *
+ * Unlike {@link parseMavenResolvedDependencies}, which merges every module into
+ * one set and keeps only the first of identical entries, each module keeps its
+ * own entries with its own `direct` and `via`, so a match can say which modules
+ * it reaches. Output with a single module gives one entry; output with no
+ * module boundary gives one entry with `module: ""`.
+ */
+export function parseMavenModuleDependencies(output: string): MavenModuleDependencies[] {
+  if (!output) return [];
+  const segments: Array<{ module: string; version?: string; packaging?: string; lines: string[] }> = [];
+  let current: (typeof segments)[number] | undefined;
+  let headerModule: string | undefined;
+  for (const raw of output.split(/\r?\n/)) {
+    let line = raw.replace(/^\s*\[(?:INFO|WARNING|DEBUG)\]\s?/, '').trimEnd();
+    // The module suffix newer plugins print (`… -- module x`), matched literally (linear).
+    const suffix = line.lastIndexOf(' -- module ');
+    if (suffix >= 0 && !/\s/.test(line.slice(suffix + 11))) line = line.slice(0, suffix);
+    const header = MAVEN_GOAL_HEADER.exec(line.trim());
+    if (header) {
+      headerModule = header[1];
+      current = { module: headerModule, lines: [] };
+      segments.push(current);
+      continue;
+    }
+    const rootMatch = /^[\s|+\\`-]/.test(line) ? null : MAVEN_MODULE_ROOT.exec(line.trim());
+    // `g:a:jar:1.0:compile` is a list entry, not a root: a root line ends in a version, never a scope.
+    const root = rootMatch && !new RegExp(`^(?:${MAVEN_SCOPES})$`).test(rootMatch[4]) ? rootMatch : null;
+    if (root) {
+      const module = `${root[1]}:${root[2]}`;
+      // A root line right after its own plugin header belongs to that segment.
+      if (current && current.lines.length === 0 && current.module === headerModule && headerModule === root[2]) {
+        current.module = module;
+      } else {
+        current = { module, lines: [] };
+        segments.push(current);
+      }
+      current.version = root[4];
+      current.packaging = root[3];
+      headerModule = undefined;
+      current.lines.push(raw);
+      continue;
+    }
+    if (!current) {
+      current = { module: '', lines: [] };
+      segments.push(current);
+    }
+    current.lines.push(raw);
+  }
+  return segments
+    .map(seg => ({
+      module: seg.module,
+      ...(seg.version !== undefined ? { version: seg.version } : {}),
+      ...(seg.packaging !== undefined ? { packaging: seg.packaging } : {}),
+      dependencies: parseMavenResolvedDependencies(seg.lines.join('\n')),
+    }))
+    .filter(m => m.module !== '' || m.dependencies.length > 0);
+}
+
+/** One Gradle project (a directory holding lockfiles) and the dependencies its lockfiles resolve. */
+export interface GradleProjectDependencies {
+  /** The project directory, relative and `/`-separated as the paths were given (`.` for the root). */
+  project: string;
+  /** The lockfiles read for it, in path order. */
+  lockfiles: string[];
+  /** As `parseGradleLockfile` reads them, merged over the project's lockfiles. */
+  dependencies: Dependency[];
+}
+
+/**
+ * Group the Gradle lockfiles of a multi-project build into one resolved set
+ * per project directory. `<project>/gradle.lockfile` is the project's lockfile;
+ * the older `<project>/gradle/dependency-locks/<configuration>.lockfile` files
+ * are read, with the configuration from the file name, only when that project
+ * has no `gradle.lockfile`. Other paths (`buildscript-gradle.lockfile`, the
+ * build's own classpath, among them) are ignored. Pure: the caller reads the
+ * files and passes `{ path, text }`.
+ */
+export function parseGradleProjectDependencies(files: ReadonlyArray<{ path: string; text: string }>): GradleProjectDependencies[] {
+  const byProject = new Map<string, { single?: { path: string; text: string }; legacy: Array<{ path: string; text: string; configuration: string }> }>();
+  const at = (project: string) => {
+    let e = byProject.get(project);
+    if (!e) byProject.set(project, (e = { legacy: [] }));
+    return e;
+  };
+  for (const f of files) {
+    const path = f.path.replace(/\\/g, '/').replace(/^\.\//, '');
+    const single = /^(?:(.*)\/)?gradle\.lockfile$/.exec(path);
+    if (single) { at(single[1] ?? '.').single = { path, text: f.text }; continue; }
+    const legacy = /^(?:(.*)\/)?gradle\/dependency-locks\/([^/]+)\.lockfile$/.exec(path);
+    if (legacy) at(legacy[1] ?? '.').legacy.push({ path, text: f.text, configuration: legacy[2] });
+  }
+  const out: GradleProjectDependencies[] = [];
+  for (const [project, e] of [...byProject].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (e.single) {
+      out.push({ project, lockfiles: [e.single.path], dependencies: parseGradleLockfile(e.single.text) });
+      continue;
+    }
+    const legacy = [...e.legacy].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    // A coordinate on several configurations is `dev` only when every one of them is a test configuration.
+    const configs = new Map<string, { dep: Dependency; configs: string[] }>();
+    for (const l of legacy) {
+      for (const d of parseGradleLockfile(l.text, l.configuration)) {
+        const key = `${d.name}|${d.version}`;
+        const seen = configs.get(key);
+        if (seen) seen.configs.push(l.configuration);
+        else configs.set(key, { dep: d, configs: [l.configuration] });
+      }
+    }
+    const dependencies = [...configs.values()].map(({ dep: d, configs: c }) =>
+      ({ ...d, scope: (c.every(isGradleTestConfiguration) ? 'dev' : 'required') as DependencyScope }));
+    out.push({ project, lockfiles: legacy.map(l => l.path), dependencies });
+  }
+  return out;
+}
+
 /**
  * Parse a Cargo `Cargo.toml`. `[dependencies]` → required,
  * `[dev-dependencies]` → dev, `[build-dependencies]` → optional. Handles both
