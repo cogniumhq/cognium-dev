@@ -37,7 +37,7 @@ import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
-import { identifierOutsideSanitizerCalls } from '../taint-propagation.js';
+import { identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText } from '../taint-propagation.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import {
   resolveIdentifierType,
@@ -2630,6 +2630,7 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       filtered, calls, constProp.tainted, constProp.symbols,
       dfg, constProp.sanitizedVars, constProp.synchronizedLines, language,
       constProp.sanitizedVarUncovered,
+      sanitizers,
     );
 
     // Stage 4 — sanitized sinks. A sanitizer on one operand does not drop
@@ -4562,6 +4563,7 @@ export function filterCleanVariableSinks(
   synchronizedLines?: Set<number>,
   language?: string,
   sanitizedVarUncovered?: Map<string, ReadonlySet<string>>,
+  sanitizers?: CircleIR['taint']['sanitizers'],
 ): CircleIR['taint']['sinks'] {
   const fieldNames = new Set<string>();
   if (dfg) {
@@ -4628,11 +4630,36 @@ export function filterCleanVariableSinks(
           // Java only. The same `+` test on other languages kept sinks in
           // minified scripts (a numeric add whose first identifier is a
           // constant). #627 is the Java `exec(cmd + tainted)` shape.
-          const concatNames = language === 'java' && isStringConcat(expr) ? argumentIdentifiers(expr) : [];
-          const names = concatNames.length > 0 ? concatNames : [arg.variable];
+          const rawConcatNames =
+            language === 'java' && isStringConcat(expr) ? argumentIdentifiers(expr) : [];
+          let concatNames = rawConcatNames;
+          if (concatNames.length > 0 && sanitizers && sanitizers.length > 0 && sink.type) {
+            concatNames = concatNames.filter(varName => {
+              const wrappedOnly = identifierOutsideSanitizerCallsInText(
+                varName,
+                expr,
+                sanitizers,
+                sink.type,
+              );
+              return wrappedOnly !== false;
+            });
+          }
+          if (rawConcatNames.length > 0 && concatNames.length === 0) continue;
+          const names = rawConcatNames.length > 0 ? concatNames : [arg.variable];
+          const concatOperandCheck = rawConcatNames.length > 0;
           let argClean = true;
           for (const varName of names) {
             const scopedName = methodName ? `${methodName}:${varName}` : varName;
+
+            if (
+              concatOperandCheck &&
+              !taintedVars.has(scopedName) &&
+              !taintedVars.has(varName) &&
+              !sanitizedVars?.has(scopedName) &&
+              !sanitizedVars?.has(varName)
+            ) {
+              continue;
+            }
 
             if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
             // #589 review: when any `method:var` sanitizer exists, decide from
