@@ -4119,7 +4119,6 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
   // matches inside string literals so `WHERE name = '…'` in SQL is not a bind.
   const assignmentRe =
     /(?:(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])|(?:(?:var|let|const)\s+)?(\w+)\s*=)\s*/g;
-  const rhsOwnStmt = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/;
 
   function isInsideStringLiteral(line: string, index: number): boolean {
     let inSingle = false;
@@ -4156,10 +4155,9 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
       if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) {
         continue;
       }
-      let rhs = line.slice(matchIndex + assignmentMatch[0].length);
-      if (line.includes(';', matchIndex + assignmentMatch[0].length)) {
-        rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
-      }
+      let rhs = line.slice(matchIndex + assignmentMatch[0].length).trim();
+      const semi = rhs.indexOf(';');
+      if (semi >= 0) rhs = rhs.slice(0, semi).trim();
       if (isConstTableLookup(rhs, lookupTables)) continue; // #667
       const isDirectSource = JS_TAINTED_PATTERNS.some((p) => p.pattern.test(rhs));
       const isTaintedPropagation =
