@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **JS/TS: a same-named local in one handler no longer taints `req.query.*` (or `request.*` / `ctx.*`) in another via identifier matching (#1223).** Request-proxy property names are ignored for cross-function variable pairing; export-style handlers get function scopes from the source when `types[].methods` is empty.
+- **JS: exported cve-intake shell handlers keep `command_injection` flows (#817).** Module-exported functions whose parameters reach `child_process.exec*` are treated like the existing `cache_poisoning` intake exception so single-file CLI scans match the cve-intake-b gate. Built-CLI regression tests pin flow-combo c04 Java xpath and PAT-CVE-2021-21315 JS; the ts-rust-parity `format_string` rust cell is still open (literal `"{}"` format string; engine reports `xss`).
 - **JS: `cache_poisoning` (CWE-524) on the cve-intake parameter shapes (#900).** Three changes:
   - A local whose initializer wraps over several lines now links the uses on its continuation lines, as Java (#597) and Go (#267) already did. A parameter inside a multi-line object literal (`const doc = {\n  issuer: 'https://' + host,\n};`) now reaches the later `cache.set('oidc-discovery', doc)`. Uses inside a function, arrow function or class in the value are not linked.
   - `cache.fetch(key, () => value)` (a read-through cache) is a `cache_poisoning` sink on the callback argument.
