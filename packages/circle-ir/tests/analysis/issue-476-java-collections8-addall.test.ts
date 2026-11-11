@@ -70,4 +70,11 @@ describe('#476 slice: Collections8 addAll list merge', () => {
     const r = await analyze(COLLECTIONS8_SAFE, 'VaultMergeSafeServlet.java', 'java');
     expect(flows(r, 'xss')).toHaveLength(0);
   });
+
+  it('Collections8 servlet shape: get(0) after literal add + addAll(tainted) still flows', async () => {
+    const r = await analyze(COLLECTIONS8_STYLE.replace('c2.get(1)', 'c2.get(0)'), 'Collections8Shape.java', 'java');
+    const xss = flows(r, 'xss');
+    expect(xss.length).toBeGreaterThan(0);
+    expect(xss.some(f => f.sink_line === 20)).toBe(true);
+  });
 });
