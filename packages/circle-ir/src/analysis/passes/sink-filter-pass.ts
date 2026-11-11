@@ -37,7 +37,10 @@ import { JS_TAINTED_PATTERNS } from './language-sources-pass.js';
 import { LIBRARY_API_SURFACE_TAG } from '../library-api-surface-downgrade.js';
 import { isNonExecutableSourceLine } from '../non-executable-lines.js';
 import { sanitizerCoversSink } from '../sanitizer-index.js';
-import { identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText } from '../taint-propagation.js';
+import {
+  identifierOutsideSanitizerCalls,
+  identifierOutsideSanitizerCallsInConcatOperand,
+} from '../taint-propagation.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import {
   resolveIdentifierType,
@@ -4501,6 +4504,70 @@ function argumentIdentifiers(expression: string): string[] {
   return out;
 }
 
+/** Split a Java string concat on top-level `+` (outside literals and parens). */
+function topLevelConcatOperands(expression: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  let start = 0;
+  for (let i = 0; i < expression.length; i++) {
+    const c = expression[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '+' && depth === 0) {
+      parts.push(expression.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(expression.slice(start));
+  return parts;
+}
+
+function concatOperandVariableNames(
+  expr: string,
+  sanitizers: CircleIR['taint']['sanitizers'] | undefined,
+  sinkType: string | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const operand of topLevelConcatOperands(expr)) {
+    const trimmed = operand.trim();
+    if (isStringLiteralExpression(trimmed)) continue;
+    let ids = argumentIdentifiers(trimmed);
+    if (sanitizers && sanitizers.length > 0 && sinkType) {
+      ids = ids.filter(varName => {
+        const wrappedOnly = identifierOutsideSanitizerCallsInConcatOperand(
+          varName,
+          trimmed,
+          sanitizers,
+          sinkType,
+        );
+        return wrappedOnly !== false;
+      });
+    }
+    for (const id of ids) {
+      if (!out.includes(id)) out.push(id);
+    }
+  }
+  return out;
+}
+
 function isStringLiteralExpression(expr: string): boolean {
   const trimmed = expr.trim();
   if (trimmed.length < 2) return false;
@@ -4631,21 +4698,11 @@ export function filterCleanVariableSinks(
           // minified scripts (a numeric add whose first identifier is a
           // constant). #627 is the Java `exec(cmd + tainted)` shape.
           const rawConcatNames =
-            language === 'java' && isStringConcat(expr) ? argumentIdentifiers(expr) : [];
-          let concatNames = rawConcatNames;
-          if (concatNames.length > 0 && sanitizers && sanitizers.length > 0 && sink.type) {
-            concatNames = concatNames.filter(varName => {
-              const wrappedOnly = identifierOutsideSanitizerCallsInText(
-                varName,
-                expr,
-                sanitizers,
-                sink.type,
-              );
-              return wrappedOnly !== false;
-            });
-          }
-          if (rawConcatNames.length > 0 && concatNames.length === 0) continue;
-          const names = rawConcatNames.length > 0 ? concatNames : [arg.variable];
+            language === 'java' && isStringConcat(expr)
+              ? concatOperandVariableNames(expr, sanitizers, sink.type)
+              : [];
+          if (language === 'java' && isStringConcat(expr) && rawConcatNames.length === 0) continue;
+          const names = rawConcatNames.length > 0 ? rawConcatNames : [arg.variable];
           const concatOperandCheck = rawConcatNames.length > 0;
           let argClean = true;
           for (const varName of names) {
@@ -4653,12 +4710,27 @@ export function filterCleanVariableSinks(
 
             if (
               concatOperandCheck &&
+              sanitizers &&
+              sanitizers.length > 0 &&
+              sink.type &&
               !taintedVars.has(scopedName) &&
               !taintedVars.has(varName) &&
               !sanitizedVars?.has(scopedName) &&
               !sanitizedVars?.has(varName)
             ) {
-              continue;
+              let outsideOnly: boolean | null = null;
+              for (const operand of topLevelConcatOperands(expr)) {
+                const trimmed = operand.trim();
+                if (!trimmed.includes(varName)) continue;
+                outsideOnly = identifierOutsideSanitizerCallsInConcatOperand(
+                  varName,
+                  trimmed,
+                  sanitizers,
+                  sink.type,
+                );
+                if (outsideOnly !== null) break;
+              }
+              if (outsideOnly === true) continue;
             }
 
             if (fieldNames.has(varName) && !isInSynchronizedBlock) { argClean = false; break; }
