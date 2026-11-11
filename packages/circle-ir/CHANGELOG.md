@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **JS: `JSON.parse(req.body)` → field access → SQL concat reports `sql_injection` (interop IL-22, #1149).** `lexical_declaration` bindings participate in constant propagation; `JSON.parse` propagates taint on the call path; expression-scan derived vars anchor at their definition line; assignment-line regex no longer treats SQL `name = '…'` as a binding.
+
 ### Added
 
 - **Resolved Java dependency sets per module (E02, #1219): `parseMavenModuleDependencies(output)` and `parseGradleProjectDependencies(files)`.** A reactor `mvn dependency:tree` / `dependency:list` prints one tree (or list) per module; `parseMavenResolvedDependencies` merges them into one set and keeps only the first of equal entries, so a later module lost its own copy, `direct` and `via`. `parseMavenModuleDependencies` returns one set per module (`groupId:artifactId`, version and packaging from the tree's root line; from list output, the plugin header's module name), each read as `parseMavenResolvedDependencies` reads it. `parseGradleProjectDependencies` groups a multi-project build's lockfiles into one set per project directory: `<project>/gradle.lockfile`, else the older `<project>/gradle/dependency-locks/<configuration>.lockfile` files (a coordinate is `dev` only when every configuration that resolved it is a test one); `buildscript-gradle.lockfile` and other files are ignored. Per-module sets let an advisory match say which modules it reaches, as `parsePnpmLockImporterDependencies` does for pnpm importers. Additive: the flat parsers, `collectDependencies` and scans are unchanged.
