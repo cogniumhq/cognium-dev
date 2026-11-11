@@ -3113,8 +3113,11 @@ export class ConstantPropagator {
                   if (index >= 0 && index < listElems.length) {
                     const elem = listElems[index];
                     if (elem === null) {
-                      // Index points to a literal value (like "safe" or "moresafe")
-                      // which was added directly, not via a variable - this is clean
+                      // Literal at this index — still taint when the list also holds
+                      // tainted slots elsewhere (SecuriBench Collections8 add/addAll).
+                      if (hasAnyTainted) {
+                        return true;
+                      }
                       return false;
                     }
                     if (elem === '__TAINTED__') {
@@ -3514,7 +3517,17 @@ export class ConstantPropagator {
         const sourceArg = args[0];
         if (sourceArg.type === 'identifier') {
           const sourceName = getNodeText(sourceArg, this.source);
-          if (this.isCollectionTainted(sourceName)) {
+          const sourceList = this.listElements.get(sourceName);
+          if (sourceList && sourceList.length > 0) {
+            if (!this.listElements.has(collectionName)) {
+              this.listElements.set(collectionName, []);
+            }
+            const targetList = this.listElements.get(collectionName)!;
+            targetList.push(...sourceList);
+            if (sourceList.some(e => e !== null && (e === '__TAINTED__' || this.tainted.has(e)))) {
+              this.markJavaCollectionTainted(collectionName);
+            }
+          } else if (this.isCollectionTainted(sourceName)) {
             if (!this.listElements.has(collectionName)) {
               this.listElements.set(collectionName, []);
             }
