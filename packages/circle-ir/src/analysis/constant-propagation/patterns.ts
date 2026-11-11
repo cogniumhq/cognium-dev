@@ -243,10 +243,6 @@ export const PROPAGATOR_METHODS = new Set([
   // Object utilities
   'requireNonNull', // Objects.requireNonNull(obj)
 
-  // JSON.parse — parsed field values stay tainted (interop IL-22, #1149).
-  // Does not execute code; sink-layer sanitizers still drop code_injection (#265).
-  'parse',
-
   // Apache Shiro WebUtils — propagate taint from string arg through the wrapper
   // back into the return value (e.g. `WebUtils.decodeRequestString(req, tainted)`).
   // Also covered by ANTI_SANITIZER_METHODS for sanitized-arg re-tainting and by

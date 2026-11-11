@@ -3668,40 +3668,64 @@ function detectExpressionScanFlows(
     }
   }
 
-  // JS/TS alias expansion (#1149 interop IL-22): `JSON.parse(req.body)` → field
-  // → SQL concat. Mirrors the Python derived-var virtual sources; uses the
-  // assignment-chain map from `buildJavaScriptTaintedVars` (req.body seeds).
+  // JS/TS body-parse chains (#1149 IL-22): virtual sources for variables
+  // derived from `JSON.parse(req.body)` without widening to all jsTaintedVars.
   if (
     (language === 'javascript' || language === 'typescript') &&
     typeof code === 'string'
   ) {
-    const derived = buildJavaScriptTaintedVars(code, language);
-    if (derived.size > 0) {
-      const existingVars = new Set(sourcesWithVar.map((s) => s.variable));
-      let anchor: (typeof sourcesWithVar)[0] | undefined = sourcesWithVar[0];
-      if (anchor) {
-        for (const s of sourcesWithVar) {
-          if (s.line < anchor.line) anchor = s;
+    const httpTypes = new Set([
+      'http_body',
+      'http_query',
+      'http_param',
+      'http_header',
+      'http_cookie',
+    ]);
+    const httpAnchor = sourcesWithVar.find((s) => httpTypes.has(s.type));
+    if (httpAnchor) {
+      const lines = code.split('\n');
+      const chainVars = new Set<string>();
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (/\bJSON\.parse\b/.test(line) && /\b(?:req|request)\.body\b/.test(line)) {
+          const bind = line.match(/(?:const|let|var)\s+(\w+)\s*=/);
+          if (bind?.[1]) chainVars.add(bind[1]);
         }
       }
-      for (const [varName, originLine] of derived) {
-        if (!varName || existingVars.has(varName)) continue;
-        if (anchor) {
-          // Anchor type/semantics to the real HTTP source, but bind the line
-          // to the derivation so const-prop veto does not fire on the step
-          // before the variable exists (#1149).
-          sourcesWithVar.push({ ...anchor, variable: varName, line: originLine });
-        } else {
-          sourcesWithVar.push({
-            type: 'http_body',
-            location: `<derived> ${varName}`,
-            severity: 'high',
-            line: originLine,
-            confidence: 0.9,
-            variable: varName,
-          });
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]!;
+          for (const seed of chainVars) {
+            const prop = line.match(
+              new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*${seed}\\.`),
+            );
+            const alias = line.match(
+              new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*\\b${seed}\\b`),
+            );
+            const lhs = prop?.[1] ?? alias?.[1];
+            if (lhs && !chainVars.has(lhs)) {
+              chainVars.add(lhs);
+              expanded = true;
+            }
+          }
         }
-        existingVars.add(varName);
+      }
+      if (chainVars.size > 0) {
+        const derivedLines = buildJavaScriptTaintedVars(code, language);
+        const existingVars = new Set(sourcesWithVar.map((s) => s.variable));
+        for (const varName of chainVars) {
+          if (!varName || existingVars.has(varName)) continue;
+          const originLine = derivedLines.get(varName);
+          if (originLine === undefined) continue;
+          sourcesWithVar.push({
+            ...httpAnchor,
+            variable: varName,
+            line: originLine,
+          });
+          existingVars.add(varName);
+        }
       }
     }
   }
