@@ -65,6 +65,8 @@ export class ConstantPropagator {
   private additionalTaintPatterns: string[] = [];
   // Track list elements by index for precise list taint tracking
   private listElements: Map<string, (string | null)[]> = new Map();
+  /** Lists that received taint via addAll (SecuriBench Collections8 get(0) recall). */
+  private listAddAllFromTainted: Set<string> = new Set();
   // Track loop variables (should not be overwritten with constant values)
   private loopVariables: Set<string> = new Set();
   // Track tainted array elements: array name → set of tainted indices (or '*' for whole array)
@@ -161,6 +163,7 @@ export class ConstantPropagator {
     this.methodReturnsParameter.clear();
     this.methodReturnsSafeValue.clear();
     this.listElements.clear();
+    this.listAddAllFromTainted.clear();
     this.loopVariables.clear();
     this.taintedArrayElements.clear();
     this.sanitizedVars.clear();
@@ -343,6 +346,7 @@ export class ConstantPropagator {
     this.goUnknownVars.clear();
     this.goScopedNames.clear();
     this.listElements.clear();
+    this.listAddAllFromTainted.clear();
     this.loopVariables.clear();
     this.taintedArrayElements.clear();
     this.sanitizedVars.clear();
@@ -3113,8 +3117,11 @@ export class ConstantPropagator {
                   if (index >= 0 && index < listElems.length) {
                     const elem = listElems[index];
                     if (elem === null) {
-                      // Literal/constant slot at this index stays clean (Collections8
-                      // recall comes from addAll copying per-index taint into listElems).
+                      // Literal slot: stay clean unless addAll merged taint into this list
+                      // (Collections8: add("abc") then addAll(tainted) then get(0) → sink).
+                      if (hasAnyTainted && this.listAddAllFromTainted.has(collectionName)) {
+                        return true;
+                      }
                       return false;
                     }
                     if (elem === '__TAINTED__') {
@@ -3545,6 +3552,7 @@ export class ConstantPropagator {
               return this.tainted.has(e) || this.tainted.has(scopedE);
             })) {
               this.markJavaCollectionTainted(collectionName);
+              this.listAddAllFromTainted.add(collectionName);
             }
           } else if (this.isCollectionTainted(sourceName)) {
             if (!this.listElements.has(collectionName)) {
@@ -3552,6 +3560,7 @@ export class ConstantPropagator {
             }
             this.listElements.get(collectionName)!.push('__TAINTED__');
             this.markJavaCollectionTainted(collectionName);
+            this.listAddAllFromTainted.add(collectionName);
           }
         } else if (this.isTaintedExpression(sourceArg)) {
           if (!this.listElements.has(collectionName)) {
@@ -3559,6 +3568,7 @@ export class ConstantPropagator {
           }
           this.listElements.get(collectionName)!.push('__TAINTED__');
           this.markJavaCollectionTainted(collectionName);
+          this.listAddAllFromTainted.add(collectionName);
         }
       }
     }
