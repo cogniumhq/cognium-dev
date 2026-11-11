@@ -3113,11 +3113,8 @@ export class ConstantPropagator {
                   if (index >= 0 && index < listElems.length) {
                     const elem = listElems[index];
                     if (elem === null) {
-                      // Literal at this index — still taint when the list also holds
-                      // tainted slots elsewhere (SecuriBench Collections8 add/addAll).
-                      if (hasAnyTainted) {
-                        return true;
-                      }
+                      // Literal/constant slot at this index stays clean (Collections8
+                      // recall comes from addAll copying per-index taint into listElems).
                       return false;
                     }
                     if (elem === '__TAINTED__') {
@@ -3524,7 +3521,12 @@ export class ConstantPropagator {
             }
             const targetList = this.listElements.get(collectionName)!;
             targetList.push(...sourceList);
-            if (sourceList.some(e => e !== null && (e === '__TAINTED__' || this.tainted.has(e)))) {
+            if (sourceList.some(e => {
+              if (e === null) return false;
+              if (e === '__TAINTED__') return true;
+              const scopedE = this.currentMethod ? `${this.currentMethod}:${e}` : e;
+              return this.tainted.has(e) || this.tainted.has(scopedE);
+            })) {
               this.markJavaCollectionTainted(collectionName);
             }
           } else if (this.isCollectionTainted(sourceName)) {
