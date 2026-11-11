@@ -4115,27 +4115,57 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     tainted.set(paramName, i + 1);
   }
 
+  // cognium-dev#582 / #490: scan every assignment on the line; #1149: skip
+  // matches inside string literals so `WHERE name = '…'` in SQL is not a bind.
+  const assignmentRe =
+    /(?:(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])|(?:(?:var|let|const)\s+)?(\w+)\s*=)\s*/g;
+  const rhsOwnStmt = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^;}"'`])*/;
+
+  function isInsideStringLiteral(line: string, index: number): boolean {
+    let inSingle = false;
+    let inDouble = false;
+    let inTemplate = false;
+    let escape = false;
+    for (let pos = 0; pos < index; pos++) {
+      const c = line[pos]!;
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\') {
+        escape = true;
+        continue;
+      }
+      if (!inDouble && !inTemplate && c === "'") inSingle = !inSingle;
+      else if (!inSingle && !inTemplate && c === '"') inDouble = !inDouble;
+      else if (!inSingle && !inDouble && c === '`') inTemplate = !inTemplate;
+    }
+    return inSingle || inDouble || inTemplate;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trimStart();
     if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    // #1173: a TS annotation (`let q: string = …`) sits between the name and
-    // `=`; without this the type (`string`) was tracked instead of `q`. Same
-    // annotation shape as the assignment scan above.
-    const annotated = line.match(/(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])\s*(.+)/);
-    // Require statement-leading bindings so `WHERE name = '…'` inside SQL does
-    // not register as `name` taint at the sink line (#1149).
-    const assignMatch =
-      annotated ??
-      line.match(/^\s*(?:var|let|const)\s+(\w+)\s*=\s*(.+)/) ??
-      line.match(/^\s*(\w+)\s*=\s*(.+)/);
-    if (!assignMatch) continue;
-    const [, lhs, rhs] = assignMatch;
-    if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) continue;
-    if (isConstTableLookup(rhs, lookupTables)) continue; // #667
-    const isDirectSource = JS_TAINTED_PATTERNS.some(p => p.pattern.test(rhs));
-    const isTaintedPropagation = tainted.size > 0 && [...tainted.keys()].some(v => new RegExp(`\\b${v}\\b`).test(rhs));
-    if (isDirectSource || isTaintedPropagation) tainted.set(lhs, i + 1);
+    assignmentRe.lastIndex = 0;
+    for (const assignmentMatch of line.matchAll(assignmentRe)) {
+      const matchIndex = assignmentMatch.index ?? 0;
+      if (isInsideStringLiteral(line, matchIndex)) continue;
+      const lhs = assignmentMatch[1] ?? assignmentMatch[2];
+      if (!lhs) continue;
+      if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) {
+        continue;
+      }
+      let rhs = line.slice(matchIndex + assignmentMatch[0].length);
+      if (line.includes(';', matchIndex + assignmentMatch[0].length)) {
+        rhs = rhsOwnStmt.exec(rhs)?.[0] ?? rhs;
+      }
+      if (isConstTableLookup(rhs, lookupTables)) continue; // #667
+      const isDirectSource = JS_TAINTED_PATTERNS.some((p) => p.pattern.test(rhs));
+      const isTaintedPropagation =
+        tainted.size > 0 && [...tainted.keys()].some((v) => new RegExp(`\\b${v}\\b`).test(rhs));
+      if (isDirectSource || isTaintedPropagation) tainted.set(lhs, i + 1);
+    }
   }
 
   return tainted;
