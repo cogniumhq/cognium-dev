@@ -24,7 +24,7 @@ public class VaultMergeServlet extends HttpServlet {
         ArrayList c2 = new ArrayList();
         c2.add("abc");
         c2.addAll(c1);
-        String s2 = (String) c2.get(0);
+        String s2 = (String) c2.get(1);
         PrintWriter writer = resp.getWriter();
         writer.println(s2);
     }
@@ -59,7 +59,7 @@ describe('#476 slice: Collections8 addAll list merge', () => {
     await initAnalyzer();
   });
 
-  it('VaultMergeServlet: xss on println after addAll copy', async () => {
+  it('VaultMergeServlet: xss on println after addAll copies tainted slot by index', async () => {
     const r = await analyze(COLLECTIONS8_STYLE, 'VaultMergeServlet.java', 'java');
     const xss = flows(r, 'xss');
     expect(xss.length).toBeGreaterThan(0);
