@@ -784,7 +784,7 @@ function javaCalleeReturnIsHtmlEncoderOnly(expr: string): boolean {
   const t = expr.trim();
   if (!t) return false;
   const enc =
-    /^(?:(?:org\.springframework\.web\.util\.)?HtmlUtils\.htmlEscape(?:Decimal|Hex)?|StringEscapeUtils\.escapeHtml(?:3|4)?|org\.owasp\.esapi\.ESAPI\.encoder\(\)\.encodeForHTML|Encode\.forHtml(?:Content|Attribute)?|Escaper\.escapeHtml|HtmlEscapers\.escapeHtml)\s*\([^)]*\)\s*$/;
+    /^(?:(?:org\.springframework\.web\.util\.)?HtmlUtils\.htmlEscape(?:Decimal|Hex)?|(?:org\.apache\.commons\.lang\.)?StringEscapeUtils\.escapeHtml(?:3|4)?|org\.owasp\.esapi\.ESAPI\.encoder\(\)\.encodeForHTML|Encode\.forHtml(?:Content|Attribute)?|Escaper\.escapeHtml|HtmlEscapers\.escapeHtml)\s*\([^)]*\)\s*$/;
   if (enc.test(t)) return true;
   if (/^new\s+String\s*\([^)]*\)\s*$/.test(t)) return false;
   return false;
