@@ -823,12 +823,30 @@ interface SanitizerCallRef {
 
 function sanitizerCallRefs(sanitizers: TaintSanitizer[], sinkType: string): SanitizerCallRef[] {
   const refs: SanitizerCallRef[] = [];
-  const seen = new Set<string>();
   for (const san of sanitizers) {
     if (!sanitizerCoversSink(san, sinkType)) continue;
+    const m = /(?:(\w+)\.)?(\w+)\(\)/.exec(san.method);
+    if (!m?.[2]) continue;
+    refs.push({ receiver: m[1], methodName: m[2] });
+  }
+  return refs;
+}
+
+function sanitizerCallRefsForTextMask(
+  sanitizers: TaintSanitizer[],
+  sinkType: string,
+): SanitizerCallRef[] {
+  const refs = sanitizerCallRefs(sanitizers, sinkType);
+  const seen = new Set(refs.map(r => `${r.receiver ?? ''}:${r.methodName}`));
+  for (const san of sanitizers) {
+    if (!sanitizerCoversSink(san, sinkType)) continue;
+    const methodSansParens = (san.method ?? '').replace(/\(\)$/, '');
+    if (!methodSansParens.includes('.')) continue;
     const tail = sanitizerMethodTail(san);
-    if (!tail || seen.has(tail)) continue;
-    seen.add(tail);
+    if (!tail) continue;
+    const key = `:${tail}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     refs.push({ receiver: undefined, methodName: tail });
   }
   return refs;
@@ -917,6 +935,23 @@ export function identifierOutsideSanitizerCalls(
  * #589: `mixed = escapeHtml(a) + b` keeps `b`; `both = escapeHtml(a) +
  * escapeHtml(b)` keeps nothing.
  */
+export function identifierOutsideSanitizerCallsInConcatOperand(
+  variable: string,
+  text: string,
+  sanitizers: TaintSanitizer[],
+  sinkType: string,
+): boolean | null {
+  const refs = sanitizerCallRefsForTextMask(sanitizers, sinkType);
+  if (refs.length === 0) return null;
+  const masked = maskSanitizerCalls(text, refs);
+  if (masked === text) return null;
+  if (!/^[A-Za-z_$][\w$]*$/.test(variable)) return true;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^A-Za-z0-9_$]|$)`,
+  );
+  return re.test(blankStringLiterals(masked));
+}
+
 export function identifierOutsideSanitizerCallsInText(
   variable: string,
   text: string,
