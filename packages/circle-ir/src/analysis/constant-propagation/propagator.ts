@@ -1282,6 +1282,7 @@ export class ConstantPropagator {
         return true; // Don't visit children directly, handleMethodDeclaration does it
 
       case 'local_variable_declaration':
+      case 'lexical_declaration': // JS/TS `const`/`let`/`var` (#1149)
         this.handleVariableDeclaration(node);
         return false;
 
@@ -3247,6 +3248,19 @@ export class ConstantPropagator {
             );
             if (args.length > returnedParamIdx && this.isTaintedExpression(args[returnedParamIdx]!)) {
               return true;
+            }
+          }
+        }
+        if (PROPAGATOR_METHODS.has(methodName)) {
+          const argsNode = node.childForFieldName('arguments');
+          if (argsNode) {
+            const args = argsNode.children.filter(
+              (c: Node) => c.type !== '(' && c.type !== ')' && c.type !== ','
+            );
+            for (const argNode of args) {
+              if (this.isTaintedExpression(argNode)) {
+                return true;
+              }
             }
           }
         }

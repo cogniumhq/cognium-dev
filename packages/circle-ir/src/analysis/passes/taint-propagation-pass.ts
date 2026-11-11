@@ -19,7 +19,7 @@ import type { SinkFilterResult } from './sink-filter-pass.js';
 import { findJavaSpringReturnXSSSinks } from './language-sources-pass.js';
 import { expressionFullyWrappedBySanitizer, identifierOutsideSanitizerCalls, identifierOutsideSanitizerCallsInText, propagateTaint } from '../taint-propagation.js';
 import { isFalsePositive, isCorrelatedPredicateFP, constPropScopedVar } from '../constant-propagation.js';
-import { buildJavaTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
+import { buildJavaTaintedVars, buildJavaScriptTaintedVars, buildPythonTaintedVars, buildRustTaintedVars, findPythonTrustBoundaryViolations, findPythonReturnXSSSinks, findJavaWikiPluginReturnXSSSinks } from './language-sources-pass.js';
 import { parseJavaArrayAccessExpression } from '../java-array-element-keys.js';
 import { canSourceReachSink, sourceSemanticsAllowed } from '../findings.js';
 import { walkBackwardDefs } from '../dfg-walk.js';
@@ -3664,6 +3664,44 @@ function detectExpressionScanFlows(
             }
           }
         }
+      }
+    }
+  }
+
+  // JS/TS alias expansion (#1149 interop IL-22): `JSON.parse(req.body)` → field
+  // → SQL concat. Mirrors the Python derived-var virtual sources; uses the
+  // assignment-chain map from `buildJavaScriptTaintedVars` (req.body seeds).
+  if (
+    (language === 'javascript' || language === 'typescript') &&
+    typeof code === 'string'
+  ) {
+    const derived = buildJavaScriptTaintedVars(code, language);
+    if (derived.size > 0) {
+      const existingVars = new Set(sourcesWithVar.map((s) => s.variable));
+      let anchor: (typeof sourcesWithVar)[0] | undefined = sourcesWithVar[0];
+      if (anchor) {
+        for (const s of sourcesWithVar) {
+          if (s.line < anchor.line) anchor = s;
+        }
+      }
+      for (const [varName, originLine] of derived) {
+        if (!varName || existingVars.has(varName)) continue;
+        if (anchor) {
+          // Anchor type/semantics to the real HTTP source, but bind the line
+          // to the derivation so const-prop veto does not fire on the step
+          // before the variable exists (#1149).
+          sourcesWithVar.push({ ...anchor, variable: varName, line: originLine });
+        } else {
+          sourcesWithVar.push({
+            type: 'http_body',
+            location: `<derived> ${varName}`,
+            severity: 'high',
+            line: originLine,
+            confidence: 0.9,
+            variable: varName,
+          });
+        }
+        existingVars.add(varName);
       }
     }
   }

@@ -4123,7 +4123,12 @@ export function buildJavaScriptTaintedVars(sourceCode: string, language: string)
     // `=`; without this the type (`string`) was tracked instead of `q`. Same
     // annotation shape as the assignment scan above.
     const annotated = line.match(/(?:var|let|const)\s+(\w+)\s*:\s*[^=;]+?\s*=(?![>=])\s*(.+)/);
-    const assignMatch = annotated ?? line.match(/(?:(?:var|let|const)\s+)?(\w+)\s*=\s*(.+)/);
+    // Require statement-leading bindings so `WHERE name = '…'` inside SQL does
+    // not register as `name` taint at the sink line (#1149).
+    const assignMatch =
+      annotated ??
+      line.match(/^\s*(?:var|let|const)\s+(\w+)\s*=\s*(.+)/) ??
+      line.match(/^\s*(\w+)\s*=\s*(.+)/);
     if (!assignMatch) continue;
     const [, lhs, rhs] = assignMatch;
     if (['if', 'while', 'for', 'return', 'true', 'false', 'null', 'undefined', 'case'].includes(lhs)) continue;
