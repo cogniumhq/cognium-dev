@@ -3389,17 +3389,6 @@ function matchingCloseParen(lineText: string, openParenIndex: number): number {
 }
 
 /**
- * cognium-dev#1156 — `io_input` at `*.parse(...)` has no `method` tag; `location` is
- * like `parser.parse() in m`. When `path_traversal` (`readFileSync`, …) appears only
- * inside that `.parse(` argument list on the same line, inline colocation must not
- * pair them — the nested sink runs before the parse returns.
- */
-/**
- * cognium-dev#1223 — when `types[].methods` is empty (common for
- * `module.exports.foo = function` handlers), derive function line ranges from
- * the source so the #472-style same-function gate still applies.
- */
-/**
  * cognium-dev#1223 — `req.query.url` contains the token `query`, which must not
  * pair with a tainted local named `query` in another function. True when every
  * occurrence of `ident` in `expr` is only as `(req|request|ctx).ident`.
@@ -3417,6 +3406,11 @@ function jsBareIdentOnlyAsRequestProxy(expr: string, ident: string): boolean {
   return hits > 0;
 }
 
+/**
+ * cognium-dev#1223 — when `types[].methods` is empty (common for
+ * `module.exports.foo = function` handlers), derive function line ranges from
+ * the source so the #472-style same-function gate still applies.
+ */
 function buildJsTsFunctionRangesFromSource(code: string): Array<[number, number]> {
   const lines = code.split('\n');
   const ranges: Array<[number, number]> = [];
@@ -3450,6 +3444,12 @@ function buildJsTsFunctionRangesFromSource(code: string): Array<[number, number]
   return ranges;
 }
 
+/**
+ * cognium-dev#1156 — `io_input` at `*.parse(...)` has no `method` tag; `location` is
+ * like `parser.parse() in m`. When `path_traversal` (`readFileSync`, …) appears only
+ * inside that `.parse(` argument list on the same line, inline colocation must not
+ * pair them — the nested sink runs before the parse returns.
+ */
 function sinkNestedInJsTsParseArgs(lineText: string, sinkMethod: string | undefined): boolean {
   if (!lineText || !sinkMethod?.length) return false;
   const needle = `${sinkMethod}(`;
