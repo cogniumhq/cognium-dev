@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Java: `println`/`write` string concats whose only dynamic fragment is `ESAPI.encoder().encodeForHTML(...)` no longer emit XSS (#915).**
 - **Java: inner-class helper returning `org.apache.commons.lang.StringEscapeUtils.escapeHtml` no longer carries taint to `PrintWriter.format` / XSS sinks (#915).**
 - **JS: `JSON.parse(req.body)` → field → SQL concat reports `sql_injection` (interop IL-22, #1149).** `req.body` is a taint pattern; only `JSON.parse` (not every `.parse`) propagates const-prop taint; HTTP-anchored virtual sources cover the parse/field chain; assignment scanning skips `name = '…'` inside SQL strings without truncating object-literal RHS.
 

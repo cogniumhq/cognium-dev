@@ -823,11 +823,13 @@ interface SanitizerCallRef {
 
 function sanitizerCallRefs(sanitizers: TaintSanitizer[], sinkType: string): SanitizerCallRef[] {
   const refs: SanitizerCallRef[] = [];
+  const seen = new Set<string>();
   for (const san of sanitizers) {
     if (!sanitizerCoversSink(san, sinkType)) continue;
-    const m = /(?:(\w+)\.)?(\w+)\(\)/.exec(san.method);
-    if (!m?.[2]) continue;
-    refs.push({ receiver: m[1], methodName: m[2] });
+    const tail = sanitizerMethodTail(san);
+    if (!tail || seen.has(tail)) continue;
+    seen.add(tail);
+    refs.push({ receiver: undefined, methodName: tail });
   }
   return refs;
 }
