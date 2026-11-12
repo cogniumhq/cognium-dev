@@ -248,6 +248,10 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java (#78 round 2): static field stores inside the same class -------
     additionalSources.push(...findStaticFieldSources(types, code, language));
 
+    // -- Java #1198: instance-field HTTP stores + reflection Field.get reads -
+    additionalSources.push(...findJavaInstanceFieldHttpSources(types, code, language));
+    additionalSources.push(...findJavaReflectionFieldGetSources(types, code, language));
+
     // -- Java (#78 round 2): non-bean setter/getter chains -------------------
     additionalSources.push(...findSetterChainSources(types, code, language));
 
@@ -1206,6 +1210,138 @@ function findStaticFieldSources(
         });
       }
     }
+  }
+
+  return sources;
+}
+
+const JAVA_HTTP_RHS_PATTERN =
+  /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+
+/**
+ * cognium-dev #1198 — Instance (non-static) field assigned from HTTP in any method.
+ * Complements constructor-only #78 field sources (SecuriBench `Refl2` writes `name` in
+ * `doGet`, not the ctor).
+ */
+function findJavaInstanceFieldHttpSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const sources: TaintSource[] = [];
+  const lines = sourceCode.split('\n');
+  const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    const instanceFields = new Set(
+      type.fields.filter(f => !f.modifiers.includes('static')).map(f => f.name),
+    );
+    if (instanceFields.size === 0) continue;
+
+    for (const m of type.methods) {
+      const mStart = m.start_line;
+      const mEnd = m.end_line;
+      for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(bareAssignRe);
+        if (!bm) continue;
+        const fieldName = bm[1];
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (!instanceFields.has(fieldName)) continue;
+        if (!JAVA_HTTP_RHS_PATTERN.test(rhs)) continue;
+
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${fieldName} instance field set in ${m.name}() — #1198`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.85,
+          variable: fieldName,
+        });
+        sources.push({
+          type: 'http_param',
+          location: `${type.name}.${fieldName} instance field (this.) — #1198`,
+          severity: 'high',
+          line: i + 1,
+          confidence: 0.85,
+          variable: `this.${fieldName}`,
+        });
+      }
+    }
+  }
+
+  return sources;
+}
+
+/**
+ * cognium-dev #1198 — `Field.get` on a reflectively looked-up instance field that was
+ * tainted earlier in the class (SecuriBench `Refl2`).
+ */
+function findJavaReflectionFieldGetSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const lines = sourceCode.split('\n');
+  const taintedFieldNames = new Set<string>();
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    const instanceFields = new Set(
+      type.fields.filter(f => !f.modifiers.includes('static')).map(f => f.name),
+    );
+    const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+    for (const m of type.methods) {
+      for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(bareAssignRe);
+        if (!bm) continue;
+        const fieldName = bm[1];
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (instanceFields.has(fieldName) && JAVA_HTTP_RHS_PATTERN.test(rhs)) {
+          taintedFieldNames.add(fieldName);
+        }
+      }
+    }
+  }
+  if (taintedFieldNames.size === 0) return [];
+
+  const sources: TaintSource[] = [];
+  const fieldVarToName = new Map<string, string>();
+  const declareFieldRe = /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
+  const fieldGetAssignRe =
+    /^\s*(?:[\w.]+\s+)?(\w+)\s*=\s*\([^)]*\)\s*(\w+)\.get\s*\(/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] ?? '').trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const decl = trimmed.match(declareFieldRe);
+    if (decl) {
+      const [, varName, reflectedField] = decl;
+      if (taintedFieldNames.has(reflectedField)) {
+        fieldVarToName.set(varName, reflectedField);
+      }
+      continue;
+    }
+    const assign = trimmed.match(fieldGetAssignRe);
+    if (!assign) continue;
+    const [, lhs, fieldVar] = assign;
+    const reflectedField = fieldVarToName.get(fieldVar);
+    if (!reflectedField) continue;
+
+    sources.push({
+      type: 'http_param',
+      location: `Field.get("${reflectedField}") assignment — #1198`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.85,
+      variable: lhs,
+    });
   }
 
   return sources;
