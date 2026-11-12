@@ -1226,6 +1226,9 @@ const JAVA_HTTP_RHS_PATTERN =
 const JAVA_DECLARE_FIELD_LINE_RE =
   /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
 const JAVA_FIELD_SET_LINE_RE = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;?/;
+/** cognium-dev #1198 — heap field stores `base.field = rhs;` (shared for regex-lint budget). */
+const JAVA_LOCAL_FIELD_ASSIGN_LINE_RE =
+  /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
 
 /**
  * cognium-dev #1198 — Instance (non-static) field assigned from HTTP in any method.
@@ -1560,13 +1563,11 @@ function findJavaHeapFieldDerivedSources(
   }
   if (seeds.size === 0) return [];
   const derived = buildJavaTaintedVars(code, seeds);
-  const localFieldAssignRe =
-    /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
   const sources: TaintSource[] = [];
   for (const [varName, line] of derived) {
     if (!varName.includes('.')) continue;
     const lineText = code.split('\n')[line - 1]?.trim() ?? '';
-    const m = localFieldAssignRe.exec(lineText);
+    const m = JAVA_LOCAL_FIELD_ASSIGN_LINE_RE.exec(lineText);
     if (!m) continue;
     const written = `${m[1]}.${m[2]}`;
   // Direct write or same-line alias (e.g. head.next.value after next.value = name).
@@ -4733,8 +4734,6 @@ export function buildJavaTaintedVars(
 
   /** cognium-dev#1198 — `head.next = next` reference alias for heap field reads. */
   const localRefAlias = new Map<string, string>();
-  const localFieldAssignRe =
-    /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
   const markQualifiedFieldTainted = (
     qualified: string,
     lineNo: number,
@@ -4920,7 +4919,9 @@ export function buildJavaTaintedVars(
         continue;
       }
 
-      const localFieldMatch = localFieldAssignRe.exec(statement.trim());
+      const localFieldMatch = JAVA_LOCAL_FIELD_ASSIGN_LINE_RE.exec(
+        statement.trim(),
+      );
       if (localFieldMatch) {
         const recv = localFieldMatch[1];
         const field = localFieldMatch[2];
