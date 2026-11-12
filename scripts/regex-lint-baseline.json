@@ -22,7 +22,7 @@
   "packages/circle-ir/src/analysis/passes/infinite-loop-pass.ts": 7,
   "packages/circle-ir/src/analysis/passes/interprocedural-pass.ts": 13,
   "packages/circle-ir/src/analysis/passes/jwt-verify-disabled-pass.ts": 1,
-  "packages/circle-ir/src/analysis/passes/language-sources-pass.ts": 311,
+  "packages/circle-ir/src/analysis/passes/language-sources-pass.ts": 312,
   "packages/circle-ir/src/analysis/passes/missing-override-pass.ts": 1,
   "packages/circle-ir/src/analysis/passes/missing-stream-pass.ts": 3,
   "packages/circle-ir/src/analysis/passes/param-source-flow-gate-pass.ts": 2,
