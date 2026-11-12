@@ -1219,6 +1219,11 @@ function findStaticFieldSources(
 const JAVA_HTTP_RHS_PATTERN =
   /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
 
+/** Shared line matchers for reflection field get/set heuristics (#1198). */
+const JAVA_DECLARE_FIELD_LINE_RE =
+  /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
+const JAVA_FIELD_SET_LINE_RE = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;?/;
+
 /**
  * cognium-dev #1198 — Instance (non-static) field assigned from HTTP in any method.
  * Complements constructor-only #78 field sources (SecuriBench `Refl2` writes `name` in
@@ -1306,14 +1311,13 @@ function findJavaReflectionFieldGetSources(
 
   const sources: TaintSource[] = [];
   const fieldVarToName = new Map<string, string>();
-  const declareFieldRe = /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
   const fieldGetAssignRe =
     /^\s*(?:[\w.]+\s+)?(\w+)\s*=\s*\([^)]*\)\s*(\w+)\.get\s*\(/;
 
   for (let i = 0; i < lines.length; i++) {
     const trimmed = (lines[i] ?? '').trim();
     if (!trimmed || trimmed.startsWith('//')) continue;
-    const decl = trimmed.match(declareFieldRe);
+    const decl = trimmed.match(JAVA_DECLARE_FIELD_LINE_RE);
     if (decl) {
       const [, varName, reflectedField] = decl;
       if (taintedFieldNames.has(reflectedField)) {
@@ -1372,19 +1376,17 @@ function findJavaReflectionFieldSetSources(
   if (taintedVars.size === 0) return [];
 
   const fieldVarToName = new Map<string, string>();
-  const declareFieldRe = /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
-  const fieldSetRe = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;?/;
 
   const sources: TaintSource[] = [];
   for (let i = 0; i < lines.length; i++) {
     const trimmed = (lines[i] ?? '').trim();
     if (!trimmed || trimmed.startsWith('//')) continue;
-    const decl = trimmed.match(declareFieldRe);
+    const decl = trimmed.match(JAVA_DECLARE_FIELD_LINE_RE);
     if (decl) {
       fieldVarToName.set(decl[1], decl[2]);
       continue;
     }
-    const setM = trimmed.match(fieldSetRe);
+    const setM = trimmed.match(JAVA_FIELD_SET_LINE_RE);
     if (!setM) continue;
     const [, fieldVar, targetObj, valueArg] = setM;
     const reflectedField = fieldVarToName.get(fieldVar);
