@@ -2387,6 +2387,7 @@ function findJavaScriptAssignmentSources(sourceCode: string, language: string): 
   // event-name allowlist to avoid firing on unrelated `.on('drain', cb)`
   // / `.on('close', cb)` etc. that carry non-user-input.
   sources.push(...findJavaScriptCallbackParamSources(sourceCode));
+  sources.push(...findJavaScriptSubscribeCallbackParamSources(sourceCode));
   sources.push(...findExpressDestructuredRequestSources(sourceCode));
   if (language === 'javascript' || language === 'typescript') {
     sources.push(...findGraphqlResolverArgSources(sourceCode));
@@ -2732,6 +2733,39 @@ function findJavaScriptCallbackParamSources(sourceCode: string): TaintSource[] {
       severity: 'high',
       line: i + 1,
       confidence: 0.95,
+      variable: paramName,
+    });
+  }
+  return sources;
+}
+
+/**
+ * cognium-dev #1224 — RxJS/Observable `.subscribe` callback first-parameter sources.
+ *
+ * Angular services return HTTP payloads through `service.method().subscribe((data) => …)`.
+ * The first callback argument is user-influenced response body (stored-XSS shapes in Juice Shop).
+ * Scoped to `.subscribe(` only — not every higher-order function — to avoid unrelated FPs.
+ */
+function findJavaScriptSubscribeCallbackParamSources(sourceCode: string): TaintSource[] {
+  const sources: TaintSource[] = [];
+  const SUBSCRIBE_CB_RE =
+    /\.subscribe\s*\(\s*(?:async\s+)?(?:function\s*\*?\s*(?:\w+\s*)?\(\s*(\w+)|\(\s*(\w+)\s*(?:[,):]|$)|(\w+)\s*=>)/;
+  const lines = sourceCode.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const m = line.match(SUBSCRIBE_CB_RE);
+    if (!m) continue;
+    const paramName = m[1] ?? m[2] ?? m[3];
+    if (!paramName) continue;
+    if (paramName === 'err' || paramName === 'error') continue;
+    sources.push({
+      type: 'http_body',
+      location: `Observable .subscribe(...) callback param '${paramName}' at line ${i + 1}`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.9,
       variable: paramName,
     });
   }
