@@ -499,6 +499,20 @@ function makeConstPropVeto(
     return use ? graph.defById.get(use.def_id!) : undefined;
   };
   return (step, sourceLine, sinkLine, sinkType) => {
+    // cognium-dev#1198 — heap-field stamped sources are not in constProp.tainted.
+    if (
+      step.variable.includes('.') &&
+      sources.some(
+        (s) =>
+          s.variable === step.variable &&
+          s.line >= sourceLine &&
+          s.line <= sinkLine &&
+          typeof s.location === 'string' &&
+          s.location.includes('heap field read'),
+      )
+    ) {
+      return false;
+    }
     const method = methodAtLine(graph, step.line);
     const blockLine = defLineForUse(graph, step.variable, step.line);
     const fpLookup = constPropFlowLookup(
@@ -917,6 +931,7 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
         ctx.code,
         types,
         graph,
+        ctx.language,
       ) ?? [];
     for (const f of collectionFlows) {
       if (flowKeys.has(flowKey(f))) continue;
@@ -1997,6 +2012,7 @@ function detectCollectionFlows(
   code?: string,
   types?: CircleIR['types'],
   graph?: PassContext['graph'],
+  language?: string,
 ): CircleIR['taint']['flows'] {
   const taintedVars = constProp.tainted;
   const unreachableLines = constProp.unreachableLines;
@@ -2011,12 +2027,25 @@ function detectCollectionFlows(
   }
 
   const javaDerivedVars =
-    typeof code === 'string'
+    language === 'java' && typeof code === 'string'
       ? buildJavaTaintedVars(
           code,
           new Set(sources.map(s => s.variable).filter((v): v is string => Boolean(v))),
         )
       : undefined;
+  // Stamp qualified sources (#1198 heap-field reads) — seeds are not
+  // present in the derived-only map returned by `buildJavaTaintedVars`.
+  if (javaDerivedVars) {
+    for (const s of sources) {
+      if (
+        s.variable?.includes('.') &&
+        typeof s.location === 'string' &&
+        s.location.includes('heap field read')
+      ) {
+        javaDerivedVars.set(s.variable, s.line);
+      }
+    }
+  }
 
   for (const sink of sinks) {
     if (unreachableLines.has(sink.line)) continue;
@@ -2030,9 +2059,27 @@ function detectCollectionFlows(
           continue;
         }
         if (arg.variable) {
-          const varName = arg.variable;
+          const expr = arg.expression ?? '';
+          let varName = arg.variable;
+          // cognium-dev#1198 — Tree-sitter sink args carry the innermost
+          // identifier (`value` in `next.value`); `buildJavaTaintedVars` keys
+          // the qualified field path instead.
+          if (
+            language === 'java' &&
+            expr.includes('.') &&
+            !expr.startsWith('this.') &&
+            (javaDerivedVars?.has(expr) ||
+              sources.some(
+                (s) =>
+                  s.variable === expr &&
+                  typeof s.location === 'string' &&
+                  s.location.includes('heap field read'),
+              ))
+          ) {
+            varName = expr;
+          }
           let scopedName = varName;
-          if (call.in_method) {
+          if (call.in_method && !varName.includes('.')) {
             const blockLine = graph
               ? defLineForUse(graph, varName, call.location.line)
               : call.location.line;
@@ -2048,7 +2095,6 @@ function detectCollectionFlows(
           // Bare `name` that is a field read (no local of that name in this
           // method) still counts as a field use — Inter4-style. A shadowing
           // local declaration in the method does not.
-          const expr = arg.expression ?? '';
           const explicitField = isFieldUseExpression(
             expr, varName, enclosingTypeNamesAt(types, call.location.line),
           );
@@ -2060,6 +2106,19 @@ function detectCollectionFlows(
           let argTainted = isTaintedInMethod(
             taintedVars, varName, scopedName, fieldNames, isFieldUse,
           );
+          if (
+            language === 'java' &&
+            !argTainted &&
+            javaDerivedVars?.has(varName) &&
+            sources.some(
+              (s) =>
+                s.variable === varName &&
+                typeof s.location === 'string' &&
+                s.location.includes('heap field read'),
+            )
+          ) {
+            argTainted = true;
+          }
           if (mapKeyRead && mapKeyRead.map === varName) {
             argTainted = isMapLiteralKeyTainted(
               constProp, varName, mapKeyRead.key, call.in_method,
@@ -4925,6 +4984,14 @@ function pickScopedSource(
     }
     return null;
   };
+
+  // cognium-dev#1198 — stamped heap-field sources (`next.value`) must win over
+  // RHS-derived anchor resolution (#515), which would otherwise credit `name`.
+  if (language === 'java' && taintedVar?.includes('.')) {
+    const byQualified = sources.filter((s) => s.variable === taintedVar);
+    const pickQualified = closestPreceding(byQualified);
+    if (pickQualified) return pickQualified;
+  }
 
   // cognium-dev#515 — derived locals must credit the RHS read, not an earlier
   // decoy source in the same method (alias entries can still carry a stale anchor).
