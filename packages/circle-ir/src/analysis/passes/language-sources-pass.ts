@@ -251,6 +251,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java #1198: instance-field HTTP stores + reflection Field.get reads -
     additionalSources.push(...findJavaInstanceFieldHttpSources(types, code, language));
     additionalSources.push(...findJavaReflectionFieldGetSources(types, code, language));
+    additionalSources.push(...findJavaReflectionFieldSetSources(types, code, language));
 
     // -- Java (#78 round 2): non-bean setter/getter chains -------------------
     additionalSources.push(...findSetterChainSources(types, code, language));
@@ -1333,6 +1334,70 @@ function findJavaReflectionFieldGetSources(
       line: i + 1,
       confidence: 0.85,
       variable: lhs,
+    });
+  }
+
+  return sources;
+}
+
+/**
+ * cognium-dev #1198 — `Field.set` stores HTTP-tainted data into a reflectively
+ * looked-up instance field (`Refl3`: set on inner class field, read at sink).
+ */
+function findJavaReflectionFieldSetSources(
+  types: TypeInfo[],
+  sourceCode: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const lines = sourceCode.split('\n');
+  const taintedVars = new Set<string>();
+  const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
+
+  for (const type of types) {
+    if (type.kind !== 'class' || type.name === '<module>') continue;
+    for (const m of type.methods) {
+      for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
+        const trimmed = (lines[i] ?? '').trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+        const bm = trimmed.match(bareAssignRe);
+        if (!bm) continue;
+        const rhs = bm[2].trim().replace(/;\s*$/, '');
+        if (JAVA_HTTP_RHS_PATTERN.test(rhs)) {
+          taintedVars.add(bm[1]);
+        }
+      }
+    }
+  }
+  if (taintedVars.size === 0) return [];
+
+  const fieldVarToName = new Map<string, string>();
+  const declareFieldRe = /^\s*(?:[\w.]+\s+)?Field\s+(\w+)\s*=\s*.+\.(?:getField|getDeclaredField)\s*\(\s*"([^"]+)"\s*\)/;
+  const fieldSetRe = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;?/;
+
+  const sources: TaintSource[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] ?? '').trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    const decl = trimmed.match(declareFieldRe);
+    if (decl) {
+      fieldVarToName.set(decl[1], decl[2]);
+      continue;
+    }
+    const setM = trimmed.match(fieldSetRe);
+    if (!setM) continue;
+    const [, fieldVar, targetObj, valueArg] = setM;
+    const reflectedField = fieldVarToName.get(fieldVar);
+    if (!reflectedField) continue;
+    if (!taintedVars.has(valueArg)) continue;
+
+    sources.push({
+      type: 'http_param',
+      location: `Field.set("${reflectedField}") on ${targetObj} — #1198`,
+      severity: 'high',
+      line: i + 1,
+      confidence: 0.85,
+      variable: `${targetObj}.${reflectedField}`,
     });
   }
 
