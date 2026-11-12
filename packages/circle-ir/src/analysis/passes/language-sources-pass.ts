@@ -256,6 +256,9 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
     // -- Java (#78 round 2): non-bean setter/getter chains -------------------
     additionalSources.push(...findSetterChainSources(types, code, language));
 
+    // -- Java #1198: taint stored on locals' instance fields (Basic29-style) -
+    additionalSources.push(...findJavaHeapFieldDerivedSources(code, language));
+
     // -- JavaScript/TypeScript: assignment sources and DOM XSS sinks ---------
     additionalSources.push(...findJavaScriptAssignmentSources(code, language));
 
@@ -1536,6 +1539,47 @@ function findSetterChainSources(
     }
   }
 
+  return sources;
+}
+
+/**
+ * cognium-dev #1198 — `next.value = name` heap field stores and reference aliases
+ * (`head.next = next`) for SecuriBench Basic29-style linked structures.
+ */
+function findJavaHeapFieldDerivedSources(
+  code: string,
+  language: string,
+): TaintSource[] {
+  if (language !== 'java') return [];
+  const seeds = new Set<string>();
+  const httpLocalRe =
+    /\b([A-Za-z_]\w*)\s*=\s*[^;]*\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.getParameter\b/;
+  for (const line of code.split('\n')) {
+    const m = httpLocalRe.exec(line);
+    if (m) seeds.add(m[1]);
+  }
+  if (seeds.size === 0) return [];
+  const derived = buildJavaTaintedVars(code, seeds);
+  const localFieldAssignRe =
+    /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const sources: TaintSource[] = [];
+  for (const [varName, line] of derived) {
+    if (!varName.includes('.')) continue;
+    const lineText = code.split('\n')[line - 1]?.trim() ?? '';
+    const m = localFieldAssignRe.exec(lineText);
+    if (!m) continue;
+    const written = `${m[1]}.${m[2]}`;
+  // Direct write or same-line alias (e.g. head.next.value after next.value = name).
+    if (varName !== written && !varName.endsWith(`.${m[2]}`)) continue;
+    sources.push({
+      type: 'http_param',
+      location: `heap field read ${varName} — #1198`,
+      severity: 'high',
+      line,
+      confidence: 0.8,
+      variable: varName,
+    });
+  }
   return sources;
 }
 
@@ -4687,6 +4731,32 @@ export function buildJavaTaintedVars(
     }
   }
 
+  /** cognium-dev#1198 — `head.next = next` reference alias for heap field reads. */
+  const localRefAlias = new Map<string, string>();
+  const localFieldAssignRe =
+    /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+  const markQualifiedFieldTainted = (
+    qualified: string,
+    lineNo: number,
+  ): void => {
+    if (knownTainted.has(qualified)) return;
+    derived.set(qualified, lineNo);
+    knownTainted.add(qualified);
+    if (!/^[\p{L}\p{N}_]+$/u.test(qualified)) {
+      const esc = qualified.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      complexTaintedRes.push(new RegExp(`(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])`, 'u'));
+    }
+    changed = true;
+    const dot = qualified.lastIndexOf('.');
+    if (dot <= 0) return;
+    const recv = qualified.slice(0, dot);
+    const field = qualified.slice(dot + 1);
+    for (const [aliasPath, targetLocal] of localRefAlias) {
+      if (targetLocal !== recv) continue;
+      markQualifiedFieldTainted(`${aliasPath}.${field}`, lineNo);
+    }
+  };
+
   let changed = true;
   let guard = 0;
   while (changed && guard < lines.length + 2) {
@@ -4846,6 +4916,32 @@ export function buildJavaTaintedVars(
             knownTainted.add(fieldName);
             changed = true;
           }
+        }
+        continue;
+      }
+
+      const localFieldMatch = localFieldAssignRe.exec(statement.trim());
+      if (localFieldMatch) {
+        const recv = localFieldMatch[1];
+        const field = localFieldMatch[2];
+        const rhs = localFieldMatch[3];
+        const qualified = `${recv}.${field}`;
+        const rhsTrim = rhs.trim();
+        const refOnly = /^[A-Za-z_]\w*$/.exec(rhsTrim);
+        if (refOnly && !JAVA_KEYWORDS.has(refOnly[0])) {
+          localRefAlias.set(qualified, refOnly[0]);
+        }
+        const rhsCode = rhs
+          .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit =>
+            ' ' + [...lit.matchAll(/\{([^}]*)\}/g)].map(x => x[1]).join(' ') + ' ')
+          .replace(/@?"(?:[^"\\]|\\.)*"/g, ' ')
+          .replace(/'(?:[^'\\]|\\.)'/g, ' ');
+        const rhsIdents = rhsCode.match(/[\p{L}\p{N}_]+/gu);
+        const ref =
+          (rhsIdents !== null && rhsIdents.some(t => knownTainted.has(t))) ||
+          (complexTaintedRes.length > 0 && complexTaintedRes.some(re => re.test(rhsCode)));
+        if (ref) {
+          markQualifiedFieldTainted(qualified, i + 1);
         }
         continue;
       }
