@@ -1255,15 +1255,7 @@ function findJavaInstanceFieldHttpSources(
 
         sources.push({
           type: 'http_param',
-          location: `${type.name}.${fieldName} instance field set in ${m.name}() — #1198`,
-          severity: 'high',
-          line: i + 1,
-          confidence: 0.85,
-          variable: fieldName,
-        });
-        sources.push({
-          type: 'http_param',
-          location: `${type.name}.${fieldName} instance field (this.) — #1198`,
+          location: `${type.name}.${fieldName} instance field (this.) set in ${m.name}() — #1198`,
           severity: 'high',
           line: i + 1,
           confidence: 0.85,
