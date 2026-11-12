@@ -1229,6 +1229,8 @@ const JAVA_FIELD_SET_LINE_RE = /^\s*(\w+)\.set\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*;
 /** cognium-dev #1198 — heap field stores `base.field = rhs;` (shared for regex-lint budget). */
 const JAVA_LOCAL_FIELD_ASSIGN_LINE_RE =
   /^\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+?);\s*$/;
+const JAVA_BARE_ASSIGN_LINE_RE =
+  /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
 
 /**
  * cognium-dev #1198 — Instance (non-static) field assigned from HTTP in any method.
@@ -1243,7 +1245,6 @@ function findJavaInstanceFieldHttpSources(
   if (language !== 'java') return [];
   const sources: TaintSource[] = [];
   const lines = sourceCode.split('\n');
-  const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
 
   for (const type of types) {
     if (type.kind !== 'class' || type.name === '<module>') continue;
@@ -1258,7 +1259,7 @@ function findJavaInstanceFieldHttpSources(
       for (let i = mStart - 1; i < Math.min(mEnd, lines.length); i++) {
         const trimmed = (lines[i] ?? '').trim();
         if (!trimmed || trimmed.startsWith('//')) continue;
-        const bm = trimmed.match(bareAssignRe);
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
         if (!bm) continue;
         const fieldName = bm[1];
         const rhs = bm[2].trim().replace(/;\s*$/, '');
@@ -1298,12 +1299,11 @@ function findJavaReflectionFieldGetSources(
     const instanceFields = new Set(
       type.fields.filter(f => !f.modifiers.includes('static')).map(f => f.name),
     );
-    const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
     for (const m of type.methods) {
       for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
         const trimmed = (lines[i] ?? '').trim();
         if (!trimmed || trimmed.startsWith('//')) continue;
-        const bm = trimmed.match(bareAssignRe);
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
         if (!bm) continue;
         const fieldName = bm[1];
         const rhs = bm[2].trim().replace(/;\s*$/, '');
@@ -1362,7 +1362,6 @@ function findJavaReflectionFieldSetSources(
   if (language !== 'java') return [];
   const lines = sourceCode.split('\n');
   const taintedVars = new Set<string>();
-  const bareAssignRe = /^\s*([A-Za-z_]\w*)\s*=\s*(.+?)(?:;\s*)?$/;
 
   for (const type of types) {
     if (type.kind !== 'class' || type.name === '<module>') continue;
@@ -1370,7 +1369,7 @@ function findJavaReflectionFieldSetSources(
       for (let i = m.start_line - 1; i < Math.min(m.end_line, lines.length); i++) {
         const trimmed = (lines[i] ?? '').trim();
         if (!trimmed || trimmed.startsWith('//')) continue;
-        const bm = trimmed.match(bareAssignRe);
+        const bm = trimmed.match(JAVA_BARE_ASSIGN_LINE_RE);
         if (!bm) continue;
         const rhs = bm[2].trim().replace(/;\s*$/, '');
         if (JAVA_HTTP_RHS_PATTERN.test(rhs)) {
@@ -1555,11 +1554,20 @@ function findJavaHeapFieldDerivedSources(
 ): TaintSource[] {
   if (language !== 'java') return [];
   const seeds = new Set<string>();
-  const httpLocalRe =
-    /\b([A-Za-z_]\w*)\s*=\s*[^;]*\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.getParameter\b/;
   for (const line of code.split('\n')) {
-    const m = httpLocalRe.exec(line);
-    if (m) seeds.add(m[1]);
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//')) continue;
+    if (!JAVA_HTTP_RHS_PATTERN.test(trimmed)) continue;
+  const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const rhs = trimmed.slice(eq + 1).trim().replace(/;\s*$/, '');
+    if (!JAVA_HTTP_RHS_PATTERN.test(rhs)) continue;
+    const lhs = trimmed.slice(0, eq).trim();
+    const bare = JAVA_BARE_ASSIGN_LINE_RE.exec(`${lhs} = ${rhs};`);
+    const local = bare
+      ? bare[1]
+      : lhs.split(/\s+/).pop() ?? '';
+    if (isSimpleJavaLocalIdent(local)) seeds.add(local);
   }
   if (seeds.size === 0) return [];
   const derived = buildJavaTaintedVars(code, seeds);
@@ -4665,6 +4673,35 @@ function joinWrappedJavaStatement(lines: readonly string[], i: number): string |
  * consumed by `detectExpressionScanFlows` in `taint-propagation-pass.ts`
  * to synthesize a virtual source for each derived var.
  */
+/** Reference-RHS alias in heap-field stores (no regex — regex-lint budget). */
+function isSimpleJavaLocalIdent(name: string): boolean {
+  if (!name) return false;
+  const first = name.charCodeAt(0);
+  if (
+    !(
+      (first >= 65 && first <= 90) ||
+      (first >= 97 && first <= 122) ||
+      first === 95
+    )
+  ) {
+    return false;
+  }
+  for (let i = 1; i < name.length; i++) {
+    const ch = name.charCodeAt(i);
+    if (
+      !(
+        (ch >= 48 && ch <= 57) ||
+        (ch >= 65 && ch <= 90) ||
+        (ch >= 97 && ch <= 122) ||
+        ch === 95
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function buildJavaTaintedVars(
   sourceCode: string,
   seedVars: Set<string>,
@@ -4928,9 +4965,11 @@ export function buildJavaTaintedVars(
         const rhs = localFieldMatch[3];
         const qualified = `${recv}.${field}`;
         const rhsTrim = rhs.trim();
-        const refOnly = /^[A-Za-z_]\w*$/.exec(rhsTrim);
-        if (refOnly && !JAVA_KEYWORDS.has(refOnly[0])) {
-          localRefAlias.set(qualified, refOnly[0]);
+        if (
+          isSimpleJavaLocalIdent(rhsTrim) &&
+          !JAVA_KEYWORDS.has(rhsTrim)
+        ) {
+          localRefAlias.set(qualified, rhsTrim);
         }
         const rhsCode = rhs
           .replace(/\$@?"(?:[^"\\]|\\.)*"/g, lit =>
