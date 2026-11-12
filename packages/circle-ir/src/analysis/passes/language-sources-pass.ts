@@ -1228,7 +1228,8 @@ function findStaticFieldSources(
  * Strategy: for each class, build a `field -> { setter, getter }` map.
  * A setter is a 1-param method whose only body statement is
  * `this.<field> = <param>;`. A getter is a 0-param method whose only
- * body statement is `return this.<field>;`. Then walk the whole source
+ * body statement is `return this.<field>;` or `return <field>;` (common
+ * in SecuriBench heap-widget cases). Then walk the whole source
  * for setter call sites whose argument matches a known HTTP source —
  * emit a synthetic source on the setter call line bound to the *getter*
  * method name, so the variable-name scan in `TaintPropagationPass`
@@ -1247,6 +1248,19 @@ function findSetterChainSources(
   const lines = sourceCode.split('\n');
 
   const javaHttpPattern = /\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\.(?:getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getCookies|getQueryString|getPathInfo|getRequestURI|getRequestURL|getInputStream|getReader)\b/;
+  const setterArgFromHttp = (arg: string): boolean => {
+    const trimmed = arg.trim();
+    if (javaHttpPattern.test(trimmed)) return true;
+    const id = /^\s*([A-Za-z_]\w*)\s*$/.exec(trimmed);
+    if (!id) return false;
+    const v = id[1].replace(/[$]/g, '\\$&');
+    // cognium-dev#1198 — SecuriBench Basic16 passes taint as a local (`writePayload(s)`)
+    // after `String s = req.getParameter(...)`; the setter-chain emitter only
+    // matched literal HTTP call expressions in the argument position.
+    return new RegExp(
+      `\\b(?:[\\w.<>,\\s]+\\s+)?${v}\\s*=\\s*[^;\\n]*\\b(?:req|request|httpRequest|servletRequest|httpServletRequest)\\.(?:getParameter|getParameterValues|getHeader|getCookies|getQueryString|getInputStream|getReader)\\s*\\(`,
+    ).test(sourceCode);
+  };
 
   for (const type of types) {
     if (type.kind !== 'class') continue;
@@ -1255,7 +1269,7 @@ function findSetterChainSources(
     // Build setter/getter pairs by inspecting per-method bodies.
     const pairs = new Map<string, { setter?: string; getter?: string }>();
     const setterRe = /this\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;?/;
-    const getterRe = /return\s+this\.([A-Za-z_]\w*)\s*;?/;
+    const getterRe = /return\s+(?:this\.)?([A-Za-z_]\w*)\s*;?/;
 
     for (const m of type.methods) {
       if (m.name === type.name) continue; // skip constructor
@@ -1314,7 +1328,7 @@ function findSetterChainSources(
         const cm = trimmed.match(setterCallRe);
         if (!cm) continue;
         const arg = cm[2];
-        if (!javaHttpPattern.test(arg)) continue;
+        if (!setterArgFromHttp(arg)) continue;
         sources.push({
           type: 'http_param',
           location: `${type.name}.${setter}(tainted) → ${type.name}.${getter}() chain — #78 round 2`,
