@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: a request value used as a regex pattern on the line it is read (`new RegExp(req.query.p)`) reports `redos` (CWE-1333).** `redos` was missing from the request sources' reach map, so the inline flow was never produced; only a value passed through a local reached the sink. The inline flow is emitted only when the request value sits in the sink's pattern argument (a request value as the subject, `req.query.q.match(/x/)` or Java `request.getParameter("x").matches("…")`, does not count). `escapeRegExp` (lodash), `escapeStringRegexp` (`escape-string-regexp`) and `escapeRegex` sanitize `redos`, so escaping the value reads `gone` in `cognium-dev recheck`. Fixtures under `tests/fixtures/redos-request-pattern/`.
 - **Java: SecuriBench Basic29 linked `Node` heap fields (`next.value`, aliased `head.next.value`) reach XSS sinks (#1198).**
 - **TS/Angular: Observable `.subscribe` callback parameters are `http_body` sources (#1224).** HTTP payloads returned through injected services (Juice Shop `restfulXss` shape) now reach `DomSanitizer.bypassSecurityTrust*` sinks.
 - **Java: `println`/`write` string concats whose only dynamic fragment is `ESAPI.encoder().encodeForHTML(...)` no longer emit XSS (#915).**

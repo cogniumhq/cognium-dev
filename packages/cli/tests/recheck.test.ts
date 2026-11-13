@@ -471,3 +471,48 @@ describe('recheck on a TypeScript CWE-1333 fix (redos-regex-literal)', () => {
     expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
   }, 60_000);
 });
+
+describe('recheck on a TypeScript CWE-1333 fix (redos: request value as a RegExp pattern)', () => {
+  const TS_FILE = 'src/search.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-request-pattern');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('rxp-before', 'vulnerable.ts');
+    tsTree('rxp-fixed', 'fixed.ts');
+    baselinePath = join(work, 'rxp-before.json');
+    await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × redos', () => {
+    expect(keys.length).toBe(3);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos')).toBe(true);
+    }
+  });
+
+  test('fixed (escaped): every key is gone', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
