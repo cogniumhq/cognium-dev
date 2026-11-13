@@ -9,11 +9,15 @@
  * `--baseline <json>` (the "before" report), every key gets a verdict:
  *
  *   gone           in the baseline, not after; `reason` says why
- *   still-present  in both
+ *   still-present  in both; or re-keyed: the declaration's id moved (an anonymous
+ *                  handler is keyed by position, so an inserted import moves it)
+ *                  and one after finding under a new key has the same flow
+ *                  identity (`reason: rekeyed`, `rekeyedTo`)
  *   new-high       not in the baseline, severity high or critical
  *   new-other      not in the baseline, lower severity
  *   unknown        in the baseline, but its file did not parse fully after the
- *                  change or was not analysed: never read as `gone`
+ *                  change or was not analysed, or more than one finding could be
+ *                  it re-keyed (`rekey-ambiguous`): never read as `gone`
  *
  * Every finding and verdict carries its evidence: source, sink, hops,
  * sanitizers in the path and a line-free flow fingerprint.
@@ -52,9 +56,9 @@ import { materializeBase } from './graph-facts.js';
 import { UsageError } from './utils/options.js';
 import { isScanSkippedDirectory } from './utils/skip-dirs.js';
 
-export const RECHECK_SCHEMA = 'cognium-recheck@0.2';
+export const RECHECK_SCHEMA = 'cognium-recheck@0.3';
 /** Baselines written by earlier versions; read, never written. */
-const READABLE_SCHEMAS = new Set([RECHECK_SCHEMA, 'cognium-recheck@0.1']);
+const READABLE_SCHEMAS = new Set([RECHECK_SCHEMA, 'cognium-recheck@0.2', 'cognium-recheck@0.1']);
 
 const LANG_BY_EXT: Record<string, SupportedLanguage> = {
   '.java': 'java', '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
@@ -111,7 +115,9 @@ export type GoneReason =
   | 'file-removed'
   | 'flow-not-found'
   | 'not-reported';
-export type UnknownReason = 'parse-error' | 'not-analysed';
+export type UnknownReason = 'parse-error' | 'not-analysed' | 'rekey-ambiguous';
+/** A `still-present` whose key changed: the declaration was re-keyed, the flow is the same. */
+export type StillPresentReason = 'rekeyed';
 
 export interface RecheckVerdict {
   key: string;
@@ -122,8 +128,24 @@ export interface RecheckVerdict {
   file: string;
   /** Line after the change; the baseline line for `gone` and `unknown`. */
   line: number;
-  /** Why a key is `gone` or `unknown`. */
-  reason?: GoneReason | UnknownReason;
+  /** Why a key is `gone` or `unknown`, or `rekeyed` for a `still-present` found under a new key. */
+  reason?: GoneReason | UnknownReason | StillPresentReason;
+  /**
+   * `still-present` / `rekeyed`: the key the same flow has after the change. The
+   * declaration's stable id moved (an anonymous handler is keyed by position), the
+   * flow did not: same rule, CWE, file, sink and source code and types, sanitizers.
+   */
+  rekeyedTo?: string;
+  /** How a baseline key was matched to a different after key; only `flow-identity`. */
+  matchedBy?: 'flow-identity';
+  /** `unknown` / `rekey-ambiguous`: the after keys with the same flow identity, none chosen. */
+  rekeyCandidates?: string[];
+  /**
+   * `gone`: the after declaration the reason was taken from when the baseline
+   * declaration's id is gone but one after declaration has the same name once
+   * positions are left out (an anonymous handler after an inserted import).
+   */
+  successorDecl?: string;
   /** `sanitized-by`: the sanitizers now in the declaration, and whether any of them covers the sink class. */
   sanitizers?: Array<{ method: string; line: number; sanitizes: string[] }>;
   sanitizerCoversSink?: boolean;
@@ -257,6 +279,8 @@ export interface RecheckContext {
   allKeys: Set<string>;
   /** Declaration ids present per file (stable ids or the qualified name fallback). */
   decls: Map<string, Set<string>>;
+  /** Qualified name per declaration id, per file. */
+  declNames?: Map<string, Map<string, string>>;
   /** `file|declId` → what the declaration holds. */
   inventory: Map<string, DeclInventory>;
   /** Files analysed (closure: the tree; files: the changed list minus skipped). */
@@ -294,7 +318,7 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
 
   const findings: RecheckFinding[] = [];
   const partialFiles: RecheckReport['partialFiles'] = [];
-  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), inventory: new Map(), analysed: new Set(toRead) };
+  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), declNames: new Map(), inventory: new Map(), analysed: new Set(toRead) };
   if (inputs.length > 0) {
     const project = await analyzeProject(inputs);
     const byFile = new Map(project.files.map(f => [f.file, f.analysis]));
@@ -348,10 +372,13 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       }
       // Declarations and what each holds, for the reason on a `gone`.
       const declIds = new Set<string>();
-      for (const d of ids?.decls ?? []) declIds.add(d.id);
+      const names = new Map<string, string>();
+      for (const d of ids?.decls ?? []) { declIds.add(d.id); names.set(d.id, d.qualified_name); }
       const inv = (line: number): DeclInventory => {
-        const id = declAt(file, ir, line, ids).id;
+        const d = declAt(file, ir, line, ids);
+        const id = d.id;
         declIds.add(id);
+        if (!names.has(id)) names.set(id, d.name);
         const k = `${file}|${id}`;
         let e = ctx.inventory.get(k);
         if (!e) { e = { sinks: new Set(), sources: 0, sanitizers: [] }; ctx.inventory.set(k, e); }
@@ -361,6 +388,8 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       for (const s of ir.taint.sources ?? []) inv(s.line).sources++;
       for (const s of ir.taint.sanitizers ?? []) inv(s.line).sanitizers.push({ method: s.method, line: s.line, sanitizes: [...s.sanitizes] });
       ctx.decls.set(file, declIds);
+      ctx.declNames!.set(file, names);
+      const lines = inputByFile.get(file)?.code.split('\n') ?? [];
 
       const sanitizersBetween = (a: number, b: number, sinkType: string): string[] => {
         const lo = Math.min(a, b), hi = Math.max(a, b);
@@ -392,7 +421,7 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       for (const f of ir.findings ?? []) {
         if (f.category !== 'security') continue;
         await add(file, ir, 'pass', f.rule_id, f.cwe, f.severity, f.line, {
-          sink: { file, line: f.line, type: f.rule_id },
+          sink: { file, line: f.line, type: f.rule_id, ...(lines[f.line - 1]?.trim() ? { code: lines[f.line - 1].trim() } : {}) },
           hops: [],
           sanitizers_in_path: [],
           ...(f.message ? { message: f.message } : {}),
@@ -462,10 +491,28 @@ function readBaseline(path: string): RecheckReport {
   return b;
 }
 
+/** A qualified name with the positional parts of ids@0.1 (`@4.0.1.1`) left out. */
+function positionFree(name: string): string {
+  return name.replace(/@[0-9]+(?:\.[0-9]+)*/g, '');
+}
+
+/**
+ * The after declaration a baseline declaration became when its id is gone: the
+ * one declaration in the file with the same name once positions are left out.
+ * None when there is no such declaration or more than one.
+ */
+function successorDecl(f: RecheckFinding, ctx: RecheckContext): string | undefined {
+  const names = ctx.declNames?.get(f.file);
+  if (!names || !f.decl.name) return undefined;
+  const want = positionFree(f.decl.name);
+  const hits = [...names].filter(([, n]) => positionFree(n) === want).map(([id]) => id);
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /** Why a baseline key is missing after the change; `unknown` when the after side cannot say. */
 function explainMissing(
   f: RecheckFinding, after: RecheckReport, ctx: RecheckContext | undefined,
-): Pick<RecheckVerdict, 'verdict' | 'reason' | 'sanitizers' | 'sanitizerCoversSink'> {
+): Pick<RecheckVerdict, 'verdict' | 'reason' | 'sanitizers' | 'sanitizerCoversSink' | 'successorDecl'> {
   const skip = (after.skipped ?? []).find(s => s.file === f.file);
   if (skip?.reason === 'not present') return { verdict: 'gone', reason: 'file-removed' };
   if ((after.partialFiles ?? []).some(p => p.file === f.file)) return { verdict: 'unknown', reason: 'parse-error' };
@@ -473,41 +520,141 @@ function explainMissing(
   if (skip || !analysed) return { verdict: 'unknown', reason: 'not-analysed' };
   if (!ctx) return { verdict: 'gone' };
   const decls = ctx.decls.get(f.file);
-  if (decls && !decls.has(f.decl.id)) return { verdict: 'gone', reason: 'declaration-removed' };
-  if (f.kind === 'pass') return { verdict: 'gone', reason: 'not-reported' };
-  const inv = ctx.inventory.get(`${f.file}|${f.decl.id}`);
+  let declId = f.decl.id;
+  let successor: Pick<RecheckVerdict, 'successorDecl'> = {};
+  if (decls && !decls.has(declId)) {
+    // The id is gone; when one after declaration is the same one re-keyed (an
+    // anonymous handler after an inserted import), the reason comes from it.
+    const next = successorDecl(f, ctx);
+    if (!next) return { verdict: 'gone', reason: 'declaration-removed' };
+    declId = next;
+    successor = { successorDecl: ctx.declNames?.get(f.file)?.get(next) ?? next };
+  }
+  if (f.kind === 'pass') return { verdict: 'gone', reason: 'not-reported', ...successor };
+  const inv = ctx.inventory.get(`${f.file}|${declId}`);
   if (inv && inv.sanitizers.length > 0) {
     const sanitizers = [...inv.sanitizers].sort((a, b) => a.line - b.line || a.method.localeCompare(b.method));
-    return { verdict: 'gone', reason: 'sanitized-by', sanitizers, sanitizerCoversSink: sanitizers.some(s => s.sanitizes.includes(f.rule)) };
+    return { verdict: 'gone', reason: 'sanitized-by', sanitizers, sanitizerCoversSink: sanitizers.some(s => s.sanitizes.includes(f.rule)), ...successor };
   }
-  if (!inv || !inv.sinks.has(f.rule)) return { verdict: 'gone', reason: 'sink-removed' };
+  if (!inv || !inv.sinks.has(f.rule)) return { verdict: 'gone', reason: 'sink-removed', ...successor };
   const src = f.evidence?.source;
-  if (src && src.file === f.file && inv.sources === 0) return { verdict: 'gone', reason: 'source-removed' };
-  return { verdict: 'gone', reason: 'flow-not-found' };
+  if (src && src.file === f.file && inv.sources === 0) return { verdict: 'gone', reason: 'source-removed', ...successor };
+  return { verdict: 'gone', reason: 'flow-not-found', ...successor };
+}
+
+const noSpace = (s: string | undefined): string => (s ?? '').replace(/\s+/g, '');
+
+/**
+ * What a finding is without its declaration: rule, CWE, file and kind, the
+ * sink's type and code, and for a flow the source's file, type and code and the
+ * sanitizers in the path (for a pass finding, its message). Code is compared with
+ * all whitespace removed. Moving the code, or inserting statements around it,
+ * keeps it; changing the sink call, the source or the sanitizers does not.
+ * Undefined when the finding carries no sink code (a 0.1 baseline): such a key is
+ * never matched by identity.
+ */
+export function flowIdentity(f: RecheckFinding): string | undefined {
+  const e = f.evidence;
+  if (!e?.sink.code) return undefined;
+  const parts = [f.kind, f.cwe, f.rule, f.file, e.sink.type, noSpace(e.sink.code)];
+  if (f.kind === 'flow') {
+    parts.push(e.source?.file ?? '', e.source?.type ?? '', noSpace(e.source?.code), [...e.sanitizers_in_path].sort().join(','));
+  } else {
+    parts.push(noSpace(e.message));
+  }
+  return parts.join('\u0000');
 }
 
 /**
  * Verdicts for `after` against `before`. Pure: `ctx` (the after side's
  * declarations and inventory) only refines the reason on a missing key; without
  * it a missing key is `gone` unless its file was skipped, partial or not listed.
+ *
+ * Findings are first matched by flow identity ({@link flowIdentity}), because a
+ * declaration's id can move while its flow does not (an anonymous handler is
+ * keyed by position: an import inserted above it re-keys it, and can hand its old
+ * id to the next handler). Per identity:
+ *
+ *   one baseline finding, one after finding   still-present; `rekeyed` with
+ *                                             `rekeyedTo` when the keys differ
+ *   more on either side, every baseline key   still-present by key
+ *     also an after key
+ *   more on either side, otherwise            `unknown` (`rekey-ambiguous`), never
+ *                                             `gone`; the candidates are not also
+ *                                             `new-*` unless they outnumber the
+ *                                             baseline findings
+ *
+ * A baseline finding with no after finding of its identity falls back to its key:
+ * still-present when the key is there and not taken by another match (a fix that
+ * changed the sink but is still reported), else `gone` with a reason. An after
+ * finding no match took is `new-high` or `new-other`.
  */
 export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?: RecheckContext): RecheckReport {
   const now = new Map(after.findings.map(f => [f.key, f]));
   const then = new Map(before.findings.map(f => [f.key, f]));
   const verdicts: RecheckVerdict[] = [];
   const ev = (f: RecheckFinding) => (f.evidence ? { evidence: f.evidence } : {});
-  for (const [key, f] of then) {
-    const a = now.get(key);
-    if (a || ctx?.allKeys.has(key)) {
-      const cur = a ?? f;
-      verdicts.push({ key, verdict: 'still-present', cwe: f.cwe, rule: f.rule, severity: cur.severity, file: f.file, line: cur.line, ...ev(cur) });
+  const base = (f: RecheckFinding) => ({ key: f.key, cwe: f.cwe, rule: f.rule, file: f.file });
+  const stillPresent = (f: RecheckFinding, cur: RecheckFinding): RecheckVerdict => ({
+    ...base(f), verdict: 'still-present', severity: cur.severity, line: cur.line,
+    ...(cur.key !== f.key ? { reason: 'rekeyed' as const, rekeyedTo: cur.key, matchedBy: 'flow-identity' as const } : {}),
+    ...ev(cur),
+  });
+
+  const group = (findings: Iterable<RecheckFinding>): Map<string, RecheckFinding[]> => {
+    const m = new Map<string, RecheckFinding[]>();
+    for (const f of findings) {
+      const id = flowIdentity(f);
+      if (id) m.set(id, [...(m.get(id) ?? []), f]);
+    }
+    return m;
+  };
+  const beforeById = group(then.values());
+  const afterById = group(now.values());
+  const resolved = new Set<string>();
+  const claimed = new Set<string>();
+  for (const [id, bs] of beforeById) {
+    const as = afterById.get(id);
+    if (!as) continue;
+    if (bs.length === 1 && as.length === 1) {
+      verdicts.push(stillPresent(bs[0], as[0]));
+      resolved.add(bs[0].key);
+      claimed.add(as[0].key);
       continue;
     }
-    const why = explainMissing(f, after, ctx);
-    verdicts.push({ key, cwe: f.cwe, rule: f.rule, severity: f.severity, file: f.file, line: f.line, ...why, ...ev(f) });
+    const afterKeys = new Set(as.map(a => a.key));
+    if (bs.every(b => afterKeys.has(b.key))) {
+      for (const b of bs) {
+        verdicts.push(stillPresent(b, now.get(b.key)!));
+        resolved.add(b.key);
+        claimed.add(b.key);
+      }
+      continue;
+    }
+    // Which after finding is which baseline finding cannot be told: never `gone`.
+    if (as.length <= bs.length) for (const a of as) claimed.add(a.key);
+    const rekeyCandidates = [...afterKeys].sort();
+    for (const b of bs) {
+      verdicts.push({
+        ...base(b), verdict: 'unknown', severity: b.severity, line: b.line,
+        reason: 'rekey-ambiguous', matchedBy: 'flow-identity', rekeyCandidates, ...ev(b),
+      });
+      resolved.add(b.key);
+    }
+  }
+
+  for (const [key, f] of then) {
+    if (resolved.has(key)) continue;
+    const a = now.get(key);
+    if ((a && !claimed.has(key)) || (!a && ctx?.allKeys.has(key))) {
+      verdicts.push(stillPresent(f, a ?? f));
+      claimed.add(key);
+      continue;
+    }
+    verdicts.push({ ...base(f), severity: f.severity, line: f.line, ...explainMissing(f, after, ctx), ...ev(f) });
   }
   for (const [key, f] of now) {
-    if (then.has(key)) continue;
+    if (claimed.has(key)) continue;
     verdicts.push({ key, verdict: HIGH.has(f.severity) ? 'new-high' : 'new-other', cwe: f.cwe, rule: f.rule, severity: f.severity, file: f.file, line: f.line, ...ev(f) });
   }
   verdicts.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.key.localeCompare(b.key));
