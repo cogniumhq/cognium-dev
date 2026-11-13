@@ -8131,7 +8131,8 @@ function findJsPathResolveStartsWithGuardSanitizers(
       line: c.line,
       sanitizes: ['path_traversal', 'external_taint_escape'],
     });
-    for (let l = c.line; l < lines.length; l++) {
+    // only inside the function the guard is in, and only until `full` is reassigned (#1257 review B1)
+    for (const l of jsGuardCreditLines(lines, c.line, c.fullVar)) {
       if (!varRefRe.test(lines[l])) continue;
       sanitizers.push({
         type: 'js_path_resolve_startswith_guard',
@@ -8216,7 +8217,8 @@ function findJsRelativeRedirectGuardSanitizers(code: string): TaintSanitizer[] {
       continue;
     }
     if (reject && guardRejects(lines, i, terminatorRe, 2)) {
-      for (let l = i + 1; l < lines.length; l++) {
+      // from the guard line itself, so a block-form guard's own `{ … }` is counted, not read as the function's end
+      for (const l of jsGuardCreditLines(lines, i, v)) {
         if (ref.test(lines[l])) sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: l + 1, sanitizes: ['open_redirect'] });
       }
     } else if (accept) {
@@ -8230,6 +8232,33 @@ function findJsRelativeRedirectGuardSanitizers(code: string): TaintSanitizer[] {
     }
   }
   return sanitizers;
+}
+
+/**
+ * The lines a guard on `v` at line index `from` may credit: from `from` to the end of the block that encloses it
+ * (the handler or function the guard is in: the first `}` that closes a brace opened before `from`), stopping
+ * before any reassignment of `v` (`v = …`, `let|const|var v = …`). Another handler in the same file, or the
+ * variable after it is reassigned, is never credited by this guard. Braces inside string literals and comments
+ * are not counted apart (a guard line with unbalanced quoted braces credits less, never more).
+ */
+function jsGuardCreditLines(lines: string[], from: number, v: string): number[] {
+  const esc = v.replace(/[.$]/g, '\\$&');
+  const reassign = new RegExp(`(?:^|[^\\w$.])(?:(?:let|const|var)\\s+)?${esc}\\s*=(?!=)`);
+  const out: number[] = [];
+  let depth = 0;
+  for (let l = from; l < lines.length; l++) {
+    const line = lines[l];
+    if (l > from && reassign.test(line)) break;
+    out.push(l);
+    for (const c of line) {
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth < 0) return out;   // the enclosing block closed on this line
+      }
+    }
+  }
+  return out;
 }
 
 /** Lines of one `{ ... }` block starting at `startLineIdx` (inclusive). */

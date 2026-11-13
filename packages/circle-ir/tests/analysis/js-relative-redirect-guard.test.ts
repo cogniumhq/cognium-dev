@@ -53,4 +53,95 @@ describe('JS/TS relative redirect guard, ternary form (CWE-601)', () => {
       expect(has(await flows('inverted', "  res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\\\') ? '/' : next);"), 'open_redirect')).toBe(true);
     });
   }
+
+  // #1257 review B1: a guard credits only its own handler, and only until the variable is reassigned. The sinks
+  // sit more than 6 lines below any `if (…startsWith…)` so the sink filter's stage 8a (any such `if` within 6
+  // lines drops a JS open_redirect sink) does not decide these cases.
+  describe('guard credit stays in its own handler', () => {
+    const guard = "  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\\\')) return res.redirect('/');";
+    const pad = Array.from({ length: 7 }, (_, k) => `  res.locals.k${k} = ${k};`).join('\n');
+    for (const [lang, ext] of [['javascript', 'js'], ['typescript', 'ts']] as const) {
+      it(`${lang}: the guarded handler is credited; a second handler using next is not`, async () => {
+        const code = `const express = require('express');
+const app = express();
+app.get('/a', (req, res) => {
+  const next = req.query.next;
+${guard}
+${pad}
+  res.redirect(next);
 });
+app.get('/b', (req, res) => {
+  const next = req.query.next;
+${pad}
+  res.redirect(next);
+});
+`;
+        const lines = code.split('\n');
+        const sinkA = lines.findIndex((l, k) => k > 4 && l.includes('res.redirect(next);')) + 1;
+        const sinkB = lines.findIndex((l, k) => k >= sinkA && l.includes('res.redirect(next);')) + 1;
+        const r = await analyze(code, `two.${ext}`, lang);
+        const got = (r.taint.flows ?? []).filter((f: any) => f.sink_type === 'open_redirect').map((f: any) => f.sink_line);
+        expect(got).toContain(sinkB);
+        expect(got).not.toContain(sinkA);
+      });
+
+      it(`${lang}: the variable reassigned after the guard is not credited`, async () => {
+        const code = `const express = require('express');
+const app = express();
+app.get('/a', (req, res) => {
+  let next = req.query.next;
+${guard}
+${pad}
+  next = req.query.other;
+  res.redirect(next);
+});
+`;
+        const r = await analyze(code, `reassign.${ext}`, lang);
+        expect(has(r.taint.flows, 'open_redirect')).toBe(true);
+      });
+
+      it(`${lang}: a block-form reject guard credits the rest of its handler`, async () => {
+        const code = `const express = require('express');
+const app = express();
+app.get('/a', (req, res) => {
+  const next = req.query.next;
+  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\\\')) {
+    return res.redirect('/');
+  }
+${pad}
+  res.redirect(next);
+});
+`;
+        const r = await analyze(code, `block.${ext}`, lang);
+        expect(has(r.taint.flows, 'open_redirect')).toBe(false);
+      });
+    }
+  });
+
+  describe('path guard credit stays in its own handler (same helper)', () => {
+    for (const [lang, ext] of [['javascript', 'js'], ['typescript', 'ts']] as const) {
+      it(`${lang}: a path.resolve + startsWith guard in one handler does not sanitize another handler's \`full\``, async () => {
+        const code = `const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const app = express();
+const ROOT = '/srv/files';
+app.get('/a', (req, res) => {
+  const full = path.resolve(ROOT, req.query.name);
+  if (!full.startsWith(ROOT)) return res.status(400).end();
+  res.send(fs.readFileSync(full));
+});
+app.get('/b', (req, res) => {
+  const full = req.query.name;
+  res.send(fs.readFileSync(full));
+});
+`;
+        const r = await analyze(code, `paths.${ext}`, lang);
+        const lines = (r.taint.flows ?? []).filter((f: any) => f.sink_type === 'path_traversal').map((f: any) => f.sink_line);
+        expect(lines).toContain(13);
+        expect(lines).not.toContain(9);
+      });
+    }
+  });
+});
+
