@@ -184,6 +184,7 @@ import { TlsVerifyDisabledPass } from './analysis/passes/tls-verify-disabled-pas
 import { ModuleSideEffectPass } from './analysis/passes/module-side-effect-pass.js';
 import { CacheNoVaryPass } from './analysis/passes/cache-no-vary-pass.js';
 import { JwtVerifyDisabledPass } from './analysis/passes/jwt-verify-disabled-pass.js';
+import { SensitiveDataInLogPass } from './analysis/passes/sensitive-data-in-log-pass.js';
 import { CsrfProtectionDisabledPass } from './analysis/passes/csrf-protection-disabled-pass.js';
 import { XmlEntityExpansionPass } from './analysis/passes/xml-entity-expansion-pass.js';
 import { MassAssignmentPass } from './analysis/passes/mass-assignment-pass.js';
@@ -1404,6 +1405,7 @@ async function analyzeFile(
   if (!disabledPasses.has('module-side-effect'))    pipeline.add(new ModuleSideEffectPass());
   if (!disabledPasses.has('cache-no-vary'))         pipeline.add(new CacheNoVaryPass());
   if (!disabledPasses.has('jwt-verify-disabled'))   pipeline.add(new JwtVerifyDisabledPass());
+  if (!disabledPasses.has('sensitive-data-in-log')) pipeline.add(new SensitiveDataInLogPass());
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
   if (!disabledPasses.has('mass-assignment'))       pipeline.add(new MassAssignmentPass());

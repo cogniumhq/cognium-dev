@@ -378,3 +378,49 @@ describe('applyTargets / recheckExitCode (pure)', () => {
     expect(recheckExitCode(applyTargets(rep([v('a', 'unknown')]), ['a']))).toBe(3);
   });
 });
+
+describe('recheck on a TypeScript CWE-532 fix (sensitive-data-in-log)', () => {
+  const TS_FILE = 'src/worker.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'sensitive-data-in-log');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('ts-before', 'vulnerable.ts');
+    tsTree('ts-fixed', 'fixed.ts');
+    baselinePath = join(work, 'ts-before.json');
+    await runCli(['recheck', join(work, 'ts-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.cwe === 'CWE-532').map(f => f.key);
+  }, 60_000);
+
+  test('before: findings keyed CWE-532 × declaration × rule', () => {
+    expect(keys.length).toBeGreaterThan(0);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-532|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|sensitive-data-in-log')).toBe(true);
+    }
+  });
+
+  test('fixed: every CWE-532 key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'ts-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.cwe === 'CWE-532').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.cwe === 'CWE-532')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'ts-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys[0]]);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
+  }, 60_000);
+});
