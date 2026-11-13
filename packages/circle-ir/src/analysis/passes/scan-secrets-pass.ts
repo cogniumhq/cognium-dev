@@ -81,7 +81,7 @@ function applyDemoDowngrade(
 const TEST_PATH_RE = /(?:^|[\\/])(?:test|tests|spec|specs|__tests?__|__mocks?__|fixtures?|testdata)(?:[\\/]|$)/i;
 const TEST_FILENAME_RE = /(?:\.(?:test|spec)\.[cm]?[jt]sx?|_test\.go|_test\.py|Test\.java|Tests\.java)$/i;
 
-function isTestFile(file: string): boolean {
+export function isTestFile(file: string): boolean {
   return TEST_PATH_RE.test(file) || TEST_FILENAME_RE.test(file);
 }
 
@@ -97,7 +97,7 @@ const GENERATED_PATH_RE =
   /(?:^|[\\/])(?:gen|generated|build[\\/]generated|src[\\/](?:main|test)[\\/]generated|target[\\/]generated-sources|target[\\/]generated-test-sources|node_modules[\\/]\.cache)(?:[\\/]|$)/i;
 const GENERATED_FILENAME_RE = /__[ch]\.java$|\.pb\.go$|_pb2\.py$|\.generated\.[cm]?[jt]sx?$/i;
 
-function isGeneratedFile(file: string): boolean {
+export function isGeneratedFile(file: string): boolean {
   return GENERATED_PATH_RE.test(file) || GENERATED_FILENAME_RE.test(file);
 }
 
@@ -404,7 +404,7 @@ const BASE64ISH_RE = /^[A-Za-z0-9+/=_-]+$/;
 const HEXISH_RE = /^[a-fA-F0-9]+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const PLACEHOLDER_RE =
+export const PLACEHOLDER_RE =
   /(?:changeme|your[-_]?(?:key|secret|token|password)(?:[-_]?here)?|replace[-_]?me|example[-_]?(?:key|secret|token)?|placeholder|todo|fixme|test[-_]?(?:key|secret|token)|fake[-_]?(?:key|secret|token)|dummy|sample|insert[-_]?your)/i;
 
 /** Bare cryptographic-hash shapes (MD5 / SHA1 / SHA256) — high entropy but rarely a secret on their own. */
