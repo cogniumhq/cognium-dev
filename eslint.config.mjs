@@ -25,6 +25,8 @@ export default tseslint.config(
       '**/coverage/**',
       '**/*.d.ts',
       'packages/circle-ir/configs/**',
+      // CommonJS Express apps that recheck analyses, not code this repo runs.
+      'packages/cli/tests/fixtures/recheck-rekey/**',
     ],
   },
   js.configs.recommended,
