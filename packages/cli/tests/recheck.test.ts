@@ -424,3 +424,50 @@ describe('recheck on a TypeScript CWE-532 fix (sensitive-data-in-log)', () => {
     expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
   }, 60_000);
 });
+
+describe('recheck on a TypeScript CWE-328/327 fix through crypto named imports (weak-hash, weak-crypto)', () => {
+  const TS_FILE = 'src/crypto-util.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'weak-crypto-named-import');
+  const CWES = new Set(['CWE-328', 'CWE-327']);
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('crypto-before', 'vulnerable.ts');
+    tsTree('crypto-fixed', 'fixed.ts');
+    baselinePath = join(work, 'crypto-before.json');
+    await runCli(['recheck', join(work, 'crypto-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => CWES.has(f.cwe)).map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per function, keyed CWE × declaration × rule', () => {
+    expect(keys.length).toBe(8);
+    for (const k of keys) {
+      expect(k.startsWith(`${k.split('|')[0]}|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|weak-hash') || k.endsWith('|weak-crypto')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'crypto-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => CWES.has(v.cwe)).every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => CWES.has(f.cwe))).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'crypto-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys[0]]);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
+  }, 60_000);
+});

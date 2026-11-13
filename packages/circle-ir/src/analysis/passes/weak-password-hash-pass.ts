@@ -39,6 +39,7 @@ import {
   literalAt,
 } from './_credential-helpers.js';
 import { isProtocolMandatedCryptoFile } from './_fp-allowlists.js';
+import { jsCryptoBindings, cryptoCallAsMember } from './_js-crypto-binding.js';
 
 const FAST_HASH_NAMES = new Set([
   'sha224', 'sha-224',
@@ -99,7 +100,13 @@ export class WeakPasswordHashPass implements AnalysisPass<WeakPasswordHashResult
 
     const findings: WeakPasswordHashResult['findings'] = [];
 
-    for (const call of graph.ir.calls) {
+    // JS/TS: `pbkdf2` / `pbkdf2Sync` reached through a named import,
+    // destructured require or module alias count as `crypto.<api>`.
+    const isJs = language === 'javascript' || language === 'typescript';
+    const cryptoBindings = isJs ? jsCryptoBindings(graph.ir.imports) : null;
+
+    for (const irCall of graph.ir.calls) {
+      const call = cryptoBindings ? cryptoCallAsMember(irCall, cryptoBindings) : irCall;
       const detection = this.detect(call, language);
       if (!detection) continue;
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: weak-hash (CWE-328), weak-crypto (CWE-327) and the weak-password-hash PBKDF2 check now see Node `crypto` APIs reached through a binding other than the receiver `crypto`.** `import { createHash } from 'crypto'` then `createHash('md5')`, an aliased import (`createHash as digestWith`), a destructured `require('crypto')`, a namespace / default / `require` alias (`nodeCrypto.createHash('sha1')`), an inline `require('crypto').createHash('md5')`, and `node:crypto` were not reported. A name counts only when the file binds it to `crypto` / `node:crypto`; the same names imported from another module or declared locally abstain. Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/weak-crypto-named-import/`; `cognium-dev recheck` keys each finding by CWE × declaration × rule, so a fix reads `gone`.
 - **Java: SecuriBench Basic29 linked `Node` heap fields (`next.value`, aliased `head.next.value`) reach XSS sinks (#1198).**
 - **TS/Angular: Observable `.subscribe` callback parameters are `http_body` sources (#1224).** HTTP payloads returned through injected services (Juice Shop `restfulXss` shape) now reach `DomSanitizer.bypassSecurityTrust*` sinks.
 - **Java: `println`/`write` string concats whose only dynamic fragment is `ESAPI.encoder().encodeForHTML(...)` no longer emit XSS (#915).**

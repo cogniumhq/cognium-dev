@@ -31,6 +31,7 @@
 import type { AnalysisPass, PassContext } from '../../graph/analysis-pass.js';
 import type { CallInfo } from '../../types/index.js';
 import type { ConstantPropagatorResult } from './constant-propagation-pass.js';
+import { jsCryptoBindings, cryptoCallAsMember } from './_js-crypto-binding.js';
 
 const WEAK_HASH_NAMES = new Set([
   'md2', 'md4', 'md5',
@@ -422,7 +423,13 @@ export class WeakHashPass implements AnalysisPass<WeakHashResult> {
       ? scanJavaStringBindings(code)
       : new Map<string, string>();
 
-    for (const call of graph.ir.calls) {
+    // JS/TS: `createHash` / `createHmac` reached through a named import,
+    // destructured require or module alias count as `crypto.<api>`.
+    const isJs = language === 'javascript' || language === 'typescript';
+    const cryptoBindings = isJs ? jsCryptoBindings(graph.ir.imports) : null;
+
+    for (const irCall of graph.ir.calls) {
+      const call = cryptoBindings ? cryptoCallAsMember(irCall, cryptoBindings) : irCall;
       const enclosing = language === 'java' ? graph.methodAtLine(call.location.line) : null;
       const methodRange = enclosing
         ? { start: enclosing.method.start_line, end: enclosing.method.end_line }
