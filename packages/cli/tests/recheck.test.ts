@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
-import { applyBaseline, applyTargets, parseRecheckOptions, recheckExitCode, RECHECK_SCHEMA, type RecheckReport } from '../src/recheck';
+import { applyBaseline, applyTargets, computeRecheck, parseRecheckOptions, recheckExitCode, RECHECK_SCHEMA, type RecheckEvidence, type RecheckFinding, type RecheckReport } from '../src/recheck';
 import { UsageError } from '../src/utils/options';
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts');
@@ -469,4 +469,205 @@ describe('recheck on a TypeScript CWE-862 fix (missing-auth-middleware)', () => 
     const rep = JSON.parse(r.stdout) as RecheckReport;
     expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
   }, 60_000);
+});
+
+/**
+ * G1: a flow in an inline route handler is keyed by the handler's positional
+ * stable id, so an inserted statement re-keys it. A no-op must not read `gone`:
+ * the moved key is `still-present` (`rekeyed`, matched by flow identity) or, when
+ * more than one finding could be it, `unknown`; the after key is not also new.
+ */
+describe('recheck G1: a re-keyed declaration is still-present, never gone (JS and TS)', () => {
+  const FIX = join(import.meta.dir, 'fixtures', 'recheck-rekey');
+  const CLASSES: Array<{ id: string; cwe: string }> = [
+    { id: '89', cwe: 'CWE-89' }, { id: '79', cwe: 'CWE-79' }, { id: '22', cwe: 'CWE-22' },
+    { id: '78', cwe: 'CWE-78' }, { id: '918', cwe: 'CWE-918' },
+  ];
+  /** n2: one statement after line 1; n3: one statement as the first line of the handler. */
+  const top = (code: string) => code.replace(/\n/, '\nconst reviewedAt = 1;\n');
+  const inner = (code: string) => code.replace(/(function \w+\([^)]*\) \{\n)/, '$1  const reviewedAt = 1;\n');
+
+  async function run(name: string, file: string, code: string, baseline?: RecheckReport, expectGone: string[] = []): Promise<RecheckReport> {
+    const root = join(work, 'g1', name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, file), code);
+    let baselinePath: string | undefined;
+    if (baseline) {
+      baselinePath = join(work, 'g1', `${name}.baseline.json`);
+      writeFileSync(baselinePath, JSON.stringify(baseline));
+    }
+    return computeRecheck(root, { changed: [file], scope: 'files', expectGone, ...(baselinePath ? { baseline: baselinePath } : {}) });
+  }
+
+  for (const lang of ['js', 'ts'] as const) {
+    for (const c of CLASSES) {
+      const file = `src/app.${lang}`;
+      const vuln = readFileSync(join(FIX, `${c.id}.vuln.${lang}`), 'utf8');
+      const fixed = readFileSync(join(FIX, `${c.id}.fixed.${lang}`), 'utf8');
+
+      test(`${c.cwe} ${lang}: no-ops keep the key (still-present or unknown), a fix is gone with a reason`, async () => {
+        const base = await run(`${c.id}-${lang}-base`, file, vuln);
+        const target = base.findings.find(f => f.cwe === c.cwe);
+        expect(target).toBeDefined();
+        const flowKeys = base.findings.filter(f => f.kind === 'flow').map(f => f.key);
+
+        for (const [variant, code] of [['top', top(vuln)], ['inner', inner(vuln)]] as const) {
+          expect(code).not.toBe(vuln);
+          const rep = await run(`${c.id}-${lang}-${variant}`, file, code, base, [target!.key]);
+          for (const key of flowKeys) {
+            const v = rep.verdicts!.find(x => x.key === key)!;
+            expect(['still-present', 'unknown'], `${variant} ${key}`).toContain(v.verdict);
+            if (v.reason === 'rekeyed') {
+              expect(v.matchedBy).toBe('flow-identity');
+              expect(rep.findings.map(f => f.key)).toContain(v.rekeyedTo!);
+            }
+          }
+          expect(rep.summary!.gone, variant).toBe(0);
+          expect(rep.summary!.newHigh + rep.summary!.newOther, variant).toBe(0);
+          expect(rep.fixed, variant).toBe('fail'); // re-keyed and still there: not fixed
+        }
+
+        const fx = await run(`${c.id}-${lang}-fixed`, file, fixed, base);
+        const v = fx.verdicts!.find(x => x.key === target!.key)!;
+        expect(v.verdict).toBe('gone');
+        expect(v.reason).not.toBe('declaration-removed');
+      }, 60_000);
+    }
+  }
+
+  const twoHandlers = (handler: (route: string) => string) =>
+    `const express = require('express');\nconst { exec } = require('child_process');\nconst app = express();\n${handler('/a')}${handler('/b')}`;
+
+  test('two anonymous handlers that differ only by route: an inserted import re-keys both, both still-present', async () => {
+    // The source is the handler line, so the route keeps the two flows apart; the
+    // first handler takes the second's old positional id, which must not count.
+    const file = 'src/app.js';
+    const code = twoHandlers(route => `app.get('${route}', (req, res) => {\n  exec('ping -c 1 ' + req.query.host, (err, out) => res.end());\n});\n`);
+    const base = await run('routes-base', file, code);
+    const keys = base.findings.filter(f => f.cwe === 'CWE-78').map(f => f.key);
+    expect(keys.length).toBe(2);
+    const rep = await run('routes-top', file, top(code), base, keys);
+    for (const key of keys) {
+      expect(rep.verdicts!.find(x => x.key === key)).toMatchObject({ verdict: 'still-present', reason: 'rekeyed' });
+    }
+    expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, newOther: 0, unknown: 0 });
+
+    // Fix the second handler and insert the import: the first keeps its flow, the
+    // second's key reads gone, though the first now holds that key's old id.
+    const fixedB = top(code).replace(/(app\.get\('\/b'[^]*?)exec\('ping -c 1 ' \+ req\.query\.host/, "$1exec('ping -c 1 localhost'");
+    const fx = await run('routes-fix-b', file, fixedB, base);
+    const [ka, kb] = [...keys].sort((x, y) => base.findings.find(f => f.key === x)!.line - base.findings.find(f => f.key === y)!.line);
+    expect(fx.verdicts!.find(x => x.key === ka)).toMatchObject({ verdict: 'still-present' });
+    expect(fx.verdicts!.find(x => x.key === kb)!.verdict).toBe('gone');
+    expect(fx.summary).toMatchObject({ newHigh: 0, unknown: 0 });
+  }, 60_000);
+
+  test('two identical vulnerable handlers, one statement inserted above both: unknown, never gone', async () => {
+    const file = 'src/app.js';
+    const code = twoHandlers(route => `app.get('${route}', (req, res) => {\n  const host = req.query.host;\n  exec('ping -c 1 ' + host, (err, out) => res.end());\n});\n`);
+    const base = await run('dup-base', file, code);
+    const keys = base.findings.filter(f => f.cwe === 'CWE-78').map(f => f.key);
+    expect(keys.length).toBe(2);
+    const rep = await run('dup-top', file, top(code), base, keys);
+    for (const key of keys) {
+      const v = rep.verdicts!.find(x => x.key === key)!;
+      expect(v.verdict).toBe('unknown');
+      expect(v.reason).toBe('rekey-ambiguous');
+      expect(v.rekeyCandidates!.length).toBe(2);
+    }
+    expect(rep.summary!.gone).toBe(0);
+    expect(rep.summary!.newHigh).toBe(0);
+    expect(rep.fixed).toBe('fail');
+    expect(recheckExitCode(rep)).toBe(3);
+  }, 60_000);
+
+  test('a fix that adds an import and parameterizes the query is gone with a real reason', async () => {
+    for (const lang of ['js', 'ts'] as const) {
+      const file = `src/app.${lang}`;
+      const imp = lang === 'js' ? "const helmet = require('helmet');" : "import helmet from 'helmet';";
+      const vuln = readFileSync(join(FIX, `89.vuln.${lang}`), 'utf8');
+      const fixed = readFileSync(join(FIX, `89.fixed.${lang}`), 'utf8').replace(/\n/, `\n${imp}\n`);
+      const base = await run(`import-fix-${lang}-base`, file, vuln);
+      const key = base.findings.find(f => f.cwe === 'CWE-89')!.key;
+      const rep = await run(`import-fix-${lang}`, file, fixed, base, [key]);
+      const v = rep.verdicts!.find(x => x.key === key)!;
+      expect(v.verdict).toBe('gone');
+      expect(v.reason).toBe('sanitized-by');
+      expect(v.sanitizerCoversSink).toBe(true);
+      expect(v.successorDecl).toBeDefined();
+      expect(rep.fixed).toBe('pass');
+    }
+  }, 60_000);
+
+  test('a 0.2 baseline is still read, and its flow findings still match by identity', async () => {
+    const file = 'src/app.js';
+    const vuln = readFileSync(join(FIX, '89.vuln.js'), 'utf8');
+    const base = await run('v02-base', file, vuln);
+    const rep = await run('v02-top', file, top(vuln), { ...base, schema: 'cognium-recheck@0.2' as typeof RECHECK_SCHEMA });
+    expect(rep.schema).toBe('cognium-recheck@0.3');
+    expect(rep.summary!.gone).toBe(0);
+  }, 60_000);
+});
+
+describe('applyBaseline flow identity (pure)', () => {
+  const finding = (key: string, sinkCode: string, extra: Partial<RecheckEvidence> = {}): RecheckFinding => ({
+    key, cwe: 'CWE-89', rule: 'sql_injection', severity: 'critical', file: 'a.js', line: 1,
+    decl: { scheme: 'ids@0.1', id: key, name: key }, kind: 'flow',
+    evidence: {
+      fingerprint: key, source: { file: 'a.js', line: 1, type: 'http_param', code: 'const id = req.query.id;' },
+      sink: { file: 'a.js', line: 2, type: 'sql_injection', code: sinkCode }, hops: [], sanitizers_in_path: [], ...extra,
+    },
+  });
+  const report = (findings: RecheckFinding[]): RecheckReport => ({ schema: RECHECK_SCHEMA, scope: 'files', files: ['a.js'], skipped: [], partialFiles: [], findings });
+  const SINK = "db.query('SELECT * FROM t WHERE id = ' + id);";
+
+  test('one moved key, whitespace changed: still-present, rekeyedTo, not new', () => {
+    const r = applyBaseline(report([finding('K2', SINK.replace(' + ', '+'))]), report([finding('K1', SINK)]));
+    expect(r.verdicts).toEqual([expect.objectContaining({ key: 'K1', verdict: 'still-present', reason: 'rekeyed', rekeyedTo: 'K2', matchedBy: 'flow-identity' })]);
+    expect(r.summary).toEqual({ gone: 0, stillPresent: 1, newHigh: 0, newOther: 0, unknown: 0 });
+  });
+
+  test('a changed sink, source or sanitizer set does not match: gone plus new-high', () => {
+    for (const after of [
+      finding('K2', "db.query('SELECT * FROM t WHERE id = ?', [id]);"),
+      finding('K2', SINK, { source: { file: 'a.js', line: 1, type: 'http_param', code: 'const id = Number(req.query.id);' } }),
+      finding('K2', SINK, { sanitizers_in_path: ['escape'] }),
+    ]) {
+      const r = applyBaseline(report([after]), report([finding('K1', SINK)]));
+      expect(r.verdicts!.map(v => [v.key, v.verdict])).toEqual([['K1', 'gone'], ['K2', 'new-high']]);
+    }
+  });
+
+  test('one lost key, two candidates: unknown, and both candidates stay new (one of them is)', () => {
+    const r = applyBaseline(report([finding('K2', SINK), finding('K3', SINK)]), report([finding('K1', SINK)]));
+    expect(r.verdicts!.find(v => v.key === 'K1')).toMatchObject({ verdict: 'unknown', reason: 'rekey-ambiguous', rekeyCandidates: ['K2', 'K3'] });
+    expect(r.summary).toMatchObject({ gone: 0, unknown: 1, newHigh: 2 });
+  });
+
+  test('two lost keys, one candidate: both unknown, the candidate not new', () => {
+    const r = applyBaseline(report([finding('K3', SINK)]), report([finding('K1', SINK), finding('K2', SINK)]));
+    expect(r.summary).toEqual({ gone: 0, stillPresent: 0, newHigh: 0, newOther: 0, unknown: 2 });
+  });
+
+  test('a key that now holds a different flow is not still-present by key: the flows are matched by identity', () => {
+    const src = (code: string) => ({ source: { file: 'a.js', line: 1, type: 'http_param', code } });
+    const before = report([finding('K1', SINK, src("app.get('/a', (req, res) => {")), finding('K2', SINK, src("app.get('/b', (req, res) => {"))]);
+    const after = report([finding('K2', SINK, src("app.get('/a', (req, res) => {")), finding('K3', SINK, src("app.get('/b', (req, res) => {"))]);
+    const r = applyBaseline(after, before);
+    expect(r.verdicts!.map(v => [v.key, v.verdict, v.rekeyedTo])).toEqual([['K1', 'still-present', 'K2'], ['K2', 'still-present', 'K3']]);
+    expect(r.summary).toEqual({ gone: 0, stillPresent: 2, newHigh: 0, newOther: 0, unknown: 0 });
+  });
+
+  test('same key, changed sink (a fix that is still reported): still-present by key, as before', () => {
+    const r = applyBaseline(report([finding('K1', "db.query(sanitize(id));")]), report([finding('K1', SINK)]));
+    expect(r.verdicts).toEqual([expect.objectContaining({ key: 'K1', verdict: 'still-present' })]);
+    expect(r.verdicts![0].rekeyedTo).toBeUndefined();
+  });
+
+  test('a finding without sink code (a 0.1 baseline) is never matched by identity', () => {
+    const old = finding('K1', SINK);
+    delete old.evidence!.sink.code;
+    const r = applyBaseline(report([finding('K2', SINK)]), report([old]));
+    expect(r.verdicts!.map(v => [v.key, v.verdict])).toEqual([['K1', 'gone'], ['K2', 'new-high']]);
+  });
 });
