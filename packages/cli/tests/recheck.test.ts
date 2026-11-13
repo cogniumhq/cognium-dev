@@ -424,3 +424,50 @@ describe('recheck on a TypeScript CWE-532 fix (sensitive-data-in-log)', () => {
     expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
   }, 60_000);
 });
+
+describe('recheck on a TypeScript CWE-1333 fix (redos-regex-literal)', () => {
+  const TS_FILE = 'src/routes.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-regex-literal');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('redos-before', 'vulnerable.ts');
+    tsTree('redos-fixed', 'fixed.ts');
+    baselinePath = join(work, 'redos-before.json');
+    await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos-regex-literal').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × rule', () => {
+    expect(keys.length).toBe(5);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos-regex-literal')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.rule === 'redos-regex-literal').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos-regex-literal')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
