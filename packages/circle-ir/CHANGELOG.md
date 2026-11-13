@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: deserialization from a cookie (CWE-502).** `serialize.unserialize(req.cookies.x)` (the classic node-serialize RCE arrives in a cookie) now reports `deserialization`: the source-to-sink reach map (`canSourceReachSink`) allowed it from request params, query and body but not from `http_cookie`. `req.signedCookies` is unchanged (its value is integrity-protected by the server's secret).
+
 - **Java: SecuriBench Basic29 linked `Node` heap fields (`next.value`, aliased `head.next.value`) reach XSS sinks (#1198).**
 - **TS/Angular: Observable `.subscribe` callback parameters are `http_body` sources (#1224).** HTTP payloads returned through injected services (Juice Shop `restfulXss` shape) now reach `DomSanitizer.bypassSecurityTrust*` sinks.
 - **Java: `println`/`write` string concats whose only dynamic fragment is `ESAPI.encoder().encodeForHTML(...)` no longer emit XSS (#915).**
