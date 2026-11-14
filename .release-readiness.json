@@ -1,0 +1,12 @@
+{
+  "required": ["ci"],
+  "ci": [
+    { "id": "ci-green", "run": "bash scripts/ci-green.sh" },
+    { "id": "bench-candidate", "run": "node scripts/bench-candidate.mjs check" }
+  ],
+  "benchmark": { "record": ".release/figures-of-record.json", "candidate": ".release/candidate-results.json", "run": null },
+  "hooks": { "security": null, "sbom-licence": null, "customer": [] },
+  "waivers": ".release/waivers.json",
+  "agents": ["cogbot-eng"],
+  "timeoutSeconds": 600
+}

@@ -1,0 +1,292 @@
+# rc-tag: turns a pushed rc/<track>-X.Y.Z-rc.N branch into the annotated release-candidate tag
+# <track>-vX.Y.Z-rc.N on the branch's commit, and creates a pre-release named after the tag. It
+# never moves or re-creates a tag, and it builds, publishes and deploys nothing (RC_OUTPUTS is
+# empty: a tag-only candidate).
+#
+# Where a candidate may come from (scripts/branch-check.sh --candidate; fails closed):
+#   - the base branch (BASE below): any rc/<track>-X.Y.Z-rc.N whose commit is on origin/<BASE>;
+#   - a hotfix: rc/<track>-X.Y.Z-rc.N with Z >= 1 whose commit is on origin/release/<track>-X.Y.W,
+#     the newest release branch of the same track and minor with W < Z.
+#   Anything else is refused: a commit on another track's release branch, on a fork's branch,
+#   reachable only from a tag, or not an ancestor of origin/<BASE> or that release branch.
+#   CI_WORKFLOW must have passed on the exact commit, so ci.yml also runs on release/** pushes.
+#
+# Three jobs, so the candidate's code never runs with a token that can write:
+#   gate   workflow code only, read-only token, no checkout: reads the candidate from the branch
+#          name and refuses (through the API) unless its commit is on BASE or, for a hotfix, on the
+#          newest release/<track>-X.Y.W (W < Z), CI_WORKFLOW passed on it and the tag does not
+#          exist. Its outputs are the only values `tag` trusts.
+#   build  the candidate's code (scripts/branch-check.sh, and the optional scripts/rc-version.sh and
+#          scripts/rc-build.sh) with a read-only token and `persist-credentials: false`, so nothing
+#          it runs can push, tag or move a ref.
+#   tag    contents: write, no checkout and no repository code: it checks the (here empty)
+#          artifact in a fresh directory under runner.temp, computes the sha256 list itself,
+#          creates the annotated tag through the API (a ref that exists is refused, so a tag is
+#          never moved) and the pre-release.
+# The split isolates because the jobs run on GitHub-hosted runners, which are ephemeral: no job
+# shares a machine with another.
+#
+# A tag created with GITHUB_TOKEN starts no other workflow (GitHub's rule), so release-readiness
+# follows this workflow through workflow_run. Residual: on `push: tags` GitHub runs the workflow
+# file as it is at the tag's commit, so a person who pushes an rc tag by hand gets that commit's
+# copy of release-readiness.yml.
+#
+# Vendored from the rc-tag template (git-branching 0.4.9), upstream commit 831c665. Changes: runs-on ubuntu-latest (public repository; GitHub-hosted runners are ephemeral); RC_TRACKS engine; tag-only.
+name: rc-tag
+
+on:
+  push:
+    branches: ["rc/**"]
+
+permissions: {}              # each job names its own
+
+concurrency:
+  group: rc-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BASE: main                 # the base branch (0.4.9): main, or master on a fork that keeps upstream's name
+  RC_TRACKS: "engine"        # the track(s) this repository cuts candidates for
+  CI_WORKFLOW: "ci.yml"      # must have passed on the candidate's exact commit
+  # The exact file names scripts/rc-build.sh writes into rc-out/, space-separated (the allow-list;
+  # empty: a tag-only candidate). Only these are published on the pre-release, with SHA256SUMS,
+  # which the tag job computes. Never a name the readiness review publishes on the same release
+  # (verdict*, release-readiness*) or a checksum file (*.sha256, SHA256SUMS): both jobs refuse them.
+  RC_OUTPUTS: ""
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read          # CI_WORKFLOW's runs on the commit
+    outputs:
+      tag: ${{ steps.rc.outputs.tag }}
+      version: ${{ steps.rc.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REF_NAME: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Read the candidate from the branch name
+        id: rc
+        shell: bash
+        run: |
+          set -euo pipefail
+          # each version part at most 9 digits, as check.sh --candidate
+          if [[ ! $REF_NAME =~ ^rc/([a-z][a-z0-9.-]*)-([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9})-rc\.([1-9][0-9]{0,8})$ ]]; then
+            echo "::error::$REF_NAME is not rc/<track>-X.Y.Z-rc.N"; exit 1
+          fi
+          track=${BASH_REMATCH[1]} ver="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}" n=${BASH_REMATCH[5]}
+          [[ " $RC_TRACKS " == *" $track "* ]] || { echo "::error::track '$track' is not in RC_TRACKS ($RC_TRACKS)"; exit 1; }
+          [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::'$SHA' is not a commit sha"; exit 1; }
+          { echo "track=$track"; echo "version=$ver"; echo "tag=$track-v$ver-rc.$n"; } >> "$GITHUB_OUTPUT"
+      - name: Refuse unless on main or the track's release branch (a hotfix), CI green, tag absent
+        shell: bash
+        env:
+          TRACK: ${{ steps.rc.outputs.track }}
+          VERSION: ${{ steps.rc.outputs.version }}
+          TAG: ${{ steps.rc.outputs.tag }}
+        run: |
+          set -euo pipefail
+          base=${BASE:-main}
+          [[ $base =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && $base != *..* && $base != */ && ! $base =~ ^(refs|rc|release|hotfix)/ ]] \
+            || { echo "::error::BASE '$base' is not a base branch name"; exit 1; }
+          BASE=$base node - <<'EOF'
+          const { GH_TOKEN, REPO, SHA, TRACK, VERSION, TAG, CI_WORKFLOW, BASE } = process.env;
+          const api = async (p) => {
+            const r = await fetch(`https://api.github.com/repos/${REPO}/${p}`, { headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json" } });
+            if (r.status === 404) return null;
+            if (!r.ok) throw new Error(`GET ${p}: ${r.status}`);
+            return r.json();
+          };
+          // sha is an ancestor of (or equal to) the branch head: compare head...sha is behind or identical
+          const on = async (ref) => {
+            const head = await api(`git/ref/${ref}`);
+            if (!head || head.object.type !== "commit") return false;
+            const c = await api(`compare/${head.object.sha}...${SHA}`);
+            return !!c && (c.status === "behind" || c.status === "identical");
+          };
+          (async () => {
+            const [x, y, z] = VERSION.split(".").map(Number);
+            let from = (await on(`heads/${BASE}`)) ? BASE : "";
+            if (!from && z >= 1) {
+              // a hotfix: the newest release/<track>-X.Y.W with W < Z, read by exact name
+              const prefix = `refs/heads/release/${TRACK}-${x}.${y}.`;
+              const refs = (await api(`git/matching-refs/heads/release/${TRACK}-${x}.${y}.`)) || [];
+              let best = -1, bestRef = "";
+              for (const r of refs) {
+                const w = r.ref.slice(prefix.length);
+                if (!/^(0|[1-9][0-9]{0,8})$/.test(w)) continue;
+                if (Number(w) < z && Number(w) > best) { best = Number(w); bestRef = r.ref.slice("refs/".length); }
+              }
+              if (bestRef && (await on(bestRef))) from = bestRef.slice("heads/".length);
+            }
+            if (!from) throw new Error(`candidate ${SHA} is on neither ${BASE} nor the newest release/${TRACK}-${x}.${y}.W (W < ${z}) it may patch`);
+            console.log(`candidate ${SHA} is on ${from}`);
+            if (await api(`git/ref/tags/${encodeURIComponent(TAG)}`)) throw new Error(`tag ${TAG} already exists; a candidate tag is never moved (push rc.N+1)`);
+            const runs = await api(`actions/workflows/${encodeURIComponent(CI_WORKFLOW)}/runs?head_sha=${SHA}&status=success&per_page=1`);
+            if (!runs || !(runs.total_count >= 1)) throw new Error(`${CI_WORKFLOW} has not passed on ${SHA}`);
+          })().catch((e) => { console.log(`::error::${e.message}`); process.exit(1); });
+          EOF
+
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 20
+    permissions:
+      contents: read         # read-only: the candidate's code runs here
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      TAG: ${{ needs.gate.outputs.tag }}
+      VERSION: ${{ needs.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The repository's own candidate check (scripts/branch-check.sh)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          BRANCH_CHECK_BASE="$BASE" bash scripts/branch-check.sh --candidate "$REF_NAME" "$SHA" origin
+          if [ -f scripts/rc-version.sh ]; then bash scripts/rc-version.sh; fi
+      - name: Build the candidate (repo hook scripts/rc-build.sh)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf rc-out && mkdir rc-out
+          if [ -f scripts/rc-build.sh ]; then bash scripts/rc-build.sh; else echo "no scripts/rc-build.sh: tag only"; fi
+          # rc-out/ must hold exactly RC_OUTPUTS (the tag job checks it again; this fails early)
+          set -f   # RC_OUTPUTS is split on spaces, never globbed
+          # shellcheck disable=SC2086
+          want=$(printf '%s\n' $RC_OUTPUTS | LC_ALL=C sort -u | sed '/^$/d')
+          have=$(cd rc-out && LC_ALL=C ls -A)
+          [[ $have == "$want" ]] || { printf '::error::rc-out/ holds\n%s\nRC_OUTPUTS lists\n%s\n' "$have" "$want"; exit 1; }
+          # the build's own sums, for its log only; the tag job computes the list of record
+          (cd rc-out && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --)
+      - if: env.RC_OUTPUTS != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-out-${{ needs.gate.outputs.tag }}
+          path: rc-out/
+          if-no-files-found: error
+          retention-days: 7
+
+  tag:
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 10
+    permissions:
+      contents: write        # the tag and the pre-release; no checkout, no repository code
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REF_NAME: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ needs.gate.outputs.tag }}
+    steps:
+      # The artifact goes into a fresh directory under runner.temp, never into the workspace: on a
+      # self-hosted runner the workspace is shared with the build job and never cleaned, and
+      # download-artifact writes through a symlink the build may have left there (a link
+      # rc-out/curl -> /usr/bin/curl would replace curl in this job). Then only flat regular files
+      # with plain names are accepted.
+      - name: A fresh directory for the artifact
+        id: dl
+        shell: bash
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d "$RUNNER_TEMP/rc-out.XXXXXXXX")
+          echo "name=${d##*/}" >> "$GITHUB_OUTPUT"
+      - if: env.RC_OUTPUTS != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rc-out-${{ needs.gate.outputs.tag }}
+          path: ${{ runner.temp }}/${{ steps.dl.outputs.name }}
+      - name: Exactly the RC_OUTPUTS files, regular, none reserved; the sha256 list of record
+        id: out
+        shell: bash
+        env:
+          D: ${{ runner.temp }}/${{ steps.dl.outputs.name }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          # the tools below come from the job container's system paths, never from the workspace
+          case ":$PATH:" in *":$GITHUB_WORKSPACE"*|*"::"*|*":.:"*|*":./"*) echo "::error::PATH reaches the workspace or the current directory"; exit 1 ;; esac
+          # the allow-list: plain names, none that the readiness review publishes on this release
+          # (a candidate-built verdict.json uploaded here would read as a GO) and no checksum file
+          set -f; shopt -s nocasematch
+          names=()
+          for n in $RC_OUTPUTS; do
+            [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || { echo "::error::RC_OUTPUTS name '$n' is not a plain file name"; exit 1; }
+            case $n in verdict*|release-readiness*|*.sha256|sha256sums*) echo "::error::RC_OUTPUTS name '$n' is reserved (the readiness review or the tag job publishes it)"; exit 1 ;; esac
+            names+=("$n")
+          done
+          shopt -u nocasematch
+          bad=$(find "$D" -mindepth 1 ! -type f -print -quit)
+          [ -z "$bad" ] || { echo "::error::the artifact holds something other than a regular file: ${bad#"$D"/}"; exit 1; }
+          want=$(if ((${#names[@]})); then printf '%s\n' "${names[@]}" | LC_ALL=C sort; fi)
+          [[ $want == "$(printf '%s\n' "$want" | LC_ALL=C sort -u | sed '/^$/d')" ]] || { echo "::error::RC_OUTPUTS lists a name twice"; exit 1; }
+          have=$(cd "$D" && LC_ALL=C ls -A)
+          [[ $have == "$want" ]] || { printf '::error::the artifact holds\n%s\nbut RC_OUTPUTS lists\n%s\n' "$have" "$want"; exit 1; }
+          ( cd "$D" && if ((${#names[@]})); then printf '%s\0' "${names[@]}" | LC_ALL=C sort -z | xargs -0 sha256sum --; fi ) > "$D/SHA256SUMS"
+          cat "$D/SHA256SUMS"
+          echo "dir=$D" >> "$GITHUB_OUTPUT"
+      - name: Tag (annotated, through the API, never moved)
+        shell: bash
+        env:
+          D: ${{ steps.out.outputs.dir }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          node - <<'EOF'
+          const fs = require("fs");
+          const { GH_TOKEN, REPO, SHA, TAG, REF_NAME, D } = process.env;
+          const api = async (p, body) => {
+            const r = await fetch(`https://api.github.com/repos/${REPO}/${p}`, { method: "POST", body: JSON.stringify(body),
+              headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" } });
+            if (!r.ok) throw new Error(`POST ${p}: ${r.status} ${await r.text()}`);
+            return r.json();
+          };
+          (async () => {
+            const sums = fs.readFileSync(`${D}/SHA256SUMS`, "utf8");
+            const message = `${TAG} (from ${REF_NAME} at ${SHA})\n\n${sums}`;
+            const tagger = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date: new Date().toISOString() };
+            const obj = await api("git/tags", { tag: TAG, message, object: SHA, type: "commit", tagger });
+            // creating a ref that exists is a 422: a candidate tag is never moved
+            await api("git/refs", { ref: `refs/tags/${TAG}`, sha: obj.sha });
+            console.log(`tagged ${TAG} -> ${SHA} (tag object ${obj.sha})`);
+          })().catch((e) => { console.log(`::error::${e.message}`); process.exit(1); });
+          EOF
+      - name: Pre-release with the outputs as its assets
+        shell: bash
+        env:
+          D: ${{ steps.out.outputs.dir }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          body=$(printf 'Release candidate %s from %s (%s). Not deployed.\n\nsha256:\n```\n%s\n```\n' "$TAG" "$SHA" "$REF_NAME" "$(cat "$D/SHA256SUMS")")
+          rel=$(curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/releases" \
+            -d "$(node -e 'console.log(JSON.stringify({tag_name:process.env.TAG,name:process.env.TAG,body:process.argv[1],prerelease:true}))' "$body")")
+          up=$(printf '%s' "$rel" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).upload_url.replace(/\{.*$/,"")))')
+          # only the allow-list and the tag job's own SHA256SUMS; names were checked above
+          # ([A-Za-z0-9][A-Za-z0-9._-]*), so they need no URL encoding
+          set -f
+          for f in $RC_OUTPUTS SHA256SUMS; do
+            p="$D/$f"
+            curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$p" "$up?name=$f" >/dev/null
+          done
+          { echo "### $TAG"; echo "- commit: \`$SHA\` (from \`$REF_NAME\`)"; echo '```'; cat "$D/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

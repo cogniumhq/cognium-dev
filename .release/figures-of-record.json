@@ -1,0 +1,18 @@
+{
+  "about": "Numbers of record for the release review. A row changes only in a reviewed PR with version, date and method.",
+  "records": [
+    {
+      "suite": "bench-diff/owasp",
+      "metric": "tp_loss",
+      "kind": "count",
+      "value": 0,
+      "direction": "lower",
+      "tolerance": 0,
+      "version": "main 8b4897c vs circle-ir-v4.19.0",
+      "date": "2026-11-03",
+      "method": "bench-diff diff (.claude/skills/autofix-issues/bench-diff.mts), OWASP BenchmarkJava, candidate vs the previous release tag"
+    },
+    { "suite": "bench-diff/juliet-java", "metric": "tp_loss", "status": "no record yet", "direction": "lower" },
+    { "suite": "bench-diff/juliet-csharp", "metric": "tp_loss", "status": "no record yet", "direction": "lower" }
+  ]
+}
