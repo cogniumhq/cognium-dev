@@ -670,14 +670,14 @@ describe('recheck on a TypeScript CWE-352 fix (csrf-samesite-none-session)', () 
 });
 
 /**
- * C5 (Java): a no-op must not read `gone`, and `sanitized-by` must name a
+ * Java fingerprint survival: a no-op must not read `gone`, and `sanitized-by` must name a
  * sanitizer the change added. A Spring handler's `@RequestParam` source, and an
  * inter-procedural parameter source, sit on the method's header line, so renaming
  * the method or adding a parameter changed their source code; they are identified
  * by the parameter instead. A sanitizer already in the method at the baseline
  * does not explain a lost flow.
  */
-describe('recheck C5: Java parameter sources and pre-existing sanitizers', () => {
+describe('recheck Java survival: parameter sources and pre-existing sanitizers', () => {
   const SPRING = 'src/main/java/app/FlagController.java';
   const controller = (o: { flag?: string; post?: string; helper?: string; call?: string; extraImport?: string } = {}) => `package app;
 
@@ -712,12 +712,12 @@ public class FlagController {
 `;
 
   async function run(name: string, file: string, code: string, baseline?: RecheckReport, expectGone: string[] = []): Promise<RecheckReport> {
-    const root = join(work, 'c5', name);
+    const root = join(work, 'java-survival', name);
     mkdirSync(join(root, file, '..'), { recursive: true });
     writeFileSync(join(root, file), code);
     let baselinePath: string | undefined;
     if (baseline) {
-      baselinePath = join(work, 'c5', `${name}.baseline.json`);
+      baselinePath = join(work, 'java-survival', `${name}.baseline.json`);
       writeFileSync(baselinePath, JSON.stringify(baseline));
     }
     return computeRecheck(root, { changed: [file], scope: 'files', expectGone, ...(baselinePath ? { baseline: baselinePath } : {}) });
