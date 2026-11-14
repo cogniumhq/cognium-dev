@@ -42,9 +42,19 @@
  * file that is not otherwise renamed is matched only when that file is analysed
  * (listed in `--changed`, or `--scope closure`, as `--changed-from` implies).
  *
+ * Flows inside a key: one method can hold several flows of one rule (two SQL
+ * sinks in one handler); they share the key. The report lists them under it
+ * (`flows`, by flow identity), and a verdict on a key still reported says, per
+ * baseline flow, whether it is still there: a key where some flows are gone and
+ * others remain is `still-present` with `partial: true`, and a new flow of the
+ * same rule in the same method is a `new-high` / `new-other` entry with
+ * `newFlow: true` beside the key's own verdict. Needs a `cognium-recheck@0.4`
+ * baseline; an earlier one kept only the first flow per key.
+ *
  * `--expect-gone <key[,…]>` names the findings the change is meant to fix;
- * the fix passes only when each of them is `gone` (and not gone because a
- * sanitizer for another sink class appeared).
+ * the fix passes only when each of them is `gone`, every flow of it (and not
+ * gone because a sanitizer for another sink class appeared). A partial fix fails
+ * with reason `partial-fix`.
  *
  * Exit codes: 0 pass; 1 the no-new-high rule or the fix check fails; 2 a usage
  * error; 3 a verdict is `unknown` (a changed file did not parse fully, or a
@@ -73,9 +83,9 @@ import { materializeBase } from './graph-facts.js';
 import { UsageError } from './utils/options.js';
 import { isScanSkippedDirectory } from './utils/skip-dirs.js';
 
-export const RECHECK_SCHEMA = 'cognium-recheck@0.3';
+export const RECHECK_SCHEMA = 'cognium-recheck@0.4';
 /** Baselines written by earlier versions; read, never written. */
-const READABLE_SCHEMAS = new Set([RECHECK_SCHEMA, 'cognium-recheck@0.2', 'cognium-recheck@0.1']);
+const READABLE_SCHEMAS = new Set([RECHECK_SCHEMA, 'cognium-recheck@0.3', 'cognium-recheck@0.2', 'cognium-recheck@0.1']);
 
 const LANG_BY_EXT: Record<string, SupportedLanguage> = {
   '.java': 'java', '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
@@ -149,7 +159,31 @@ export interface RecheckFinding {
   decl: { scheme: string; id: string; name: string; kind?: string; bodyHash?: string; tokens?: number };
   kind: 'flow' | 'pass';
   evidence?: RecheckEvidence;
+  /**
+   * Every distinct flow under the key (distinct by flow identity), by line, when
+   * there is more than one: two SQL sinks in one method share a key. Absent when
+   * the key holds one flow, which `evidence` describes (from `cognium-recheck@0.4`;
+   * an earlier baseline kept only the first flow per key).
+   */
+  flows?: RecheckFlow[];
 }
+
+/** One flow (or one pass occurrence) under a key. */
+export interface RecheckFlow {
+  /** sha256 (16 hex) of the flow identity ({@link flowIdentity}): no line, no declaration. */
+  identity: string;
+  line: number;
+  evidence: RecheckEvidence;
+}
+
+/**
+ * A flow's verdict inside a key: `still-present` (an after flow of the same flow
+ * identity), `gone` (none, and no after flow left to pair it with), `changed` (no
+ * flow of its identity, paired in line order with an after flow that matches no
+ * baseline flow: the same flow with its sink, source or sanitizers edited; it is
+ * still there), or `new` (an after flow that matches and pairs with no baseline flow).
+ */
+export type RecheckFlowVerdict = 'still-present' | 'gone' | 'changed' | 'new';
 
 export type GoneReason =
   | 'sanitized-by'
@@ -213,13 +247,33 @@ export interface RecheckVerdict {
   sanitizerCoversSink?: boolean;
   /** The finding after the change; the baseline's for `gone` and `unknown`. */
   evidence?: RecheckEvidence;
+  /**
+   * Per-flow detail, when the baseline or the after key holds more than one flow
+   * (needs a `cognium-recheck@0.4` baseline for a key that is still reported). Each
+   * baseline flow, and each after flow that is new, with its verdict.
+   */
+  flows?: Array<{ identity: string; verdict: RecheckFlowVerdict; line: number; sink?: string }>;
+  /**
+   * `still-present`: some of the key's baseline flows are gone and others remain.
+   * The key is not fixed.
+   */
+  partial?: boolean;
+  /**
+   * `new-high` / `new-other`: a new flow under a key that is still reported (`key`
+   * is the key after the change), not a new key. A key's verdict stays one entry;
+   * this entry is beside it, so a key can appear twice in `verdicts`.
+   */
+  newFlow?: boolean;
 }
 
 export interface RecheckTarget {
   key: string;
   verdict: RecheckVerdict['verdict'] | 'not-in-baseline';
+  /** The verdict's reason; `partial-fix` when some of the key's flows are gone and others remain. */
   reason?: string;
   fixed: boolean;
+  /** With per-flow detail: how many of the key's baseline flows are gone or remain, and how many are new. */
+  flows?: { gone: number; remaining: number; new: number };
 }
 
 export interface RecheckReport {
@@ -567,10 +621,18 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
     }
   }
   // One entry per key (the first by line), sorted: same files → same report.
+  // The key's other flows, distinct by flow identity, are listed under it.
   const byKey = new Map<string, RecheckFinding>();
+  const flowsByKey = new Map<string, Map<string, RecheckFlow>>();
   for (const f of findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.key.localeCompare(b.key))) {
     if (!byKey.has(f.key)) byKey.set(f.key, f);
+    const id = flowIdentity(f);
+    if (!id || !f.evidence) continue;
+    const m = flowsByKey.get(f.key) ?? new Map<string, RecheckFlow>();
+    if (!m.has(id)) m.set(id, { identity: fingerprint([id]), line: f.line, evidence: f.evidence });
+    flowsByKey.set(f.key, m);
   }
+  for (const [key, m] of flowsByKey) if (m.size > 1) byKey.get(key)!.flows = [...m.values()];
   const report: RecheckReport = {
     schema: RECHECK_SCHEMA,
     scope,
@@ -1035,6 +1097,39 @@ export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?:
     missing.push(f);
   }
 
+  // A lost key whose first flow matched nothing may still hold other flows: when
+  // one unclaimed after key in its file holds any of its flows, it is that key
+  // re-keyed (a fix of one flow plus an import above an anonymous handler); more
+  // than one is `unknown`. Never `gone` while one of its flows is still reported.
+  const flowIds = (f: RecheckFinding): Set<string> =>
+    new Set(flowsOf(f).map(x => flowIdentity({ ...f, line: x.line, evidence: x.evidence })).filter((x): x is string => !!x));
+  const flowHits = new Map<string, RecheckFinding[]>();
+  for (const f of missing) {
+    const ids = flowIds(f);
+    if (ids.size === 0) continue;
+    const hits = [...now.values()].filter(a => !claimed.has(a.key) && a.file === f.file && [...flowIds(a)].some(id => ids.has(id)));
+    if (hits.length > 0) flowHits.set(f.key, hits);
+  }
+  const flowWanted = new Map<string, number>();
+  for (const hits of flowHits.values()) for (const a of hits) flowWanted.set(a.key, (flowWanted.get(a.key) ?? 0) + 1);
+  const stillMissing: RecheckFinding[] = [];
+  for (const f of missing) {
+    const hits = flowHits.get(f.key);
+    if (!hits) { stillMissing.push(f); continue; }
+    if (hits.length === 1 && flowWanted.get(hits[0].key) === 1) {
+      verdicts.push(stillPresent(f, hits[0]));
+      claimed.add(hits[0].key);
+      continue;
+    }
+    if (hits.length === 1) claimed.add(hits[0].key);
+    verdicts.push({
+      ...base(f), verdict: 'unknown', severity: f.severity, line: f.line,
+      reason: 'rekey-ambiguous', matchedBy: 'flow-identity', rekeyCandidates: hits.map(h => h.key).sort(), ...ev(f),
+    });
+  }
+  missing.length = 0;
+  missing.push(...stillMissing);
+
   // Moves across files, on evidence only: the after findings of the same flow
   // identity (files left out) where the finding's file or declaration moved to.
   const moves = ctx?.moves;
@@ -1079,9 +1174,40 @@ export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?:
     }
     verdicts.push({ ...base(f), severity: f.severity, line: f.line, ...explainMissing(f, after, ctx, m), ...ev(f) });
   }
+  // Per flow inside a key: which of the key's baseline flows are still there,
+  // which are gone, and which after flows are new. A baseline written before
+  // `cognium-recheck@0.4` kept one flow per key, so it gives no per-flow detail
+  // for a key that is still reported.
+  const perFlow = before.schema === RECHECK_SCHEMA;
+  const newFlows: RecheckVerdict[] = [];
+  for (const v of verdicts) {
+    const f = then.get(v.key);
+    if (!f) continue;
+    if (v.verdict === 'gone') {
+      if (f.flows) v.flows = f.flows.map(x => flowEntry(x, 'gone'));
+      continue;
+    }
+    if (v.verdict !== 'still-present' || !perFlow) continue;
+    const a = now.get(v.rekeyedTo ?? v.key);
+    if (!a) continue; // still reported outside the analysed scope: no flows to compare
+    const cmp = compareFlows(f, a);
+    if (!cmp) continue;
+    if (f.flows || a.flows) v.flows = cmp.entries;
+    if (cmp.entries.some(e => e.verdict === 'gone')) v.partial = true;
+    for (const x of cmp.added) {
+      newFlows.push({
+        key: a.key, verdict: HIGH.has(a.severity) ? 'new-high' : 'new-other', cwe: a.cwe, rule: a.rule, severity: a.severity,
+        file: a.file, line: x.line, newFlow: true, evidence: x.evidence,
+      });
+    }
+  }
+  verdicts.push(...newFlows);
   for (const [key, f] of now) {
     if (claimed.has(key)) continue;
-    verdicts.push({ key, verdict: HIGH.has(f.severity) ? 'new-high' : 'new-other', cwe: f.cwe, rule: f.rule, severity: f.severity, file: f.file, line: f.line, ...ev(f) });
+    verdicts.push({
+      key, verdict: HIGH.has(f.severity) ? 'new-high' : 'new-other', cwe: f.cwe, rule: f.rule, severity: f.severity, file: f.file, line: f.line, ...ev(f),
+      ...(f.flows ? { flows: f.flows.map(x => flowEntry(x, 'new')) } : {}),
+    });
   }
   verdicts.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.key.localeCompare(b.key));
   const count = (v: RecheckVerdict['verdict']) => verdicts.filter(x => x.verdict === v).length;
@@ -1091,18 +1217,84 @@ export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?:
   return after;
 }
 
+/** A key's flows: its listed flows, or the one its evidence describes. */
+function flowsOf(f: RecheckFinding): RecheckFlow[] {
+  if (f.flows && f.flows.length > 0) return f.flows;
+  const id = flowIdentity(f);
+  return id && f.evidence ? [{ identity: fingerprint([id]), line: f.line, evidence: f.evidence }] : [];
+}
+
+const flowEntry = (x: RecheckFlow, verdict: RecheckFlowVerdict): NonNullable<RecheckVerdict['flows']>[number] =>
+  ({ identity: x.identity, verdict, line: x.line, ...(x.evidence.sink.code ? { sink: x.evidence.sink.code } : {}) });
+
+/**
+ * The flows of a baseline key against the flows of the after key it matched.
+ * A baseline flow with an after flow of the same flow identity (files left out
+ * when the key moved to another file) is `still-present`. The flows left over on
+ * both sides are paired as `changed`, same sink code first, then in line order:
+ * an edited flow is still there, never `gone`. What is left after that is `gone` (baseline) or `new`
+ * (after). Undefined when either side has no flow identity (no sink code).
+ */
+function compareFlows(f: RecheckFinding, a: RecheckFinding): { entries: NonNullable<RecheckVerdict['flows']>; added: RecheckFlow[] } | undefined {
+  const moved = f.file !== a.file;
+  const idOf = (owner: RecheckFinding, x: RecheckFlow) => {
+    const g = { ...owner, line: x.line, evidence: x.evidence };
+    return moved ? movedIdentity(g) : flowIdentity(g);
+  };
+  const was = flowsOf(f), is = flowsOf(a);
+  if (was.length === 0 || is.length === 0) return undefined;
+  const isIds = is.map(x => idOf(a, x));
+  const wasIds = new Set(was.map(x => idOf(f, x)));
+  const entries: NonNullable<RecheckVerdict['flows']> = [];
+  const lostWas: RecheckFlow[] = [];
+  for (const x of was) {
+    if (isIds.includes(idOf(f, x))) entries.push(flowEntry(x, 'still-present'));
+    else lostWas.push(x);
+  }
+  const byLine = (p: RecheckFlow, q: RecheckFlow) => p.line - q.line || p.identity.localeCompare(q.identity);
+  const lostIs = is.filter((_, i) => !wasIds.has(isIds[i])).sort(byLine);
+  lostWas.sort(byLine);
+  // Pair the leftovers: first a flow whose sink code is unchanged (its source or
+  // sanitizers changed), then in line order.
+  const pairedWas = new Set<RecheckFlow>();
+  const pairedIs = new Set<RecheckFlow>();
+  for (const x of lostWas) {
+    const y = lostIs.find(c => !pairedIs.has(c) && noSpace(c.evidence.sink.code) === noSpace(x.evidence.sink.code));
+    if (y) { pairedWas.add(x); pairedIs.add(y); }
+  }
+  const restIs = lostIs.filter(y => !pairedIs.has(y));
+  for (const x of lostWas) {
+    if (pairedWas.has(x)) continue;
+    const y = restIs.shift();
+    if (y) { pairedWas.add(x); pairedIs.add(y); }
+  }
+  for (const x of lostWas) entries.push(flowEntry(x, pairedWas.has(x) ? 'changed' : 'gone'));
+  const added = lostIs.filter(y => !pairedIs.has(y));
+  for (const x of added) entries.push(flowEntry(x, 'new'));
+  entries.sort((p, q) => p.line - q.line || p.identity.localeCompare(q.identity));
+  return { entries, added };
+}
+
 /**
  * `--expect-gone`: each target must be `gone`. A `gone` by a sanitizer that
  * covers none of the sink's class (an HTML encoder before a SQL sink) does not
  * count as fixed. Pure.
  */
 export function applyTargets(report: RecheckReport, keys: string[]): RecheckReport {
-  const byKey = new Map((report.verdicts ?? []).map(v => [v.key, v]));
+  // A new flow's entry shares its key with the key's own verdict: the key's verdict decides.
+  const byKey = new Map((report.verdicts ?? []).filter(v => !v.newFlow).map(v => [v.key, v]));
   report.targets = [...new Set(keys)].sort().map((key): RecheckTarget => {
     const v = byKey.get(key);
     if (!v || v.verdict === 'new-high' || v.verdict === 'new-other') return { key, verdict: 'not-in-baseline', fixed: false };
+    // A key is gone only when every one of its flows is: a partial fix reads still-present.
     const fixed = v.verdict === 'gone' && !(v.reason === 'sanitized-by' && v.sanitizerCoversSink === false);
-    return { key, verdict: v.verdict, ...(v.reason ? { reason: v.reason } : {}), fixed };
+    const reason = v.partial ? 'partial-fix' : v.reason;
+    const flows = v.flows ? {
+      gone: v.flows.filter(x => x.verdict === 'gone').length,
+      remaining: v.flows.filter(x => x.verdict === 'still-present' || x.verdict === 'changed').length,
+      new: v.flows.filter(x => x.verdict === 'new').length,
+    } : undefined;
+    return { key, verdict: v.verdict, ...(reason ? { reason } : {}), fixed, ...(flows ? { flows } : {}) };
   });
   report.fixed = report.targets.every(t => t.fixed) ? 'pass' : 'fail';
   return report;

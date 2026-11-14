@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
-import { applyBaseline, applyTargets, computeRecheck, parseRecheckOptions, recheckExitCode, RECHECK_SCHEMA, type RecheckEvidence, type RecheckFinding, type RecheckReport } from '../src/recheck';
+import { applyBaseline, applyTargets, computeRecheck, parseRecheckOptions, recheckExitCode, RECHECK_SCHEMA, type RecheckEvidence, type RecheckFinding, type RecheckFlow, type RecheckReport, type RecheckVerdict } from '../src/recheck';
 import { UsageError } from '../src/utils/options';
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts');
@@ -558,7 +558,7 @@ describe('recheck G1: a re-keyed declaration is still-present, never gone (JS an
     const vuln = readFileSync(join(FIX, '89.vuln.js'), 'utf8');
     const base = await run('v02-base', file, vuln);
     const rep = await run('v02-top', file, top(vuln), { ...base, schema: 'cognium-recheck@0.2' as typeof RECHECK_SCHEMA });
-    expect(rep.schema).toBe('cognium-recheck@0.3');
+    expect(rep.schema).toBe(RECHECK_SCHEMA);
     expect(rep.summary!.gone).toBe(0);
   }, 60_000);
 });
@@ -1050,5 +1050,197 @@ ${body}}
     expect(() => parseRecheckOptions({ changed: OLD, renames: 'a.java' })).toThrow(UsageError);
     expect(() => parseRecheckOptions({ changed: OLD, renames: 'a.java=b.java,a.java=c.java' })).toThrow(UsageError);
     expect(() => parseRecheckOptions({ changed: OLD, renames: true })).toThrow(UsageError);
+  });
+});
+
+/**
+ * Per-flow verdicts: one method can hold several flows of one rule (two SQL sinks
+ * in one handler), and they share a key. Fixing one while the other stays must
+ * read as a partial fix, not `still-present` alone; `--expect-gone` passes only
+ * when every flow of the key is gone; a new flow of the same rule in the same
+ * method is a new finding; and a refactor that loses one of two flows is visible.
+ */
+describe('recheck per-flow verdicts: several flows of one rule in one method (Java and JS)', () => {
+  const LANGS = {
+    java: {
+      file: 'src/main/java/app/Lookup.java',
+      code: (sinks: string[]) => `package app;
+import java.sql.*;
+import javax.servlet.http.*;
+public class Lookup extends HttpServlet {
+  private Connection conn;
+  public void doGet(HttpServletRequest req, HttpServletResponse res) throws Exception {
+    String id = req.getParameter("id");
+    Statement st = conn.createStatement();
+${sinks.join('\n')}
+  }
+}
+`,
+      vuln: (t: string) => `    st.executeQuery("SELECT * FROM ${t} WHERE id = '" + id + "'");`,
+      fixed: (t: string) => `    PreparedStatement ps${t} = conn.prepareStatement("SELECT * FROM ${t} WHERE id = ?");
+    ps${t}.setString(1, id);
+    ps${t}.executeQuery();`,
+      constant: (t: string) => `    st.executeQuery("SELECT COUNT(*) FROM ${t}");`,
+    },
+    js: {
+      file: 'src/app.js',
+      code: (sinks: string[]) => `const express = require('express');
+const mysql = require('mysql');
+const db = mysql.createConnection({});
+const app = express();
+app.get('/u', function handler(req, res) {
+  const id = req.query.id;
+${sinks.join('\n')}
+  res.send('ok');
+});
+`,
+      vuln: (t: string) => `  db.query('SELECT * FROM ${t} WHERE id = ' + id);`,
+      fixed: (t: string) => `  db.query('SELECT * FROM ${t} WHERE id = ?', [id]);`,
+      constant: (t: string) => `  db.query('SELECT COUNT(*) FROM ${t}');`,
+    },
+  } as const;
+
+  async function run(name: string, file: string, code: string, baseline?: RecheckReport, expectGone: string[] = []): Promise<RecheckReport> {
+    const root = join(work, 'per-flow', name);
+    mkdirSync(join(root, file, '..'), { recursive: true });
+    writeFileSync(join(root, file), code);
+    let baselinePath: string | undefined;
+    if (baseline) {
+      baselinePath = join(work, 'per-flow', `${name}.baseline.json`);
+      writeFileSync(baselinePath, JSON.stringify(baseline));
+    }
+    return computeRecheck(root, { changed: [file], scope: 'files', expectGone, ...(baselinePath ? { baseline: baselinePath } : {}) });
+  }
+  const sqlKey = (rep: RecheckReport) => rep.findings.find(f => f.cwe === 'CWE-89')!.key;
+  const keyVerdict = (rep: RecheckReport, key: string) => rep.verdicts!.find(v => v.key === key && !v.newFlow)!;
+  const verdictsOf = (flows: RecheckVerdict['flows']) => (flows ?? []).map(x => x.verdict);
+
+  for (const [lang, L] of Object.entries(LANGS)) {
+    test(`${lang}: the baseline lists both flows under the one key`, async () => {
+      const base = await run(`${lang}-two`, L.file, L.code([L.vuln('a'), L.vuln('b')]));
+      const sql = base.findings.filter(f => f.cwe === 'CWE-89');
+      expect(sql.length).toBe(1);
+      expect(sql[0].flows!.map(x => x.line)).toEqual([sql[0].line, sql[0].line + 1]);
+      expect(new Set(sql[0].flows!.map(x => x.identity)).size).toBe(2);
+    }, 60_000);
+
+    test(`${lang}: one of two flows fixed reads partial, not fixed, and --expect-gone fails`, async () => {
+      const base = await run(`${lang}-two`, L.file, L.code([L.vuln('a'), L.vuln('b')]));
+      const key = sqlKey(base);
+      const rep = await run(`${lang}-one-fixed`, L.file, L.code([L.fixed('a'), L.vuln('b')]), base, [key]);
+      const v = keyVerdict(rep, key);
+      expect(v.verdict).toBe('still-present');
+      expect(v.partial).toBe(true);
+      // The other flow remains; in JS the parameterized call between source and sink
+      // is a sanitizer on its path, so its identity is edited (`changed`), not lost.
+      expect(v.flows![0]).toMatchObject({ verdict: 'gone' });
+      expect(v.flows![0].sink).toContain('FROM a');
+      expect(['still-present', 'changed']).toContain(v.flows![1].verdict);
+      expect(v.flows![1].sink).toContain('FROM b');
+      expect(rep.targets).toEqual([{ key, verdict: 'still-present', reason: 'partial-fix', fixed: false, flows: { gone: 1, remaining: 1, new: 0 } }]);
+      expect(rep.fixed).toBe('fail');
+      expect(rep.summary!.newHigh).toBe(0);
+      expect(recheckExitCode(rep)).toBe(1);
+    }, 60_000);
+
+    test(`${lang}: both flows fixed: the key is gone, every flow gone, --expect-gone passes`, async () => {
+      const base = await run(`${lang}-two`, L.file, L.code([L.vuln('a'), L.vuln('b')]));
+      const key = sqlKey(base);
+      const rep = await run(`${lang}-both-fixed`, L.file, L.code([L.fixed('a'), L.fixed('b')]), base, [key]);
+      const v = keyVerdict(rep, key);
+      expect(v.verdict).toBe('gone');
+      expect(v.partial).toBeUndefined();
+      expect(verdictsOf(v.flows)).toEqual(['gone', 'gone']);
+      expect(rep.targets).toEqual([expect.objectContaining({ key, verdict: 'gone', fixed: true, flows: { gone: 2, remaining: 0, new: 0 } })]);
+      expect(rep.fixed).toBe('pass');
+    }, 60_000);
+
+    test(`${lang}: a new flow of the same rule in the same method is new-high`, async () => {
+      const base = await run(`${lang}-one`, L.file, L.code([L.vuln('a')]));
+      const key = sqlKey(base);
+      expect(base.findings.find(f => f.key === key)!.flows).toBeUndefined();
+      const rep = await run(`${lang}-added`, L.file, L.code([L.vuln('a'), L.vuln('c')]), base);
+      const v = keyVerdict(rep, key);
+      expect(v.verdict).toBe('still-present');
+      expect(v.partial).toBeUndefined();
+      expect(verdictsOf(v.flows)).toEqual(['still-present', 'new']);
+      const added = rep.verdicts!.filter(x => x.newFlow);
+      expect(added).toEqual([expect.objectContaining({ key, verdict: 'new-high', cwe: 'CWE-89', line: v.line + 1, newFlow: true })]);
+      expect(added[0].evidence!.sink.code).toContain('FROM c');
+      expect(rep.summary!.newHigh).toBe(1);
+      expect(rep.noNewHigh).toBe('fail');
+      expect(recheckExitCode(rep)).toBe(1);
+    }, 60_000);
+
+    test(`${lang}: a refactor that loses one of two flows and keeps the other is visible`, async () => {
+      const base = await run(`${lang}-two`, L.file, L.code([L.vuln('a'), L.vuln('b')]));
+      const key = sqlKey(base);
+      const rep = await run(`${lang}-refactor`, L.file, L.code([L.vuln('a'), L.constant('b')]), base);
+      const v = keyVerdict(rep, key);
+      expect(v.verdict).toBe('still-present');
+      expect(v.partial).toBe(true);
+      expect(v.flows!.map(x => [x.verdict, x.sink?.includes('FROM a') ? 'a' : 'b'])).toEqual([['still-present', 'a'], ['gone', 'b']]);
+      expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, unknown: 0 });
+    }, 60_000);
+
+    test(`${lang}: an unchanged method with two flows is still-present, not partial, nothing new`, async () => {
+      const base = await run(`${lang}-two`, L.file, L.code([L.vuln('a'), L.vuln('b')]));
+      const key = sqlKey(base);
+      const rep = await run(`${lang}-noop`, L.file, L.code([L.vuln('a'), L.vuln('b')]), base, [key]);
+      const v = keyVerdict(rep, key);
+      expect(v.verdict).toBe('still-present');
+      expect(v.partial).toBeUndefined();
+      expect(verdictsOf(v.flows)).toEqual(['still-present', 'still-present']);
+      expect(rep.verdicts!.some(x => x.newFlow)).toBe(false);
+      expect(rep.targets![0]).toEqual({ key, verdict: 'still-present', fixed: false, flows: { gone: 0, remaining: 2, new: 0 } });
+    }, 60_000);
+  }
+
+  test('a 0.3 baseline (one flow per key) gives no per-flow detail and no new-flow entries', async () => {
+    const L = LANGS.js;
+    const base = await run('js-two', L.file, L.code([L.vuln('a'), L.vuln('b')]));
+    const old = { ...base, schema: 'cognium-recheck@0.3' as typeof RECHECK_SCHEMA, findings: base.findings.map(({ flows: _flows, ...f }) => f) };
+    const rep = await run('js-v03-added', L.file, L.code([L.vuln('a'), L.vuln('b'), L.vuln('c')]), old);
+    const v = keyVerdict(rep, sqlKey(base));
+    expect(v.verdict).toBe('still-present');
+    expect(v.flows).toBeUndefined();
+    expect(v.partial).toBeUndefined();
+    expect(rep.summary!.newHigh).toBe(0);
+  }, 60_000);
+});
+
+describe('per-flow verdicts (pure)', () => {
+  const flow = (sinkCode: string, line: number): RecheckFlow => ({
+    identity: sinkCode, line,
+    evidence: {
+      fingerprint: 'fp', source: { file: 'a.js', line: 1, type: 'http_param', code: 'const id = req.query.id;' },
+      sink: { file: 'a.js', line, type: 'sql_injection', code: sinkCode }, hops: [], sanitizers_in_path: [],
+    },
+  });
+  const finding = (key: string, flows: RecheckFlow[]): RecheckFinding => ({
+    key, cwe: 'CWE-89', rule: 'sql_injection', severity: 'critical', file: 'a.js', line: flows[0].line,
+    decl: { scheme: 'ids@0.1', id: key, name: key }, kind: 'flow', evidence: flows[0].evidence,
+    ...(flows.length > 1 ? { flows } : {}),
+  });
+  const report = (findings: RecheckFinding[]): RecheckReport => ({ schema: RECHECK_SCHEMA, scope: 'files', files: ['a.js'], skipped: [], partialFiles: [], findings });
+  const A = "db.query('a' + id);", B = "db.query('b' + id);", C = "db.query('c' + id);";
+
+  test('one flow edited in place (same key, changed sink) is changed, not gone plus new', () => {
+    const r = applyBaseline(report([finding('K1', [flow(A, 2), flow("db.query(clean(b));", 3)])]), report([finding('K1', [flow(A, 2), flow(B, 3)])]));
+    expect(r.verdicts!.map(v => [v.key, v.verdict, v.partial, (v.flows ?? []).map(x => x.verdict)])).toEqual([['K1', 'still-present', undefined, ['still-present', 'changed']]]);
+    expect(r.summary!.newHigh).toBe(0);
+  });
+
+  test('a new flow entry does not decide the key for --expect-gone', () => {
+    const r = applyTargets(applyBaseline(report([finding('K1', [flow(A, 2), flow(C, 4)])]), report([finding('K1', [flow(A, 2)])])), ['K1']);
+    expect(r.verdicts!.filter(v => v.key === 'K1').map(v => v.verdict).sort()).toEqual(['new-high', 'still-present']);
+    expect(r.targets).toEqual([{ key: 'K1', verdict: 'still-present', fixed: false, flows: { gone: 0, remaining: 1, new: 1 } }]);
+  });
+
+  test('a lost key whose first flow is fixed while another of its flows moved to a new key is re-keyed, not gone', () => {
+    // The fix removed flow A; an import above the anonymous handler moved its id from K1 to K2.
+    const r = applyTargets(applyBaseline(report([finding('K2', [flow(B, 4)])]), report([finding('K1', [flow(A, 2), flow(B, 3)])])), ['K1']);
+    expect(r.verdicts).toEqual([expect.objectContaining({ key: 'K1', verdict: 'still-present', rekeyedTo: 'K2', partial: true })]);
+    expect(r.targets).toEqual([expect.objectContaining({ key: 'K1', fixed: false, reason: 'partial-fix' })]);
   });
 });
