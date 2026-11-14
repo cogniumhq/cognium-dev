@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: a complete same-site redirect guard is credited (CWE-601).** `res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/')` (or the strict regex `/^\/(?![\/\\])/.test(next)`) no longer reports `open_redirect`; `crlf` is unchanged. A guard that rejects only `//` is still reported: `/\evil.example` is read by browsers as `//evil.example`.
 - **JS/TS: an `if` check on an unrelated value no longer hides an `open_redirect` / `crlf` sink.** Sink-filter stage 8a dropped a redirect or header sink when any `includes` / `startsWith` / `endsWith` / `indexOf` / `test` / `match` / `has` check stood within six lines above it. The check must now test a value the sink call reads (a dotted name in its arguments, e.g. `target` or `req.query.next`). Allow-list and reject guards on that value drop the sink as before; when the sink's call is not found on its line, any guard in the window still does.
 - **Java: SecuriBench Basic29 linked `Node` heap fields (`next.value`, aliased `head.next.value`) reach XSS sinks (#1198).**
 - **TS/Angular: Observable `.subscribe` callback parameters are `http_body` sources (#1224).** HTTP payloads returned through injected services (Juice Shop `restfulXss` shape) now reach `DomSanitizer.bypassSecurityTrust*` sinks.

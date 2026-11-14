@@ -620,6 +620,8 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(
         ...findJsPathResolveStartsWithGuardSanitizers(code),
       );
+      // JS/TS open_redirect: a same-site relative-path guard that rejects `//` AND `/\`.
+      additionalSanitizers.push(...findJsRelativeRedirectGuardSanitizers(code));
       // cognium-dev#1146: same-file helper returns path.resolve after allow-list guard.
       additionalSanitizers.push(
         ...findJsPathAllowlistHelperSanitizers(code),
@@ -8129,7 +8131,8 @@ function findJsPathResolveStartsWithGuardSanitizers(
       line: c.line,
       sanitizes: ['path_traversal', 'external_taint_escape'],
     });
-    for (let l = c.line; l < lines.length; l++) {
+    // only inside the function the guard is in, and only until `full` is reassigned (#1257 review B1)
+    for (const l of jsGuardCreditLines(lines, c.line, c.fullVar)) {
       if (!varRefRe.test(lines[l])) continue;
       sanitizers.push({
         type: 'js_path_resolve_startswith_guard',
@@ -8141,6 +8144,121 @@ function findJsPathResolveStartsWithGuardSanitizers(
   }
 
   return sanitizers;
+}
+
+/**
+ * JS/TS open_redirect: the same-site relative-path guard (CWE-601).
+ *
+ *   if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return res.redirect('/');
+ *   res.redirect(next);
+ *
+ *   if (next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\')) { res.redirect(next); }
+ *   if (/^\/(?![\/\\])/.test(next)) { res.redirect(next); }
+ *   res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/');
+ *
+ * A path that starts with one `/` and is not `//…` (protocol-relative) or `/\…` (which browsers read as
+ * `//…`) stays on the same site, so the redirect cannot leave it. BOTH `//` and `/\` must be rejected: a guard
+ * that only rejects `//` is still bypassable with `/\evil.example`, and is not credited. The reject form
+ * (conditions joined by `||`, then a terminator) credits every later line that uses the variable; the accept
+ * form (joined by `&&`, or one of the strict regex spellings) credits the lines of its block. Only
+ * `open_redirect` is sanitized. Matching is by substring on the whitespace-free condition (no new regex).
+ */
+function findJsRelativeRedirectGuardSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  if (!code.includes('startsWith') && !code.includes('.test(')) return sanitizers;
+  const lines = code.split('\n');
+  const quotes = ["'", '"', '`'];
+  const lit = (q: string, body: string) => `${q}${body}${q}`;
+  const anyQ = (cond: string, f: (q: string) => string) => quotes.some((q) => cond.includes(f(q)));
+  const strictRegexes = ['/^\\/(?![\\/\\\\])/.test(', '/^\\/(?!\\/|\\\\)/.test(', '/^\\/[^\\/\\\\]/.test('];
+  const terminatorRe =
+    /\b(?:throw|return|res\s*\.\s*status\s*\([^)]*\)\s*\.\s*(?:send|end|json))/;
+  const varRefFor = (v: string) => new RegExp(`(?<![\\w$.])${v.replace(/[.$]/g, '\\$&')}(?![\\w$])`);
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const cond = raw.replace(/\s+/g, '');
+    const isIf = /\bif\s*\(/.test(raw);
+    // the ternary form on the redirect line itself: `res.redirect(<guard> ? next : '/')`
+    if (!isIf && !(cond.includes('?') && cond.includes(':'))) continue;
+    // the guarded variable: the receiver of `.startsWith('//')`, or the argument of a strict regex's `.test(`
+    let v: string | undefined;
+    for (const q of quotes) {
+      const at = cond.indexOf(`.startsWith(${lit(q, '//')})`);
+      if (at > 0) {
+        let k = at;
+        while (k > 0 && /[\w$.]/.test(cond[k - 1])) k--;
+        v = cond.slice(k, at).replace(/^!+/, '');
+        break;
+      }
+    }
+    const regexAccept = strictRegexes.find((r) => cond.includes(r));
+    if (!v && regexAccept) {
+      const after = cond.slice(cond.indexOf(regexAccept) + regexAccept.length);
+      const m = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)/.exec(after);
+      v = m?.[1];
+    }
+    if (!v || !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(v)) continue;
+    const slash = (q: string) => `${v}.startsWith(${lit(q, '/')})`;
+    const dbl = (q: string) => `${v}.startsWith(${lit(q, '//')})`;
+    const back = (q: string) => `${v}.startsWith(${lit(q, '/\\\\')})`;
+    const reject =
+      cond.includes('||') && !cond.includes('&&') &&
+      anyQ(cond, (q) => `!${slash(q)}`) && anyQ(cond, dbl) && anyQ(cond, back) &&
+      !anyQ(cond, (q) => `!${dbl(q)}`) && !anyQ(cond, (q) => `!${back(q)}`);
+    const accept =
+      (cond.includes('&&') && !cond.includes('||') &&
+        anyQ(cond, slash) && !anyQ(cond, (q) => `!${slash(q)}`) &&
+        anyQ(cond, (q) => `!${dbl(q)}`) && anyQ(cond, (q) => `!${back(q)}`)) ||
+      (!!regexAccept && !cond.includes(`!${regexAccept}`) && !cond.includes('||'));
+    const ref = varRefFor(v);
+    if (!isIf) {
+      // ternary: credited only when the guarded value is the consequent (`<guard> ? next : <fallback>`)
+      if (accept && cond.includes(`?${v}:`)) sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: i + 1, sanitizes: ['open_redirect'] });
+      continue;
+    }
+    if (reject && guardRejects(lines, i, terminatorRe, 2)) {
+      // from the guard line itself, so a block-form guard's own `{ … }` is counted, not read as the function's end
+      for (const l of jsGuardCreditLines(lines, i, v)) {
+        if (ref.test(lines[l])) sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: l + 1, sanitizes: ['open_redirect'] });
+      }
+    } else if (accept) {
+      const block = jsBracedBlockLines(lines, i);
+      const body = block ?? [raw];
+      for (let k = 0; k < body.length; k++) {
+        if (ref.test(k === 0 ? raw.slice(raw.indexOf(')', raw.indexOf('if')) + 1) : body[k])) {
+          sanitizers.push({ type: 'js_relative_redirect_guard', method: 'startsWith', line: i + k + 1, sanitizes: ['open_redirect'] });
+        }
+      }
+    }
+  }
+  return sanitizers;
+}
+
+/**
+ * The lines a guard on `v` at line index `from` may credit: from `from` to the end of the block that encloses it
+ * (the handler or function the guard is in: the first `}` that closes a brace opened before `from`), stopping
+ * before any reassignment of `v` (`v = …`, `let|const|var v = …`). Another handler in the same file, or the
+ * variable after it is reassigned, is never credited by this guard. Braces inside string literals and comments
+ * are not counted apart (a guard line with unbalanced quoted braces credits less, never more).
+ */
+function jsGuardCreditLines(lines: string[], from: number, v: string): number[] {
+  const esc = v.replace(/[.$]/g, '\\$&');
+  const reassign = new RegExp(`(?:^|[^\\w$.])(?:(?:let|const|var)\\s+)?${esc}\\s*=(?!=)`);
+  const out: number[] = [];
+  let depth = 0;
+  for (let l = from; l < lines.length; l++) {
+    const line = lines[l];
+    if (l > from && reassign.test(line)) break;
+    out.push(l);
+    for (const c of line) {
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth < 0) return out;   // the enclosing block closed on this line
+      }
+    }
+  }
+  return out;
 }
 
 /** Lines of one `{ ... }` block starting at `startLineIdx` (inclusive). */
