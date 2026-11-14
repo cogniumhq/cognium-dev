@@ -668,3 +668,224 @@ describe('recheck on a TypeScript CWE-352 fix (csrf-samesite-none-session)', () 
     expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
   }, 60_000);
 });
+
+/**
+ * C5 (Java): a no-op must not read `gone`, and `sanitized-by` must name a
+ * sanitizer the change added. A Spring handler's `@RequestParam` source, and an
+ * inter-procedural parameter source, sit on the method's header line, so renaming
+ * the method or adding a parameter changed their source code; they are identified
+ * by the parameter instead. A sanitizer already in the method at the baseline
+ * does not explain a lost flow.
+ */
+describe('recheck C5: Java parameter sources and pre-existing sanitizers', () => {
+  const SPRING = 'src/main/java/app/FlagController.java';
+  const controller = (o: { flag?: string; post?: string; helper?: string; call?: string; extraImport?: string } = {}) => `package app;
+
+import java.sql.Connection;
+import java.sql.Statement;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+${o.extraImport ?? ''}
+@RestController
+public class FlagController {
+  private Connection conn;
+
+  @PostMapping("/flag")
+  public String ${o.post ?? 'postFlag'}(${o.flag ?? '@RequestParam String flag'}) throws Exception {
+    Statement st = conn.createStatement();
+    st.executeQuery("SELECT * FROM flags WHERE f = '" + flag + "'");
+    return "ok";
+  }
+
+  public void ${o.helper ?? 'helper(String name)'} throws Exception {
+    Statement st = conn.createStatement();
+    st.executeQuery("SELECT * FROM t WHERE n = '" + name + "'");
+  }
+
+  @PostMapping("/call")
+  public String call(@RequestParam String who) throws Exception {
+    ${o.call ?? 'helper(who)'};
+    return "ok";
+  }
+}
+`;
+
+  async function run(name: string, file: string, code: string, baseline?: RecheckReport, expectGone: string[] = []): Promise<RecheckReport> {
+    const root = join(work, 'c5', name);
+    mkdirSync(join(root, file, '..'), { recursive: true });
+    writeFileSync(join(root, file), code);
+    let baselinePath: string | undefined;
+    if (baseline) {
+      baselinePath = join(work, 'c5', `${name}.baseline.json`);
+      writeFileSync(baselinePath, JSON.stringify(baseline));
+    }
+    return computeRecheck(root, { changed: [file], scope: 'files', expectGone, ...(baselinePath ? { baseline: baselinePath } : {}) });
+  }
+
+  const sqlFlows = (rep: RecheckReport) => rep.findings.filter(f => f.cwe === 'CWE-89' && f.kind === 'flow');
+
+  test('the @RequestParam and inter-procedural parameter sources carry the parameter, not just the header', async () => {
+    const base = await run('spring-base', SPRING, controller());
+    const params = sqlFlows(base).map(f => [f.evidence!.source!.type, f.evidence!.source!.params]).sort();
+    expect(params).toEqual([
+      ['http_param', [{ name: 'flag', type: 'String', annotations: ['RequestParam'] }]],
+      ['interprocedural_param', [{ name: 'name', type: 'String', annotations: [] }]],
+    ]);
+  }, 60_000);
+
+  test('method renamed and given an extra parameter: still-present by flow identity, not gone, nothing new', async () => {
+    const base = await run('spring-base2', SPRING, controller());
+    const keys = sqlFlows(base).map(f => f.key);
+    expect(keys.length).toBe(2);
+    const rep = await run('spring-renamed', SPRING, controller({
+      post: 'postFlagRenamed',
+      flag: '@RequestParam String flag, java.util.concurrent.atomic.AtomicLong extra',
+      helper: 'helperRenamed(String name, java.util.concurrent.atomic.AtomicLong extra)',
+      call: 'helperRenamed(who, null)',
+    }), base, keys);
+    for (const key of keys) {
+      expect(rep.verdicts!.find(v => v.key === key), key).toMatchObject({ verdict: 'still-present', reason: 'rekeyed', matchedBy: 'flow-identity' });
+    }
+    expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, newOther: 0, unknown: 0 });
+    expect(rep.fixed).toBe('fail');
+  }, 60_000);
+
+  test('only a parameter added (no rename): still-present, not gone', async () => {
+    const base = await run('spring-base3', SPRING, controller());
+    const rep = await run('spring-param', SPRING, controller({ flag: '@RequestParam String flag, int page' }), base);
+    expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, newOther: 0, unknown: 0 });
+  }, 60_000);
+
+  test('a handler passing two request parameters to a helper: both renamed, given a parameter, still-present', async () => {
+    const Q = 'src/main/java/app/Query.java';
+    const q = (handle: string, helper: string, call: string) => `package app;
+import java.sql.*;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class Query {
+  private Connection conn;
+  @PostMapping("/q")
+  public String ${handle} throws Exception {
+    return ${call};
+  }
+  protected String ${helper} throws Exception {
+    String sql = "SELECT * FROM e WHERE n = '" + name + "' AND t = '" + tan + "'";
+    Statement st = conn.createStatement();
+    st.executeQuery(sql);
+    return "ok";
+  }
+}
+`;
+    const base = await run('query-base', Q, q('handle(@RequestParam String name, @RequestParam String tan)', 'query(String name, String tan)', 'query(name, tan)'));
+    const keys = sqlFlows(base).map(f => f.key);
+    expect(keys.length).toBeGreaterThan(0);
+    const rep = await run('query-renamed', Q, q(
+      'handleRenamed(@RequestParam String name, @RequestParam String tan, int page)',
+      'lookup(String name, String tan, int page)', 'lookup(name, tan, page)'), base);
+    for (const key of keys) expect(rep.verdicts!.find(v => v.key === key)!.verdict, key).toBe('still-present');
+    expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, newOther: 0, unknown: 0 });
+  }, 60_000);
+
+  test('a real change of source (request parameter to header) still reads gone, and the new flow is new', async () => {
+    const base = await run('spring-base4', SPRING, controller());
+    const key = sqlFlows(base).find(f => f.evidence!.source!.type === 'http_param')!.key;
+    const rep = await run('spring-header', SPRING, controller({
+      post: 'postFlagRenamed',
+      flag: '@RequestHeader("X-Flag") String flag',
+      extraImport: 'import org.springframework.web.bind.annotation.RequestHeader;',
+    }), base);
+    expect(rep.verdicts!.find(v => v.key === key)!.verdict).toBe('gone');
+    expect(rep.summary!.newHigh).toBe(1);
+  }, 60_000);
+
+  const LOOKUP = 'src/main/java/app/Lookup.java';
+  const lookup = (body: string) => `package app;
+import java.sql.*;
+import javax.servlet.http.*;
+public class Lookup extends HttpServlet {
+  private Connection conn;
+  public void doGet(HttpServletRequest req, HttpServletResponse res) throws Exception {
+    String id = req.getParameter("id");
+    String note = org.owasp.esapi.ESAPI.encoder().encodeForHTML(req.getParameter("note"));
+    res.getWriter().println(note);
+${body}
+  }
+}
+`;
+
+  test('a fix beside a pre-existing sanitizer: sanitized-by names only the new sanitizer', async () => {
+    const base = await run('san-base', LOOKUP, lookup(VULN));
+    const f = base.findings.find(x => x.cwe === 'CWE-89')!;
+    expect(f.evidence!.decl_sanitizers!.some(s => s.includes('encodeForHTML'))).toBe(true);
+    const rep = await run('san-fixed', LOOKUP, lookup(FIXED), base, [f.key]);
+    const v = rep.verdicts!.find(x => x.key === f.key)!;
+    expect(v).toMatchObject({ verdict: 'gone', reason: 'sanitized-by', sanitizerCoversSink: true });
+    expect(v.sanitizers!.some(s => s.method.includes('encodeForHTML'))).toBe(false);
+    expect(rep.fixed).toBe('pass');
+  }, 60_000);
+
+  test('a sanitizer the engine does not know, beside a pre-existing one: not sanitized-by the old one', async () => {
+    const base = await run('san-base2', LOOKUP, lookup(VULN));
+    const key = base.findings.find(x => x.cwe === 'CWE-89')!.key;
+    const rep = await run('san-unknown', LOOKUP, lookup(`    id = org.owasp.esapi.ESAPI.encoder().encodeForSQL(new org.owasp.esapi.codecs.MySQLCodec(0), id);\n${VULN}`), base);
+    const v = rep.verdicts!.find(x => x.key === key)!;
+    expect(v.verdict).toBe('gone');
+    expect(v.reason).not.toBe('sanitized-by');
+    expect(v.sanitizers).toBeUndefined();
+  }, 60_000);
+
+  describe('applyBaseline with the after declarations (pure)', () => {
+    const FILE_J = 'A.java';
+    const flowFinding = (key: string, extra: Partial<RecheckEvidence> = {}): RecheckFinding => ({
+      key, cwe: 'CWE-117', rule: 'log_injection', severity: 'medium', file: FILE_J, line: 5,
+      decl: { scheme: 'ids@0.1', id: 'd1', name: 'A.verify' }, kind: 'flow',
+      evidence: {
+        fingerprint: key, source: { file: FILE_J, line: 3, type: 'http_param', code: 'String m = req.getParameter("m");' },
+        sink: { file: FILE_J, line: 5, type: 'log_injection', code: 'log.info(m);' }, hops: [], sanitizers_in_path: [],
+        decl_sanitizers: ['sig.replace()'], ...extra,
+      },
+    });
+    const rep = (findings: RecheckFinding[]): RecheckReport => ({ schema: RECHECK_SCHEMA, scope: 'files', files: [FILE_J], skipped: [], partialFiles: [], findings });
+    const ctx = (sanitizers: Array<{ method: string; line: number; sanitizes: string[] }>) => ({
+      allKeys: new Set<string>(), decls: new Map([[FILE_J, new Set(['d1'])]]), declNames: new Map([[FILE_J, new Map([['d1', 'A.verify']])]]),
+      inventory: new Map([[`${FILE_J}|d1`, { sinks: new Set(['log_injection']), sources: 1, sanitizers }]]), analysed: new Set([FILE_J]),
+    });
+    const OLD = { method: 'sig.replace()', line: 4, sanitizes: ['log_injection'] };
+
+    test('a no-op that loses the flow beside a sanitizer already there: flow-not-found, not sanitized-by', () => {
+      const r = applyBaseline(rep([]), rep([flowFinding('K1')]), ctx([OLD]));
+      expect(r.verdicts![0]).toMatchObject({ key: 'K1', verdict: 'gone', reason: 'flow-not-found' });
+      expect(r.verdicts![0].sanitizers).toBeUndefined();
+      expect(r.verdicts![0].sanitizerCoversSink).toBeUndefined();
+    });
+
+    test('a sanitizer added since the baseline: sanitized-by, naming only it', () => {
+      const NEW = { method: 'Encode.forJava()', line: 5, sanitizes: ['log_injection'] };
+      const r = applyBaseline(rep([]), rep([flowFinding('K1')]), ctx([OLD, NEW]));
+      expect(r.verdicts![0]).toMatchObject({ verdict: 'gone', reason: 'sanitized-by', sanitizers: [NEW], sanitizerCoversSink: true });
+    });
+
+    test('a second call to a sanitizer the method already used counts as new', () => {
+      const AGAIN = { method: 'sig.replace()', line: 6, sanitizes: ['log_injection'] };
+      const r = applyBaseline(rep([]), rep([flowFinding('K1')]), ctx([OLD, AGAIN]));
+      expect(r.verdicts![0]).toMatchObject({ reason: 'sanitized-by', sanitizers: [AGAIN] });
+    });
+
+    test('a parameter source matches on the parameter: a new header matches, a renamed, retyped or re-annotated parameter does not', () => {
+      const p = (code: string, param: { name: string; type?: string; annotations: string[] }): Partial<RecheckEvidence> =>
+        ({ source: { file: FILE_J, line: 3, type: 'http_param', code, params: [param] } });
+      const before = flowFinding('K1', p('public String postFlag(@RequestParam String m) {', { name: 'm', type: 'String', annotations: ['RequestParam'] }));
+      const same = flowFinding('K2', p('public String postFlagV2(@RequestParam String m, int page) {', { name: 'm', type: 'String', annotations: ['RequestParam'] }));
+      expect(applyBaseline(rep([same]), rep([before])).verdicts).toEqual([expect.objectContaining({ key: 'K1', verdict: 'still-present', reason: 'rekeyed', rekeyedTo: 'K2' })]);
+      for (const param of [
+        { name: 'msg', type: 'String', annotations: ['RequestParam'] },
+        { name: 'm', type: 'Object', annotations: ['RequestParam'] },
+        { name: 'm', type: 'String', annotations: ['PathVariable'] },
+      ]) {
+        const other = flowFinding('K2', p('public String postFlag(…) {', param));
+        expect(applyBaseline(rep([other]), rep([before])).verdicts!.map(v => [v.key, v.verdict])).toEqual([['K1', 'gone'], ['K2', 'new-other']]);
+      }
+    });
+  });
+});

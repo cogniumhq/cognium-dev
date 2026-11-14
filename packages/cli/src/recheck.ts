@@ -85,13 +85,33 @@ export interface RecheckOptions {
 export interface RecheckEvidence {
   /** sha256 (16 hex) of CWE, sink file, declaration and type, source file, declaration and type: no lines. */
   fingerprint: string;
-  source?: { file: string; line: number; type: string; code?: string };
+  /**
+   * `params`: the source is a parameter of a named method (a Spring `@RequestParam`,
+   * or an inter-procedural parameter), whose `code` is the method's header line.
+   * The parameter's name, declared type and annotations identify the source without
+   * the header. When the engine does not say which of the header's source
+   * parameters the flow starts from, all of them are listed.
+   */
+  source?: { file: string; line: number; type: string; code?: string; params?: RecheckParamSource[] };
   sink: { file: string; line: number; type: string; code?: string };
   hops: Array<{ file: string; line: number; method?: string; variable?: string }>;
   sanitizers_in_path: string[];
+  /**
+   * Flow findings: every sanitizer call in the sink's enclosing declaration (method
+   * names, sorted, repeats kept), whatever it sanitizes. A later `sanitized-by` is
+   * given only for a sanitizer this list does not already hold.
+   */
+  decl_sanitizers?: string[];
   confidence?: number;
   /** Pass findings: the engine's message. */
   message?: string;
+}
+
+/** A method parameter as a flow source: what a rename of the method or another parameter leaves alone. */
+export interface RecheckParamSource {
+  name: string;
+  type?: string;
+  annotations: string[];
 }
 
 export interface RecheckFinding {
@@ -146,7 +166,11 @@ export interface RecheckVerdict {
    * positions are left out (an anonymous handler after an inserted import).
    */
   successorDecl?: string;
-  /** `sanitized-by`: the sanitizers now in the declaration, and whether any of them covers the sink class. */
+  /**
+   * `sanitized-by`: the sanitizers in the declaration that the baseline finding's
+   * declaration and path did not already hold, and whether any of them covers the
+   * sink class.
+   */
   sanitizers?: Array<{ method: string; line: number; sanitizes: string[] }>;
   sanitizerCoversSink?: boolean;
   /** The finding after the change; the baseline's for `gone` and `unknown`. */
@@ -391,6 +415,8 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       ctx.declNames!.set(file, names);
       const lines = inputByFile.get(file)?.code.split('\n') ?? [];
 
+      const declSanitizers = (line: number): string[] =>
+        (ctx.inventory.get(`${file}|${declAt(file, ir, line, ids).id}`)?.sanitizers ?? []).map(s => s.method).sort();
       const sanitizersBetween = (a: number, b: number, sinkType: string): string[] => {
         const lo = Math.min(a, b), hi = Math.max(a, b);
         return (ir.taint.sanitizers ?? [])
@@ -410,11 +436,13 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
           : flow.path.map(s => ({ file, line: s.line, ...(s.variable ? { variable: s.variable } : {}) }));
         const sanitizers = [...new Set([...(path?.sanitizers_in_path ?? []), ...(sourceFile === file ? sanitizersBetween(flow.source_line, flow.sink_line, flow.sink_type) : [])])].sort();
         const sourceDecl = await declOf(sourceFile, flow.source_line);
+        const params = paramSources(byFile.get(sourceFile), flow);
         await add(file, ir, 'flow', flow.sink_type, SINK_CWE[t], SINK_SEVERITY[t] ?? 'high', flow.sink_line, {
-          source: { file: sourceFile, line: flow.source_line, type: flow.source_type, ...(sourceCode ? { code: sourceCode } : {}) },
+          source: { file: sourceFile, line: flow.source_line, type: flow.source_type, ...(sourceCode ? { code: sourceCode } : {}), ...(params ? { params } : {}) },
           sink: { file, line: flow.sink_line, type: flow.sink_type, ...(sinkCode ? { code: sinkCode } : {}) },
           hops,
           sanitizers_in_path: sanitizers,
+          decl_sanitizers: declSanitizers(flow.sink_line),
           confidence: path?.confidence ?? flow.confidence,
         }, sourceDecl?.id);
       }
@@ -443,6 +471,42 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
     findings: [...byKey.values()],
   };
   return { report, ctx };
+}
+
+/**
+ * The parameters a flow's source is, when the source sits on the header of a named
+ * method (on the parameter's own line, for a header split over lines). The flow's
+ * first variable names the parameter when it is one (`name`, or `@RequestParam
+ * name in handle`). Otherwise the engine does not
+ * say which, and the candidates are the parameters on that line that the engine
+ * lists as sources, plus, for a request source, the annotated ones; a single
+ * candidate is the parameter, several are all listed. A parameter that is not a
+ * source (an added `int page`) is left out, so adding it keeps the identity.
+ * Undefined otherwise: a call such as `req.getParameter("id")`, or an anonymous
+ * handler, which `ir.types` does not list, keeps its source code as its identity.
+ */
+function paramSources(
+  ir: CircleIR | undefined,
+  flow: { source_line: number; source_type: string; path: Array<{ variable: string; line: number; type: string }> },
+): RecheckParamSource[] | undefined {
+  if (!ir) return undefined;
+  const line = flow.source_line;
+  const method = (ir.types ?? []).flatMap(t => t.methods ?? [])
+    .find(m => m.name && m.start_line <= line && m.end_line >= line && m.parameters.some(p => p.line === line));
+  if (!method) return undefined;
+  const onLine = method.parameters.filter(p => p.line === line);
+  const of = (p: (typeof onLine)[number]): RecheckParamSource =>
+    ({ name: p.name, ...(p.type ? { type: p.type.replace(/\s+/g, '') } : {}), annotations: [...p.annotations].sort() });
+  const first = flow.path.find(s => s.type === 'source' && s.line === line) ?? (flow.path[0]?.line === line ? flow.path[0] : undefined);
+  // An annotated request parameter's flow names it `@RequestParam name in method`.
+  const variable = first?.variable.match(/^@\S+\s+(\S+)\s+in\s/)?.[1] ?? first?.variable;
+  const named = onLine.find(p => p.name === variable);
+  if (named) return [of(named)];
+  const sourceVars = new Set((ir.taint.sources ?? []).filter(s => s.line === line && s.variable).map(s => s.variable!));
+  const request = flow.source_type !== 'interprocedural_param';
+  const candidates = onLine.filter(p => sourceVars.has(p.name) || (request && p.annotations.length > 0));
+  if (candidates.length === 0) return undefined;
+  return candidates.map(of).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** The project taint path a per-file flow mirrors (same sink, same source line and type), if any. */
@@ -532,8 +596,11 @@ function explainMissing(
   }
   if (f.kind === 'pass') return { verdict: 'gone', reason: 'not-reported', ...successor };
   const inv = ctx.inventory.get(`${f.file}|${declId}`);
-  if (inv && inv.sanitizers.length > 0) {
-    const sanitizers = [...inv.sanitizers].sort((a, b) => a.line - b.line || a.method.localeCompare(b.method));
+  // Only a sanitizer the change added explains the loss: one already in the
+  // declaration (or the path) at the baseline did not stop the flow then.
+  const added = inv ? newSanitizers(inv.sanitizers, f.evidence) : [];
+  if (added.length > 0) {
+    const sanitizers = added.sort((a, b) => a.line - b.line || a.method.localeCompare(b.method));
     return { verdict: 'gone', reason: 'sanitized-by', sanitizers, sanitizerCoversSink: sanitizers.some(s => s.sanitizes.includes(f.rule)), ...successor };
   }
   if (!inv || !inv.sinks.has(f.rule)) return { verdict: 'gone', reason: 'sink-removed', ...successor };
@@ -542,12 +609,47 @@ function explainMissing(
   return { verdict: 'gone', reason: 'flow-not-found', ...successor };
 }
 
+/**
+ * The after declaration's sanitizers that the baseline did not hold, counted per
+ * method name: the baseline's are its declaration's (`decl_sanitizers`, absent
+ * from baselines written before it) and its path's. A second call to a sanitizer
+ * the method already used counts as new. The latest calls are taken as the new ones.
+ */
+function newSanitizers(
+  now: DeclInventory['sanitizers'], ev: RecheckEvidence | undefined,
+): DeclInventory['sanitizers'] {
+  const had = new Map<string, number>();
+  const count = (names: string[]) => {
+    const m = new Map<string, number>();
+    for (const n of names) m.set(n, (m.get(n) ?? 0) + 1);
+    return m;
+  };
+  const inDecl = count(ev?.decl_sanitizers ?? []);
+  const inPath = count(ev?.sanitizers_in_path ?? []);
+  for (const n of new Set([...inDecl.keys(), ...inPath.keys()])) had.set(n, Math.max(inDecl.get(n) ?? 0, inPath.get(n) ?? 0));
+  const out: DeclInventory['sanitizers'] = [];
+  const byMethod = new Map<string, DeclInventory['sanitizers']>();
+  for (const s of now) byMethod.set(s.method, [...(byMethod.get(s.method) ?? []), s]);
+  for (const [method, calls] of byMethod) {
+    const sorted = [...calls].sort((a, b) => a.line - b.line);
+    out.push(...sorted.slice(had.get(method) ?? 0));
+  }
+  return out;
+}
+
 const noSpace = (s: string | undefined): string => (s ?? '').replace(/\s+/g, '');
+
+/** A parameter source's identity: what it is, not the header line it sits on. */
+const paramIdentity = (p: RecheckParamSource): string =>
+  `param:${p.annotations.join(',')}:${p.type ?? ''}:${p.name}`;
 
 /**
  * What a finding is without its declaration: rule, CWE, file and kind, the
  * sink's type and code, and for a flow the source's file, type and code and the
- * sanitizers in the path (for a pass finding, its message). Code is compared with
+ * sanitizers in the path (for a pass finding, its message). A parameter source
+ * (`source.params`) is identified by its name, declared type and annotations
+ * instead of its code, the method's header line: renaming the method or adding a
+ * parameter keeps it; renaming, retyping or re-annotating the parameter does not. Code is compared with
  * all whitespace removed. Moving the code, or inserting statements around it,
  * keeps it; changing the sink call, the source or the sanitizers does not.
  * Undefined when the finding carries no sink code (a 0.1 baseline): such a key is
@@ -558,7 +660,8 @@ export function flowIdentity(f: RecheckFinding): string | undefined {
   if (!e?.sink.code) return undefined;
   const parts = [f.kind, f.cwe, f.rule, f.file, e.sink.type, noSpace(e.sink.code)];
   if (f.kind === 'flow') {
-    parts.push(e.source?.file ?? '', e.source?.type ?? '', noSpace(e.source?.code), [...e.sanitizers_in_path].sort().join(','));
+    const src = e.source?.params ? e.source.params.map(paramIdentity).join(';') : noSpace(e.source?.code);
+    parts.push(e.source?.file ?? '', e.source?.type ?? '', src, [...e.sanitizers_in_path].sort().join(','));
   } else {
     parts.push(noSpace(e.message));
   }
