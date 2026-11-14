@@ -103,7 +103,7 @@ export class WeakPasswordHashPass implements AnalysisPass<WeakPasswordHashResult
     // JS/TS: `pbkdf2` / `pbkdf2Sync` reached through a named import,
     // destructured require or module alias count as `crypto.<api>`.
     const isJs = language === 'javascript' || language === 'typescript';
-    const cryptoBindings = isJs ? jsCryptoBindings(graph.ir.imports) : null;
+    const cryptoBindings = isJs ? jsCryptoBindings(graph.ir.imports, graph.ir) : null;
 
     for (const irCall of graph.ir.calls) {
       const call = cryptoBindings ? cryptoCallAsMember(irCall, cryptoBindings) : irCall;

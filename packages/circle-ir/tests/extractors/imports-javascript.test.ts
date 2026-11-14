@@ -229,4 +229,29 @@ const express = require('express');
       expect(expressImport!.line_number).toBe(3);
     });
   });
+
+  describe('TypeScript type-only imports', () => {
+    it('marks `import type` and `type` specifiers, and nothing else', async () => {
+      const code = [
+        "import type { A } from 'a';",
+        "import { type B, C } from 'b';",
+        "import type * as D from 'd';",
+        "import type E from 'e';",
+        "import F, { G } from 'f';",
+        '',
+      ].join('\n');
+      const tree = await parse(code, 'typescript');
+      const imports = extractImports(tree, 'typescript');
+      const typeOnly = (local: string) =>
+        imports.find(i => (i.alias ?? i.imported_name) === local)?.is_type_only;
+      expect(typeOnly('A')).toBe(true);
+      expect(typeOnly('B')).toBe(true);
+      expect(typeOnly('C')).toBeUndefined();
+      expect(typeOnly('D')).toBe(true);
+      expect(typeOnly('E')).toBe(true);
+      expect(typeOnly('F')).toBeUndefined();
+      expect(typeOnly('G')).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(imports.find(i => i.imported_name === 'G')!, 'is_type_only')).toBe(false);
+    });
+  });
 });

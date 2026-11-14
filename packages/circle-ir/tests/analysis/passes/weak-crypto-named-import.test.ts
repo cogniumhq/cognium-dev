@@ -8,6 +8,9 @@
  *   - fixed.ts      — the same functions with strong algorithms: zero
  *   - near-miss.ts  — the same names bound to other modules or local
  *                     functions: zero
+ *   - shadow-*.ts, type-only*.ts — a parameter, local or inner function
+ *                     that shadows the imported name, or a type-only import
+ *                     (binds no value): zero
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -51,6 +54,15 @@ describe('weak-crypto-named-import: bindings', () => {
     const out = cryptoCallAsMember(c, b);
     expect(out.receiver).toBe('crypto');
     expect(out.method_name).toBe(api);
+  });
+
+  it('type-only imports bind nothing', () => {
+    const t = jsCryptoBindings([
+      { ...imp('createHash', 'crypto'), is_type_only: true },
+      { ...imp('*', 'crypto', 'cryptoTypes', true), is_type_only: true },
+    ]);
+    expect(t.named.size).toBe(0);
+    expect(t.modules.size).toBe(0);
   });
 
   it.each([
@@ -98,6 +110,43 @@ describe('weak-crypto-named-import: fixtures', () => {
 
   it('near-miss: zero', () => {
     expect(cryptoFindings(nearMiss)).toEqual([]);
+  });
+
+  it.each([
+    'shadow-param.ts',
+    'shadow-local.ts',
+    'shadow-function.ts',
+    'shadow-module-alias.ts',
+    'type-only-param.ts',
+    'type-only.ts',
+  ])('near-miss %s: zero', async (name) => {
+    const r = await analyze(fixture(name), 'src/crypto-util.ts', 'typescript');
+    expect(cryptoFindings(r)).toEqual([]);
+  });
+
+  it('a shadowed name does not hide a different, unshadowed crypto import', async () => {
+    const src = [
+      "import { createHash, createHmac } from 'crypto';",
+      'export function digestWith(createHash: (a: string) => string): string { return createHash(\'md5\'); }',
+      "export function sign(key: string) { return createHmac('md5', key); }",
+      '',
+    ].join('\n');
+    const r = await analyze(src, 'src/crypto-util.ts', 'typescript');
+    expect(cryptoFindings(r).map(f => [f.line, f.rule_id])).toEqual([[3, 'weak-hash']]);
+  });
+
+  it('JavaScript: a parameter shadowing a destructured require is not reported', async () => {
+    const js = await analyze(
+      "const { createHash } = require('crypto');\nfunction h(createHash, x) { return createHash('md5').update(x); }\nmodule.exports = { h };\n",
+      'src/h.js', 'javascript');
+    expect(cryptoFindings(js)).toEqual([]);
+  });
+
+  it('JavaScript: a parameter shadowing a require alias is not reported', async () => {
+    const js = await analyze(
+      "const c = require('crypto');\nfunction h(c, x) { return c.createHash('md5').update(x); }\nmodule.exports = { h };\n",
+      'src/h.js', 'javascript');
+    expect(cryptoFindings(js)).toEqual([]);
   });
 
   it('JavaScript: the same shapes are reported', async () => {
