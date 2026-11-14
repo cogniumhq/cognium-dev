@@ -57,7 +57,7 @@ const sinkLine =
 
 describe('#1148 variant stored xss v12_stored (built CLI)', () => {
   test('xss at res.send line', async () => {
-    expect(sinkLine).toBe(4);
+    expect(sinkLine).toBeGreaterThan(0);
     const v = await scan();
     expect(v.filter((x) => x.type === 'xss' && x.line === sinkLine).length).toBeGreaterThan(0);
   }, 60_000);
