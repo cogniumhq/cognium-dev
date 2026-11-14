@@ -286,6 +286,13 @@ export function shouldSuppressGatedLoggerLogInjection(
   if (flow.sink_type !== 'log_injection') return false;
   const duplicateCalls = callsAtSink.filter(c => isJavaLoggerLogInjectionDuplicate(c));
   if (duplicateCalls.length === 0) return false;
+  // Log4j message lookup substitution — `${…}` in the format string (cognium-dev#1247).
+  for (const call of duplicateCalls) {
+    for (const arg of call.arguments) {
+      const expr = (arg.expression ?? '').trim();
+      if (/\$\{/.test(expr) && /\+/.test(expr)) return false;
+    }
+  }
   const sinkVar = flow.path.length > 0 ? flow.path[flow.path.length - 1]?.variable : undefined;
   if (sinkVar && /^[A-Za-z_$][\w$]*$/.test(sinkVar)) {
     const escaped = sinkVar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
