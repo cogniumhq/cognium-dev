@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   # Lets the self-hosted runner be re-verified without opening a PR.
   workflow_dispatch:
 
@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 # Jobs are split rather than sequenced inside one block so each surfaces as its
 # own check: they run in parallel, a lint failure cannot mask a test failure,
