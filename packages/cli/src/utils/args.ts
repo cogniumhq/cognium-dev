@@ -76,7 +76,7 @@ COMMANDS:
                          (dependency-calls@0.1); packages from --jar, the Maven
                          repository (with a version), else a built-in table
   recheck (--changed <files> | --changed-from <ref>) [path]
-                       Re-check a code fix (cognium-recheck@0.3): findings keyed by
+                       Re-check a code fix (cognium-recheck@0.4): findings keyed by
                          CWE × declaration × rule, with evidence; against a baseline,
                          gone / still-present / new-high / new-other / unknown
   list-passes [cat]    List all analysis passes (optionally filter by category)
@@ -122,6 +122,11 @@ RECHECK OPTIONS:
                                --changed-from]
   --expect-gone <keys>       Keys the change is meant to fix (comma-separated, or
                                @list.txt); the fix check fails unless each is gone
+  --renames <old=new,...>    File renames between the baseline and the change
+                               (or @list.txt, git diff --name-status -M lines too):
+                               a finding that moved with its file is still-present
+                               (moved); the new paths join --changed. --changed-from
+                               takes renames and copies from git
   -o, --output <file>        Write the report to a file instead of stdout
   Exit codes: 0 pass; 1 a new high finding or a targeted key not gone; 2 usage error;
   3 a verdict is unknown (a changed file did not parse fully, or was not analysed)
