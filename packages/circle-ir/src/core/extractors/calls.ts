@@ -100,6 +100,13 @@ export interface CallExtractionOptions {
    * constructor calls named `super` / `this`.
    */
   navigationTypes?: boolean;
+  /**
+   * Java only: method names the file declares more than once (overloads).
+   * A call to one of these names gets `ArgumentInfo.type` even without
+   * `navigationTypes`, so inter-procedural taint can pick the overload by
+   * argument types. Calls to other names are unchanged.
+   */
+  overloadedMethodNames?: ReadonlySet<string>;
 }
 
 export function extractCalls(
@@ -146,8 +153,14 @@ export function extractCalls(
   // Find all method invocations
   const invocations = getNodesFromCache(tree.rootNode, 'method_invocation', cache);
   const typed = options.navigationTypes === true;
+  const overloaded = options.overloadedMethodNames;
   for (const inv of invocations) {
-    calls.push(extractCallInfo(inv, context, typed));
+    const info = extractCallInfo(inv, context, typed);
+    if (!typed && overloaded?.has(info.method_name)) {
+      const argsNode = inv.childForFieldName('arguments');
+      if (argsNode) addArgumentTypes(argsNode, info.arguments);
+    }
+    calls.push(info);
   }
 
   // Find object creation expressions (constructor calls)
@@ -1919,6 +1932,21 @@ function extractArguments(argsNode: Node, typed = false): ArgumentInfo[] {
   }
 
   return args;
+}
+
+/**
+ * Give each argument its static type (`ArgumentInfo.type`) and nothing else:
+ * the overload-selection input for a call to a same-file overloaded method
+ * when `navigationTypes` is off.
+ */
+function addArgumentTypes(argsNode: Node, args: ArgumentInfo[]): void {
+  let position = 0;
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child || child.type === '(' || child.type === ')' || child.type === ',') continue;
+    const arg = args[position++];
+    if (arg) arg.type = javaStaticType(child);
+  }
 }
 
 const NUMERIC_RANK: Record<string, number> = { byte: 1, short: 2, char: 2, int: 3, long: 4, float: 5, double: 6 };
