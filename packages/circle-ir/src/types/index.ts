@@ -578,6 +578,11 @@ export interface ImportInfo {
   alias: string | null;
   is_wildcard: boolean;
   line_number: number | null;
+  /**
+   * TypeScript type-only import (`import type { X } …` or `import { type X } …`):
+   * it binds no runtime value. Absent for every other import.
+   */
+  is_type_only?: true;
 }
 
 // =============================================================================
