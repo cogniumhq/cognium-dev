@@ -425,6 +425,98 @@ describe('recheck on a TypeScript CWE-532 fix (sensitive-data-in-log)', () => {
   }, 60_000);
 });
 
+describe('recheck on a TypeScript CWE-1333 fix (redos-regex-literal)', () => {
+  const TS_FILE = 'src/routes.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-regex-literal');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('redos-before', 'vulnerable.ts');
+    tsTree('redos-fixed', 'fixed.ts');
+    baselinePath = join(work, 'redos-before.json');
+    await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos-regex-literal').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × rule', () => {
+    expect(keys.length).toBe(5);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos-regex-literal')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.rule === 'redos-regex-literal').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos-regex-literal')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-1333 fix (redos: request value as a RegExp pattern)', () => {
+  const TS_FILE = 'src/search.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-request-pattern');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('rxp-before', 'vulnerable.ts');
+    tsTree('rxp-fixed', 'fixed.ts');
+    baselinePath = join(work, 'rxp-before.json');
+    await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × redos', () => {
+    expect(keys.length).toBe(3);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos')).toBe(true);
+    }
+  });
+
+  test('fixed (escaped): every key is gone', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
 /**
  * G1: a flow in an inline route handler is keyed by the handler's positional
  * stable id, so an inserted statement re-keys it. A no-op must not read `gone`:

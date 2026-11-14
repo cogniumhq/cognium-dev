@@ -3922,6 +3922,13 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // (a re.escape-wrapped pattern cannot execute anything, so both are safe).
   { method: 'escape', class: 're', removes: ['redos', 'code_injection'] },
 
+  // JS/TS ReDoS — escaping a request value before `new RegExp(...)` makes it a
+  // literal: lodash `_.escapeRegExp`, the `escape-string-regexp` package, and
+  // the common local helper names.
+  { method: 'escapeRegExp', removes: ['redos'] },
+  { method: 'escapeStringRegexp', removes: ['redos'] },
+  { method: 'escapeRegex', removes: ['redos'] },
+
   // Python SQLAlchemy — `text(...).bindparams(...)` binds params safely.
   // The `bindparams` call is the sanitizer; the parent `text` wraps the
   // template. Also add `expression.literal` for explicit SQL literals.
