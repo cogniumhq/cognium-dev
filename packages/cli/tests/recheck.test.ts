@@ -717,3 +717,46 @@ describe('applyBaseline flow identity (pure)', () => {
     expect(r.verdicts!.map(v => [v.key, v.verdict])).toEqual([['K1', 'gone'], ['K2', 'new-high']]);
   });
 });
+
+describe('recheck on a TypeScript CWE-352 fix (csrf-samesite-none-session)', () => {
+  const TS_FILE = 'src/app.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'csrf-samesite-none-session');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('csrf-before', 'vulnerable.ts');
+    tsTree('csrf-fixed', 'fixed.ts');
+    baselinePath = join(work, 'csrf-before.json');
+    await runCli(['recheck', join(work, 'csrf-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'csrf-samesite-none-session').map(f => f.key);
+  }, 60_000);
+
+  test('before: keyed CWE-352 × declaration × rule', () => {
+    expect(keys.length).toBe(1);
+    expect(keys[0].startsWith(`CWE-352|${TS_FILE}|`)).toBe(true);
+    expect(keys[0].endsWith('|csrf-samesite-none-session')).toBe(true);
+  });
+
+  test("fixed (sameSite 'lax'): the key is gone", async () => {
+    const r = await runCli(['recheck', join(work, 'csrf-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'csrf-samesite-none-session')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the key is still-present', async () => {
+    const r = await runCli(['recheck', join(work, 'csrf-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
