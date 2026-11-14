@@ -189,11 +189,11 @@ test('check: an unknown sha fails', () => {
   assert.equal(check(d).code, 1);
 });
 
-test('check: no results file exits 3', () => {
+test('check: no results file exits 1', () => {
   const { d } = repo();
   const r = check(d);
-  assert.equal(r.code, 3);
-  assert.match(r.out, /^bench-candidate: no candidate results file$/m);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /^bench-candidate: no candidate results file; measure the candidate first$/m);
 });
 
 test('check: a file with no sha fails', () => {
@@ -218,5 +218,6 @@ test('check: --file names another results file', () => {
   git(d, 'add', '.');
   git(d, 'commit', '-q', '-m', 'other');
   assert.equal(check(d, '--file', 'other.json').code, 0);
-  assert.equal(check(d).code, 3);
+  assert.equal(check(d).code, 1);
+  assert.match(check(d).out, /no candidate results file/);
 });
