@@ -592,12 +592,16 @@ export function canSourceReachSink(sourceType: string, sinkType: SinkType): bool
     // pairing was gated out and generateFindings dropped it — same class as the
     // #129 log_injection/format_string/nosql_injection drop. Mirrors how
     // deserialization already sits on both http_param and http_query.
+    // deserialization added to http_cookie: a cookie value reaching node-serialize's
+    // unserialize (or any deserialization sink) is the classic JS RCE (CVE-2017-5941 came in
+    // through a cookie). The reach map had it on http_param/http_query/http_body only, so
+    // `serialize.unserialize(req.cookies.profile)` was dropped while the req.body form fired.
     // cache_poisoning added (cognium-dev #900): request-derived strings written
     // into a shared in-memory cache (Map.set value arg, OIDC/mr-title-frag shapes).
     http_param: ['sql_injection', 'command_injection', 'path_traversal', 'xss', 'xpath_injection', 'ldap_injection', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'deserialization', 'xxe', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection', 'cache_poisoning'],
     http_body: ['sql_injection', 'command_injection', 'deserialization', 'xxe', 'xss', 'code_injection', 'mybatis_mapper_call', 'crlf', 'mass_assignment', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection', 'cache_poisoning'],
     http_header: ['sql_injection', 'xss', 'ssrf', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection', 'cache_poisoning'],
-    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
+    http_cookie: ['sql_injection', 'xss', 'mybatis_mapper_call', 'code_injection', 'crlf', 'open_redirect', 'trust_boundary', 'deserialization', 'log_injection', 'format_string', 'nosql_injection', 'prompt_injection'],
     // xss added cognium-dev 3.163.0: URL path components (getRequestURI,
     // getRequestURL, getPathInfo, getServletPath) reflected back into HTML
     // output are a classic reflected-XSS vector — cf. Basic35 in
