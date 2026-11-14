@@ -889,3 +889,166 @@ ${body}
     });
   });
 });
+
+describe('recheck Java survival: a finding that moved to another file', () => {
+  const OLD = 'src/main/java/app/Lookup.java';
+  const MOVED = 'src/main/java/app/LookupMoved.java';
+  const COPY = 'src/main/java/app/LookupCopy.java';
+  const RENAMED = 'src/main/java/app/Finder.java';
+  const VULN_Q = `st.executeQuery("SELECT * FROM t WHERE id = '" + id + "'");`;
+  const FIX_Q = `java.sql.PreparedStatement ps = conn.prepareStatement("SELECT * FROM t WHERE id = ?");
+    ps.setString(1, id);
+    ps.executeQuery();`;
+  const doGet = (query = VULN_Q) => `  public void doGet(HttpServletRequest req, HttpServletResponse res) throws Exception {
+    String id = req.getParameter("id");
+    Connection conn = DriverManager.getConnection("jdbc:h2:mem:t");
+    Statement st = conn.createStatement();
+    ${query}
+    res.getWriter().println("ok");
+  }
+`;
+  const cls = (name: string, body: string, ext = 'HttpServlet') => `package app;
+import java.sql.*;
+import javax.servlet.http.*;
+public class ${name} extends ${ext} {
+  public int size() { return 1; }
+${body}}
+`;
+  const git = (repo: string, ...a: string[]) =>
+    execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+
+  /** A git repository holding `before`, committed, with `after` in the working tree (a null deletes the file). */
+  function repo(name: string, before: Record<string, string>, after: Record<string, string | null>): string {
+    const root = join(work, 'java-move', name);
+    mkdirSync(join(root, 'src/main/java/app'), { recursive: true });
+    for (const [f, code] of Object.entries(before)) writeFileSync(join(root, f), code);
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'base');
+    for (const [f, code] of Object.entries(after)) {
+      if (code === null) git(root, 'rm', '-q', f);
+      else {
+        mkdirSync(join(root, f, '..'), { recursive: true }); // git rm drops the emptied directory
+        writeFileSync(join(root, f), code);
+      }
+    }
+    git(root, 'add', '-A');
+    return root;
+  }
+
+  /** Two plain trees: the baseline on `before`, then the re-check with it on `after`. */
+  async function trees(name: string, before: Record<string, string>, after: Record<string, string>, opts: Partial<{ changed: string[]; renames: Array<[string, string]>; expectGone: (b: RecheckReport) => string[]; strip: boolean }> = {}) {
+    const write = (dir: string, files: Record<string, string>) => {
+      const root = join(work, 'java-move', name, dir);
+      mkdirSync(join(root, 'src/main/java/app'), { recursive: true });
+      for (const [f, code] of Object.entries(files)) writeFileSync(join(root, f), code);
+      return root;
+    };
+    const base = await computeRecheck(write('before', before), { changed: Object.keys(before), scope: 'files', expectGone: [] });
+    if (opts.strip) for (const f of base.findings) f.decl = { scheme: f.decl.scheme, id: f.decl.id, name: f.decl.name };
+    const baselinePath = join(work, 'java-move', name, 'base.json');
+    writeFileSync(baselinePath, JSON.stringify(base));
+    const changed = opts.changed ?? [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+    const rep = await computeRecheck(write('after', after), {
+      changed: [...new Set([...changed, ...(opts.renames ?? []).flat()])], scope: 'files', baseline: baselinePath,
+      expectGone: opts.expectGone ? opts.expectGone(base) : [], ...(opts.renames ? { renames: opts.renames } : {}),
+    });
+    return { base, rep };
+  }
+
+  const sql = (r: RecheckReport) => r.findings.filter(f => f.cwe === 'CWE-89' && f.kind === 'flow');
+  const sqlVerdicts = (r: RecheckReport) => r.verdicts!.filter(v => v.cwe === 'CWE-89');
+
+  test('a method moved to another file (git, --changed-from): still-present, moved, nothing new; --expect-gone fails', async () => {
+    const root = repo('move-git', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: cls('Lookup', ''), [MOVED]: cls('LookupMoved', doGet(), 'Lookup') });
+    const rep = await computeRecheck(root, { changed: [], changedFrom: 'HEAD', scope: 'closure', expectGone: [] });
+    const vs = sqlVerdicts(rep);
+    expect(vs.length).toBe(1);
+    expect(vs[0]).toMatchObject({ verdict: 'still-present', reason: 'moved', matchedBy: 'move', movedFrom: OLD, file: MOVED });
+    expect(vs[0].moveEvidence).toContain('body-hash'); // git may also call the new file a copy of the old
+    expect(vs[0].key).toContain(`|${OLD}|`);
+    expect(vs[0].rekeyedTo).toContain(`|${MOVED}|`);
+    // The class the method moved into extends the servlet rather than being one, so
+    // the engine no longer reports the header finding: only the SQL flow is compared.
+    expect(rep.summary).toMatchObject({ newHigh: 0, unknown: 0 });
+    const target = await computeRecheck(root, { changed: [], changedFrom: 'HEAD', scope: 'closure', expectGone: [vs[0].key] });
+    expect(target.targets).toEqual([{ key: vs[0].key, verdict: 'still-present', reason: 'moved', fixed: false }]);
+  }, 60_000);
+
+  test('a method moved to another file (--baseline, the new file listed): still-present by its body hash', async () => {
+    const { base, rep } = await trees('move-baseline', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: cls('Lookup', ''), [MOVED]: cls('LookupMoved', doGet(), 'Lookup') });
+    expect(sql(base)[0].decl.bodyHash).toMatch(/^[a-z0-9]+$/);
+    expect(sqlVerdicts(rep)).toEqual([expect.objectContaining({ verdict: 'still-present', reason: 'moved', movedFrom: OLD, file: MOVED })]);
+    expect(rep.summary).toMatchObject({ newHigh: 0, unknown: 0 });
+  }, 60_000);
+
+  test('a class renamed with its file (git rename): still-present, moved', async () => {
+    const root = repo('rename-git', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: null, [RENAMED]: cls('Finder', doGet()) });
+    const rep = await computeRecheck(root, { changed: [], changedFrom: 'HEAD', scope: 'closure', expectGone: [] });
+    const vs = sqlVerdicts(rep);
+    expect(vs).toEqual([expect.objectContaining({ verdict: 'still-present', reason: 'moved', movedFrom: OLD, file: RENAMED })]);
+    expect(vs[0].moveEvidence).toContain('git-rename');
+    expect(rep.summary).toMatchObject({ gone: 0, newHigh: 0, unknown: 0 });
+  }, 60_000);
+
+  test('a class renamed with its file (--baseline with --renames, or by body hash alone): still-present', async () => {
+    const before = { [OLD]: cls('Lookup', doGet()) };
+    const after = { [RENAMED]: cls('Finder', doGet()) };
+    const mapped = await trees('rename-map', before, after, { changed: [OLD], renames: [[OLD, RENAMED]] });
+    expect(sqlVerdicts(mapped.rep)).toEqual([expect.objectContaining({ verdict: 'still-present', reason: 'moved', movedFrom: OLD, file: RENAMED })]);
+    expect(sqlVerdicts(mapped.rep)[0].moveEvidence).toContain('rename-map');
+    expect(mapped.rep.summary).toMatchObject({ gone: 0, newHigh: 0, unknown: 0 });
+    const hashed = await trees('rename-hash', before, after);
+    expect(sqlVerdicts(hashed.rep)).toEqual([expect.objectContaining({ verdict: 'still-present', reason: 'moved', moveEvidence: ['body-hash'] })]);
+  }, 60_000);
+
+  test('a move plus a real fix (parameterized query) is gone, its reason from where it moved', async () => {
+    const root = repo('rename-fix', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: null, [RENAMED]: cls('Finder', doGet(FIX_Q)) });
+    const rep = await computeRecheck(root, { changed: [], changedFrom: 'HEAD', scope: 'closure', expectGone: [] });
+    const vs = sqlVerdicts(rep);
+    expect(vs.length).toBe(1);
+    expect(vs[0]).toMatchObject({ verdict: 'gone', movedTo: RENAMED, moveEvidence: ['git-rename'] });
+    expect(['sink-removed', 'sanitized-by', 'flow-not-found']).toContain(vs[0].reason!);
+    const moved = await trees('move-fix', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: cls('Lookup', ''), [MOVED]: cls('LookupMoved', doGet(FIX_Q), 'Lookup') },
+      { expectGone: b => sql(b).map(f => f.key) });
+    expect(sqlVerdicts(moved.rep).map(v => v.verdict)).toEqual(['gone']);
+    expect(moved.rep.fixed).toBe('pass');
+  }, 60_000);
+
+  test('two files the method could have moved to: unknown (move-ambiguous), never gone', async () => {
+    const { rep } = await trees('move-two', { [OLD]: cls('Lookup', doGet()) },
+      { [OLD]: cls('Lookup', ''), [MOVED]: cls('LookupMoved', doGet(), 'Lookup'), [COPY]: cls('LookupCopy', doGet(), 'Lookup') });
+    const vs = sqlVerdicts(rep).filter(v => v.key.includes(`|${OLD}|`));
+    expect(vs).toEqual([expect.objectContaining({ verdict: 'unknown', reason: 'move-ambiguous', matchedBy: 'move' })]);
+    expect(vs[0].rekeyCandidates!.length).toBe(2);
+    expect(sqlVerdicts(rep).filter(v => v.verdict === 'gone')).toEqual([]);
+    // The same through git: renamed to one file and copied to another.
+    const root = repo('rename-copy', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: null, [RENAMED]: cls('Finder', doGet()), [COPY]: cls('LookupCopy', doGet()) });
+    const g = await computeRecheck(root, { changed: [], changedFrom: 'HEAD', scope: 'closure', expectGone: [] });
+    expect(sqlVerdicts(g).filter(v => v.key.includes(`|${OLD}|`)).map(v => [v.verdict, v.reason])).toEqual([['unknown', 'move-ambiguous']]);
+    expect(sqlVerdicts(g).filter(v => v.verdict === 'gone')).toEqual([]);
+  }, 60_000);
+
+  test('with no evidence (a baseline without body hashes, no rename): gone plus new, as before', async () => {
+    const { rep } = await trees('move-none', { [OLD]: cls('Lookup', doGet()) }, { [OLD]: cls('Lookup', ''), [MOVED]: cls('LookupMoved', doGet(), 'Lookup') }, { strip: true });
+    expect(sqlVerdicts(rep).map(v => [v.verdict, v.reason ?? '', v.file]).sort()).toEqual([
+      ['gone', 'declaration-removed', OLD], ['new-high', '', MOVED],
+    ]);
+    const renamed = await trees('rename-none', { [OLD]: cls('Lookup', doGet()) }, { [RENAMED]: cls('Finder', doGet()) }, { strip: true });
+    expect(sqlVerdicts(renamed.rep).map(v => [v.verdict, v.reason ?? '', v.file]).sort()).toEqual([
+      ['gone', 'file-removed', OLD], ['new-high', '', RENAMED],
+    ]);
+  }, 60_000);
+
+  test('--renames parses old=new, tab and git name-status lines, adds the new paths to --changed, and rejects bad input', () => {
+    const o = parseRecheckOptions({ changed: OLD, renames: `${OLD}=${RENAMED}` });
+    expect(o.renames).toEqual([[OLD, RENAMED]]);
+    expect(o.changed).toEqual([RENAMED, OLD].sort());
+    const list = join(work, 'renames.txt');
+    writeFileSync(list, `R087\t${OLD}\t${RENAMED}\n${MOVED}\t${COPY}\n`);
+    expect(parseRecheckOptions({ changed: OLD, renames: `@${list}` }).renames).toEqual([[OLD, RENAMED], [MOVED, COPY]].sort((a, b) => a[0].localeCompare(b[0])));
+    expect(() => parseRecheckOptions({ changed: OLD, renames: 'a.java' })).toThrow(UsageError);
+    expect(() => parseRecheckOptions({ changed: OLD, renames: 'a.java=b.java,a.java=c.java' })).toThrow(UsageError);
+    expect(() => parseRecheckOptions({ changed: OLD, renames: true })).toThrow(UsageError);
+  });
+});
