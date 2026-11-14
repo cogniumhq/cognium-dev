@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { analyze, initAnalyzer } from '../../../src/analyzer.js';
 import {
+  MAX_GROUP_DEPTH,
+  MAX_SOURCE_LENGTH,
   isExponentialRegex,
   parseRegex,
   requestMemberBase,
@@ -70,6 +72,37 @@ describe('redos-regex-literal: the regex', () => {
     expect(parseRegex('(a')).toBeNull();
     expect(parseRegex('a)')).toBeNull();
     expect(parseRegex('[a')).toBeNull();
+  });
+
+  // `d` groups nested inside each other, each repeated: `((…(a+)+…)+)+$`.
+  const nested = (d: number) => '('.repeat(d) + 'a+' + ')+'.repeat(d) + '$';
+
+  it('abstains on 2000 nested groups instead of overflowing the stack', () => {
+    expect(() => parseRegex(nested(2000))).not.toThrow();
+    expect(parseRegex(nested(2000))).toBeNull();
+    expect(() => isExponentialRegex(nested(2000))).not.toThrow();
+    expect(isExponentialRegex(nested(2000))).toBe(false);
+    expect(isExponentialRegex(nested(20000))).toBe(false);
+  });
+
+  it('nesting limit: MAX_GROUP_DEPTH groups parse, one more does not', () => {
+    expect(MAX_GROUP_DEPTH).toBe(100);
+    expect(parseRegex(nested(MAX_GROUP_DEPTH))).not.toBeNull();
+    expect(isExponentialRegex(nested(MAX_GROUP_DEPTH))).toBe(true);
+    expect(parseRegex(nested(MAX_GROUP_DEPTH + 1))).toBeNull();
+    expect(isExponentialRegex(nested(MAX_GROUP_DEPTH + 1))).toBe(false);
+    // Lookarounds count toward the depth.
+    const inLookahead = '(?=' + nested(MAX_GROUP_DEPTH).slice(0, -1) + ')x';
+    expect(parseRegex(inLookahead)).toBeNull();
+  });
+
+  it('length limit: MAX_SOURCE_LENGTH characters parse, one more does not', () => {
+    expect(MAX_SOURCE_LENGTH).toBe(10_000);
+    const at = 'b'.repeat(MAX_SOURCE_LENGTH - '(a+)+$'.length) + '(a+)+$';
+    expect(at.length).toBe(MAX_SOURCE_LENGTH);
+    expect(isExponentialRegex(at)).toBe(true);
+    expect(parseRegex('b' + at)).toBeNull();
+    expect(isExponentialRegex('b' + at)).toBe(false);
   });
 
   it('splits a regex literal', () => {
@@ -140,6 +173,21 @@ describe('redos-regex-literal: fixtures', () => {
       '});',
     ].join('\n');
     expect(redos(await analyze(code, 'app.js', 'javascript')).map(f => f.line)).toEqual([4]);
+  });
+
+  it('a 2000-deep nested literal: no throw, no finding; a normal one beside it still fires', async () => {
+    const deep = '('.repeat(2000) + 'a+' + ')+'.repeat(2000) + '$';
+    const code = [
+      "const app = require('express')();",
+      "app.get('/x', function check(req, res) {",
+      `  const deep = /${deep}/.test(req.query.q);`,
+      '  const ok = /^(\\w+\\s?)*$/.test(req.query.name);',
+      '  res.json({ deep, ok });',
+      '});',
+    ].join('\n');
+    // Before the depth cap this call threw `RangeError: Maximum call stack size exceeded`.
+    const r = await analyze(code, 'deep.js', 'javascript');
+    expect(redos(r).map(f => f.line)).toEqual([4]);
   });
 
   it('other languages are not scanned', async () => {

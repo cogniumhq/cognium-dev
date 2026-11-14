@@ -28,8 +28,9 @@
  *     `(ab+)+`) is not reported, even where the parts overlap.
  *   - Alternations that overlap (`(a|a)*`) and polynomial shapes (`\d+\d+`)
  *     are out of scope.
- *   - Patterns with backreferences, the `v` flag, or that do not parse are
- *     skipped.
+ *   - Patterns with backreferences, the `v` flag, groups nested more than
+ *     `MAX_GROUP_DEPTH` deep, a source over `MAX_SOURCE_LENGTH` characters,
+ *     or that do not parse are skipped.
  *   - Values that are not visibly from the request (a constant, a database
  *     row, a function result, a parameter of a helper) are skipped.
  */
@@ -55,13 +56,30 @@ interface Term {
 
 class Unsupported extends Error {}
 
+/**
+ * Bounds on what `parseRegex` reads. Past them the pattern is treated as
+ * unparsable and the pass abstains. The parser and every helper that walks
+ * the parsed tree (`canMatchNonEmpty`, `loopsAlone`, `altLoopsAlone`, the
+ * walk in `isExponentialRegex`) recurse once per group level, so the depth
+ * cap keeps a deeply nested literal from overflowing the stack. Real
+ * patterns nest a handful of groups and run to a few hundred characters.
+ */
+export const MAX_GROUP_DEPTH = 100;
+export const MAX_SOURCE_LENGTH = 10_000;
+
 function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= '0' && ch <= '9';
 }
 
-/** Parse a JS regex source into terms; null for backreferences or anything not understood. */
+/**
+ * Parse a JS regex source into terms; null for backreferences, anything not
+ * understood, groups nested deeper than `MAX_GROUP_DEPTH`, or a source longer
+ * than `MAX_SOURCE_LENGTH`.
+ */
 export function parseRegex(source: string): Term[][] | null {
+  if (source.length > MAX_SOURCE_LENGTH) return null;
   let i = 0;
+  let depth = 0;
   const n = source.length;
 
   function readEscape(): Atom {
@@ -157,7 +175,9 @@ export function parseRegex(source: string): Term[][] | null {
             i = close + 1;
           } else throw new Unsupported(); // modifiers `(?i:` and the like
         } else i++;
+        if (++depth > MAX_GROUP_DEPTH) throw new Unsupported();
         const inner = readAlts(true);
+        depth--;
         if (source[i] !== ')') throw new Unsupported();
         i++;
         atom = lookaround ? { kind: 'assert' } : { kind: 'group', alts: inner };
