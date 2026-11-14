@@ -15,7 +15,7 @@
  *
  * Exit codes:
  *   write  0 written, 2 bad arguments (nothing written), 3 cannot judge (nothing written)
- *   check  0 measured on this code, 1 not (or the file is unreadable), 3 no results file
+ *   check  0 measured on this code, 1 not (no results file, unreadable, or measured elsewhere)
  *
  * A file that names the same tag and sha keeps its other suites and gets this
  * suite's entry replaced. A file for another tag or sha is started afresh:
@@ -138,7 +138,7 @@ export function check(args) {
   const p = parseArgs(args, ['file']);
   if (p.error || p.positional.length) return { code: 1, lines: [`bench-candidate: ${p.error ?? 'check takes no positional arguments'}`] };
   const file = p.opts.file ?? DEFAULT_FILE;
-  if (!existsSync(file)) return { code: 3, lines: ['bench-candidate: no candidate results file'] };
+  if (!existsSync(file)) return { code: 1, lines: ['bench-candidate: no candidate results file; measure the candidate first'] };
 
   const parsed = readJson(file);
   if (parsed.error) return { code: 1, lines: [`bench-candidate: ${file} is not JSON: ${parsed.error}`] };
