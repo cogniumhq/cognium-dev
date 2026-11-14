@@ -1454,6 +1454,25 @@ function stripGenerics(type: string): string {
 }
 
 /**
+ * Resolve a declared type from a field, local, or parameter. When the
+ * declaration uses a fully-qualified name (no import for `Logger`), keep the
+ * FQN so class-scoped sink patterns (e.g. Log4j `Logger.info`) match.
+ */
+function resolveDeclaredJavaType(
+  rawType: string,
+  context: ResolutionContext,
+): { simpleName: string | null; fqn: string | null } {
+  const bare = stripGenerics(rawType.trim());
+  if (bare.includes('.')) {
+    const simple = bare.substring(bare.lastIndexOf('.') + 1);
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(simple)) {
+      return { simpleName: simple, fqn: bare };
+    }
+  }
+  return resolveFqn(bare, context);
+}
+
+/**
  * Resolve the receiver expression to its declared simple type and (if
  * available) fully-qualified name. Returns `{ simpleName: null, fqn: null }`
  * for receivers that cannot be statically resolved — dynamic dispatch,
@@ -1474,7 +1493,7 @@ function resolveReceiverType(
   if (receiver.startsWith('this.')) {
     const fieldName = receiver.substring('this.'.length);
     const fieldType = context.fieldTypes.get(fieldName);
-    if (fieldType) return resolveFqn(stripGenerics(fieldType), context);
+    if (fieldType) return resolveDeclaredJavaType(fieldType, context);
     return { simpleName: null, fqn: null };
   }
 
@@ -1490,9 +1509,10 @@ function resolveReceiverType(
   const ctorMatch = receiver.match(/^new\s+([A-Za-z_$][\w$.]*)\s*[<(]/);
   if (ctorMatch) {
     const ctorClass = ctorMatch[1];
-    const simple = ctorClass.includes('.')
-      ? ctorClass.substring(ctorClass.lastIndexOf('.') + 1)
-      : ctorClass;
+    if (ctorClass.includes('.')) {
+      return resolveDeclaredJavaType(ctorClass, context);
+    }
+    const simple = ctorClass;
     return resolveFqn(simple, context);
   }
 
@@ -1502,7 +1522,7 @@ function resolveReceiverType(
     context.paramTypes.get(receiver) ??
     context.fieldTypes.get(receiver);
   if (declaredType) {
-    return resolveFqn(stripGenerics(declaredType), context);
+    return resolveDeclaredJavaType(declaredType, context);
   }
 
   // Receiver starts with uppercase letter — likely a static class reference.
