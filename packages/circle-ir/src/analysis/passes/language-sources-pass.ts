@@ -14051,8 +14051,108 @@ export function findPythonJinjaTemplateSstiFindings(
 }
 
 /**
+ * The text of the first argument of a call whose `(` ends just before
+ * `start` on `line`: up to the first top-level `,` or the closing `)`, or
+ * to the end of the line when the call continues on the next one.
+ */
+export function firstJsCallArg(line: string, start: number): string {
+  let depth = 0;
+  for (let k = start; k < line.length; k++) {
+    const ch = line[k];
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const end = line.indexOf(ch, k + 1);
+      if (end < 0) return line.slice(start);
+      // Skip escaped quotes.
+      let e = end;
+      while (e > 0 && line[e - 1] === '\\') {
+        const next = line.indexOf(ch, e + 1);
+        if (next < 0) return line.slice(start);
+        e = next;
+      }
+      k = e;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return line.slice(start, k);
+      depth--;
+    } else if (ch === ',' && depth === 0) return line.slice(start, k);
+  }
+  return line.slice(start);
+}
+
+/**
+ * For `const { a, b: c, d = 1 } = <rhs>` whose `<rhs>` reads the request
+ * (`reqRe`), the bound names (`a`, `c`, `d`); otherwise null.
+ */
+export function jsDestructuredFromRequest(stmt: string, reqRe: RegExp): string[] | null {
+  const kw = ['const ', 'let ', 'var '].find(k => stmt.startsWith(k));
+  if (!kw) return null;
+  const t = stmt.slice(kw.length).trimStart();
+  if (!t.startsWith('{')) return null;
+  const close = t.indexOf('}');
+  if (close < 0) return null;
+  const rest = t.slice(close + 1).trimStart();
+  if (!rest.startsWith('=') || !reqRe.test(blankJsStringText(rest.slice(1)))) return null;
+  const names: string[] = [];
+  for (const raw of t.slice(1, close).split(',')) {
+    let p = raw.trim();
+    const eq = p.indexOf('=');
+    if (eq >= 0) p = p.slice(0, eq).trim();
+    const colon = p.indexOf(':');
+    const bound = (colon >= 0 ? p.slice(colon + 1) : p).trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(bound)) names.push(bound);
+  }
+  return names.length > 0 ? names : null;
+}
+
+/**
+ * `expr` with the text of its string literals blanked: quoted strings become
+ * `''`, a template literal keeps only its `${…}` substitutions. What remains
+ * is the code that can read a variable.
+ */
+export function blankJsStringText(expr: string): string {
+  let out = '';
+  let k = 0;
+  while (k < expr.length) {
+    const ch = expr[k];
+    if (ch === "'" || ch === '"') {
+      let e = k + 1;
+      while (e < expr.length && expr[e] !== ch) e += expr[e] === '\\' ? 2 : 1;
+      out += "''";
+      k = e + 1;
+      continue;
+    }
+    if (ch === '`') {
+      let e = k + 1;
+      let subs = '';
+      while (e < expr.length && expr[e] !== '`') {
+        if (expr[e] === '\\') { e += 2; continue; }
+        if (expr[e] === '$' && expr[e + 1] === '{') {
+          const close = expr.indexOf('}', e + 2);
+          if (close < 0) { subs += ` ${expr.slice(e + 2)}`; e = expr.length; break; }
+          subs += ` ${expr.slice(e + 2, close)}`;
+          e = close + 1;
+          continue;
+        }
+        e++;
+      }
+      out += `''${subs}`;
+      k = e + 1;
+      continue;
+    }
+    out += ch;
+    k++;
+  }
+  return out;
+}
+
+/**
  * Sprint 90 detector C (#189) — JS SSTI via `Handlebars.compile(<tainted>)`
- * or `ejs.render(<tainted>, ...)` / `ejs.compile(<tainted>)`.
+ * or `ejs.render(<tainted>, ...)` / `ejs.compile(<tainted>)`; also
+ * `handlebars.compile`, `pug.render` / `pug.compile` and
+ * `nunjucks.renderString`. Only the code of the first argument counts: a
+ * fixed template literal that names a context variable is not tainted.
  *
  * Compiling an attacker-controlled template lets the attacker execute
  * arbitrary code through helper-shadowing / prototype gadgets
@@ -14065,8 +14165,9 @@ export function findJsTemplateInjectionSstiFindings(
   const findings: SastFinding[] = [];
   if (typeof code !== 'string' || code.length === 0) return findings;
   if (
-    !/\bHandlebars\s*\.\s*compile\s*\(/.test(code) &&
-    !/\bejs\s*\.\s*(?:render|compile)\s*\(/.test(code)
+    !/\b[Hh]andlebars\s*\.\s*compile\s*\(/.test(code) &&
+    !/\b(?:ejs|pug)\s*\.\s*(?:render|compile)\s*\(/.test(code) &&
+    !/\bnunjucks\s*\.\s*renderString\s*\(/.test(code)
   ) {
     return findings;
   }
@@ -14082,10 +14183,17 @@ export function findJsTemplateInjectionSstiFindings(
     for (let i = 0; i < lines.length; i++) {
       const t = lines[i].trim();
       if (t.startsWith('//')) continue;
+      // `const { a, b: c } = req.body;` binds every destructured name.
+      const destructured = jsDestructuredFromRequest(t, reqExtractRe);
+      if (destructured) {
+        for (const name of destructured) taintedVars.add(name);
+        continue;
+      }
       const m = t.match(/^(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(.+?);?$/);
       if (!m) continue;
       const lhs = m[1];
-      const rhs = m[2];
+      // A name inside a string literal is text, not a read (`'<p><%= name %></p>'`).
+      const rhs = blankJsStringText(m[2]);
       if (taintedVars.has(lhs)) continue;
       if (reqExtractRe.test(rhs)) {
         taintedVars.add(lhs);
@@ -14103,14 +14211,18 @@ export function findJsTemplateInjectionSstiFindings(
   if (taintedVars.size === 0) return findings;
 
   const callRe =
-    /\b(Handlebars\s*\.\s*compile|ejs\s*\.\s*(?:render|compile))\s*\(\s*([^,)]+)/;
+    /\b([Hh]andlebars\s*\.\s*compile|(?:ejs|pug)\s*\.\s*(?:render|compile)|nunjucks\s*\.\s*renderString)\s*\(/;
   const seen = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim().startsWith('//')) continue;
     const m = line.match(callRe);
-    if (!m) continue;
-    const arg = m[2].trim();
+    if (!m || m.index === undefined) continue;
+    // The template source is the first argument; only its code counts —
+    // the text of a string literal (a fixed template that names a context
+    // variable) and the context object after it do not.
+    const arg = blankJsStringText(firstJsCallArg(line, m.index + m[0].length)).trim();
+    if (arg === '') continue;
     let tainted = reqExtractRe.test(arg);
     if (!tainted) {
       for (const v of taintedVars) {
@@ -14134,7 +14246,8 @@ export function findJsTemplateInjectionSstiFindings(
       message:
         'Server-side template injection: compiling/rendering a template ' +
         'whose source is attacker-controlled (`Handlebars.compile(...)` / ' +
-        '`ejs.render(...)`) opens helper-shadowing and prototype-gadget RCE ' +
+        '`ejs.render(...)` / `pug.render(...)` / `nunjucks.renderString(...)`) ' +
+        'opens helper-shadowing, prototype-gadget and template-code RCE ' +
         'paths. Use a fixed template and pass user data as context.',
       file,
       line: i + 1,
