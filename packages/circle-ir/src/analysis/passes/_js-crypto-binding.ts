@@ -25,13 +25,19 @@
  *     `const`/`let`/`var`, an inner function — is dropped for the whole
  *     file. The declaration may shadow the import in the scope the call is
  *     in, and the IR has no scope tree to tell, so the call is not rewritten.
- *     The declaration that comes from the import itself
- *     (`const c = require('crypto')`, on the import's own line) does not count.
+ *     The declaration that comes from the import itself does not count:
+ *     `const c = require('crypto')` records its def on the declarator line,
+ *     which is the import's line or, when the `require` call wraps onto a
+ *     later line, up to IMPORT_DECL_SPAN lines above it. The nearest such
+ *     `local` def is skipped, once.
  */
 
 import type { CallInfo, DFG, ImportInfo, TypeInfo } from '../../types/index.js';
 
 const CRYPTO_MODULES: ReadonlySet<string> = new Set(['crypto', 'node:crypto']);
+
+/** How far above a `require('crypto')` line its own declarator may start. */
+const IMPORT_DECL_SPAN = 3;
 
 const REQUIRE_CRYPTO_RE = /^require\(\s*(['"])(?:node:)?crypto\1\s*\)$/;
 
@@ -81,9 +87,21 @@ export function jsCryptoBindings(
 /** Bound names the file declares again, other than by the import itself. */
 function redeclaredNames(importLine: ReadonlyMap<string, number | null>, decl: JsDeclarations): Set<string> {
   const out = new Set<string>();
-  for (const def of decl.dfg?.defs ?? []) {
+  const defs = decl.dfg?.defs ?? [];
+  // The import's own declarator: the nearest `local` def at or above the
+  // import line, within IMPORT_DECL_SPAN lines.
+  const ownDef = new Map<string, (typeof defs)[number]>();
+  for (const def of defs) {
+    const line = importLine.get(def.variable);
+    if (line == null || def.kind !== 'local') continue;
+    const gap = line - def.line;
+    if (gap < 0 || gap > IMPORT_DECL_SPAN) continue;
+    const prev = ownDef.get(def.variable);
+    if (!prev || def.line > prev.line) ownDef.set(def.variable, def);
+  }
+  for (const def of defs) {
     if (!importLine.has(def.variable)) continue;
-    if (def.kind === 'local' && def.line === importLine.get(def.variable)) continue;
+    if (ownDef.get(def.variable) === def) continue;
     out.add(def.variable);
   }
   for (const type of decl.types ?? []) {

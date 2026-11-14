@@ -149,6 +149,21 @@ describe('weak-crypto-named-import: fixtures', () => {
     expect(cryptoFindings(js)).toEqual([]);
   });
 
+  it.each([
+    ["const nodeCrypto =\n  require('crypto');\nfunction h(x) { return nodeCrypto.createHash('md5').update(x); }\nmodule.exports = { h };\n", 3],
+    ["const {\n  createHash,\n} = require(\n  'crypto');\nfunction h(x) { return createHash('md5').update(x); }\nmodule.exports = { h };\n", 5],
+  ])('JavaScript: a require that wraps onto another line is still reported (%#)', async (src, line) => {
+    const js = await analyze(src, 'src/h.js', 'javascript');
+    expect(cryptoFindings(js).map(f => [f.line, f.rule_id])).toEqual([[line, 'weak-hash']]);
+  });
+
+  it('JavaScript: a require alias reassigned later in the file is not reported', async () => {
+    const js = await analyze(
+      "const c = require('crypto');\nfunction h(x) { c = makeHasher(); return c.createHash('md5').update(x); }\nmodule.exports = { h };\n",
+      'src/h.js', 'javascript');
+    expect(cryptoFindings(js)).toEqual([]);
+  });
+
   it('JavaScript: the same shapes are reported', async () => {
     const js = await analyze(
       "const { createHash } = require('crypto');\nfunction h(x) { return createHash('md5').update(x).digest('hex'); }\nmodule.exports = { h };\n",
