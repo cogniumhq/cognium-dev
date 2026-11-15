@@ -65,34 +65,46 @@ describe('#240 ship 1 — trust_boundary framework sinks (CWE-501)', () => {
   // Java — Cookie constructor + setValue + SecurityContext + System.setProperty
   // -----------------------------------------------------------------
 
-  it('TN — Java new Cookie(name, user_value) is not trust_boundary (#1152)', async () => {
+  it('TN — Java new Cookie(name, sid param) is not trust_boundary (#1152 static #118)', async () => {
     const code = [
       'import javax.servlet.http.*;',
-      'public class Ctrl {',
-      '  public void go(HttpServletRequest req, HttpServletResponse res) {',
-      '    String v = req.getParameter("v");',
-      '    Cookie c = new Cookie("u", v);',
-      '    res.addCookie(c);',
+      'public class InsecureCookieTp {',
+      '  public void set(HttpServletResponse resp, String sid) {',
+      '    Cookie c = new Cookie("SESSIONID", sid);',
+      '    resp.addCookie(c);',
       '  }',
       '}',
     ].join('\n');
-    const r = await analyze(code, 'Ctrl.java', 'java');
+    const r = await analyze(code, 'InsecureCookieTp.java', 'java');
     expect(hasTrustBoundarySignal(r)).toBe(false);
   });
 
-  it('TN — Java Cookie.setValue(user_value) is not trust_boundary (#1152)', async () => {
+  it('TP — Java new Cookie(name, req.getParameter) is trust_boundary (#1247 cookie_trusted)', async () => {
     const code = [
       'import javax.servlet.http.*;',
-      'public class Ctrl {',
-      '  public void go(HttpServletRequest req, HttpServletResponse res) {',
-      '    String v = req.getParameter("v");',
-      '    Cookie c = new Cookie("u", "seed");',
-      '    c.setValue(v);',
-      '    res.addCookie(c);',
+      'public class V02CookieTrusted {',
+      '  public void admin(HttpServletRequest req, HttpServletResponse res) {',
+      '    String flag = req.getParameter("admin");',
+      '    res.addCookie(new Cookie("is_admin", flag));',
       '  }',
       '}',
     ].join('\n');
-    const r = await analyze(code, 'Ctrl.java', 'java');
+    const r = await analyze(code, 'V02CookieTrusted.java', 'java');
+    expect(hasTrustBoundarySignal(r)).toBe(true);
+  });
+
+  it('TN — Java Cookie.setValue(sid param) is not trust_boundary (#1152)', async () => {
+    const code = [
+      'import javax.servlet.http.*;',
+      'public class InsecureCookieTp {',
+      '  public void set(HttpServletResponse resp, String sid) {',
+      '    Cookie c = new Cookie("SESSIONID", "seed");',
+      '    c.setValue(sid);',
+      '    resp.addCookie(c);',
+      '  }',
+      '}',
+    ].join('\n');
+    const r = await analyze(code, 'InsecureCookieTp.java', 'java');
     expect(hasTrustBoundarySignal(r)).toBe(false);
   });
 
