@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.0] - 2026-11-15
+
+### Changes
+
+- test(cli): recheck re-key cases for CWE-601 and CWE-502 (JS and TS)
+- test(cli): eslint-disable on v12_stored gates fixture (Refs #1148)
+- test(cli): gates-nightly v12_stored variant XSS via built CLI (Refs #1148)
+- test(recheck): name the Java survival tests by what they cover
+- fix(recheck): identify parameter sources by the parameter; sanitized-by only for new sanitizers
+- feat(circle-ir): csrf-samesite-none-session (CWE-352) for JS/TS
+- recheck: a finding whose declaration key moved is still-present (or unknown), never gone (G1)
+- feat(circle-ir): sensitive-data-in-log (CWE-532) for JS/TS
+- fix(#1149): scan JS taint binds per-assignment; drop require in gate fixture
+- fix(js): JSON.parse(req.body) field flows to SQL sink (#1149)
+- test(cli): gates-nightly IL-57 rust JSON→yaml deser (Refs #1150)
+- fix(circle-ir): narrow #817 shell intake to sync execSync PAT shape
+- fix(circle-ir): cve-intake exported shell handlers keep command_injection (#817)
+- fix(circle-ir): cache_poisoning on the cve-intake parameter shapes, with a built-CLI test (#900)
+- chore(cli): suppress self-scan cache_poisoning on in-process Map caches
+- fix(cli): S4 — never follow symlinks in the file walk; a bad link is reported, not fatal
+- fix(circle-ir,cli): S3 — exponential regexes, a hard bound behind --file-timeout-ms, regex lint in CI
+- fix(java): field-carried Commandline argv at execute (#1199)
+- feat(circle-ir,cli): facts@2 is the default fact schema (graph-store T5a.1b)
+- feat(cli): recheck verifies a fix — --expect-gone, parse guard, evidence, --changed-from (R1–R4)
+- fix(java-graph): review — linear XML read, narrower constructor rooting
+- fix(facts@2): names in registering files are not registration rows
+- feat(java-graph): entries from registering files passed in as text
+- feat(circle-ir,cli): facts@2 follow-ups — TS graph facts, call.declaring, --facts-scheme (#1139)
+- fix(#900): restore Map.get SQL suppression; add cache_poisoning CLI maps
+
 ## [4.20.0] - 2026-11-06
 
 ### Changes
