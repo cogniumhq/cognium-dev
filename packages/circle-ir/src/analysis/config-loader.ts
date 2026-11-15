@@ -1133,10 +1133,12 @@ const TRUST_BOUNDARY_FRAMEWORK_SINKS: SinkPattern[] = [
   // Express: res.cookie(name, value, opts) — cookie-jar write.
   { method: 'cookie',  class: 'Response', type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['javascript', 'typescript'] },
 
-  // --- Java: SecurityContext / System.setProperty (not Cookie — #1152) -----
-  // Tainted `new Cookie(name, value)` / `setValue` are covered by crlf +
-  // insecure-cookie on the Set-Cookie path; Cookie is not server-side session
-  // storage (gates static #118).
+  // --- Java: Cookie / SecurityContext / System.setProperty ----------------
+  // `new Cookie(name, value)` / `setValue` — CWE-501 when the value is HTTP-sourced
+  // in-method (#1247 variant `cookie_trusted`); non-HTTP method params are dropped
+  // in `TaintPropagationPass` (#1152 static #118 / InsecureCookieTp).
+  { method: 'Cookie',            class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [1], languages: ['java'] },
+  { method: 'setValue',          class: 'Cookie',          type: 'trust_boundary', cwe: 'CWE-501', severity: 'medium', arg_positions: [0], languages: ['java'] },
   // Spring Security: SecurityContext.setAuthentication(userSuppliedAuth) —
   // installs an untrusted principal into the request-scoped security
   // context; downstream authz decisions become attacker-controlled.

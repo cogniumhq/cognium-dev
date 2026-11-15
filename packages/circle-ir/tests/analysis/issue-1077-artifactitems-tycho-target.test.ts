@@ -63,6 +63,26 @@ describe('#1077 Tycho *.target Maven locations', () => {
     expect(parseTychoTargetDependencies('')).toEqual([]);
   });
 
+  it('a self-closing location does not swallow the Maven location after it', () => {
+    const t = `<target><locations>
+  <location path="\${project_loc}/other.target" type="Target"/>
+  <location type="Maven"><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><version>42.7.8</version></location>
+  <location type="Directory" path="lib" />
+  <location type="Maven"><dependencies>
+    <dependency><groupId>com.hazelcast</groupId><artifactId>hazelcast</artifactId><version>5.5.0</version></dependency>
+  </dependencies></location>
+</locations></target>`;
+    expect(keys(parseTychoTargetDependencies(t))).toEqual([
+      'com.hazelcast:hazelcast@5.5.0/required',
+      'org.postgresql:postgresql@42.7.8/required',
+    ]);
+  });
+
+  it('a self-closing Maven location yields nothing and does not hide the next one', () => {
+    const t = `<location type="Maven"/><location type="Maven"><groupId>a</groupId><artifactId>b</artifactId><version>1</version></location>`;
+    expect(keys(parseTychoTargetDependencies(t))).toEqual(['a:b@1/required']);
+  });
+
   it('collectDependencies reads java.targetPlatforms beside the pom', () => {
     const ds = keys(collectDependencies({ java: { pomXml: pom, targetPlatforms: [target] } }));
     expect(ds).toContain('org.apache.commons:commons-lang3@3.12.0/required');

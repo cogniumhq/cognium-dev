@@ -162,8 +162,14 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
               continue;
             }
 
+            // Java: a source in another method than the call reaches it
+            // through the call graph, wherever that method is declared; the
+            // line test is for a source in the calling method itself (C5 F4).
+            const callerRange = language === 'java' ? enclosingMethodRange(graph.ir.types, edge.callLine) : null;
+            let flowAdded = false;
             for (const source of sources) {
-              if (source.line > edge.callLine) continue;
+              if (source.line > edge.callLine &&
+                  !(callerRange !== null && (source.line < callerRange[0] || source.line > callerRange[1]))) continue;
               if (source.type === 'interprocedural_param' && source.confidence < 0.6) continue;
               // cognium-dev #128 — drop `interprocedural_param` sources whose
               // enclosing method is a TIER_3_LIBRARY_API surface (utility/helper
@@ -211,9 +217,13 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
                 confidence: sink.confidence * source.confidence * 0.85,
                 sanitized: false,
               });
+              flowAdded = true;
               break; // one source per sink is enough
             }
-            break; // one call edge per sink is enough
+            // One call edge per sink is enough. Java: the first edge that
+            // yields a flow, so the answer does not hang on which caller of
+            // the method comes first in the file.
+            if (language !== 'java' || flowAdded) break;
           }
         }
       }
@@ -314,16 +324,22 @@ export class InterproceduralPass implements AnalysisPass<InterproceduralPassResu
       // Generate simple source→sink flows for any newly-found sinks
       if (additionalSinks.length > 0 && sources.length > 0) {
         for (const sink of additionalSinks) {
+          // Java: the earliest source in the sink's own method, at or above
+          // the sink, when there is one. `sources[0]` is whichever source
+          // comes first in the file, so moving a method changed the source
+          // (and with it the line range the sanitizer filter below reads),
+          // which dropped live escapes (C5 F4, WebGoat `VerifyAccount`).
+          const source = (language === 'java' ? sourceInSinkMethod(graph.ir.types, fallbackSources, sink.line) : null) ?? sources[0];
           additionalFlows.push({
-            source_line: sources[0].line,
+            source_line: source.line,
             sink_line:   sink.line,
-            source_type: sources[0].type,
+            source_type: source.type,
             sink_type:   sink.type,
             path: [
-              { variable: 'input', line: sources[0].line, type: 'source' as const },
+              { variable: 'input', line: source.line, type: 'source' as const },
               { variable: 'input', line: sink.line,       type: 'sink'   as const },
             ],
-            confidence: sources[0].confidence * sink.confidence,
+            confidence: source.confidence * sink.confidence,
             sanitized: false,
           });
         }
@@ -1281,4 +1297,28 @@ export function csharpParamReachesSink(
   if (!credit) return true;
   const safe = new Set([...credit.sanitizedVarsAt(sink.type, sink.line), ...credit.guardedVarsAt(sink.type, sink.line)]);
   return reaching.some(v => !safe.has(v));
+}
+
+/** The line range of the innermost method around `line`, or `null`. */
+function enclosingMethodRange(types: readonly TypeInfo[], line: number): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (const t of types) {
+    for (const m of t.methods) {
+      if (line < m.start_line || line > m.end_line) continue;
+      if (best === null || m.end_line - m.start_line < best[1] - best[0]) best = [m.start_line, m.end_line];
+    }
+  }
+  return best;
+}
+
+/** The earliest source inside the innermost method around `sinkLine`, at or above it, or `null`. */
+function sourceInSinkMethod<S extends { line: number }>(types: readonly TypeInfo[], sources: readonly S[], sinkLine: number): S | null {
+  const range = enclosingMethodRange(types, sinkLine);
+  if (range === null) return null;
+  let best: S | null = null;
+  for (const s of sources) {
+    if (s.line < range[0] || s.line > sinkLine) continue;
+    if (best === null || s.line < best.line) best = s;
+  }
+  return best;
 }

@@ -2539,6 +2539,40 @@ function isSameOriginQueryPrefix(prefix: string): boolean {
   return prefix.includes('?');                 // taint lands in the query
 }
 
+/**
+ * The values a JS sink call reads: each dotted name (`target`, `req.query.next`)
+ * in the argument list of `method(` on the sink line, outside string literals,
+ * and not itself called. Empty when the call is not found on the line.
+ */
+export function jsSinkArgumentValues(lineText: string, method?: string): string[] {
+  if (!method) return [];
+  const m = new RegExp(`\\b${method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).exec(lineText);
+  if (!m) return [];
+  let depth = 1, i = m.index + m[0].length;
+  const start = i;
+  for (; i < lineText.length && depth > 0; i++) {
+    const ch = lineText[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  const args = lineText.slice(start, depth === 0 ? i - 1 : i)
+    .replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, '""');
+  const out = new Set<string>();
+  const re = /(?<![\w$.])([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)(?![\w$])(?!\s*\()/g;
+  for (let r = re.exec(args); r; r = re.exec(args)) {
+    const name = r[1].replace(/\s+/g, '');
+    if (!/^(?:true|false|null|undefined|this|new|typeof|await)$/.test(name)) out.add(name);
+  }
+  return [...out];
+}
+
+/** True if a guard line mentions one of the sink's values as a whole name. */
+function guardTestsValue(line: string, values: string[]): boolean {
+  return values.some(v => new RegExp(
+    `(?<![\\w$.])${v.replace(/[.$]/g, '\\$&')}(?![\\w$])`,
+  ).test(line));
+}
+
 export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
   readonly name = 'sink-filter';
   readonly category = 'security' as const;
@@ -2840,10 +2874,16 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         }
         const sinkLineText = sourceLines[sink.line - 1] ?? '';
         // 8a. Conditional-allowlist guard: if (allowed.includes(x)) res.redirect(x);
+        // The guard must test a value the sink uses: a check on an unrelated
+        // variable (`if (name.includes(' '))`) no longer drops the sink. When the
+        // sink's argument names no value (the call is not found on the line),
+        // any guard in the window still drops it, as before.
+        const sinkValues = jsSinkArgumentValues(sinkLineText, sink.method);
         const startLine = Math.max(0, sink.line - 7);
         for (let i = startLine; i < sink.line - 1; i++) {
           const line = sourceLines[i] ?? '';
-          if (/\bif\s*\(/.test(line) && guardPatterns.test(line)) {
+          if (/\bif\s*\(/.test(line) && guardPatterns.test(line)
+              && (sinkValues.length === 0 || guardTestsValue(line, sinkValues))) {
             return false;
           }
         }

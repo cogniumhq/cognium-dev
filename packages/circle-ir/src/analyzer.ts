@@ -54,7 +54,7 @@
  *  – FeatureEnvyPass      — fires on legitimate delegation patterns (see pass file)
  */
 
-import type { CircleIR, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
+import type { CircleIR, TypeInfo, AnalysisResponse, Vulnerability, Enriched, ProjectAnalysis, ProjectMeta, ProjectProfile, ProjectProfileSummary, ProjectShape, ProjectEnv, SastFinding } from './types/index.js';
 import type { TaintConfig } from './types/config.js';
 import {
   initParser,
@@ -186,6 +186,7 @@ import { CacheNoVaryPass } from './analysis/passes/cache-no-vary-pass.js';
 import { JwtVerifyDisabledPass } from './analysis/passes/jwt-verify-disabled-pass.js';
 import { SensitiveDataInLogPass } from './analysis/passes/sensitive-data-in-log-pass.js';
 import { PrototypePollutionPass } from './analysis/passes/prototype-pollution-pass.js';
+import { CsrfSameSiteNoneSessionPass } from './analysis/passes/csrf-samesite-none-session-pass.js';
 import { CsrfProtectionDisabledPass } from './analysis/passes/csrf-protection-disabled-pass.js';
 import { XmlEntityExpansionPass } from './analysis/passes/xml-entity-expansion-pass.js';
 import { MassAssignmentPass } from './analysis/passes/mass-assignment-pass.js';
@@ -699,6 +700,23 @@ export async function initAnalyzer(options: AnalyzerOptions = {}): Promise<void>
  * cognium-dev#458 — Python starred parameter names (`*args`, `**kwargs`) reach
  * the tainted-var map with their stars, and `*` is a quantifier.
  */
+/**
+ * Java: the method names some type in the file declares more than once.
+ * Calls to these names get argument types so inter-procedural taint can
+ * choose the overload (see `CallExtractionOptions.overloadedMethodNames`).
+ */
+function javaOverloadedMethodNames(types: readonly TypeInfo[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of types) {
+    const seen = new Set<string>();
+    for (const m of t.methods) {
+      if (seen.has(m.name)) out.add(m.name);
+      seen.add(m.name);
+    }
+  }
+  return out;
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1170,7 +1188,10 @@ async function analyzeFile(
   phaseEnd('extractTypes', tTypes);
   checkDeadline('extractTypes');
   const tCalls = phaseStart();
-  const calls   = extractCalls(tree, nodeCache, language, { navigationTypes: options.navigationTypes });
+  const calls   = extractCalls(tree, nodeCache, language, {
+    navigationTypes: options.navigationTypes,
+    overloadedMethodNames: language === 'java' ? javaOverloadedMethodNames(types) : undefined,
+  });
   phaseEnd('extractCalls', tCalls);
   checkDeadline('extractCalls');
   const tImports = phaseStart();
@@ -1409,6 +1430,7 @@ async function analyzeFile(
   if (!disabledPasses.has('sensitive-data-in-log')) pipeline.add(new SensitiveDataInLogPass());
   if (!disabledPasses.has('prototype-pollution'))   pipeline.add(new PrototypePollutionPass());
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
+  if (!disabledPasses.has('csrf-samesite-none-session')) pipeline.add(new CsrfSameSiteNoneSessionPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
   if (!disabledPasses.has('mass-assignment'))       pipeline.add(new MassAssignmentPass());
   if (!disabledPasses.has('info-disclosure-stacktrace')) pipeline.add(new InfoDisclosureStacktracePass());
