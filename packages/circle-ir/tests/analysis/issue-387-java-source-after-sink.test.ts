@@ -114,9 +114,13 @@ describe('#387 Java: a source read after the sink does not pair with it when no 
     expect(findings).toHaveLength(0);
   });
 
-  it('legacy 8-arg PrefCookieServlet: no backwards pairing after #1152 (Cookie not trust_boundary)', async () => {
+  it('legacy 8-arg PrefCookieServlet: no backwards non-trust_boundary pairing (#1247 may add trust_boundary)', async () => {
     const legacy = await run(PREF, 'PrefCookieServlet.java', false);
-    expect(legacy.findings.some(f => f.source.line > f.sink.line)).toBe(false);
+    expect(
+      legacy.findings.some(
+        (f) => f.source.line > f.sink.line && f.type !== 'trust_boundary',
+      ),
+    ).toBe(false);
   });
 
   it('leaves a file_input read after the sink it opened unchanged (stands in for an unproven flow)', async () => {
