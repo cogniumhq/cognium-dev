@@ -516,15 +516,18 @@ export function analyzeInterprocedural(
   const calls = graph.ir.calls;
   const declaredTypeNames = new Set<string>(types.map(t => t.name));
 
-  // Build method nodes from type information
-  const methodNodes = buildMethodNodes(types);
-
   // Build call graph edges with receiver type resolution
   const lang = graph.ir.meta.language;
+  // Java: overloads get one node each, and calls bind by arity and argument
+  // types (see `resolveJavaCallTargets`).
+  const isJava = lang === 'java';
+
+  // Build method nodes from type information
+  const methodNodes = buildMethodNodes(types, isJava);
   const collectionReceiver = (lang === 'typescript' || lang === 'javascript') && typeof options.sourceCode === 'string'
     ? makeBuiltinCollectionReceiverTest(options.sourceCode)
     : null;
-  const callEdges = buildCallEdges(calls, methodNodes, types, collectionReceiver);
+  const callEdges = buildCallEdges(calls, methodNodes, types, collectionReceiver, isJava);
 
   // Identify initially tainted parameters (from sources)
   const taintedMethods = new Set<string>();
@@ -534,8 +537,7 @@ export function analyzeInterprocedural(
   for (const source of sources) {
     const methodInfo = findMethodAtLine(types, source.line);
     if (methodInfo) {
-      const fqn = buildMethodFQN(methodInfo.packageName, methodInfo.className, methodInfo.methodName);
-      taintedMethods.add(fqn);
+      taintedMethods.add(nodeKeyOf(methodNodes, methodInfo));
     }
   }
 
@@ -664,216 +666,229 @@ export function analyzeInterprocedural(
     }
   }
 
-  for (const call of calls) {
-    // Check if any arguments are tainted
-    const taintedArgPositions: number[] = [];
-    const taintedArgVars: string[] = [];
-    for (const arg of call.arguments) {
-      if (arg.variable) {
-        // Check 1: DFG-based taint tracking (indexed lookup, no O(N) scan)
-        const use = graph.usesAtLine(call.location.line).find(u => u.variable === arg.variable) ?? null;
-        const isTaintedByDFG = use && use.def_id !== null && taintedDefIds.has(use.def_id);
+  // Java: the calls are visited until no parameter gains taint, and only the
+  // last visit reports sinks, so a callee declared above its caller (or a
+  // helper moved within the file) is analysed as if declared below it. Other
+  // languages keep the single visit in source order.
+  const maxCallPasses = isJava ? 10 : 1;
+  let emit = !isJava;
+  for (let pass = 0; ; pass++) {
+    let grew = false;
+    for (const call of calls) {
+      // Check if any arguments are tainted
+      const taintedArgPositions: number[] = [];
+      const taintedArgVars: string[] = [];
+      for (const arg of call.arguments) {
+        if (arg.variable) {
+          // Check 1: DFG-based taint tracking (indexed lookup, no O(N) scan)
+          const use = graph.usesAtLine(call.location.line).find(u => u.variable === arg.variable) ?? null;
+          const isTaintedByDFG = use && use.def_id !== null && taintedDefIds.has(use.def_id);
 
-        // Check 2: Constant propagation taint tracking (for collections with tainted elements)
-        const isTaintedByCP = taintedVarsFromCP.has(arg.variable);
+          // Check 2: Constant propagation taint tracking (for collections with tainted elements)
+          const isTaintedByCP = taintedVarsFromCP.has(arg.variable);
 
-        if (isTaintedByDFG || isTaintedByCP) {
-          taintedArgPositions.push(arg.position);
-          taintedArgVars.push(arg.variable);
-          continue;
-        }
-      }
-      // cognium-dev#626: a Java argv container built in place —
-      // `launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step))` — carries
-      // every tainted variable named inside it. For a call expression `variable`
-      // is the callee name, so the check above never sees `step`.
-      if (graph.ir.meta.language === 'java' && ARGV_CONTAINER_ARG_RE.test(arg.expression ?? '')) {
-        const inCode = (arg.expression ?? '').replace(/"(?:[^"\\]|\\.)*"/g, ' ');
-        const carried = graph.usesAtLine(call.location.line).find(u =>
-          u.def_id !== null && taintedDefIds.has(u.def_id) &&
-          new RegExp(`(?<![\\p{L}\\p{N}_.])${u.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(inCode));
-        if (carried) {
-          taintedArgPositions.push(arg.position);
-          taintedArgVars.push(carried.variable);
-        }
-      }
-    }
-
-    // Resolve callee by receiver type when available (nested / inner classes).
-    // A method of a built-in Map/Set receiver (`this.cache.set(k, v)`) is
-    // never a method of a class in this file, whatever its name.
-    const builtinReceiver = collectionReceiver !== null && collectionReceiver(call.receiver);
-    const resolvedCalleeFqn = builtinReceiver ? null : resolveMethodCall(call, methodNodes, types);
-    const targetMethod = builtinReceiver
-      ? undefined
-      : resolvedCalleeFqn
-        ? methodNodes.byFqn.get(resolvedCalleeFqn)
-        : getMethodNode(methodNodes, call.method_name);
-
-    if (!targetMethod) {
-      // External method call - check if tainted data is escaping
-      // Skip collection methods (data manipulation), sanitizer methods (data cleaning),
-      // and safe utility methods (validation, normalization)
-      if (taintedArgPositions.length > 0 &&
-          !collectionMethods.has(call.method_name) &&
-          !sanitizerMethods.has(call.method_name) &&
-          !safeUtilityMethods.has(call.method_name) &&
-          !ormQueryBuilderMethods.has(call.method_name)) {
-        // Bash specialization: every external utility (ping, whois, curl, nc,
-        // …) is an unknown call, but an unquoted tainted positional yields
-        // word-splitting/arg-injection that is concretely CWE-78 command
-        // injection — not a generic CWE-668 escape. Re-classify, except for a
-        // small allowlist of side-effect-free builtins.
-        const isBash = graph.ir.meta.language === 'bash';
-        // Go: a value consumed by a builtin, wrapped into an error, formatted
-        // into a string, logged, or run through a pure stdlib helper has not
-        // left the program. Measured on 203 Go repositories these shapes were
-        // 78% of ALL Go taint flows (9469 escapes vs 2742 classical), with
-        // `len` alone at 709 — so a handler file with a single request read
-        // produced a page of CWE-668 before any real sink was reached.
-        if (graph.ir.meta.language === 'go' && isGoNonEscapeCall(call)) {
-          continue;
-        }
-        // Go: a bool test of the value against a constant-pattern regexp (#349).
-        if (graph.ir.meta.language === 'go' && isGoConstRegexMatchCall(call, graph, calls)) {
-          continue;
-        }
-        // C# — same gate, same reason (#474, sibling of #455/#468).
-        if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
-          continue;
-        }
-        // Java — JDK exception construction, static formatters (#468, minimal slices)
-        // and Character predicates (#807).
-        if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames, graph.ir.imports ?? [], calls)) {
-          continue;
-        }
-        const bashSafeBuiltins = new Set([
-          'echo', 'printf', 'test', '[', '[[', 'true', 'false', ':',
-          'declare', 'local', 'export', 'readonly', 'typeset',
-        ]);
-        if (isBash && bashSafeBuiltins.has(call.method_name)) {
-          continue;
-        }
-        // Bash: a function defined in this script is not an external utility.
-        // Its arguments reach its own positional parameters through the DFG
-        // (call-argument chains), so a real sink inside its body still fires.
-        if (isBash && bashScriptFunctions.has(call.method_name)) {
-          continue;
-        }
-
-        // Bash argv-terminator gate (#216 FP #4): when `--` appears as an
-        // argument before every tainted position AND every tainted positional
-        // is double-quoted, both flag-injection and word-splitting are
-        // impossible. Common pattern: `grep -- "$pattern" file`. The two
-        // conditions are conjunctive — quoting alone permits `-e payload`
-        // flag injection, `--` alone permits word-splitting on unquoted
-        // expansion.
-        if (isBash && taintedArgPositions.length > 0) {
-          const terminatorPos = call.arguments
-            .filter(a => a.expression === '--')
-            .map(a => a.position)
-            .reduce<number | null>((min, p) => (min === null || p < min ? p : min), null);
-          const earliestTainted = Math.min(...taintedArgPositions);
-          if (terminatorPos !== null && terminatorPos < earliestTainted) {
-            const allTaintedQuoted = taintedArgPositions.every(p => {
-              const a = call.arguments[p];
-              if (!a) return false;
-              const expr = a.expression.trim();
-              return expr.startsWith('"') && expr.endsWith('"');
-            });
-            if (allTaintedQuoted) {
-              continue;
-            }
+          if (isTaintedByDFG || isTaintedByCP) {
+            taintedArgPositions.push(arg.position);
+            taintedArgVars.push(arg.variable);
+            continue;
           }
         }
-
-        // Bash SQL CLI re-classification (#216 FP #5): SQL client utilities
-        // (sqlite3, mysql, psql, mariadb) take SQL strings as positional
-        // args, not shell commands. When taint reaches the fallback (e.g.
-        // via variable indirection that bypasses the per-utility builtin
-        // sink in `bash.ts`), classify as CWE-89 sql_injection instead of
-        // CWE-78 command_injection. The flow IS a vulnerability; only the
-        // type label is corrected.
-        const bashSqlCliTools = new Set(['sqlite3', 'mysql', 'psql', 'mariadb']);
-        const isBashSqlCli = isBash && bashSqlCliTools.has(call.method_name);
-
-        const sink: TaintSink = isBashSqlCli
-          ? {
-              type: 'sql_injection',
-              cwe: 'CWE-89',
-              location: `Tainted data (${taintedArgVars.join(', ')}) interpolated into SQL query passed to ${call.method_name}`,
-              line: call.location.line,
-              confidence: 0.7,
-              method: call.method_name,
-              argPositions: taintedArgPositions,
-            }
-          : isBash
-          ? {
-              type: 'command_injection',
-              cwe: 'CWE-78',
-              location: `Tainted data (${taintedArgVars.join(', ')}) passed unquoted to shell utility ${call.method_name}`,
-              line: call.location.line,
-              confidence: 0.6,
-              method: call.method_name,
-              argPositions: taintedArgPositions,
-            }
-          : {
-              // Create an "external_taint_escape" sink for this call
-              // This represents tainted data being passed to code we can't analyze
-              type: 'external_taint_escape',
-              cwe: 'CWE-668',  // Exposure of Resource to Wrong Sphere
-              location: `Tainted data (${taintedArgVars.join(', ')}) passed to external method ${call.receiver ? call.receiver + '.' : ''}${call.method_name}()`,
-              line: call.location.line,
-              confidence: 0.7,  // Lower confidence since we can't verify the external method is dangerous
-              method: call.method_name,
-              argPositions: taintedArgPositions,
-            };
-
-        // Only add if not already present
-        if (!propagatedSinks.some(s => s.line === sink.line && s.type === sink.type)) {
-          propagatedSinks.push(sink);
-        }
-      }
-      continue;
-    }
-
-    if (taintedArgPositions.length > 0) {
-      // Mark corresponding parameters as tainted
-      for (const pos of taintedArgPositions) {
-        if (pos < targetMethod.parameters.length) {
-          targetMethod.parameters[pos].isTainted = true;
-          targetMethod.parameters[pos].sourceLine = call.location.line;
-          const paramName = targetMethod.parameters[pos].name;
-          for (const def of graph.ir.dfg.defs) {
-            if (
-              def.kind === 'param' &&
-              def.variable === paramName &&
-              def.line >= targetMethod.startLine &&
-              def.line <= targetMethod.endLine
-            ) {
-              taintedDefIds.add(def.id);
-            }
+        // cognium-dev#626: a Java argv container built in place —
+        // `launchCommand(Arrays.asList("/bin/sh", "-c", "make " + step))` — carries
+        // every tainted variable named inside it. For a call expression `variable`
+        // is the callee name, so the check above never sees `step`.
+        if (graph.ir.meta.language === 'java' && ARGV_CONTAINER_ARG_RE.test(arg.expression ?? '')) {
+          const inCode = (arg.expression ?? '').replace(/"(?:[^"\\]|\\.)*"/g, ' ');
+          const carried = graph.usesAtLine(call.location.line).find(u =>
+            u.def_id !== null && taintedDefIds.has(u.def_id) &&
+            new RegExp(`(?<![\\p{L}\\p{N}_.])${u.variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'u').test(inCode));
+          if (carried) {
+            taintedArgPositions.push(arg.position);
+            taintedArgVars.push(carried.variable);
           }
         }
       }
-      taintedMethods.add(targetMethod.fqn);
 
-      // Check if target method has sinks
-      const methodSinks = sinks.filter(
-        s => s.line >= targetMethod.startLine && s.line <= targetMethod.endLine
-      );
+      // Resolve callee by receiver type when available (nested / inner classes).
+      // A method of a built-in Map/Set receiver (`this.cache.set(k, v)`) is
+      // never a method of a class in this file, whatever its name.
+      const builtinReceiver = collectionReceiver !== null && collectionReceiver(call.receiver);
+      const targets: MethodNode[] = builtinReceiver ? [] : resolveCallTargets(call, methodNodes, types, isJava);
 
-      // These sinks are now reachable via inter-procedural flow
-      for (const sink of methodSinks) {
-        // Check if not already in the list
-        if (!propagatedSinks.some(s => s.line === sink.line)) {
-          propagatedSinks.push({
-            ...sink,
-            confidence: sink.confidence * 0.85, // Slightly lower confidence for inter-proc
-          });
+      if (targets.length === 0) {
+        if (!emit) continue;
+        // External method call - check if tainted data is escaping
+        // Skip collection methods (data manipulation), sanitizer methods (data cleaning),
+        // and safe utility methods (validation, normalization)
+        if (taintedArgPositions.length > 0 &&
+            !collectionMethods.has(call.method_name) &&
+            !sanitizerMethods.has(call.method_name) &&
+            !safeUtilityMethods.has(call.method_name) &&
+            !ormQueryBuilderMethods.has(call.method_name)) {
+          // Bash specialization: every external utility (ping, whois, curl, nc,
+          // …) is an unknown call, but an unquoted tainted positional yields
+          // word-splitting/arg-injection that is concretely CWE-78 command
+          // injection — not a generic CWE-668 escape. Re-classify, except for a
+          // small allowlist of side-effect-free builtins.
+          const isBash = graph.ir.meta.language === 'bash';
+          // Go: a value consumed by a builtin, wrapped into an error, formatted
+          // into a string, logged, or run through a pure stdlib helper has not
+          // left the program. Measured on 203 Go repositories these shapes were
+          // 78% of ALL Go taint flows (9469 escapes vs 2742 classical), with
+          // `len` alone at 709 — so a handler file with a single request read
+          // produced a page of CWE-668 before any real sink was reached.
+          if (graph.ir.meta.language === 'go' && isGoNonEscapeCall(call)) {
+            continue;
+          }
+          // Go: a bool test of the value against a constant-pattern regexp (#349).
+          if (graph.ir.meta.language === 'go' && isGoConstRegexMatchCall(call, graph, calls)) {
+            continue;
+          }
+          // C# — same gate, same reason (#474, sibling of #455/#468).
+          if (graph.ir.meta.language === 'csharp' && isCSharpNonEscapeCall(call)) {
+            continue;
+          }
+          // Java — JDK exception construction, static formatters (#468, minimal slices)
+          // and Character predicates (#807).
+          if (graph.ir.meta.language === 'java' && isJavaNonEscapeCall(call, declaredTypeNames, graph.ir.imports ?? [], calls)) {
+            continue;
+          }
+          const bashSafeBuiltins = new Set([
+            'echo', 'printf', 'test', '[', '[[', 'true', 'false', ':',
+            'declare', 'local', 'export', 'readonly', 'typeset',
+          ]);
+          if (isBash && bashSafeBuiltins.has(call.method_name)) {
+            continue;
+          }
+          // Bash: a function defined in this script is not an external utility.
+          // Its arguments reach its own positional parameters through the DFG
+          // (call-argument chains), so a real sink inside its body still fires.
+          if (isBash && bashScriptFunctions.has(call.method_name)) {
+            continue;
+          }
+
+          // Bash argv-terminator gate (#216 FP #4): when `--` appears as an
+          // argument before every tainted position AND every tainted positional
+          // is double-quoted, both flag-injection and word-splitting are
+          // impossible. Common pattern: `grep -- "$pattern" file`. The two
+          // conditions are conjunctive — quoting alone permits `-e payload`
+          // flag injection, `--` alone permits word-splitting on unquoted
+          // expansion.
+          if (isBash && taintedArgPositions.length > 0) {
+            const terminatorPos = call.arguments
+              .filter(a => a.expression === '--')
+              .map(a => a.position)
+              .reduce<number | null>((min, p) => (min === null || p < min ? p : min), null);
+            const earliestTainted = Math.min(...taintedArgPositions);
+            if (terminatorPos !== null && terminatorPos < earliestTainted) {
+              const allTaintedQuoted = taintedArgPositions.every(p => {
+                const a = call.arguments[p];
+                if (!a) return false;
+                const expr = a.expression.trim();
+                return expr.startsWith('"') && expr.endsWith('"');
+              });
+              if (allTaintedQuoted) {
+                continue;
+              }
+            }
+          }
+
+          // Bash SQL CLI re-classification (#216 FP #5): SQL client utilities
+          // (sqlite3, mysql, psql, mariadb) take SQL strings as positional
+          // args, not shell commands. When taint reaches the fallback (e.g.
+          // via variable indirection that bypasses the per-utility builtin
+          // sink in `bash.ts`), classify as CWE-89 sql_injection instead of
+          // CWE-78 command_injection. The flow IS a vulnerability; only the
+          // type label is corrected.
+          const bashSqlCliTools = new Set(['sqlite3', 'mysql', 'psql', 'mariadb']);
+          const isBashSqlCli = isBash && bashSqlCliTools.has(call.method_name);
+
+          const sink: TaintSink = isBashSqlCli
+            ? {
+                type: 'sql_injection',
+                cwe: 'CWE-89',
+                location: `Tainted data (${taintedArgVars.join(', ')}) interpolated into SQL query passed to ${call.method_name}`,
+                line: call.location.line,
+                confidence: 0.7,
+                method: call.method_name,
+                argPositions: taintedArgPositions,
+              }
+            : isBash
+            ? {
+                type: 'command_injection',
+                cwe: 'CWE-78',
+                location: `Tainted data (${taintedArgVars.join(', ')}) passed unquoted to shell utility ${call.method_name}`,
+                line: call.location.line,
+                confidence: 0.6,
+                method: call.method_name,
+                argPositions: taintedArgPositions,
+              }
+            : {
+                // Create an "external_taint_escape" sink for this call
+                // This represents tainted data being passed to code we can't analyze
+                type: 'external_taint_escape',
+                cwe: 'CWE-668',  // Exposure of Resource to Wrong Sphere
+                location: `Tainted data (${taintedArgVars.join(', ')}) passed to external method ${call.receiver ? call.receiver + '.' : ''}${call.method_name}()`,
+                line: call.location.line,
+                confidence: 0.7,  // Lower confidence since we can't verify the external method is dangerous
+                method: call.method_name,
+                argPositions: taintedArgPositions,
+              };
+
+          // Only add if not already present
+          if (!propagatedSinks.some(s => s.line === sink.line && s.type === sink.type)) {
+            propagatedSinks.push(sink);
+          }
+        }
+        continue;
+      }
+
+      if (taintedArgPositions.length > 0) {
+        for (const targetMethod of targets) {
+          // Mark corresponding parameters as tainted
+          for (const pos of taintedArgPositions) {
+            if (pos < targetMethod.parameters.length) {
+              targetMethod.parameters[pos].sourceLine = call.location.line;
+              // Its param defs are already seeded once the parameter is tainted.
+              if (targetMethod.parameters[pos].isTainted) continue;
+              targetMethod.parameters[pos].isTainted = true;
+              grew = true;
+              const paramName = targetMethod.parameters[pos].name;
+              for (const def of graph.ir.dfg.defs) {
+                if (
+                  def.kind === 'param' &&
+                  def.variable === paramName &&
+                  def.line >= targetMethod.startLine &&
+                  def.line <= targetMethod.endLine
+                ) {
+                  taintedDefIds.add(def.id);
+                }
+              }
+            }
+          }
+          taintedMethods.add(targetMethod.fqn);
+          if (!emit) continue;
+
+          // Check if target method has sinks
+          const methodSinks = sinks.filter(
+            s => s.line >= targetMethod.startLine && s.line <= targetMethod.endLine
+          );
+
+          // These sinks are now reachable via inter-procedural flow
+          for (const sink of methodSinks) {
+            // Check if not already in the list
+            if (!propagatedSinks.some(s => s.line === sink.line)) {
+              propagatedSinks.push({
+                ...sink,
+                confidence: sink.confidence * 0.85, // Slightly lower confidence for inter-proc
+              });
+            }
+          }
         }
       }
     }
+    if (emit) break;
+    if (!grew || pass + 1 >= maxCallPasses) emit = true;
   }
 
   // Propagate taint through return values
@@ -921,19 +936,37 @@ interface MethodNodeMaps {
   byFqn: Map<string, MethodNode>;
   /** Index for simple name lookups (may have collisions) */
   byName: Map<string, MethodNode>;
+  /** Each declaration's node (Java: one per overload; elsewhere the FQN's last declaration). */
+  byInfo: Map<MethodInfo, MethodNode>;
 }
 
 /**
  * Build method nodes from type information.
  * Uses fully qualified names (FQN) as keys for precise method resolution.
  */
-function buildMethodNodes(types: TypeInfo[]): MethodNodeMaps {
+function buildMethodNodes(types: TypeInfo[], javaOverloads = false): MethodNodeMaps {
   const byFqn = new Map<string, MethodNode>();
   const byName = new Map<string, MethodNode>();
+  const byInfo = new Map<MethodInfo, MethodNode>();
 
   for (const type of types) {
+    // Java: a name declared more than once in the type is keyed by its erased
+    // parameter types, `pkg.C.m(String)`, so no overload replaces another.
+    // A name declared once keeps the plain `pkg.C.m` key.
+    const nameCount = new Map<string, number>();
+    if (javaOverloads) {
+      for (const m of type.methods) nameCount.set(m.name, (nameCount.get(m.name) ?? 0) + 1);
+    }
     for (const method of type.methods) {
-      const fqn = buildMethodFQN(type.package, type.name, method.name);
+      let fqn = buildMethodFQN(type.package, type.name, method.name);
+      if (javaOverloads) {
+        if ((nameCount.get(method.name) ?? 0) > 1) {
+          fqn += `(${method.parameters.map(p => p.type === null ? '?' : javaErasure(p.type).text).join(',')})`;
+        }
+        // Two declarations with one key (same-named nested types, or a
+        // parse that lost the types): keep both, the later one by line.
+        if (byFqn.has(fqn)) fqn += `@${method.start_line}`;
+      }
 
       const node: MethodNode = {
         name: method.name,
@@ -956,6 +989,7 @@ function buildMethodNodes(types: TypeInfo[]): MethodNodeMaps {
 
       // Store with FQN as primary key
       byFqn.set(fqn, node);
+      byInfo.set(method, node);
 
       // Store with simple name for fallback (first occurrence wins)
       if (!byName.has(method.name)) {
@@ -964,7 +998,250 @@ function buildMethodNodes(types: TypeInfo[]): MethodNodeMaps {
     }
   }
 
-  return { byFqn, byName };
+  // Elsewhere a later declaration of one FQN replaces the earlier one.
+  if (!javaOverloads) {
+    for (const [info, node] of byInfo) {
+      if (byFqn.get(node.fqn) !== node) byInfo.delete(info);
+    }
+  }
+
+  return { byFqn, byName, byInfo };
+}
+
+/** The node key of the method a `findMethodAtLine` context names. */
+function nodeKeyOf(maps: MethodNodeMaps, ctx: MethodContext): string {
+  return maps.byInfo.get(ctx.method)?.fqn
+    ?? buildMethodFQN(ctx.packageName, ctx.className, ctx.methodName);
+}
+
+/**
+ * The same-file methods a call may bind to. Java: see
+ * `resolveJavaCallTargets`. Elsewhere: the one node `resolveMethodCall`
+ * names, if any.
+ */
+function resolveCallTargets(
+  call: CallInfo,
+  methodNodes: MethodNodeMaps,
+  types: TypeInfo[],
+  isJava: boolean,
+): MethodNode[] {
+  if (isJava) return resolveJavaCallTargets(call, methodNodes, types);
+  const fqn = resolveMethodCall(call, methodNodes, types);
+  const node = fqn ? methodNodes.byFqn.get(fqn) : getMethodNode(methodNodes, call.method_name);
+  return node ? [node] : [];
+}
+
+/**
+ * Java call resolution (C5 follow-up F4). The owner type is chosen as
+ * before (the receiver's declared type; else, with a receiver, the first type
+ * declaring the name; else the innermost type around the call that declares
+ * it, then the first type declaring it). Among that type's methods of the
+ * name:
+ *   1. those whose arity fits the call (a trailing varargs parameter takes
+ *      any number of arguments, including none);
+ *   2. of those, the ones every known argument type can be passed to
+ *      (`javaArgDefinitelyIncompatible`);
+ *   3. if exactly one candidate takes every argument at its exact erased
+ *      type, that one.
+ * Whatever is still ambiguous is kept whole, so taint reaches every
+ * overload the call could be, never just the one declared last. A step that
+ * would leave nothing falls back to the step before it (our types are a
+ * syntactic approximation, and dropping every candidate would hide flows).
+ * The result does not depend on the order of the declarations.
+ */
+function resolveJavaCallTargets(
+  call: CallInfo,
+  methodNodes: MethodNodeMaps,
+  types: TypeInfo[],
+): MethodNode[] {
+  const name = call.method_name;
+  const declares = (t: TypeInfo): boolean => t.methods.some(m => m.name === name);
+  let owners: TypeInfo[] = [];
+  if (call.receiver_type) {
+    const rt = call.receiver_type;
+    owners = types.filter(t => declares(t) && (t.name === rt || (t.package !== null && `${t.package}.${t.name}` === rt)));
+  }
+  if (owners.length === 0 && call.receiver) {
+    const first = types.find(declares);
+    if (first) owners = [first];
+  }
+  if (owners.length === 0) {
+    const line = call.location.line;
+    const around = types
+      .filter(t => declares(t) && line >= t.start_line && line <= t.end_line)
+      .sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line));
+    const first = around[0] ?? types.find(declares);
+    if (first) owners = [first];
+  }
+  const candidates: MethodInfo[] = owners.flatMap(t => t.methods.filter(m => m.name === name));
+  const chosen = selectJavaOverloads(candidates, call, types);
+  const out: MethodNode[] = [];
+  for (const m of chosen) {
+    const node = methodNodes.byInfo.get(m);
+    if (node && !out.includes(node)) out.push(node);
+  }
+  return out;
+}
+
+function selectJavaOverloads(candidates: MethodInfo[], call: CallInfo, types: TypeInfo[]): MethodInfo[] {
+  if (candidates.length <= 1) return candidates;
+  const n = call.arguments.length;
+  const byArity = candidates.filter(m => javaArityFits(m, n));
+  if (byArity.length === 0) return candidates;
+  if (byArity.length === 1) return byArity;
+  const argTypes = call.arguments.map(a => a.type ?? null);
+  const applicable = byArity.filter(m => argTypes.every((t, i) => !javaArgDefinitelyIncompatibleAt(t, m, i, n, types)));
+  if (applicable.length === 0) return byArity;
+  if (applicable.length === 1) return applicable;
+  const exact = applicable.filter(m => m.parameters.length === n && argTypes.every((t, i) => {
+    const p = m.parameters[i]?.type;
+    return t !== null && p !== null && p !== undefined && javaErasure(t).text === javaErasure(p).text;
+  }));
+  return exact.length === 1 ? exact : applicable;
+}
+
+/** A trailing parameter is varargs when spelled `T...`, or untyped (the default extractor reports a varargs parameter with no type). */
+function javaIsVarargs(m: MethodInfo): boolean {
+  const last = m.parameters[m.parameters.length - 1];
+  return last !== undefined && (last.type === null || last.type.trimEnd().endsWith('...'));
+}
+
+function javaArityFits(m: MethodInfo, n: number): boolean {
+  const k = m.parameters.length;
+  return k === n || (javaIsVarargs(m) && n >= k - 1);
+}
+
+function javaArgDefinitelyIncompatibleAt(
+  argType: string | null,
+  m: MethodInfo,
+  i: number,
+  n: number,
+  types: TypeInfo[],
+): boolean {
+  if (argType === null) return false;
+  const k = m.parameters.length;
+  const varargs = javaIsVarargs(m);
+  if (varargs && i >= k - 1) {
+    const raw = m.parameters[k - 1].type;
+    if (raw === null) return false;
+    const arrayType = raw.trimEnd().replace(/\.\.\.$/, '[]');
+    const elemType = raw.trimEnd().replace(/\.\.\.$/, '');
+    // One argument in the varargs slot may be the array itself.
+    if (n === k && !javaArgDefinitelyIncompatible(argType, arrayType, types)) return false;
+    return javaArgDefinitelyIncompatible(argType, elemType, types);
+  }
+  const p = m.parameters[i]?.type ?? null;
+  return p === null ? false : javaArgDefinitelyIncompatible(argType, p, types);
+}
+
+const JAVA_PRIMITIVES = new Set(['byte', 'short', 'char', 'int', 'long', 'float', 'double', 'boolean']);
+const JAVA_BOX: Record<string, string> = {
+  byte: 'Byte', short: 'Short', char: 'Character', int: 'Integer',
+  long: 'Long', float: 'Float', double: 'Double', boolean: 'Boolean',
+};
+const JAVA_UNBOX: Record<string, string> = Object.fromEntries(Object.entries(JAVA_BOX).map(([p, b]) => [b, p]));
+const JAVA_WIDENS: Record<string, readonly string[]> = {
+  byte: ['short', 'int', 'long', 'float', 'double'],
+  short: ['int', 'long', 'float', 'double'],
+  char: ['int', 'long', 'float', 'double'],
+  int: ['long', 'float', 'double'],
+  long: ['float', 'double'],
+  float: ['double'],
+  double: [],
+  boolean: [],
+};
+const NUMBER_SUPERS = ['Number', 'Object', 'Comparable', 'Serializable', 'Constable', 'ConstantDesc'];
+/**
+ * Final JDK types whose every supertype is known: an argument of one of
+ * these static types can be passed only to a parameter typed as one of its
+ * supertypes, and no other class can be passed to a parameter of one of them.
+ */
+const JAVA_FINAL_SUPERS: Record<string, readonly string[]> = {
+  String: ['String', 'Object', 'CharSequence', 'Comparable', 'Serializable', 'Constable', 'ConstantDesc'],
+  Integer: ['Integer', ...NUMBER_SUPERS],
+  Long: ['Long', ...NUMBER_SUPERS],
+  Short: ['Short', 'Number', 'Object', 'Comparable', 'Serializable', 'Constable'],
+  Byte: ['Byte', 'Number', 'Object', 'Comparable', 'Serializable', 'Constable'],
+  Float: ['Float', ...NUMBER_SUPERS],
+  Double: ['Double', ...NUMBER_SUPERS],
+  Boolean: ['Boolean', 'Object', 'Comparable', 'Serializable', 'Constable'],
+  Character: ['Character', 'Object', 'Comparable', 'Serializable', 'Constable'],
+  Class: ['Class', 'Object', 'Serializable', 'Type', 'GenericDeclaration', 'AnnotatedElement', 'TypeDescriptor', 'OfField'],
+};
+
+/** A Java type spelled in source, erased: no annotations, type arguments or package; `...` read as `[]`. */
+function javaErasure(raw: string): { base: string; dims: number; text: string } {
+  let t = raw.replace(/@[\w.]+(?:\([^)]*\))?\s*/g, '').replace(/\bfinal\s+/g, '').trim();
+  let prev = '';
+  while (prev !== t) { prev = t; t = t.replace(/<[^<>]*>/g, ''); }
+  t = t.replace(/\.\.\.$/, '[]').replace(/\s+/g, '');
+  const dims = (t.match(/\[\]/g) ?? []).length;
+  const qualified = t.replace(/\[\]/g, '');
+  const base = qualified.slice(qualified.lastIndexOf('.') + 1);
+  return { base, dims, text: base + '[]'.repeat(dims) };
+}
+
+/**
+ * `true` only when an argument of static type `argType` certainly cannot be
+ * passed to a parameter of type `paramType` (no subtyping, widening, boxing
+ * or unboxing makes it fit). Anything this cannot decide (an unknown class,
+ * a type variable, a supertype declared in another file) is compatible.
+ */
+function javaArgDefinitelyIncompatible(argType: string, paramType: string, types: TypeInfo[]): boolean {
+  const a = javaErasure(argType);
+  const p = javaErasure(paramType);
+  if (!a.base || !p.base) return false;
+  const declared = new Map<string, TypeInfo>();
+  for (const t of types) if (!declared.has(t.name)) declared.set(t.name, t);
+  // A type variable (or anything else we cannot read) decides nothing.
+  const opaque = (b: string): boolean =>
+    !JAVA_PRIMITIVES.has(b) && !(b in JAVA_FINAL_SUPERS) && !declared.has(b) && /^[A-Z][A-Z0-9]?$/.test(b);
+  if (opaque(a.base) || opaque(p.base)) return false;
+  if (a.base === 'null' && a.dims === 0) return p.dims === 0 && JAVA_PRIMITIVES.has(p.base);
+  if (a.dims !== p.dims) {
+    // An array goes to Object / Cloneable / Serializable, or to a shallower
+    // array of one of those.
+    if (a.dims > p.dims && ['Object', 'Cloneable', 'Serializable'].includes(p.base)) return false;
+    return true;
+  }
+  if (a.dims > 0) {
+    if (JAVA_PRIMITIVES.has(a.base) || JAVA_PRIMITIVES.has(p.base)) return a.base !== p.base;
+    return javaArgDefinitelyIncompatible(a.base, p.base, types);
+  }
+  if (a.base === p.base) return false;
+  const aPrim = JAVA_PRIMITIVES.has(a.base);
+  const pPrim = JAVA_PRIMITIVES.has(p.base);
+  if (aPrim && pPrim) return !JAVA_WIDENS[a.base].includes(p.base);
+  if (aPrim) return !JAVA_FINAL_SUPERS[JAVA_BOX[a.base]].includes(p.base);
+  if (pPrim) {
+    const unboxed = JAVA_UNBOX[a.base];
+    if (unboxed) return unboxed !== p.base && !JAVA_WIDENS[unboxed].includes(p.base);
+    return true;
+  }
+  if (a.base in JAVA_FINAL_SUPERS) return !JAVA_FINAL_SUPERS[a.base].includes(p.base);
+  if (p.base === 'Object') return false;
+  if (p.base in JAVA_FINAL_SUPERS) return true;
+  // A class or interface declared in this file: incompatible only when its
+  // whole supertype closure is declared here too and does not hold the
+  // parameter type.
+  const start = declared.get(a.base);
+  if (!start) return false;
+  const seen = new Set<string>();
+  const queue: TypeInfo[] = [start];
+  while (queue.length > 0) {
+    const t = queue.pop()!;
+    if (seen.has(t.name)) continue;
+    seen.add(t.name);
+    for (const sup of [t.extends, ...t.implements]) {
+      if (!sup) continue;
+      const sb = javaErasure(sup).base;
+      if (sb === p.base) return false;
+      const st = declared.get(sb);
+      if (!st) return false;   // a supertype from elsewhere could be anything
+      queue.push(st);
+    }
+  }
+  return !seen.has(p.base);
 }
 
 /**
@@ -1076,25 +1353,30 @@ function buildCallEdges(
   methodNodes: MethodNodeMaps,
   types: TypeInfo[],
   collectionReceiver: ((receiver: string | null | undefined) => boolean) | null = null,
+  isJava = false,
 ): CallEdge[] {
   const edges: CallEdge[] = [];
 
   for (const call of calls) {
     if (collectionReceiver !== null && collectionReceiver(call.receiver)) continue;
-    // Resolve the call target using receiver type
-    const resolvedFqn = resolveMethodCall(call, methodNodes, types);
-    if (!resolvedFqn) continue;
-
     // Find the caller method
     const callerMethod = call.in_method;
     if (!callerMethod) continue;
 
-    edges.push({
-      callerMethod,
-      calleeMethod: resolvedFqn,
-      callLine: call.location.line,
-      taintedArgs: [],
-    });
+    // Resolve the call target(s) using receiver type (Java: every overload
+    // the call may bind to gets an edge).
+    const calleeKeys = isJava
+      ? resolveJavaCallTargets(call, methodNodes, types).map(n => n.fqn)
+      : [resolveMethodCall(call, methodNodes, types)].filter((k): k is string => k !== null);
+
+    for (const calleeMethod of calleeKeys) {
+      edges.push({
+        callerMethod,
+        calleeMethod,
+        callLine: call.location.line,
+        taintedArgs: [],
+      });
+    }
   }
 
   return edges;
@@ -1150,7 +1432,7 @@ function propagateReturnTaint(
     const methodCtx = findMethodAtLine(types, returnDef.line);
     if (!methodCtx) continue;
 
-    const fqn = buildMethodFQN(methodCtx.packageName, methodCtx.className, methodCtx.methodName);
+    const fqn = nodeKeyOf(methodNodes, methodCtx);
 
     // Find uses on the same line (the returned value) — indexed lookup
     const usesOnLine = graph.usesAtLine(returnDef.line);

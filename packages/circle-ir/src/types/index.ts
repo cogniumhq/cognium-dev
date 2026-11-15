@@ -191,8 +191,9 @@ export interface ArgumentInfo {
    * The argument's static type as the source spells it (`String`, `long`,
    * `Money`, `List<Foo>`), or `null` where it cannot be read off the syntax
    * and the declarations in scope. `null` (the literal) is spelled `null`.
-   * Java only, and present only under `AnalyzerOptions.navigationTypes`;
-   * overload selection reads it.
+   * Java only. Present under `AnalyzerOptions.navigationTypes`, and without
+   * it on a call to a method name the file declares more than once;
+   * overload selection (navigation and inter-procedural taint) reads it.
    */
   type?: string | null;
   /**
