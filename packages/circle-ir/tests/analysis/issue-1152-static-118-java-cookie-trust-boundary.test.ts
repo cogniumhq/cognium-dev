@@ -8,13 +8,17 @@ import { initAnalyzer, analyze } from '../../src/analyzer.js';
 const tbFlows = (ir: Awaited<ReturnType<typeof analyze>>) =>
   (ir.taint?.flows ?? []).filter((f) => f.sink_type === 'trust_boundary' && !f.sanitized);
 
+/** Mirrors sast-validation static #118 (`InsecureCookieTp.java`). */
 const static118JavaShape = `
+package com.demo.fpcorpus;
+import javax.servlet.http.Cookie;
+import javax.servlet.http.HttpServletResponse;
 public class InsecureCookieTp {
-  public void doGet(jakarta.servlet.http.HttpServletRequest req,
-                    jakarta.servlet.http.HttpServletResponse response) {
-    String v = req.getParameter("v");
-    jakarta.servlet.http.Cookie userCookie = new jakarta.servlet.http.Cookie("BenchmarkTest", v);
-    response.addCookie(userCookie);
+  public void set(HttpServletResponse resp, String sid) {
+    Cookie c = new Cookie("SESSIONID", sid);
+    c.setSecure(false);
+    c.setHttpOnly(false);
+    resp.addCookie(c);
   }
 }
 `;
