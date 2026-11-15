@@ -8237,13 +8237,15 @@ function findJsRelativeRedirectGuardSanitizers(code: string): TaintSanitizer[] {
 /**
  * The lines a guard on `v` at line index `from` may credit: from `from` to the end of the block that encloses it
  * (the handler or function the guard is in: the first `}` that closes a brace opened before `from`), stopping
- * before any reassignment of `v` (`v = …`, `let|const|var v = …`). Another handler in the same file, or the
+ * before any reassignment of `v` (`v = …`, `v += …`, `let|const|var v = …`). Another handler in the same file, or the
  * variable after it is reassigned, is never credited by this guard. Braces inside string literals and comments
  * are not counted apart (a guard line with unbalanced quoted braces credits less, never more).
  */
 function jsGuardCreditLines(lines: string[], from: number, v: string): number[] {
   const esc = v.replace(/[.$]/g, '\\$&');
-  const reassign = new RegExp(`(?:^|[^\\w$.])(?:(?:let|const|var)\\s+)?${esc}\\s*=(?!=)`);
+  const reassign = new RegExp(
+    `(?:^|[^\\w$.])(?:(?:let|const|var)\\s+)?${esc}\\s*(?:[+\\-*/%|&^]?=)(?!=)`,
+  );
   const out: number[] = [];
   let depth = 0;
   for (let l = from; l < lines.length; l++) {
