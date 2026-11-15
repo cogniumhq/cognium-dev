@@ -997,9 +997,12 @@ export function parseTychoTargetDependencies(targetXml: string): Dependency[] {
     if (version.includes('${')) version = 'unknown';
     out.push(dep('maven', `${gid}:${aid}`, version, 'required'));
   };
-  const locRe = /<location\b([^>]*)>([\s\S]*?)<\/location>/g;
+  // A self-closing `<location … />` (e.g. `type="Target"` or `type="Directory"`) has no
+  // body; it must not open a block that runs on into the next location's content.
+  const locRe = /<location\b([^>]*?)(?:\/>|>([\s\S]*?)<\/location>)/g;
   let m: RegExpExecArray | null;
   while ((m = locRe.exec(text)) !== null) {
+    if (m[2] === undefined) continue;
     if (!/\btype\s*=\s*["']Maven["']/i.test(m[1])) continue;
     const body = m[2];
     const deps = body.match(/<dependency>[\s\S]*?<\/dependency>/g);

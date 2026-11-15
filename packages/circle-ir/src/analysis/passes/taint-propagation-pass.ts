@@ -1353,6 +1353,26 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #1152 / #1247 — Java `new Cookie(…, value)` trust_boundary only
+    // when `value` is HTTP-sourced in the same method. Method parameters such as
+    // `InsecureCookieTp.set(..., String sid)` are not CWE-501 session-trust writes.
+    const javaCookieTrustSinkLines = new Set<number>();
+    for (const s of sinks) {
+      if (
+        s.type === 'trust_boundary' &&
+        (s.method === 'Cookie' || s.method === 'setValue')
+      ) {
+        javaCookieTrustSinkLines.add(s.line);
+      }
+    }
+    if (javaCookieTrustSinkLines.size > 0) {
+      finalFlows = finalFlows.filter(f => {
+        if (f.sink_type !== 'trust_boundary') return true;
+        if (!javaCookieTrustSinkLines.has(f.sink_line)) return true;
+        return typeof f.source_type === 'string' && f.source_type.startsWith('http_');
+      });
+    }
+
     // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
     // The DFG propagator and the four supplementary detectors each emit
     // independently; merge-time dedup at the supplement seams is partial
