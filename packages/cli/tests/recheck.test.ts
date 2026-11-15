@@ -436,6 +436,7 @@ describe('recheck G1: a re-keyed declaration is still-present, never gone (JS an
   const CLASSES: Array<{ id: string; cwe: string }> = [
     { id: '89', cwe: 'CWE-89' }, { id: '79', cwe: 'CWE-79' }, { id: '22', cwe: 'CWE-22' },
     { id: '78', cwe: 'CWE-78' }, { id: '918', cwe: 'CWE-918' },
+    { id: '601', cwe: 'CWE-601' }, { id: '502', cwe: 'CWE-502' },
   ];
   /** n2: one statement after line 1; n3: one statement as the first line of the handler. */
   const top = (code: string) => code.replace(/\n/, '\nconst reviewedAt = 1;\n');
