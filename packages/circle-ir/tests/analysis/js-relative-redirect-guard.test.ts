@@ -100,6 +100,21 @@ ${pad}
         expect(has(r.taint.flows, 'open_redirect')).toBe(true);
       });
 
+      it(`${lang}: compound assignment after the guard stops credit (#1272)`, async () => {
+        const code = `const express = require('express');
+const app = express();
+app.get('/a', (req, res) => {
+  const next = req.query.next;
+  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\\\')) return res.redirect('/');
+${pad}
+  next += req.query.suffix;
+  res.redirect(next);
+});
+`;
+        const r = await analyze(code, `compound.${ext}`, lang);
+        expect(has(r.taint.flows, 'open_redirect')).toBe(true);
+      });
+
       it(`${lang}: a block-form reject guard credits the rest of its handler`, async () => {
         const code = `const express = require('express');
 const app = express();
