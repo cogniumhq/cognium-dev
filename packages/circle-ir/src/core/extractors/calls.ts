@@ -100,6 +100,13 @@ export interface CallExtractionOptions {
    * constructor calls named `super` / `this`.
    */
   navigationTypes?: boolean;
+  /**
+   * Java only: method names the file declares more than once (overloads).
+   * A call to one of these names gets `ArgumentInfo.type` even without
+   * `navigationTypes`, so inter-procedural taint can pick the overload by
+   * argument types. Calls to other names are unchanged.
+   */
+  overloadedMethodNames?: ReadonlySet<string>;
 }
 
 export function extractCalls(
@@ -146,8 +153,14 @@ export function extractCalls(
   // Find all method invocations
   const invocations = getNodesFromCache(tree.rootNode, 'method_invocation', cache);
   const typed = options.navigationTypes === true;
+  const overloaded = options.overloadedMethodNames;
   for (const inv of invocations) {
-    calls.push(extractCallInfo(inv, context, typed));
+    const info = extractCallInfo(inv, context, typed);
+    if (!typed && overloaded?.has(info.method_name)) {
+      const argsNode = inv.childForFieldName('arguments');
+      if (argsNode) addArgumentTypes(argsNode, info.arguments);
+    }
+    calls.push(info);
   }
 
   // Find object creation expressions (constructor calls)
@@ -1454,6 +1467,25 @@ function stripGenerics(type: string): string {
 }
 
 /**
+ * Resolve a declared type from a field, local, or parameter. When the
+ * declaration uses a fully-qualified name (no import for `Logger`), keep the
+ * FQN so class-scoped sink patterns (e.g. Log4j `Logger.info`) match.
+ */
+function resolveDeclaredJavaType(
+  rawType: string,
+  context: ResolutionContext,
+): { simpleName: string | null; fqn: string | null } {
+  const bare = stripGenerics(rawType.trim());
+  if (bare.includes('.')) {
+    const simple = bare.substring(bare.lastIndexOf('.') + 1);
+    if (/^[A-Z][A-Za-z0-9_]*$/.test(simple)) {
+      return { simpleName: simple, fqn: bare };
+    }
+  }
+  return resolveFqn(bare, context);
+}
+
+/**
  * Resolve the receiver expression to its declared simple type and (if
  * available) fully-qualified name. Returns `{ simpleName: null, fqn: null }`
  * for receivers that cannot be statically resolved — dynamic dispatch,
@@ -1474,7 +1506,7 @@ function resolveReceiverType(
   if (receiver.startsWith('this.')) {
     const fieldName = receiver.substring('this.'.length);
     const fieldType = context.fieldTypes.get(fieldName);
-    if (fieldType) return resolveFqn(stripGenerics(fieldType), context);
+    if (fieldType) return resolveDeclaredJavaType(fieldType, context);
     return { simpleName: null, fqn: null };
   }
 
@@ -1490,9 +1522,10 @@ function resolveReceiverType(
   const ctorMatch = receiver.match(/^new\s+([A-Za-z_$][\w$.]*)\s*[<(]/);
   if (ctorMatch) {
     const ctorClass = ctorMatch[1];
-    const simple = ctorClass.includes('.')
-      ? ctorClass.substring(ctorClass.lastIndexOf('.') + 1)
-      : ctorClass;
+    if (ctorClass.includes('.')) {
+      return resolveDeclaredJavaType(ctorClass, context);
+    }
+    const simple = ctorClass;
     return resolveFqn(simple, context);
   }
 
@@ -1502,7 +1535,7 @@ function resolveReceiverType(
     context.paramTypes.get(receiver) ??
     context.fieldTypes.get(receiver);
   if (declaredType) {
-    return resolveFqn(stripGenerics(declaredType), context);
+    return resolveDeclaredJavaType(declaredType, context);
   }
 
   // Receiver starts with uppercase letter — likely a static class reference.
@@ -1899,6 +1932,21 @@ function extractArguments(argsNode: Node, typed = false): ArgumentInfo[] {
   }
 
   return args;
+}
+
+/**
+ * Give each argument its static type (`ArgumentInfo.type`) and nothing else:
+ * the overload-selection input for a call to a same-file overloaded method
+ * when `navigationTypes` is off.
+ */
+function addArgumentTypes(argsNode: Node, args: ArgumentInfo[]): void {
+  let position = 0;
+  for (let i = 0; i < argsNode.childCount; i++) {
+    const child = argsNode.child(i);
+    if (!child || child.type === '(' || child.type === ')' || child.type === ',') continue;
+    const arg = args[position++];
+    if (arg) arg.type = javaStaticType(child);
+  }
 }
 
 const NUMERIC_RANK: Record<string, number> = { byte: 1, short: 2, char: 2, int: 3, long: 4, float: 5, double: 6 };
