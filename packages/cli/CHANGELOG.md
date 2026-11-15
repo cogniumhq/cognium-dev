@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.1] - 2026-11-15
+
+### Changes
+
+- fix(circle-ir): JS/TS template_injection (CWE-1336) credits a fixed template (#1252)
+
 ## [4.21.0] - 2026-11-15
 
 ### Changes
