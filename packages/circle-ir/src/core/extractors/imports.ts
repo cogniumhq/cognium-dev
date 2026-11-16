@@ -150,6 +150,8 @@ function extractJavaImports(tree: Tree, cache?: NodeCache): ImportInfo[] {
 function extractJSImportInfo(node: Node): ImportInfo[] {
   const imports: ImportInfo[] = [];
   const lineNumber = node.startPosition.row + 1;
+  // TypeScript `import type …` (the whole statement) binds no runtime value.
+  const statementTypeOnly = hasTypeKeyword(node);
 
   // Get the module source (from 'module')
   const sourceNode = node.childForFieldName('source');
@@ -243,6 +245,7 @@ function extractJSImportInfo(node: Node): ImportInfo[] {
               alias,
               is_wildcard: false,
               line_number: lineNumber,
+              ...(hasTypeKeyword(specifier) ? { is_type_only: true } : {}),
             });
           }
         }
@@ -305,6 +308,7 @@ function extractJSImportInfo(node: Node): ImportInfo[] {
                 alias,
                 is_wildcard: false,
                 line_number: lineNumber,
+                ...(hasTypeKeyword(specifier) ? { is_type_only: true } : {}),
               });
             }
           }
@@ -313,8 +317,22 @@ function extractJSImportInfo(node: Node): ImportInfo[] {
     }
   }
 
-  return imports;
+  return statementTypeOnly ? imports.map(imp => ({ ...imp, is_type_only: true })) : imports;
 }
+
+/**
+ * True when `node` (an import_statement or import_specifier) carries the
+ * TypeScript `type` modifier as a direct child: `import type { X } …`,
+ * `import { type X } …`.
+ */
+function hasTypeKeyword(node: Node): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && !child.isNamed && child.type === 'type') return true;
+  }
+  return false;
+}
+
 
 /**
  * Find CommonJS require calls: const x = require('module')
