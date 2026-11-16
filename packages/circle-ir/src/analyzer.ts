@@ -188,6 +188,7 @@ import { SensitiveDataInLogPass } from './analysis/passes/sensitive-data-in-log-
 import { RedosRegexLiteralPass } from './analysis/passes/redos-regex-literal-pass.js';
 import { HardcodedSecretArgumentPass } from './analysis/passes/hardcoded-secret-argument-pass.js';
 import { MissingAuthMiddlewarePass } from './analysis/passes/missing-auth-middleware-pass.js';
+import { PrototypePollutionPass } from './analysis/passes/prototype-pollution-pass.js';
 import { CsrfSameSiteNoneSessionPass } from './analysis/passes/csrf-samesite-none-session-pass.js';
 import { CsrfProtectionDisabledPass } from './analysis/passes/csrf-protection-disabled-pass.js';
 import { XmlEntityExpansionPass } from './analysis/passes/xml-entity-expansion-pass.js';
@@ -1433,6 +1434,7 @@ async function analyzeFile(
   if (!disabledPasses.has('redos-regex-literal'))   pipeline.add(new RedosRegexLiteralPass());
   if (!disabledPasses.has('hardcoded-secret-argument')) pipeline.add(new HardcodedSecretArgumentPass());
   if (!disabledPasses.has('missing-auth-middleware')) pipeline.add(new MissingAuthMiddlewarePass());
+  if (!disabledPasses.has('prototype-pollution'))   pipeline.add(new PrototypePollutionPass());
   if (!disabledPasses.has('csrf-protection-disabled')) pipeline.add(new CsrfProtectionDisabledPass());
   if (!disabledPasses.has('csrf-samesite-none-session')) pipeline.add(new CsrfSameSiteNoneSessionPass());
   if (!disabledPasses.has('xml-entity-expansion'))  pipeline.add(new XmlEntityExpansionPass());
