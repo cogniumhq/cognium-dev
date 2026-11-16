@@ -425,6 +425,329 @@ describe('recheck on a TypeScript CWE-532 fix (sensitive-data-in-log)', () => {
   }, 60_000);
 });
 
+describe('recheck on a TypeScript CWE-328/327 fix through crypto named imports (weak-hash, weak-crypto)', () => {
+  const TS_FILE = 'src/crypto-util.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'weak-crypto-named-import');
+  const CWES = new Set(['CWE-328', 'CWE-327']);
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('crypto-before', 'vulnerable.ts');
+    tsTree('crypto-fixed', 'fixed.ts');
+    baselinePath = join(work, 'crypto-before.json');
+    await runCli(['recheck', join(work, 'crypto-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => CWES.has(f.cwe)).map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per function, keyed CWE × declaration × rule', () => {
+    expect(keys.length).toBe(8);
+    for (const k of keys) {
+      expect(k.startsWith(`${k.split('|')[0]}|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|weak-hash') || k.endsWith('|weak-crypto')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'crypto-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => CWES.has(v.cwe)).every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => CWES.has(f.cwe))).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'crypto-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys[0]]);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-1333 fix (redos-regex-literal)', () => {
+  const TS_FILE = 'src/routes.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-regex-literal');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('redos-before', 'vulnerable.ts');
+    tsTree('redos-fixed', 'fixed.ts');
+    baselinePath = join(work, 'redos-before.json');
+    await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos-regex-literal').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × rule', () => {
+    expect(keys.length).toBe(5);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos-regex-literal')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.rule === 'redos-regex-literal').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos-regex-literal')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'redos-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-1333 fix (redos: request value as a RegExp pattern)', () => {
+  const TS_FILE = 'src/search.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'redos-request-pattern');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('rxp-before', 'vulnerable.ts');
+    tsTree('rxp-fixed', 'fixed.ts');
+    baselinePath = join(work, 'rxp-before.json');
+    await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'redos').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1333 × declaration × redos', () => {
+    expect(keys.length).toBe(3);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1333|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|redos')).toBe(true);
+    }
+  });
+
+  test('fixed (escaped): every key is gone', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'redos')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present', async () => {
+    const r = await runCli(['recheck', join(work, 'rxp-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-798 fix (hardcoded-secret-argument)', () => {
+  const TS_FILE = 'src/secrets.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'hardcoded-secret-argument');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('cred-before', 'vulnerable.ts');
+    tsTree('cred-fixed', 'fixed.ts');
+    baselinePath = join(work, 'cred-before.json');
+    await runCli(['recheck', join(work, 'cred-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.cwe === 'CWE-798').map(f => f.key);
+  }, 60_000);
+
+  test('before: findings keyed CWE-798 × declaration × rule, one key per function', () => {
+    expect(new Set(keys).size).toBe(9);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-798|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|hardcoded-credential')).toBe(true);
+    }
+  });
+
+  test('fixed: every CWE-798 key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'cred-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', [...new Set(keys)].join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.cwe === 'CWE-798').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.cwe === 'CWE-798')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'cred-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys[0]]);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-862 fix (missing-auth-middleware)', () => {
+  const TS_FILE = 'src/notes.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'missing-auth-middleware');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('authz-before', 'vulnerable.ts');
+    tsTree('authz-fixed', 'fixed.ts');
+    baselinePath = join(work, 'authz-before.json');
+    await runCli(['recheck', join(work, 'authz-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.rule === 'missing-auth-middleware').map(f => f.key);
+  }, 60_000);
+
+  test('before: keyed CWE-862 × declaration × rule', () => {
+    expect(keys.length).toBeGreaterThan(0);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-862|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|missing-auth-middleware')).toBe(true);
+    }
+  });
+
+  test('fixed: every key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'authz-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.verdicts!.filter(v => v.rule === 'missing-auth-middleware').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.rule === 'missing-auth-middleware')).toEqual([]);
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'authz-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-1321 fix (prototype-pollution)', () => {
+  const TS_FILE = 'src/merge.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'prototype-pollution');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('pp-before', 'vulnerable.ts');
+    tsTree('pp-fixed', 'fixed.ts');
+    baselinePath = join(work, 'pp-before.json');
+    await runCli(['recheck', join(work, 'pp-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.cwe === 'CWE-1321').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per vulnerable function, CWE-1321 × declaration × rule', () => {
+    expect(keys.length).toBe(4);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1321|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|prototype-pollution')).toBe(true);
+    }
+  });
+
+  test('fixed: every CWE-1321 key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'pp-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.filter(v => v.cwe === 'CWE-1321').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.cwe === 'CWE-1321')).toEqual([]);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'pp-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys[0]]);
+    expect(r.code).toBe(1);
+    expect((JSON.parse(r.stdout) as RecheckReport).targets![0]).toMatchObject({ key: keys[0], verdict: 'still-present', fixed: false });
+  }, 60_000);
+});
+
+describe('recheck on a TypeScript CWE-1336 fix (template_injection)', () => {
+  const TS_FILE = 'src/preview.ts';
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'template-injection');
+  let baselinePath: string;
+  let keys: string[];
+
+  function tsTree(name: string, fixture: string): string {
+    const root = join(work, name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, TS_FILE), readFileSync(join(FIXTURES, fixture), 'utf8'));
+    return root;
+  }
+
+  beforeAll(async () => {
+    tsTree('ssti-before', 'vulnerable.ts');
+    tsTree('ssti-fixed', 'fixed.ts');
+    baselinePath = join(work, 'ssti-before.json');
+    await runCli(['recheck', join(work, 'ssti-before'), '--changed', TS_FILE, '-o', baselinePath]);
+    const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+    keys = rep.findings.filter(f => f.cwe === 'CWE-1336').map(f => f.key);
+  }, 60_000);
+
+  test('before: one key per handler, keyed CWE-1336 × declaration × rule', () => {
+    expect(keys.length).toBe(6);
+    for (const k of keys) {
+      expect(k.startsWith(`CWE-1336|${TS_FILE}|`)).toBe(true);
+      expect(k.endsWith('|template_injection')).toBe(true);
+    }
+  });
+
+  test('fixed: every CWE-1336 key is gone, --expect-gone passes', async () => {
+    const r = await runCli(['recheck', join(work, 'ssti-fixed'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.verdicts!.filter(v => v.cwe === 'CWE-1336').every(v => v.verdict === 'gone')).toBe(true);
+    expect(rep.findings.filter(f => f.cwe === 'CWE-1336')).toEqual([]);
+    expect(rep.targets!.every(t => t.verdict === 'gone' && t.fixed)).toBe(true);
+  }, 60_000);
+
+  test('unchanged: the keys are still-present and --expect-gone fails', async () => {
+    const r = await runCli(['recheck', join(work, 'ssti-before'), '--changed', TS_FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+    expect(r.code).toBe(1);
+    const rep = JSON.parse(r.stdout) as RecheckReport;
+    expect(rep.targets!.every(t => t.verdict === 'still-present' && t.fixed === false)).toBe(true);
+  }, 60_000);
+});
+
 /**
  * G1: a flow in an inline route handler is keyed by the handler's positional
  * stable id, so an inserted statement re-keys it. A no-op must not read `gone`:
@@ -436,6 +759,7 @@ describe('recheck G1: a re-keyed declaration is still-present, never gone (JS an
   const CLASSES: Array<{ id: string; cwe: string }> = [
     { id: '89', cwe: 'CWE-89' }, { id: '79', cwe: 'CWE-79' }, { id: '22', cwe: 'CWE-22' },
     { id: '78', cwe: 'CWE-78' }, { id: '918', cwe: 'CWE-918' },
+    { id: '601', cwe: 'CWE-601' }, { id: '502', cwe: 'CWE-502' },
   ];
   /** n2: one statement after line 1; n3: one statement as the first line of the handler. */
   const top = (code: string) => code.replace(/\n/, '\nconst reviewedAt = 1;\n');

@@ -1353,6 +1353,26 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
       });
     }
 
+    // cognium-dev #1152 / #1247 — Java `new Cookie(…, value)` trust_boundary only
+    // when `value` is HTTP-sourced in the same method. Method parameters such as
+    // `InsecureCookieTp.set(..., String sid)` are not CWE-501 session-trust writes.
+    const javaCookieTrustSinkLines = new Set<number>();
+    for (const s of sinks) {
+      if (
+        s.type === 'trust_boundary' &&
+        (s.method === 'Cookie' || s.method === 'setValue')
+      ) {
+        javaCookieTrustSinkLines.add(s.line);
+      }
+    }
+    if (javaCookieTrustSinkLines.size > 0) {
+      finalFlows = finalFlows.filter(f => {
+        if (f.sink_type !== 'trust_boundary') return true;
+        if (!javaCookieTrustSinkLines.has(f.sink_line)) return true;
+        return typeof f.source_type === 'string' && f.source_type.startsWith('http_');
+      });
+    }
+
     // cognium-dev #49 — final dedup on (source_line, sink_line, sink_type).
     // The DFG propagator and the four supplementary detectors each emit
     // independently; merge-time dedup at the supplement seams is partial
@@ -3541,6 +3561,29 @@ function sinkNestedInJsTsParseArgs(lineText: string, sinkMethod: string | undefi
   return false;
 }
 
+/**
+ * For a source and a `redos` sink on the same line: the source's expression
+ * (`req.query.p` from `req.query.p in handler`) is inside a call argument at
+ * one of the sink's pattern positions. Sources tagged with an LHS variable
+ * (`re = RegExp(...)`) carry no expression and do not qualify.
+ */
+function redosColocatedInPatternArg(
+  source: CircleIR['taint']['sources'][number],
+  sink: CircleIR['taint']['sinks'][number],
+  calls: CircleIR['calls'],
+): boolean {
+  if (source.variable) return false;
+  const loc = source.location ?? '';
+  const at = loc.indexOf(' in ');
+  const expr = (at >= 0 ? loc.slice(0, at) : loc).trim();
+  if (expr.length < 3) return false;
+  const positions = sink.argPositions && sink.argPositions.length > 0 ? sink.argPositions : [0];
+  return calls.some(c =>
+    c.location.line === sink.line &&
+    c.method_name === sink.method &&
+    c.arguments.some(a => positions.includes(a.position) && (a.expression ?? '').includes(expr)));
+}
+
 function detectExpressionScanFlows(
   calls: CircleIR['calls'],
   sources: CircleIR['taint']['sources'],
@@ -4900,6 +4943,10 @@ function detectExpressionScanFlows(
       // Drop flows tagged constant / SPI (see sourceSemanticsAllowed
       // JSDoc for the per-sink policy).
       if (!sourceSemanticsAllowed(source, sink.type)) continue;
+      // A colocated request value reaches a `redos` sink only as the pattern
+      // argument: `new RegExp(req.query.p)`, not `req.query.p.match(/x/)` or
+      // Java `request.getParameter("x").matches("[a-z]+")`.
+      if (sink.type === 'redos' && !redosColocatedInPatternArg(source, sink, calls)) continue;
       // cognium-dev#1156 — sink nested only inside `.parse(` args (same line).
       const colocLineText = (sink as { code?: string }).code ?? '';
       if (
