@@ -5,10 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.1] - 2026-11-15
+
+### Changes
+
+- circle-ir: credit a complete same-site redirect guard in JS/TS (CWE-601), never a '//'-only one (#1257)
+- fix(circle-ir): JS/TS template_injection (CWE-1336) credits a fixed template (#1252)
+
+## [4.21.0] - 2026-11-15
+
+### Changes
+
+- test(java): allow trust_boundary backwards pairings under legacy generateFindings (#1247)
+- fix(java): HTTP-sourced Cookie values report trust_boundary (#1247 S3)
+- fix(circle-ir): self-closing Tycho target location no longer hides the next Maven location
+- fix(java): resolve same-file overloads by arity and argument types; order-independent inter-procedural taint
+- fix(java): resolve FQN Log4j Logger receivers for log_injection (#1247)
+- feat(circle-ir): csrf-samesite-none-session (CWE-352) for JS/TS
+- docs(circle-ir): changelog for the stage-8a guard scope
+- fix(circle-ir): JS stage-8a redirect guard must test the redirected value
+- chore(circle-ir): put #1223 helpers' doc comments back above their functions
+- fix(circle-ir): JS cross-handler req.* name collision (#1223)
+- feat(circle-ir): sensitive-data-in-log (CWE-532) for JS/TS
+- test(java): SecuriBench Basic30 field-sensitive heap regression (#1198)
+- fix(circle-ir): regex-lint budget for #1198 heap-field helpers
+- fix(circle-ir): hoist JAVA_LOCAL_FIELD_ASSIGN_LINE_RE (#1198)
+- fix(circle-ir): Java heap field taint for SecuriBench Basic29 (#1198)
+- chore(circle-ir): share reflection line regexes, bump regex-lint baseline (#1198)
+- fix(circle-ir): Field.set taint into reflectively targeted fields (#1198 S3)
+- fix(circle-ir): scope #1198 field HTTP sources to this.* only (#614)
+- fix(circle-ir): taint Field.get on HTTP-tainted instance fields (#1198)
+- fix(circle-ir): recognize bare-field getters in setter-chain sources (#1198)
+- fix(circle-ir): TS subscribe callback http_body source (#1224)
+- fix(circle-ir): ESAPI println concat FP without dropping qualified sanitizers (#915)
+- fix(java): treat ESAPI encodeForHTML concat operands as sanitized (#915)
+- fix(circle-ir): FQN escapeHtml inner helper gates XSS format (#915)
+- fix(java): List.get on literal slot after addAll merges taint (#476)
+- fix(circle-ir): #1149 IL-22 JSON.parse body→SQL without broad regressions
+- fix(#1149): scan JS taint binds per-assignment; drop require in gate fixture
+- fix(js): JSON.parse(req.body) field flows to SQL sink (#1149)
+- fix(circle-ir): per-index list.get after addAll (Refs #476)
+- chore: CHANGELOG for Collections8 addAll (Refs #476)
+- fix(java): Collections8 addAll list taint merge (Refs #476)
+- fix(circle-ir): narrow #817 shell intake to sync execSync PAT shape
+- fix(circle-ir): cve-intake exported shell handlers keep command_injection (#817)
+- fix(circle-ir): cache_poisoning on the cve-intake parameter shapes, with a built-CLI test (#900)
+- fix(circle-ir): parse libxmljs call args without backtracking regex (#1222)
+- fix(js): libxmljs noent:false drops xxe taint sink (#1222)
+- feat(circle-ir): Maven reactor and Gradle multi-project resolved sets, one per module (#1219)
+- fix(java): gate interprocedural xss when helper returns HtmlUtils.htmlEscape (#915)
+- fix(java): row array literal taints 2-D cells (Refs #476)
+- fix(java): array element flows for n-n index alias (Refs #476)
+- feat(circle-ir): graph-store T6 on facts@2 — producer walk, blastRadius / impactedTests, parity script
+- fix(circle-ir): keep interprocedural_param flows to cache_poisoning sinks (#900)
+- fix(circle-ir,cli): S3 — exponential regexes, a hard bound behind --file-timeout-ms, regex lint in CI
+- test(circle-ir): #1187 acceptance + cross-file positive control
+- fix(circle-ir): drop JS/TS test→production cross-file taint (#1187)
+- fix(js): detect module let on shared top-level lines (#1148)
+- chore(circle-ir): CHANGELOG for #1150
+- fix(rust): keep IL-57 param JSON→yaml deser flows (#1150)
+- fix(java): field-carried Commandline argv at execute (#1199)
+- fix(java): getTheValue pass-through gate for ldap_injection (#1197)
+- feat(circle-ir,cli): facts@2 is the default fact schema (graph-store T5a.1b)
+- fix(circle-ir): Java DFG column on defs/uses for lambda lines (#1196)
+- fix(circle-ir): qualify java.lang receivers on external call sites (#1195)
+- fix(circle-ir): emit declare global block declarations (#1194)
+- fix(circle-ir): recover zx Shell generic call signature parse (#1193)
+- fix(java): member-type-first binding for new Type() (#1192)
+- chore(deps): Bump apache-arrow from 21.1.0 to 21.2.0
+- chore(deps-dev): Bump the dev-tooling group with 2 updates
+- docs(stable-ids): Java and Go block node ids re-key too; columns are UTF-16
+- docs(changelog): node-id re-key also moves TS facts@2 flow rows
+- test(stable-ids): block placement with and without start_column
+- fix(stable-ids): TS/JS node ids as stable as their body id (T-SI1.1)
+- fix(circle-ir): treat export default { handler } as module exports (#818)
+- test(circle-ir): lock non-helper OWASP trustbound shapes (#589)
+- fix(circle-ir): trust_boundary through encoder-only multi-line helpers (#589 S4)
+- fix(circle-ir): exported onLogin keeps static #107 log_injection (#1151)
+- fix(circle-ir): super(…) binds a simple name only through a wildcard import the file has
+- docs(circle-ir): CHANGELOG notes the superclass scoping and CallInfo.in_type
+- fix(circle-ir): super(…) resolves its superclass from the class's scope
+- test(circle-ir): explicit super(…)/this(…) rows in facts@2 too
+- fix(circle-ir): navigation overload selection picks the overload typed as the arguments
+- fix(circle-ir): explicit super(…)/this(…) are Java call sites
+- test(circle-ir): explicit super(…)/this(…) constructor calls in the Java graph (failing)
+- fix(java-graph): review — linear XML read, narrower constructor rooting
+- fix(facts@2): names in registering files are not registration rows
+- feat(java-graph): entries from registering files passed in as text
+- fix(circle-ir): TS type-annotated tainted declaration keeps its xss sinks (#1173)
+- fix(circle-ir): credit a typeof-string reject-guard on a JS/TS nosql filter (#1172)
+- fix(circle-ir): legacy collection update/remove/findAndModify are nosql_injection sinks (#1172)
+- fix(circle-ir): Angular bypassSecurityTrust* fires as an xss sink again (#1171)
+- fix(circle-ir): JS/TS nested-sink rule for #1156 covers every emitter and any source call
+- feat(circle-ir,cli): facts@2 follow-ups — TS graph facts, call.declaring, --facts-scheme (#1139)
+- fix(java): scope log_injection dedupe on gated SLF4J loggers (#468)
+- fix(java): suppress duplicate log_injection on gated SLF4J loggers (#468)
+- fix(circle-ir): inline req.query reaches cache_poisoning Map.set (#900 S2)
+- test(circle-ir): lock static-parity py log_injection (#1151 S2)
+- fix(#900): module-scope Map detection must not match indented locals
+- fix(#900): restore Map.get SQL suppression; add cache_poisoning CLI maps
+- fix(js): add cache_poisoning sink for shared Map writes (#900 S1)
+- test(java): align #387 legacy cookie case with #1152 sink table
+- fix(java): drop trust_boundary on Cookie ctor/setValue (#1152)
+- test(circle-ir): lock static #107 js log_injection shape (#1151)
+- fix(circle-ir): Java callee param seeds — arity keys, qualified calls (#814)
+- fix(circle-ir): Java same-file callee parameter taint seeding
+
 ## [Unreleased]
 
 ### Fixed
 
+- **JS/TS: `template_injection` (CWE-1336) credits the fix: a fixed template that names a request variable is no longer a finding.** The detector read the first argument up to the first `,` or `)` and matched tainted names anywhere in it, so `ejs.render('<p>Hello <%= name %></p>', { name })` — the fix — still reported the template injection, and `cognium-dev recheck` read `still-present`. It now takes the whole first argument (balanced, string-aware) and looks only at its code: the text of quoted strings and of template literals is ignored, `${…}` substitutions still count. The same applies to the request-derived locals it tracks, and a destructuring (`const { tpl } = req.body`) now binds its names. Coverage extended to `handlebars.compile`, `pug.render` / `pug.compile` and `nunjucks.renderString` (already `code_injection` CWE-94 sinks; now also CWE-1336). Fixtures: vulnerable / fixed / near-miss TypeScript files under `tests/fixtures/template-injection/`; a CLI test checks the fix reads `gone` and an unchanged file `still-present`.
+- **JS/TS: a complete same-site redirect guard is credited (CWE-601).** `res.redirect(next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/')` (or the strict regex `/^\/(?![\/\\])/.test(next)`) no longer reports `open_redirect`; `crlf` is unchanged. A guard that rejects only `//` is still reported: `/\evil.example` is read by browsers as `//evil.example`.
 - **JS/TS: deserialization from a cookie (CWE-502).** `serialize.unserialize(req.cookies.x)` (the classic node-serialize RCE arrives in a cookie) now reports `deserialization`: the source-to-sink reach map (`canSourceReachSink`) allowed it from request params, query and body but not from `http_cookie`. `req.signedCookies` is unchanged (its value is integrity-protected by the server's secret).
 - **Java: `trust_boundary` on `new Cookie(name, value)` / `setValue` fires when the value is HTTP-sourced in-method (#1247 `cookie_trusted`), not for bare method parameters (#1152 static #118 / `InsecureCookieTp`).**
 - **Java/Tycho: a self-closing `<location … />` in a `*.target` file no longer hides the Maven location after it.** The location matcher treated `<location type="Target"/>` (or `type="Directory"`) as an opening tag, so its "body" ran on to the next `</location>` and the following `<location type="Maven">` was never read; its dependencies were missing from the census. Self-closing locations are now skipped (#1077 follow-up).
