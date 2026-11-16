@@ -1,0 +1,328 @@
+# release-readiness: reviews one release candidate (an rc tag <track>-v<ver>-rc.N) and writes the
+# verdict (GO or NO-GO, every check with its evidence, each failure as a ready-to-file task) as the
+# notes of the candidate's pre-release, with verdict.json and its sha256 as assets. It never moves
+# a tag, merges, publishes or deploys. The checks and the numbers of record are in
+# .release-readiness.json and .release/.
+#
+# Before any of the candidate's code runs, a step checks that the candidate is on the base branch
+# (BASE) or on a release/<track>-* branch (a hotfix); otherwise the verdict is NO-GO and none of
+# the candidate's steps run. The gate (config, numbers of record, waivers) and the reviewer
+# script are copied from that branch (scripts/gate-from-base.sh), so a candidate cannot weaken its
+# own gate. The CI evidence is fetched by workflow code with the read-only token and handed over
+# as a file, so the candidate's commands run with no token. Residual: on `push: tags` GitHub runs
+# this file as it is at the tag's commit, so the ancestry check holds on workflow_run and
+# workflow_dispatch (the file from the default branch) but not against a candidate that also
+# rewrites this file.
+#
+# Why three triggers: a tag the rc-tag workflow creates with its GITHUB_TOKEN starts no other
+# workflow, so the review follows rc-tag through workflow_run (on success only) and derives the
+# tag from the rc/<track>-<ver>-rc.N branch. A person who pushes an rc tag directly triggers it
+# through `push: tags`. workflow_dispatch re-runs a review by hand.
+#
+# Permissions: the review job checks out and runs the candidate's commands with a read-only token
+# (contents: read, and actions: read for the CI runs list, which a workflow step reads before the
+# candidate's code and never hands to it). Only the notes job, which runs no repository code (it
+# downloads the verdict and calls the releases API), may write: it creates the pre-release when
+# the tag has none, attaches verdict.json and verdict.json.sha256 (never overwritten) and writes
+# the verdict into its notes. Both jobs run on GitHub-hosted runners, which are ephemeral.
+#
+# Vendored from the release-readiness template 0.4.4, upstream commit 831c665. Changes: runs-on ubuntu-latest; files under .release/.
+name: release-readiness
+
+on:
+  workflow_run:
+    workflows: [rc-tag]
+    types: [completed]
+  push:
+    tags: ["*-v*.*.*-rc.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "rc tag to review, <track>-v<ver>-rc.N"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  BASE: main                 # the base branch (0.4.4): main, or master on a fork that keeps upstream's name
+  CI_WORKFLOW: "ci.yml"      # the workflow rc-tag.yml checks; must have passed on the candidate's commit
+
+concurrency:
+  group: release-readiness-${{ github.event.workflow_run.head_branch || github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read          # the CI runs list below (workflow code only)
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Which candidate
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            workflow_run)
+              [[ $RUN_BRANCH =~ ^rc/([a-z][a-z0-9.-]*)-([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]] \
+                || { echo "::error::$RUN_BRANCH is not rc/<track>-<ver>-rc.N"; exit 1; }
+              tag="${BASH_REMATCH[1]}-v${BASH_REMATCH[2]}-rc.${BASH_REMATCH[3]}" ;;
+            workflow_dispatch) tag=$INPUT_TAG ;;
+            *) tag=$REF_NAME ;;
+          esac
+          [[ $tag =~ ^([a-z][a-z0-9.-]*)-v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]] \
+            || { echo "::error::$tag is not <track>-v<ver>-rc.N"; exit 1; }
+          { echo "tag=$tag"; echo "track=${BASH_REMATCH[1]}"; } >> "$GITHUB_OUTPUT"
+      # fetch-depth 0: every branch from the server, for the ancestry check below.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      # Workflow code, before the candidate's: refs/remotes/origin/* were fetched from the server by
+      # the checkout above; nothing from the candidate's tree is read here.
+      - name: Refuse a candidate that is not on main or a release branch
+        id: anc
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TRACK: ${{ steps.tag.outputs.track }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          base=${BASE:-main}
+          [[ $base =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && $base != *..* && $base != */ && ! $base =~ ^(refs|rc|release|hotfix)/ ]] \
+            || { echo "::error::BASE '$base' is not a base branch name"; exit 1; }
+          sha=$(git rev-parse HEAD)
+          on=""
+          for ref in $(git for-each-ref --format='%(refname)' "refs/remotes/origin/$base" "refs/remotes/origin/release/$TRACK-[0-9]*"); do
+            if git merge-base --is-ancestor "$sha" "$ref"; then on=${ref#refs/remotes/origin/}; break; fi
+          done
+          if [ -n "$on" ]; then
+            echo "candidate $TAG ($sha) is on $on"
+            echo "on=true" >> "$GITHUB_OUTPUT"
+            echo "base=$on" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::$TAG ($sha) is on neither $base nor a release/$TRACK-* branch: NO-GO, its code is not run"
+            printf '<!-- release-readiness:start -->\n## Release readiness: NO-GO\n\n`%s` at `%s` is on neither `%s` nor a `release/%s-*` branch, so the review did not run its code. Cut candidates from `%s` (or a hotfix from its release branch) through `rc/` branches.\n<!-- release-readiness:end -->\n' \
+              "$TAG" "$sha" "$base" "$TRACK" "$base" > "$RUNNER_TEMP/verdict.md"
+            printf '{"verdict":"NO-GO","reasons":["the candidate is on neither %s nor a release/%s-* branch"]}\n' "$base" "$TRACK" > "$RUNNER_TEMP/verdict.json"
+            cat "$RUNNER_TEMP/verdict.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "on=false" >> "$GITHUB_OUTPUT"
+          fi
+      # The evidence for the ci-green check (scripts/ci-green.sh), fetched here (workflow code,
+      # read-only token) so the candidate's own commands below run without a token. An API error
+      # leaves an empty list, and ci-green then fails: a review that cannot show CI passed is not GO.
+      - name: List CI_WORKFLOW's successful runs on the candidate's commit
+        if: steps.anc.outputs.on == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          sha=$(git rev-parse HEAD)
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/$CI_WORKFLOW/runs?head_sha=$sha&status=success&per_page=20" \
+            > "$RUNNER_TEMP/ci-runs.json" || echo '{"workflow_runs":[]}' > "$RUNNER_TEMP/ci-runs.json"
+      # 0.4.0: the gate (config, figure of record, waivers, goals) and the reviewer script come from the
+      # branch the candidate is on (BASE, or its release/<track>-* branch: ON_BRANCH, from the anc
+      # step, never the BASE setting itself), copied by gate-from-base.sh with `git show` (the base's
+      # copy of the helper; nothing of the candidate is read), into a fresh directory outside the
+      # checkout. A candidate cannot weaken its own gate.
+      - name: Take the gate from the base branch
+        if: steps.anc.outputs.on == 'true'
+        id: gate
+        shell: bash
+        env:
+          ON_BRANCH: ${{ steps.anc.outputs.base }}
+        run: |
+          set -euo pipefail
+          g="$RUNNER_TEMP/gate"
+          [ ! -e "$g" ] || { echo "::error::$g exists before the copy"; exit 1; }
+          git show "origin/$ON_BRANCH:scripts/gate-from-base.sh" > "$RUNNER_TEMP/gate-from-base.sh"
+          bash "$RUNNER_TEMP/gate-from-base.sh" "origin/$ON_BRANCH" "$g"
+          echo "dir=$g" >> "$GITHUB_OUTPUT"
+      - name: Review the candidate
+        if: steps.anc.outputs.on == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GATE: ${{ steps.gate.outputs.dir }}
+        run: |
+          set -uo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sha=$(git rev-parse HEAD)
+          export CI_RUNS_FILE="$RUNNER_TEMP/ci-runs.json"
+          code=0
+          # The base's reviewer. While the base still carries a reviewer older than 0.4.0 (the
+          # adoption PR is not merged yet), it runs without --gate-from: still the base's script,
+          # never the candidate's.
+          gate_args=()
+          if grep -q -- '--gate-from' "$GATE/scripts/release-readiness.mjs"; then gate_args=(--gate-from "$GATE"); fi
+          # (0.4.4) BRANCH_CHECK_BASE: the base branch a failure's task names; a reviewer before 0.4.4 ignores it
+          BRANCH_CHECK_BASE="${BASE:-main}" node "$GATE/scripts/release-readiness.mjs" --config .release-readiness.json --tag "$TAG" --sha "$sha" "${gate_args[@]}" \
+            --out-md "$RUNNER_TEMP/verdict.md" --out-json "$RUNNER_TEMP/verdict.json" > /dev/null || code=$?
+          if [ "$code" -ge 2 ]; then
+            echo "::error::release-readiness could not run (exit $code)"
+            printf '<!-- release-readiness:start -->\n## Release readiness: NO-GO\n\nThe review could not run on `%s` at `%s` (exit %s): see the workflow run.\n<!-- release-readiness:end -->\n' \
+              "$TAG" "$sha" "$code" > "$RUNNER_TEMP/verdict.md"
+            echo '{"verdict":"NO-GO","reasons":["the review could not run"]}' > "$RUNNER_TEMP/verdict.json"
+          fi
+          cat "$RUNNER_TEMP/verdict.md" >> "$GITHUB_STEP_SUMMARY"
+      # 0.4.3: the artifact is one fresh directory holding exactly verdict.md and verdict.json,
+      # uploaded with a single-line path, so its root holds the two files the notes job accepts. In a
+      # container job `${{ runner.temp }}` is the host's path and the runner translates an input into
+      # the container's only at its start: a two-line path kept its second line on the host, and
+      # upload-artifact rooted the artifact at / (`__w/_temp/verdict.md`), which the notes job
+      # refused. This step runs after every path that writes a verdict (the branch refusal, the
+      # review, its could-not-run fallback).
+      - name: Exactly verdict.md and verdict.json, regular files, in a fresh directory
+        id: out
+        shell: bash
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d "$RUNNER_TEMP/verdict-out.XXXXXXXX")
+          for f in verdict.md verdict.json; do
+            if [ ! -f "$RUNNER_TEMP/$f" ] || [ -L "$RUNNER_TEMP/$f" ]; then
+              echo "::error::$f is missing or not a regular file"; exit 1
+            fi
+            cat -- "$RUNNER_TEMP/$f" > "$d/$f"
+          done
+          echo "name=${d##*/}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-readiness-${{ steps.tag.outputs.tag }}
+          path: ${{ runner.temp }}/${{ steps.out.outputs.name }}
+          if-no-files-found: error
+
+  notes:
+    needs: review
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # 0.3.5: the verdict goes into a fresh directory under runner.temp, never into the workspace
+      # the review job shared after running the candidate's commands (download-artifact writes
+      # through a symlink left there); then exactly verdict.md and verdict.json, regular files.
+      - name: A fresh directory for the verdict
+        id: dl
+        shell: bash
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d "$RUNNER_TEMP/verdict.XXXXXXXX")
+          echo "name=${d##*/}" >> "$GITHUB_OUTPUT"
+          echo "V=$d" >> "$GITHUB_ENV"   # every later step reads the verdict from $V
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-readiness-${{ needs.review.outputs.tag }}
+          path: ${{ runner.temp }}/${{ steps.dl.outputs.name }}
+      - name: Refuse anything but verdict.md and verdict.json, regular files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          case ":$PATH:" in *":$GITHUB_WORKSPACE"*|*"::"*|*":.:"*|*":./"*) echo "::error::PATH reaches the workspace or the current directory"; exit 1 ;; esac
+          bad=$(find "$V" -mindepth 1 ! -type f -print -quit)
+          [ -z "$bad" ] || { echo "::error::the verdict artifact holds something other than a regular file"; exit 1; }
+          [[ $(cd "$V" && LC_ALL=C ls -A | tr '\n' ' ') == "verdict.json verdict.md " ]] \
+            || { echo "::error::the verdict artifact must hold exactly verdict.md and verdict.json"; exit 1; }
+      - name: The candidate's pre-release (created when the tag has none)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.review.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"   # never the workspace (its .git/config is the review job's)
+          node - <<'EOF'
+          const fs = require("fs");
+          const { GH_TOKEN, REPO, TAG } = process.env;
+          const md = fs.readFileSync(`${process.env.V}/verdict.md`, "utf8").trim();
+          const api = (path, init = {}) => fetch(`https://api.github.com/repos/${REPO}${path}`, { ...init,
+            headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" } });
+          (async () => {
+            const got = await api(`/releases/tags/${encodeURIComponent(TAG)}`);
+            if (got.ok) return console.log(`pre-release ${TAG} exists`);
+            if (got.status !== 404) throw new Error(`read release: ${got.status} ${await got.text()}`);
+            const r = await api("/releases", { method: "POST",
+              body: JSON.stringify({ tag_name: TAG, name: TAG, draft: false, prerelease: true, body: md }) });
+            if (!r.ok) throw new Error(`create release: ${r.status} ${await r.text()}`);
+            console.log(`created pre-release ${TAG}`);
+          })().catch((e) => { console.error(e.message); process.exit(1); });
+          EOF
+      # The verdict of record. gh comes from Debian's own archive (signed by the distribution);
+      # without --clobber an existing asset of the same name is an error, never replaced.
+      - name: Attach verdict.json and its sha256 to the pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.review.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends gh > /dev/null
+          gh --version
+          cd "$V"
+          names=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')
+          if printf '%s\n' "$names" | grep -qxE 'verdict\.json(\.sha256)?'; then
+            echo "::error::$TAG already carries a verdict; assets are never overwritten, review rc.N+1"
+            exit 1
+          fi
+          sha256sum verdict.json > verdict.json.sha256
+          cat verdict.json.sha256
+          gh release upload "$TAG" verdict.json verdict.json.sha256 --repo "$REPO" --clobber=false \
+            || { echo "::error::uploading the verdict to $TAG failed (it carried none a moment ago); re-run this job"; exit 1; }
+      - name: Write the verdict as the pre-release's notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.review.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"   # never the workspace (its .git/config is the review job's)
+          node - <<'EOF'
+          const fs = require("fs");
+          const { GH_TOKEN, REPO, TAG } = process.env;
+          const md = fs.readFileSync(`${process.env.V}/verdict.md`, "utf8").trim();
+          const api = (path, init = {}) => fetch(`https://api.github.com/repos/${REPO}${path}`, { ...init,
+            headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" } });
+          (async () => {
+            const got = await api(`/releases/tags/${encodeURIComponent(TAG)}`);
+            if (!got.ok) throw new Error(`read release: ${got.status} ${await got.text()}`);
+            const rel = await got.json();
+            const old = rel.body || "";
+            const re = /<!-- release-readiness:start -->[\s\S]*?<!-- release-readiness:end -->/;
+            const body = re.test(old) ? old.replace(re, md) : (old ? `${old.trimEnd()}\n\n${md}` : md);
+            const r = await api(`/releases/${rel.id}`, { method: "PATCH", body: JSON.stringify({ body }) });
+            if (!r.ok) throw new Error(`update release: ${r.status} ${await r.text()}`);
+            console.log(`wrote the verdict into the notes of ${TAG}`);
+          })().catch((e) => { console.error(e.message); process.exit(1); });
+          EOF
+      - name: Red on NO-GO
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          v=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).verdict)' "$V/verdict.json")
+          echo "verdict: $v"
+          [ "$v" = "GO" ]
