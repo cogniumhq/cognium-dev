@@ -27,6 +27,21 @@
  * change closure: the whole tree is analysed and every finding whose sink,
  * source or path touches a changed file is reported.
  *
+ * Moves across files: a key holds its file, so a method moved to another file,
+ * or a class renamed together with its file, would read as a `gone` plus a new
+ * finding. When the move is evidenced, the baseline finding is matched to the one
+ * after finding of the same flow identity (file left out) in the file or
+ * declaration it moved to: `still-present`, `reason: moved`, `movedFrom`. The
+ * evidence is a git rename or copy (`--changed-from`), a caller's rename map
+ * (`--renames`), or a declaration whose body settled as a move by its body hash
+ * (circle-ir `detectMoves`). More than one candidate is `unknown`
+ * (`move-ambiguous`), never `gone`; a moved finding whose flow changed (a
+ * removed sink, an added sanitizer) is `gone`, its reason taken from where it
+ * moved to. Without evidence nothing changes. A rename's new path is added to
+ * `--changed`, so the file it moved to is analysed; a declaration moved into a
+ * file that is not otherwise renamed is matched only when that file is analysed
+ * (listed in `--changed`, or `--scope closure`, as `--changed-from` implies).
+ *
  * `--expect-gone <key[,…]>` names the findings the change is meant to fix;
  * the fix passes only when each of them is `gone` (and not gone because a
  * sanitizer for another sink class appeared).
@@ -45,9 +60,11 @@ import {
   analyzeProject,
   declAt,
   deriveStableIds,
+  detectMoves,
   stableIdsSupport,
   type CircleIR,
   type StableIdFile,
+  type StableDecl,
   type SupportedLanguage,
   type TaintPath,
 } from 'circle-ir';
@@ -79,6 +96,8 @@ export interface RecheckOptions {
   scope: RecheckScope;
   /** Keys the change is meant to fix. */
   expectGone: string[];
+  /** File renames the caller vouches for (`--renames`), baseline path → after path. */
+  renames?: Array<[string, string]>;
   output?: string;
 }
 
@@ -122,7 +141,12 @@ export interface RecheckFinding {
   severity: string;
   file: string;
   line: number;
-  decl: { scheme: string; id: string; name: string };
+  /**
+   * The enclosing declaration. For an `ids@0.1` declaration, also its kind, body
+   * hash and body token count: what a later run needs to tell that the
+   * declaration moved to another file (absent from baselines written before).
+   */
+  decl: { scheme: string; id: string; name: string; kind?: string; bodyHash?: string; tokens?: number };
   kind: 'flow' | 'pass';
   evidence?: RecheckEvidence;
 }
@@ -135,9 +159,14 @@ export type GoneReason =
   | 'file-removed'
   | 'flow-not-found'
   | 'not-reported';
-export type UnknownReason = 'parse-error' | 'not-analysed' | 'rekey-ambiguous';
-/** A `still-present` whose key changed: the declaration was re-keyed, the flow is the same. */
-export type StillPresentReason = 'rekeyed';
+export type UnknownReason = 'parse-error' | 'not-analysed' | 'rekey-ambiguous' | 'move-ambiguous';
+/**
+ * A `still-present` whose key changed: the declaration was re-keyed, the flow is
+ * the same (`rekeyed`), or the finding moved to another file on evidence (`moved`).
+ */
+export type StillPresentReason = 'rekeyed' | 'moved';
+/** Why a finding is taken to have moved to another file. */
+export type MoveEvidenceKind = 'git-rename' | 'git-copy' | 'rename-map' | 'body-hash';
 
 export interface RecheckVerdict {
   key: string;
@@ -156,9 +185,18 @@ export interface RecheckVerdict {
    * flow did not: same rule, CWE, file, sink and source code and types, sanitizers.
    */
   rekeyedTo?: string;
-  /** How a baseline key was matched to a different after key; only `flow-identity`. */
-  matchedBy?: 'flow-identity';
-  /** `unknown` / `rekey-ambiguous`: the after keys with the same flow identity, none chosen. */
+  /** How a baseline key was matched to a different after key. */
+  matchedBy?: 'flow-identity' | 'move';
+  /**
+   * `still-present` / `moved`: the baseline file the finding moved from (`file` is
+   * where it is after the change). `gone` after a move: the file the reason was
+   * taken from is `movedTo`.
+   */
+  movedFrom?: string;
+  movedTo?: string;
+  /** `moved`, `move-ambiguous`, or a `gone` after a move: what evidences the move. */
+  moveEvidence?: MoveEvidenceKind[];
+  /** `unknown` / `rekey-ambiguous` or `move-ambiguous`: the after keys that could be it, none chosen. */
   rekeyCandidates?: string[];
   /**
    * `gone`: the after declaration the reason was taken from when the baseline
@@ -235,7 +273,39 @@ export function parseRecheckOptions(o: Raw): RecheckOptions {
     throw new UsageError('--expect-gone needs --baseline or --changed-from: a verdict needs a before');
   }
   const output = typeof (o.output ?? o.o) === 'string' ? (o.output ?? o.o) as string : undefined;
-  return { changed: changed ?? [], changedFrom: changedFrom as string | undefined, baseline, scope: scopeRaw, expectGone, output };
+  const renames = parseRenames(o.renames);
+  // A renamed file's new path is in scope: the finding that moved there is looked for.
+  const changedAll = changed && renames ? [...new Set([...changed, ...renames.flatMap(([a, b]) => [norm(a), norm(b)])])].sort() : changed;
+  return {
+    changed: changedAll ?? [], changedFrom: changedFrom as string | undefined, baseline, scope: scopeRaw, expectGone, output,
+    ...(renames ? { renames } : {}),
+  };
+}
+
+/**
+ * `--renames old=new[,…]` or `@file`: file renames the caller vouches for, one
+ * per line or comma. A line may also be `old<TAB>new` or a
+ * `git diff --name-status -M` line (`R100<TAB>old<TAB>new`, `C…` for a copy).
+ */
+function parseRenames(v: string | boolean | undefined): Array<[string, string]> | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string' || v.trim() === '') throw new UsageError('--renames needs a value');
+  const lines = v.startsWith('@') ? readFileSync(v.slice(1), 'utf8').split('\n') : v.split(',');
+  const out = new Map<string, string>();
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    let parts = line.includes('\t') ? line.split('\t').map(x => x.trim()) : line.split('=').map(x => x.trim());
+    if (parts.length === 3 && /^[RC]\d*$/.test(parts[0])) parts = parts.slice(1);
+    if (parts.length !== 2 || !parts[0] || !parts[1] || parts[0] === parts[1]) {
+      throw new UsageError(`--renames: '${line}' is not old=new`);
+    }
+    const [from, to] = [norm(parts[0]), norm(parts[1])];
+    if (out.has(from) && out.get(from) !== to) throw new UsageError(`--renames: ${from} is renamed twice`);
+    out.set(from, to);
+  }
+  if (out.size === 0) throw new UsageError('--renames lists no renames');
+  return [...out].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 function norm(p: string): string {
@@ -266,6 +336,23 @@ export function changedFromGit(root: string, ref: string): string[] {
     if (line.trim()) out.add(norm(line.trim()));
   }
   return [...out].sort();
+}
+
+/**
+ * The renames and copies git finds between `ref` and the working tree under
+ * `root` (`git diff -M -C`), relative to `root`: evidence that a finding moved
+ * with its file.
+ */
+export function renamesFromGit(root: string, ref: string): Array<{ from: string; to: string; evidence: MoveEvidenceKind }> {
+  const out = execFileSync('git', ['-C', root, 'diff', '--name-status', '-M', '-C', '--relative', ref, '--'],
+    { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 }).toString();
+  const renames: Array<{ from: string; to: string; evidence: MoveEvidenceKind }> = [];
+  for (const line of out.split('\n')) {
+    const parts = line.split('\t');
+    if (parts.length !== 3 || !/^[RC]/.test(parts[0])) continue;
+    renames.push({ from: norm(parts[1]), to: norm(parts[2]), evidence: parts[0].startsWith('R') ? 'git-rename' : 'git-copy' });
+  }
+  return renames.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
 }
 
 /** Every file of the given languages under `dir`, relative, skipping dot entries and dependency/output directories. */
@@ -309,6 +396,22 @@ export interface RecheckContext {
   inventory: Map<string, DeclInventory>;
   /** Files analysed (closure: the tree; files: the changed list minus skipped). */
   analysed: Set<string>;
+  /** The after side's `ids@0.1` declarations per analysed file, for move detection. */
+  ids?: Map<string, StableIdFile>;
+  /** Evidenced moves from the baseline to the after side ({@link detectFindingMoves}). */
+  moves?: RecheckMoves;
+}
+
+/** Where baseline findings may have moved, and on what evidence. */
+export interface RecheckMoves {
+  /** File renames and copies: baseline path → after paths. */
+  files: Map<string, Array<{ to: string; evidence: MoveEvidenceKind }>>;
+  /**
+   * `file|declId` of a baseline declaration → the after declarations it may have
+   * moved to by body hash. `settled` is false for a shared body hash (more than one
+   * declaration could be it): such a target can only make a verdict `unknown`.
+   */
+  decls: Map<string, Array<{ file: string; declId: string; settled: boolean }>>;
 }
 
 interface Analysis {
@@ -342,7 +445,7 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
 
   const findings: RecheckFinding[] = [];
   const partialFiles: RecheckReport['partialFiles'] = [];
-  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), declNames: new Map(), inventory: new Map(), analysed: new Set(toRead) };
+  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), declNames: new Map(), inventory: new Map(), analysed: new Set(toRead), ids: new Map() };
   if (inputs.length > 0) {
     const project = await analyzeProject(inputs);
     const byFile = new Map(project.files.map(f => [f.file, f.analysis]));
@@ -375,8 +478,13 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       severity: string, line: number, ev: Omit<RecheckEvidence, 'fingerprint'>, sourceDeclId?: string,
     ): Promise<void> => {
       if (!cwe) return; // security findings only: the re-check is about CWEs
-      const d = declAt(file, ir, line, await idsOf(file));
-      const decl = { scheme: d.scheme, id: d.id, name: d.name };
+      const ids = await idsOf(file);
+      const d = declAt(file, ir, line, ids);
+      const sd = d.scheme === 'ids@0.1' ? ids?.decls.find(x => x.id === d.id) : undefined;
+      const decl: RecheckFinding['decl'] = {
+        scheme: d.scheme, id: d.id, name: d.name,
+        ...(sd && sd.body_hash ? { kind: sd.kind, bodyHash: sd.body_hash, tokens: sd.token_count } : {}),
+      };
       const key = `${cwe}|${file}|${decl.id}|${rule}`;
       ctx.allKeys.add(key);
       const evidence: RecheckEvidence = {
@@ -389,6 +497,7 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
 
     for (const { file, analysis: ir } of project.files) {
       const ids = await idsOf(file);
+      if (ids) ctx.ids!.set(file, ids);
       const ps = ir.parse_status;
       if (ps && !ps.success && changedSet.has(file)) {
         const first = [...(ps.error_locations ?? [])].sort((a, b) => a.line - b.line || a.column - b.column)[0];
@@ -537,7 +646,16 @@ export async function computeRecheck(root: string, opts: RecheckOptions): Promis
       ref.cleanup();
     }
   }
-  if (before) applyBaseline(after.report, before, after.ctx);
+  if (before) {
+    const files: Array<{ from: string; to: string; evidence: MoveEvidenceKind }> = [];
+    if (opts.changedFrom) files.push(...renamesFromGit(base, opts.changedFrom));
+    for (const [from, to] of opts.renames ?? []) {
+      const rel = (p: string) => norm(isAbsolute(p) ? relative(base, p) : p);
+      files.push({ from: rel(from), to: rel(to), evidence: 'rename-map' });
+    }
+    after.ctx.moves = detectFindingMoves(before, after.ctx, files);
+    applyBaseline(after.report, before, after.ctx);
+  }
   if (opts.expectGone.length > 0) applyTargets(after.report, opts.expectGone);
   return after.report;
 }
@@ -553,6 +671,68 @@ function readBaseline(path: string): RecheckReport {
     throw new UsageError(`--baseline ${path}: not a ${RECHECK_SCHEMA} report (run recheck on the files before the change first)`);
   }
   return b;
+}
+
+/** circle-ir `detectMoves`' default: a smaller body never settles a move by its hash alone. */
+const MOVE_MIN_TOKENS = 12;
+
+/**
+ * Where the baseline's findings may have moved. File renames and copies are
+ * taken as given. Declarations: the baseline's finding-holding `ids@0.1`
+ * declarations that are gone from the after side are paired with the after
+ * declarations by circle-ir's `detectMoves`; a pair that settles by equal body
+ * hash (unique on both sides, at least {@link MOVE_MIN_TOKENS} tokens) into
+ * another file is a settled target, and a shared body hash
+ * (`body-hash-ambiguous`) gives unsettled targets, which can only make a verdict
+ * `unknown`. Every after declaration not in the baseline's set counts as added,
+ * so an after declaration elsewhere with the same body makes the hash shared:
+ * the pairing errs towards `unknown`, never towards a match. Pure.
+ */
+export function detectFindingMoves(
+  before: RecheckReport, ctx: RecheckContext,
+  files: Array<{ from: string; to: string; evidence: MoveEvidenceKind }> = [],
+): RecheckMoves {
+  const moves: RecheckMoves = { files: new Map(), decls: new Map() };
+  for (const r of files) {
+    if (r.from === r.to) continue;
+    const list = moves.files.get(r.from) ?? [];
+    if (!list.some(x => x.to === r.to)) list.push({ to: r.to, evidence: r.evidence });
+    moves.files.set(r.from, list);
+  }
+  if (!ctx.ids || ctx.ids.size === 0) return moves;
+  // The baseline's declarations, as ids@0.1 records with what move detection reads.
+  const fileOf = new Map<string, string>();
+  const beforeDecls = new Map<string, StableDecl>();
+  for (const f of before.findings) {
+    const d = f.decl;
+    if (d.scheme !== 'ids@0.1' || !d.bodyHash || !d.kind || beforeDecls.has(d.id)) continue;
+    if (ctx.decls.get(f.file)?.has(d.id)) continue; // still there: not moved
+    fileOf.set(`b:${d.id}`, f.file);
+    beforeDecls.set(d.id, {
+      id: d.id, body_id: `${d.id}.${d.bodyHash}`, body_hash: d.bodyHash, kind: d.kind as StableDecl['kind'],
+      name: d.name.replace(/^.*[.:/]/, ''), qualified_name: d.name, signature: '', parent: null,
+      start_line: 0, end_line: 0, start_column: 0, end_column: 0, flags: [], token_count: d.tokens ?? 0,
+    });
+  }
+  if (beforeDecls.size === 0) return moves;
+  const afterFiles = [...ctx.ids.values()];
+  for (const f of afterFiles) for (const d of f.decls) if (!fileOf.has(`a:${d.id}`)) fileOf.set(`a:${d.id}`, f.file);
+  const beforeFile: StableIdFile = { scheme: 'ids@0.1', file: '<baseline>', language: 'java', module: '<baseline>', decls: [...beforeDecls.values()], partial: false };
+  const found = detectMoves([beforeFile], afterFiles, { minTokens: MOVE_MIN_TOKENS });
+  const add = (from: StableDecl, to: StableDecl, settled: boolean) => {
+    const bf = fileOf.get(`b:${from.id}`);
+    const af = fileOf.get(`a:${to.id}`);
+    if (!bf || !af || bf === af) return; // a move inside the file keeps the file: flow identity already matches it
+    const k = `${bf}|${from.id}`;
+    const list = moves.decls.get(k) ?? [];
+    list.push({ file: af, declId: to.id, settled });
+    moves.decls.set(k, list);
+  };
+  for (const m of found.moves) if (m.evidence === 'body-hash') add(m.from, m.to, true);
+  for (const c of found.candidates) {
+    if (c.evidence === 'body-hash-ambiguous' && c.from.token_count >= MOVE_MIN_TOKENS) add(c.from, c.to, false);
+  }
+  return moves;
 }
 
 /** A qualified name with the positional parts of ids@0.1 (`@4.0.1.1`) left out. */
@@ -573,29 +753,106 @@ function successorDecl(f: RecheckFinding, ctx: RecheckContext): string | undefin
   return hits.length === 1 ? hits[0] : undefined;
 }
 
-/** Why a baseline key is missing after the change; `unknown` when the after side cannot say. */
-function explainMissing(
-  f: RecheckFinding, after: RecheckReport, ctx: RecheckContext | undefined,
-): Pick<RecheckVerdict, 'verdict' | 'reason' | 'sanitizers' | 'sanitizerCoversSink' | 'successorDecl'> {
-  const skip = (after.skipped ?? []).find(s => s.file === f.file);
+/** Where one baseline finding may have moved: its file's renames and its declaration's body-hash moves. */
+interface MoveLookup {
+  targets: Array<{ file: string; declId?: string; settled: boolean; evidence: MoveEvidenceKind }>;
+}
+
+function moveTargets(f: RecheckFinding, moves: RecheckMoves): MoveLookup {
+  const targets: MoveLookup['targets'] = [];
+  for (const r of moves.files.get(f.file) ?? []) targets.push({ file: r.to, settled: true, evidence: r.evidence });
+  for (const d of moves.decls.get(`${f.file}|${f.decl.id}`) ?? []) {
+    targets.push({ file: d.file, declId: d.declId, settled: d.settled, evidence: 'body-hash' });
+  }
+  return { targets };
+}
+
+const evidenceFor = (m: MoveLookup, a: RecheckFinding): MoveEvidenceKind[] =>
+  [...new Set(m.targets.filter(t => t.file === a.file && (t.declId === undefined || t.declId === a.decl.id)).map(t => t.evidence))].sort();
+
+/**
+ * A moved flow's source is where the baseline's was, or moved with it: to a
+ * rename of its file, or, when it sat in the finding's own file, to the file
+ * the finding moved to.
+ */
+function sourceFileFollows(f: RecheckFinding, a: RecheckFinding, moves: RecheckMoves): boolean {
+  const was = f.evidence?.source?.file;
+  const is = a.evidence?.source?.file;
+  if (was === undefined || is === undefined) return was === is;
+  if (is === was || (was === f.file && is === a.file)) return true;
+  return (moves.files.get(was) ?? []).some(r => r.to === is);
+}
+
+const baseName = (file: string): string => file.replace(/^.*\//, '').replace(/\.[^.]*$/, '');
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The declaration in `file` (which a baseline finding's file was renamed to) that
+ * is the baseline declaration: the one with the same position-free qualified
+ * name, the old file's base name (a Java class named by its file) read as the
+ * new one's. None when there is no such declaration or more than one.
+ */
+function renamedDecl(f: RecheckFinding, file: string, ctx: RecheckContext): string | undefined {
+  const names = ctx.declNames?.get(file);
+  if (!names || !f.decl.name) return undefined;
+  const was = positionFree(f.decl.name);
+  const [from, to] = [baseName(f.file), baseName(file)];
+  const want = from && from !== to ? was.replace(new RegExp(`\\b${escapeRe(from)}\\b`, 'g'), to) : was;
+  for (const w of new Set([want, was])) {
+    const hits = [...names].filter(([, n]) => positionFree(n) === w).map(([id]) => id);
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) return undefined;
+  }
+  return undefined;
+}
+
+type Explained = Pick<RecheckVerdict, 'verdict' | 'reason' | 'sanitizers' | 'sanitizerCoversSink' | 'successorDecl' | 'movedTo' | 'moveEvidence'>;
+
+/**
+ * Why a baseline key is missing after the change; `unknown` when the after side
+ * cannot say. When its file or declaration is gone but moved on evidence
+ * (`move`), the reason is taken from where it moved to (`movedTo`): a moved
+ * finding is never `file-removed` or `declaration-removed` for the move alone.
+ */
+function explainMissing(f: RecheckFinding, after: RecheckReport, ctx: RecheckContext | undefined, move?: MoveLookup): Explained {
+  const here = explainIn(f, f.file, after, ctx, () => (ctx ? successorDecl(f, ctx) : undefined));
+  // A shared body hash is no evidence of where the declaration went, only that
+  // a flow found there could be it: with no such flow it does not explain a loss.
+  const settled = (move?.targets ?? []).filter(t => t.settled);
+  if (!ctx || settled.length === 0) return here;
+  if (here.verdict !== 'gone' || (here.reason !== 'file-removed' && here.reason !== 'declaration-removed')) return here;
+  if (settled.length > 1) {
+    return { verdict: 'unknown', reason: 'move-ambiguous', moveEvidence: [...new Set(settled.map(t => t.evidence))].sort() };
+  }
+  const t = settled[0];
+  const there = explainIn(f, t.file, after, ctx, () => t.declId ?? renamedDecl(f, t.file, ctx));
+  return { ...there, movedTo: t.file, moveEvidence: [t.evidence] };
+}
+
+/** {@link explainMissing} in one file, the declaration found by `locate` when its id is not there. */
+function explainIn(
+  f: RecheckFinding, file: string, after: RecheckReport, ctx: RecheckContext | undefined, locate: () => string | undefined,
+): Explained {
+  const skip = (after.skipped ?? []).find(s => s.file === file);
   if (skip?.reason === 'not present') return { verdict: 'gone', reason: 'file-removed' };
-  if ((after.partialFiles ?? []).some(p => p.file === f.file)) return { verdict: 'unknown', reason: 'parse-error' };
-  const analysed = ctx ? ctx.analysed.has(f.file) : after.files.includes(f.file) && !skip;
+  if ((after.partialFiles ?? []).some(p => p.file === file)) return { verdict: 'unknown', reason: 'parse-error' };
+  const analysed = ctx ? ctx.analysed.has(file) : after.files.includes(file) && !skip;
   if (skip || !analysed) return { verdict: 'unknown', reason: 'not-analysed' };
   if (!ctx) return { verdict: 'gone' };
-  const decls = ctx.decls.get(f.file);
+  const decls = ctx.decls.get(file);
   let declId = f.decl.id;
   let successor: Pick<RecheckVerdict, 'successorDecl'> = {};
   if (decls && !decls.has(declId)) {
     // The id is gone; when one after declaration is the same one re-keyed (an
-    // anonymous handler after an inserted import), the reason comes from it.
-    const next = successorDecl(f, ctx);
+    // anonymous handler after an inserted import, or the declaration in the file
+    // it moved to), the reason comes from it.
+    const next = locate();
     if (!next) return { verdict: 'gone', reason: 'declaration-removed' };
     declId = next;
-    successor = { successorDecl: ctx.declNames?.get(f.file)?.get(next) ?? next };
+    successor = { successorDecl: ctx.declNames?.get(file)?.get(next) ?? next };
   }
   if (f.kind === 'pass') return { verdict: 'gone', reason: 'not-reported', ...successor };
-  const inv = ctx.inventory.get(`${f.file}|${declId}`);
+  const inv = ctx.inventory.get(`${file}|${declId}`);
   // Only a sanitizer the change added explains the loss: one already in the
   // declaration (or the path) at the baseline did not stop the flow then.
   const added = inv ? newSanitizers(inv.sanitizers, f.evidence) : [];
@@ -656,12 +913,24 @@ const paramIdentity = (p: RecheckParamSource): string =>
  * never matched by identity.
  */
 export function flowIdentity(f: RecheckFinding): string | undefined {
+  return identity(f, true);
+}
+
+/**
+ * {@link flowIdentity} with the file and the source's file left out: what a
+ * finding that moved to another file keeps. Only compared under move evidence.
+ */
+function movedIdentity(f: RecheckFinding): string | undefined {
+  return identity(f, false);
+}
+
+function identity(f: RecheckFinding, withFiles: boolean): string | undefined {
   const e = f.evidence;
   if (!e?.sink.code) return undefined;
-  const parts = [f.kind, f.cwe, f.rule, f.file, e.sink.type, noSpace(e.sink.code)];
+  const parts = [f.kind, f.cwe, f.rule, withFiles ? f.file : '', e.sink.type, noSpace(e.sink.code)];
   if (f.kind === 'flow') {
     const src = e.source?.params ? e.source.params.map(paramIdentity).join(';') : noSpace(e.source?.code);
-    parts.push(e.source?.file ?? '', e.source?.type ?? '', src, [...e.sanitizers_in_path].sort().join(','));
+    parts.push(withFiles ? e.source?.file ?? '' : '', e.source?.type ?? '', src, [...e.sanitizers_in_path].sort().join(','));
   } else {
     parts.push(noSpace(e.message));
   }
@@ -689,7 +958,15 @@ export function flowIdentity(f: RecheckFinding): string | undefined {
  *
  * A baseline finding with no after finding of its identity falls back to its key:
  * still-present when the key is there and not taken by another match (a fix that
- * changed the sink but is still reported), else `gone` with a reason. An after
+ * changed the sink but is still reported), else, when `ctx.moves` evidences that
+ * its file or declaration moved ({@link detectFindingMoves}), it is matched to
+ * the after findings there of the same flow identity with the files left out:
+ *
+ *   one candidate, on settled evidence, wanted by     still-present, `moved`,
+ *     no other baseline finding                       `movedFrom`, `rekeyedTo`
+ *   otherwise                                         `unknown` (`move-ambiguous`)
+ *
+ * and else `gone` with a reason (from where it moved, when it did). An after
  * finding no match took is `new-high` or `new-other`.
  */
 export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?: RecheckContext): RecheckReport {
@@ -746,6 +1023,7 @@ export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?:
     }
   }
 
+  const missing: RecheckFinding[] = [];
   for (const [key, f] of then) {
     if (resolved.has(key)) continue;
     const a = now.get(key);
@@ -754,7 +1032,52 @@ export function applyBaseline(after: RecheckReport, before: RecheckReport, ctx?:
       claimed.add(key);
       continue;
     }
-    verdicts.push({ ...base(f), severity: f.severity, line: f.line, ...explainMissing(f, after, ctx), ...ev(f) });
+    missing.push(f);
+  }
+
+  // Moves across files, on evidence only: the after findings of the same flow
+  // identity (files left out) where the finding's file or declaration moved to.
+  const moves = ctx?.moves;
+  const moveOf = new Map<string, MoveLookup>();
+  if (moves) for (const f of missing) moveOf.set(f.key, moveTargets(f, moves));
+  const matchesOf = new Map<string, RecheckFinding[]>();
+  const nowByFile = new Map<string, RecheckFinding[]>();
+  if (moves) for (const a of now.values()) nowByFile.set(a.file, [...(nowByFile.get(a.file) ?? []), a]);
+  for (const f of missing) {
+    const m = moveOf.get(f.key);
+    const id = m && m.targets.length > 0 ? movedIdentity(f) : undefined;
+    if (!m || !id) continue;
+    const hits = [...new Set(m.targets.map(t => t.file))].flatMap(file => nowByFile.get(file) ?? []).filter(a =>
+      !claimed.has(a.key) && m.targets.some(t => t.file === a.file && (t.declId === undefined || t.declId === a.decl.id))
+      && movedIdentity(a) === id && sourceFileFollows(f, a, moves!));
+    if (hits.length > 0) matchesOf.set(f.key, hits);
+  }
+  // An after finding two baseline findings could have moved to is neither's.
+  const wanted = new Map<string, number>();
+  for (const hits of matchesOf.values()) for (const a of hits) wanted.set(a.key, (wanted.get(a.key) ?? 0) + 1);
+  for (const f of missing) {
+    const m = moveOf.get(f.key);
+    const hits = matchesOf.get(f.key);
+    if (m && hits) {
+      const a = hits[0];
+      const t = m.targets.find(x => x.file === a.file && (x.declId === undefined || x.declId === a.decl.id))!;
+      if (hits.length === 1 && t.settled && wanted.get(a.key) === 1) {
+        verdicts.push({
+          ...base(f), file: a.file, verdict: 'still-present', severity: a.severity, line: a.line,
+          reason: 'moved', rekeyedTo: a.key, matchedBy: 'move', movedFrom: f.file, moveEvidence: evidenceFor(m, a), ...ev(a),
+        });
+        claimed.add(a.key);
+        continue;
+      }
+      // One candidate is most likely it; several stay new, as one of them is.
+      if (hits.length === 1) claimed.add(a.key);
+      verdicts.push({
+        ...base(f), verdict: 'unknown', severity: f.severity, line: f.line, reason: 'move-ambiguous', matchedBy: 'move',
+        rekeyCandidates: hits.map(h => h.key).sort(), moveEvidence: [...new Set(hits.flatMap(h => evidenceFor(m, h)))].sort(), ...ev(f),
+      });
+      continue;
+    }
+    verdicts.push({ ...base(f), severity: f.severity, line: f.line, ...explainMissing(f, after, ctx, m), ...ev(f) });
   }
   for (const [key, f] of now) {
     if (claimed.has(key)) continue;
