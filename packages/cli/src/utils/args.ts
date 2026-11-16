@@ -76,7 +76,7 @@ COMMANDS:
                          (dependency-calls@0.1); packages from --jar, the Maven
                          repository (with a version), else a built-in table
   recheck (--changed <files> | --changed-from <ref>) [path]
-                       Re-check a code fix (cognium-recheck@0.3): findings keyed by
+                       Re-check a code fix (cognium-recheck@0.4): findings keyed by
                          CWE × declaration × rule, with evidence; against a baseline,
                          gone / still-present / new-high / new-other / unknown
   list-passes [cat]    List all analysis passes (optionally filter by category)
