@@ -1,7 +1,7 @@
 {
-  "tag": "engine-v4.22.0-rc.1",
-  "sha": "8280f0469dc8dfa69362e34925c035ae85daad6d",
-  "version": "8280f0469dc8 vs circle-ir-v4.21.1",
+  "tag": "engine-v4.22.0-rc.2",
+  "sha": "44d828763998c0922ab6ca08f8d066d8f7ae1a2a",
+  "version": "44d828763998 vs circle-ir-v4.21.1",
   "date": "2026-11-16",
   "method": "bench-diff diff via scripts/bench-gate.mjs vs circle-ir-v4.21.1",
   "results": [
