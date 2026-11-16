@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.22.0] - 2026-11-16
+
+### Changes
+
+- chore(deps): Bump web-tree-sitter (#1280)
+- circle-ir: deserialization from a cookie (CWE-502) — http_cookie may reach a deserialization sink (#1256)
+- feat(circle-ir): prototype-pollution (CWE-1321) for JS/TS (#1251)
+- feat(circle-ir): missing-auth-middleware (CWE-862) for JS/TS (#1254)
+- feat(circle-ir): hardcoded-secret-argument (CWE-798) for JS/TS (#1253)
+- feat(circle-ir): redos-regex-literal (CWE-1333) for JS/TS (#1250)
+- fix(circle-ir): JS/TS weak crypto through crypto named imports and aliases (#1249)
+- fix(circle-ir): stop JS redirect guard credit after compound assignment (#1274)
+
 ## [4.21.1] - 2026-11-15
 
 ### Changes
