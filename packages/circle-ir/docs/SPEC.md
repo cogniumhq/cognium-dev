@@ -600,6 +600,7 @@ interface ImportInfo {
   alias: string | null;
   is_wildcard: boolean;
   line_number: number | null;
+  is_type_only?: true;  // TypeScript `import type` / `import { type X }`; absent otherwise
 }
 ```
 
