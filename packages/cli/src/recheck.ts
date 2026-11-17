@@ -155,8 +155,11 @@ export interface RecheckFinding {
    * The enclosing declaration. For an `ids@0.1` declaration, also its kind, body
    * hash and body token count: what a later run needs to tell that the
    * declaration moved to another file (absent from baselines written before).
+   * For an anonymous function passed to a call, its call-site `anchor`
+   * ({@link anchorsOf}): how the declaration is found again when its
+   * position-keyed id moved.
    */
-  decl: { scheme: string; id: string; name: string; kind?: string; bodyHash?: string; tokens?: number };
+  decl: { scheme: string; id: string; name: string; kind?: string; bodyHash?: string; tokens?: number; anchor?: string };
   kind: 'flow' | 'pass';
   evidence?: RecheckEvidence;
   /**
@@ -452,6 +455,8 @@ export interface RecheckContext {
   analysed: Set<string>;
   /** The after side's `ids@0.1` declarations per analysed file, for move detection. */
   ids?: Map<string, StableIdFile>;
+  /** Call-site anchor per anonymous declaration id, per file ({@link anchorsOf}). */
+  anchors?: Map<string, Map<string, string>>;
   /** Evidenced moves from the baseline to the after side ({@link detectFindingMoves}). */
   moves?: RecheckMoves;
 }
@@ -499,7 +504,7 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
 
   const findings: RecheckFinding[] = [];
   const partialFiles: RecheckReport['partialFiles'] = [];
-  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), declNames: new Map(), inventory: new Map(), analysed: new Set(toRead), ids: new Map() };
+  const ctx: RecheckContext = { allKeys: new Set(), decls: new Map(), declNames: new Map(), inventory: new Map(), analysed: new Set(toRead), ids: new Map(), anchors: new Map() };
   if (inputs.length > 0) {
     const project = await analyzeProject(inputs);
     const byFile = new Map(project.files.map(f => [f.file, f.analysis]));
@@ -535,9 +540,11 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
       const ids = await idsOf(file);
       const d = declAt(file, ir, line, ids);
       const sd = d.scheme === 'ids@0.1' ? ids?.decls.find(x => x.id === d.id) : undefined;
+      const anchor = sd ? ctx.anchors!.get(file)?.get(sd.id) : undefined;
       const decl: RecheckFinding['decl'] = {
         scheme: d.scheme, id: d.id, name: d.name,
         ...(sd && sd.body_hash ? { kind: sd.kind, bodyHash: sd.body_hash, tokens: sd.token_count } : {}),
+        ...(anchor ? { anchor } : {}),
       };
       const key = `${cwe}|${file}|${decl.id}|${rule}`;
       ctx.allKeys.add(key);
@@ -552,6 +559,8 @@ async function analyse(base: string, changed: string[], scope: RecheckScope): Pr
     for (const { file, analysis: ir } of project.files) {
       const ids = await idsOf(file);
       if (ids) ctx.ids!.set(file, ids);
+      const code = inputByFile.get(file)?.code;
+      if (ids && code !== undefined) ctx.anchors!.set(file, anchorsOf(ids, ir, code));
       const ps = ir.parse_status;
       if (ps && !ps.success && changedSet.has(file)) {
         const first = [...(ps.error_locations ?? [])].sort((a, b) => a.line - b.line || a.column - b.column)[0];
@@ -815,6 +824,64 @@ function successorDecl(f: RecheckFinding, ctx: RecheckContext): string | undefin
   return hits.length === 1 ? hits[0] : undefined;
 }
 
+/**
+ * The call-site anchor of each anonymous function a call takes as an argument:
+ * the call's callee (`app.get`), its first string literal argument (`'/a'`),
+ * where the function sits among the arguments (`last`, else its index) and its
+ * position-free qualified name (the enclosing declaration). An anonymous
+ * handler's id holds its position, so an import above it or a middleware put
+ * before it moves the id; the anchor stays. The call is the one with an
+ * argument whose text is the declaration's own text; a declaration with no
+ * such call, or more than one, has no anchor, and an anchor two declarations
+ * of the file share is no anchor for either: it cannot tell them apart.
+ */
+export function anchorsOf(ids: StableIdFile, ir: CircleIR, code: string): Map<string, string> {
+  const lines = code.split('\n');
+  const text = (d: StableDecl): string => {
+    const ls = lines.slice(d.start_line - 1, d.end_line);
+    if (ls.length === 0) return '';
+    ls[ls.length - 1] = ls[ls.length - 1].slice(0, d.end_column);
+    ls[0] = ls[0].slice(d.start_column);
+    return noSpace(ls.join('\n'));
+  };
+  const out = new Map<string, string>();
+  const seen = new Map<string, number>();
+  for (const d of ids.decls) {
+    if (!d.flags.includes('unstable:anonymous')) continue;
+    const t = text(d);
+    if (!t) continue;
+    const sites = (ir.calls ?? []).flatMap(c => {
+      const i = c.arguments.findIndex(a => noSpace(a.expression) === t);
+      return i < 0 ? [] : [{ c, i }];
+    });
+    if (sites.length !== 1) continue;
+    const { c, i } = sites[0];
+    const route = c.arguments.find(a => a.literal != null && /^['"`]/.test(a.expression.trim()))?.literal ?? '';
+    const role = i === c.arguments.length - 1 ? 'last' : String(i);
+    const callee = c.receiver ? `${c.receiver}.${c.method_name}` : c.method_name;
+    const anchor = `${callee}(${JSON.stringify(route)}) ${role} in ${positionFree(d.qualified_name)}`;
+    out.set(d.id, anchor);
+    seen.set(anchor, (seen.get(anchor) ?? 0) + 1);
+  }
+  for (const [id, a] of out) if (seen.get(a)! > 1) out.delete(id);
+  return out;
+}
+
+/**
+ * The after declaration an anonymous baseline declaration is, by its anchor
+ * ({@link anchorsOf}): the one declaration of the file with the same anchor.
+ * Undefined, and the reason falls back to the declaration's id, when the
+ * baseline carries no anchor, the declaration that holds the id still has the
+ * anchor, or no after declaration or more than one has it.
+ */
+function anchorSuccessor(f: RecheckFinding, file: string, ctx: RecheckContext): string | undefined {
+  const want = f.decl.anchor;
+  const anchors = ctx.anchors?.get(file);
+  if (!want || !anchors || file !== f.file || anchors.get(f.decl.id) === want) return undefined;
+  const hits = [...anchors].filter(([, a]) => a === want).map(([id]) => id);
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /** Where one baseline finding may have moved: its file's renames and its declaration's body-hash moves. */
 interface MoveLookup {
   targets: Array<{ file: string; declId?: string; settled: boolean; evidence: MoveEvidenceKind }>;
@@ -904,7 +971,14 @@ function explainIn(
   const decls = ctx.decls.get(file);
   let declId = f.decl.id;
   let successor: Pick<RecheckVerdict, 'successorDecl'> = {};
-  if (decls && !decls.has(declId)) {
+  // An anonymous handler is found by its call-site anchor first: its id holds
+  // its position, so after an import above it the id can be gone, or name the
+  // next handler (whose sanitizers would then explain this one's loss).
+  const anchored = anchorSuccessor(f, file, ctx);
+  if (anchored) {
+    declId = anchored;
+    successor = { successorDecl: ctx.declNames?.get(file)?.get(anchored) ?? anchored };
+  } else if (decls && !decls.has(declId)) {
     // The id is gone; when one after declaration is the same one re-keyed (an
     // anonymous handler after an inserted import, or the declaration in the file
     // it moved to), the reason comes from it.
