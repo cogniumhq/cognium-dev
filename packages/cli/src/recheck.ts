@@ -863,8 +863,7 @@ export function anchorsOf(ids: StableIdFile, ir: CircleIR, code: string): Map<st
     out.set(d.id, anchor);
     seen.set(anchor, (seen.get(anchor) ?? 0) + 1);
   }
-  for (const [id, a] of out) if (seen.get(a)! > 1) out.delete(id);
-  return out;
+  return new Map([...out].filter(([, a]) => seen.get(a) === 1));
 }
 
 /**
