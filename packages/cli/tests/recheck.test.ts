@@ -887,6 +887,92 @@ describe('recheck G1: a re-keyed declaration is still-present, never gone (JS an
   }, 60_000);
 });
 
+describe('recheck G-A/G-B: an anonymous handler is found again by its call-site anchor', () => {
+  const FIX = join(import.meta.dir, 'fixtures', 'recheck-anon');
+  const FILE = 'src/app.ts';
+  const read = (name: string) => readFileSync(join(FIX, name), 'utf8');
+
+  async function run(name: string, code: string, baseline?: RecheckReport, expectGone: string[] = []): Promise<RecheckReport> {
+    const root = join(work, 'anon', name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, FILE), code);
+    let baselinePath: string | undefined;
+    if (baseline) {
+      baselinePath = join(work, 'anon', `${name}.baseline.json`);
+      writeFileSync(baselinePath, JSON.stringify(baseline));
+    }
+    return computeRecheck(root, { changed: [FILE], scope: 'files', expectGone, ...(baselinePath ? { baseline: baselinePath } : {}) });
+  }
+  const keyOf = (rep: RecheckReport, cwe: string) => {
+    const ks = rep.findings.filter(f => f.cwe === cwe);
+    expect(ks.length, cwe).toBe(1);
+    return ks[0];
+  };
+
+  test('the baseline records an anchor for an anonymous handler: callee, route, argument role', async () => {
+    const base = await run('anchor', read('two.vuln.ts'));
+    expect(keyOf(base, 'CWE-79').decl.anchor).toBe('app.get("/a") last in src/app/<anonymous>');
+    expect(keyOf(base, 'CWE-117').decl.anchor).toBe('app.get("/b") last in src/app/<anonymous>');
+  }, 60_000);
+
+  test('CWE-862: requireAuth put before the handler is gone with a successorDecl, not declaration-removed', async () => {
+    const base = await run('862-base', read('862.vuln.ts'));
+    const keys = base.findings.filter(f => f.cwe === 'CWE-862');
+    expect(keys.length).toBe(2);
+    const del = keys.find(f => f.decl.anchor?.startsWith('notesRouter.delete('))!;
+    const patch = keys.find(f => f.decl.anchor?.startsWith('notesRouter.patch('))!;
+    const rep = await run('862-fixed', read('862.fixed.ts'), base, [del.key]);
+    const v = rep.verdicts!.find(x => x.key === del.key)!;
+    expect(v).toMatchObject({ verdict: 'gone', reason: 'not-reported' });
+    expect(v.successorDecl).toContain('<anonymous>');
+    expect(rep.fixed).toBe('pass');
+    expect(rep.verdicts!.find(x => x.key === patch.key)!.verdict).toBe('still-present');
+  }, 60_000);
+
+  for (const [cwe, fixture, other] of [['CWE-79', 'two.fixed-79.ts', 'CWE-117'], ['CWE-117', 'two.fixed-117.ts', 'CWE-79']] as const) {
+    test(`${cwe}: an import above two handlers plus a fix is sanitized-by on the right handler; the other stays`, async () => {
+      const base = await run(`${cwe}-base`, read('two.vuln.ts'));
+      const target = keyOf(base, cwe);
+      const rep = await run(`${cwe}-fixed`, read(fixture), base, [target.key]);
+      const v = rep.verdicts!.find(x => x.key === target.key)!;
+      expect(v).toMatchObject({ verdict: 'gone', reason: 'sanitized-by', sanitizerCoversSink: true });
+      expect(v.successorDecl).toBeDefined();
+      expect(rep.fixed).toBe('pass');
+      const o = rep.verdicts!.find(x => x.key === keyOf(base, other).key)!;
+      expect(o.verdict).toBe('still-present');
+    }, 60_000);
+  }
+
+  test('two handlers with the same callee and route have no anchor: declaration-removed, no guess', async () => {
+    const base = await run('same-base', read('same-route.vuln.ts'));
+    const xss = base.findings.filter(f => f.cwe === 'CWE-79');
+    expect(xss.length).toBe(2);
+    for (const f of xss) expect(f.decl.anchor).toBeUndefined();
+    const first = xss.sort((a, b) => a.line - b.line)[0];
+    const rep = await run('same-fixed', read('same-route.fixed.ts'), base, [first.key]);
+    const v = rep.verdicts!.find(x => x.key === first.key)!;
+    expect(v).toMatchObject({ verdict: 'gone', reason: 'declaration-removed' });
+    expect(v.successorDecl).toBeUndefined();
+  }, 60_000);
+
+  test('a no-op (lines added at the top) in a two-handler file: both still-present, the fix check fails', async () => {
+    const base = await run('noop-base', read('two.vuln.ts'));
+    const keys = base.findings.filter(f => f.cwe === 'CWE-79' || f.cwe === 'CWE-117').map(f => f.key);
+    expect(keys.length).toBe(2);
+    const rep = await run('noop', `// reviewed\n\n${read('two.vuln.ts')}`, base, keys);
+    for (const k of keys) expect(rep.verdicts!.find(x => x.key === k)!.verdict).toBe('still-present');
+    expect(rep.fixed).toBe('fail');
+  }, 60_000);
+
+  test('a baseline without anchors (written before) keeps the name match', async () => {
+    const base = await run('old-base', read('two.vuln.ts'));
+    const stripped: RecheckReport = { ...base, findings: base.findings.map(f => ({ ...f, decl: { ...f.decl, anchor: undefined } })) };
+    const target = keyOf(base, 'CWE-79');
+    const rep = await run('old-fixed', read('two.fixed-79.ts'), stripped, [target.key]);
+    expect(rep.verdicts!.find(x => x.key === target.key)).toMatchObject({ verdict: 'gone', reason: 'declaration-removed' });
+  }, 60_000);
+});
+
 describe('applyBaseline flow identity (pure)', () => {
   const finding = (key: string, sinkCode: string, extra: Partial<RecheckEvidence> = {}): RecheckFinding => ({
     key, cwe: 'CWE-89', rule: 'sql_injection', severity: 'critical', file: 'a.js', line: 1,
