@@ -3625,6 +3625,10 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
 
   // Log Injection sanitizers
   { method: 'replace', removes: ['log_injection'] },  // Used to remove newlines/control chars
+  // JSON.stringify escapes CR/LF (and every other control character) inside a
+  // string, so a log entry cannot be split. Log injection only: the output still
+  // carries `<`, quotes and shell/SQL metacharacters.
+  { method: 'stringify', class: 'JSON', removes: ['log_injection'] },
 
   // LDAP Injection
   { method: 'encodeForLDAP', removes: ['ldap_injection'] },
