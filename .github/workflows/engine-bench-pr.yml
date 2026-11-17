@@ -54,6 +54,11 @@ jobs:
     container:
       image: node:22-bookworm
     timeout-minutes: 75
+    # A container job's default shell is `sh` (dash); the steps use pipefail
+    # and PIPESTATUS.
+    defaults:
+      run:
+        shell: bash
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
     steps:
