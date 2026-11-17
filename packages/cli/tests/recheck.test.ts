@@ -993,6 +993,89 @@ describe('recheck on a TypeScript CWE-352 fix (csrf-samesite-none-session)', () 
   }, 60_000);
 });
 
+describe('recheck on a JS/TS CWE-117 fix (log_injection: CR/LF replace, JSON.stringify)', () => {
+  const FIXTURES = join(import.meta.dir, '..', '..', 'circle-ir', 'tests', 'fixtures', 'log-injection');
+  /** A no-op: lines added at the top move every finding's line. */
+  const noop = (code: string) => `// reviewed\n\n${code}`;
+
+  function tree(name: string, file: string, code: string): string {
+    const root = join(work, 'cwe117', name);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, file), code);
+    return root;
+  }
+
+  for (const lang of ['ts', 'js'] as const) {
+    describe(lang, () => {
+      const FILE = `src/app.${lang}`;
+      const vuln = readFileSync(join(FIXTURES, `vulnerable.${lang}`), 'utf8');
+      let baselinePath: string;
+      let keys: string[];
+
+      beforeAll(async () => {
+        baselinePath = join(work, `cwe117-${lang}-before.json`);
+        await runCli(['recheck', tree(`${lang}-before`, FILE, vuln), '--changed', FILE, '-o', baselinePath]);
+        const rep = JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport;
+        keys = rep.findings.filter(f => f.cwe === 'CWE-117').map(f => f.key);
+      }, 60_000);
+
+      test('before: one key per handler, keyed CWE-117 × declaration × log_injection', () => {
+        expect(keys.length).toBe(lang === 'ts' ? 2 : 1);
+        for (const k of keys) {
+          expect(k.startsWith(`CWE-117|${FILE}|`)).toBe(true);
+          expect(k.endsWith('|log_injection')).toBe(true);
+        }
+      });
+
+      test('no-op: every key is still-present and --expect-gone fails', async () => {
+        const r = await runCli(['recheck', tree(`${lang}-noop`, FILE, noop(vuln)), '--changed', FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+        expect(r.code).toBe(1);
+        const rep = JSON.parse(r.stdout) as RecheckReport;
+        expect(rep.fixed).toBe('fail');
+        expect(rep.targets!.map(t => [t.verdict, t.fixed])).toEqual(keys.map(() => ['still-present', false]));
+      }, 60_000);
+    });
+  }
+
+  describe('ts fixes', () => {
+    const FILE = 'src/app.ts';
+    let baselinePath: string;
+    let keys: string[];
+
+    beforeAll(async () => {
+      baselinePath = join(work, 'cwe117-ts-fix-before.json');
+      await runCli(['recheck', tree('ts-fix-before', FILE, readFileSync(join(FIXTURES, 'vulnerable.ts'), 'utf8')), '--changed', FILE, '-o', baselinePath]);
+      keys = (JSON.parse(readFileSync(baselinePath, 'utf8')) as RecheckReport).findings.filter(f => f.cwe === 'CWE-117').map(f => f.key);
+    }, 60_000);
+
+    for (const [fixture, sanitizer] of [['fixed-replace.ts', 'replace'], ['fixed-json.ts', 'JSON.stringify']] as const) {
+      test(`${fixture}: every key is gone, sanitized-by ${sanitizer}, and --expect-gone passes`, async () => {
+        const root = tree(fixture.replace('.ts', ''), FILE, readFileSync(join(FIXTURES, fixture), 'utf8'));
+        const r = await runCli(['recheck', root, '--changed', FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+        expect(r.code).toBe(0);
+        const rep = JSON.parse(r.stdout) as RecheckReport;
+        expect(rep.fixed).toBe('pass');
+        expect(rep.targets!.map(t => [t.verdict, t.fixed])).toEqual(keys.map(() => ['gone', true]));
+        for (const k of keys) {
+          const v = rep.verdicts!.find(x => x.key === k)!;
+          expect(v.reason).toBe('sanitized-by');
+          expect(v.sanitizerCoversSink).toBe(true);
+          expect(v.sanitizers!.some(s => s.method.includes(sanitizer))).toBe(true);
+        }
+        expect(rep.findings.filter(f => f.cwe === 'CWE-117')).toEqual([]);
+      }, 60_000);
+    }
+
+    test('near-miss.ts (a replace that strips no CR/LF): every key is still-present', async () => {
+      const root = tree('near-miss', FILE, readFileSync(join(FIXTURES, 'near-miss.ts'), 'utf8'));
+      const r = await runCli(['recheck', root, '--changed', FILE, '--baseline', baselinePath, '--expect-gone', keys.join(',')]);
+      expect(r.code).toBe(1);
+      const rep = JSON.parse(r.stdout) as RecheckReport;
+      expect(rep.targets!.map(t => t.verdict)).toEqual(keys.map(() => 'still-present'));
+    }, 60_000);
+  });
+});
+
 /**
  * Java fingerprint survival: a no-op must not read `gone`, and `sanitized-by` must name a
  * sanitizer the change added. A Spring handler's `@RequestParam` source, and an
