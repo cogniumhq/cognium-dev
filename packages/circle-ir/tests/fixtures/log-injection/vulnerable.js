@@ -1,6 +1,6 @@
 // CWE-117 fixture (JavaScript): a request value written unchanged to a log
 // call. The line marked FLAG must give one `log_injection` flow.
-const express = require('express');
+import express from 'express';
 
 const app = express();
 
