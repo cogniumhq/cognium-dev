@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Java: an HTML-context encoder no longer clears SQL injection or other non-XSS sinks.** `param = ESAPI.encoder().encodeForHTML(param)` before `"… '" + param + "'"` passed to `Statement.executeUpdate` reported nothing: #589 kept an encoder's taint alive for `trust_boundary` only, and the constant propagator's "not tainted" verdict on the derived `sql` vetoed the flow. Every encoder in `HTML_CONTEXT_ENCODER_METHODS` (ESAPI `encodeForHTML` / `HTMLAttribute` / `JavaScript` / `CSS` / `XML` / `XMLAttribute`, the OWASP Java Encoder `for*` family, Commons `escapeHtml*` / `escapeXml*` / `escapeEcmaScript`, Spring `htmlEscape*`) now cleans only `xss` (and its row's `external_taint_escape` credit), so `sql_injection`, `command_injection` and the other sink types are reported on the encoded value; `xss` on the encoded value stays clear. `encodeForSQL`, PreparedStatement binding and the other families keep their credit.
+
 ## [4.22.0] - 2026-11-16
 
 ### Changes

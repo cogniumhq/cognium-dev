@@ -463,6 +463,24 @@ function goConstantHelperCalleeFromLines(lines: string[], lineNumber: number): s
   return null;
 }
 
+/**
+ * Whether `step` is a variable produced by an HTML-context encoder
+ * that does not clean `sinkType` (#589 `sanitizedVarUncovered`, scoped
+ * `method:var`; a bare name looks up only its own method).
+ */
+function encoderLeavesSinkUncovered(
+  constProp: ConstantPropagatorResult,
+  graph: PassContext['graph'],
+  step: { variable: string; line: number },
+  sinkType: string,
+): boolean {
+  const unc = constProp.sanitizedVarUncovered;
+  if (!unc || unc.size === 0) return false;
+  if (step.variable.includes(':')) return !!unc.get(step.variable)?.has(sinkType);
+  const method = methodAtLine(graph, step.line);
+  return !!unc.get(method ? `${method}:${step.variable}` : step.variable)?.has(sinkType);
+}
+
 function makeConstPropVeto(
   constProp: ConstantPropagatorResult,
   graph: PassContext['graph'],
@@ -470,7 +488,13 @@ function makeConstPropVeto(
   code: string | undefined,
   language?: string,
   sanitizers?: SinkFilterResult['sanitizers'],
-): (step: { variable: string; line: number }, sourceLine: number, sinkLine: number, sinkType?: string) => boolean {
+): (
+  step: { variable: string; line: number },
+  sourceLine: number,
+  sinkLine: number,
+  sinkType?: string,
+  encodedUpstream?: boolean,
+) => boolean {
   const lines = typeof code === 'string' ? code.split('\n') : [];
   const selfReassign = new Map<string, number[]>();
   const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -498,7 +522,7 @@ function makeConstPropVeto(
     const use = (graph.usesByLine.get(line) ?? []).find(u => u.variable === v && u.def_id != null);
     return use ? graph.defById.get(use.def_id!) : undefined;
   };
-  return (step, sourceLine, sinkLine, sinkType) => {
+  return (step, sourceLine, sinkLine, sinkType, encodedUpstream) => {
     // cognium-dev#1198 — heap-field stamped sources are not in constProp.tainted.
     if (
       step.variable.includes('.') &&
@@ -525,6 +549,11 @@ function makeConstPropVeto(
     const r = isFalsePositive(constProp, step.line, fpLookup);
     if (!r.isFalsePositive) return false;
     if (r.reason !== 'variable_not_tainted') return true;
+    // An earlier step is the output of an HTML-context encoder
+    // that does not clean this sink type (`sql = "…" + encodeForHTML(p)`).
+    // const-prop's "not tainted" for a value derived from it is that encoder's
+    // credit, which does not apply here.
+    if (encodedUpstream) return false;
     if (
       r.reason === 'variable_not_tainted' &&
       language === 'java' &&
@@ -697,8 +726,13 @@ export class TaintPropagationPass implements AnalysisPass<TaintPropagationPassRe
     const verifiedFlows = propagationResult.flows.filter(flow => {
       if (constProp.unreachableLines.has(flow.sink.line)) return false;
 
+      // Once the path passes a variable whose HTML-context encoder
+      // leaves this sink type uncovered, later steps are not vetoed as
+      // "not tainted" (see `encodedUpstream` in makeConstPropVeto).
+      let encodedUpstream = false;
       for (const step of flow.path) {
-        if (isVetoed(step, flow.source.line, flow.sink.line, flow.sink.type)) return false;
+        if (isVetoed(step, flow.source.line, flow.sink.line, flow.sink.type, encodedUpstream)) return false;
+        if (!encodedUpstream) encodedUpstream = encoderLeavesSinkUncovered(constProp, graph, step, flow.sink.type);
       }
 
       if (isCorrelatedPredicateFP(constProp, flow)) return false;
