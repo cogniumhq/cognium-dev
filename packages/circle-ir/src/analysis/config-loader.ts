@@ -1783,6 +1783,8 @@ export const DEFAULT_SINKS: SinkPattern[] = [
   { method: 'eval', class: 'ScriptContext', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0] },
   // Dynamic class loading (can lead to RCE)
   { method: 'forName', class: 'Class', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
+  // Attacker-chosen class names used for reflective instantiation (yamlbeans CVE-2023-24621, cognium-dev#1290)
+  { method: 'forName', class: 'Class', type: 'deserialization', cwe: 'CWE-502', severity: 'critical', arg_positions: [0], languages: ['java'] },
   { method: 'loadClass', class: 'ClassLoader', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [0] },
   { method: 'defineClass', class: 'ClassLoader', type: 'code_injection', cwe: 'CWE-94', severity: 'critical', arg_positions: [0, 1] },
   { method: 'newInstance', class: 'Class', type: 'code_injection', cwe: 'CWE-94', severity: 'high', arg_positions: [] },
