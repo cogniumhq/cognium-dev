@@ -180,11 +180,12 @@ ${VULN}`;
     expect(t.fixed).toBe(false);
     expect(rep.fixed).toBe('fail');
     expect(r.code).toBe(1);
-    // The engine drops the SQL flow after an HTML encoder; the verdict says why, and the fix check refuses it.
-    expect(t).toEqual({ key: target, verdict: 'gone', reason: 'sanitized-by', fixed: false });
+    // #1289: an HTML-context encoder clears only the XSS class, so the CWE-89
+    // flow it precedes is untouched and stays still-present; the fix check refuses it.
+    expect(t).toEqual({ key: target, verdict: 'still-present', fixed: false });
     const v = rep.verdicts!.find(x => x.key === target)!;
-    expect(v.sanitizerCoversSink).toBe(false);
-    expect(v.sanitizers!.some(s => s.method.includes('encodeForHTML'))).toBe(true);
+    expect(v.verdict).toBe('still-present');
+    expect(v.sanitizerCoversSink).toBeUndefined();
   }, 60_000);
 
   test('a real fix passes the fix check with exit 0', async () => {

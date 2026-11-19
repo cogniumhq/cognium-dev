@@ -1,0 +1,23 @@
+[
+  {
+    "file": "BenchmarkTest01585.java",
+    "signature": "format_string@43->52",
+    "cwe": "CWE-134",
+    "reason": "real CWE-134: user input via escapeHtml reaches getWriter().format(); OWASP labels file not-XSS",
+    "ref": "PR #1289"
+  },
+  {
+    "file": "BenchmarkTest01924.java",
+    "signature": "format_string@49->55",
+    "cwe": "CWE-134",
+    "reason": "real CWE-134: user input via escapeHtml reaches getWriter().format(); OWASP labels file not-XSS",
+    "ref": "PR #1289"
+  },
+  {
+    "file": "BenchmarkTest02581.java",
+    "signature": "format_string@68->74",
+    "cwe": "CWE-134",
+    "reason": "real CWE-134: user input via escapeHtml reaches getWriter().format(); OWASP labels file not-XSS",
+    "ref": "PR #1289"
+  }
+]
