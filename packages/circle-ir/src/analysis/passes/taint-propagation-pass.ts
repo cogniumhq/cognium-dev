@@ -1658,24 +1658,55 @@ function isInJavaSanitizedMethod(
     return true;
   }
   if (sinkType === 'xxe') {
-    // DocumentBuilderFactory / SAXParserFactory / XMLInputFactory hardening.
-    // Any one of these features suffices per the OWASP XXE cheatsheet.
-    const setFeatureRe =
-      /\.setFeature\s*\(\s*"(?:[^"]*disallow-doctype-decl|[^"]*external-general-entities|[^"]*external-parameter-entities|[^"]*load-external-dtd)"/;
-    if (setFeatureRe.test(body)) return true;
-    // setProperty variant for XMLInputFactory: `XMLInputFactory.SUPPORT_DTD`.
-    if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
-    // cognium-dev#1291 — TransformerFactory hardening (angus-mail text_xml):
-    // FEATURE_SECURE_PROCESSING plus empty external DTD/stylesheet access.
-    if (
-      /FEATURE_SECURE_PROCESSING|feature\/secure-processing/.test(body) &&
-      /ACCESS_EXTERNAL_DTD/.test(body) &&
-      /ACCESS_EXTERNAL_STYLESHEET/.test(body)
-    ) {
-      return true;
-    }
-  return false;
+    return isHardenedXmlFactory(body);
   }
+  return false;
+}
+
+/**
+ * cognium-dev#1291 / #1293 follow-up — does this Java method body harden an XML
+ * factory against XXE? One table shared by every factory kind (DocumentBuilder,
+ * SAXParser, XMLInputFactory, TransformerFactory, SchemaFactory, XMLReader).
+ *
+ * Hardened when ANY of these appears in the body:
+ *   1. setFeature("…disallow-doctype-decl | external-general-entities |
+ *      external-parameter-entities | load-external-dtd", …) — a string literal.
+ *   2. setProperty(…SUPPORT_DTD…, false) — XMLInputFactory.
+ *   3. set{Attribute,Property}(…ACCESS_EXTERNAL_{DTD,STYLESHEET,SCHEMA}…, "")
+ *      or the literal "http://javax.xml.XMLConstants/property/accessExternal…"
+ *      URI, with the value argument checked to be the EMPTY STRING. Covers both
+ *      the direct `tf.setAttribute(NAME, "")` form and a wrapper call such as
+ *      angus-mail's `setAttribute(tf, NAME, "")`.
+ *
+ * FEATURE_SECURE_PROCESSING is deliberately NOT accepted: on its own it does not
+ * stop external entity or DTD resolution (JAXP). A non-empty access value such
+ * as "all" or "file" is NOT hardening and must not match (#1293 regression: it
+ * cleared `ACCESS_EXTERNAL_DTD="all"` because it never checked the value).
+ *
+ * Limits (unchanged from the prior recognizer): matching is textual and
+ * method-scoped — it does not verify the hardened factory is the one used at the
+ * sink, and an occurrence inside a comment or a log string is not excluded (the
+ * accessExternal* URI itself contains "//", so cheap comment-stripping would
+ * corrupt it).
+ */
+function isHardenedXmlFactory(body: string): boolean {
+  // (1) Feature flags that disable DTD / external-entity processing.
+  const setFeatureRe =
+    /\.setFeature\s*\(\s*"(?:[^"]*disallow-doctype-decl|[^"]*external-general-entities|[^"]*external-parameter-entities|[^"]*load-external-dtd)"/;
+  if (setFeatureRe.test(body)) return true;
+  // (2) XMLInputFactory SUPPORT_DTD = false.
+  if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
+  // (3) External-access lockdown set to the empty string. The name (XMLConstants
+  // constant or literal property URI) is matched only when the value argument is
+  // the empty string, so a non-empty value like "all"/"file" is not credited.
+  // A permissive value on ANY external-access attribute (e.g. ACCESS_EXTERNAL_DTD
+  // = "all" alongside ACCESS_EXTERNAL_STYLESHEET = "") vetoes the credit — the
+  // open vector is still exploitable, so the method is not treated as hardened.
+  const accessName =
+    '(?:ACCESS_EXTERNAL_(?:DTD|STYLESHEET|SCHEMA)\\b|"https?:\\/\\/javax\\.xml\\.XMLConstants\\/property\\/accessExternal(?:DTD|Stylesheet|Schema)")';
+  const emptyExternalAccessRe = new RegExp(`${accessName}\\s*,\\s*""`);
+  const permissiveExternalAccessRe = new RegExp(`${accessName}\\s*,\\s*"[^"]+"`);
+  if (emptyExternalAccessRe.test(body) && !permissiveExternalAccessRe.test(body)) return true;
   return false;
 }
 
