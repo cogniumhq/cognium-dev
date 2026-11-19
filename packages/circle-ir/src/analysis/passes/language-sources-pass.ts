@@ -13580,6 +13580,20 @@ export function findRustLdapInjectionFindings(
   return findings;
 }
 
+/** Identifier mention with word boundaries; avoids dynamic `RegExp` (regex-lint). */
+function exprMentionsIdent(expr: string, ident: string): boolean {
+  if (!ident) return false;
+  let from = 0;
+  for (;;) {
+    const idx = expr.indexOf(ident, from);
+    if (idx === -1) return false;
+    const before = idx > 0 ? expr.charAt(idx - 1) : ' ';
+    const after = expr.charAt(idx + ident.length);
+    if (!/[A-Za-z0-9_]/.test(before) && !/[A-Za-z0-9_]/.test(after)) return true;
+    from = idx + 1;
+  }
+}
+
 /**
  * flow-quartet tier-1 rust `format_string` (#1245): `HttpResponse::Ok().body(format!(...))`
  * with actix `web::Query` / path data in the macro arguments. Gates classify this as
@@ -13694,7 +13708,7 @@ export function findRustActixBodyFormatFormatStringSinks(
             if (httpGetRe.test(rhs)) fn.tainted.add(lhs);
             else {
               for (const v of fn.tainted) {
-                if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+                if (exprMentionsIdent(rhs, v)) {
                   fn.tainted.add(lhs);
                   break;
                 }
@@ -13715,7 +13729,7 @@ export function findRustActixBodyFormatFormatStringSinks(
       let hit = false;
       for (let p = 1; p < argParts.length; p++) {
         for (const v of fn.tainted) {
-          if (new RegExp(`\\b${v}\\b`).test(argParts[p])) {
+          if (exprMentionsIdent(argParts[p], v)) {
             hit = true;
             break;
           }
