@@ -2,7 +2,7 @@
 // expected=false cases. All output here is hand-made; nothing comes from a real scan.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -36,7 +36,7 @@ const parse = (text, env) => run(['parse', '-'], text, env);
 test('1: no added rows gives exit 0 and fp_gain 0', () => {
   const r = parse(output([]));
   assert.equal(r.code, 0);
-  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 added_on_real=0 added_unscored=0$/m);
+  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 waived=0 added_on_real=0 added_unscored=0$/m);
 });
 
 test('2: an addition on an expected=false case fails at the default max 0', () => {
@@ -52,7 +52,7 @@ test('3: additions on expected=true and expected=? are evidence and do not gate'
     added('helpers/Util.java', 'xss@1->2', '?'),
   ]));
   assert.equal(r.code, 0);
-  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 added_on_real=1 added_unscored=1$/m);
+  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 waived=0 added_on_real=1 added_unscored=1$/m);
   assert.doesNotMatch(r.out, /offending/);
 });
 
@@ -126,6 +126,70 @@ test('13: parse of a missing file and usage errors exit 3', () => {
     assert.equal(r.code, 3, args.join(' '));
     assert.match(r.out, /^bench-fp-gate: cannot judge: /m);
   }
+});
+
+// A waiver file written to a temp path, passed via FP_WAIVERS so these tests
+// never depend on the committed scripts/bench-fp-waivers.json.
+function waiverFile(entries) {
+  const dir = mkdtempSync(join(tmpdir(), 'bench-fp-waivers-'));
+  const p = join(dir, 'waivers.json');
+  writeFileSync(p, typeof entries === 'string' ? entries : JSON.stringify(entries));
+  return p;
+}
+const waiver = (file, signature) =>
+  ({ file, signature, cwe: 'CWE-134', reason: 'reviewed', ref: 'PR #1289' });
+
+test('14: an ADDED expected=false row matching a waiver is waived, not fp_gain', () => {
+  // The waiver signature carries a line number, so a shifted line still matches.
+  const fp = waiverFile([waiver('BenchmarkTest01585.java', 'format_string@43->52')]);
+  const r = parse(output([added('BenchmarkTest01585.java', 'format_string@99->120', 'false/xss')]), { FP_WAIVERS: fp });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 waived=1 /m);
+  assert.match(r.out, /^bench-fp-gate: waived BenchmarkTest01585\.java format_string@99->120$/m);
+  assert.doesNotMatch(r.out, /offending/);
+});
+
+test('15: an un-waived expected=false row still fails even with a waiver file', () => {
+  const fp = waiverFile([waiver('BenchmarkTest01585.java', 'format_string@43->52')]);
+  const r = parse(output([added('BenchmarkTest09999.java', 'xss@1->2', 'false/xss')]), { FP_WAIVERS: fp });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /^bench-fp-gate: fp_gain=1 max=0 waived=0 /m);
+  assert.match(r.out, /^bench-fp-gate: offending BenchmarkTest09999\.java xss@1->2$/m);
+});
+
+test('16: an unreadable or malformed waiver file cannot be judged (exit 3)', () => {
+  const missing = parse(output([]), { FP_WAIVERS: join(mkdtempSync(join(tmpdir(), 'nw-')), 'absent.json') });
+  assert.equal(missing.code, 3);
+  assert.match(missing.out, /cannot judge: cannot read waiver file /);
+
+  const badJson = parse(output([]), { FP_WAIVERS: waiverFile('{ not json') });
+  assert.equal(badJson.code, 3);
+  assert.match(badJson.out, /cannot judge: waiver file .* is not valid JSON/);
+
+  const notArray = parse(output([]), { FP_WAIVERS: waiverFile({ file: 'x', signature: 'y' }) });
+  assert.equal(notArray.code, 3);
+  assert.match(notArray.out, /cannot judge: waiver file .* is not a JSON array/);
+
+  const badEntry = parse(output([]), { FP_WAIVERS: waiverFile([{ cwe: 'CWE-134' }]) });
+  assert.equal(badEntry.code, 3);
+  assert.match(badEntry.out, /cannot judge: waiver 0 in .* needs string file and signature/);
+});
+
+test('17: a waiver that matches nothing is harmless, not an error', () => {
+  const fp = waiverFile([waiver('BenchmarkTest01585.java', 'format_string@43->52')]);
+  const r = parse(output([]), { FP_WAIVERS: fp });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /^bench-fp-gate: fp_gain=0 max=0 waived=0 /m);
+});
+
+test('18: a waiver without a line number matches on the exact signature only', () => {
+  const fp = waiverFile([waiver('BenchmarkTest01585.java', 'format_string')]);
+  const exact = parse(output([added('BenchmarkTest01585.java', 'format_string', 'false/xss')]), { FP_WAIVERS: fp });
+  assert.equal(exact.code, 0);
+  assert.match(exact.out, /waived=1 /);
+  const shifted = parse(output([added('BenchmarkTest01585.java', 'format_string@1->2', 'false/xss')]), { FP_WAIVERS: fp });
+  assert.equal(shifted.code, 1);
+  assert.match(shifted.out, /fp_gain=1 .*waived=0 /);
 });
 
 test('judge: the exported function', () => {
