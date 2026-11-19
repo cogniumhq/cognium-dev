@@ -1,9 +1,9 @@
 {
-  "tag": "engine-v4.22.0-rc.2",
-  "sha": "44d828763998c0922ab6ca08f8d066d8f7ae1a2a",
-  "version": "44d828763998 vs circle-ir-v4.21.1",
-  "date": "2026-11-16",
-  "method": "bench-diff diff via scripts/bench-gate.mjs vs circle-ir-v4.21.1",
+  "tag": "engine-v4.23.0-rc.1",
+  "sha": "aa646cafb01b0985ab8b6f31c1e84e84f1ada9cb",
+  "version": "aa646cafb01b vs circle-ir-v4.22.0",
+  "date": "2026-11-19",
+  "method": "bench-diff diff via scripts/bench-gate.mjs vs circle-ir-v4.22.0",
   "results": [
     {
       "suite": "bench-diff/owasp",
