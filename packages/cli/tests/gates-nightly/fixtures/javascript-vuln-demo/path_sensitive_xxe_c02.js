@@ -1,4 +1,5 @@
 'use strict';
+/* eslint-disable @typescript-eslint/no-require-imports -- byte-aligned flow-combo c02 corpus */
 const libxml = require('libxmljs');
 
 // cognium-dev#1244 flow-combo c02 — one-branch / path-sensitive XXE (CWE-611)
