@@ -61,4 +61,14 @@ describe('#1222 libxmljs noent and xxe taint flows', () => {
     const r = await analyze(UNKNOWN_OPTS_VAR, 'dyn.js', 'javascript');
     expect(flows(r).length).toBeGreaterThan(0);
   });
+
+  it('single-argument parseXml keeps xxe flow when input is tainted (#1244 flow-combo c02)', async () => {
+    const code = `const libxml = require('libxmljs');
+app.post('/onebranch', (req, res) => {
+  libxml.parseXml(req.body);
+  res.end();
+});`;
+    const r = await analyze(code, 'path_sensitive_xxe.js', 'javascript');
+    expect(flows(r).length).toBeGreaterThan(0);
+  });
 });

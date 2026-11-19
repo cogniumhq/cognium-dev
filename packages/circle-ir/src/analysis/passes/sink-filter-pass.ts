@@ -1838,8 +1838,9 @@ function jsSsrfHostGuardedLines(code: string): Set<number> {
 /**
  * True when a libxmljs `parseXml` / `parseXmlString` call at `sinkLine` has
  * disabled external entities: `noent: false`, an inline options object without
- * `noent: true`, or a single-argument call (default `noent: false`).
- * Dynamic options (`parseXml(buf, opts)`) → false (unknown; keep the sink).
+ * `noent: true`, or a two-argument call whose inline options omit `noent: true`.
+ * Single-argument calls and dynamic options (`parseXml(buf, opts)`) → false
+ * (unknown entity resolution; keep the sink — flow-combo c02 / #1244).
  * (cognium-dev#1222)
  */
 function jsLibxmljsNoentDisablesXxe(code: string, sinkLine: number): boolean {
@@ -1873,7 +1874,7 @@ function jsLibxmljsNoentDisablesXxe(code: string, sinkLine: number): boolean {
 
   const inner = afterCall.slice(openParen + 1, closeIdx);
   const commaIdx = inner.indexOf(',');
-  if (commaIdx < 0) return true;
+  if (commaIdx < 0) return false;
 
   const secondArg = inner.slice(commaIdx + 1).trim();
   if (/^[A-Za-z_$][\w$]*$/.test(secondArg)) return false;
