@@ -612,6 +612,7 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       additionalSanitizers.push(...findJsWrapperFunctionSanitizers(code));
       // Sprint 75 (#216 Pattern D): JS SSRF allow-list guard (var-aware).
       additionalSanitizers.push(...findJsSsrfAllowlistGuardSanitizers(code));
+      additionalSanitizers.push(...findJsSsrfAllowlistWrapperSanitizers(code));
       // Sprint 77b (#216 Pattern X): JS/TS argv-form execFile/spawn and
       // parameterized SQL placeholder sanitizers.
       additionalSanitizers.push(...findJsArgvFormExecSanitizers(code));
@@ -7915,6 +7916,57 @@ function findJsSsrfAllowlistGuardSanitizers(code: string): TaintSanitizer[] {
         type: 'js_ssrf_allowlist_guard',
         method: 'if',
         line: l,
+        sanitizes: ['ssrf', 'external_taint_escape'],
+      });
+    }
+  }
+
+  return sanitizers;
+}
+
+/**
+ * JS/TS: custom-wrapper SSRF allow-list (flow-combo c08 / #1244).
+ *
+ * Recognizes helpers that validate `new URL(param).hostname` against a
+ * fixed allow-list (`ALLOWED.has` / `includes`) and return the same param,
+ * e.g. flow-sanitize `custom_wrapper` clean probes.
+ */
+function findJsSsrfAllowlistWrapperSanitizers(code: string): TaintSanitizer[] {
+  const sanitizers: TaintSanitizer[] = [];
+  const lines = code.split('\n');
+
+  const fnDeclRe = /\bfunction\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)/;
+  const arrowDeclRe =
+    /\b(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*\(\s*([A-Za-z_]\w*)\s*\)\s*=>/;
+  const allowlistName =
+    /^(?:[A-Z][A-Z0-9_]+|.*?(allowed|accepted|whitelist|permitted|valid|approved).*)$/i;
+  const allowGuard = /!\s*([A-Za-z_]\w*)\s*\.\s*(?:has|includes)\s*\(/;
+
+  const wrappers = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = fnDeclRe.exec(lines[i]) ?? arrowDeclRe.exec(lines[i]);
+    if (!m) continue;
+    const name = m[1];
+    const param = m[2];
+    const body = lines.slice(i, Math.min(lines.length, i + 12)).join('\n');
+    if (!new RegExp(`new\\s+URL\\s*\\(\\s*${param}\\b`).test(body)) continue;
+    const gm = allowGuard.exec(body);
+    if (!gm || !allowlistName.test(gm[1]!)) continue;
+    if (!/\b(?:throw|return)\b/.test(body)) continue;
+    if (!new RegExp(`\\breturn\\s+${param}\\b`).test(body)) continue;
+    wrappers.add(name);
+  }
+
+  for (const name of wrappers) {
+    for (let i = 0; i < lines.length; i++) {
+      const declSelf = new RegExp(`\\b(?:function|const|let|var)\\s+${name}\\b`);
+      if (declSelf.test(lines[i])) continue;
+      if (!new RegExp(`\\b${name}\\s*\\(`).test(lines[i])) continue;
+      sanitizers.push({
+        type: 'js_ssrf_allowlist_wrapper',
+        method: name,
+        line: i + 1,
         sanitizes: ['ssrf', 'external_taint_escape'],
       });
     }
