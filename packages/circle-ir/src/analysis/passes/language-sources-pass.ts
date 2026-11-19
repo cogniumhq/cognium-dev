@@ -600,6 +600,24 @@ export class LanguageSourcesPass implements AnalysisPass<LanguageSourcesResult> 
       )) {
         ctx.addFinding(finding);
       }
+      for (const r of findRustActixBodyFormatFormatStringSinks(code)) {
+        if (
+          additionalSinks.some(
+            (s) => s.line === r.sinkLine && s.type === 'format_string',
+          )
+        ) {
+          continue;
+        }
+        additionalSinks.push({
+          type: 'format_string',
+          cwe: 'CWE-134',
+          line: r.sinkLine,
+          location:
+            `Actix HttpResponse body built with format! containing request data at line ${r.sinkLine}`,
+          method: 'body',
+          confidence: 0.9,
+        });
+      }
     }
 
     // -- JavaScript/TypeScript: Sprint 73 (#216 Pattern A + B) — ETE
@@ -6396,7 +6414,7 @@ function findRustNumericRangeCheckGuardSanitizers(
         type: 'rust_numeric_range_check_guard',
         method: 'if',
         line: l + 1,
-        sanitizes: ['xss', 'external_taint_escape'],
+        sanitizes: ['xss', 'external_taint_escape', 'format_string'],
       });
     }
   }
@@ -7327,6 +7345,7 @@ function findRustPatInfoHttpOnlyResponseSanitizers(code: string): TaintSanitizer
         'external_taint_escape',
         'open_redirect',
         'log_injection',
+        'format_string',
       ],
     });
   }
@@ -13559,6 +13578,157 @@ export function findRustLdapInjectionFindings(
     }
   }
   return findings;
+}
+
+/**
+ * flow-quartet tier-1 rust `format_string` (#1245): `HttpResponse::Ok().body(format!(...))`
+ * with actix `web::Query` / path data in the macro arguments. Gates classify this as
+ * CWE-134 (`format_string`), not only CWE-79 xss on `.body(...)`.
+ */
+export function findRustActixBodyFormatFormatStringSinks(
+  code: string,
+): { sinkLine: number }[] {
+  const sinks: { sinkLine: number }[] = [];
+  if (typeof code !== 'string' || code.length === 0) return sinks;
+  if (!/HttpResponse::\w+\(\)\s*\.\s*body\s*\(\s*format!\s*\(/.test(code)) {
+    return sinks;
+  }
+
+  const lines = code.split('\n');
+  const extractorTypeRe =
+    /:\s*(?:String|Bytes|bytes::Bytes|axum::body::Bytes|web::Query\b|web::Path\b|web::Form\b|web::Json\b|HttpRequest\b|actix_web::HttpRequest\b)/;
+  const httpGetRe = /\.get\s*\(\s*"[^"]+"\s*\)/;
+
+  type Fn = { start: number; end: number; tainted: Set<string> };
+  const fns: Fn[] = [];
+  let cur: Fn | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i];
+    if (/^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(/.test(t)) {
+      if (cur) {
+        cur.end = i - 1;
+        fns.push(cur);
+      }
+      cur = { start: i, end: lines.length - 1, tainted: new Set() };
+      let headerJoined = '';
+      for (let j = i; j < Math.min(i + 12, lines.length); j++) {
+        headerJoined += lines[j];
+        if (/\{\s*$/.test(lines[j])) break;
+      }
+      const open = headerJoined.indexOf('(');
+      const close = headerJoined.lastIndexOf(')');
+      if (open !== -1 && close > open) {
+        const params = headerJoined.substring(open + 1, close);
+        let depth = 0;
+        let buf = '';
+        const parts: string[] = [];
+        for (const ch of params) {
+          if (ch === '<' || ch === '(') depth++;
+          else if (ch === '>' || ch === ')') depth--;
+          if (ch === ',' && depth === 0) {
+            parts.push(buf);
+            buf = '';
+            continue;
+          }
+          buf += ch;
+        }
+        if (buf.trim().length > 0) parts.push(buf);
+        for (const p of parts) {
+          const pm = p.match(/(?:mut\s+)?(\w+)\s*:/);
+          if (!pm) continue;
+          if (extractorTypeRe.test(p)) cur!.tainted.add(pm[1]);
+        }
+      }
+    }
+  }
+  if (cur) fns.push(cur);
+
+  const bodyFormatRe =
+    /HttpResponse::\w+\(\)\s*\.\s*body\s*\(\s*format!\s*\(\s*([^)]+)\)\s*\)/;
+
+  const splitFormatArgs = (argSpan: string): string[] => {
+    const parts: string[] = [];
+    let d = 0;
+    let b = '';
+    let inStr: string | null = null;
+    for (let k = 0; k < argSpan.length; k++) {
+      const ch = argSpan[k];
+      if (inStr) {
+        if (ch === '\\') {
+          b += ch + (argSpan[k + 1] ?? '');
+          k++;
+          continue;
+        }
+        if (ch === inStr) inStr = null;
+        b += ch;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = ch;
+        b += ch;
+        continue;
+      }
+      if (ch === '(' || ch === '[' || ch === '{') d++;
+      else if (ch === ')' || ch === ']' || ch === '}') d--;
+      if (ch === ',' && d === 0) {
+        parts.push(b);
+        b = '';
+        continue;
+      }
+      b += ch;
+    }
+    if (b.trim().length > 0) parts.push(b);
+    return parts;
+  };
+
+  for (const fn of fns) {
+    for (let pass = 0; pass < 3; pass++) {
+      const before = fn.tainted.size;
+      for (let i = fn.start; i <= fn.end; i++) {
+        const t = lines[i].trim();
+        const letM = t.match(/^let\s+(?:mut\s+)?(\w+)\s*(?::\s*[^=]+)?=\s*(.+?);?$/);
+        if (letM) {
+          const lhs = letM[1];
+          const rhs = letM[2];
+          if (!fn.tainted.has(lhs)) {
+            if (httpGetRe.test(rhs)) fn.tainted.add(lhs);
+            else {
+              for (const v of fn.tainted) {
+                if (new RegExp(`\\b${v}\\b`).test(rhs)) {
+                  fn.tainted.add(lhs);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      if (fn.tainted.size === before) break;
+    }
+    if (fn.tainted.size === 0) continue;
+    for (let i = fn.start; i <= fn.end; i++) {
+      const line = lines[i];
+      const m = bodyFormatRe.exec(line);
+      if (!m) continue;
+      const argParts = splitFormatArgs(m[1]);
+      if (argParts.length < 2) continue;
+      let hit = false;
+      for (let p = 1; p < argParts.length; p++) {
+        for (const v of fn.tainted) {
+          if (new RegExp(`\\b${v}\\b`).test(argParts[p])) {
+            hit = true;
+            break;
+          }
+        }
+        if (hit) break;
+      }
+      if (!hit) continue;
+      if (!sinks.some((s) => s.sinkLine === i + 1)) {
+        sinks.push({ sinkLine: i + 1 });
+      }
+    }
+  }
+  return sinks;
 }
 
 /**
