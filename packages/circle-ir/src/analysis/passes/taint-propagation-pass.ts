@@ -1631,7 +1631,16 @@ function isInJavaSanitizedMethod(
     if (setFeatureRe.test(body)) return true;
     // setProperty variant for XMLInputFactory: `XMLInputFactory.SUPPORT_DTD`.
     if (/\.setProperty\s*\([^,]*SUPPORT_DTD[^,]*,\s*false\s*\)/.test(body)) return true;
-    return false;
+    // cognium-dev#1291 — TransformerFactory hardening (angus-mail text_xml):
+    // FEATURE_SECURE_PROCESSING plus empty external DTD/stylesheet access.
+    if (
+      /FEATURE_SECURE_PROCESSING|feature\/secure-processing/.test(body) &&
+      /ACCESS_EXTERNAL_DTD/.test(body) &&
+      /ACCESS_EXTERNAL_STYLESHEET/.test(body)
+    ) {
+      return true;
+    }
+  return false;
   }
   return false;
 }
