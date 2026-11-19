@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [4.23.0] - 2026-11-19
+
+### Fixed
+
+- **`recheck`: successors of anonymous handlers are matched by call-site anchor (#1287).** A `gone` verdict whose anonymous/inline handler was re-keyed (e.g. an import inserted above it) now resolves its successor declaration by the handler's call-site anchor, so an import-plus-real-fix reads the correct reason instead of `declaration-removed`.
+
+### Tests
+
+- **Lock flow-combo JS/Java XXE/xpath regressions for #1244 (#1294, #1295, #1296, #1297, #1298, #1299, #1300, #1302).** Built-CLI regression tests pinning flow-combo cases c02/c03/c04/c05/c06/c11/c13 (JS xxe) and c04 (Java xpath). No runtime behavior change.
+
+Note: #1283 (CI: cognium-ai regression scan, advisory) and #1284 (CI: engine bench regression check) are repository-CI changes, not cognium-dev CLI runtime; include only if this file lists CI. #1286 (chore: mark bench/.claude third-party for the Loop) is a chore.
+
 ## [4.22.0] - 2026-11-16
 
 ### Changes
