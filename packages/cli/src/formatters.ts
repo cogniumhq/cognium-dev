@@ -104,7 +104,7 @@ export interface ScanResult {
 export interface ScanNotification {
   level: 'error' | 'warning' | 'note';
   /** Stable reason id, emitted as SARIF `properties.reason`. */
-  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling';
+  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate';
   message: string;
   file?: string;
   line?: number;
@@ -124,6 +124,11 @@ export function parseErrorText(p: NonNullable<ScanResult['parseErrors']>): strin
   return `${p.count} syntax error(s)${at}; the parser could not read the code around them, so findings in this file may be incomplete`;
 }
 
+export function entryPathDroppedText(n: number): string {
+  return `${n} high/critical security finding(s) dropped by require-entry-path: no entry point reaches them. `
+    + 'Rerun with --disable-pass require-entry-path to report them.';
+}
+
 /** Every notification for a scan, run-level conditions first, then per file in result order. */
 export function scanNotifications(results: ScanResult[], crossFileData?: CrossFileData): ScanNotification[] {
   const out: ScanNotification[] = [];
@@ -140,6 +145,10 @@ export function scanNotifications(results: ScanResult[], crossFileData?: CrossFi
       reason: 'cross-file-budget',
       message: 'Cross-file budget exceeded — some cross-file taint paths may be missing. Raise it with --cross-file-budget-ms <n> (0 = unlimited).',
     });
+  }
+  // A design choice, not a failure: a note, and the run is still complete.
+  if (crossFileData?.entryPathDropped) {
+    out.push({ level: 'note', reason: 'entry-path-gate', message: entryPathDroppedText(crossFileData.entryPathDropped) });
   }
   for (const r of results) {
     if (r.error) {
@@ -197,6 +206,11 @@ export interface CrossFileData {
    * format.
    */
   skippedPaths?: Array<{ path: string; reason: string }>;
+  /**
+   * High/critical security findings and taint flows the `require-entry-path`
+   * gate removed (circle-ir `entry_path_dropped`). Reported, never silent.
+   */
+  entryPathDropped?: number;
 }
 
 export const SINK_SEVERITY: Record<SinkType, string> = {
@@ -687,6 +701,11 @@ export function formatResults(
     ));
   }
 
+  if (crossFileData?.entryPathDropped) {
+    lines.push('');
+    lines.push(colors.dim(`ℹ ${entryPathDroppedText(crossFileData.entryPathDropped)}`));
+  }
+
   if (crossFileData?.budgetExceeded) {
     lines.push('');
     lines.push(colors.yellow(
@@ -734,6 +753,7 @@ export function formatJSON(
       crossFileBudgetExceeded: crossFileData?.budgetExceeded ?? false,
       errors: results.filter(r => r.error).length,
       filesWithParseErrors: results.filter(r => !r.error && r.parseErrors).length,
+      entryPathDropped: crossFileData?.entryPathDropped ?? 0,
       // Same rule as SARIF `invocations[0].executionSuccessful`.
       executionSuccessful: executionSuccessful(scanNotifications(results, crossFileData)),
     },

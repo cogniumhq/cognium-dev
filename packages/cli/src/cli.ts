@@ -1045,6 +1045,7 @@ async function scanProject(
       projectSizeBudgetExceeded: readTruncated || projectResult.project_size_budget_exceeded === true,
       filesAnalysed: projectResult.files.length,
       filesTotal: files.length,
+      entryPathDropped: projectResult.entry_path_dropped ?? 0,
     },
   };
 }
@@ -1405,7 +1406,6 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // counted on the status line too, so JSON and SARIF runs show them.
     const notAnalysed = results.filter(r => r.error).length;
     const partlyParsed = results.filter(r => !r.error && r.parseErrors).length;
-    const notices = scanNotifications(results, crossFileData);
 
     // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
     // overstating what was actually analysed.
@@ -1540,6 +1540,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       // Cross-file taint paths are always security findings; exclude them when security isn't requested
       if (crossFileData && !allowedCategories.includes('security')) {
         crossFileData.taintPaths = [];
+        crossFileData.entryPathDropped = 0;
       }
     }
 
@@ -1559,7 +1560,8 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // have no findings skips BOTH the ceiling warning and the
     // `N of M file(s) analysed` summary, and exits 0 — which is precisely the
     // clean-scan claim over unread files this change exists to prevent.
-    // Likewise a file not fully analysed or a budget cut (`notices`).
+    // Likewise a file not fully analysed, a budget cut or a gate drop (`notices`).
+    const notices = scanNotifications(results, crossFileData);
     const truncated = crossFileData?.projectSizeBudgetExceeded === true;
     const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated || notices.length > 0;
 

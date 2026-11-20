@@ -215,6 +215,8 @@ Use `-v` flag to see all scanned files including clean ones.
 
 **Incomplete analysis is never silent:** a file that was not analysed (an analysis error, or `--file-timeout-ms`) prints `[ERROR]`, and a file with syntax errors prints `[PARTIAL]`, because the parser could not read the code around them. Both are counted on the final status line and in the summary. JSON has `summary.errors`, `summary.filesWithParseErrors`, `results[].parse_errors` and `summary.executionSuccessful`. SARIF lists each case, and an exceeded budget, in `runs[0].invocations[0].toolExecutionNotifications`, each with a level, the file location and a `properties.reason`. `executionSuccessful` is `false` when a file was not analysed or a budget cut the analysis short.
 
+In a directory scan, the `require-entry-path` gate drops high and critical security findings that no entry point reaches. The number dropped is printed in text output, given as `summary.entryPathDropped` in JSON and as a SARIF `note`, together with the flag that keeps them (`--disable-pass require-entry-path`).
+
 ### Output streams (stdout vs stderr)
 
 `cognium-dev` follows the standard CLI convention: machine-readable payload on **stdout**, diagnostics on **stderr**.

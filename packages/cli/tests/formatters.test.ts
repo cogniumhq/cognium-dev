@@ -87,6 +87,13 @@ describe('formatResults', () => {
     expect(output).toContain('may be incomplete');
   });
 
+  test('states how many findings the entry-path gate dropped and how to keep them', () => {
+    const output = formatResults([], false, { taintPaths: [], crossFileCalls: [], entryPathDropped: 2 });
+    expect(output).toContain('2 high/critical security finding(s) dropped by require-entry-path');
+    expect(output).toContain('--disable-pass require-entry-path');
+    expect(formatResults([], false, { taintPaths: [], crossFileCalls: [], entryPathDropped: 0 })).not.toContain('require-entry-path');
+  });
+
   test('the cross-file budget warning names the CLI flag', () => {
     const output = formatResults([], false, { taintPaths: [], crossFileCalls: [], budgetExceeded: true });
     expect(output).toContain('--cross-file-budget-ms');
@@ -120,7 +127,11 @@ describe('formatJSON', () => {
     expect(parsed.summary.totalVulnerabilities).toBe(1);
     expect(parsed.summary.errors).toBe(0);
     expect(parsed.summary.filesWithParseErrors).toBe(0);
+    expect(parsed.summary.entryPathDropped).toBe(0);
     expect(parsed.summary.executionSuccessful).toBe(true);
+    const gated = JSON.parse(formatJSON(results, { taintPaths: [], crossFileCalls: [], entryPathDropped: 4 }));
+    expect(gated.summary.entryPathDropped).toBe(4);
+    expect(gated.summary.executionSuccessful).toBe(true);
   });
 
   test('counts partly parsed and unanalysed files instead of reporting errors: 0 alone', () => {

@@ -194,6 +194,19 @@ describe('SARIF 2.1.0 conformance', () => {
     expect(validate(doc)).toEqual([]);
   });
 
+  test('findings dropped by the entry-path gate are a note naming the flag; the run is still complete', () => {
+    const doc = JSON.parse(formatSARIF([], { taintPaths: [], crossFileCalls: [], entryPathDropped: 3 }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(true);
+    expect(invocation.toolExecutionNotifications).toHaveLength(1);
+    const n = invocation.toolExecutionNotifications[0];
+    expect(n.level).toBe('note');
+    expect(n.properties).toEqual({ reason: 'entry-path-gate' });
+    expect(n.message.text).toContain('3 high/critical security finding(s)');
+    expect(n.message.text).toContain('--disable-pass require-entry-path');
+    expect(validate(doc)).toEqual([]);
+  });
+
   test('an exceeded cross-file budget is a warning and marks the run unsuccessful', () => {
     const doc = JSON.parse(formatSARIF([], { taintPaths: [], crossFileCalls: [], budgetExceeded: true }));
     const invocation = doc.runs[0].invocations[0];

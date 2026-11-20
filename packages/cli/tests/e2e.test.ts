@@ -165,6 +165,39 @@ describe('files not fully analysed', () => {
   }, 30_000);
 });
 
+// ─── The entry-path gate's drops are counted, with the flag that keeps them ─
+
+describe('require-entry-path drops are reported', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-gate-'));
+  const servlet = (name: string, method: string, base: string) =>
+    `import javax.servlet.http.*;\npublic class ${name}${base} {\n  public void ${method}(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    Runtime.getRuntime().exec(req.getParameter("c"));\n  }\n}\n`;
+  writeFileSync(join(dir, 'Entry.java'), servlet('Entry', 'doGet', ' extends HttpServlet'));
+  // Nothing calls Helper.util, so the gate drops its command injection.
+  writeFileSync(join(dir, 'Helper.java'), servlet('Helper', 'util', ''));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('SARIF carries a note with the count and the flag; JSON counts it', async () => {
+    const sarif = JSON.parse((await run('scan', dir, '-f', 'sarif', '-q')).stdout);
+    const notes = sarif.runs[0].invocations[0].toolExecutionNotifications
+      .filter((n: { properties: { reason: string } }) => n.properties.reason === 'entry-path-gate');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].level).toBe('note');
+    expect(notes[0].message.text).toContain('--disable-pass require-entry-path');
+    expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(true);
+  }, 60_000);
+
+  test('the flag in the note brings the finding back and the count to 0', async () => {
+    const gated = JSON.parse((await run('scan', dir, '-f', 'json', '-q', '--category', 'security')).stdout);
+    const ungated = JSON.parse((await run('scan', dir, '-f', 'json', '-q', '--category', 'security', '--disable-pass', 'require-entry-path')).stdout);
+    const helperVulns = (j: { results: Array<{ file: string; vulnerabilities: unknown[] }> }) =>
+      j.results.find(r => r.file.endsWith('Helper.java'))?.vulnerabilities.length ?? 0;
+    expect(gated.summary.entryPathDropped).toBeGreaterThanOrEqual(1);
+    expect(helperVulns(gated)).toBe(0);
+    expect(ungated.summary.entryPathDropped).toBe(0);
+    expect(helperVulns(ungated)).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+});
+
 // ─── Scan: exit codes ───────────────────────────────────────────────────────
 
 describe('exit codes', () => {
