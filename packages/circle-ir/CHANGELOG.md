@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ProjectAnalysis.entry_path_dropped` counts the findings that the `require-entry-path` gate removes (cognium-dev#1306).** `applyRequireEntryPath` returns its drop count. `analyzeProject` sets the field when the count is above 0. Results are unchanged.
 
+### Fixed
+
+- **TypeScript: generic calls with `typeof import(...)` or `import(...).T` in type arguments no longer mark stable ids partial (cognium-dev#1312).** Benign-parse rules now cover call-site type arguments where tree-sitter leaves an `ERROR` `>() tail after `import` types in expressions and return statements.
+
 ## [4.23.0] - 2026-11-19
 
 ### Security
