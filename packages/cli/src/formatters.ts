@@ -104,7 +104,7 @@ export interface ScanResult {
 export interface ScanNotification {
   level: 'error' | 'warning' | 'note';
   /** Stable reason id, emitted as SARIF `properties.reason`. */
-  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate';
+  reason: 'analysis-error' | 'file-timeout' | 'parse-error' | 'cross-file-budget' | 'project-size-ceiling' | 'entry-path-gate' | 'no-files';
   message: string;
   file?: string;
   line?: number;
@@ -132,6 +132,10 @@ export function entryPathDroppedText(n: number): string {
 /** Every notification for a scan, run-level conditions first, then per file in result order. */
 export function scanNotifications(results: ScanResult[], crossFileData?: CrossFileData): ScanNotification[] {
   const out: ScanNotification[] = [];
+  // An empty run says why it is empty (cross-file data exists only when files were read).
+  if (results.length === 0 && !crossFileData) {
+    out.push({ level: 'warning', reason: 'no-files', message: 'No supported files found; nothing was analysed.' });
+  }
   if (crossFileData?.projectSizeBudgetExceeded) {
     out.push({
       level: 'warning',

@@ -198,6 +198,32 @@ describe('require-entry-path drops are reported', () => {
   }, 60_000);
 });
 
+// ─── An empty scan still writes a valid report ──────────────────────────────
+
+describe('empty directory', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cognium-empty-'));
+  const outFile = join(dir, 'out.sarif');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('-f sarif -o writes a valid empty SARIF run and exits 0', async () => {
+    const { exitCode, stderr } = await run('scan', dir, '-f', 'sarif', '-o', outFile);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain('No supported files found');
+    expect(existsSync(outFile)).toBe(true);
+    const doc = JSON.parse(await Bun.file(outFile).text());
+    expect(doc.version).toBe('2.1.0');
+    expect(doc.runs[0].results).toEqual([]);
+    expect(doc.runs[0].invocations[0].executionSuccessful).toBe(true);
+    expect(doc.runs[0].invocations[0].toolExecutionNotifications[0].properties.reason).toBe('no-files');
+  }, 30_000);
+
+  test('-f json writes an empty report to stdout', async () => {
+    const { stdout, exitCode } = await run('scan', dir, '-f', 'json', '-q');
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).summary.filesScanned).toBe(0);
+  }, 30_000);
+});
+
 // ─── Scan: exit codes ───────────────────────────────────────────────────────
 
 describe('exit codes', () => {

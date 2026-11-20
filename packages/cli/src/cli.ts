@@ -1050,6 +1050,17 @@ async function scanProject(
   };
 }
 
+/** Write a scan report to the `-o` file, or to stdout. */
+function writeReport(output: string, outputFile: string | undefined): void {
+  if (outputFile) {
+    writeFileSync(outputFile, output);
+    // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
+    console.error(colors.green(`Results written to ${outputFile}`));
+  } else if (output.trim()) {
+    writeStdout(output + '\n');
+  }
+}
+
 // ─── Shared WASM initialization ──────────────────────────────────────────────
 
 async function initWasm(spin: Spinner | null): Promise<void> {
@@ -1296,6 +1307,13 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
+      // A JSON or SARIF report, and any -o file, is still written: a CI step
+      // that uploads it must get a valid empty run, not a missing file.
+      if (options.format !== 'text' || options.output) {
+        const empty = options.format === 'json' ? formatJSON([]) : options.format === 'sarif' ? formatSARIF([]) : formatResults([]);
+        writeReport(empty, options.output);
+      }
+      await exitAfterFlush(0);
       return;
     }
 
@@ -1590,14 +1608,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           output = formatResults(results, options.verbose, crossFileData, profileSummary);
       }
 
-      if (options.output) {
-        const { writeFileSync } = await import('fs');
-        writeFileSync(options.output, output);
-        // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
-        console.error(colors.green(`Results written to ${options.output}`));
-      } else if (output.trim()) {
-        writeStdout(output + '\n');
-      }
+      writeReport(output, options.output);
 
       // Summary
       if (!options.quiet && options.format === 'text') {

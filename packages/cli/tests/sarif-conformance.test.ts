@@ -41,8 +41,12 @@ function vuln(over: Partial<ScanResult['vulnerabilities'][0]> = {}) {
 }
 
 describe('SARIF 2.1.0 conformance', () => {
-  test('empty scan produces a valid document', () => {
-    expect(validate(JSON.parse(formatSARIF([])))).toEqual([]);
+  test('empty scan produces a valid document that says why it is empty', () => {
+    const doc = JSON.parse(formatSARIF([]));
+    expect(validate(doc)).toEqual([]);
+    expect(doc.runs[0].results).toEqual([]);
+    expect(doc.runs[0].invocations[0].executionSuccessful).toBe(true);
+    expect(doc.runs[0].invocations[0].toolExecutionNotifications[0].properties).toEqual({ reason: 'no-files' });
   });
 
   test('clean file with no vulnerabilities is valid', () => {

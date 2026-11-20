@@ -217,6 +217,8 @@ Use `-v` flag to see all scanned files including clean ones.
 
 In a directory scan, the `require-entry-path` gate drops high and critical security findings that no entry point reaches. The number dropped is printed in text output, given as `summary.entryPathDropped` in JSON and as a SARIF `note`, together with the flag that keeps them (`--disable-pass require-entry-path`).
 
+A scan that finds no supported files still writes its JSON or SARIF report, to stdout or to `-o`. The SARIF run is valid, has no results and carries a `no-files` notification, so a CI step that uploads it does not fail on a missing file.
+
 ### Output streams (stdout vs stderr)
 
 `cognium-dev` follows the standard CLI convention: machine-readable payload on **stdout**, diagnostics on **stderr**.
