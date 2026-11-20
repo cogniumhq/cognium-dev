@@ -147,7 +147,7 @@ jobs:
       # console summary says a gate moved, the lcov says which lines.
       - name: Upload coverage report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-${{ matrix.package }}
           path: packages/${{ matrix.package }}/coverage/
