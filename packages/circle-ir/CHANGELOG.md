@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ProjectAnalysis.entry_path_dropped` counts the findings that the `require-entry-path` gate removes (cognium-dev#1306).** `applyRequireEntryPath` returns its drop count. `analyzeProject` sets the field when the count is above 0. Results are unchanged.
+
 ## [4.23.0] - 2026-11-19
 
 ### Security
