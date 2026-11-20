@@ -9,7 +9,7 @@ import { join, dirname, extname, resolve, relative, basename, sep } from 'path';
 import { createRequire } from 'module';
 import { getHeapStatistics } from 'v8';
 import {
-  initAnalyzer, analyze, analyzeProject,
+  initAnalyzer, analyze, analyzeProject, AnalysisTimeoutError,
   setLogLevel, type LogLevel,
   setFindingsInstrumentation,
   type SinkType, type SastFinding, type SupportedLanguage, type TaintPath,
@@ -33,6 +33,7 @@ import {
 } from '@cognium/project-profile-detect';
 import {
   formatResults, formatJSON, formatSARIF,
+  scanNotifications,
   SINK_SEVERITY, SINK_CWE,
   applyTagSeverityDowngrade,
   type ScanResult, type CrossFileData, type ProjectProfileSummary,
@@ -828,6 +829,20 @@ export function nearestNpmManifests(start: string): AnalyzeOptions['dependencyCo
   return packageJson !== undefined || packageLock !== undefined ? { js: { packageJson, packageLock } } : undefined;
 }
 
+/**
+ * Syntax errors the parser recovered from (circle-ir `parse_status`). The
+ * file was analysed only as far as the parser could read it, so it must not
+ * be reported as cleanly scanned.
+ */
+export function parseErrorsOf(ir: {
+  parse_status?: { success: boolean; error_count: number; error_locations: Array<{ line: number }> };
+}): ScanResult['parseErrors'] {
+  const ps = ir.parse_status;
+  if (!ps || ps.success !== false) return undefined;
+  const lines = [...new Set(ps.error_locations.map(l => l.line))].sort((a, b) => a - b);
+  return { count: Math.max(ps.error_count, lines.length), lines };
+}
+
 async function scanFile(filePath: string, language: string, analyzeOpts?: AnalyzeOptions): Promise<ScanResult> {
   try {
     const code = readFileSync(filePath, 'utf-8');
@@ -865,12 +880,14 @@ async function scanFile(filePath: string, language: string, analyzeOpts?: Analyz
       });
     }
 
-    return { file: filePath, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
+    const parseErrors = parseErrorsOf(result);
+    return { file: filePath, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   } catch (error) {
     return {
       file: filePath,
       vulnerabilities: [],
       error: error instanceof Error ? error.message : 'Unknown error',
+      ...(error instanceof AnalysisTimeoutError ? { errorKind: 'timeout' as const } : {}),
     };
   }
 }
@@ -1002,7 +1019,8 @@ async function scanProject(
         ...(finding.tags && finding.tags.length > 0 ? { tags: [...finding.tags] } : {}),
       });
     }
-    return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities) };
+    const parseErrors = parseErrorsOf(analysis);
+    return { file, vulnerabilities: dedupeVulnerabilities(vulnerabilities), ...(parseErrors ? { parseErrors } : {}) };
   });
   // #1007: a file skipped by --file-timeout-ms is reported as an error, never as clean.
   for (const t of projectResult.timed_out_files ?? []) {
@@ -1010,6 +1028,7 @@ async function scanProject(
       file: t.file,
       vulnerabilities: [],
       error: `analysis timed out after ${t.elapsed_ms}ms (at ${t.phase}); file skipped`,
+      errorKind: 'timeout',
     });
   }
 
@@ -1026,8 +1045,20 @@ async function scanProject(
       projectSizeBudgetExceeded: readTruncated || projectResult.project_size_budget_exceeded === true,
       filesAnalysed: projectResult.files.length,
       filesTotal: files.length,
+      entryPathDropped: projectResult.entry_path_dropped ?? 0,
     },
   };
+}
+
+/** Write a scan report to the `-o` file, or to stdout. */
+function writeReport(output: string, outputFile: string | undefined): void {
+  if (outputFile) {
+    writeFileSync(outputFile, output);
+    // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
+    console.error(colors.green(`Results written to ${outputFile}`));
+  } else if (output.trim()) {
+    writeStdout(output + '\n');
+  }
 }
 
 // ─── Shared WASM initialization ──────────────────────────────────────────────
@@ -1276,6 +1307,13 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
 
     if (files.length === 0) {
       if (spin) spin.warn('No supported files found');
+      // A JSON or SARIF report, and any -o file, is still written: a CI step
+      // that uploads it must get a valid empty run, not a missing file.
+      if (options.format !== 'text' || options.output) {
+        const empty = options.format === 'json' ? formatJSON([]) : options.format === 'sarif' ? formatSARIF([]) : formatResults([]);
+        writeReport(empty, options.output);
+      }
+      await exitAfterFlush(0);
       return;
     }
 
@@ -1382,15 +1420,26 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     }
     watchdog?.stop();
 
+    // Files not analysed (errors, timeouts) and files only partly parsed are
+    // counted on the status line too, so JSON and SARIF runs show them.
+    const notAnalysed = results.filter(r => r.error).length;
+    const partlyParsed = results.filter(r => !r.error && r.parseErrors).length;
+
     // #424 — on a truncated run this said `Scanned <discovered> file(s)`,
     // overstating what was actually analysed.
     if (spin) {
       const analysed = crossFileData?.projectSizeBudgetExceeded
         ? (crossFileData.filesAnalysed ?? files.length)
         : files.length;
-      spin.succeed(analysed === files.length
+      const line = analysed === files.length
         ? `Scanned ${files.length} file(s)`
-        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`);
+        : `Scanned ${analysed} of ${files.length} file(s) — stopped at the project size ceiling`;
+      const problems = [
+        notAnalysed > 0 ? `${notAnalysed} not analysed` : '',
+        partlyParsed > 0 ? `${partlyParsed} with syntax errors` : '',
+      ].filter(Boolean).join(', ');
+      if (problems) spin.warn(`${line} (${problems})`);
+      else spin.succeed(line);
     }
 
     // Apply suppressions from config
@@ -1509,6 +1558,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
       // Cross-file taint paths are always security findings; exclude them when security isn't requested
       if (crossFileData && !allowedCategories.includes('security')) {
         crossFileData.taintPaths = [];
+        crossFileData.entryPathDropped = 0;
       }
     }
 
@@ -1528,8 +1578,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
     // have no findings skips BOTH the ceiling warning and the
     // `N of M file(s) analysed` summary, and exits 0 — which is precisely the
     // clean-scan claim over unread files this change exists to prevent.
+    // Likewise a file not fully analysed, a budget cut or a gate drop (`notices`).
+    const notices = scanNotifications(results, crossFileData);
     const truncated = crossFileData?.projectSizeBudgetExceeded === true;
-    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated;
+    const shouldOutput = totalVulns > 0 || crossFilePaths > 0 || errors > 0 || options.verbose || options.output || options.format !== 'text' || truncated || notices.length > 0;
 
     // 3.106.0 (#169) — assemble the project-profile summary for output and
     // tag each vulnerability with its file's resolved profile.
@@ -1556,14 +1608,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           output = formatResults(results, options.verbose, crossFileData, profileSummary);
       }
 
-      if (options.output) {
-        const { writeFileSync } = await import('fs');
-        writeFileSync(options.output, output);
-        // 3.89.2: status to stderr — keeps stdout consistent across with/without --output.
-        console.error(colors.green(`Results written to ${options.output}`));
-      } else if (output.trim()) {
-        writeStdout(output + '\n');
-      }
+      writeReport(output, options.output);
 
       // Summary
       if (!options.quiet && options.format === 'text') {
@@ -1589,7 +1634,10 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
           writeStdout(colors.green(`No findings in ${scannedLabel}`) + '\n');
         }
         if (errors > 0) {
-          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis`) + '\n');
+          writeStdout(colors.yellow(`${errors} file(s) had errors during analysis and were not analysed`) + '\n');
+        }
+        if (partlyParsed > 0) {
+          writeStdout(colors.yellow(`${partlyParsed} file(s) had syntax errors; findings in them may be incomplete`) + '\n');
         }
       }
     }

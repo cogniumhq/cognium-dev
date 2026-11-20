@@ -190,17 +190,21 @@ export interface ApplyRequireEntryPathOptions {
  * The mutation is idempotent — running twice produces the same result
  * (BFS is deterministic; annotation always overwrites prior fields
  * with the same values).
+ *
+ * Returns how many findings and taint flows were dropped, so a caller
+ * can report the gate's effect instead of leaving it invisible.
  */
 export function applyRequireEntryPath(
   fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
   options: ApplyRequireEntryPathOptions = {},
-): void {
+): number {
   const disabledSet = normalizeDisabled(options.disabledPasses);
-  if (disabledSet.has(RULE_ID_REQUIRE_ENTRY_PATH)) return;
+  if (disabledSet.has(RULE_ID_REQUIRE_ENTRY_PATH)) return 0;
 
   // Build the project-wide method index + reverse-caller adjacency once.
   const graph = buildProjectMethodGraph(fileAnalyses);
-  if (graph.methodsByKey.size === 0) return;
+  if (graph.methodsByKey.size === 0) return 0;
+  let dropped = 0;
 
   // Per-file classifier context (calls, runtime_registrations) — used
   // by the polyglot classifier for Go inline call walks and JS/TS +
@@ -250,9 +254,9 @@ export function applyRequireEntryPath(
             });
             break;
           case 'drop':
-            // Findings dropped by the entry-path gate carry no
-            // side-channel signal — downstream consumers see them
-            // as if they were never emitted.
+            // The finding itself is removed; only the returned count
+            // (`ProjectAnalysis.entry_path_dropped`) records it.
+            dropped++;
             break;
         }
       }
@@ -290,10 +294,12 @@ export function applyRequireEntryPath(
           profile,
         );
         if (decision.action !== 'drop') keptFlows.push(flow);
+        else dropped++;
       }
       fa.analysis.taint.flows = keptFlows;
     }
   }
+  return dropped;
 }
 
 // ---------------------------------------------------------------------------

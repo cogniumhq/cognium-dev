@@ -80,6 +80,24 @@ describe('formatResults', () => {
     expect(output).toContain('[ERROR]');
     expect(output).toContain('Parse error');
   });
+
+  test('marks a partly parsed file, even when it has no findings', () => {
+    const output = formatResults([{ file: 'src/A.java', vulnerabilities: [], parseErrors: { count: 1, lines: [3] } }]);
+    expect(output).toContain('[PARTIAL] src/A.java: 1 syntax error(s) (first at line 3)');
+    expect(output).toContain('may be incomplete');
+  });
+
+  test('states how many findings the entry-path gate dropped and how to keep them', () => {
+    const output = formatResults([], false, { taintPaths: [], crossFileCalls: [], entryPathDropped: 2 });
+    expect(output).toContain('2 high/critical security finding(s) dropped by require-entry-path');
+    expect(output).toContain('--disable-pass require-entry-path');
+    expect(formatResults([], false, { taintPaths: [], crossFileCalls: [], entryPathDropped: 0 })).not.toContain('require-entry-path');
+  });
+
+  test('the cross-file budget warning names the CLI flag', () => {
+    const output = formatResults([], false, { taintPaths: [], crossFileCalls: [], budgetExceeded: true });
+    expect(output).toContain('--cross-file-budget-ms');
+  });
 });
 
 // ─── formatJSON ──────────────────────────────────────────────────────────────
@@ -107,6 +125,26 @@ describe('formatJSON', () => {
     expect(parsed.summary.filesScanned).toBe(2);
     expect(parsed.summary.filesWithVulnerabilities).toBe(1);
     expect(parsed.summary.totalVulnerabilities).toBe(1);
+    expect(parsed.summary.errors).toBe(0);
+    expect(parsed.summary.filesWithParseErrors).toBe(0);
+    expect(parsed.summary.entryPathDropped).toBe(0);
+    expect(parsed.summary.executionSuccessful).toBe(true);
+    const gated = JSON.parse(formatJSON(results, { taintPaths: [], crossFileCalls: [], entryPathDropped: 4 }));
+    expect(gated.summary.entryPathDropped).toBe(4);
+    expect(gated.summary.executionSuccessful).toBe(true);
+  });
+
+  test('counts partly parsed and unanalysed files instead of reporting errors: 0 alone', () => {
+    const results: ScanResult[] = [
+      { file: 'src/A.java', vulnerabilities: [], parseErrors: { count: 2, lines: [3, 9] } },
+      { file: 'src/B.java', vulnerabilities: [], error: 'analysis timed out after 5ms (at parse); file skipped', errorKind: 'timeout' },
+    ];
+    const parsed = JSON.parse(formatJSON(results));
+    expect(parsed.summary.errors).toBe(1);
+    expect(parsed.summary.filesWithParseErrors).toBe(1);
+    expect(parsed.summary.executionSuccessful).toBe(false);
+    expect(parsed.results[0].parse_errors).toEqual({ count: 2, lines: [3, 9] });
+    expect(parsed.results[1].parse_errors).toBeUndefined();
   });
 
   test('includes cross-file taint paths when provided', () => {
