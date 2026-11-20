@@ -1981,14 +1981,15 @@ function isJsMapTypedReceiver(
   const raw = (receiver ?? '').trim();
   if (!raw || !sourceLines) return false;
   const lastDot = raw.lastIndexOf('.');
-  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  let r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (r.startsWith('#')) r = r.slice(1);
   if (!/^[A-Za-z_$][\w$]*$/.test(r)) return false;
   const n = escapeRe(r);
   const mapCtor = new RegExp(
-    `\\b${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
+    `\\b#?${n}\\s*(?::[^=;]*)?=\\s*new\\s+(?:Weak)?Map\\s*(?:<.*>)?\\s*\\(`,
   );
   const mapType = new RegExp(
-    `\\b${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
+    `\\b#?${n}\\s*\\??\\s*:\\s*(?:Readonly)?(?:Weak)?Map\\s*<`,
   );
   return sourceLines.some(l => mapCtor.test(l) || mapType.test(l));
 }
@@ -2007,7 +2008,8 @@ function isInMemoryMapGetReceiver(
   // declaration that positively says Map/WeakMap suppresses the sink, so a
   // real `req.db.get(sql)` (no Map-typed `db`) keeps firing.
   const lastDot = raw.lastIndexOf('.');
-  const r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  let r = (lastDot >= 0 ? raw.slice(lastDot + 1) : raw).trim();
+  if (r.startsWith('#')) r = r.slice(1);
   if (/^(properties|memoryCache)$/i.test(r)) return true;
   return isJsMapTypedReceiver(receiver, sourceLines);
 }
