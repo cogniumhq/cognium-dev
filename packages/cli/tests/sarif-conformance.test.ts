@@ -137,14 +137,71 @@ describe('SARIF 2.1.0 conformance', () => {
         message: {
           text: 'Project size ceiling reached — analysed 7 of 18 files.',
         },
+        properties: { reason: 'project-size-ceiling' },
       },
     ]);
     expect(validate(doc)).toEqual([]);
   });
 
-  test('a complete scan does not emit a project size ceiling notification', () => {
-    const doc = JSON.parse(formatSARIF([]));
-    expect(doc.runs[0].invocations).toBeUndefined();
+  test('a complete scan says so and carries no notification', () => {
+    const doc = JSON.parse(formatSARIF([{ file: 'src/Clean.java', vulnerabilities: [] }]));
+    expect(doc.runs[0].invocations).toEqual([{ executionSuccessful: true }]);
+    expect(validate(doc)).toEqual([]);
+  });
+
+  // A file skipped by --file-timeout-ms (or one whose analysis threw) has no
+  // results. Before, SARIF had nothing else either, so it read as clean.
+  test('a file that was not analysed is an error notification at that file, and the run is unsuccessful', () => {
+    const results: ScanResult[] = [
+      { file: 'src/Slow.java', vulnerabilities: [], error: 'analysis timed out after 12ms (at parse); file skipped', errorKind: 'timeout' },
+      { file: 'src/Broken.java', vulnerabilities: [], error: 'boom' },
+      { file: 'src/Vuln.java', vulnerabilities: [vuln()] },
+    ];
+    const doc = JSON.parse(formatSARIF(results));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(false);
+    expect(invocation.toolExecutionNotifications).toEqual([
+      {
+        level: 'error',
+        message: { text: 'File not analysed: analysis timed out after 12ms (at parse); file skipped' },
+        locations: [{ physicalLocation: { artifactLocation: { uri: 'src/Slow.java' } } }],
+        properties: { reason: 'file-timeout' },
+      },
+      {
+        level: 'error',
+        message: { text: 'File not analysed: boom' },
+        locations: [{ physicalLocation: { artifactLocation: { uri: 'src/Broken.java' } } }],
+        properties: { reason: 'analysis-error' },
+      },
+    ]);
+    expect(doc.runs[0].results).toHaveLength(1);
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('a partly parsed file is a warning at its first error line; the run still completed', () => {
+    const results: ScanResult[] = [
+      { file: 'src/A.java', vulnerabilities: [], parseErrors: { count: 2, lines: [3, 9] } },
+    ];
+    const doc = JSON.parse(formatSARIF(results));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(true);
+    expect(invocation.toolExecutionNotifications).toHaveLength(1);
+    const n = invocation.toolExecutionNotifications[0];
+    expect(n.level).toBe('warning');
+    expect(n.properties).toEqual({ reason: 'parse-error' });
+    expect(n.locations).toEqual([{ physicalLocation: { artifactLocation: { uri: 'src/A.java' }, region: { startLine: 3 } } }]);
+    expect(n.message.text).toContain('2 syntax error(s) (first at line 3)');
+    expect(validate(doc)).toEqual([]);
+  });
+
+  test('an exceeded cross-file budget is a warning and marks the run unsuccessful', () => {
+    const doc = JSON.parse(formatSARIF([], { taintPaths: [], crossFileCalls: [], budgetExceeded: true }));
+    const invocation = doc.runs[0].invocations[0];
+    expect(invocation.executionSuccessful).toBe(false);
+    expect(invocation.toolExecutionNotifications).toHaveLength(1);
+    expect(invocation.toolExecutionNotifications[0].level).toBe('warning');
+    expect(invocation.toolExecutionNotifications[0].properties).toEqual({ reason: 'cross-file-budget' });
+    expect(invocation.toolExecutionNotifications[0].message.text).toContain('--cross-file-budget-ms');
     expect(validate(doc)).toEqual([]);
   });
 });
