@@ -14,6 +14,8 @@
  *   `[] | undefined`;
  * - `importOriginal<typeof import('m')>()` as a declarator's value leaves an
  *   `ERROR` of `>()` after the declarator.
+ * - `g<typeof import('m')>()` / `g<import('m').T>()` in a call position leaves the
+ *   same `>()` tail on the `return_statement` or expression (cognium-dev#1312).
  *
  * Either way every declaration is still in the tree, so the file is not
  * "partial" for stable ids or dead code. Any other error still is.
@@ -117,9 +119,51 @@ function isSplitTypeofImportCall(n: Node): boolean {
   return arg?.type === 'call_expression' && arg.childForFieldName('function')?.type === 'import';
 }
 
+/** Leftover `>()` after `g<typeof import('m')>()` / `g<import('m').T>()` (cognium-dev#1312). */
+function isEmptyGenericCallTail(n: Node): boolean {
+  if (n.type !== 'ERROR' || n.childCount !== 2) return false;
+  const [gt, params] = [n.child(0), n.child(1)];
+  return gt?.type === '>' && params?.type === 'formal_parameters' && params.namedChildCount === 0;
+}
+
+function isLessThanImportTypeArg(right: Node | null): boolean {
+  if (!right) return false;
+  if (isImportTypeExpression(right)) return true;
+  if (right.type === 'unary_expression' && right.child(0)?.type === 'typeof') {
+    const arg = right.namedChild(0);
+    return arg?.type === 'call_expression' && arg.childForFieldName('function')?.type === 'import';
+  }
+  return false;
+}
+
+function isImportTypeGenericComparison(bin: Node): boolean {
+  return bin.type === 'binary_expression' && bin.child(1)?.type === '<' && isLessThanImportTypeArg(bin.childForFieldName('right'));
+}
+
+function isSplitImportTypeGenericCall(n: Node): boolean {
+  if (!isEmptyGenericCallTail(n)) return false;
+  const parent = n.parent;
+  if (!parent) return false;
+  if (parent.type === 'binary_expression') return isImportTypeGenericComparison(parent);
+  if (parent.type === 'return_statement') {
+    const expr = parent.childForFieldName('argument') ?? parent.namedChild(0);
+    return !!expr && isImportTypeGenericComparison(expr);
+  }
+  if (parent.type === 'expression_statement') {
+    const expr = parent.namedChild(0);
+    return !!expr && isImportTypeGenericComparison(expr);
+  }
+  return false;
+}
+
 function isBenign(n: Node): boolean {
   if (n.type === 'ERROR') {
-    return insideTypeContext(n) || isSplitTypeofImportCall(n) || isBenignInterfaceMemberRecoveryError(n);
+    return (
+      insideTypeContext(n) ||
+      isSplitTypeofImportCall(n) ||
+      isSplitImportTypeGenericCall(n) ||
+      isBenignInterfaceMemberRecoveryError(n)
+    );
   }
   if (n.isMissing) return n.type === ';' && isSplitImportArrayDeclaration(n);
   return false;
