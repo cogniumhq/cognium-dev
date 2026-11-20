@@ -1190,6 +1190,13 @@ export interface ProjectAnalysis {
    * Added in circle-ir 4.9.27 (cognium-dev#424).
    */
   project_size_budget_exceeded?: boolean;
+  /**
+   * How many high/critical security findings and taint flows the
+   * `require-entry-path` gate removed because no classified entry point
+   * reaches them. Present only when at least one was removed. Disabling the
+   * gate (`disabledPasses: ['require-entry-path']`) keeps them.
+   */
+  entry_path_dropped?: number;
 }
 
 export interface FileAnalysis {

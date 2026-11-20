@@ -2137,7 +2137,7 @@ export async function analyzeProject(
   // that ARE reachable get annotated with `entryPath[]`. Runs BEFORE
   // ProjectMeta assembly so downstream consumers see the gated stream.
   // No-op when the caller disabled the rule via `disabledPasses`.
-  applyRequireEntryPath(fileAnalyses, {
+  const entryPathDropped = applyRequireEntryPath(fileAnalyses, {
     projectProfile: options.projectProfile,
     disabledPasses: options.disabledPasses,
   });
@@ -2186,6 +2186,9 @@ export async function analyzeProject(
   }
   if (projectSizeBudgetExceeded) {
     projectAnalysis.project_size_budget_exceeded = true;
+  }
+  if (entryPathDropped > 0) {
+    projectAnalysis.entry_path_dropped = entryPathDropped;
   }
   return projectAnalysis;
 }
