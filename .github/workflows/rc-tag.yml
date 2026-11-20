@@ -277,16 +277,20 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP"
           body=$(printf 'Release candidate %s from %s (%s). Not deployed.\n\nsha256:\n```\n%s\n```\n' "$TAG" "$SHA" "$REF_NAME" "$(cat "$D/SHA256SUMS")")
-          rel=$(curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+          rel=$(curl --fail-with-body -sSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/releases" \
-            -d "$(node -e 'console.log(JSON.stringify({tag_name:process.env.TAG,name:process.env.TAG,body:process.argv[1],prerelease:true}))' "$body")")
+            -d "$(node -e 'console.log(JSON.stringify({tag_name:process.env.TAG,name:process.env.TAG,body:process.argv[1],prerelease:true}))' "$body")") \
+            || { echo "::error::POST releases: $rel"; exit 1; }
           up=$(printf '%s' "$rel" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).upload_url.replace(/\{.*$/,"")))')
           # only the allow-list and the tag job's own SHA256SUMS; names were checked above
-          # ([A-Za-z0-9][A-Za-z0-9._-]*), so they need no URL encoding
+          # ([A-Za-z0-9][A-Za-z0-9._-]*), so they need no URL encoding. A tag-only candidate
+          # (RC_OUTPUTS empty) has an empty SHA256SUMS, and the upload API refuses a 0-byte asset
+          # with a 422, so that empty list is not uploaded: the release then carries no assets.
           set -f
           for f in $RC_OUTPUTS SHA256SUMS; do
             p="$D/$f"
-            curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
-              --data-binary @"$p" "$up?name=$f" >/dev/null
+            if [ "$f" = SHA256SUMS ] && [ -z "$RC_OUTPUTS" ] && [ ! -s "$p" ]; then echo "tag-only candidate: empty SHA256SUMS not uploaded"; continue; fi
+            res=$(curl --fail-with-body -sSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$p" "$up?name=$f") || { echo "::error::upload $f: $res"; exit 1; }
           done
           { echo "### $TAG"; echo "- commit: \`$SHA\` (from \`$REF_NAME\`)"; echo '```'; cat "$D/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
