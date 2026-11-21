@@ -641,6 +641,18 @@ class Graph {
       }
       return;
     }
+    if (t === 'expression_statement') {
+      const expr = named(stmt)[0];
+      if (expr?.type === 'assignment_expression') {
+        const exportName = this.cjsExportName(expr.childForFieldName('left'));
+        if (exportName) {
+          const right = expr.childForFieldName('right');
+          const local = right?.type === 'identifier' ? right.text : exportName;
+          ctx.exports.set(exportName, local);
+        }
+      }
+      return;
+    }
     if (t === 'lexical_declaration' || t === 'variable_declaration') {
       for (const d of named(stmt)) {
         if (d.type !== 'variable_declarator') continue;
@@ -1069,6 +1081,31 @@ class Graph {
 
   // -- references (functions and classes used as values) ---------------------
 
+  /** `exports.X` / `module.exports.X` on the left of an assignment → export name `X`. */
+  private cjsExportName(left: Node | null): string | null {
+    if (!left || left.type !== 'member_expression') return null;
+    const object = left.childForFieldName('object');
+    const property = left.childForFieldName('property');
+    if (!object || !property) return null;
+    if (object.type === 'identifier' && object.text === 'exports') return property.text;
+    if (object.type === 'member_expression') {
+      const mod = object.childForFieldName('object');
+      const prop = object.childForFieldName('property')?.text;
+      if (mod?.type === 'identifier' && mod.text === 'module' && prop === 'exports') return property.text;
+    }
+    return null;
+  }
+
+  private isCjsExportsReceiver(ctx: FileCtx, object: Node): boolean {
+    if (object.type === 'identifier' && object.text === 'exports' && !this.localBinding(object, 'exports')) return true;
+    if (object.type === 'member_expression') {
+      const mod = object.childForFieldName('object');
+      const prop = object.childForFieldName('property')?.text;
+      if (mod?.type === 'identifier' && mod.text === 'module' && !this.localBinding(mod, 'module') && prop === 'exports') return true;
+    }
+    return false;
+  }
+
   private reference(ctx: FileCtx, node: Node | null): void {
     if (!node) return;
     if (node.type === 'parenthesized_expression' || node.type === 'as_expression' || node.type === 'non_null_expression' || node.type === 'satisfies_expression') {
@@ -1117,6 +1154,10 @@ class Graph {
     if (object.type === 'this') {
       const cls = this.enclosingClass(ctx, node);
       return cls ? this.memberBodies(cls, name) : [];
+    }
+    if (this.isCjsExportsReceiver(ctx, object)) {
+      const r = this.resolveExport(ctx, name, 0);
+      return r.kind === 'decls' ? this.callables(r.decls) : [];
     }
     if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
       const t = this.resolveLocal(ctx, object.text);

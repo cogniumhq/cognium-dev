@@ -262,6 +262,25 @@ describe('more shapes', () => {
   });
 });
 
+describe('#1340 CommonJS exports member references', () => {
+  it('records exports.run and module.exports.run as references to the export', async () => {
+    const cjs = [
+      'function run() { return 1; }',
+      "exports.run = run;",
+      "process.on('exit', exports.run);",
+    ].join('\n');
+    const cjsNamed = [
+      'exports.x = function () { return 2; };',
+      "module.exports.y = function y() { return 3; };",
+      "setTimeout(module.exports.y, 0);",
+    ].join('\n');
+    const g1 = await buildTsCallGraph(src({ 'lib/exit.js': cjs }));
+    expect(references(g1)).toEqual(expect.arrayContaining(['p/lib/exit -> p/lib/exit:run']));
+    const g2 = await buildTsCallGraph(src({ 'lib/hooks.js': cjsNamed }));
+    expect(references(g2)).toEqual(expect.arrayContaining(['p/lib/hooks -> p/lib/hooks:y']));
+  });
+});
+
 describe('#1336 Function.prototype call/apply/bind', () => {
   const calc = `export class Calc {
   b(n: number): number { return n + 2; }
