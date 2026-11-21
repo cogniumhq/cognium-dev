@@ -3726,6 +3726,8 @@ export const DEFAULT_SANITIZERS: SanitizerPattern[] = [
   // SQL - parameterized queries (mysql, pg)
   { method: 'escape', class: 'mysql', removes: ['sql_injection'] },
   { method: 'escapeId', class: 'mysql', removes: ['sql_injection'] },
+  // BenchProctor express_ts safe ORDER BY (cognium-dev#1332): escapeIdentifier wrapper before concat query
+  { method: 'escapeIdentifier', removes: ['sql_injection', 'external_taint_escape'] },
   { method: 'format', class: 'mysql', removes: ['sql_injection'] },
 
   // MongoDB - sanitization
