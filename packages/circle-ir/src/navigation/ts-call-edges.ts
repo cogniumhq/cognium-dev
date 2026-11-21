@@ -1827,7 +1827,7 @@ class Graph {
       return;
     }
     if (fn.type === 'member_expression') {
-      this.callMember(ctx, fn, edge, unresolved);
+      this.callMember(ctx, fn, site, edge, unresolved);
       return;
     }
     unresolved('<expr>', 'dynamic', `callee is a ${fn.type}`);
@@ -1928,9 +1928,36 @@ class Graph {
     return t.kind === 'namespace' || t.kind === 'external' ? t : null;
   }
 
+  /** Member bodies `recv.name` denotes (for `.bind` reference edges). */
+  private memberValueTargets(ctx: FileCtx, object: Node, name: string): StableDecl[] {
+    if (object.type === 'this') {
+      const cls = this.enclosingClass(ctx, object);
+      return cls ? this.memberBodies(cls, name) : [];
+    }
+    if (object.type === 'identifier' && !this.localBinding(object, object.text)) {
+      const t = this.resolveLocal(ctx, object.text);
+      if (t.kind === 'namespace') {
+        const m = this.resolveExport(t.ctx, name, 0);
+        return m.kind === 'decls' ? this.callables(m.decls) : [];
+      }
+      const type = t.kind === 'decls' ? t.decls.find(d => d.kind === 'type') : undefined;
+      if (type) return this.memberBodies(type, name);
+    }
+    const type = this.typeOf(ctx, object);
+    return type && type !== 'external' ? this.memberBodies(type, name) : [];
+  }
+
+  private memberReferenceAt(ctx: FileCtx, object: Node, methodName: string, site: CallEdgeSite): void {
+    const targets = this.memberValueTargets(ctx, object, methodName);
+    if (targets.length === 0) return;
+    const from = (ctx.locate(site.line, site.col) ?? ctx.module).id;
+    for (const d of targets) if (d.id !== from) this.references.push({ from, to: d.id, site });
+  }
+
   private callMember(
     ctx: FileCtx,
     fn: Node,
+    site: CallEdgeSite,
     edge: (to: StableDecl, tier: Tier, name: string, evidence: string, via?: StableDecl) => void,
     unresolved: (name: string, reason: UnresolvedReason, evidence: string) => void,
   ): void {
@@ -1941,13 +1968,40 @@ class Graph {
       return;
     }
     const name = property.text;
+    if (name === 'call' || name === 'apply' || name === 'bind') {
+      if (object.type === 'member_expression') {
+        const recv = object.childForFieldName('object');
+        const innerName = object.childForFieldName('property')?.text;
+        if (recv && innerName) {
+          if (name === 'bind') this.memberReferenceAt(ctx, recv, innerName, site);
+          else this.resolveMemberCall(ctx, recv, innerName, edge, unresolved);
+          return;
+        }
+      }
+      unresolved(
+        name,
+        'unknown',
+        'receiver type unknown and no method of this name in the tree',
+      );
+      return;
+    }
     if (property.type === 'private_property_identifier' && object.type !== 'this') {
       unresolved(name, 'unknown', 'private member on another receiver');
       return;
     }
+    this.resolveMemberCall(ctx, object, name, edge, unresolved);
+  }
+
+  private resolveMemberCall(
+    ctx: FileCtx,
+    object: Node,
+    name: string,
+    edge: (to: StableDecl, tier: Tier, name: string, evidence: string, via?: StableDecl) => void,
+    unresolved: (name: string, reason: UnresolvedReason, evidence: string) => void,
+  ): void {
     // `super.m()`
     if (object.type === 'super') {
-      const cls = this.enclosingClass(ctx, fn);
+      const cls = this.enclosingClass(ctx, object);
       const sup = cls ? this.supers.get(cls.id)?.extends : null;
       if (!sup || sup === 'external') {
         unresolved(name, sup === 'external' ? 'external' : 'unknown', 'superclass method');
