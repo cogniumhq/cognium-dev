@@ -388,7 +388,15 @@ describe('one TypeScript file, end to end', () => {
   });
 
   it('ref, unresolved and registration: a registration with no engine owner belongs to the declaration enclosing it (here the module)', () => {
-    expect(rowsOf(tsFacts, 'ref').map(r => `${q(r.from_id)} -> ${q(r.to_id)} +${r.rel_line as number}:${r.col as number}`)).toEqual(['src/shapes:handlers -> src/shapes:measure +0:26']);
+    expect(
+      rowsOf(tsFacts, 'ref')
+        .map(r => `${q(r.from_id)} -> ${q(r.to_id)} +${r.rel_line as number}:${r.col as number}`)
+        .sort(),
+    ).toEqual([
+      'src/shapes:Circle -> src/shapes:Square +0:20',
+      'src/shapes:Square -> src/shapes:Shape +0:20',
+      'src/shapes:handlers -> src/shapes:measure +0:26',
+    ]);
     const reg = rowsOf(tsFacts, 'registration');
     expect(tsGraph.unresolvedRegistrations).toHaveLength(1);
     expect(tsGraph.unresolvedRegistrations[0].from).toBeUndefined();

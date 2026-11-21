@@ -306,6 +306,23 @@ describe('#1336 Function.prototype call/apply/bind', () => {
   });
 });
 
+describe('class heritage', () => {
+  it('records extends in-tree and external with reference edges (Refs #1343)', async () => {
+    const g = await buildTsCallGraph(src({
+      'src/base.ts': "import { LitElement } from 'lit';\nexport class BaseElement extends LitElement {}\n",
+      'src/button.ts': "import { html } from 'lit';\nimport { BaseElement } from './base';\nexport class Button extends BaseElement {\n  update(c: unknown) { super.update(c); }\n  render() { return html`<b></b>`; }\n}\n",
+    }));
+    const q = new Map(g.files.flatMap(f => f.decls.map(d => [d.id, d.qualified_name] as const)));
+    const byClass = (name: string) => g.heritage.find(h => q.get(h.class)?.endsWith(`:${name}`));
+    const baseHeritage = byClass('BaseElement');
+    const buttonHeritage = byClass('Button');
+    expect(baseHeritage?.extends).toEqual({ kind: 'external', name: 'LitElement', module: 'lit' });
+    expect(buttonHeritage?.extends).toEqual({ kind: 'in-tree', to: expect.any(String) });
+    expect(q.get(buttonHeritage!.extends!.kind === 'in-tree' ? buttonHeritage!.extends!.to : '')).toBe('p/base:BaseElement');
+    expect(references(g)).toEqual(expect.arrayContaining(['p/button:Button -> p/base:BaseElement']));
+  });
+});
+
 describe('files', () => {
   it('reports partial files, skips other languages, handles JSX and default classes', async () => {
     const g = await buildTsCallGraph(src({

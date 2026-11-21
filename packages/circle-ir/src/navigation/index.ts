@@ -33,6 +33,8 @@ export {
   type TsEntry,
   type UnresolvedRegistration,
   type ReferenceEdge,
+  type ClassHeritage,
+  type ClassExtendsTarget,
   type FieldUseEdge,
   type ImportEdge,
   type LoadEdge,
