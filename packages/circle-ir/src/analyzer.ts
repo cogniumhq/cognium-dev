@@ -358,6 +358,18 @@ export interface AnalyzerOptions {
   onFileEnd?: (filePath: string) => void;
 
   /**
+   * `analyzeProject` only: produces each file's `CircleIR` in place of
+   * `analyze(code, filePath, language, options)` (cognium-dev#1324). The
+   * project loop still awaits files one at a time in input order, so a caller
+   * that starts every file's work before `analyzeProject` runs (on worker
+   * threads, say) and returns the pending result here gets a parallel per-file
+   * phase with the same merge order. An `AnalysisTimeoutError` it throws is
+   * recorded in `timed_out_files`, and any other error ends the run, the same
+   * as for `analyze()`. Ignored by `analyze()`. Omitted: `analyze()` is used.
+   */
+  analyzeFile?: (code: string, filePath: string, language: SupportedLanguage) => Promise<CircleIR>;
+
+  /**
    * Size ceiling for the PER-FILE phase of `analyzeProject`, in source
    * characters summed across the files given (cognium-dev#424). `0` or
    * omitted disables it — no behaviour change for existing callers.
@@ -2053,7 +2065,9 @@ export async function analyzeProject(
     }
     let ir: CircleIR;
     try {
-      ir = await analyze(code, filePath, language, options);
+      ir = options.analyzeFile
+        ? await options.analyzeFile(code, filePath, language)
+        : await analyze(code, filePath, language, options);
     } catch (err) {
       if (err instanceof AnalysisTimeoutError) {
         timedOutFiles.push({ file: filePath, elapsed_ms: err.elapsedMs, phase: err.phase });

@@ -16,6 +16,8 @@ import {
   type MetricValue, type FileMetrics,
   type PassOptions,
   type ProjectProfile,
+  type AnalyzerOptions as CircleAnalyzerOptions,
+  type CircleIR,
   parseNpmDependencies, parseNpmLockDependencies,
   parsePnpmLockDependencies, parseYarnLockDependencies, pnpmLockImporters,
   parsePypiDependencies, parsePyprojectDependencies, parsePoetryLockDependencies,
@@ -43,6 +45,8 @@ import { buildInfo } from './build-info.js';
 import { parseArgs, showHelp, showVersion } from './utils/args.js';
 import { computeRecheck, parseRecheckOptions, recheckExitCode } from './recheck.js';
 import { startFileWatchdog, type FileWatchdog } from './file-watchdog.js';
+import { ScanPool, scanPoolSize, serveScanWorker, decodeScanError } from './scan-pool.js';
+import { isMainThread, workerData } from 'worker_threads';
 import { UsageError, parseFormat, parseSeverity, parseWholeNumber, exitAfterFlush, writeStdout } from './utils/options.js';
 import { writeJson } from './utils/json-stream.js';
 import { spinner, type Spinner } from './utils/spinner.js';
@@ -946,12 +950,99 @@ export function defaultMaxProjectSourceChars(
   }
 }
 
+// ─── #1324: per-file phase on worker threads ────────────────────────────────
+
+const SCAN_WORKER_KIND = 'cognium-dev-scan-worker';
+
+interface ScanWorkerData {
+  kind: typeof SCAN_WORKER_KIND;
+  init: CircleAnalyzerOptions;
+  logLevel?: LogLevel;
+  instrumentFindings: boolean;
+  /** `analyze()` options, without the function-valued ones. */
+  fileOpts: CircleAnalyzerOptions;
+}
+
+interface ScanWorkerTask {
+  code: string;
+  filePath: string;
+  language: SupportedLanguage;
+}
+
+/**
+ * Start every file's per-file analysis on a pool of `--threads` workers, and
+ * return the `analyzeFile` hook that hands `analyzeProject` each file's
+ * pending result in its own order. `null` when the scan runs in-process: one
+ * thread, one file, or the analyzer was not started from known grammar paths.
+ */
+function startScanPool(
+  files: ReadonlyArray<ScanWorkerTask>,
+  projectOpts: CircleAnalyzerOptions,
+  threads: number,
+): { analyzeFile: NonNullable<CircleAnalyzerOptions['analyzeFile']>; close: () => void } | null {
+  const size = scanPoolSize(threads, files.length);
+  if (size <= 1 || !analyzerInitOptions) return null;
+  const { onFileStart: _s, onFileEnd: _e, analyzeFile: _a, ...fileOpts } = projectOpts;
+  const data: ScanWorkerData = {
+    kind: SCAN_WORKER_KIND,
+    init: analyzerInitOptions,
+    ...(appliedLogLevel ? { logLevel: appliedLogLevel } : {}),
+    instrumentFindings: process.env.CIRCLE_IR_INSTRUMENT_FINDINGS === '1',
+    fileOpts,
+  };
+  const inProcess = (t: ScanWorkerTask): Promise<CircleIR> => analyze(t.code, t.filePath, t.language, projectOpts);
+  const pool = new ScanPool<ScanWorkerTask, CircleIR>({
+    size,
+    script: new URL(import.meta.url),
+    workerData: data,
+    runInProcess: inProcess,
+    decodeError: decodeScanError,
+  });
+  const pending = new Map<string, Array<Promise<CircleIR>>>();
+  for (const f of files) {
+    const p = pool.run({ code: f.code, filePath: f.filePath, language: f.language });
+    // Awaited by `analyzeProject` in order; a run that ends early leaves the
+    // rest unawaited, which must not surface as unhandled rejections.
+    p.catch(() => {});
+    const list = pending.get(f.filePath);
+    if (list) list.push(p); else pending.set(f.filePath, [p]);
+  }
+  return {
+    analyzeFile: (code, filePath, language) =>
+      pending.get(filePath)?.shift() ?? inProcess({ code, filePath, language }),
+    close: () => pool.close(),
+  };
+}
+
+/** Worker-thread entry: analyse the files the main thread sends. */
+function runScanWorker(data: ScanWorkerData): void {
+  // The listener is attached before the first await: Bun drops a message that
+  // reaches a worker with no `message` listener yet. Tasks wait for startup.
+  const ready = (async (): Promise<CircleAnalyzerOptions> => {
+    if (data.logLevel) setLogLevel(data.logLevel);
+    if (data.instrumentFindings) setFindingsInstrumentation(true);
+    await initAnalyzer(data.init);
+    // S3: the hard bound watches this thread, which is the one a stuck step blocks.
+    const watchdog = startFileWatchdog(data.fileOpts.fileTimeoutMs ?? 0);
+    return watchdog
+      ? { ...data.fileOpts, onFileStart: watchdog.onFileStart, onFileEnd: watchdog.onFileEnd }
+      : data.fileOpts;
+  })();
+  ready.catch((error: unknown) => {
+    // Startup failed: the pool sees the thread exit and runs its files in-process.
+    console.error(colors.red('Scan worker failed to start:'), error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+  serveScanWorker<ScanWorkerTask, CircleIR>(async (t) => analyze(t.code, t.filePath, t.language, await ready));
+}
+
 async function scanProject(
   files: string[],
   language: string | undefined,
   analyzeOpts?: AnalyzeOptions,
   crossFileBudgetMs?: number,
   maxProjectSourceChars?: number,
+  threads = 1,
 ): Promise<{ results: ScanResult[]; crossFileData: CrossFileData }> {
   // #424: the ceiling has to be applied HERE, not only inside analyzeProject.
   // Reading every file up front materialises the whole project's source before
@@ -981,7 +1072,7 @@ async function scanProject(
     });
   }
 
-  const projectResult = await analyzeProject(filesWithCode, {
+  const projectOpts: CircleAnalyzerOptions = {
     passOptions: analyzeOpts?.passOptions,
     disabledPasses: analyzeOpts?.disabledPasses,
     // 3.89.2 (cli): surface the circle-ir cross-file budget via CLI flag /
@@ -995,7 +1086,16 @@ async function scanProject(
     ...(analyzeOpts?.fileTimeoutMs ? { fileTimeoutMs: analyzeOpts.fileTimeoutMs } : {}),
     ...(analyzeOpts?.watchdog ? { onFileStart: analyzeOpts.watchdog.onFileStart, onFileEnd: analyzeOpts.watchdog.onFileEnd } : {}),
     ...(analyzeOpts?.dependencyContext ? { dependencyContext: analyzeOpts.dependencyContext } : {}),
-  });
+  };
+  // #1324: with more than one thread, the per-file phase runs on a worker pool.
+  // At one thread this is the in-process loop, unchanged.
+  const pool = startScanPool(filesWithCode, projectOpts, threads);
+  let projectResult;
+  try {
+    projectResult = await analyzeProject(filesWithCode, pool ? { ...projectOpts, analyzeFile: pool.analyzeFile } : projectOpts);
+  } finally {
+    pool?.close();
+  }
 
   const results: ScanResult[] = projectResult.files.map(({ file, analysis }) => {
     const vulnerabilities: ScanResult['vulnerabilities'] = (analysis.taint.flows || []).map(flow => ({
@@ -1063,6 +1163,14 @@ function writeReport(output: string, outputFile: string | undefined): void {
 
 // ─── Shared WASM initialization ──────────────────────────────────────────────
 
+/** #1324: the grammar paths the analyzer was started with, for scan workers. */
+let analyzerInitOptions: CircleAnalyzerOptions | undefined;
+
+async function initAnalyzerRecorded(opts: CircleAnalyzerOptions): Promise<void> {
+  await initAnalyzer(opts);
+  analyzerInitOptions = opts;
+}
+
 async function initWasm(spin: Spinner | null): Promise<void> {
   const isStandalone = import.meta.url.includes('/$bunfs/');
 
@@ -1099,7 +1207,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
     }
 
     if (wasmDir) {
-      await initAnalyzer({
+      await initAnalyzerRecorded({
         wasmPath: join(wasmDir, 'web-tree-sitter.wasm'),
         languagePaths: {
           bash: join(wasmDir, 'tree-sitter-bash.wasm'),
@@ -1139,7 +1247,7 @@ async function initWasm(spin: Spinner | null): Promise<void> {
     // a `query(...)` call, reported as sql_injection + missing-await (#409).
     // circle-ir itself switched grammars in 3.24.0 (#5); this explicit map
     // silently overrode that.
-    await initAnalyzer({
+    await initAnalyzerRecorded({
       wasmPath: wasmBasePath + 'web-tree-sitter.wasm',
       languagePaths: {
         bash: wasmBasePath + 'tree-sitter-bash.wasm',
@@ -1381,7 +1489,7 @@ async function runScan(targetPath: string, options: ScanOptions): Promise<void> 
         excludePatterns: config?.exclude,
         basePath: absPath,
       });
-      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars);
+      const projectScan = await scanProject(files, options.language, analyzeOpts, options.crossFileBudgetMs, options.maxProjectSourceChars, options.threads);
       results = projectScan.results;
       crossFileData = projectScan.crossFileData;
       if (skippedPaths.length > 0) crossFileData = { ...crossFileData, skippedPaths: skippedPaths.map(p => ({ path: relative(absPath, p.path) || p.path, reason: p.reason })) };
@@ -1975,7 +2083,11 @@ function applyLogLevel(cliValue: unknown): void {
     return;
   }
   setLogLevel(normalized);
+  appliedLogLevel = normalized;
 }
+
+/** #1324: the level set by `applyLogLevel`, for scan workers. */
+let appliedLogLevel: LogLevel | undefined;
 
 /**
  * Resolve the #145 PR B instrumentation flag from env. Enabled when
@@ -2521,8 +2633,12 @@ async function main(): Promise<void> {
   }
 }
 
-// Run the CLI
-main().catch((error) => {
+const scanWorker = !isMainThread && (workerData as { kind?: unknown } | null)?.kind === SCAN_WORKER_KIND;
+
+// Run the CLI (or, on a #1324 scan worker thread, serve the main thread).
+if (scanWorker) {
+  runScanWorker(workerData as ScanWorkerData);
+} else main().catch((error) => {
   // #1006: a bad option is a usage error (exit 1), reported before any scan work.
   if (error instanceof UsageError) {
     console.error(colors.red(`Error: ${error.message}`));

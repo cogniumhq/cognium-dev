@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`AnalyzerOptions.analyzeFile`: `analyzeProject` can take each file's `CircleIR` from the caller (cognium-dev#1324).** When it is set, the per-file loop awaits `analyzeFile(code, filePath, language)` in place of `analyze()`, still in input order, so a caller can run the per-file work in parallel. Timeout and error handling are unchanged. Without it, nothing changes.
 - **`ProjectAnalysis.entry_path_dropped` counts the findings that the `require-entry-path` gate removes (cognium-dev#1306).** `applyRequireEntryPath` returns its drop count. `analyzeProject` sets the field when the count is above 0. Results are unchanged.
 
 ### Fixed
