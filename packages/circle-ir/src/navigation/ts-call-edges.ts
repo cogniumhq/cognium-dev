@@ -402,6 +402,8 @@ function filePath(segments: readonly string[]): string {
   return joinRoutePath(out);
 }
 
+type LocalBinding = { kind: 'param'; node: Node } | { kind: 'var'; node: Node } | { kind: 'fn'; node: Node };
+
 class Graph {
   private readonly files = new Map<string, FileCtx>();
   readonly edges: CallEdge[] = [];
@@ -430,6 +432,8 @@ class Graph {
   private readonly tables: EntryTables;
   private readonly pendingRoutes: PendingRoute[] = [];
   private readonly mounts: { parent: string; child: string; prefix: string }[] = [];
+  /** Per-block name index (#1338): one scan per statement_block / for loop body. */
+  private readonly blockBindings = new WeakMap<Node, Map<string, LocalBinding>>();
 
   constructor(private readonly options: TsCallGraphOptions) {
     this.maxInferred = options.maxInferred ?? 16;
@@ -814,12 +818,39 @@ class Graph {
 
   // -- lexical scope ---------------------------------------------------------
 
+  /** Build once per block; answers every `localBinding` query for names in that block. */
+  private blockBindingMap(block: Node): Map<string, LocalBinding> {
+    let map = this.blockBindings.get(block);
+    if (map) return map;
+    map = new Map();
+    for (const s of named(block)) {
+      if ((s.type === 'function_declaration' || s.type === 'generator_function_declaration')) {
+        const fnName = s.childForFieldName('name')?.text;
+        if (fnName) map.set(fnName, { kind: 'fn', node: s });
+      }
+      if (s.type === 'lexical_declaration' || s.type === 'variable_declaration') {
+        for (const d of named(s)) {
+          if (d.type !== 'variable_declarator') continue;
+          const pat = d.childForFieldName('name');
+          for (const nm of patternNames(pat)) map.set(nm, { kind: 'var', node: d });
+        }
+      }
+    }
+    if (block.type === 'for_in_statement') {
+      for (const nm of patternNames(block.childForFieldName('left'))) {
+        map.set(nm, { kind: 'param', node: block });
+      }
+    }
+    this.blockBindings.set(block, map);
+    return map;
+  }
+
   /**
    * The nearest binding of `name` inside the enclosing functions and blocks
    * (module level excluded): a parameter, a variable declarator, or a nested
    * function declaration.
    */
-  private localBinding(start: Node, name: string): { kind: 'param'; node: Node } | { kind: 'var'; node: Node } | { kind: 'fn'; node: Node } | null {
+  private localBinding(start: Node, name: string): LocalBinding | null {
     for (let n: Node | null = start.parent; n && n.type !== 'program'; n = n.parent) {
       if (FUNCTION_NODES.has(n.type)) {
         const params = n.childForFieldName('parameters');
@@ -836,17 +867,8 @@ class Graph {
         return { kind: 'param', node: n };
       }
       if (n.type === 'statement_block' || n.type === 'for_statement' || n.type === 'for_in_statement') {
-        for (const s of named(n)) {
-          if ((s.type === 'function_declaration' || s.type === 'generator_function_declaration') && s.childForFieldName('name')?.text === name) {
-            return { kind: 'fn', node: s };
-          }
-          if (s.type === 'lexical_declaration' || s.type === 'variable_declaration') {
-            for (const d of named(s)) {
-              if (d.type === 'variable_declarator' && patternNames(d.childForFieldName('name')).includes(name)) return { kind: 'var', node: d };
-            }
-          }
-        }
-        if (n.type === 'for_in_statement' && patternNames(n.childForFieldName('left')).includes(name)) return { kind: 'param', node: n };
+        const hit = this.blockBindingMap(n).get(name);
+        if (hit) return hit;
       }
     }
     return null;
