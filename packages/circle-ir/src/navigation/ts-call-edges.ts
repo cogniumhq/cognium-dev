@@ -128,6 +128,19 @@ export interface ReferenceEdge {
   site: CallEdgeSite;
 }
 
+/** Resolved `extends` target for a class declaration. */
+export type ClassExtendsTarget =
+  | { kind: 'in-tree'; to: string }
+  | { kind: 'external'; name: string; module: string | null };
+
+/** Class heritage (`extends` / `implements`) at the declaration site. */
+export interface ClassHeritage {
+  class: string;
+  extends?: ClassExtendsTarget;
+  implements: string[];
+  site: CallEdgeSite;
+}
+
 /**
  * A body reads or writes a field of its own class (`this.x`, also through an
  * accessor): whenever the body runs, the field is in use.
@@ -204,6 +217,8 @@ export interface TsCallGraph {
   /** Call and `new` sites walked; equals the distinct sites over `edges` and `unresolved`. */
   sites: number;
   references: ReferenceEdge[];
+  /** `extends` / `implements` on class declarations (additive; empty when none). */
+  heritage: ClassHeritage[];
   /** `this.x` reads and writes of the enclosing class's fields and accessors. */
   fieldUses: FieldUseEdge[];
   imports: ImportEdge[];
@@ -412,7 +427,17 @@ class Graph {
   /** Type decl id → its class or interface node and file. */
   private readonly typeNodes = new Map<string, { node: Node; ctx: FileCtx }>();
   /** Type decl id → direct supertypes (resolved decls). */
-  private readonly supers = new Map<string, { extends: StableDecl | 'external' | null; implements: StableDecl[] }>();
+  private readonly supers = new Map<
+    string,
+    {
+      extends: StableDecl | 'external' | null;
+      implements: StableDecl[];
+      site: CallEdgeSite;
+      extendsName?: string;
+      extendsModule?: string | null;
+    }
+  >();
+  readonly heritage: ClassHeritage[] = [];
   /** Type decl id → direct subtypes. */
   private readonly subs = new Map<string, StableDecl[]>();
   /** Declarations without a body: overload, interface and abstract signatures. */
@@ -489,6 +514,38 @@ class Graph {
         else this.subs.set(p.id, [self]);
       }
     }
+    this.emitClassHeritage();
+  }
+
+  /** Publish class heritage and reference edges for resolved `extends` / `implements`. */
+  private emitClassHeritage(): void {
+    for (const [id, s] of this.supers) {
+      const decl = this.declById(id);
+      if (!decl || decl.kind !== 'type') continue;
+      let extendsTarget: ClassExtendsTarget | undefined;
+      if (s.extends && s.extends !== 'external') {
+        extendsTarget = { kind: 'in-tree', to: s.extends.id };
+        if (s.extends.id !== id) this.references.push({ from: id, to: s.extends.id, site: s.site });
+      } else if (s.extends === 'external' && s.extendsName) {
+        extendsTarget = { kind: 'external', name: s.extendsName, module: s.extendsModule ?? null };
+      }
+      const implementsIds = s.implements.map(i => i.id);
+      for (const to of implementsIds) {
+        if (to !== id) this.references.push({ from: id, to, site: s.site });
+      }
+      if (extendsTarget || implementsIds.length > 0) {
+        this.heritage.push({
+          class: id,
+          extends: extendsTarget,
+          implements: implementsIds,
+          site: s.site,
+        });
+      }
+    }
+    this.heritage.sort(
+      (a, b) =>
+        a.site.file < b.site.file ? -1 : a.site.file > b.site.file ? 1 : a.site.line - b.site.line || a.site.col - b.site.col,
+    );
   }
 
   private sortedFiles(): FileCtx[] {
@@ -702,15 +759,33 @@ class Graph {
         }
         const ifaceExt = named(node).find(c => c.type === 'extends_type_clause');
         if (ifaceExt) implNodes.push(...named(ifaceExt));
+        const heritageSite: CallEdgeSite = {
+          file: ctx.path,
+          line: (heritage ?? node).startPosition.row + 1,
+          col: (heritage ?? node).startPosition.column,
+        };
+        let extendsName: string | undefined;
+        let extendsModule: string | null | undefined;
         if (extendsNodes[0]) {
           const r = this.resolveTypeRef(ctx, extendsNodes[0]);
           ext = r === null ? null : r;
+          if (r === 'external' && (extendsNodes[0].type === 'identifier' || extendsNodes[0].type === 'type_identifier')) {
+            extendsName = extendsNodes[0].text;
+            const binding = ctx.imports.get(extendsName);
+            extendsModule = binding ? binding.specifier : null;
+          }
         }
         for (const n of implNodes) {
           const r = this.resolveTypeRef(ctx, n);
           if (r && r !== 'external') impls.push(r);
         }
-        this.supers.set(decl.id, { extends: ext, implements: impls });
+        this.supers.set(decl.id, {
+          extends: ext,
+          implements: impls,
+          site: heritageSite,
+          extendsName,
+          extendsModule,
+        });
         if (t !== 'interface_declaration') this.decoratorEntries(ctx, node, decl);
       }
     }
@@ -2229,6 +2304,7 @@ export async function buildTsCallGraph(files: readonly TsSourceFile[], options: 
     partial,
     sites: graph.siteCount,
     references: dedupe([...graph.references].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
+    heritage: [...graph.heritage],
     fieldUses: dedupe([...graph.fieldUses].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), r => `${r.from}>${r.to}@${r.site.file}:${r.site.line}:${r.site.col}`),
     imports: graph.importEdges(),
     loads: dedupe([...graph.loadEdges].sort((a, b) => bySite(a, b) || cmp(a.to, b.to)), l => `${l.from}>${l.to}`),
