@@ -1788,6 +1788,24 @@ function isSchemeHostPrefix(prefix: string): boolean {
  * host-guarded above (following one-hop derivations), and the guard has a
  * throwing/returning body (reject polarity — the safe path is everything below).
  */
+/** Names bound to the in-process supertest helper (`require('supertest')` / default import). */
+function jsSupertestRequestBindingNames(code: string): Set<string> {
+  const names = new Set<string>();
+  for (const line of code.split('\n')) {
+    let m = line.match(
+      /\b(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]supertest['"]\s*\)/,
+    );
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+(\w+)\s+from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+\*\s+as\s+(\w+)\s+from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+    m = line.match(/\bimport\s+(\w+)\s*,\s*\{[^}]*\}\s*from\s+['"]supertest['"]/);
+    if (m) names.add(m[1]!);
+  }
+  return names;
+}
+
 function jsSsrfHostGuardedLines(code: string): Set<number> {
   const covered = new Set<number>();
   const lines = code.split('\n');
@@ -3804,6 +3822,22 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
         filtered = filtered.filter(
           sink => !(sink.type === 'ssrf' && guardedLines.has(sink.line)),
         );
+      }
+    }
+
+    // Stage 15f2 — JS/TS ssrf: supertest drives an in-process Express app, not a
+    // network URL (#1326). Drop the classless `request(app)` SSRF sink when the
+    // callee is bound to `require('supertest')` / a default import from
+    // supertest.
+    if (['javascript', 'typescript'].includes(language)) {
+      const supertestNames = jsSupertestRequestBindingNames(ctx.code);
+      if (supertestNames.size > 0) {
+        filtered = filtered.filter(sink => {
+          if (sink.type !== 'ssrf' || sink.method !== 'request') return true;
+          const callee = (sink.code ?? '').match(/^([A-Za-z_$][\w$]*)\s*\(/);
+          if (callee && supertestNames.has(callee[1]!)) return false;
+          return true;
+        });
       }
     }
 
