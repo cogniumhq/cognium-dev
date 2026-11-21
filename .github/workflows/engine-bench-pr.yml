@@ -63,7 +63,7 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
     steps:
       # The repository goes in repo/; the corpus and the snapshots stay outside it.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: repo
           persist-credentials: false
