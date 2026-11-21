@@ -212,8 +212,10 @@ function extractJSRuntimeRegistrations(
 
     // For `.use(handler)` / `.on('event', handler)` / `.get('/p', h1, h2)` etc.
     // Every remaining positional argument that is a function-like is a handler.
-    for (let i = handlerStart; i < argNodes.length; i++) {
-      const handlerNode = argNodes[i];
+    // An array argument (`router.get('/p', [auth, h])`) holds handlers too.
+    const handlerNodes = argNodes.slice(handlerStart).flatMap(n => (n.type === 'array' ? n.namedChildren : [n]));
+    for (const handlerNode of handlerNodes) {
+      if (!handlerNode) continue;
       const handler = resolveHandler(handlerNode, index);
       if (!handler) continue;
 
