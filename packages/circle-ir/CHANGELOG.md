@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JS/TS: more imported Express handler shapes count as route entry points (Refs cognium-dev#1323, follow-up to #1331).** #1331 resolved a handler imported by name and registered by name (`router.get('/run', run)`). `require-entry-path` now also resolves a default export bound under another local name, a handler re-exported through one hop (`export { run } from './handler'` in `index.ts`), a member handler on a namespace or `require` import (`handlers.run`) or a class import (`Controller.run`), and a handler inside an array argument (`router.get('/p', [auth, run])`), which is now recorded in `runtime_registrations`. Before, the gate dropped the high/critical findings in these handlers whenever another JS/TS entry point was in the scan. An imported function that no route registers is still dropped.
 - **TypeScript: generic calls with `typeof import(...)` or `import(...).T` in type arguments no longer mark stable ids partial (cognium-dev#1312).** Benign-parse rules now cover call-site type arguments where tree-sitter leaves an `ERROR` `>() tail after `import` types in expressions and return statements.
 
 ## [4.23.0] - 2026-11-19

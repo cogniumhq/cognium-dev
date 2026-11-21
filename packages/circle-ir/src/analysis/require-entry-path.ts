@@ -549,7 +549,9 @@ function collectEntryPointKeys(
  * When an Express-family route registers an imported handler
  * (`router.get(path, run)` with `run` from `./handler`), classify the
  * exported function in the other file as a Tier-1 entry point
- * (cognium-dev#1323).
+ * (cognium-dev#1323). Also resolves a member handler on a namespace or
+ * class import (`handlers.run`, `Controller.run`), a default export whose
+ * name differs from the local binding, and one re-export hop (`index.ts`).
  */
 function addCrossFileJsTsRouteHandlerEntryPoints(
   fileAnalyses: ReadonlyArray<{ file: string; analysis: CircleIR }>,
@@ -557,6 +559,7 @@ function addCrossFileJsTsRouteHandlerEntryPoints(
   entryPoints: Set<string>,
 ): void {
   const knownFiles = new Set(fileAnalyses.map(fa => fa.file));
+  const byFile = new Map(fileAnalyses.map(fa => [fa.file, fa.analysis]));
 
   for (const fa of fileAnalyses) {
     const language = (fa.analysis.meta.language ?? '').toLowerCase();
@@ -581,29 +584,68 @@ function addCrossFileJsTsRouteHandlerEntryPoints(
         continue;
       }
       const handlerName = reg.handler?.name;
-      if (!handlerName || handlerName.includes('.')) continue;
+      const ref = handlerName?.match(/^([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?$/);
+      if (!ref) continue;
+      const [, head, member] = ref;
 
-      const localKeys = (graph.methodsByName.get(handlerName) ?? []).filter(
-        key => graph.methodsByKey.get(key)?.file === fa.file,
-      );
-      const alreadyEntry = localKeys.some(key => entryPoints.has(key));
-      if (alreadyEntry) continue;
+      if (!member) {
+        const localKeys = (graph.methodsByName.get(head) ?? []).filter(
+          key => graph.methodsByKey.get(key)?.file === fa.file,
+        );
+        const alreadyEntry = localKeys.some(key => entryPoints.has(key));
+        if (alreadyEntry) continue;
+      }
 
       const imp = imports.find(
-        i => !i.is_type_only && (i.alias ?? i.imported_name) === handlerName && i.from_package,
+        i => !i.is_type_only && (i.alias ?? i.imported_name) === head && i.from_package,
       );
       if (!imp?.from_package) continue;
 
       const targetFile = resolveRelativeImportToScanFile(fa.file, imp.from_package, knownFiles);
       if (!targetFile) continue;
 
-      const symbolName = imp.imported_name === 'default' ? handlerName : imp.imported_name;
-      for (const key of graph.methodsByName.get(symbolName) ?? []) {
-        const rec = graph.methodsByKey.get(key);
-        if (rec?.file === targetFile) {
-          entryPoints.add(key);
+      if (!member) {
+        if (!imp.is_wildcard) addExportedHandler(targetFile, imp.imported_name, head, 0);
+      } else if (imp.is_wildcard) {
+        // `import * as handlers` / `const handlers = require(...)`, then `handlers.run`.
+        addExportedHandler(targetFile, member, member, 0);
+      } else {
+        // `import { Controller }`, then `Controller.run`.
+        for (const key of graph.methodsByName.get(member) ?? []) {
+          const rec = graph.methodsByKey.get(key);
+          if (rec?.file === targetFile && rec.className === imp.imported_name) entryPoints.add(key);
         }
       }
+    }
+  }
+
+  /**
+   * Mark `symbol` exported from `file`. A default export whose name differs
+   * from the local binding falls back to the file's only module-scope
+   * function. When nothing matches, follow one hop of the file's re-exports
+   * (`export { run } from './run'`, `export * from …`, both recorded as
+   * un-aliased wildcard imports) and its imports of the same name.
+   */
+  function addExportedHandler(file: string, symbol: string, local: string, hop: number): void {
+    const name = symbol === 'default' ? local : symbol;
+    let keys = (graph.methodsByName.get(name) ?? []).filter(key => graph.methodsByKey.get(key)?.file === file);
+    if (keys.length === 0 && symbol === 'default') {
+      const moduleMethods = (byFile.get(file)?.types ?? []).find(t => t.name === '<module>')?.methods ?? [];
+      if (moduleMethods.length === 1) {
+        keys = [makeMethodKey(file, '<module>', moduleMethods[0].name, moduleMethods[0].start_line)];
+      }
+    }
+    if (keys.length > 0) {
+      for (const key of keys) entryPoints.add(key);
+      return;
+    }
+    if (hop > 0 || symbol === 'default') return;
+    for (const imp of byFile.get(file)?.imports ?? []) {
+      if (!imp.from_package || imp.is_type_only) continue;
+      const reExport = imp.is_wildcard && imp.alias === null;
+      if (!reExport && (imp.alias ?? imp.imported_name) !== symbol) continue;
+      const next = resolveRelativeImportToScanFile(file, imp.from_package, knownFiles);
+      if (next && next !== file) addExportedHandler(next, reExport ? symbol : imp.imported_name, symbol, hop + 1);
     }
   }
 }
