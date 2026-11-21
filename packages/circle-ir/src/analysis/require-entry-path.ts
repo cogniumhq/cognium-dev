@@ -66,6 +66,7 @@
 
 import type {
   CircleIR,
+  ImportInfo,
   MethodInfo,
   ProjectProfile,
   SastFinding,
@@ -74,7 +75,11 @@ import type {
   TaintHop,
   TypeInfo,
 } from '../types/index.js';
-import { classifyEntryPointTier, isSupertypeLifecycleMethod } from './entry-point-detection.js';
+import {
+  classifyEntryPointTier,
+  isSupertypeLifecycleMethod,
+  pathLooksLikeLibraryOrTest,
+} from './entry-point-detection.js';
 
 // ---------------------------------------------------------------------------
 // Public rule id + constants
@@ -213,6 +218,7 @@ export function applyRequireEntryPath(
 
   // Classify entry points once — reused for every finding.
   const entryPointKeys = collectEntryPointKeys(graph, fileContext, indexTypesByName(fileAnalyses));
+  for (const key of collectImportedRouteHandlerKeys(fileAnalyses)) entryPointKeys.add(key);
 
   // Per-language entry-point-key count — used by the safety guard
   // (#237): if a language has ZERO classified entry points across the
@@ -586,6 +592,136 @@ function inheritsLifecycleEntry(
     frontier = next;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// JS/TS route handlers imported from another file (cognium-dev #1323)
+// ---------------------------------------------------------------------------
+
+const JSTS_LANGUAGES: ReadonlySet<string> = new Set(['javascript', 'typescript', 'tsx', 'jsx']);
+
+const JSTS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
+
+type ScannedFile = { file: string; analysis: CircleIR };
+
+/**
+ * Method keys of exported functions that a router file registers by name:
+ * `import { run } from './handler'` then `router.get('/run', run)`. The
+ * per-file classifier only matches a handler name against methods of the
+ * registering file, so an imported handler was never an entry point and,
+ * once any other JS/TS entry point existed, the gate dropped its findings.
+ *
+ * Handles named, default and namespace / `require` imports, member access
+ * (`handlers.run`, `Controller.run`), and one re-export hop (`index.ts`).
+ * Only relative specifiers that resolve to a file in the scan are followed.
+ */
+function collectImportedRouteHandlerKeys(fileAnalyses: ReadonlyArray<ScannedFile>): Set<string> {
+  const out = new Set<string>();
+  const byPath = new Map<string, ScannedFile>();
+  for (const fa of fileAnalyses) {
+    if (JSTS_LANGUAGES.has((fa.analysis.meta.language ?? '').toLowerCase())) byPath.set(normalizePath(fa.file), fa);
+  }
+  if (byPath.size < 2) return out;
+
+  for (const fa of byPath.values()) {
+    if (pathLooksLikeLibraryOrTest(fa.file)) continue;
+    for (const reg of fa.analysis.runtime_registrations ?? []) {
+      if (reg.kind !== 'http_route' && reg.kind !== 'middleware') continue;
+      const ref = reg.handler?.name?.match(/^([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?$/);
+      if (!ref) continue;
+      const [, head, member] = ref;
+      const imp = (fa.analysis.imports ?? []).find(i => localName(i) === head);
+      if (!imp?.from_package || imp.is_type_only) continue;
+      const target = resolveModule(fa.file, imp.from_package, byPath);
+      if (!target) continue;
+      if (imp.is_wildcard) {
+        // `import * as handlers` / `const handlers = require(...)`, then `handlers.run`.
+        if (member) addExportedFunction(target, member, null, byPath, out);
+      } else if (member) {
+        // `import { Controller }`, then `Controller.run`.
+        addClassMethod(target, imp.imported_name, member, out);
+      } else {
+        addExportedFunction(target, imp.imported_name, head, byPath, out);
+      }
+    }
+  }
+  return out;
+}
+
+/** The name an import binds in the importing file. */
+function localName(imp: ImportInfo): string {
+  return imp.alias ?? imp.imported_name;
+}
+
+/**
+ * Mark the module-scope function exported as `name` from `target`. A default
+ * import matches a function named like its local binding, else the file's
+ * only module-scope function. When nothing matches, follow one hop of the
+ * file's re-exports (`export { run } from './run'`, `export * from …`) and its
+ * imports of the same name.
+ */
+function addExportedFunction(
+  target: ScannedFile,
+  name: string,
+  defaultLocal: string | null,
+  byPath: Map<string, ScannedFile>,
+  out: Set<string>,
+  hop = 0,
+): void {
+  const moduleType = (target.analysis.types ?? []).find(t => t.name === '<module>');
+  const methods = moduleType?.methods ?? [];
+  let hits = name === 'default'
+    ? methods.filter(m => m.name === defaultLocal)
+    : methods.filter(m => m.name === name);
+  if (hits.length === 0 && name === 'default' && methods.length === 1) hits = methods;
+  if (hits.length > 0) {
+    for (const m of hits) out.add(makeMethodKey(target.file, '<module>', m.name, m.start_line));
+    return;
+  }
+  if (hop > 0 || name === 'default') return;
+  for (const imp of target.analysis.imports ?? []) {
+    if (!imp.from_package || imp.is_type_only) continue;
+    // Re-exports are recorded as un-aliased wildcard imports.
+    const reExport = imp.is_wildcard && imp.alias === null;
+    if (!reExport && localName(imp) !== name) continue;
+    const next = resolveModule(target.file, imp.from_package, byPath);
+    if (next && next !== target) addExportedFunction(next, reExport ? name : imp.imported_name, name, byPath, out, hop + 1);
+  }
+}
+
+function addClassMethod(target: ScannedFile, className: string, methodName: string, out: Set<string>): void {
+  for (const t of target.analysis.types ?? []) {
+    if (t.name !== className) continue;
+    for (const m of t.methods ?? []) {
+      if (m.name === methodName) out.add(makeMethodKey(target.file, t.name, m.name, m.start_line));
+    }
+  }
+}
+
+/** Resolve a relative specifier against `fromFile` to a scanned JS/TS file. */
+function resolveModule(fromFile: string, spec: string, byPath: Map<string, ScannedFile>): ScannedFile | null {
+  if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
+  const from = normalizePath(fromFile);
+  const base = normalizePath(`${from.slice(0, from.lastIndexOf('/') + 1)}${spec}`);
+  // TS ESM imports name the emitted `.js` file: `./handler.js` → `handler.ts`.
+  const stem = base.replace(/\.(?:[cm]?js|jsx)$/, '');
+  const candidates = [base, ...JSTS_EXTENSIONS.map(e => stem + e), ...JSTS_EXTENSIONS.map(e => `${base}/index${e}`)];
+  for (const c of candidates) {
+    const hit = byPath.get(c);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Forward slashes, with `.` and `..` segments collapsed. */
+function normalizePath(p: string): string {
+  const parts: string[] = [];
+  for (const seg of p.replace(/\\/g, '/').split('/')) {
+    if (seg === '.') continue;
+    if (seg === '..' && parts.length > 0 && parts[parts.length - 1] !== '..' && parts[parts.length - 1] !== '') parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join('/');
 }
 
 /**

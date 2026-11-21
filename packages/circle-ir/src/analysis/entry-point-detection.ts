@@ -680,7 +680,7 @@ const POLYGLOT_TEST_FILE_MARKERS: ReadonlyArray<string> = [
   '.tests.',
 ];
 
-function pathLooksLikeLibraryOrTest(filePath: string | null | undefined): boolean {
+export function pathLooksLikeLibraryOrTest(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   const padded = `/${normalized}/`;
