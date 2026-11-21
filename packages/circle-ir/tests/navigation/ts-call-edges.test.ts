@@ -320,6 +320,9 @@ describe('class heritage', () => {
     expect(buttonHeritage?.extends).toEqual({ kind: 'in-tree', to: expect.any(String) });
     expect(q.get(buttonHeritage!.extends!.kind === 'in-tree' ? buttonHeritage!.extends!.to : '')).toBe('p/base:BaseElement');
     expect(references(g)).toEqual(expect.arrayContaining(['p/button:Button -> p/base:BaseElement']));
+    // S2 (#1343): `super.update` must appear as an edge or unresolved site, not vanish.
+    // Inherited `update` lives on external LitElement → unresolved, not silent.
+    expect(unresolved(g)).toEqual(expect.arrayContaining(['update: external']));
   });
 });
 
