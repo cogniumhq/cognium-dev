@@ -1806,6 +1806,72 @@ function jsSupertestRequestBindingNames(code: string): Set<string> {
   return names;
 }
 
+/**
+ * Stage 15f1 (#1332) — true for `/^…$/` regex literals whose body is a finite
+ * allowlist: explicit anchors, no unescaped `.` wildcard. Alternation inside
+ * the anchored body is allowed (BenchProctor express_ts safe cmdi/xpathi shapes).
+ */
+function isJsAnchoredFiniteAllowlistRegexBody(src: string): boolean {
+  if (!src.startsWith('^') || !src.endsWith('$')) return false;
+  const inner = src.slice(1, -1);
+  if (inner === '') return false;
+  const stripped = inner.replace(/\[(?:[^\]\\]|\\.)*\]/g, '');
+  const cleaned = stripped.replace(/\\./g, '');
+  return !cleaned.includes('.');
+}
+
+/**
+ * Returns 1-indexed lines whose sinks are covered by a reject-guard:
+ * `if (!/^allowlist$/.test(var)) { … return|throw; … }` then uses `var`
+ * (or one-hop assignment from it) below. Mirrors `jsSsrfHostGuardedLines`.
+ */
+function jsAnchoredAllowlistRejectGuardedLines(code: string): Set<number> {
+  const covered = new Set<number>();
+  const lines = code.split('\n');
+  const rejectRegexTest =
+    /\bif\s*\(\s*!\s*\/((?:[^/\\]|\\.)*)\/[a-z]*\s*\.\s*test\s*\(\s*(?:String\s*\(\s*)?([A-Za-z_$][\w$]*)(?:\s*\))?\s*\)\s*\)/;
+  const terminatorRe = /\b(throw|return)\b/;
+  const assignRe = /^\s*(?:const|let|var\s+)?\s*([A-Za-z_$][\w$]*)\s*=(?!=)\s*(.*)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const rm = rejectRegexTest.exec(lines[i] ?? '');
+    if (!rm || !isJsAnchoredFiniteAllowlistRegexBody(rm[1] ?? '')) continue;
+    const guardedVar = rm[2];
+    if (!guardedVar) continue;
+
+    let hasTerminator = terminatorRe.test(lines[i] ?? '');
+    if (!hasTerminator) {
+      for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
+        const ln = lines[j] ?? '';
+        if (terminatorRe.test(ln)) { hasTerminator = true; break; }
+        // Closing brace of the guard `if` — not `});` inside the block body.
+        if (/^\s*}\s*$/.test(ln) || /^\s*}\s*else\b/.test(ln)) break;
+      }
+    }
+    if (!hasTerminator) continue;
+
+    const guarded = new Set<string>([guardedVar]);
+    const mentionsGuarded = (text: string): boolean => {
+      for (const name of guarded) if (new RegExp(`\\b${name}\\b`).test(text)) return true;
+      return false;
+    };
+    for (let p = 0; p <= i; p++) {
+      const pre = assignRe.exec(lines[p] ?? '');
+      if (pre && mentionsGuarded(pre[2]!)) guarded.add(pre[1]!);
+    }
+    for (let l = i + 1; l < lines.length; l++) {
+      const lineText = lines[l] ?? '';
+      const assign = assignRe.exec(lineText);
+      if (assign) {
+        if (mentionsGuarded(assign[2]!)) guarded.add(assign[1]!);
+        else if (assign[1] !== guardedVar) guarded.delete(assign[1]!);
+      }
+      if (mentionsGuarded(lineText)) covered.add(l + 1);
+    }
+  }
+  return covered;
+}
+
 function jsSsrfHostGuardedLines(code: string): Set<number> {
   const covered = new Set<number>();
   const lines = code.split('\n');
@@ -3821,6 +3887,28 @@ export class SinkFilterPass implements AnalysisPass<SinkFilterResult> {
       if (guardedLines.size > 0) {
         filtered = filtered.filter(
           sink => !(sink.type === 'ssrf' && guardedLines.has(sink.line)),
+        );
+      }
+    }
+
+    // Stage 15f1 — JS/TS: anchored allowlist reject-guard on user input
+    // (cognium-dev#1332 BenchProctor express_ts). `if (!/^tokens$/.test(x)) return`
+    // before cmdi/xpathi/sqli/xss sinks drops the sink when the line references
+    // the guarded (or one-hop derived) variable.
+    if (['javascript', 'typescript'].includes(language)) {
+      const allowlistGuarded = jsAnchoredAllowlistRejectGuardedLines(ctx.code);
+      if (allowlistGuarded.size > 0) {
+        const CREDITED = new Set([
+          'command_injection',
+          'xpath_injection',
+          'sql_injection',
+          'xss',
+          'unsafe_deserialization',
+          'code_injection',
+          'path_traversal',
+        ]);
+        filtered = filtered.filter(
+          sink => !(CREDITED.has(sink.type) && allowlistGuarded.has(sink.line)),
         );
       }
     }
