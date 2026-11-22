@@ -128,3 +128,56 @@ urlpatterns = [
 ]
 `,
 };
+
+/** ViewSets mounted with `as_view()`: with a `{verb: action}` map, and without one. */
+export const PY_DRF_VIEWSET: Record<string, string> = {
+  'src/shop/__init__.py': '',
+  'src/shop/views.py': `
+from rest_framework import viewsets
+from rest_framework.response import Response
+
+
+class SearchViewSet(viewsets.ViewSet):
+    def list(self, request):
+        return Response([])
+
+    def create(self, request):
+        return Response({})
+
+
+class ItemViewSet(viewsets.ModelViewSet):
+    def list(self, request):
+        return Response([])
+
+    def create(self, request):
+        return Response({})
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    def destroy(self, request, pk=None):
+        return Response(status=204)
+
+    def export(self, request):
+        return Response([])
+
+
+class BareViewSet(viewsets.ViewSet):
+    def list(self, request):
+        return Response([])
+
+    def create(self, request):
+        return Response({})
+`,
+  'src/shop/urls.py': `
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path("search/", views.SearchViewSet.as_view({"post": "list"})),
+    path("items/", views.ItemViewSet.as_view(actions={"get": "list", "post": "create"})),
+    path("items/export/", views.ItemViewSet.as_view({"get": "export"})),
+    path("bare/", views.BareViewSet.as_view()),
+]
+`,
+};

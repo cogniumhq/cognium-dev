@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { buildPythonGraph, type PythonGraph } from '../../src/navigation/index.js';
 import { parse } from '../../src/core/parser.js';
 import { extractCalls } from '../../src/core/extractors/calls.js';
-import { PY_DRF_INCLUDE, PY_DRF_INLINE, PY_DRF_VERBS } from './python-drf-fixture.js';
+import { PY_DRF_INCLUDE, PY_DRF_INLINE, PY_DRF_VERBS, PY_DRF_VIEWSET } from './python-drf-fixture.js';
 
 const files = (app: Record<string, string>) => Object.entries(app).map(([path, code]) => ({ path, code }));
 
@@ -68,6 +68,38 @@ describe('DRF verbs', () => {
       'shop.views:ItemDetail.destroy DELETE /detail/<int:pk>/',
     ]));
     expect(rows.filter(r => r.includes(' ANY '))).toEqual([]);
+  });
+
+  it('takes ViewSet verbs from the as_view({verb: action}) map only', async () => {
+    const { rows } = await routes(PY_DRF_VIEWSET);
+    const at = (path: string) => rows.filter(r => r.endsWith(` ${path}`)).sort();
+    // Only POST → list is wired: list is not GET, and create gets no route.
+    expect(at('/search/')).toEqual([
+      'shop.views:SearchViewSet POST /search/',
+      'shop.views:SearchViewSet.list POST /search/',
+    ]);
+    // actions= keyword; a perform_* hook takes the verbs of its wired action; destroy is not wired.
+    expect(at('/items/')).toEqual([
+      'shop.views:ItemViewSet GET /items/',
+      'shop.views:ItemViewSet POST /items/',
+      'shop.views:ItemViewSet.create POST /items/',
+      'shop.views:ItemViewSet.list GET /items/',
+      'shop.views:ItemViewSet.perform_create POST /items/',
+    ]);
+    // A custom action named by the map is a route.
+    expect(at('/items/export/')).toEqual([
+      'shop.views:ItemViewSet GET /items/export/',
+      'shop.views:ItemViewSet.export GET /items/export/',
+    ]);
+  });
+
+  it('keeps ANY for a ViewSet without an as_view() map, not verbs guessed from action names', async () => {
+    const { rows } = await routes(PY_DRF_VIEWSET);
+    expect(rows.filter(r => r.endsWith(' /bare/')).sort()).toEqual([
+      'shop.views:BareViewSet ANY /bare/',
+      'shop.views:BareViewSet.create ANY /bare/',
+      'shop.views:BareViewSet.list ANY /bare/',
+    ]);
   });
 });
 
